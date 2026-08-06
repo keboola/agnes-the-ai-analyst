@@ -93,7 +93,12 @@
      other two states live in the rail and the overflow menu. #}
   {% if detail.redesign %}
     {% if not in_stack %}
-      {{ ds.button('Download locally', variant='primary', type='button', id='dom-add-btn') }}
+      {# "Add to stack" is the product's noun for what this button changes, and
+         it is the wording the data-package header uses for the identical
+         action — the two surfaces described the same click differently. The
+         rail's Availability block is where the download itself is spelled
+         out. Legacy keeps "Download locally". #}
+      {{ ds.button('Add to stack', variant='primary', type='button', id='dom-add-btn') }}
     {% endif %}
   {% elif effective_requirement == 'required' %}
     <button class="btn btn-required" disabled>Always downloaded (required)</button>
@@ -184,8 +189,9 @@
    instances are entitled to see unchanged. #}
 {% if detail.redesign %}
 
-{{ detail.side_open('Domain information', icon='info') }}
-  {# No "Type" row — the header badge already says Memory. #}
+{# Unlabelled, like every other facts block in the system — each row names its
+   own value. No "Type" row either: the header badge already says Memory. #}
+{{ detail.side_open('') }}
   {% set _rows = [{'key': 'Items', 'val': (items|length|string) if items else 'None yet'}] %}
   {% if required_count %}
     {% set _ = _rows.append({'key': 'Required', 'html': True,
@@ -194,19 +200,31 @@
   {{ detail.side_rows(_rows) }}
 {{ detail.side_close() }}
 
+{# Chip + sentence in ONE tinted callout, exactly as the data-package rail
+   states the same fact: they are a single answer, and as two loose fragments
+   the sentence read like body copy that happened to follow a badge. #}
 {{ detail.side_open('Availability', icon='stack') }}
   {% if effective_requirement == 'required' %}
-    {{ detail.status('Always downloaded', 'ok') }}
-    <p class="detail-side__note">
-      Your organization requires this domain, so it always travels with your workspace.
-    </p>
+    {{ detail.side_panel_open('ok') }}
+      {{ detail.status('Always downloaded', 'ok') }}
+      <p class="detail-side__note">
+        Your organization requires this domain, so it always travels with your workspace.
+      </p>
+    {{ detail.side_panel_close() }}
   {% elif in_stack %}
-    {{ detail.status('Downloaded locally', 'ok') }}
+    {{ detail.side_panel_open('ok') }}
+      {{ detail.status('Downloaded locally', 'ok') }}
+      <p class="detail-side__note">
+        <code>agnes pull</code> keeps this domain on your laptop.
+      </p>
+    {{ detail.side_panel_close() }}
   {% else %}
-    {{ detail.status('Not downloaded') }}
-    <p class="detail-side__note">
-      You have access to this domain. Download it to keep a local copy.
-    </p>
+    {{ detail.side_panel_open('warn') }}
+      {{ detail.status('Not downloaded', 'warn') }}
+      <p class="detail-side__note">
+        You have access to this domain. Add it to your stack to keep a local copy.
+      </p>
+    {{ detail.side_panel_close() }}
   {% endif %}
 {{ detail.side_close() }}
 

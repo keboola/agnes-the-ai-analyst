@@ -94,6 +94,47 @@ to `[data-theme="paper"]`; the rail chrome CSS is
    The `--ds-hero-*` family stays DARK under paper (the one "night"
    moment: /home install hero, terminal mockups). Don't hand-build
    heroes; don't assume ink color — use tokens.
+6b. **Resource detail pages are ONE template, never a family of
+   lookalikes.** Every entity with a detail page — data package, plugin,
+   skill, agent, file, collection, upload, memory domain, recipe, table —
+   renders through `templates/macros/_detail.html` + `css/detail-page.css`.
+   The reference implementation is `catalog_package_detail.html`; read it
+   before building a new one. The contract:
+
+   - **Header:** `detail.hero(...)` and nothing hand-written. It carries
+     the title, the `type_label` badge, the trust marker, and exactly ONE
+     prominent action; everything else goes in `detail.menu(...)`. A
+     client-hydrated page uses `name_id` / `icon_id` / `body_slot` for its
+     JS hooks — the marketplace pages hand-wrote their header for exactly
+     four hooks and lost the badge, the rail and the menu doing it.
+   - **Container language:** `detail--panels` is the shared DEFAULT
+     (`hero(panels=False)` to escape it, and only for a surface designed
+     against the borderless rhythm). One rule: *a section is a panel;
+     everything inside a panel is whitespace.* No cards inside panels.
+   - **Main column:** the subject — what it is / does, then the objects it
+     contains (`detail.objects(...)` for any "what is inside this" list),
+     then examples (`detail.questions(...)`).
+   - **Rail:** the facts, always in this order, each skipped when empty —
+     About prose → the metadata read-out (`side_rows`, **unlabelled**: the
+     rows name their own values) → Owner/Publisher → Sharing →
+     Availability → Versions. Put an entity-specific block where it belongs
+     in that order; don't invent a new position for it.
+   - **Owner/admin tools are not a block in the flow.** The action ladder is
+     `store_menu()` in the header's overflow menu, history is
+     `version_timeline()` in the rail, and only an alert about the page
+     (the quarantine banner) sits above the content.
+   - **Shared concepts use the shared component**, always:
+     `visibility_chip` / `side_sharing`, `version_timeline`, `store_menu`,
+     `owner`, `status`, `side_panel_*`, `related`, `objects`, `empty`. If
+     you are about to write page-local CSS for one of these, the component
+     is missing a parameter — add it there instead.
+   - **Gating.** The whole redesign is opt-in. `cols_open` / `aside_open` /
+     `cols_close` emit nothing on the legacy path, but any content that
+     MOVED (the rail's blocks, a re-worded or relocated main section) must
+     sit behind `{% if detail.redesign %}` with the legacy markup kept
+     verbatim in the `{% else %}`. Guarded by
+     `tests/test_ui_layout_theme.py::TestDetailPageTemplateIsShared`.
+
 7. **Motion:** use `--ds-motion-{fast,med,slow}` +
    `--ds-ease-{standard,enter}`; honor `prefers-reduced-motion` on
    anything that moves.

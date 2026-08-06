@@ -200,7 +200,7 @@ class TestRailOptIn:
         resp = web_client.get("/library", cookies=admin_cookie)
         assert resp.status_code == 200
         text = resp.text
-        head = text.split('class="lib-actions"', 1)[1].split("</div>", 1)[0]
+        head = text.split('class="lib-head"', 1)[1].split('class="fbar-dock"', 1)[0]
         assert 'href="/stack"' not in head
 
         rows = re.findall(r"<tr[^>]*\bdata-item-id=[^>]*>", text)
@@ -335,8 +335,8 @@ class TestRailOptIn:
     def test_library_page_hosts_uploads(self, web_client, admin_cookie, monkeypatch):
         """The caller's things live on /library — the renamed, widened former
         /artefacts. It carries the item count, the "+ Upload" affordance, the
-        share dialog, a setup-status pill on the title, and a "Coming soon"
-        info banner for the not-yet-built data apps."""
+        share dialog, and a "Data apps coming soon" badge on the Files band for
+        the not-yet-built kind that will ship into that section."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/library", cookies=admin_cookie)
         assert resp.status_code == 200
@@ -348,25 +348,37 @@ class TestRailOptIn:
         assert 'id="lib-item-count"' in text
         assert "data-new-upload" in text
         assert 'id="uploadModal"' in text
-        # Owner-initiated sharing: every grant-backed row gets a Share action,
-        # and the dialog it opens ships with the page.
-        assert 'id="shareModal"' in text
-        assert 'id="shareGroups"' in text
+        # Owner-initiated sharing: the dialog a grant-backed row's Sharing badge
+        # opens ships with the page — as the shared component every detail page's
+        # badge opens, not the page-local copy this page used to carry.
+        assert "js/components/share_dialog.js" in text
+        assert "css/share_dialog.css" in text
+        assert 'id="shareModal"' not in text, "the share dialog is a component, not page markup"
         # Every "add something" path sits behind ONE chevron button.
         assert 'id="lib-new-btn"' in text
         assert 'id="lib-new-menu"' in text
         for label in ("Build a skill", "Build a plugin", "Upload a file"):
             assert f"<span>{label}</span>" in text
-        # The page-head `.pnote` caveats are retired. The whole-Library
-        # "content being prepared" notice is gone entirely — the title carries no
-        # status pill — and Data apps is a "Coming soon" info banner under the
-        # inventory.
+        # The page-head `.pnote` caveats are retired, and so are the two tinted
+        # panels that replaced them. What is left above the inventory is ONE thin
+        # row (the caveat about the list), and Data apps states its schedule as a
+        # badge on the band it will ship into.
         assert 'class="pnote"' not in text
         assert "Content being prepared" not in text
         assert "lib-status" not in text
-        assert 'class="lib-soon__badge">Coming soon<' in text
-        assert 'aria-label="Data apps — coming soon"' in text
-        # The loud page-local banner these replaced is gone, class and all.
+        assert 'class="lib-count-note"' in text
+        assert ">More coming soon<" in text
+        assert "lib-strip" not in text
+        # The Data apps badge is NOT asserted here, and its absence is correct:
+        # this instance has no files, so there is no Files band to carry it. The
+        # schedule now lives on the section the kind will ship into, which means
+        # an empty Library states it nowhere — a deliberate consequence of moving
+        # it out of the page head. See
+        # test_web_library_sharing.test_data_apps_schedule_is_a_badge_on_the_files_band,
+        # which seeds content and asserts the badge for real.
+        assert 'class="fbar-group__soon"' not in text
+        # The banners these replaced are gone, class and all.
+        assert "lib-soon" not in text
         assert "lib-apps" not in text
         # The "same knowledge, everywhere" connect banner closes the Library
         # header (it moved here from the My Stack header).
@@ -522,11 +534,11 @@ class TestRailOptIn:
 class TestRailChatHistory:
     """Rail chat-history migration (#896): the conversation history lives in the
     left rail, directly under New chat and present on every page (not just
-    /chat). It carries NO section heading — the titles are the section — and a
-    "View all chats" / "Show less" control instead, wired in JS. The standalone
-    "+ New chat" button is retired and the chat entry is renamed "New chat"
-    (id="new-chat", so chat.js resets in place on /chat). All gated on can_chat.
-    Topnav is unaffected — its in-page chat sidebar is unchanged."""
+    /chat). It is TWO collapsible sections — Pinned, then Chats — with no
+    truncation and no "View all chats" control. The standalone "+ New chat"
+    button is retired and the chat entry is renamed "New chat" (id="new-chat", so
+    chat.js resets in place on /chat). All gated on can_chat. Topnav is
+    unaffected — its in-page chat sidebar is unchanged."""
 
     def _enable_chat(self, web_client, monkeypatch):
         """Make can_chat true: chat enabled AND an explicit CHAT grant (admin
@@ -552,20 +564,24 @@ class TestRailChatHistory:
         assert "New chat" in text
         # The standalone +New chat button above the nav (old markup) is retired.
         assert 'class="rail-newchat"' not in text
-        # No "Chats" heading row above the list any more — the recents sit
-        # directly under New chat. Both the label and the summary-row markup
-        # that carried it are gone.
+        # The conversations are TWO collapsible sections (see
+        # TestRailChatSections for the full contract).
+        assert 'id="rail-pinned"' in text
+        assert 'id="rail-chats"' in text
+        # The heading is a quiet section LABEL, not the `.rail-i`-styled summary
+        # row with a clock glyph that #896 shipped and retired: styled as a nav
+        # destination, it read as a fourth Library/Agents/Admin.
         assert 'class="rail-i rail-history-summary"' not in text
         assert "rail-history-summary-txt" not in text
         assert "rail-history-caret" not in text
-        # ...and NOT replaced by an expand/collapse control: the list fills the
-        # rail's free space and scrolls, so a five-row cap plus a button to undo
-        # it was redundant by construction (see test_recents_are_never_truncated).
+        # The recent feed is capped and closes on a LINK to the Chats page — not
+        # on an in-place expander, which is what the retired "Show more" was
+        # (see test_recents_are_capped_by_a_link_not_by_an_expander).
         assert "rail-history-more" not in text
-        assert "View all chats" not in text
         assert "Show less" not in text
-        # The loader that fills the list off /chat — and truncates it on every
-        # rail page — is wired in.
+        assert 'id="rail-view-all-chats"' in text
+        assert 'href="/chats"' in text
+        # The loader that fills the list off /chat is wired in.
         assert "js/rail_history.js" in text
 
     def test_rail_onboarding_card_hosts_the_panel(self, web_client, admin_cookie, monkeypatch):
@@ -661,9 +677,7 @@ class TestRailChatHistory:
         marker = 'id="new-token-btn"'
         assert marker in resp.text
         handler = resp.text[resp.text.index(marker) - 400 : resp.text.index(marker) + 400]
-        assert "preventDefault()" in handler, (
-            "New token must cancel the <summary> default action, not only bubbling"
-        )
+        assert "preventDefault()" in handler, "New token must cancel the <summary> default action, not only bubbling"
         assert "stopPropagation()" in handler
 
     def test_profile_menu_can_restart_onboarding(self, web_client, admin_cookie, monkeypatch):
@@ -695,6 +709,136 @@ class TestRailChatHistory:
         resp = web_client.get("/stack", cookies=admin_cookie)
         assert 'id="rail-restart-onboarding"' not in resp.text
 
+    def test_pinned_and_chats_are_two_collapsible_sections(self, web_client, admin_cookie, monkeypatch):
+        """Pinned is its OWN section, above Chats, and either can be put away.
+
+        The two lists answer different questions — a curated shelf vs. a
+        chronological feed — and as sibling groups in one list they could only be
+        told apart by a header that scrolled away, with neither one closable. So:
+        a section each, Pinned first, each with a disclosure and its own list."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        self._enable_chat(web_client, monkeypatch)
+        text = web_client.get("/stack", cookies=admin_cookie).text
+        rail = text.split('<nav class="rail"', 1)[1].split("</nav>", 1)[0]
+
+        # Anatomy of each section: a labelled disclosure button wired to its own
+        # body, and a list of its own.
+        # "Recent", not "Chats": the feed is a capped slice with "View all chats"
+        # under it, and a section labelled "Chats" over a slice would make that
+        # link read as a second route to the same list.
+        for sec, toggle, body, label in (
+            ("rail-pinned", "rail-pinned-toggle", "rail-pinned-body", "Pinned"),
+            ("rail-chats", "rail-chats-toggle", "rail-chats-body", "Recent"),
+        ):
+            assert f'id="{sec}"' in rail
+            assert f'id="{toggle}"' in rail
+            assert f'aria-controls="{body}"' in rail, f"{toggle} must point at its own body"
+            assert f'id="{body}"' in rail
+            assert f'<span class="rail-chatsec-txt">{label}</span>' in rail
+        # Both start expanded server-side; rail_history.js applies the persisted
+        # state before any rows arrive.
+        assert rail.count('aria-expanded="true"') >= 2
+        # Two lists, and the chat page's ids are still the ones the renderers
+        # bind to (chat.js owns #chat-list on /chat unchanged).
+        assert 'id="pinned-chat-list"' in rail
+        assert 'id="chat-list"' in rail
+        # Pinned above Chats, and the empty state lives in Chats (the section
+        # that survives a first run) rather than between them.
+        assert rail.find('id="rail-pinned"') < rail.find('id="rail-chats"') < rail.find('id="cloud-chat-empty-state"')
+        # Pinned starts hidden — a "Pinned" header over nothing is dead chrome,
+        # so a renderer unhides it only once it has rows.
+        pinned_open = rail[rail.find('<section class="rail-chatsec" id="rail-pinned"') :][:120]
+        assert " hidden" in pinned_open, "the Pinned section must start hidden"
+
+    def test_chat_section_headers_are_labels_not_rows(self, web_client, admin_cookie, monkeypatch):
+        """The headers keep the group-label voice they were promoted from —
+        10.5px/700 uppercase muted ink — and stay LABELS: no background in any
+        state, no border, no divider.
+
+        This is the rail's colour rule, not taste (see
+        test_accent_marks_where_you_are_and_nothing_else): the accent marks the
+        active conversation and the neutral wash marks hovering an actual row, so
+        a header that filled on hover would read as a selectable row. Ink is the
+        one channel still free, so hover spends that."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        css = web_client.get("/static/css/rail.css").text
+
+        def block_for(selector):
+            return css.split(selector, 1)[1].split("}", 1)[0]
+
+        hd = block_for('html[data-ui-layout="rail"] .rail-chatsec-hd {')
+        assert "background: none" in hd
+        assert "border: none" in hd
+        assert "border-top" not in hd and "border-bottom" not in hd
+        assert "color: var(--ds-text-muted)" in hd
+        # Left edge shared with the conversation titles below (rows: `padding:
+        # 4px 9px`) — a section label indented differently from its own list
+        # reads as a misalignment in a 240px column.
+        assert "9px" in hd
+        hover = block_for('html[data-ui-layout="rail"] .rail-chatsec-hd:hover {')
+        assert "color: var(--ds-text-secondary)" in hover
+        assert "background" not in hover, "a filled header would read as a row"
+        txt = block_for('html[data-ui-layout="rail"] .rail-chatsec-txt {')
+        assert "font-size: 10.5px" in txt
+        assert "font-weight: 700" in txt
+        assert "text-transform: uppercase" in txt
+        # The caret annotates the label, so it sits against it — not flushed to
+        # the rail's right edge, where it read as a second column of controls
+        # beside the conversation rows' own "⋮". No count rides out there either.
+        caret = block_for('html[data-ui-layout="rail"] .rail-chatsec-caret {')
+        assert "margin-left: auto" not in caret
+        assert "rail-chatsec-count" not in css
+        # Keyboard reachability — it is a real <button>, so it must show focus.
+        assert "outline: var(--ds-focus-outline)" in block_for(
+            'html[data-ui-layout="rail"] .rail-chatsec-hd:focus-visible {'
+        )
+        # Whitespace separates the sections; the rail's only nav divider is
+        # Admin's (test_admin_is_the_only_divided_group).
+        gap = block_for('html[data-ui-layout="rail"] .rail-chatsec + .rail-chatsec {')
+        assert "margin-top" in gap
+        assert "border" not in gap
+
+    def test_any_date_boundary_stays_subordinate_to_the_section_label(self, web_client, admin_cookie, monkeypatch):
+        """A date boundary ("Older") lives INSIDE a section, so it cannot wear the
+        same uppercase-700 label voice as that section's own header — two labels
+        of equal weight nested one inside the other read as siblings, i.e. as two
+        sections with the rows above the second one orphaned.
+
+        Conditional on the rail styling date headers at all: whether a capped
+        feed is short enough to need no date labels is a separate call, and this
+        guard is about the hierarchy that applies whenever they DO render."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        css = web_client.get("/static/css/rail.css").text
+        selector = 'html[data-ui-layout="rail"] .rail-history .cloud-chat-list-group-header {'
+        if selector not in css:
+            return  # the rail renders no date headers — nothing to keep in line
+        block = css.split(selector, 1)[1].split("}", 1)[0]
+        assert "text-transform: none" in block
+        assert "letter-spacing: 0" in block
+        assert "font-weight: 600" in block
+
+    def test_section_collapse_is_persisted(self, web_client, admin_cookie, monkeypatch):
+        """One owner for the section chrome — rail_history.js, loaded on every
+        rail page INCLUDING /chat (where chat.js owns only the rows, and calls in
+        through window.railChatSections).
+
+        The open state survives navigation: a disclosure that forgets what you
+        did to it on every page load reads as broken, and the choice ("I live in
+        my pins") is about how the caller works, not about the page they're on."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        js = web_client.get("/static/js/rail_history.js").text
+        assert "agnes.rail.chatsec." in js, "the open state must be persisted per section"
+        assert "localStorage.setItem" in js and "localStorage.getItem" in js
+        # Default OPEN: only an explicit "0" closes a section, so a first-time
+        # caller never has to discover a disclosure to see their chats.
+        assert '!== "0"' in js
+        assert 'setAttribute("aria-expanded"' in js
+        assert "window.railChatSections" in js, "chat.js needs a seam to re-sync after a render"
+        chat_js = web_client.get("/static/js/chat.js").text
+        assert "window.railChatSections" in chat_js, "/chat must re-sync the sections it re-renders"
+        css = web_client.get("/static/css/rail.css").text
+        assert 'html[data-ui-layout="rail"] .rail-chatsec.is-collapsed .rail-chatsec-caret {' in css
+
     def test_rail_history_absent_without_chat_grant(self, web_client, admin_cookie, monkeypatch):
         """No chat reachability → no history section, no New chat item, no
         Finish setup row, no loader (matches the "Chat slot only when
@@ -712,8 +856,8 @@ class TestRailChatHistory:
 class TestRailTwoZones:
     """Rail IA: two fixed zones with the conversation list between them.
 
-    Top zone   — New chat, then the newest few conversations.
-    (scroll)   — the rest of the list, inside .rail-history-body.
+    Top zone   — New chat, then the Pinned + Chats sections.
+    (scroll)   — the rest of both lists, inside .rail-history-body.
     Bottom     — Library · Agents, then Admin behind a divider, then the
                  onboarding card, then the profile pinned to the very bottom.
 
@@ -738,8 +882,9 @@ class TestRailTwoZones:
         sequence = [
             'class="rail-nav rail-nav-top"',  # zone 1
             'id="new-chat"',
-            'class="rail-history"',  # recents, no heading of their own
-            'id="chat-list"',
+            'class="rail-history"',  # the conversations region…
+            'id="rail-pinned"',  # …Pinned first,
+            'id="chat-list"',  # …then Chats
             'class="rail-nav rail-nav-bottom"',  # zone 2
             'href="/library"',
             'href="/agents"',
@@ -766,8 +911,9 @@ class TestRailTwoZones:
         assert "border-top" in block_for('html[data-ui-layout="rail"] .rail-admin {')
         # The profile keeps its own divider (it is the very bottom row).
         assert "border-top" in block_for('html[data-ui-layout="rail"] .rail-user-menu {')
-        # The recents no longer draw one — the "Chats" heading they used to
-        # separate is gone.
+        # The conversations region draws none — the Pinned/Chats section labels
+        # are separated by whitespace, not rules (see
+        # test_chat_section_headers_are_labels_not_rows).
         assert "border-top" not in block_for('html[data-ui-layout="rail"] .rail-history {')
         assert "border-top" not in block_for('html[data-ui-layout="rail"] .rail-nav-bottom {')
 
@@ -897,15 +1043,16 @@ class TestRailTwoZones:
             body = css.split(selector, 1)[1].split("}", 1)[0]
             assert "min-height: var(--rail-row-h)" in body, selector
 
-    def test_recents_are_never_truncated(self, web_client, admin_cookie, monkeypatch):
-        """The list fills the free space between the two zones and scrolls inside
-        its own box, in ONE state — so the bottom zone never moves and every
-        conversation is reachable by scrolling.
+    def test_recents_are_capped_by_a_link_not_by_an_expander(self, web_client, admin_cookie, monkeypatch):
+        """The region still fills the free space between the two zones and scrolls
+        inside its own box, in ONE state — so the bottom zone never moves.
 
-        There is no collapsed state and no "View all chats" toggle. Both were
-        redundant by construction: this region is already exactly the rail's free
-        space, so a five-row cap showed five rows on a screen with room for nine
-        and the toggle's only job was to undo a limit we imposed ourselves."""
+        What changed with /chats: the recent feed is capped again. The cap that
+        was removed had nowhere to go (five rows on a screen with room for nine,
+        plus a "Show more" whose only job was to undo a limit we imposed
+        ourselves); this one hands the long tail to a page built for it. So the
+        contract is: a cap, and a LINK — never a second state of this list. The
+        two-state machinery stays retired in CSS and in JS."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         css = web_client.get("/static/css/rail.css").text
         body = css.split('html[data-ui-layout="rail"] .rail-history-body {', 1)[1].split("}", 1)[0]
@@ -914,17 +1061,19 @@ class TestRailTwoZones:
         # min-height:0 (and no floor) so a short viewport shrinks the list rather
         # than pushing the bottom zone past the fold — `.rail` cannot scroll.
         assert "min-height: 0" in body
-        # The two-state machinery is gone, in CSS and in JS.
+        # No collapsed/expanded pair, and no in-place expander.
         assert ".rail-history.is-expanded" not in css
         assert "rail-history-more" not in css
         js = web_client.get("/static/js/rail_history.js").text
-        assert "RECENT_LIMIT" not in js
         assert "recentsExpanded" not in js
         # The constructor CALL, not the bare word: the comment that records why
         # the observer was removed names it, and asserting on the name alone
         # would forbid explaining the removal.
         assert "new MutationObserver" not in js
         assert "applyTruncation()" not in js
+        # The cap itself, and its destination.
+        assert "slice(0, RAIL_RECENT_LIMIT)" in js
+        assert 'html[data-ui-layout="rail"] .rail-history-all {' in css
 
 
 class TestRailAdminSubitems:
@@ -1496,9 +1645,7 @@ class TestPaperThemeAssets:
         emits nothing rather than an unstyled marker.
         """
         for sel in self._selectors("app/web/static/css/trustmark.css"):
-            assert '[data-theme="paper"]' in sel, (
-                f"trustmark.css selector not scoped to paper theme: {sel!r}"
-            )
+            assert '[data-theme="paper"]' in sel, f"trustmark.css selector not scoped to paper theme: {sel!r}"
 
     def test_keyframe_stops_are_not_mistaken_for_selectors(self):
         """Guard on the guard: without the @keyframes strip, a stop like
@@ -1661,3 +1808,110 @@ class TestResourceColourTokens:
         assert "--ds-kind-library: #0a5aa8;" in globals_, "default collection hue changed"
         assert "--ds-kind-skill: #0e7c57;" in globals_, "default skill hue changed"
         assert "--ds-kind-memory: #523410;" in globals_, "default memory hue changed"
+
+
+class TestDetailPageTemplateIsShared:
+    """Every resource detail page is the SAME template, not nine lookalikes.
+
+    The point of `macros/_detail.html` is that a reader meets one page shape
+    on a data package, a plugin, a skill, an agent, a file, a collection and a
+    memory domain — same header, same container language, same rail, same
+    place for every shared concept. Two things drift without a guard:
+
+      1. a page keeps hand-writing its own header (the marketplace pages did
+         exactly this, for the sake of four hydration hooks, and lost the
+         type badge, the rail and the overflow menu in the process), and
+      2. a page opts out of the panels container language, so it renders
+         borderless sections beside another page's panels.
+
+    The blue half is the regression guard: none of it may reach a default
+    instance, whose page is a contract.
+    """
+
+    # (path-builder key, the type badge the header must print)
+    PAPER_PAGES = (
+        ("/catalog/p/{pkg}", "Data package"),
+        ("/marketplace/curated/agnes-builtin/agnes-analyst", "Plugin"),
+    )
+
+    @staticmethod
+    def _package(slug: str) -> str:
+        from src.repositories import data_packages_repo
+
+        return data_packages_repo().create(
+            name="Shared Template Package",
+            slug=slug,
+            description="A package used to assert the shared detail template.",
+            icon=None,
+            color=None,
+            created_by="admin1",
+        )
+
+    def test_every_detail_page_speaks_the_panels_language(self, web_client, admin_cookie, monkeypatch):
+        """`detail--panels` is the scaffold's shared default, not a per-page
+        opt-in — a default each page has to remember to ask for is a default
+        that drifts."""
+        monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
+        self._package("panels-detail-pkg")
+        for path in ("/catalog/p/panels-detail-pkg", "/marketplace/curated/agnes-builtin/agnes-analyst"):
+            resp = web_client.get(path, cookies=admin_cookie)
+            assert resp.status_code == 200, path
+            assert "detail--panels" in resp.text, f"{path} is not on the shared container language"
+            assert "detail-cols" in resp.text, f"{path} is missing the two-column shell"
+            assert "detail-aside" in resp.text, f"{path} is missing the rail"
+
+    def test_the_marketplace_pages_render_through_the_shared_hero(self, web_client, admin_cookie, monkeypatch):
+        """They used to hand-write the header. The tell is the type badge and
+        the overflow menu, which only the shared hero emits."""
+        monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
+        text = web_client.get("/marketplace/curated/agnes-builtin/agnes-analyst", cookies=admin_cookie).text
+        assert 'class="detail-type"' in text, "the plugin header must name the resource type"
+        assert ">Plugin<" in text
+        assert '<details class="detail-menu">' in text, "secondary actions belong in the overflow menu"
+        # The hydration hooks survived the move onto the shared hero.
+        assert 'id="hero-name"' in text
+        assert 'id="hero-icon"' in text
+        assert 'id="details-list"' in text
+
+    def test_the_marketplace_pages_keep_the_legacy_page_on_a_default_instance(
+        self, web_client, admin_cookie, monkeypatch
+    ):
+        """The whole redesign is gated. A default instance renders the
+        gradient hero with its nested panel, and none of the rail."""
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        text = web_client.get("/marketplace/curated/agnes-builtin/agnes-analyst", cookies=admin_cookie).text
+        assert "detail--panels" not in text
+        assert "detail-cols" not in text, "the two-column shell must not reach default instances"
+        assert "detail-aside" not in text
+        assert 'class="detail-type"' not in text
+        # …and it still renders the nested hero panel it has always drawn,
+        # with "What it does" and Details inside the header rather than split
+        # between a section and the rail.
+        assert "detail-hero--paneled" in text
+        assert "detail-hero__panel-split" in text
+        assert 'id="lead-text"' in text
+        assert 'id="details-list"' in text
+
+    def test_shared_concepts_use_one_component_each(self):
+        """Sharing, versions, the admin ladder and 'what is inside this' are
+        defined once in the scaffold. A page that re-specifies one of them
+        locally is how two surfaces come to disagree about the same fact."""
+        scaffold = open("app/web/templates/macros/_detail.html").read()
+        for macro in (
+            "macro visibility_chip(",
+            "macro side_sharing(",
+            "macro version_timeline(",
+            "macro store_menu(",
+            "macro objects(",
+        ):
+            assert macro in scaffold, f"the shared scaffold is missing `{macro}`"
+
+        # The store-entity action ladder existed twice, byte-similar, on the
+        # plugin and the skill/agent pages. Neither may rebuild it.
+        for page in (
+            "app/web/templates/marketplace_plugin_detail.html",
+            "app/web/templates/marketplace_item_detail.html",
+        ):
+            assert "detail.store_menu(" in open(page).read(), (
+                f"{page} must reach the Edit/Archive/Hard-delete ladder through the shared macro"
+            )

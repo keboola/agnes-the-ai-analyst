@@ -225,10 +225,23 @@
        whatever verdict context the submission row carries so an
        admin doesn't see a bare "Hidden" with no actionable detail. #}
     <h3>Hidden</h3>
+    {# Inside paper's Manage region the heading is already the row's label, so
+       the sentence only has to say what the state MEANS. The stored value is
+       what an admin occasionally needs and never needs read aloud, so it moves
+       to the title — a raw `visibility_status = "hidden"` in body copy is a
+       schema detail wearing a product sentence's clothes. Blue keeps the
+       original wording: it has no Manage region to supply the label. #}
+    {% if is_paper() %}
+    <div title="visibility_status = &quot;{{ entity.visibility_status }}&quot;">
+      Not listed in the Store, and nobody can install it. Anyone who installed
+      it earlier keeps working from the copy they already have.
+    </div>
+    {% else %}
     <div>
       This entity is not visible in the public Store
       (<code>visibility_status = "{{ entity.visibility_status }}"</code>).
     </div>
+    {% endif %}
     {% if sub and sub.inline_checks %}
       {% set ic = sub.inline_checks %}
       {% if ic.manifest and ic.manifest.issues %}

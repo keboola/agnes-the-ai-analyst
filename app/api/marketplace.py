@@ -256,6 +256,16 @@ class PluginDetailResponse(BaseModel):
     entity_id: Optional[str] = None  # flea only
     plugin_name: str
     manifest_name: str
+    # Trust axis — the same two stored fields `MarketplaceItem` (the listing
+    # row) already carries, so a detail page can spell the one trust
+    # vocabulary (`macros/_trustmark.html`) instead of the retired
+    # Curated/Flea split. Curated plugins are admin-registered, so they
+    # report `organization` with verification left at `none` — identical to
+    # what `_curated_to_item` puts on the listing row for the same plugin.
+    # Defaults match that helper's, so a caller that ignores these fields
+    # (and the blue/topnav pill, which still reads `source`) is unaffected.
+    publisher_kind: str = "user"
+    verification_state: str = "none"
     # Display
     description: Optional[str] = None
     version: Optional[str] = None
@@ -346,6 +356,12 @@ class InnerDetailResponse(BaseModel):
     category: Optional[str] = None
     parent_author_name: Optional[str] = None
     parent_updated_at: Optional[str] = None
+    # Trust axis — see the twin fields on `PluginDetailResponse`. An inner
+    # skill/agent inherits its PARENT's trust: it ships inside that bundle and
+    # is not separately publishable, so a per-inner claim would be a second
+    # vocabulary saying something the store never recorded.
+    publisher_kind: str = "user"
+    verification_state: str = "none"
     # Parent plugin's `name` from `.claude-plugin/plugin.json` — same value
     # the synth marketplace.json uses, so /<manifest_name>:<inner_name> is
     # exactly what Claude Code accepts after install.
@@ -1715,6 +1731,9 @@ async def curated_detail(
 
     return PluginDetailResponse(
         source="curated",
+        # Same claim `_curated_to_item` puts on this plugin's listing row.
+        publisher_kind="organization",
+        verification_state="none",
         marketplace_id=marketplace_id,
         marketplace_name=meta["name"],
         plugin_name=plugin_name,
@@ -1877,6 +1896,10 @@ async def flea_detail(
 
     return PluginDetailResponse(
         source="flea",
+        # Stored on the entity; same two fields the Library row and
+        # `_flea_to_item` read for this entity.
+        publisher_kind=entity.get("publisher_kind") or "user",
+        verification_state=entity.get("verification_state") or "none",
         entity_id=entity_id,
         plugin_name=_flea_display_name,
         manifest_name=invocation,
@@ -2586,6 +2609,9 @@ async def curated_skill_detail(
     return InnerDetailResponse(
         marketplace_id=marketplace_id,
         plugin_name=plugin_name,
+        # Inherited from the parent curated plugin (admin-registered).
+        publisher_kind="organization",
+        verification_state="none",
         kind="skill",
         name=fm.get("name") or skill_name,
         description=fm.get("description"),
@@ -2652,6 +2678,9 @@ async def curated_agent_detail(
     return InnerDetailResponse(
         marketplace_id=marketplace_id,
         plugin_name=plugin_name,
+        # Inherited from the parent curated plugin (admin-registered).
+        publisher_kind="organization",
+        verification_state="none",
         kind="agent",
         name=fm.get("name") or agent_name,
         description=fm.get("description"),
@@ -2707,6 +2736,10 @@ async def flea_skill_detail(
     return InnerDetailResponse(
         marketplace_id="",
         plugin_name=entity["name"],
+        # Inherited from the parent flea entity — an inner asset is not
+        # separately publishable, so it cannot carry its own claim.
+        publisher_kind=entity.get("publisher_kind") or "user",
+        verification_state=entity.get("verification_state") or "none",
         kind="skill",
         name=fm.get("name") or skill_name,
         description=fm.get("description"),
@@ -2764,6 +2797,10 @@ async def flea_agent_detail(
     return InnerDetailResponse(
         marketplace_id="",
         plugin_name=entity["name"],
+        # Inherited from the parent flea entity — an inner asset is not
+        # separately publishable, so it cannot carry its own claim.
+        publisher_kind=entity.get("publisher_kind") or "user",
+        verification_state=entity.get("verification_state") or "none",
         kind="agent",
         name=fm.get("name") or agent_name,
         description=fm.get("description"),

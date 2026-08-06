@@ -61,6 +61,14 @@
      paper sheet turns the label into the same eyebrow the dl above uses. */
   .pkg-questions { margin-top: 10px; }
   .pkg-questions__label { font-size: 12px; font-weight: 600; color: var(--ds-text-secondary); }
+  /* The expanded body's wrappers (`.pkg-table-panel*`) are plain blocks on the
+     default theme — they exist so the paper sheet can group the same content
+     into one inner panel with a two-column split. Only the "nothing
+     documented" line needs styling here, and it carries exactly the treatment
+     it had as an inline style attribute before it earned a class name. */
+  .pkg-table-panel__empty {
+    color: var(--ds-text-secondary); font-size: 13px; font-style: italic; padding: 8px 0;
+  }
 </style>
 {% endblock %}
 
@@ -69,16 +77,30 @@
 {% import "macros/_detail.html" as detail with context %}
 {% import "macros/_trustmark.html" as _pkg_trust %}
 
-{# Hero meta line: table count (+ total size when known). #}
-{% set _meta = [{'icon': 'table', 'text': (tables|length|string) ~ ' table' ~ ('s' if tables|length != 1 else '')}] %}
-{% if total_size_bytes %}{% set _ = _meta.append({'icon': 'db', 'text': total_size_display}) %}{% endif %}
+{# The distinct query modes across the package's tables. #}
+{% set _modes = tables | map(attribute='query_mode') | reject('none') | unique | sort | list %}
+{# Freshness = the newest sync across the tables. The per-row dates say this
+   table-by-table; this answers it for the package. ISO dates sort lexically,
+   so `max` needs no parsing. #}
+{% set _last_sync = tables | map(attribute='last_sync_display') | reject('none') | map('string') | max %}
+
+{# Under the editorial layout the header carries NO numbers: they are the rail's
+   subject, and the rail states all of them (table count, local size, freshness,
+   query modes) in one labelled block. A second copy under the description made
+   the header answer a question the reader had not asked yet, and — sharing its
+   row with the action buttons — it wrapped mid-strip at common widths. So the
+   header is title, badges and the one sentence that says what this is.
+   The legacy hero keeps its meta line: that page has no rail to move it to. #}
+{% set _meta = None if detail.redesign else [{'icon': 'table', 'text': (tables|length|string) ~ ' table' ~ ('s' if tables|length != 1 else '')}] %}
+{% if _meta and total_size_bytes %}{% set _ = _meta.append({'icon': 'db', 'text': total_size_display}) %}{% endif %}
 
 {# ── What it is + Best for / Avoid when ────────────────────────────────
-   ONE definition of this copy, rendered in one of two places: as real
-   sections in the main column under the editorial layout, or — on the
-   legacy path — inside the hero's nested white panel, which is where the
-   gradient-hero design put it. Defined as a macro rather than duplicated,
-   so the two placements can never drift. #}
+   ONE definition of this copy, rendered in one of two places: on the legacy
+   path inside the hero's nested white panel, which is where the gradient-hero
+   design put it; under the editorial layout the "Best for / Avoid when" pair
+   becomes a real main-column section (and the long description moves into the
+   rail, see "About this package"). Defined as a macro rather than duplicated,
+   so the placements can never drift. #}
 {% macro pkg_overview(headings=True) %}
 {% if pkg.long_description %}
   {% if headings %}<h2 class="detail-section__title">{{ detail.ico('info') }}What it is</h2>{% endif %}
@@ -149,12 +171,23 @@
    Computed here rather than inline: Jinja does not allow a comment inside a
    function-call expression. #}
 {% set _pkg_trust_level = _pkg_trust.level_for(pkg.publisher_kind, 'none', False) | trim %}
+
+{# Ownership is a RAIL fact under the editorial layout: the rail carries an
+   Owner block with the monogram, so an "Owned by X · Team" line in the header
+   too is the same claim twice — and it sat between the title and the
+   description, delaying the one sentence that says what the package is. The
+   legacy hero keeps the line: that header has no rail to defer to. #}
+{% set _hero_owner_name = None if detail.redesign else pkg.owner_name %}
+{% set _hero_owner_team = None if detail.redesign else pkg.owner_team %}
+{# The panels container language is the scaffold's shared default under the
+   redesign (see `panels` in macros/_detail.html), so this page no longer opts
+   into it by hand — every resource detail page now speaks it. #}
 {% call detail.hero(
      kind='data', name=pkg.name, color=pkg.color,
      cover_image_url=pkg.cover_image_url, icon=pkg.icon,
      type_label='Data package', menu=_menu|trim,
      trust=_pkg_trust_level,
-     badges=badges, owner_name=pkg.owner_name, owner_team=pkg.owner_team,
+     badges=badges, owner_name=_hero_owner_name, owner_team=_hero_owner_team,
      description=pkg.description, tags=pkg.tags, meta=_meta,
      back_href=_back.href, back_label=_back.label, panel=pkg_panel|trim) %}
   {# Auto-membership: this package is already in the caller's stack (any
@@ -172,7 +205,12 @@
      The legacy path keeps all three as buttons. #}
   {% if detail.redesign %}
     {% if not in_stack %}
-      {{ ds.button('Download locally', variant='primary', type='button', id='pkg-add-btn') }}
+      {# "Add to stack" — the Stack is the noun the whole product uses for
+         "the things my agents can reach", and it is what this button changes;
+         "Download locally" described the mechanism (`agnes pull` fetching
+         parquets) rather than the outcome. The rail's Availability block is
+         where the download state itself is spelled out. #}
+      {{ ds.button('Add to stack', variant='primary', type='button', id='pkg-add-btn') }}
     {% endif %}
   {% elif effective_requirement == 'required' %}
     <button class="btn btn-required" disabled title="Required by your organization">Always downloaded (required)</button>
@@ -189,11 +227,11 @@
 
 {{ detail.cols_open() }}
 
-{% if detail.redesign and pkg.long_description %}
-{{ detail.section_open('Overview', icon='info') }}
-  {{ pkg_overview(headings=False) }}
-{{ detail.section_close() }}
-{% endif %}
+{# No "Overview" section here under the redesign: the long description is a
+   fact ABOUT the package, so it moves into the rail's "About this package"
+   block alongside the other facts, and the main column belongs entirely to
+   the tables — the thing the reader came to browse. The legacy path still
+   renders the same copy in the hero panel. #}
 
 {% if detail.redesign and (pkg.when_to_use or pkg.when_not_to_use) %}
 {{ detail.section_open('When to reach for it', icon='check') }}
@@ -214,6 +252,12 @@
        the description gets the full width beneath them; the numbers right-align
        into their own column so they read down the list as a column. #}
     <summary>
+      {# A TABLE glyph, matching the section heading above it — these rows are
+         tables, and the database cylinder the resource palette uses for the
+         PACKAGE says "a data source" instead. It gives every row one fixed
+         anchor on the left, so the names line up as a column even though the
+         chevron ahead of it changes shape when the row opens. #}
+      <span class="pkg-table-row__glyph" aria-hidden="true">{{ detail.ico('table') }}</span>
       <span class="pkg-table-row__text">
         <span class="pkg-table-row__head">
           <a class="pkg-table-row__name" href="/catalog/t/{{ t.id }}"
@@ -244,37 +288,50 @@
     </summary>
     {% endif %}
     <div class="pkg-table-detail">
-      <dl>
-        {% if t.grain %}<dt>Grain</dt><dd>{{ t.grain }}</dd>{% endif %}
-        {% if t.platforms %}<dt>Platforms</dt><dd>{{ t.platforms|join(' · ') }}</dd>{% endif %}
-        {% if t.partition_col %}<dt>Partition</dt><dd><code>{{ t.partition_col }}</code></dd>{% endif %}
-        {% if t.history %}<dt>History</dt><dd>{{ t.history }}</dd>{% endif %}
-      </dl>
-      {% if t.gotchas %}
-      <div data-section="gotchas">
-        {% for g in t.gotchas %}
-        <div class="pkg-gotcha" {% if g.key %}data-gotcha="key"{% endif %}>
-          {% if g.key %}<span class="pkg-gotcha__label">Key gotcha</span>{% endif %}{{ g.body }}
+      {# The expanded body is ONE inner panel, not a loose run of blocks under
+         the row. Opening a row drops a visibly separate surface inside the
+         list, so it is unambiguous which row the documentation belongs to and
+         where it ends — the previous version bled into the next row's
+         hairline. Inside it, the facts and the questions sit side by side:
+         "what is this table" on the left, "what can I ask it" on the right. #}
+      <div class="pkg-table-panel{% if t.sample_questions %} pkg-table-panel--split{% endif %}">
+        <div class="pkg-table-panel__facts">
+          <dl>
+            {% if t.grain %}<dt>Grain</dt><dd>{{ t.grain }}</dd>{% endif %}
+            {% if t.platforms %}<dt>Platforms</dt><dd>{{ t.platforms|join(' · ') }}</dd>{% endif %}
+            {% if t.partition_col %}<dt>Partition</dt><dd><code>{{ t.partition_col }}</code></dd>{% endif %}
+            {% if t.history %}<dt>History</dt><dd>{{ t.history }}</dd>{% endif %}
+          </dl>
         </div>
-        {% endfor %}
+        {% if t.sample_questions %}
+        <div class="pkg-table-panel__ask">
+          {# Same uppercase eyebrow as GRAIN / PLATFORMS / PARTITION beside it,
+             so the two halves of the panel read as one labelled block rather
+             than a definition list followed by a stray bold line. #}
+          <div class="pkg-questions">
+            <div class="pkg-questions__label">Try one of these</div>
+            <ul class="pkg-questions-list">
+              {% for q in t.sample_questions %}<li>{{ q }}</li>{% endfor %}
+            </ul>
+          </div>
+        </div>
+        {% endif %}
+        {% if t.gotchas %}
+        {# Full width under the split: a caveat qualifies everything above it,
+           and an amber note squeezed into half a panel reads as a footnote to
+           the left column only. #}
+        <div class="pkg-table-panel__notes" data-section="gotchas">
+          {% for g in t.gotchas %}
+          <div class="pkg-gotcha" {% if g.key %}data-gotcha="key"{% endif %}>
+            {% if g.key %}<span class="pkg-gotcha__label">Key gotcha</span>{% endif %}{{ g.body }}
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+        {% if not (t.grain or t.platforms or t.partition_col or t.history or t.gotchas or t.sample_questions) %}
+        <div class="pkg-table-panel__empty">No extended documentation yet for this table.</div>
+        {% endif %}
       </div>
-      {% endif %}
-      {% if t.sample_questions %}
-      <div class="pkg-questions">
-        {# Same uppercase eyebrow as GRAIN / PLATFORMS / PARTITION above, so
-           the expanded body reads as one labelled block rather than a
-           definition list followed by a stray bold line. #}
-        <div class="pkg-questions__label">Try one of these</div>
-        <ul class="pkg-questions-list">
-          {% for q in t.sample_questions %}<li>{{ q }}</li>{% endfor %}
-        </ul>
-      </div>
-      {% endif %}
-      {% if not (t.grain or t.platforms or t.partition_col or t.history or t.gotchas or t.sample_questions) %}
-      <div style="color:var(--ds-text-secondary); font-size:13px; font-style:italic; padding:8px 0;">
-        No extended documentation yet for this table.
-      </div>
-      {% endif %}
     </div>
   </details>
   {% endfor %}
@@ -286,32 +343,46 @@
 {# ── Example questions you can ask Agnes ───────────────────── #}
 {% if pkg.example_questions %}
 {{ detail.section_open('Example questions you can ask Agnes', icon='spark') }}
-  <ul class="detail-questions">
-    {% for q in pkg.example_questions %}
-    <li>
-      <a href="/chat?q={{ q | urlencode }}">
-        {{ detail.ico('spark') }}<span>{{ q }}</span>{{ detail.ico('back') }}
-      </a>
-    </li>
-    {% endfor %}
-  </ul>
+  {{ detail.questions(pkg.example_questions) }}
 {{ detail.section_close() }}
 {% endif %}
 
+{# The rail is a panel like every other section — `detail--panels` gives it the
+   same surface, radius and padding as the main column's sections, so the page
+   reads as one system rather than a bordered sidebar beside unbordered
+   content. It needs no modifier of its own. #}
 {{ detail.aside_open() }}
 {# The rail's content is redesign-only: on the legacy path there is no
    rail, and appending these as extra sections would change a page default
    instances are entitled to see unchanged. #}
 {% if detail.redesign %}
 
-{# No "Type" row — the badge beside the title already says Data package, and a
-   rail that repeats the header teaches the reader to skip the rail. Same
-   reason the description isn't restated here. #}
-{{ detail.side_open('Package information', icon='info') }}
+{# Rail order: prose, then the numbers it refers to, then who owns it, then
+   state. The description leads because it is the sentence that makes the rest
+   of the rail mean something — a reader who has not yet been told what the
+   package IS has no use for "88 MB".
+
+   The long description is the same copy the legacy hero panel carries; here it
+   is a rail block rather than a main-column section, because the main column's
+   subject is the tables. #}
+{% if pkg.long_description %}
+{{ detail.side_open('About this package', icon='file') }}
+  <div data-section="long-description"><div class="detail-prose detail-side__prose">{{ pkg.long_description }}</div></div>
+{{ detail.side_close() }}
+{% endif %}
+
+{# Deliberately UNLABELLED. Every row here names its own value — "Tables 3",
+   "Local size 88 MB" — so an eyebrow reading "Package information" over the
+   top labelled a block that was already fully labelled, and put a second
+   heading between the description and the facts that follow from it. The rows
+   now read as the description's own read-out. No "Type" row either: the badge
+   beside the title already says Data package, and a rail that repeats the
+   header teaches the reader to skip the rail. #}
+{{ detail.side_open('') }}
   {% set _rows = [{'key': 'Tables', 'val': tables|length|string}] %}
   {% if total_size_display %}{% set _ = _rows.append({'key': 'Local size', 'val': total_size_display}) %}{% endif %}
+  {% if _last_sync %}{% set _ = _rows.append({'key': 'Last updated', 'val': _last_sync[:10]}) %}{% endif %}
   {% if pkg.category %}{% set _ = _rows.append({'key': 'Category', 'val': pkg.category}) %}{% endif %}
-  {% set _modes = tables | map(attribute='query_mode') | reject('none') | unique | sort | list %}
   {% if _modes %}{% set _ = _rows.append({'key': 'Query modes', 'val': _modes | join(' · ')}) %}{% endif %}
   {{ detail.side_rows(_rows) }}
 {{ detail.side_close() }}
@@ -323,27 +394,41 @@
 {% endif %}
 
 {# ── Stack availability ────────────────────────────────────────────────
-   The one question the rail exists to answer for a data package: is this
-   on my laptop, and can I change that? An RBAC grant already puts the
-   package in the caller's stack — this is about the local copy `agnes
-   pull` keeps, which is why the wording is "downloaded", never "access". #}
+   Is this on my laptop, and can I change that? An RBAC grant already puts the
+   package in the caller's stack — this is about the local copy `agnes pull`
+   keeps, which is why the wording is "downloaded", never "access". Last in the
+   rail: it is the one block that is about the READER rather than the package,
+   and the header's Add-to-stack button is the answer to it.
+
+   Chip + sentence sit in ONE tinted callout: they are a single answer, and
+   as two loose fragments the sentence read like body copy that happened to
+   follow a badge. The tint tracks the state — settled green when a local
+   copy exists, amber when there is something the reader could do about it —
+   and the word inside always spells the state out, so the colour never
+   carries it alone. #}
 {{ detail.side_open('Availability', icon='stack') }}
   {% if effective_requirement == 'required' %}
-    {{ detail.status('Always downloaded', 'ok') }}
-    <p class="detail-side__note">
-      Your organization requires this package, so <code>agnes pull</code> always
-      keeps a local copy.
-    </p>
+    {{ detail.side_panel_open('ok') }}
+      {{ detail.status('Always downloaded', 'ok') }}
+      <p class="detail-side__note">
+        Your organization requires this package, so <code>agnes pull</code> always
+        keeps a local copy.
+      </p>
+    {{ detail.side_panel_close() }}
   {% elif in_stack %}
-    {{ detail.status('Downloaded locally', 'ok') }}
-    <p class="detail-side__note">
-      <code>agnes pull</code> keeps these tables on your laptop.
-    </p>
+    {{ detail.side_panel_open('ok') }}
+      {{ detail.status('Downloaded locally', 'ok') }}
+      <p class="detail-side__note">
+        <code>agnes pull</code> keeps these tables on your laptop.
+      </p>
+    {{ detail.side_panel_close() }}
   {% else %}
-    {{ detail.status('Not downloaded') }}
-    <p class="detail-side__note">
-      You have access to this package. Download it to query the tables locally.
-    </p>
+    {{ detail.side_panel_open('warn') }}
+      {{ detail.status('Not downloaded', 'warn') }}
+      <p class="detail-side__note">
+        You have access to this package. Download it to query the tables locally.
+      </p>
+    {{ detail.side_panel_close() }}
   {% endif %}
 {{ detail.side_close() }}
 

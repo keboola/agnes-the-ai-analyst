@@ -644,45 +644,205 @@
 
 {% block content %}
 {% import "_components.html" as ds %}
-{% import "macros/_detail.html" as detail %}
+{% import "macros/_detail.html" as detail with context %}
 {% import "macros/_catalog_card.html" as cards %}
-<div class="detail plugin-detail" id="root" data-kind="plugin"
-     style="--kind: var(--ds-kind-plugin); --kind-soft: var(--ds-kind-plugin-soft);"
+{% import "macros/_trustmark.html" as _plugin_trust %}
+
+{# Back link target — pinned to the very top by the shared hero.
+   Rail returns to the Library's Plugins band (its only browse surface —
+   Marketplace/Catalog is not a rail destination); topnav keeps the
+   classic per-tab marketplace link; ?from=skills returns to the Skill
+   builder, and admin moderation back to /admin/store. See
+   router._detail_back. #}
+{% if from_source == 'admin-moderation' %}
+  {% set _back = '/admin/store' %}
+  {% set _back_label = 'Moderation & Trust' %}
+{% elif from_source == 'skills' %}
+  {% set _back = '/skills' %}
+  {% set _back_label = 'Skill builder' %}
+{% else %}
+  {% set _b = detail_back('plugin',
+                          '/marketplace?tab=' ~ ('curated' if source == 'curated' else 'flea'),
+                          'Curated Marketplace' if source == 'curated' else 'Flea Market') %}
+  {% set _back = _b.href %}
+  {% set _back_label = _b.label %}
+{% endif %}
+
+{# A curated plugin has no `entity` — it comes from an admin-registered
+   marketplace, so the claim is 'org', matching what `PluginDetailResponse`
+   reports. Under the redesign the marker rides the title, like every other
+   detail page; the legacy path keeps the JS-rendered Curated/Flea pill it has
+   always shown, so `trust` is withheld there rather than swapping one badge
+   for another on a default instance. #}
+{% set _trust_level = (_plugin_trust.level_for(entity.publisher_kind, entity.verification_state,
+                                               show_unverified_trust_enabled())
+                       if entity else 'org') | trim %}
+
+{# The header's hydration targets. Everything JS fills by id lives here rather
+   than in a hand-written hero — the page used to re-implement the whole
+   header for the sake of these four hooks, and drifted from the scaffold
+   every time the scaffold moved. #}
+{% set _hero_slot %}
+  <!-- v49 phase-2: hidden by default; JS only un-hides when d.tagline is
+       truthy, so entities without a tagline don't flash "Loading…". -->
+  <div class="tagline" id="hero-tagline" hidden></div>
+  <div class="pills" id="hero-pills"></div>
+  <!-- Telemetry funnel chip — same shape as the listing card so a user
+       clicking through from /marketplace sees identical figures. Hidden
+       by JS when stack_count == 0 AND invocations_30d == 0. -->
+  <div class="hero-telemetry" id="hero-telemetry" hidden></div>
+{% endset %}
+
+{# Secondary actions move into the overflow menu, leaving the header with the
+   one action the reader came to take. Cowork export is a secondary path (a
+   zip for claude.ai, not the product's own install), and the owner/admin
+   ladder is the shared `store_menu` every store surface uses. #}
+{% set _menu %}
+{% if detail.redesign %}
+  {% set _cowork = [{'label': 'Download for Cowork', 'icon': 'download',
+                     'attrs': 'id="cowork-menu-item" hidden',
+                     'title': 'Download this plugin as a single zip to upload in Claude Cowork (claude.ai)'}] %}
+  {% if entity and (is_owner or is_admin) %}
+    {{ detail.store_menu(entity, is_owner=is_owner, is_admin=is_admin,
+                         edit_in_flight=edit_in_flight, before=_cowork) }}
+  {% else %}
+    {{ detail.menu(_cowork) }}
+  {% endif %}
+{% endif %}
+{% endset %}
+
+{# Legacy hero panel — the nested white card holding "What it does" beside
+   "Details". Empty under the redesign, where the same two blocks become a
+   main-column section and the rail's facts respectively: an editorial header
+   is not a box, so there is nothing for a panel to be nested inside. Keeping
+   it verbatim on the legacy path is what leaves a default instance
+   untouched. #}
+{% set _hero_panel %}
+{% if not detail.redesign %}
+  <div class="detail-hero__panel-split">
+    <div class="main" id="panel-what">
+      <h2 class="detail-section__title">{{ detail.ico('info') }}What it does</h2>
+      <div class="lead" id="lead-text">Loading…</div>
+    </div>
+    <div class="side details" id="panel-details">
+      <h2 class="detail-section__title">{{ detail.ico('file') }}Details</h2>
+      <dl id="details-list"></dl>
+    </div>
+  </div>
+{% endif %}
+{% endset %}
+
+{# Version rows for the rail timeline, newest first. The restorable rule is
+   the API's, not the UI's: `submission_status=None` is a legacy v1 seeded
+   before the submission_id backfill and counts as approved; anything else
+   non-approved shows why instead of offering a Restore the server would
+   reject. Same rule the legacy versions card applies. #}
+{% set _versions = [] %}
+{% for v in (entity.version_history | sort(attribute='n', reverse=true)) if entity and entity.version_history %}
+  {# `entity` rows are `_FlexDict`s: a MISSING key yields an empty _FlexDict,
+     not Undefined — and an empty dict is unhashable, so feeding it to a
+     `{...}.get(…)` lookup below raises TypeError and 500s the page. Normalise
+     both fields to a plain type first. `''` (rather than none) is the
+     not-a-status sentinel, because `none` means "legacy v1, treat as
+     approved" and a row with no status at all is not that. #}
+  {% set _st = v.submission_status if v.submission_status is string else '' %}
+  {% set _size = v.size if v.size is number else None %}
+  {% set _ = _versions.append({
+       'n': v.n, 'hash': v.hash if v.hash is string else None,
+       'created_at': v.created_at if v.created_at is string else '',
+       'size_display': (_size | humanbytes(1)) if _size else None,
+       'restorable': _st in ['approved', None],
+       'state': {'blocked_inline': 'blocked', 'blocked_llm': 'blocked',
+                 'review_error': 'errored', 'pending_inline': 'pending',
+                 'pending_llm': 'pending'}.get(_st),
+       'state_tone': {'blocked_inline': 'danger', 'blocked_llm': 'danger',
+                      'review_error': 'warn', 'pending_inline': 'info',
+                      'pending_llm': 'info'}.get(_st, 'warn'),
+       'state_title': {'blocked_inline': 'This version was blocked by guardrails — restore disabled.',
+                       'blocked_llm': 'This version was blocked by guardrails — restore disabled.',
+                       'review_error': 'The security reviewer errored on this version — restore disabled.',
+                       'pending_inline': 'This version is still under review.',
+                       'pending_llm': 'This version is still under review.'}.get(_st, '')}) %}
+{% endfor %}
+
+{% call detail.hero(
+     cls='plugin-detail',
+     kind='plugin', name=(entity.title if entity else None) or plugin_name,
+     name_id='hero-name', icon_id='hero-icon', type_label='Plugin',
+     trust=(_trust_level if detail.redesign else None), trust_own=is_owner,
+     menu=_menu|trim, body_slot=_hero_slot, panel=_hero_panel|trim,
+     back_href=_back, back_label=_back_label) %}
+  {# Three-element install state — see renderInstallState() below. Only one of
+     {installBtn} vs {statusPill + removeBtn} is visible at a time. #}
+  <div class="actions-row">
+    <button class="btn-install" id="install-btn" type="button" hidden>+ Add to my stack</button>
+    <span class="status-pill" id="status-pill" hidden>✓ In your stack</span>
+    <button class="btn-remove" id="remove-btn" type="button" hidden>✕ Remove from stack</button>
+    {# Legacy keeps Cowork as a header button; the redesign moves it into the
+       overflow menu above, so the header carries one action. #}
+    <a class="btn-cowork" id="cowork-btn" hidden
+       {% if detail.redesign %}data-menu-mirrored="1"{% endif %}
+       title="Download this plugin as a single zip to upload in Claude Cowork (claude.ai)">&darr; Download for Cowork</a>
+  </div>
+  <div class="stack-hint" id="stack-hint" hidden>
+    <div class="head">
+      <span class="title" id="stack-hint-title">✓ Added to your stack</span>
+      <button class="dismiss" id="stack-hint-dismiss" type="button">Don’t show again</button>
+    </div>
+    <div>Run in Claude Code:</div>
+    <div class="cmd-chip">
+      <span class="prompt">/</span>
+      <span class="cmd">update-agnes-plugins</span>
+      <button class="btn-copy" id="stack-hint-copy" type="button">Copy</button>
+    </div>
+  </div>
+{% endcall %}
+
+{# The root element the hydration script reads its dataset off. It used to BE
+   the `.detail` wrapper; the shared hero owns that element now, so the data
+   attributes live on a zero-height marker inside it. #}
+<div id="root" hidden
      data-source="{{ source }}"
+     data-kind="plugin"
      data-marketplace-id="{{ marketplace_id or '' }}"
      data-plugin-name="{{ plugin_name or '' }}"
      data-entity-id="{{ entity_id or '' }}"
-     data-visibility="{{ entity.visibility_status if entity else 'approved' }}">
-  {# Back link — pinned to the very top, above the review banner + owner
-     actions strip (previously it rendered after them, landing mid-page).
-     Rail returns to the Library's Plugins band (its only browse surface —
-     Marketplace/Catalog is not a rail destination); topnav keeps the
-     classic per-tab marketplace link; ?from=skills returns to the Skill
-     builder, and admin moderation back to /admin/store. See
-     router._detail_back. #}
-  {% if from_source == 'admin-moderation' %}
-    {% set _back = '/admin/store' %}
-    {% set _back_label = 'Moderation & Trust' %}
-  {% elif from_source == 'skills' %}
-    {% set _back = '/skills' %}
-    {% set _back_label = 'Skill builder' %}
-  {% else %}
-    {% set _b = detail_back('plugin',
-                            '/marketplace?tab=' ~ ('curated' if source == 'curated' else 'flea'),
-                            'Curated Marketplace' if source == 'curated' else 'Flea Market') %}
-    {% set _back = _b.href %}
-    {% set _back_label = _b.label %}
-  {% endif %}
-  <a class="detail-back" href="{{ _back }}">{{ detail.ico('back') }}{{ _back_label }}</a>
+     {% if detail.redesign %}data-redesign="1" data-trust-in-header="1"{% endif %}
+     data-visibility="{{ entity.visibility_status if entity else 'approved' }}"></div>
+
+{{ detail.cols_open() }}
+
+{# "What it does" is the page's subject, so under the editorial layout it is
+   the first main-column section rather than half of a nested hero panel; the
+   Details list it used to sit beside becomes the rail's facts block. #}
+{% if detail.redesign %}
+{{ detail.section_open('What it does', icon='info', id='panel-what') }}
+  <div class="lead" id="lead-text">Loading…</div>
+{{ detail.section_close() }}
+{% endif %}
+
+  {# ── Owner / admin tools ──────────────────────────────────────────────
+     These used to render as three separately-styled blocks wedged between
+     the header and the content: a hex-coloured status banner, a hairline
+     action strip, and a bordered versions card — one audience, three
+     container idioms, no shared heading.
+
+     Under the redesign they stop being an interruption. The Edit / Archive /
+     Hard-delete ladder is in the header's overflow menu (`detail.store_menu`,
+     the same one the skill/agent page uses), version history is a rail
+     timeline, and only the quarantine banner stays in the flow — it is an
+     alert ABOUT this page, so it belongs above the content it qualifies.
+
+     The legacy branches below are the previous markup, unchanged: a default
+     instance is entitled to the page it already has. #}
 
   {# Quarantine banner — owner / admin only when non-approved. Self-guarded. #}
   {% include "_quarantine_banner.html" %}
 
   {# Owner-actions strip (Edit + Delete locked-when-not-approved). Mirrors
-     the policy that previously lived in store_detail.html. Edit is a
-     placeholder for now ("coming soon"); Delete is gated server-side
-     so the visible state matches what the API will accept. #}
-  {% if entity and (is_owner or is_admin) %}
+     the policy that previously lived in store_detail.html. Legacy only —
+     under the redesign this ladder is `detail.store_menu` in the header. #}
+  {% if entity and (is_owner or is_admin) and not detail.redesign %}
   <style>
     /* Container layout only — buttons render via `ds.button`. The
        danger-variant's hover ("fills red on hover") is the system-
@@ -697,7 +857,10 @@
     .plugin-detail .owner-actions__label { display: none; }
   </style>
   <div class="owner-actions">
-    <span class="owner-actions__label">Manage</span>
+    {# "Actions", not "Manage": the region heading already says Manage.
+       Only paper ever shows this span (blue keeps it display:none), so
+       the wording change cannot reach a default instance. #}
+    <span class="owner-actions__label">Actions</span>
     {# v37 edit feature: Edit lands a real page. Disabled while a
        prior version is under review (server-side 409 also enforces).
        edit_in_flight is set by the router whenever the latest
@@ -758,116 +921,106 @@
   </div>
   {% endif %}
 
+  {# Self-guarding: renders the bordered versions card on the legacy path and
+     nothing but `restoreVersion()` under the redesign, where the same history
+     is a rail timeline (`detail.version_timeline`) — see the rail below. #}
   {% include "_flea_versions.html" %}
 
-  <div class="detail-hero detail-hero--paneled">
-    {{ detail.hero_deco() }}
-    <div class="detail-hero__bar">
-    {# Icon tile — the per-kind glyph is the placeholder; JS swaps in the
-       curator cover (adds `--cover`, injects <img>) once the detail XHR
-       resolves, since curated cover URLs aren't known server-side. #}
-    <div class="detail-hero__icon" id="hero-icon">{{ cards.kind_glyph('plugin') }}</div>
-    <div class="detail-hero__body">
-      <div class="detail-hero__title-row">
-        <h1 id="hero-name">{{ (entity.title if entity else None) or plugin_name }}</h1>
-      </div>
-      <!-- v49 phase-2: hidden by default; JS only un-hides when d.tagline
-           is truthy, so entities without a tagline don't flash "Loading…". -->
-      <div class="tagline" id="hero-tagline" hidden></div>
-      <div class="pills" id="hero-pills"></div>
-      <!-- Telemetry funnel chip — same shape as the listing card so a user
-           clicking through from /marketplace sees identical figures. Hidden
-           by JS when stack_count == 0 AND invocations_30d == 0. -->
-      <div class="hero-telemetry" id="hero-telemetry" hidden></div>
-    </div>
-    <div class="detail-hero__actions">
-      {# All hero actions sit on one row (matches the shared detail.hero()
-         layout used by the catalog / memory / library detail pages). The
-         Cowork export lives alongside install/remove rather than on its own
-         line. Href + visibility for Cowork set by JS once the payload
-         resolves. #}
-      <div class="actions-row">
-        <button class="btn-install" id="install-btn" type="button" hidden>+ Add to my stack</button>
-        <span class="status-pill" id="status-pill" hidden>✓ In your stack</span>
-        <button class="btn-remove" id="remove-btn" type="button" hidden>✕ Remove from stack</button>
-        <a class="btn-cowork" id="cowork-btn" hidden
-           title="Download this plugin as a single zip to upload in Claude Cowork (claude.ai)">&darr; Download for Cowork</a>
-      </div>
-      <div class="stack-hint" id="stack-hint" hidden>
-        <div class="head">
-          <span class="title" id="stack-hint-title">✓ Added to your stack</span>
-          <button class="dismiss" id="stack-hint-dismiss" type="button">Don’t show again</button>
-        </div>
-        <div>Run in Claude Code:</div>
-        <div class="cmd-chip">
-          <span class="prompt">/</span>
-          <span class="cmd">update-agnes-plugins</span>
-          <button class="btn-copy" id="stack-hint-copy" type="button">Copy</button>
-        </div>
-      </div>
-    </div>
-    </div>
-
-    {# "What it does" + "Details" nested in the hero as one white card at the
-       bottom of the header (mirrors the data-package hero panel). Populated
-       by the hydration script below via #lead-text / #details-list. #}
-    <div class="detail-hero__panel">
-      <div class="detail-hero__panel-split">
-        <div class="main" id="panel-what">
-          <h2 class="detail-section__title">{{ detail.ico('info') }}What it does</h2>
-          <div class="lead" id="lead-text">Loading…</div>
-        </div>
-        <div class="side details" id="panel-details">
-          <h2 class="detail-section__title">{{ detail.ico('file') }}Details</h2>
-          <dl id="details-list"></dl>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Use cases — populated from marketplace-metadata.json use_cases[]. Hidden
-       until the curator has supplied at least one card. -->
-  <section class="ds-card detail-section" id="panel-use-cases" hidden>
-    <h2 class="detail-section__title">{{ detail.ico('check') }}When to use it</h2>
+  {# Use cases — populated from marketplace-metadata.json use_cases[]. Hidden
+     until the curator has supplied at least one card. #}
+  {{ detail.section_open('When to use it', icon='check', id='panel-use-cases', hidden=True) }}
     <div class="use-cases-grid" id="panel-use-cases-grid"></div>
-  </section>
+  {{ detail.section_close() }}
 
-  <!-- Sample interaction — single user/assistant Q&A from
-       marketplace-metadata.json sample_interaction. Hidden until populated. -->
-  <section class="ds-card detail-section" id="panel-sample" hidden>
-    <h2 class="detail-section__title">{{ detail.ico('chat') }}Example</h2>
+  {# Sample interaction — single user/assistant Q&A from
+     marketplace-metadata.json sample_interaction. Hidden until populated. #}
+  {{ detail.section_open('Example', icon='chat', id='panel-sample', hidden=True) }}
     <div class="sample-interaction">
       <div class="sample-user"><span class="sample-label">You</span><div id="sample-user"></div></div>
       <div class="sample-assistant"><span class="sample-label">Claude</span><div id="sample-assistant" class="sample-assistant-body"></div></div>
     </div>
-  </section>
+  {{ detail.section_close() }}
 
-  <!-- v32: video + doc_links section. Both blocks stay hidden until populated
-       so the layout collapses gracefully when an upstream marketplace ships
-       no marketplace-metadata.json. -->
-  <section class="ds-card detail-section" id="panel-video" hidden>
-    <h2 class="detail-section__title">{{ detail.ico('play') }}Demo video</h2>
+  {# v32: video + doc_links section. Both blocks stay hidden until populated
+     so the layout collapses gracefully when an upstream marketplace ships
+     no marketplace-metadata.json. #}
+  {{ detail.section_open('Demo video', icon='play', id='panel-video', hidden=True) }}
     <div class="video-embed" id="video-wrap"></div>
-  </section>
+  {{ detail.section_close() }}
 
-  <section class="ds-card detail-section" id="panel-docs" hidden>
-    <h2 class="detail-section__title">{{ detail.ico('book') }}Documentation</h2>
+  {{ detail.section_open('Documentation', icon='book', id='panel-docs', hidden=True) }}
     <ul class="doc-link-list" id="doc-link-list"></ul>
-  </section>
+  {{ detail.section_close() }}
 
+  {# What is inside the bundle — the same role "Tables in this package" plays
+     on the reference page, so under the redesign it is a section like any
+     other rather than a bare `.structure` div with its own heading idiom.
+     Legacy keeps that div: the class carries this page's own spacing. #}
+  {% if detail.redesign %}
+  {{ detail.section_open('Internal structure', icon='layers', id='structure', hidden=True) }}
+  {% else %}
   <div class="structure" id="structure" hidden>
     <h2 class="detail-section__title">{{ detail.ico('layers') }}Internal structure</h2>
+  {% endif %}
     <div id="struct-skills"></div>
     <div id="struct-agents"></div>
     <div id="struct-commands"></div>
     <div id="struct-hooks"></div>
     <div id="struct-mcps"></div>
-  </div>
+  {% if detail.redesign %}{{ detail.section_close() }}{% else %}</div>{% endif %}
 
-  <section class="ds-card detail-section" id="error-msg" hidden>
+  {{ detail.section_open('', id='error-msg', hidden=True) }}
     <p class="empty-msg" id="error-text"></p>
-  </section>
-</div>
+  {{ detail.section_close() }}
+
+{# ── Rail ─────────────────────────────────────────────────────────────
+   The facts, in the shared order (see the page contract in
+   macros/_detail.html): the metadata read-out, then who published it, then
+   the reader's own state, then version history, then the admin errand. #}
+{{ detail.aside_open() }}
+{% if detail.redesign %}
+
+  {# The Details list the hero panel used to carry, unlabelled like every
+     other facts block — each row names its own value. `#details-list` and
+     `#panel-details` keep their ids so the hydration script is untouched. #}
+  {{ detail.side_open('', id='panel-details') }}
+    <dl id="details-list" class="detail-side__dl"></dl>
+  {{ detail.side_close() }}
+
+  {# Publisher — who stands behind this. The trust MARKER is in the header
+     (stated once); this is the name, plus the verification errand when the
+     instance runs that workflow. #}
+  {% if entity %}
+  {{ detail.side_open('Publisher', icon='user') }}
+    {{ detail.owner(
+         'Your organization' if entity.publisher_kind == 'organization'
+         else (entity_owner_label or entity.owner_username),
+         sub='Organization' if entity.publisher_kind == 'organization' else None) }}
+  {{ detail.side_close() }}
+  {% endif %}
+
+  {# Availability — the reader's own state, in the same rail position and the
+     same tinted callout the data-package and memory pages use for it. JS
+     retints and rewords it once the payload resolves. #}
+  {{ detail.side_open('Availability', icon='stack') }}
+    {{ detail.side_panel_open('') }}
+      <span id="rail-stack-status">{{ detail.status('Checking…') }}</span>
+      <p class="detail-side__note" id="rail-stack-note">
+        Looking up whether this plugin is in your stack.
+      </p>
+    {{ detail.side_panel_close() }}
+  {{ detail.side_close() }}
+
+  {# Version history — the same `timeline()` every activity list uses. Owner
+     and admin only, like the card it replaces. #}
+  {% if (is_owner or is_admin) and entity and entity.version_history %}
+  {{ detail.side_open('Versions', icon='history') }}
+    {{ detail.version_timeline(_versions, entity.version_no) }}
+  {{ detail.side_close() }}
+  {% endif %}
+
+{% endif %}
+{{ detail.cols_close() }}
 
 <script>
 'use strict';
@@ -979,10 +1132,17 @@
   const pills = document.getElementById('hero-pills');
   const pillBits = [];
   if (d.category) pillBits.push(`<span class="pill cat">${esc(d.category)}</span>`);
-  if (d.source === 'curated')
-    pillBits.push(`<span class="pill curated">Curated</span>`);
-  else
-    pillBits.push(`<span class="pill flea">Flea</span>`);
+  // Under the redesign the trust claim rides the TITLE, rendered server-side
+  // by the shared hero like every other detail page, so the pill row states
+  // it nowhere — the page used to inject it here from a <template> because it
+  // hand-wrote its own header. `data-trust-in-header` is that switch. Blue
+  // keeps the Curated/Flea badge unchanged.
+  if (!root.dataset.trustInHeader) {
+    if (d.source === 'curated')
+      pillBits.push(`<span class="pill curated">Curated</span>`);
+    else
+      pillBits.push(`<span class="pill flea">Flea</span>`);
+  }
   const verLabel = d.source === 'curated'
     ? `${esc(d.marketplace_name || d.marketplace_id)} v${esc(d.version || '')}`
     : `v${esc(d.version || '')}`;
@@ -1061,6 +1221,27 @@
   const statusPill = document.getElementById('status-pill');
   const removeBtn = document.getElementById('remove-btn');
 
+  // The rail's Availability block — the reader's own state, stated in the
+  // same position and the same tinted callout the data-package and memory
+  // pages use for it. Under the redesign the header carries only the ONE
+  // action ("Add to my stack"), so "am I already on this?" needs a home that
+  // is not a button; this is it. No-op where the rail does not exist.
+  function renderRailStack(installed) {
+    const chip = document.getElementById('rail-stack-status');
+    const note = document.getElementById('rail-stack-note');
+    if (!chip || !note) return;
+    const panel = chip.closest('.detail-side__panel');
+    if (panel) {
+      panel.classList.remove('detail-side__panel--ok', 'detail-side__panel--warn');
+      panel.classList.add(installed ? 'detail-side__panel--ok' : 'detail-side__panel--warn');
+    }
+    chip.innerHTML = `<span class="detail-status detail-status--${installed ? 'ok' : 'warn'}">`
+      + (installed ? 'In your stack' : 'Not in your stack') + '</span>';
+    note.textContent = installed
+      ? 'Run /update-agnes-plugins in Claude Code to pick up the latest version.'
+      : 'Add it to your stack to use it in Claude Code.';
+  }
+
   function renderInstallState(installed) {
     installBtn.hidden = installed;
     statusPill.hidden = !installed;
@@ -1068,6 +1249,7 @@
     statusPill.textContent = '✓ In your stack';
     statusPill.removeAttribute('title');
     removeBtn.hidden = !installed;
+    renderRailStack(installed);
   }
   renderInstallState(!!d.installed);
 
@@ -1088,12 +1270,39 @@
     } else if (source === 'flea' && d.type === 'plugin' && entityId) {
       prefixed = `store-${entityId}`;
     }
-    if (!prefixed) return;
-    btn.href = `/marketplace/cowork/${encodeURIComponent(prefixed)}.zip`;
+    if (!prefixed) {
+      // No standalone zip for this bundle. Cowork may be the menu's ONLY
+      // item (a curated plugin the caller neither owns nor administers), and
+      // a "⋮" that opens onto nothing is worse than no "⋮" — so the trigger
+      // goes with its last item.
+      const menu = document.querySelector('.detail-menu');
+      if (menu && ![...menu.querySelectorAll('.detail-menu__item')].some(i => !i.hidden)) {
+        menu.hidden = true;
+      }
+      return;
+    }
+    const href = `/marketplace/cowork/${encodeURIComponent(prefixed)}.zip`;
+    const filename = `${prefixed}.zip`;
     // Pin the saved filename client-side so a cached 304 (no
     // Content-Disposition) can't reuse a stale download name.
-    btn.setAttribute('download', `${prefixed}.zip`);
-    btn.hidden = false;
+    btn.href = href;
+    btn.setAttribute('download', filename);
+    // Under the redesign Cowork is a secondary path, so it lives in the
+    // header's overflow menu rather than as a second prominent button. The
+    // menu item is a <button> the shared `menu()` macro emitted, so it is
+    // wired to the same URL here instead of being a second <a> to maintain.
+    const item = document.getElementById('cowork-menu-item');
+    if (item) {
+      item.hidden = false;
+      item.addEventListener('click', () => {
+        const a = document.createElement('a');
+        a.href = href;
+        a.download = filename;
+        a.click();
+      });
+    }
+    // The header button stays hidden wherever the menu mirrors it.
+    btn.hidden = btn.dataset.menuMirrored === '1';
   })();
 
   // v32+ quarantine: when the entity is non-approved (only owner +
@@ -1404,6 +1613,35 @@
 
   function buildCardSection(title, items, type) {
     if (!items || !items.length) return '';
+    // Under the redesign the bundle's contents render as the shared object
+    // list (`detail.objects()` — see macros/_detail.html), the SAME row shape
+    // the data-package page uses for "Tables in this package". They are the
+    // same relationship, so they get the same component; the photo-card grid
+    // below stays as the legacy rendering.
+    if (root.dataset.redesign) {
+      const rows = items.map(it => `
+        <li style="--kind: var(--ds-kind-${type}); --kind-soft: var(--ds-kind-${type}-soft);">
+          <a class="detail-object" href="${esc(it.detail_url || '#')}">
+            <span class="detail-object__glyph" aria-hidden="true">${deriveInitials(it.name, type)}</span>
+            <span class="detail-object__text">
+              <span class="detail-object__head">
+                <span class="detail-object__name">${esc(it.name)}</span>
+                <span class="detail-object__kind">${esc(type)}</span>
+              </span>
+              ${it.description ? `<span class="detail-object__desc">${esc(it.description)}</span>` : ''}
+            </span>
+            ${buildInnerCardChip(it) ? `<span class="detail-object__meta">${buildInnerCardChip(it)}</span>` : ''}
+          </a>
+        </li>`).join('');
+      return `
+        <div class="substruct">
+          <div class="head">
+            <h3>${esc(title)}</h3>
+            <span class="count">${items.length} ${type}${items.length === 1 ? '' : 's'}</span>
+          </div>
+          <ul class="detail-objects">${rows}</ul>
+        </div>`;
+    }
     // Inner cards render the marketplace-metadata cover photo when present
     // (mirrored OK for external, file exists for internal); otherwise derive
     // initials from the entity name — same logic as the top-level card grid.
@@ -1482,4 +1720,5 @@
   }
 })();
 </script>
+</div>{# /.detail — opened by detail.hero(), closed after the last section #}
 {% endblock %}
