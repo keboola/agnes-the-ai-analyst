@@ -272,6 +272,17 @@ FEATURE_FLAGS: tuple[FeatureFlag, ...] = (
         default=False,
         description="Hosted user web apps (data apps). New feature — off by default.",
     ),
+    FeatureFlag(
+        name="agent_profiles",
+        config_keys=("agent_profiles", "enabled"),
+        env_var="AGNES_AGENT_PROFILES_ENABLED",
+        default=True,
+        description=(
+            "Agent profiles surface — /agents builder, /api/v1/agents* management + "
+            "runtime API, `agnes agent`/`agnes chat` CLI. Grandfathered on by default; "
+            "an instance opts out via AGNES_AGENT_PROFILES_ENABLED=0."
+        ),
+    ),
 )
 
 
@@ -502,6 +513,31 @@ def get_studio_enabled() -> bool:
     ``/admin/server-config`` inventory panel.
     """
     return feature_enabled("studio", "enabled", env_var="AGNES_STUDIO_ENABLED", default=True)
+
+
+def get_agent_profiles_enabled() -> bool:
+    """Whether the Agent profiles surface (``/agents`` builder, the
+    ``/api/v1/agents*`` management + runtime API, and the ``agnes agent`` /
+    ``agnes chat`` CLI clients of that API) is exposed.
+
+    On by default — upstream behavior is unchanged; an instance opts out
+    per-deployment with ``AGNES_AGENT_PROFILES_ENABLED=0`` (the
+    infra/Terraform ``.env`` override) or ``agent_profiles.enabled: false``
+    in instance.yaml. Hides the "My agents" nav entry and redirects
+    ``/agents`` to home; the guarded REST routers 403 with
+    ``{"kind": "agent_profiles_disabled"}``.
+
+    Only gates the HTTP-facing surface. The internal mechanisms a disabled
+    instance must keep running regardless — default-agent seeding, chat
+    attribution to the default agent, and the broker's agent policy — call
+    the repositories directly and never go through this flag.
+
+    Resolution: env var > ``agent_profiles.enabled`` YAML > True — delegates
+    to :func:`feature_enabled` (the canonical resolver, #1022); see
+    :data:`FEATURE_FLAGS` for the registry entry backing the
+    ``/admin/server-config`` inventory panel.
+    """
+    return feature_enabled("agent_profiles", "enabled", env_var="AGNES_AGENT_PROFILES_ENABLED", default=True)
 
 
 def get_instance_name() -> str:

@@ -33,13 +33,18 @@ import duckdb
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
 
+from app.auth.access import require_agent_profiles_enabled
 from app.auth.dependencies import _get_db, require_session_token
 from app.chat.webhook_delivery import validate_and_resolve
 from src.repositories import agent_webhooks_repo, agents_repo
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1/agents", tags=["agent-webhooks"])
+router = APIRouter(
+    prefix="/api/v1/agents",
+    tags=["agent-webhooks"],
+    dependencies=[Depends(require_agent_profiles_enabled)],
+)
 
 _VALID_EVENTS = ("job.completed", "job.failed")
 _DEFAULT_EVENTS = list(_VALID_EVENTS)

@@ -121,3 +121,4 @@ without grepping the codebase.
 | `chat` | `chat.enabled` | `AGNES_CHAT_ENABLED` | `false` | New feature — off by default. |
 | `chat_approvals` | `chat.approvals_enabled` | `AGNES_CHAT_APPROVALS_ENABLED` | `true` | Operator kill-switch for interactive approval prompts. Off denies ask-flagged tool calls instantly instead of waiting for a human. |
 | `data_apps` | `data_apps.enabled` | `AGNES_DATA_APPS_ENABLED` | `false` | New feature — off by default. |
+| `agent_profiles` | `agent_profiles.enabled` | `AGNES_AGENT_PROFILES_ENABLED` | `true` | Grandfathered — shipped enabled before this flag existed. Gates the `/agents` builder, the `/api/v1/agents*` management + runtime API (and its CLI clients, `agnes agent`/`agnes chat`). Does not gate default-agent seeding, chat attribution, or the broker's agent policy — those are internal mechanisms, not HTTP surface. |

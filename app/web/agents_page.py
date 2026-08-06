@@ -55,6 +55,8 @@ def _memories_for_panel(agent_id: str) -> list[dict]:
 # OpenAPI description, and internal nav notes don't belong in the public schema.
 @router.get("/agents", response_class=HTMLResponse)
 async def agents_page(request: Request, user: dict = Depends(get_current_user)):
+    if not get_agent_profiles_enabled():
+        return RedirectResponse("/")
     rows = agents_repo().list_for_user(user["id"])
     agents = [
         {
