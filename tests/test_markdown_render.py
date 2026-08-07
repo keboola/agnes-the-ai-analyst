@@ -251,3 +251,74 @@ def test_render_plain_emits_no_tags():
     out = render_plain("[x](https://example.com)\n\n| a | b |\n|---|---|\n| 1 | 2 |")
     assert "<" not in out
     assert "x" in out and "1 2" in out
+
+
+# ---------------------------------------------------------------------------
+# html_source=True: the stored text may itself be an HTML blob
+#
+# OpenMetadata "stores descriptions as rich HTML" (connectors/openmetadata/
+# transformer.py::strip_html says so), and those descriptions land verbatim in
+# `metric_definitions.description` alongside hand-authored markdown from
+# docs/metrics/*.yaml. One column, two dialects — so the metric surfaces opt
+# into a renderer that accepts both.
+# ---------------------------------------------------------------------------
+
+
+HTML_BLOB = "<p><strong>Live Deals</strong> &mdash; deals currently live.</p>"
+
+
+def test_render_plain_html_source_strips_tags_instead_of_resurrecting_them():
+    """The reported bug: an HTML-blob description leaked `<p><strong>` as
+    literal text into the one-line preview.
+
+    Without `html_source`, the markdown renderer escapes the blob into
+    entities, nh3's tag-strip finds no tags left to remove, and the closing
+    `html.unescape` turns the entities back into visible characters — a
+    plain-text projection containing markup, which is exactly what
+    render_plain exists to prevent."""
+    from app.markdown_render import render_plain
+
+    out = render_plain(HTML_BLOB, html_source=True)
+    assert out == "Live Deals — deals currently live."
+    assert "<" not in out and ">" not in out
+
+
+def test_render_safe_html_source_renders_the_blob_as_markup():
+    """The detail view shows bold text, not the characters `<strong>`."""
+    from app.markdown_render import render_safe
+
+    out = render_safe(HTML_BLOB, html_source=True)
+    assert "<strong>Live Deals</strong>" in out
+    assert "&lt;strong&gt;" not in out
+
+
+def test_html_source_still_renders_plain_markdown():
+    """The same column also holds hand-authored markdown, so the permissive
+    mode must not stop being a markdown renderer."""
+    from app.markdown_render import render_plain, render_safe
+
+    assert "<strong>hello</strong>" in render_safe("**hello** world", html_source=True)
+    assert render_plain("**Bold** and `code`.", html_source=True) == "Bold and code."
+
+
+def test_html_source_still_sanitizes():
+    """Accepting HTML from the source is nh3's job to make safe, not a hole:
+    the allowlist is unchanged, so script/handlers/unknown tags still go."""
+    from app.markdown_render import render_plain, render_safe
+
+    out = render_safe('<p onclick="steal()">hi</p><script>alert(1)</script>', html_source=True)
+    assert "<script" not in out.lower()
+    assert "onclick" not in out.lower()
+    assert "alert(1)" not in out
+    assert "hi" in out
+    assert "alert(1)" not in render_plain("<script>alert(1)</script>", html_source=True)
+
+
+def test_default_mode_is_unchanged_by_the_new_parameter():
+    """Marketplace content keeps its stricter posture — a curator's pasted
+    HTML renders as visible text there, deliberately."""
+    from app.markdown_render import render_safe
+
+    out = render_safe(HTML_BLOB)
+    assert "<strong>" not in out
+    assert "&lt;strong&gt;" in out
