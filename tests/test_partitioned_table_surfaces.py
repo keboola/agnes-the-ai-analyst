@@ -221,9 +221,18 @@ class TestPathContainment:
         assert resolve_local_partition_dir(pattern) is None
         assert local_parquet_size_bytes(pattern) is None
 
-    def test_an_evil_id_does_not_profile_anything(self, data_dir, monkeypatch):
+    @pytest.mark.parametrize("evil", ["..", "*", "o*", "[o]k"])
+    def test_an_evil_id_does_not_profile_anything(self, data_dir, monkeypatch, evil):
         """End to end on the one surface that resolves a directory without a
-        registry-existence check first."""
+        registry-existence check first.
+
+        The wildcard cases are the sharper half and were live until this branch:
+        `refresh_profile` built its own `rglob(f"data/{name}.parquet")` instead
+        of going through the validated resolver, so `*` matched `ok.parquet` and
+        profiled it — storing one table's statistics under the requested name,
+        with no error anywhere (Devin Review on #1198). A 404 is the only
+        acceptable answer for a name that does not denote one table.
+        """
         import importlib
 
         import src.db as db_module
@@ -236,7 +245,7 @@ class TestPathContainment:
         conn = db_module.get_system_db()
         try:
             with pytest.raises(HTTPException) as exc_info:
-                catalog.refresh_profile("..", user={"id": "admin1"}, conn=conn)
+                catalog.refresh_profile(evil, user={"id": "admin1"}, conn=conn)
         finally:
             conn.close()
         assert exc_info.value.status_code == 404
