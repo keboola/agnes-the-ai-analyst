@@ -249,6 +249,142 @@ class TestStorePreview:
         assert r.status_code == 422
 
 
+class TestStorePreviewFieldIssues:
+    """Preview validates the metadata the author typed, not only the ZIP.
+
+    Before this, "Check bundle" could come back clean and the very next click
+    on Save would 409 on a name the author already owned — the pre-flight
+    covered strictly less ground than the flight.
+    """
+
+    def test_clean_fields_report_no_issues(self, web_client):
+        _, cookies = _create_user(web_client, "pf1@x.com")
+        r = web_client.post(
+            "/api/store/entities/preview",
+            files={"file": ("s.zip", _make_skill_zip("fine-name"), "application/zip")},
+            data={"type": "skill", "name": "fine-name", "description": _OK_DESC},
+            cookies=cookies,
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["field_issues"] == []
+
+    def test_name_already_owned_is_reported(self, web_client):
+        """The 409 that used to arrive only on Save."""
+        _, cookies = _create_user(web_client, "pf2@x.com")
+        created = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _make_skill_zip("taken"), "application/zip")},
+            data={"type": "skill", "name": "taken", "description": _OK_DESC},
+            cookies=cookies,
+        )
+        assert created.status_code == 201, created.text
+
+        r = web_client.post(
+            "/api/store/entities/preview",
+            files={"file": ("s.zip", _make_skill_zip("taken"), "application/zip")},
+            data={"type": "skill", "name": "taken", "description": _OK_DESC},
+            cookies=cookies,
+        )
+        assert r.status_code == 200, r.text
+        codes = [i["code"] for i in r.json()["field_issues"]]
+        assert "conflict_owner_name" in codes
+        assert all(i["field"] == "name" for i in r.json()["field_issues"])
+
+    def test_invalid_name_format_is_reported(self, web_client):
+        _, cookies = _create_user(web_client, "pf3@x.com")
+        r = web_client.post(
+            "/api/store/entities/preview",
+            files={"file": ("s.zip", _make_skill_zip("ok-name"), "application/zip")},
+            data={"type": "skill", "name": "Not A Slug", "description": _OK_DESC},
+            cookies=cookies,
+        )
+        assert r.status_code == 200, r.text
+        assert [i["code"] for i in r.json()["field_issues"]] == ["invalid_name_format"]
+
+    def test_invalid_category_is_reported(self, web_client):
+        _, cookies = _create_user(web_client, "pf4@x.com")
+        r = web_client.post(
+            "/api/store/entities/preview",
+            files={"file": ("s.zip", _make_skill_zip("cat-name"), "application/zip")},
+            data={
+                "type": "skill",
+                "name": "cat-name",
+                "description": _OK_DESC,
+                "category": "Not A Category",
+            },
+            cookies=cookies,
+        )
+        assert r.status_code == 200, r.text
+        issues = r.json()["field_issues"]
+        assert [(i["field"], i["code"]) for i in issues] == [("category", "invalid_category")]
+
+    def test_valid_category_passes(self, web_client):
+        from src.store_categories import STORE_CATEGORIES
+
+        _, cookies = _create_user(web_client, "pf5@x.com")
+        r = web_client.post(
+            "/api/store/entities/preview",
+            files={"file": ("s.zip", _make_skill_zip("cat-ok"), "application/zip")},
+            data={
+                "type": "skill",
+                "name": "cat-ok",
+                "description": _OK_DESC,
+                # Lower-cased on purpose: create_entity matches the taxonomy
+                # case-insensitively, so preview must not be stricter than the
+                # save it previews.
+                "category": list(STORE_CATEGORIES)[0].lower(),
+            },
+            cookies=cookies,
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["field_issues"] == []
+
+    def test_name_falls_back_to_the_manifest(self, web_client):
+        """Same precedence as create_entity: no typed name → the bundle's own.
+        A caller who omits `name` must be judged on the name Save would use."""
+        _, cookies = _create_user(web_client, "pf6@x.com")
+        created = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _make_skill_zip("from-manifest"), "application/zip")},
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=cookies,
+        )
+        assert created.status_code == 201, created.text
+
+        r = web_client.post(
+            "/api/store/entities/preview",
+            files={"file": ("s.zip", _make_skill_zip("from-manifest"), "application/zip")},
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=cookies,
+        )
+        assert r.status_code == 200, r.text
+        assert [i["code"] for i in r.json()["field_issues"]] == ["conflict_owner_name"]
+
+    def test_another_users_name_is_not_a_conflict(self, web_client):
+        """`(owner, name)` is the uniqueness slot — two people may each own a
+        `notes`. Reporting someone else's name as taken would be a new bug."""
+        _, a_cookies = _create_user(web_client, "pf7a@x.com")
+        assert (
+            web_client.post(
+                "/api/store/entities",
+                files={"file": ("s.zip", _make_skill_zip("shared-name"), "application/zip")},
+                data={"type": "skill", "name": "shared-name", "description": _OK_DESC},
+                cookies=a_cookies,
+            ).status_code
+            == 201
+        )
+
+        _, b_cookies = _create_user(web_client, "pf7b@x.com")
+        r = web_client.post(
+            "/api/store/entities/preview",
+            files={"file": ("s.zip", _make_skill_zip("shared-name"), "application/zip")},
+            data={"type": "skill", "name": "shared-name", "description": _OK_DESC},
+            cookies=b_cookies,
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["field_issues"] == []
+
+
 class TestStoreDocsUpload:
     def test_create_with_docs(self, web_client, tmp_path):
         _, cookies = _create_user(web_client, "docs@x.com")

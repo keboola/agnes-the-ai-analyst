@@ -3,6 +3,8 @@
 from pathlib import Path
 import re
 
+import pytest
+
 
 TEMPLATES = Path("app/web/templates")
 STATIC = Path("app/web/static")
@@ -190,6 +192,35 @@ def test_swept_templates_use_no_raw_hex() -> None:
     assert not offenders, "raw hex literals found in swept templates:\n" + "\n".join(
         f"  {n}: {hs}" for n, hs in offenders.items()
     )
+
+
+# (template, css selector) pairs whose BACKGROUND must resolve through a
+# `--ds-*` token. Narrower than the sweep above on purpose: these are the
+# surfaces where a fixed light background sits under theme-aware text, so a
+# literal there is not a cosmetic drift — it makes the row unreadable in the
+# other theme. #1193 was exactly this: `.token-card.is-revoked` carried a
+# hardcoded near-white while `.token-name` followed `--text-secondary`.
+_THEME_AWARE_SURFACES = (
+    ("_profile_tokens.html", ".token-card.is-revoked"),
+    ("_profile_tokens.html", ".token-card.is-expired"),
+)
+
+
+@pytest.mark.parametrize(("template", "selector"), _THEME_AWARE_SURFACES)
+def test_theme_aware_surface_background_is_tokenized(template: str, selector: str) -> None:
+    text = (TEMPLATES / template).read_text(encoding="utf-8")
+    assert selector in text, f"{template}: selector {selector} disappeared — update _THEME_AWARE_SURFACES"
+    # Grab the rule block this selector opens (selectors may be grouped, so
+    # scan from the selector to the first closing brace after it).
+    start = text.index(selector)
+    block = text[start : text.index("}", start)]
+    backgrounds = re.findall(r"background(?:-color)?\s*:\s*([^;}]+)", block)
+    assert backgrounds, f"{template}: {selector} no longer sets a background — update _THEME_AWARE_SURFACES"
+    for value in backgrounds:
+        assert "var(--ds-" in value, (
+            f"{template}: {selector} background is `{value.strip()}` — must reference a "
+            "--ds-* token so it has a dark-theme value (see #1193)"
+        )
 
 
 def test_no_unprefixed_primary_token_in_templates() -> None:

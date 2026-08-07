@@ -274,6 +274,21 @@ class PreviewComponent(BaseModel):
     issues: list = []
 
 
+class PreviewFieldIssue(BaseModel):
+    """One reason the accompanying form fields would be refused on save.
+
+    Preview validates the ZIP; the metadata the author typed alongside it
+    (name, description, category) went unchecked until Save, so a "Check
+    bundle" could come back clean and the very next click still 409 on a
+    name the author already owns. Same codes the create endpoint raises, so
+    the two verdicts read as one system.
+    """
+
+    field: str
+    code: str
+    message: str
+
+
 class PreviewResponse(BaseModel):
     type: str
     name: Optional[str] = None
@@ -283,6 +298,7 @@ class PreviewResponse(BaseModel):
     # single source of truth (src/store_naming.py:TITLE_ACRONYMS).
     title: Optional[str] = None
     components: list[PreviewComponent] = []
+    field_issues: list[PreviewFieldIssue] = []
 
 
 class OkResponse(BaseModel):
@@ -1773,16 +1789,97 @@ async def get_entity_doc(
 # ---------------------------------------------------------------------------
 
 
+def _preview_field_issues(
+    user: dict,
+    *,
+    final_name: str,
+    category: Optional[str],
+) -> list[PreviewFieldIssue]:
+    """Dry-run the metadata half of ``create_entity``'s refusals.
+
+    Everything here is a check ``create_entity`` performs and raises on; this
+    just reports instead of raising, so the pre-flight covers the same ground
+    as the save it is a pre-flight for. Deliberately excludes the guardrail
+    pipeline (that runs against the baked tree on save) and the per-submitter
+    quota (transient, and not a property of what the author typed).
+    """
+    issues: list[PreviewFieldIssue] = []
+
+    if not final_name:
+        issues.append(
+            PreviewFieldIssue(
+                field="name",
+                code="missing_name",
+                message="Give it a name — the bundle's manifest doesn't supply one.",
+            )
+        )
+    elif not _NAME_RE.match(final_name):
+        issues.append(
+            PreviewFieldIssue(
+                field="name",
+                code="invalid_name_format",
+                message="Must start with a letter and use only lowercase letters, numbers and hyphens.",
+            )
+        )
+    else:
+        # Name-slot collisions: both are 409s on save, and both are invisible
+        # to the author until then — exactly the class of failure a pre-flight
+        # exists to move earlier.
+        if store_entities_repo().get_by_owner_and_name(user["id"], final_name, exclude_archived=True):
+            issues.append(
+                PreviewFieldIssue(
+                    field="name",
+                    code="conflict_owner_name",
+                    message=f"You already have something called “{final_name}”. Pick another name.",
+                )
+            )
+        else:
+            try:
+                username = sanitize_username(user["email"])
+            except (KeyError, ValueError):
+                username = ""
+            if username and _suffixed_already_taken(suffixed_name(final_name, username), exclude_archived=True):
+                issues.append(
+                    PreviewFieldIssue(
+                        field="name",
+                        code="conflict_global_suffix",
+                        message=f"“{final_name}” is already taken under your username. Pick another name.",
+                    )
+                )
+
+    if category and normalize_category(category) is None:
+        issues.append(
+            PreviewFieldIssue(
+                field="category",
+                code="invalid_category",
+                message="Not one of the available categories: " + ", ".join(STORE_CATEGORIES) + ".",
+            )
+        )
+
+    return issues
+
+
 @router.post("/entities/preview", response_model=PreviewResponse)
 async def preview_entity(
     file: UploadFile = File(...),
     type: str = Form(...),
+    # The builder posts these alongside the bundle and always has — they were
+    # simply not declared here, so FastAPI dropped them and "Check bundle"
+    # validated only the ZIP. Optional so every existing caller (the upload
+    # wizard's step 1, the CLI, tests) keeps working unchanged.
+    name: Optional[str] = Form(None),
+    description: Optional[str] = Form(None),
+    category: Optional[str] = Form(None),
     user: dict = Depends(get_current_user),
 ):
     """Wizard step 1 — validate the uploaded ZIP and parse frontmatter for
     pre-fill on step 2. Does **not** persist anything: tmp dir is wiped before
     the response returns. The browser must hold the same File and re-submit
     it on step 2 (POST /entities) for the actual create.
+
+    When the caller sends the metadata fields too, ``field_issues`` reports
+    what ``POST /entities`` would refuse them for — a pre-flight that only
+    checked the ZIP let a clean check be followed straight by a 409.
     """
     if type not in _VALID_TYPES:
         raise HTTPException(status_code=400, detail="invalid_type")
@@ -1800,11 +1897,19 @@ async def preview_entity(
     from src.store_naming import humanize_name
 
     extracted_name = meta.get("name")
+    # Same precedence as create_entity: the typed name wins, the manifest's is
+    # the fallback — so preview judges the name the save would actually use.
+    field_issues = _preview_field_issues(
+        user,
+        final_name=(name or extracted_name or "").strip(),
+        category=category,
+    )
     return PreviewResponse(
         type=type,
         name=extracted_name,
         description=meta.get("description"),
         title=humanize_name(extracted_name) if extracted_name else None,
+        field_issues=field_issues,
         components=[
             PreviewComponent(
                 type=row["type"],
@@ -3539,6 +3644,60 @@ async def request_entity_verification(
 
 
 # ---------------------------------------------------------------------------
+# `hidden` disambiguation — shared by delete / install / the detail feeds
+# ---------------------------------------------------------------------------
+
+
+def _entity_review_blocked(entity_id: str) -> bool:
+    """True when guardrail review REJECTED any submission for ``entity_id``.
+
+    ``store_entities.visibility_status = 'hidden'`` is written by two very
+    different paths — the author choosing Private, and guardrail quarantine —
+    so the submission history is the only thing that tells them apart. Probes
+    every submission rather than just the latest so an ambiguous chain resolves
+    the safe way. Mirrors the ``NOT EXISTS`` clause in
+    ``user_store_installs.list_for_user``; see
+    ``BLOCKING_SUBMISSION_STATUSES`` for why ``review_error`` is not a
+    rejection.
+    """
+    try:
+        subs = store_submissions_repo().list_for_entity(entity_id)
+    except Exception:
+        logger.exception("store: could not read submissions for entity %s", entity_id)
+        return True  # unreadable history → refuse, never fail open
+    return any((s.get("status") or "") in BLOCKING_SUBMISSION_STATUSES for s in subs)
+
+
+def is_own_unflagged_private(entity: Dict[str, Any], user_id: str) -> bool:
+    """True when ``entity`` is THIS caller's own deliberately-Private row.
+
+    The one predicate every ``hidden``-aware gate has to share. ``hidden``
+    means two opposite things — "the author chose Private" and "guardrails
+    quarantined this" — and a gate that reads only ``visibility_status``
+    necessarily gets one of them wrong. Reading it as quarantine is what
+    locked an author out of deleting their own Private plugin (#1177) and
+    out of adding it to their own stack from the detail page (#1178);
+    ``visibility_status`` never promotes off ``hidden`` for a Private
+    entity, so neither lock was the transient state its copy claimed.
+
+    Scoped tightly: owner only, ``hidden`` only (``pending`` / ``blocked`` /
+    ``archived`` fall through to the caller's own refusal for everyone), and
+    refused outright once review has rejected any submission for the row.
+    """
+    row_id = entity.get("id") or ""
+    # No id to check the submission history against — the exemption cannot be
+    # established, so it is not granted. Never fail open: `list_for_entity("")`
+    # returns nothing, which would otherwise read as "review cleared it".
+    if not row_id:
+        return False
+    if (entity.get("visibility_status") or "") != "hidden":
+        return False
+    if (entity.get("owner_user_id") or "") != user_id:
+        return False
+    return not _entity_review_blocked(row_id)
+
+
+# ---------------------------------------------------------------------------
 # Delete — DELETE /api/store/entities/{id}
 # ---------------------------------------------------------------------------
 
@@ -3565,7 +3724,9 @@ async def delete_entity(
 
     Quarantined (pending / blocked / hidden) entities: only admins can
     archive or hard-delete; owner is refused so they can't erase the
-    evidence of a flagged upload before triage.
+    evidence of a flagged upload before triage. The author's own
+    deliberately-Private row is not that — see
+    ``is_own_unflagged_private``.
     """
     entity = store_entities_repo().get(entity_id)
     if not entity:
@@ -3590,7 +3751,18 @@ async def delete_entity(
 
     # Quarantined (non-approved + non-archived): owner can't touch.
     # Admin can either Archive (soft) or Hard Delete from here.
-    if entity.get("visibility_status") not in ("approved", "archived") and not is_admin_caller:
+    #
+    # Exempt: the owner's own unflagged Private row. `hidden` is the status
+    # BOTH Private and quarantine write, and for a Private entity it never
+    # promotes — so reading it as quarantine here left the author unable to
+    # ever delete a plugin nobody else can even see (#1177). Genuinely
+    # quarantined rows (guardrails rejected a submission) still refuse, which
+    # is the evidence-preservation the gate exists for.
+    if (
+        entity.get("visibility_status") not in ("approved", "archived")
+        and not is_admin_caller
+        and not is_own_unflagged_private(entity, user["id"])
+    ):
         raise HTTPException(
             status_code=403,
             detail={
@@ -3686,26 +3858,6 @@ async def delete_entity(
 # ---------------------------------------------------------------------------
 
 
-def _entity_review_blocked(entity_id: str) -> bool:
-    """True when guardrail review REJECTED any submission for ``entity_id``.
-
-    ``store_entities.visibility_status = 'hidden'`` is written by two very
-    different paths — the author choosing Private, and guardrail quarantine —
-    so the submission history is the only thing that tells them apart. Probes
-    every submission rather than just the latest so an ambiguous chain resolves
-    the safe way. Mirrors the ``NOT EXISTS`` clause in
-    ``user_store_installs.list_for_user``; see
-    ``BLOCKING_SUBMISSION_STATUSES`` for why ``review_error`` is not a
-    rejection.
-    """
-    try:
-        subs = store_submissions_repo().list_for_entity(entity_id)
-    except Exception:
-        logger.exception("store: could not read submissions for entity %s", entity_id)
-        return True  # unreadable history → refuse, never fail open
-    return any((s.get("status") or "") in BLOCKING_SUBMISSION_STATUSES for s in subs)
-
-
 @router.post("/entities/{entity_id}/install", response_model=InstallResponse)
 async def install_entity(
     entity_id: str,
@@ -3725,15 +3877,7 @@ async def install_entity(
     # entity, i.e. one they deliberately kept Private (`access='private'` on
     # upload, or the builder's Private choice). Without it, a Private skill
     # could never reach its author's own Stack — the point of the Private
-    # tier. Scoped tightly:
-    #
-    #   * owner only, and only at `visibility_status='hidden'` — the other
-    #     statuses (`pending`, `blocked`, `archived`) fall through to the 409
-    #     for everyone including the author, and a third party never reaches
-    #     the exemption at all, and
-    #   * refused when guardrail review REJECTED the bundle — `hidden` is the
-    #     status BOTH Private and quarantine write, so the submission history
-    #     is what separates them.
+    # tier. `is_own_unflagged_private` carries the scoping rules.
     #
     # What this deliberately does NOT wait for: an async guardrail review still
     # in flight. `_entity_review_blocked` is false while a submission sits at
@@ -3745,12 +3889,11 @@ async def install_entity(
     # conditions on EVERY read, so a bundle the review goes on to block stops
     # being served without this row needing to be removed.
     _status = entity.get("visibility_status")
-    _is_own_private = (
-        _status == "hidden"
-        and (entity.get("owner_user_id") or "") == user["id"]
-        and not _entity_review_blocked(entity_id)
-    )
-    if _status != "approved" and not _is_own_private and not is_user_admin(user["id"], conn):
+    if (
+        _status != "approved"
+        and not is_own_unflagged_private(entity, user["id"])
+        and not is_user_admin(user["id"], conn)
+    ):
         raise HTTPException(status_code=409, detail="entity_not_approved")
     installs = user_store_installs_repo()
     inserted = installs.install(user["id"], entity_id)

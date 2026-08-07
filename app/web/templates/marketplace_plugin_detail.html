@@ -934,7 +934,12 @@
                         attrs='title="Hard delete: drops the bundle from disk + removes existing user_store_installs. Use only for legal / privacy removals — existing users lose the plugin. Visible only to admins — analysts won\'t see this button."') %}
         Hard delete <span class="admin-only-hint">admin-only</span>
       {% endcall %}
-    {% elif entity.visibility_status == 'approved' %}
+    {% elif entity.visibility_status == 'approved' or own_private %}
+      {# own_private: the author's own Private row. It sits at 'hidden' — the
+         same status quarantine writes — and never promotes off it, so gating
+         Archive on 'approved' alone locked the author out of deleting a
+         plugin nobody else can see (#1177). The API gate uses the same
+         predicate, so button and endpoint agree. #}
       {{ ds.button('Archive', variant='danger', size='sm', type='button',
                    id='owner-archive-btn',
                    attrs='title="Soft delete: hides from browse + blocks new installs. Existing user_store_installs continue serving the bundle."') }}
@@ -1343,7 +1348,14 @@
   // install button with a gray inert style + tooltip. The API also
   // refuses POST /install with `entity_not_approved` so a clever user
   // who toggles the disabled attribute in devtools still hits a 409.
-  if (d.visibility_status && d.visibility_status !== 'approved') {
+  //
+  // `installable` — not `visibility_status !== 'approved'` — is the gate,
+  // because `hidden` covers both quarantine AND the author's own Private
+  // row, and the latter is installable by its author forever (#1178). The
+  // server resolves it next to the endpoint's own gate; re-deriving the
+  // rule here is what let button and API disagree. Older payloads omit the
+  // field, so an absent value keeps the historical behaviour.
+  if (d.visibility_status && d.visibility_status !== 'approved' && d.installable !== true) {
     installBtn.hidden = false;
     statusPill.hidden = true;
     removeBtn.hidden = true;
