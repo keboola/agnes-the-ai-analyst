@@ -76,6 +76,36 @@ class TestRegistryIntegrity:
             if not s.editable:
                 assert s.lock_reason.strip(), f"{s.name} is locked with no lock_reason"
 
+    def test_no_section_mixes_editable_and_locked_switches(self):
+        """`editable` is enforced per SECTION, so a section must not hold both.
+
+        `POST /api/admin/server-config` validates the top-level section name
+        against `_EDITABLE_SECTIONS` and then deep-merges the whole patch, so
+        one `editable=True` switch opens every key in its section. A locked
+        switch sharing that section would render its `lock_reason` in the
+        inventory while its key stayed writable through the merge — the lock
+        would be a label, not a gate.
+
+        Today both locked switches sit alone in their sections, so the
+        existing guards pass vacuously on this case: `_locked_sections()` in
+        tests/test_admin_configure_api.py computes `locked - editable`, which
+        removes a mixed section before anything is asserted about it. This is
+        the assertion that fails instead of letting the next switch author
+        discover it in production.
+        """
+        by_section: dict[str, list] = {}
+        for s in SWITCHES:
+            if s.config_keys:
+                by_section.setdefault(s.config_keys[0], []).append(s)
+        for section, group in by_section.items():
+            editable = sorted(s.name for s in group if s.editable)
+            locked = sorted(s.name for s in group if not s.editable)
+            assert not (editable and locked), (
+                f"section {section!r} mixes editable {editable} with locked {locked}. "
+                "Section-level write gating cannot honour both — either give the locked "
+                "switch its own section, or drop its lock and gate the behaviour elsewhere."
+            )
+
     def test_editable_entries_state_no_reason(self):
         """Shrinks-only: a switch that became editable must clear its reason,
         so a stale explanation cannot outlive the restriction it described."""
