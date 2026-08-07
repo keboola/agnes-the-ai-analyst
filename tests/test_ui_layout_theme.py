@@ -1509,6 +1509,13 @@ class TestCatalogRecommendations:
     content). The download-a-local-copy action for a granted-but-not-yet-
     materialized package lives on My Stack, not here."""
 
+    @pytest.fixture(autouse=True)
+    def _auto_membership_mode(self, monkeypatch):
+        """The reshape is auto-membership behavior, opt-in since the classic
+        subscribe model became the default again (spec
+        2026-08-07-default-chrome-ux-parity)."""
+        monkeypatch.setenv("AGNES_STACK_AUTO_MEMBERSHIP", "1")
+
     def test_granted_package_absent_from_catalog_present_on_my_stack(self, web_client, admin_cookie, monkeypatch):
         """A granted-but-not-yet-downloaded package must not appear anywhere
         on /catalog. It lives on My Stack. Materializing (subscribing) it
