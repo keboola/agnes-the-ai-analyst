@@ -27,6 +27,33 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
+- **Default-chrome instances get their remaining pre-redesign surfaces back**
+  (spec `docs/superpowers/specs/2026-08-07-default-chrome-ux-parity.md`,
+  wave 2). On the default topnav chrome: `/me/profile`, `/me/activity` and
+  `/agents` render frozen pre-redesign copies (`*_legacy.html`;
+  `/agents` restores the pre-redesign "My agents" management page with its
+  original handler logic); `/me/ai-connector` is a real page again (the
+  frozen standalone connector page with the `/mcp-connect` token fallback,
+  with `/me/mcp` + `/me/cowork` aliases redirecting to it) instead of a
+  redirect; the user menu's "AI Connector" row returns; the pre-redesign
+  guided tour ships again (frozen `_tour_legacy.html` + `js/tour_legacy.js`
+  + `css/tour_legacy.css`, restored `app/web/onboarding.py` steps, and the
+  header "?" launcher); and the chat welcome cards keep their pre-redesign
+  copy and icons byte-for-byte (`_chat_welcome_cards_legacy.html`). The
+  page swaps key on the chrome layout, like every earlier legacy surface
+  (library, marketplace, catalog): the rail chrome keeps all redesigned
+  pages, while paper-on-topnav — a per-knob combination, not the preset —
+  renders the classic pages in paper colors. The two surfaces whose NAV
+  affordance is paper-dependent key on the full opt-in expression (rail or
+  paper) instead: the legacy tour and the standalone connector page, so a
+  paper-on-topnav instance gets neither an orphaned tour pop-up (its "?"
+  launcher is hidden there) nor a page its menu no longer links. The
+  "Moderation & Trust" hub entry is now gated on
+  `store.verification_enabled` in all three of its entry points — topnav
+  mega-menu, /admin hub card, and the Cmd/Ctrl-K palette (with its `g v`
+  hotkey) — a semantic gate: with verification off, the default, the hub
+  has nothing to moderate.
+
 - **BREAKING-revert: stack auto-membership is now opt-in**
   (`features.stack_auto_membership`, env `AGNES_STACK_AUTO_MEMBERSHIP`,
   default **off**). The auto-membership stack model the redesign shipped as a
@@ -180,30 +207,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   frozen pre-redesign `/catalog` and `/corporate-memory` pages
   (`catalog_legacy.html`, `corporate_memory_legacy.html`; rail keeps the
   unified/redesigned pages).
-
-- **Default-chrome instances get their remaining pre-redesign surfaces back**
-  (spec `docs/superpowers/specs/2026-08-07-default-chrome-ux-parity.md`,
-  wave 2). On the default topnav chrome: `/me/profile`, `/me/activity` and
-  `/agents` render frozen pre-redesign copies (`*_legacy.html`;
-  `/agents` restores the pre-redesign "My agents" management page with its
-  original handler logic); `/me/ai-connector` is a real page again (the
-  frozen standalone connector page with the `/mcp-connect` token fallback,
-  with `/me/mcp` + `/me/cowork` aliases redirecting to it) instead of a
-  redirect; the user menu's "AI Connector" row returns; the pre-redesign
-  guided tour ships again (frozen `_tour_legacy.html` + `js/tour_legacy.js`
-  + `css/tour_legacy.css`, restored `app/web/onboarding.py` steps, and the
-  header "?" launcher); and the chat welcome cards keep their pre-redesign
-  copy and icons byte-for-byte (`_chat_welcome_cards_legacy.html`). Under
-  ANY redesign opt-in — rail layout or paper theme — every one of these
-  keeps the redesigned behavior unchanged: the legacy tour and the
-  standalone connector page key on the same opt-in expression as their nav
-  affordances, so a paper-on-topnav instance gets neither an orphaned tour
-  pop-up nor a resurrected page its menu no longer links. The
-  "Moderation & Trust" hub entry is now gated on
-  `store.verification_enabled` in all three of its entry points — topnav
-  mega-menu, /admin hub card, and the Cmd/Ctrl-K palette (with its `g v`
-  hotkey) — a semantic gate: with verification off, the default, the hub
-  has nothing to moderate.
 
 ### Fixed
 
