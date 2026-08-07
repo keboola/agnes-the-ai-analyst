@@ -403,6 +403,21 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
             ),
         },
     },
+    "features": {
+        "stack_auto_membership": {
+            "kind": "bool",
+            "default": _flag_default("features", "stack_auto_membership", False),
+            "hint": (
+                "Stack membership mode. OFF (classic, the default): membership "
+                "is the subscribe model — required plus subscribed grants, all "
+                "downloaded by agnes pull. ON: auto-membership — every granted "
+                "resource is in the stack immediately; subscribe/unsubscribe "
+                "only control the local copy. Read per request; flips instantly, "
+                "subscriptions are interpreted, never rewritten. The "
+                "instance.experience: redesign preset defaults this ON."
+            ),
+        },
+    },
     "mcp": {
         "allow_query_param_token": {
             "kind": "bool",
