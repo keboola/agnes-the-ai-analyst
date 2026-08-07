@@ -155,3 +155,55 @@ def test_every_write_instance_yaml_call_site_is_guarded():
         "unguarded write_instance_yaml call(s) — under `set -e` + the ERR trap "
         f"a refused rewrite aborts the applier before app+scheduler restart: {bare}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Every writer of the overlay, not just the ones a review happened to find
+# ---------------------------------------------------------------------------
+
+_OVERLAY_WRITERS = [
+    ("app/api/admin.py", "server-config editor + the narrow overlay writer"),
+    ("app/api/initial_workspace.py", "_write_section / _drop_section"),
+    ("src/db_state_machine.py", "write_backend_state"),
+    ("scripts/ops/agnes-state-applier.sh", "the applier's embedded PyYAML writer"),
+]
+
+
+def _replace_calls_without_a_preceding_chmod(body: str) -> list[tuple[int, str]]:
+    """Lines doing an ``os.replace`` onto the overlay with no ``os.chmod`` of
+    the temp in the four lines above it."""
+    lines = body.splitlines()
+    offenders = []
+    for n, line in enumerate(lines):
+        if "os.replace(" not in line:
+            continue
+        window = "\n".join(lines[max(0, n - 6) : n])
+        if "os.chmod(" not in window:
+            offenders.append((n + 1, line.strip()))
+    return offenders
+
+
+def test_every_overlay_writer_chmods_the_temp_before_the_rename():
+    """0600 is only worth anything if EVERY writer applies it.
+
+    The overlay is rewritten from four places. A writer that misses the chmod
+    does not merely leave one save world-readable — ``os.replace`` carries the
+    temp file's mode onto the destination, so it relaxes the file
+    permanently, including on instances a previous save or the startup script
+    had already repaired. Two of the four were missed on the first pass here
+    (`initial_workspace`), which is exactly why this guard enumerates writers
+    instead of naming the ones a review happened to catch.
+
+    The chmod must precede the rename. Chmodding the destination afterwards
+    leaves the real path observable at the umask default for the window
+    between the two calls, on a file holding the database url with its
+    password inline.
+    """
+    from pathlib import Path as _P
+
+    failures = {}
+    for rel, what in _OVERLAY_WRITERS:
+        offenders = _replace_calls_without_a_preceding_chmod(_P(rel).read_text())
+        if offenders:
+            failures[f"{rel} ({what})"] = offenders
+    assert not failures, f"overlay writers renaming without a preceding chmod: {failures}"

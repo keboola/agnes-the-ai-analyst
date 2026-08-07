@@ -150,8 +150,12 @@ for f in os.listdir(d):
         tmp = p + ".tmp"
         with open(tmp, "w") as fh:
             json.dump(data, fh, indent=2)
+        # H2-NEW: the tmp inherits umask 0644, so it needs 0600 — applied
+        # HERE rather than to `p` after the rename, which would leave the
+        # job file (its error messages can quote a database url) observable
+        # at the umask default for the window between the two calls.
+        os.chmod(tmp, 0o600)
         os.replace(tmp, p)
-        os.chmod(p, 0o600)  # H2-NEW: tmp inherited umask 0644; restore 0600.
         continue
     candidates.append((os.path.getmtime(p), p))
 candidates.sort()
@@ -178,8 +182,12 @@ if err:
 tmp = p + ".tmp"
 with open(tmp, "w") as fh:
     json.dump(data, fh, indent=2)
+# H2-NEW: the tmp inherits umask 0644, so it needs 0600 — applied
+# HERE rather than to `p` after the rename, which would leave the
+# job file (its error messages can quote a database url) observable
+# at the umask default for the window between the two calls.
+os.chmod(tmp, 0o600)
 os.replace(tmp, p)
-os.chmod(p, 0o600)  # H2-NEW: tmp inherited umask 0644; restore 0600.
 PY
 }
 
@@ -232,8 +240,12 @@ existing["database"] = db
 tmp = path + ".tmp"
 with open(tmp, "w") as f:
     yaml.safe_dump(existing, f, default_flow_style=False, sort_keys=True)
+# 0600 on the TEMP file, before the rename — os.replace is atomic and
+# carries the temp's mode, so the real path is never observable at the
+# umask default. Chmodding the destination afterwards leaves a window on
+# a file that holds the database url with its password inline.
+os.chmod(tmp, 0o600)
 os.replace(tmp, path)
-os.chmod(path, 0o600)
 PY
         # Propagate the writer's exit status instead of `return` (which would
         # discard it). The abort above only protects the file if the caller
@@ -573,8 +585,19 @@ if [ "$FINAL_STATUS" = "success" ]; then
     if write_instance_yaml "$TARGET_BACKEND" "$TARGET_URL"; then
         logger -t agnes-state-applier "Migration job $JOB_ID succeeded — flipped instance.yaml backend to $TARGET_BACKEND"
     else
-        update_job "$PENDING_JOB" "failed" "migration completed but instance.yaml could not be rewritten — backend left on $SOURCE_BACKEND"
-        logger -t agnes-state-applier "Migration job $JOB_ID succeeded but instance.yaml rewrite FAILED — backend still $SOURCE_BACKEND, manual intervention needed"
+        # $FLAG is deliberately left holding the TARGET lifecycle here, which
+        # is the opposite of what the rollback branch below does — the two
+        # failures are not mirror images. There, nothing moved: the migration
+        # failed, so the source backend is still the live one and the flag
+        # must follow the file. Here the migration SUCCEEDED — the data is in
+        # the target — and only the config write was refused. Clearing the
+        # flag would tear down the side-car the migrated data now lives in,
+        # turning a fixable "edit one file" into data stranded behind a
+        # container that no longer exists. So the side-car stays up, the
+        # inconsistency is reported rather than papered over, and the remedy
+        # is to repair instance.yaml by hand.
+        update_job "$PENDING_JOB" "failed" "migration completed but instance.yaml could not be rewritten — data is in $TARGET_BACKEND, config still names $SOURCE_BACKEND"
+        logger -t agnes-state-applier "Migration job $JOB_ID succeeded but instance.yaml rewrite FAILED — data is in $TARGET_BACKEND while config still names $SOURCE_BACKEND; lifecycle flag left at the target so the side-car stays up; repair instance.yaml by hand"
     fi
 else
     logger -t agnes-state-applier "Migration job $JOB_ID failed — leaving backend on $SOURCE_BACKEND"
