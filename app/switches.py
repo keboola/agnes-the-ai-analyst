@@ -199,6 +199,25 @@ SWITCHES: tuple[Switch, ...] = (
             "Authorization header."
         ),
     ),
+    Switch(
+        name="agent_profiles",
+        config_keys=("agent_profiles", "enabled"),
+        env_var="AGNES_AGENT_PROFILES_ENABLED",
+        kind="bool",
+        default=True,
+        effect="restart",
+        category="product",
+        editable=False,
+        lock_reason=(
+            "Deliberately env-var-only kill switch — no runtime-toggle use case identified. "
+            "Flip via AGNES_AGENT_PROFILES_ENABLED (or the static instance.yaml) and restart."
+        ),
+        description=(
+            "Agent profiles surface — /agents builder, /api/v1/agents* management + "
+            "runtime API, `agnes agent`/`agnes chat` CLI. Grandfathered on by default; "
+            "an instance opts out via AGNES_AGENT_PROFILES_ENABLED=0."
+        ),
+    ),
 )
 
 _BY_NAME: dict[str, Switch] = {s.name: s for s in SWITCHES}
