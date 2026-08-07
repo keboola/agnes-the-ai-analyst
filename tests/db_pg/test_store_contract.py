@@ -367,6 +367,181 @@ def test_archived_entity_visible_with_list(store_repos):
     assert "entity-1" in ids_all
 
 
+def test_publisher_kind_defaults_to_user(store_repos):
+    """v104: an upload is user-published until an admin says otherwise, and
+    'none' verification renders no chip — so the upgrade is visually inert."""
+    repos, _, _ = store_repos
+    repos["users"].create(id="user-1", email="alice@x.com", name="Alice")
+    entity = _make_entity(repos["entities"])
+    assert entity["publisher_kind"] == "user"
+    assert entity["verification_state"] == "none"
+    assert entity["verified_at"] is None
+
+
+def test_create_rejects_unknown_publisher_kind(store_repos):
+    repos, _, _ = store_repos
+    repos["users"].create(id="user-1", email="alice@x.com", name="Alice")
+    with pytest.raises(ValueError):
+        _make_entity(repos["entities"], publisher_kind="admin")
+
+
+def test_set_publisher_kind_round_trips(store_repos):
+    repos, _, _ = store_repos
+    repos["users"].create(id="user-1", email="alice@x.com", name="Alice")
+    se = repos["entities"]
+    _make_entity(se)
+    assert se.set_publisher_kind("entity-1", "organization", by_user_id="admin-1") is True
+    assert se.get("entity-1")["publisher_kind"] == "organization"
+    assert se.set_publisher_kind("entity-1", "user", by_user_id="admin-1") is True
+    assert se.get("entity-1")["publisher_kind"] == "user"
+
+
+def test_set_publisher_kind_missing_row_returns_false(store_repos):
+    repos, _, _ = store_repos
+    assert repos["entities"].set_publisher_kind("nope", "organization", by_user_id="admin-1") is False
+
+
+def test_set_verification_stamps_only_on_verified(store_repos):
+    """verified_at/by must never read stale: stamped for 'verified', cleared
+    for every other state."""
+    repos, _, _ = store_repos
+    repos["users"].create(id="user-1", email="alice@x.com", name="Alice")
+    se = repos["entities"]
+    _make_entity(se)
+
+    assert se.set_verification("entity-1", "verified", by_user_id="admin-1") is True
+    row = se.get("entity-1")
+    assert row["verification_state"] == "verified"
+    assert row["verified_at"] is not None
+    assert row["verified_by"] == "admin-1"
+
+    assert se.set_verification("entity-1", "changes_requested", by_user_id="admin-1", note="Thin description") is True
+    row = se.get("entity-1")
+    assert row["verification_state"] == "changes_requested"
+    assert row["verified_at"] is None
+    assert row["verification_note"] == "Thin description"
+
+
+def test_set_verification_refused_on_organization_published(store_repos):
+    """Invariant 1: publisher_kind='organization' ⇒ verification_state='none'.
+    An org item carries the stronger claim; a checkmark on top would invent a
+    fourth trust tier."""
+    repos, _, _ = store_repos
+    repos["users"].create(id="user-1", email="alice@x.com", name="Alice")
+    se = repos["entities"]
+    _make_entity(se)
+    se.set_publisher_kind("entity-1", "organization", by_user_id="admin-1")
+
+    assert se.set_verification("entity-1", "verified", by_user_id="admin-1") is False
+    assert se.get("entity-1")["verification_state"] == "none"
+
+
+def test_set_publisher_kind_to_organization_clears_verification(store_repos):
+    """Invariant 1 from the other direction: promoting an already-verified user
+    item to organization drops the now-redundant checkmark."""
+    repos, _, _ = store_repos
+    repos["users"].create(id="user-1", email="alice@x.com", name="Alice")
+    se = repos["entities"]
+    _make_entity(se)
+    se.set_verification("entity-1", "verified", by_user_id="admin-1")
+
+    se.set_publisher_kind("entity-1", "organization", by_user_id="admin-1")
+    row = se.get("entity-1")
+    assert row["verification_state"] == "none"
+    assert row["verified_at"] is None
+    assert row["verification_note"] is None
+
+
+def test_set_verification_rejects_unknown_state(store_repos):
+    repos, _, _ = store_repos
+    repos["users"].create(id="user-1", email="alice@x.com", name="Alice")
+    _make_entity(repos["entities"])
+    with pytest.raises(ValueError):
+        repos["entities"].set_verification("entity-1", "approved", by_user_id="admin-1")
+
+
+def test_list_filters_by_publisher_kind_and_owner_split(store_repos):
+    """The three Publisher facet values: Organization is publisher_kind alone;
+    Me / Other users are a per-request split of publisher_kind='user'."""
+    repos, _, _ = store_repos
+    repos["users"].create(id="user-1", email="alice@x.com", name="Alice")
+    repos["users"].create(id="user-2", email="bob@x.com", name="Bob")
+    se = repos["entities"]
+    _make_entity(se, id="e-org", name="org-skill", visibility_status="approved")
+    _make_entity(se, id="e-mine", name="my-skill", visibility_status="approved")
+    _make_entity(
+        se,
+        id="e-theirs",
+        name="their-skill",
+        owner_user_id="user-2",
+        owner_username="bob",
+        visibility_status="approved",
+    )
+    se.set_publisher_kind("e-org", "organization", by_user_id="admin-1")
+
+    org, _ = se.list(publisher_kind="organization")
+    assert [i["id"] for i in org] == ["e-org"]
+
+    mine, _ = se.list(publisher_kind="user", owner_user_id="user-1")
+    assert [i["id"] for i in mine] == ["e-mine"]
+
+    theirs, _ = se.list(publisher_kind="user", exclude_owner_user_id="user-1")
+    assert [i["id"] for i in theirs] == ["e-theirs"]
+
+
+def test_list_filters_by_verification_state(store_repos):
+    repos, _, _ = store_repos
+    repos["users"].create(id="user-1", email="alice@x.com", name="Alice")
+    se = repos["entities"]
+    _make_entity(se, id="e-ver", name="verified-skill", visibility_status="approved")
+    _make_entity(se, id="e-raw", name="raw-skill", visibility_status="approved")
+    se.set_verification("e-ver", "verified", by_user_id="admin-1")
+
+    verified, _ = se.list(verification_state=["verified"])
+    assert [i["id"] for i in verified] == ["e-ver"]
+
+    # "Unverified" is a filter VALUE (the union of the non-positive states),
+    # never a label rendered on a card.
+    unverified, _ = se.list(verification_state=["none", "requested", "changes_requested"])
+    assert [i["id"] for i in unverified] == ["e-raw"]
+
+
+def test_list_rejects_unknown_facet_values(store_repos):
+    repos, _, _ = store_repos
+    se = repos["entities"]
+    with pytest.raises(ValueError):
+        se.list(publisher_kind="admin")
+    with pytest.raises(ValueError):
+        se.list(verification_state=["approved"])
+
+
+def test_publisher_counts_splits_me_from_other_users(store_repos):
+    """The honest replacement for the retired per-tab counts."""
+    repos, _, _ = store_repos
+    repos["users"].create(id="user-1", email="alice@x.com", name="Alice")
+    repos["users"].create(id="user-2", email="bob@x.com", name="Bob")
+    se = repos["entities"]
+    _make_entity(se, id="e-org", name="org-skill", visibility_status="approved")
+    _make_entity(se, id="e-mine", name="my-skill", visibility_status="approved")
+    _make_entity(
+        se,
+        id="e-theirs",
+        name="their-skill",
+        owner_user_id="user-2",
+        owner_username="bob",
+        visibility_status="approved",
+    )
+    se.set_publisher_kind("e-org", "organization", by_user_id="admin-1")
+
+    counts = se.publisher_counts(visibility_status=["approved"], viewer_user_id="user-1")
+    assert counts == {"organization": 1, "me": 1, "other_users": 1}
+
+    # No viewer (system/anonymous caller): every user-published row is
+    # "other users", nothing is silently attributed to nobody.
+    anon = se.publisher_counts(visibility_status=["approved"])
+    assert anon == {"organization": 1, "me": 0, "other_users": 2}
+
+
 def test_category_counts_groups_and_buckets_other(store_repos):
     """category_counts must reproduce the /api/marketplace/categories
     GROUP BY on both backends: NULL/empty category collapses into 'Other',
@@ -564,13 +739,16 @@ def test_find_purge_candidates_contract(store_repos):
         entity_id="entity-old",
     )
     _backdate_created_at(
-        repos, conn, backend, old_id,
+        repos,
+        conn,
+        backend,
+        old_id,
         datetime.now(timezone.utc) - timedelta(days=45),
     )
 
     # Fresh blocked_llm — not old enough, must be excluded.
     _make_entity(repos["entities"], id="entity-fresh", name="fresh-skill")
-    fresh_id = subs.create(
+    subs.create(
         submitter_id="user-1",
         submitter_email="alice@x.com",
         type="skill",
@@ -592,7 +770,10 @@ def test_find_purge_candidates_contract(store_repos):
         entity_id="entity-appr",
     )
     _backdate_created_at(
-        repos, conn, backend, appr_id,
+        repos,
+        conn,
+        backend,
+        appr_id,
         datetime.now(timezone.utc) - timedelta(days=100),
     )
 
@@ -606,10 +787,13 @@ def test_find_purge_candidates_contract(store_repos):
     # Already-purged rows (bundle_purged_at set) are excluded even if they
     # still match on status + age.
     subs.mark_bundle_purged(old_id)
-    assert subs.find_purge_candidates(
-        statuses=["blocked_llm", "review_error"],
-        older_than=cutoff,
-    ) == []
+    assert (
+        subs.find_purge_candidates(
+            statuses=["blocked_llm", "review_error"],
+            older_than=cutoff,
+        )
+        == []
+    )
 
 
 def test_submission_delete_removes_row(store_repos):

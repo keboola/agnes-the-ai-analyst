@@ -59,6 +59,33 @@ def test_ingest_csv_indexes_as_registered_table(e2e_env, tmp_path):
     assert reg["query_mode"] == "local"
 
 
+def test_ingest_csv_derived_table_is_owner_private(e2e_env, tmp_path):
+    """#4: the uploader owns the derived table (registered_by) and can read it
+    via RBAC, while another user cannot — access tracks the owning collection."""
+    from src.ingest.runner import ingest_file
+    from src.rbac import can_access_table, get_accessible_tables
+    from src.repositories import corpus_files_repo, table_registry_repo, users_repo
+
+    users_repo().create(id="u1", email="u1@test.com", name="Owner")
+    users_repo().create(id="u2", email="u2@test.com", name="Other")
+
+    corpus_id = _new_corpus("ing-priv")  # created_by="u1"
+    csv = tmp_path / "priv.csv"
+    csv.write_text("a,b\n1,2\n", encoding="utf-8")
+    file_id = _add_file(corpus_id, "priv.csv", "csv", str(csv))
+    assert ingest_file(file_id) == "indexed"
+
+    table_id = corpus_files_repo().get(file_id)["processing_detail"]["derived_table_id"]
+    # Provenance: the real uploader, not the literal "ingest".
+    assert table_registry_repo().get(table_id)["registered_by"] == "u1"
+
+    # RBAC: owner in, other out.
+    assert can_access_table({"id": "u1"}, table_id) is True
+    assert can_access_table({"id": "u2"}, table_id) is False
+    assert table_id in get_accessible_tables({"id": "u1"})
+    assert table_id not in get_accessible_tables({"id": "u2"})
+
+
 def test_ingest_txt_creates_chunks(e2e_env, tmp_path):
     from src.ingest.runner import ingest_file
     from src.repositories import corpus_chunks_repo, corpus_files_repo

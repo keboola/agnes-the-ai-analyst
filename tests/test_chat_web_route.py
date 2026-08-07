@@ -206,6 +206,49 @@ def test_can_chat_hidden_for_admin_without_explicit_grant(monkeypatch):
     assert ctx["can_chat"] is False
 
 
+class TestSkillUploadDialogDestinations:
+    """The chat Skill/Agent/Plugin dialog offers its destinations inline.
+
+    It used to be a Store-only "quick submit" that deferred metadata editing to
+    ``/store/upload`` — a route that no longer exists (the full form moved to
+    ``/store/new``), so the dialog pointed twice at a 404 and gave the uploader
+    no say in where the bundle landed.
+    """
+
+    def test_no_dead_store_upload_link(self, api_client: TestClient):
+        r = api_client.get("/chat")
+        assert r.status_code == 200
+        assert "/store/upload" not in r.text, (
+            "chat dialog links to /store/upload, which 404s — the full upload form is /store/new"
+        )
+        assert 'href="/store/new"' in r.text
+
+    def test_three_destination_checkboxes_with_private_default(self, api_client: TestClient):
+        r = api_client.get("/chat")
+        body = r.text
+        # Library: stated but not negotiable — every upload lands there.
+        assert 'id="chat-store-library"' in body
+        lib = body.split('id="chat-store-library"')[1].split(">")[0]
+        assert "checked" in lib and "disabled" in lib
+        # Stack: a real choice, pre-checked.
+        assert 'id="chat-store-stack"' in body
+        stack = body.split('id="chat-store-stack"')[1].split(">")[0]
+        assert "checked" in stack
+        assert "disabled" not in stack
+        # Sharing: a real choice, and OFF by default — private is the default
+        # for anything uploaded through chat.
+        assert 'id="chat-store-share"' in body
+        share = body.split('id="chat-store-share"')[1].split(">")[0]
+        assert "checked" not in share, "chat uploads must default to private, not shared"
+
+    def test_dialog_no_longer_titled_submit_to_the_store(self, api_client: TestClient):
+        """Title has to match what the default action does (a private Library
+        save), or the dialog promises a publish the checkboxes didn't ask for."""
+        body = api_client.get("/chat").text
+        assert "Submit to the Store" not in body
+        assert "Upload a Skill, Agent, or Plugin" in body
+
+
 def test_studio_page_keeps_chat_nav_tab(api_client: TestClient, logged_in_user):
     """Regression: the Studio landing page (``/admin/studio``) renders via the
     reduced-context ``_chrome_ctx`` builder, which used to omit ``can_chat``.
@@ -238,9 +281,15 @@ def test_chrome_ctx_matches_build_context_can_chat_and_config():
 
     app = _NS(state=_NS(chat_config=_NS(enabled=True)))
     scope = {
-        "type": "http", "app": app, "method": "GET", "path": "/admin/studio",
-        "query_string": b"", "headers": [], "server": ("test", 80),
-        "scheme": "http", "client": ("1.2.3.4", 9),
+        "type": "http",
+        "app": app,
+        "method": "GET",
+        "path": "/admin/studio",
+        "query_string": b"",
+        "headers": [],
+        "server": ("test", 80),
+        "scheme": "http",
+        "client": ("1.2.3.4", 9),
     }
     request = Request(scope)
 

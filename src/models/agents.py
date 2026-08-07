@@ -62,6 +62,18 @@ class Agent(Base):
     memory_mode: Mapped[str] = mapped_column(String, server_default=text("'all'"), nullable=False)
     memory_write_mode: Mapped[str] = mapped_column(String, server_default=text("'propose'"), nullable=False)
     is_default: Mapped[bool] = mapped_column(Boolean, server_default=text("FALSE"), nullable=False)
+    # v110: paper-theme agent-builder superset. role/tone/greeting are authored
+    # profile fields; knowledge/plugins/surfaces are opaque id-list JSON the
+    # builder owns (never joined in SQL); status is the builder's draft|ready
+    # lifecycle. The builder maps created_by→owner_user_id and
+    # instructions→system_prompt, so those reuse the columns above.
+    role: Mapped[str | None] = mapped_column(String, nullable=True)
+    tone: Mapped[str | None] = mapped_column(String, server_default=text("'concise'"), nullable=True)
+    greeting: Mapped[str | None] = mapped_column(Text, nullable=True)
+    knowledge: Mapped[str | None] = mapped_column(Text, server_default=text("'[]'"), nullable=True)
+    plugins: Mapped[str | None] = mapped_column(Text, server_default=text("'[]'"), nullable=True)
+    surfaces: Mapped[str | None] = mapped_column(Text, server_default=text("'{}'"), nullable=True)
+    status: Mapped[str | None] = mapped_column(String, server_default=text("'draft'"), nullable=True)
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=True
     )

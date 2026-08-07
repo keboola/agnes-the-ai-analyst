@@ -66,6 +66,11 @@ class ChatSession:
     # 1 restart-invariant reuse). NULL means unknown/legacy — see
     # RELAY_PROTOCOL_VERSION's docstring above.
     relay_protocol_version: Optional[int] = None
+    # When the user pinned this conversation in the history panel; None = not
+    # pinned. A timestamp rather than a bool so pins order most-recent-first.
+    # NOTE: never index this column — same DuckDB 1.5.3 FK+index bug as above,
+    # and this one is UPDATEd on every pin/unpin (i.e. after messages exist).
+    pinned_at: Optional[datetime] = None
 
 
 @dataclass

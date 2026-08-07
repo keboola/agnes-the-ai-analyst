@@ -1,19 +1,24 @@
-"""User stack API — subscribe / unsubscribe / list (v49 unified stack).
+"""User stack API — subscribe / unsubscribe / list (auto-membership model).
 
-Section 6 of the design spec covers the three user-facing endpoints under
-``/api/stack``:
+Three user-facing endpoints under ``/api/stack``:
 
-  - ``GET    /api/stack?type=data_package|memory_domain`` — user's effective stack
-  - ``POST   /api/stack/subscribe``                       — opt-in to an available grant
-  - ``DELETE /api/stack/subscription/{type}/{id}``        — opt-out
+  - ``GET    /api/stack?type=data_package|memory_domain`` — user's effective
+    stack (auto: every grant on the caller's groups, required or available)
+  - ``POST   /api/stack/subscribe``                       — download a local
+    copy of an ``available`` resource already in the stack
+  - ``DELETE /api/stack/subscription/{type}/{id}``        — remove the local
+    copy (the resource stays in the stack, still queryable server-side)
 
 Stack resolution is delegated to ``app/services/stack_resolver.py``. Required
-grants beat available + subscription; the resolver raises HTTPException
-directly for the two business-rule errors (``already_required`` on subscribe,
-``cannot_remove_required`` on unsubscribe).
+grants are always both in-stack and materialized (downloaded); available
+grants are auto-in-stack but only materialized once subscribed. The resolver
+raises HTTPException directly for the two business-rule errors
+(``already_required`` on subscribe, ``cannot_remove_required`` on
+unsubscribe) — required resources are always downloaded, so there's nothing
+to opt in/out of.
 
-Server-side telemetry (Section 9.2) — ``stack.subscribe`` / ``stack.unsubscribe``
-events land in ``usage_events`` via ``UsageRepository.emit_server_event``.
+Server-side telemetry — ``stack.subscribe`` / ``stack.unsubscribe`` events
+land in ``usage_events`` via ``UsageRepository.emit_server_event``.
 """
 
 from __future__ import annotations
@@ -26,6 +31,7 @@ from pydantic import BaseModel
 from app.auth.access import can_access
 from app.auth.dependencies import get_current_user
 from app.resource_types import ResourceType
+from app.services.journey import mark_journey
 from app.services.stack_resolver import StackResolver
 
 logger = logging.getLogger(__name__)
@@ -87,6 +93,7 @@ def _emit_event(
     """Fire-and-forget — telemetry must never break the user's action."""
     try:
         from src.repositories import usage_repo
+
         usage_repo().emit_server_event(
             event_type=event_type,
             user_id=user["id"],
@@ -109,9 +116,11 @@ async def list_stack(
 ):
     """Return the user's effective stack for the given resource type.
 
-    Effective stack = required ∪ (subscribed ∩ available). Required entries
-    always count as in_stack; available entries only if the user has a
-    subscription row.
+    Auto-membership: effective stack = required ∪ available — every grant on
+    the caller's groups, no subscription needed. Every item is
+    ``in_stack: true``; ``materialized`` additionally flags whether it's ALSO
+    kept as a local copy (`agnes pull` downloads it) — always true for
+    required, true for available only once subscribed.
     """
     _reject_co_session(user)
     rt = _validate_type(type)
@@ -125,6 +134,7 @@ async def list_stack(
             "color": e.color,
             "requirement": e.requirement,
             "in_stack": e.in_stack,
+            "materialized": e.materialized,
         }
         for e in resolver.stack(user["id"], rt)
     ]
@@ -136,13 +146,14 @@ async def browse_stack(
     type: str,
     user: dict = Depends(get_current_user),
 ):
-    """List every resource of ``type`` the caller could add to their stack.
+    """List every resource of ``type`` the caller could see (RBAC-granted).
 
-    Unlike ``GET /api/stack`` (effective stack only), this returns the full
-    RBAC-granted candidate set — required + available — each annotated with
-    an ``in_stack`` flag so an analyst's Claude can tell what is already
-    subscribed and what is still available to add. This is the
-    "what could I add" discovery surface (issue #621).
+    Auto-membership means this is now equivalent in scope to ``GET
+    /api/stack`` (required + available, no separate opt-in tier) — it's kept
+    as a discovery surface so callers who want the full candidate set (issue
+    #621) don't have to reason about the difference. Each item carries
+    ``in_stack: true`` and a ``materialized`` flag so an analyst's Claude can
+    tell what is already downloaded locally vs. only server-side queryable.
 
     Scoped per-user by ``StackResolver.browse`` (group grants only), so the
     only authorization gate is authentication — no extra RBAC dependency.
@@ -159,6 +170,7 @@ async def browse_stack(
             "color": e.color,
             "requirement": e.requirement,
             "in_stack": e.in_stack,
+            "materialized": e.materialized,
         }
         for e in resolver.browse(user["id"], rt)
     ]
@@ -170,8 +182,9 @@ async def subscribe(
     payload: SubscribeRequest,
     user: dict = Depends(get_current_user),
 ):
-    """Opt in to an ``available`` grant. Refuses to subscribe if the resource
-    is required (it's already in the stack — clients shouldn't bother)."""
+    """Download a local copy of an ``available`` resource already in the
+    stack. Refuses to subscribe if the resource is required (it's always
+    downloaded automatically — clients shouldn't bother)."""
     _reject_co_session(user)
     rt = _validate_type(payload.resource_type)
     # The user must have *some* grant on the resource — otherwise this is a
@@ -192,6 +205,9 @@ async def subscribe(
             "resource_id": payload.resource_id,
         },
     )
+    # The onboarding step is "Put knowledge in your stack" — this is that,
+    # whichever surface asked for it (Library page, chat, CLI, MCP).
+    mark_journey(user.get("id"), stack_setup_done=True)
     return {"subscribed": True}
 
 
@@ -201,13 +217,16 @@ async def unsubscribe(
     resource_id: str,
     user: dict = Depends(get_current_user),
 ):
-    """Opt out of an ``available`` grant. Returns 400 ``cannot_remove_required``
-    when the resource is required for any of the user's groups.
+    """Remove the local copy of an ``available`` resource — the resource
+    stays in the stack (still queryable server-side), only the download is
+    dropped. Returns 400 ``cannot_remove_required`` when the resource is
+    required for any of the user's groups (required is always downloaded,
+    no opt-out).
 
     Returns 204 No Content on success — DELETE idempotency convention
     enforced by the API design rules test. Callers should treat 204 as
-    "removed", 400 + ``cannot_remove_required`` as "still subscribed
-    because Required tier blocks opt-out".
+    "local copy removed", 400 + ``cannot_remove_required`` as "still
+    downloaded because Required tier blocks opt-out".
     """
     _reject_co_session(user)
     rt = _validate_type(resource_type)
@@ -224,3 +243,135 @@ async def unsubscribe(
             "resource_id": resource_id,
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Artefacts (file_corpora "collections") — added to My Stack (#feature)
+# ---------------------------------------------------------------------------
+#
+# Artefacts are NOT routed through StackResolver (see module docstring for
+# data_package/memory_domain) — there is no admin-RBAC "required" tier for a
+# personal upload. Permission is ownership/sharing (checked via
+# ``can_access_collection``, the same primitive /artefacts and /library use),
+# and Stack membership is stored as a plain ``user_stack_subscriptions`` row
+# with ``resource_type='collection'`` — the generic subscribe()/unsubscribe()
+# already used above is idempotent, satisfying "prevent duplicate
+# memberships" for free. Small, dedicated endpoints rather than threading
+# artefacts through ``_validate_type``/``StackResolver``.
+#
+# NOTE (deferred follow-up — see the product spec's scope note): adding an
+# artefact here makes it *queryable as Stack data*, but the default agent's
+# retrieval tools (``knowledge_search``/``collections_search`` in
+# app/api/mcp/foundation_tools.py, backed by /api/knowledge/search and
+# /api/collections/search) do not yet gate results by Stack membership — they
+# still fan out over every RBAC-accessible collection. Wiring that gate is an
+# intentionally separate, higher-risk change; this feature only makes the
+# membership data correct and queryable.
+
+
+@router.post("/artefacts/{corpus_id}")
+async def add_artefact_to_stack(
+    corpus_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """Add an artefact (a ``file_corpora`` collection) to the caller's Stack
+    so the default agent can use it. 404 if the collection doesn't exist
+    (or is soft-deleted); 403 if the caller cannot access it (not owned, not
+    shared with one of their groups, not workspace-published). Idempotent —
+    adding an already-in-stack artefact just re-confirms membership.
+
+    Returns the same catalog-card shape My Stack renders (``card``), so the
+    picker/Artefacts-page JS can insert the new row live without a reload.
+    """
+    _reject_co_session(user)
+    from app.auth.access import can_access_collection
+    from app.services.artefact_access import (
+        build_artefact_access_context,
+        collection_visibility,
+        owner_label_for,
+    )
+    from src.repositories import corpus_files_repo, file_corpora_repo, user_stack_subscriptions_repo
+
+    uid = user["id"]
+    col = file_corpora_repo().get(corpus_id)
+    if not col:
+        raise HTTPException(status_code=404, detail="artefact_not_found")
+    if not can_access_collection(uid, corpus_id):
+        raise HTTPException(status_code=403, detail="no_access")
+
+    user_stack_subscriptions_repo().subscribe(uid, ResourceType.COLLECTION.value, corpus_id)
+    _emit_event(event_type="stack.artefact_add", user=user, props={"resource_id": corpus_id})
+    # Same onboarding milestone as /subscribe above: a file collection joining
+    # the stack is "Put knowledge in your stack" just as much as a package is.
+    mark_journey(uid, stack_setup_done=True)
+
+    # Local import — the card normalizer lives in app/web/router.py (the web
+    # page that owns its presentation contract); deferred to request time to
+    # avoid a module-load-order dependency between the two routers.
+    from app.web.router import _catalog_card_stack_artefact
+
+    cf_repo = corpus_files_repo()
+    try:
+        files = cf_repo.list_for_corpus(corpus_id)
+    except Exception:
+        files = []
+    file_count = len(files)
+    first_file = None
+    if file_count == 1:
+        f0 = files[0]
+        first_file = {
+            "filename": f0.get("filename"),
+            "file_type": f0.get("file_type"),
+            "size_bytes": f0.get("size_bytes"),
+        }
+    ctx = build_artefact_access_context(uid)
+    visibility, visibility_label = collection_visibility(ctx, corpus_id)
+    card = _catalog_card_stack_artefact(
+        {**col, "file_count": file_count, "first_file": first_file},
+        visibility=visibility,
+        visibility_label=visibility_label,
+        owner_label=owner_label_for(ctx, col),
+        accessible=True,
+    )
+    return {"added": True, "card": card}
+
+
+@router.delete("/artefacts/{corpus_id}", status_code=204)
+async def remove_artefact_from_stack(
+    corpus_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """Remove an artefact from the caller's Stack — drops agent access only.
+
+    The artefact itself, its files, ownership and sharing are untouched;
+    this only deletes the ``user_stack_subscriptions`` membership row. No
+    "required" concept exists for artefacts, so there is no 400 case (unlike
+    the data_package/memory_domain unsubscribe endpoint) — always 204.
+    """
+    _reject_co_session(user)
+    from src.repositories import user_stack_subscriptions_repo
+
+    user_stack_subscriptions_repo().unsubscribe(user["id"], ResourceType.COLLECTION.value, corpus_id)
+    _emit_event(event_type="stack.artefact_remove", user=user, props={"resource_id": corpus_id})
+
+
+@router.get("/artefacts/candidates")
+async def stack_artefact_candidates(
+    user: dict = Depends(get_current_user),
+):
+    """List every artefact eligible for the "Add artefacts to Stack" picker:
+    collections accessible to the caller (owned, or shared with them/their
+    team, or workspace-published) that are NOT already in their Stack.
+
+    ``total_accessible`` counts every accessible artefact regardless of
+    Stack membership, distinguishing "no artefacts exist at all" from "all
+    accessible artefacts are already in your Stack" for the picker's empty
+    states. Small dataset per caller in practice (mirrors /artefacts, which
+    also fetches everything server-side) — the caller's search/visibility
+    filter runs client-side over this list, no server-side ``q`` param.
+    """
+    _reject_co_session(user)
+    from app.services.artefact_access import list_candidate_collections
+
+    items, total_accessible = list_candidate_collections(user["id"])
+    return {"items": items, "total_accessible": total_accessible}

@@ -240,6 +240,47 @@
   .mp-type-row .pill.is-active {
     background: var(--primary); color: #fff; border-color: var(--primary);
   }
+  /* Facet rows (v104): a leading label so three stacked pill rows stay
+     readable — without it "Organization / Me / Other users" and
+     "Verified / Not verified" read as one undifferentiated pill soup. */
+  .mp-facet-label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--ds-text-muted);
+    margin-right: 2px;
+  }
+  #mp-publisher-row, #mp-verification-row { margin-bottom: 10px; }
+
+  /* Trust chips on a card's publisher line. At most one ever renders, and
+     there is no "unverified" variant by design — absence of a chip IS the
+     neutral default (an "Unverified" label would print on ~every card on an
+     instance with no reviewer). Mirrors .cc-trust in catalog_card.css. */
+  .mp-trust {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    margin-left: 5px;
+    padding: 1px 6px;
+    border-radius: var(--ds-radius-pill);
+    border: 1px solid transparent;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    vertical-align: baseline;
+  }
+  .mp-trust svg { width: 10px; height: 10px; }
+  .mp-trust--org {
+    background: var(--ds-surface-sunken);
+    border-color: var(--ds-border);
+    color: var(--ds-text-secondary);
+  }
+  .mp-trust--verified {
+    background: var(--ds-accent-success-bg);
+    border-color: var(--ds-accent-success-line);
+    color: var(--ds-accent-success-ink);
+  }
 
   /* ── Card grid ───────────────────────────────────────────────────── */
   .mp-grid {

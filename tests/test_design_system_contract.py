@@ -167,6 +167,11 @@ _NO_RAW_HEX_TEMPLATES = (
     "profile.html",
     "setup.html",
     "me_activity.html",
+    # Paper-theme rebrand sweep: page-local colours moved to --ds-* tokens.
+    # (marketplace_plugin_detail.html is intentionally excluded — its dark
+    # hero + terminal-mock retain fixed hex by design.)
+    "memory_domain_detail.html",
+    "activity_center.html",
 )
 
 
@@ -693,4 +698,218 @@ def test_legacy_token_aliases_defined_in_root() -> None:
     missing = [t for t in required_tokens if f"{t}:" not in css]
     assert not missing, "tokens introduced by #400 are missing from style-custom.css :root:\n" + "\n".join(
         f"  {t}" for t in missing
+    )
+
+
+# ── Light-only tint guard ────────────────────────────────────────────────
+# The `--ds-*-soft` family is the DS tint vocabulary, and every one of them is
+# declared ONCE in the global `:root` — none has a `data-theme="dark"`
+# override, so a `-soft` fill stays near-white under dark while the
+# `--ds-text-*` ink flips near-white with the theme. That pairing is invisible
+# text, and it shipped once: `.cbn` (the connect banner) filled with
+# `--ds-agnes-soft` and drew its title in `--ds-text-primary`, which measured
+# ~1:1 in dark mode. The fix is a dark-scoped override tinting the CURRENT
+# surface (`color-mix(… var(--ds-agnes) 18%, var(--ds-surface))`), the idiom
+# `.ag-pv-bubble` already used. This guard stops the next one.
+#
+# Deliberately NOT flagged, because they are correct:
+#   - a `-soft` fill whose own ink is a deep accent (`--ds-agnes`,
+#     `--ds-kind-*`): dark-on-light stays legible when the tint can't flip,
+#     so `.ag-ava` / `.ag-instack` / `.ws-badge--in_workspace` are fine.
+#   - `--ds-text-inverse` ink: that token IS the pairing for solid fills.
+#   - rules already scoped to a `[data-theme="…"]`: a dark block carries its
+#     own colours, and a light theme (`paper`, `blue`, `navy`) can never be
+#     the active theme when the app is dark.
+_TOKENS_CSS = STATIC / "css" / "design-tokens.css"
+
+_CSS_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+_THEME_SCOPED_RE = re.compile(r'\[data-theme="[a-z]+"\]')
+_TOKEN_DECL_RE = re.compile(r"(--ds-[a-z0-9-]+)\s*:")
+_BACKGROUND_DECL_RE = re.compile(r"^\s*background(-color)?\s*:")
+# `color:` but not `-color:` (so `border-color`/`background-color` don't count
+# as ink), and not the inverse token (the deliberate solid-fill pairing).
+_FLIPPING_INK_RE = re.compile(r"(?<![a-z-])color\s*:\s*var\(--ds-text-(?!inverse)")
+
+
+def _css_rules(css: str) -> list[tuple[str, str]]:
+    """Every declaration block as `(selector, body)`.
+
+    At-rule wrappers (`@media`, `@supports`) are transparent — their nested
+    rules are returned with their own selectors, so a rule inside a media
+    query is audited like any other. Comments are stripped first.
+    """
+    css = _CSS_COMMENT_RE.sub("", css)
+    rules: list[tuple[str, str]] = []
+    stack: list[str | None] = []
+    buf = ""
+    for ch in css:
+        if ch == "{":
+            selector = buf.strip()
+            buf = ""
+            # `None` marks a wrapper whose body holds rules, not declarations.
+            stack.append(None if selector.startswith("@") else selector)
+        elif ch == "}":
+            closed = stack.pop() if stack else None
+            if closed is not None:
+                rules.append((closed, buf))
+            buf = ""
+        else:
+            buf += ch
+    return rules
+
+
+def _light_only_soft_tokens() -> set[str]:
+    """`--ds-*-soft` tokens with no `data-theme="dark"` declaration anywhere in
+    design-tokens.css — i.e. the tints that keep their light value under dark."""
+    rules = _css_rules(_TOKENS_CSS.read_text(encoding="utf-8"))
+    light: set[str] = set()
+    dark: set[str] = set()
+    for selector, body in rules:
+        target = dark if '[data-theme="dark"]' in selector else light
+        target.update(_TOKEN_DECL_RE.findall(body))
+    return {t for t in light - dark if t.endswith("-soft")}
+
+
+def _anchor_class(selector_part: str) -> str | None:
+    """The rightmost class in a selector — the element the background paints."""
+    classes = re.findall(r"\.([A-Za-z0-9_-]+)", selector_part)
+    return classes[-1] if classes else None
+
+
+def _paints_ink_on(anchor: str, selector_part: str, candidate: str) -> bool:
+    """Whether `candidate`'s ink lands on the background painted by
+    `selector_part`: either the very same rule, or a descendant / BEM child of
+    the anchor class (`.cbn` → `.cbn-title`, `.cbn__title`, `.cbn .title`)."""
+    if candidate.strip() == selector_part:
+        return True
+    return re.search(rf"\.{re.escape(anchor)}(?:[-_][A-Za-z0-9_-]+)?(?=[\s:.\[]|$)", candidate) is not None
+
+
+def light_only_tint_offenders(css: str, light_only: set[str]) -> list[str]:
+    """Rules that fill with a light-only `-soft` tint while ink that flips with
+    the theme is drawn on them, and that ship no dark-theme override.
+
+    The override has to live in the same stylesheet as the rule it fixes —
+    keeping the two together is the point, and a cross-file search would make
+    the guard depend on file load order.
+    """
+    rules = _css_rules(css)
+    offenders: list[str] = []
+    for selector, body in rules:
+        if _THEME_SCOPED_RE.search(selector):
+            continue
+        for declaration in body.split(";"):
+            if not _BACKGROUND_DECL_RE.match(declaration):
+                continue
+            tints = sorted(t for t in light_only if f"var({t})" in declaration)
+            if not tints:
+                continue
+            for part in (p.strip() for p in selector.split(",")):
+                anchor = _anchor_class(part)
+                if anchor is None:
+                    continue
+                inked_by = [
+                    other
+                    for other, other_body in rules
+                    if _FLIPPING_INK_RE.search(other_body)
+                    and any(_paints_ink_on(anchor, part, p) for p in other.split(","))
+                ]
+                if not inked_by:
+                    continue
+                has_dark_override = any(
+                    '[data-theme="dark"]' in other and re.search(rf"\.{re.escape(anchor)}\b", other)
+                    for other, _ in rules
+                )
+                if has_dark_override:
+                    continue
+                offenders.append(f"{part} (fill {', '.join(tints)}; ink from {inked_by[0].strip()})")
+    return offenders
+
+
+def _css_sources() -> dict[str, str]:
+    """Every stylesheet the app ships, plus each template's inline <style>."""
+    sources = {str(p): p.read_text(encoding="utf-8") for p in sorted(STATIC.rglob("*.css"))}
+    for path in _all_html():
+        inline = _inline_styles_in_template(path.read_text(encoding="utf-8"))
+        if inline.strip():
+            sources[str(path)] = inline
+    return sources
+
+
+def test_light_only_soft_tint_never_backs_theme_flipping_ink() -> None:
+    """A `--ds-*-soft` fill + `--ds-text-*` ink needs a dark-theme override.
+
+    Without one the fill stays light while the ink goes light — the connect
+    banner's title measured ~1:1 in dark mode this way. Fix a finding either by
+    tinting the current surface under `:root[data-theme="dark"]`
+    (`color-mix(in srgb, var(--ds-accent) N%, var(--ds-surface))`) or by giving
+    the component ink that does not flip.
+    """
+    light_only = _light_only_soft_tokens()
+    assert light_only, "expected the --ds-*-soft tints to have no dark-theme override — detector needs rewriting"
+
+    offenders = {
+        name: found for name, css in _css_sources().items() if (found := light_only_tint_offenders(css, light_only))
+    }
+    assert not offenders, "light-only -soft tint painted under theme-flipping ink with no dark override:\n" + "\n".join(
+        f"  {name}:\n" + "\n".join(f"    {o}" for o in found) for name, found in offenders.items()
+    )
+
+
+_REGRESSION_CSS = """
+.cbn { background: var(--ds-agnes-soft); border-radius: 16px; }
+.cbn-title { color: var(--ds-text-primary); font-weight: 750; }
+"""
+
+
+def test_light_only_tint_detector_fires_on_the_connect_banner_regression() -> None:
+    """The exact pre-fix shape must be reported, or the guard above is vacuous."""
+    offenders = light_only_tint_offenders(_REGRESSION_CSS, {"--ds-agnes-soft"})
+    assert len(offenders) == 1, offenders
+    assert offenders[0].startswith(".cbn ")
+
+
+def test_light_only_tint_detector_accepts_a_dark_override() -> None:
+    """The shipped fix — a dark-scoped fill over the current surface — is clean."""
+    fixed = _REGRESSION_CSS + (
+        ':root[data-theme="dark"] .cbn { background: color-mix(in srgb, var(--ds-agnes) 18%, var(--ds-surface)); }'
+    )
+    assert light_only_tint_offenders(fixed, {"--ds-agnes-soft"}) == []
+
+
+def test_light_only_tint_detector_ignores_accent_ink_on_a_tint() -> None:
+    """A tint whose own ink is a deep accent is legible in both themes."""
+    chip_css = ".ag-instack { background: var(--ds-agnes-soft); color: var(--ds-agnes); }"
+    assert light_only_tint_offenders(chip_css, {"--ds-agnes-soft"}) == []
+
+
+def test_light_only_tint_detector_flattens_media_queries() -> None:
+    """A rule inside `@media` is audited like any other — nesting is not a hole."""
+    nested = "@media (max-width: 620px) {" + _REGRESSION_CSS + "}"
+    assert len(light_only_tint_offenders(nested, {"--ds-agnes-soft"})) == 1
+
+
+def test_plugin_detail_chip_icons_are_sized_wherever_the_chip_renders() -> None:
+    """`buildInnerCardChip()` emits ONE chip into TWO structures — the legacy
+    photo card's body and the redesigned object row's trailing meta slot — so its
+    stylesheet must be scoped to the page, not to `.inner-card`.
+
+    The regression: the redesign moved the chip into `.detail-object__meta`,
+    outside `.inner-card`, and the whole rule block (including
+    `width: 13px; height: 13px` on the inline SVGs) stopped matching. Inline SVG
+    with a `viewBox` and no dimensions falls back to the intrinsic
+    replaced-element box, so each glyph rendered at ~160px — three of them across
+    the row, in a chip meant to be 13px punctuation.
+    """
+    src = (TEMPLATES / "marketplace_plugin_detail.html").read_text()
+    # The redesigned renderer really does put the chip outside `.inner-card` —
+    # if this changes, the rest of this test is asserting about nothing. Matched
+    # loosely (bare call or hoisted local) so this stays a check on WHERE the
+    # chip lands, not on how the renderer spells it.
+    assert re.search(r'class="detail-object__meta">\$\{\s*(?:chip|buildInnerCardChip\(it\))\s*\}', src), (
+        "the object-row renderer no longer wraps the chip in .detail-object__meta"
+    )
+    assert ".plugin-detail .inv-chip svg" in src, "the chip's SVG size rule is missing"
+    assert ".inner-card .inv-chip" not in src, (
+        "chip rules are scoped to .inner-card again — the object-row chip loses all of them, including the SVG size"
     )

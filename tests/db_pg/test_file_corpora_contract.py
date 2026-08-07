@@ -84,6 +84,15 @@ def test_create_then_get_returns_same_shape(repo):
     assert row["description"] == "Test desc"
     assert row["created_by"] == "user1"
     assert row["deleted_at"] is None
+    # origin defaults to 'uploaded' on both backends (v102 / Alembic 0049).
+    assert row["origin"] == "uploaded"
+
+
+def test_origin_defaults_uploaded_and_accepts_generated(repo):
+    up = repo.get(repo.create(name="Up", slug="up", description=None, created_by="u"))
+    assert up["origin"] == "uploaded"
+    gen = repo.get(repo.create(name="Gen", slug="gen", description=None, created_by="u", origin="generated"))
+    assert gen["origin"] == "generated"
 
 
 def test_create_id_has_col_prefix(repo):

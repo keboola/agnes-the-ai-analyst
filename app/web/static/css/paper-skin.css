@@ -1,0 +1,669 @@
+/* Paper component skin — shape/typography layer of the `paper` theme.
+ *
+ * The palette lives in design-tokens.css (`:root[data-theme="paper"]`);
+ * this sheet carries the parts of the issue-#896 prototype look that
+ * are NOT expressible as color tokens: button shape, hover-lift cards,
+ * badge-pill tags, tight negative tracking on headlines, calm inputs.
+ *
+ * Every rule is scoped to `[data-theme="paper"]`, so the sheet is
+ * inert for blue/navy/dark instances — loading it globally changes
+ * nothing unless the instance opts into the paper theme.
+ *
+ * Vocabulary rules (mirrors the prototype's own comments):
+ *   - `.btn-primary`/`.btn-secondary` are the ONE prominent CTA per
+ *     context, on `--ds-radius-btn`; dense per-row actions keep the
+ *     tight 8px radius.
+ *   - Nothing labelled is pill-shaped — not buttons, not inputs.
+ *     Fully-round is the badge/tag/counter language. The one carve-out
+ *     is the pair of connect-banner CTAs (`.cbn-cta`, `.klb-cta`),
+ *     marketing surfaces that stay round under every theme.
+ *   - Category tags use the `--ds-kind-*` sticker palette, never the
+ *     brand primary, so categories can't be mistaken for actions.
+ */
+
+/* ── Type — heavy headline, calm body (prototype: Inter 15px/1.55,
+   antialiased) ─────────────────────────────────────────────────── */
+[data-theme="paper"] body {
+    font-family: var(--ds-font);
+    font-size: 15px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    background: var(--ds-bg);
+    color: var(--ds-text-primary);
+}
+
+[data-theme="paper"] h1 {
+    font-weight: 700;
+    letter-spacing: -0.6px;
+}
+
+[data-theme="paper"] h2 {
+    font-weight: 600;
+    letter-spacing: -0.15px;
+}
+
+/* ── Buttons — one radius, quiet secondaries ──────────────────────
+   `--ds-radius-btn`, not the pill: buttons live next to inputs and
+   toolbar controls (`.fbar__search input`, `.fbar-filter__btn`,
+   `.cc-btn`), which are never pill-shaped, and a fully-round CTA in
+   that row read as a different component from the identical CTA on a
+   detail header. Fully-round stays the BADGE language (tags, status
+   chips, counters, circular icon-only buttons). */
+[data-theme="paper"] .btn {
+    border-radius: var(--ds-radius-btn);
+    font-weight: 500;
+}
+
+[data-theme="paper"] .btn-primary {
+    background: var(--ds-primary);
+    border-color: var(--ds-primary);
+    color: #ffffff;
+}
+
+[data-theme="paper"] .btn-primary:hover {
+    background: var(--ds-primary-dark);
+    border-color: var(--ds-primary-dark);
+}
+
+[data-theme="paper"] .btn-secondary,
+[data-theme="paper"] .btn-ghost {
+    background: var(--ds-surface);
+    border-color: var(--ds-border);
+    color: var(--ds-text-primary);
+}
+
+[data-theme="paper"] .btn-secondary:hover,
+[data-theme="paper"] .btn-ghost:hover {
+    background: var(--ds-surface-dim);
+}
+
+/* ── Inputs — tight corners, hairline borders, emerald focus ──── */
+[data-theme="paper"] input[type="text"],
+[data-theme="paper"] input[type="search"],
+[data-theme="paper"] input[type="email"],
+[data-theme="paper"] input[type="password"],
+[data-theme="paper"] input[type="url"],
+[data-theme="paper"] input[type="number"],
+[data-theme="paper"] textarea,
+[data-theme="paper"] select {
+    border-radius: 12px;
+    border-color: var(--ds-border);
+    background: var(--ds-surface);
+    color: var(--ds-text-primary);
+}
+
+[data-theme="paper"] input:focus-visible,
+[data-theme="paper"] textarea:focus-visible,
+[data-theme="paper"] select:focus-visible {
+    border-color: var(--ds-primary);
+}
+
+/* ── Cards — hairline border, hover lift ──────────────────────── */
+[data-theme="paper"] .ds-card,
+[data-theme="paper"] .stack-card,
+[data-theme="paper"] .card {
+    border-radius: 12px;
+    border: 1px solid var(--ds-border);
+    box-shadow: none;
+    transition: border-color var(--ds-motion-fast) var(--ds-ease-standard),
+        transform var(--ds-motion-fast) var(--ds-ease-standard),
+        box-shadow var(--ds-motion-fast) var(--ds-ease-standard);
+}
+
+[data-theme="paper"] .ds-card:hover,
+[data-theme="paper"] .stack-card:hover,
+[data-theme="paper"] .card:hover {
+    border-color: var(--ds-border);
+    transform: translateY(-2px);
+    box-shadow: var(--ds-shadow-md);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    [data-theme="paper"] .ds-card,
+    [data-theme="paper"] .stack-card,
+    [data-theme="paper"] .card {
+        transition: none;
+    }
+
+    [data-theme="paper"] .ds-card:hover,
+    [data-theme="paper"] .stack-card:hover,
+    [data-theme="paper"] .card:hover {
+        transform: none;
+    }
+}
+
+/* ── Badges & filter pills — fully rounded category language ──── */
+[data-theme="paper"] .badge,
+[data-theme="paper"] .filter-pill,
+[data-theme="paper"] .tag {
+    border-radius: var(--ds-radius-pill);
+    font-weight: 600;
+    letter-spacing: 0.02em;
+}
+
+[data-theme="paper"] .filter-pill.is-active,
+[data-theme="paper"] .filter-pill.on {
+    background: var(--ds-primary-light);
+    border-color: var(--ds-brand-accent);
+    color: var(--ds-primary-dark);
+}
+
+/* Categorical kind tags — sticker palette, never the brand color. */
+[data-theme="paper"] .tag-kind-data {
+    background: var(--ds-kind-data-soft);
+    color: var(--ds-kind-data);
+}
+
+[data-theme="paper"] .tag-kind-plugin {
+    background: var(--ds-kind-plugin-soft);
+    color: var(--ds-kind-plugin);
+}
+
+[data-theme="paper"] .tag-kind-memory {
+    background: var(--ds-kind-memory-soft);
+    color: var(--ds-kind-memory);
+}
+
+[data-theme="paper"] .tag-kind-library {
+    background: var(--ds-kind-library-soft);
+    color: var(--ds-kind-library);
+}
+
+[data-theme="paper"] .tag-kind-recipe {
+    background: var(--ds-kind-recipe-soft);
+    color: var(--ds-kind-recipe);
+}
+
+/* ── Assistant voice — surfaces where the agent speaks ────────── */
+[data-theme="paper"] .agnes-card,
+[data-theme="paper"] .callout-agnes {
+    background: var(--ds-assistant-soft);
+    border: 1px solid var(--ds-assistant-line);
+    border-radius: 12px;
+    color: var(--ds-text-primary);
+}
+
+[data-theme="paper"] .agnes-card b,
+[data-theme="paper"] .callout-agnes b {
+    color: var(--ds-assistant);
+}
+
+/* ── Agnes-platform "connect / knowledge" surfaces keep emerald ──────
+   The app primary is now sky blue, but the surfaces that speak for
+   the Agnes *platform* — the "same knowledge, everywhere" connect banner,
+   the Knowledge Layer hero's "Connect your tools" CTA, and the whole AI
+   Connector page — keep the emerald brand green. Scope-override the primary
+   trio on those containers so their CTAs/accents stay green without touching
+   the app. (Backgrounds/orbit already ride --ds-agnes, which stays emerald.)
+   Scoped to the connect banner's CTA rather than the whole `.cbn` container —
+   the same shape as `.klb-cta` below — so the shared knowledge-surface fill it
+   now paints (style-custom.css) resolves --ds-primary to the app sky, pixel-for-
+   pixel identical to the Knowledge Layer hero it matches. */
+[data-theme="paper"] .cbn-cta,
+[data-theme="paper"] .klb-cta,
+[data-theme="paper"] .aic-flow {
+    --ds-primary: #10b981;
+    --ds-primary-dark: #059669;
+    --ds-primary-light: #ecfdf5;
+    --ds-brand-accent: #a7f3d0;
+}
+
+/* …and they keep their SHAPE too. Both banner CTAs are authored fully-round
+   (style-custom.css) — the marketing idiom these two connect surfaces are
+   built on — and paper no longer squares them down to `--ds-radius-btn`. The
+   pill is what marks them as the product-model banner rather than another
+   labelled page button, so it stays under every theme. */
+
+/* ── Hero — the light paper hero card ──────────────────────────────
+   The canonical `.page-header--hero` assumes a dark gradient and
+   hardcodes white ink (style-custom.css). Paper flips the hero to a
+   light card, so every white-ink rule needs a dark-ink counterpart
+   here — title/subtitle/links/actions plus the marketplace hero's
+   translucent-white search-scope controls. */
+[data-theme="paper"] .page-header--hero {
+    background: linear-gradient(180deg, var(--ds-surface) 0%, #f7faff 100%);
+    color: var(--ds-text-primary);
+    border: 1px solid var(--ds-border);
+    border-radius: 16px;
+    box-shadow: var(--ds-shadow-lg);
+}
+
+[data-theme="paper"] .page-header--hero .page-header__title {
+    color: var(--ds-text-primary);
+    font-weight: 700;
+    letter-spacing: -0.6px;
+}
+
+[data-theme="paper"] .page-header--hero .page-header__eyebrow {
+    color: var(--ds-primary-dark);
+}
+
+[data-theme="paper"] .page-header--hero .page-header__subtitle {
+    color: var(--ds-text-secondary);
+}
+
+[data-theme="paper"] .page-header--hero .page-header__actions a,
+[data-theme="paper"] .page-header--hero .page-header__actions button {
+    color: var(--ds-text-primary);
+}
+
+[data-theme="paper"] .page-header--hero a {
+    color: var(--ds-primary-dark);
+}
+
+[data-theme="paper"] .page-header--hero a:hover {
+    color: var(--ds-primary);
+}
+
+/* Catalog/memory `.stack-hero` — same dark-hero assumption as
+   `.page-header--hero`; flip its white ink to the paper hierarchy. */
+[data-theme="paper"] .stack-hero {
+    background: linear-gradient(180deg, var(--ds-surface) 0%, #f7faff 100%);
+    color: var(--ds-text-primary);
+    border: 1px solid var(--ds-border);
+    border-radius: 16px;
+    box-shadow: var(--ds-shadow-lg);
+}
+
+[data-theme="paper"] .stack-hero h1 {
+    color: var(--ds-text-primary);
+}
+
+[data-theme="paper"] .stack-hero .eyebrow {
+    color: var(--ds-primary-dark);
+}
+
+[data-theme="paper"] .stack-hero .sub {
+    color: var(--ds-text-secondary);
+}
+
+[data-theme="paper"] .stack-hero__search-row {
+    border: 1px solid var(--ds-border);
+    box-shadow: var(--ds-shadow-sm);
+}
+
+[data-theme="paper"] .stack-hero__status-row {
+    color: var(--ds-text-secondary);
+}
+
+[data-theme="paper"] .stack-hero__status-row input[type="checkbox"] {
+    accent-color: var(--ds-primary);
+}
+
+[data-theme="paper"] .stack-hero__status-label {
+    color: var(--ds-text-muted);
+}
+
+/* Marketplace hero search-scope row — translucent-white chrome on
+   the dark hero becomes slate ink on paper. */
+[data-theme="paper"] .mp-hero .scope-label {
+    color: var(--ds-text-muted);
+}
+
+[data-theme="paper"] .mp-hero .scope label {
+    color: var(--ds-text-primary);
+}
+
+[data-theme="paper"] .mp-hero .scope label:hover {
+    background: var(--ds-surface-dim);
+}
+
+[data-theme="paper"] .mp-hero .scope input[type="checkbox"] {
+    accent-color: var(--ds-primary);
+}
+
+/* ── Stack tabs — light segmented control (prototype .segmented)
+   instead of the dark hero-tinted bar. ───────────────────────────── */
+[data-theme="paper"] .stack-tabs {
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    box-shadow: var(--ds-shadow-sm);
+}
+
+[data-theme="paper"] .stack-tabs button {
+    color: var(--ds-text-secondary);
+}
+
+[data-theme="paper"] .stack-tabs button .tab-icon {
+    color: var(--ds-text-muted);
+}
+
+[data-theme="paper"] .stack-tabs button:hover {
+    color: var(--ds-text-primary);
+    background: var(--ds-surface-dim);
+    border-color: var(--ds-border);
+}
+
+[data-theme="paper"] .stack-tabs button.is-active {
+    background: var(--ds-surface-dim);
+    border-color: var(--ds-border);
+    color: var(--ds-text-primary);
+    font-weight: 600;
+}
+
+[data-theme="paper"] .stack-tabs button.is-active .tab-icon {
+    color: var(--ds-primary-dark);
+}
+
+[data-theme="paper"] .stack-tabs button .count {
+    background: var(--ds-bg);
+    border: 1px solid var(--ds-border);
+    color: var(--ds-text-muted);
+}
+
+/* ── Tables — quiet chrome, wash header ───────────────────────── */
+[data-theme="paper"] .data-table th {
+    background: var(--ds-surface-dim);
+    color: var(--ds-text-muted);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+[data-theme="paper"] .data-table td {
+    border-color: var(--ds-border-light);
+}
+
+/* ── Toasts — dark pill, bottom-center (prototype confirmation) ─ */
+[data-theme="paper"] .toast {
+    border-radius: var(--ds-radius-pill);
+}
+
+/* ── Detail pages ─────────────────────────────────────────────────────
+   The shared entity-detail scaffold (macros/_detail.html) is skinned in
+   its OWN sheet — static/css/detail-page.css — not here: the redesign
+   replaced the scaffold's per-kind gradient slab with an editorial
+   header plus a two-column shell, which is a page layout rather than a
+   component re-tint, and it is long enough to earn a file.
+
+   An interim version of that work lived in this block and dressed the
+   showcase hero in paper's near-black `--ds-hero-*` slab. That kept the
+   kind hues from clashing but kept the SLAB, i.e. ~260px of header
+   before the first line of content and a frosted panel nested inside a
+   coloured box. The editorial header supersedes it whole, so the rules
+   are gone rather than layered under new ones.
+
+   What remains here is the one piece that is a component and not part of
+   the detail layout: the owner/admin action strip, which the marketplace
+   pages render between the header and the first section. */
+
+/* ── Owner/admin action bar ───────────────────────────────────────────
+   `.owner-actions` was a bare right-aligned flex row: three unparented
+   pills, two of them destructive and as loud as Edit. It becomes a named
+   strip — and a hairline-topped one rather than a bordered card, so it
+   reads as the foot of the header instead of a fourth box on a page whose
+   sections no longer have boxes at all. The destructive pair is demoted to
+   quiet controls that only commit to danger on hover: the colour arrives
+   with the intent, not with the page. */
+html[data-theme="paper"] .owner-actions {
+    align-items: center;
+    justify-content: flex-start;
+    gap: 10px;
+    padding: 14px 0 0;
+    margin-bottom: 32px;
+    background: none;
+    border: 0;
+    border-top: 1px solid var(--ds-border-light);
+    border-radius: 0;
+}
+
+html[data-theme="paper"] .owner-actions__label {
+    display: block;
+    margin-right: auto;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ds-text-muted);
+}
+
+html[data-theme="paper"] .owner-actions .btn-danger {
+    background: transparent;
+    border-color: var(--ds-border);
+    color: var(--ds-accent-danger-ink);
+}
+
+html[data-theme="paper"] .owner-actions .btn-danger:hover:not([disabled]) {
+    background: var(--ds-accent-danger-bg);
+    border-color: var(--ds-accent-danger-line);
+    color: var(--ds-accent-danger-ink);
+}
+
+html[data-theme="paper"] .owner-actions .btn-danger[disabled] {
+    background: transparent;
+    border-color: var(--ds-border-light);
+    color: var(--ds-text-muted);
+}
+
+/* Hero pill row: wrap BETWEEN pills, never inside one. The trust marker is a
+   wider label than the `Flea` badge it replaced, so on a phone the row's last
+   pill ("Updated 4 days ago") was left breaking across three lines mid-phrase
+   instead of moving down whole. The row already wraps; the pills just have to
+   stop being wrappable themselves. */
+html[data-theme="paper"] .detail-hero .pills > .pill {
+    white-space: nowrap;
+}
+
+/* ── Manage region ────────────────────────────────────────────────────
+   The owner/admin blocks on a marketplace detail page — submission status,
+   publisher + verification, versions, and the action strip — are one
+   audience's tools, and they used to render as three different containers
+   plus a bare button row: a hex-coloured banner, a sunken bordered strip, a
+   white bordered card, and the hairline strip above. Nothing said they
+   belonged together, so they read as unrelated boxes wedged between the
+   header and the content.
+
+   They become one region: a single hairline and one small-caps label, then
+   label/content ROWS rather than nested boxes — the same "sections are not
+   boxes" language the rest of the paper detail page speaks. The label column
+   is what makes four rows read as one thing, so each block's own heading is
+   pulled into it (`Actions`, `Publisher`, `Versions`, and the status
+   heading) instead of floating above its own card.
+
+   `.manage-region` only exists on paper — the template gates the wrapper on
+   `is_paper()`, so every selector here is dead on a blue instance and the
+   four blocks render there exactly as they always have. */
+html[data-theme="paper"] .manage-region {
+    --manage-label-col: 132px;
+    margin: 36px 0 32px;
+    border-top: 1px solid var(--ds-border);
+}
+
+html[data-theme="paper"] .manage-region__head {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 14px 0 4px;
+}
+
+html[data-theme="paper"] .manage-region__label {
+    margin: 0;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ds-text-muted);
+}
+
+html[data-theme="paper"] .manage-region__hint {
+    margin: 0;
+    font-size: 12px;
+    color: var(--ds-text-muted);
+}
+
+/* Row rhythm. The separator is a border-TOP on each row, not a bottom: these
+   blocks are interleaved with the `<style>` and `<script>` tags that carry
+   their behaviour, so `:last-child` is a hidden <script> and a bottom border
+   would leave a hairline dangling under the final row. Leading edges also
+   mean the region self-corrects when a row is absent — an entity with no
+   version history, or an approved one with no status row, still ends cleanly. */
+html[data-theme="paper"] .manage-region > .vis-banner,
+html[data-theme="paper"] .manage-region > .owner-actions,
+html[data-theme="paper"] .manage-region > .trust-strip,
+html[data-theme="paper"] .manage-region > .versions-card {
+    margin: 0;
+    padding: 14px 0;
+    background: none;
+    border: 0;
+    border-top: 1px solid var(--ds-border-light);
+    border-radius: 0;
+    font-size: 13px;
+}
+
+/* Shared label column. Each block already carries a heading in its first
+   child; this puts them all in one column instead of stacking them above
+   their own former cards. */
+html[data-theme="paper"] .manage-region > .vis-banner,
+html[data-theme="paper"] .manage-region > .versions-card {
+    display: grid;
+    grid-template-columns: var(--manage-label-col) minmax(0, 1fr);
+    gap: 2px 16px;
+    align-items: start;
+}
+
+html[data-theme="paper"] .manage-region > .vis-banner > h3,
+html[data-theme="paper"] .manage-region > .versions-card > h3 {
+    grid-column: 1;
+    grid-row: 1;
+    margin: 0;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ds-text-muted);
+}
+
+html[data-theme="paper"] .manage-region > .vis-banner > :not(h3),
+html[data-theme="paper"] .manage-region > .versions-card > :not(h3) {
+    grid-column: 2;
+    min-width: 0;
+}
+
+/* The two flex rows already lead with their label — they only need the
+   column width and a left-aligned start, not a grid. */
+html[data-theme="paper"] .manage-region > .owner-actions,
+html[data-theme="paper"] .manage-region > .trust-strip {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 8px;
+}
+
+html[data-theme="paper"] .manage-region > .owner-actions > .owner-actions__label,
+html[data-theme="paper"] .manage-region > .trust-strip > .trust-strip__label {
+    flex: 0 0 calc(var(--manage-label-col) - 16px);
+    margin-right: 16px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ds-text-muted);
+}
+
+/* Destructive controls sit at the far end of their row, away from Edit —
+   the same reason the danger pair only commits to colour on hover. */
+html[data-theme="paper"] .manage-region > .owner-actions > .btn-danger:first-of-type {
+    margin-left: auto;
+}
+
+/* Verification actions keep their right-hand placement; the note wraps to
+   its own line under the publisher rather than squeezing the buttons. */
+html[data-theme="paper"] .manage-region > .trust-strip > .trust-strip__actions {
+    margin-left: auto;
+}
+
+html[data-theme="paper"] .manage-region > .trust-strip > .trust-strip__note {
+    flex: 1 1 100%;
+    margin-left: calc(var(--manage-label-col));
+    color: var(--ds-text-secondary);
+}
+
+/* ── Status row vs. real problem ──────────────────────────────────────
+   `hidden` and `overridden` are steady states: nothing to fix, so they get
+   the same quiet row every other entry in this region gets. A submission
+   still under review, or blocked with findings, is the one thing here that
+   IS urgent — it keeps an accent fill and spans the full width, because its
+   body is a findings list rather than a one-line value. Undifferentiated
+   loudness was the old banner's real failure: `hidden` shouted in exactly
+   the voice `blocked_llm` needed. */
+html[data-theme="paper"] .manage-region > .vis-banner.hidden {
+    color: var(--ds-text-secondary);
+}
+
+html[data-theme="paper"] .manage-region > .vis-banner.pending,
+html[data-theme="paper"] .manage-region > .vis-banner.blocked {
+    display: block;
+    margin: 14px 0;
+    padding: 14px 16px;
+    border: 1px solid;
+    border-radius: var(--ds-radius-md);
+}
+
+html[data-theme="paper"] .manage-region > .vis-banner.pending {
+    background: var(--ds-accent-warn-bg);
+    border-color: var(--ds-accent-warn-line);
+    color: var(--ds-accent-warn-ink);
+}
+
+html[data-theme="paper"] .manage-region > .vis-banner.blocked {
+    background: var(--ds-accent-danger-bg);
+    border-color: var(--ds-accent-danger-line);
+    color: var(--ds-accent-danger-ink);
+}
+
+/* A broken-out banner keeps a real heading rather than the column's
+   small-caps label — it is a notice again, not a row. */
+html[data-theme="paper"] .manage-region > .vis-banner.pending > h3,
+html[data-theme="paper"] .manage-region > .vis-banner.blocked > h3 {
+    margin: 0 0 6px;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0;
+    text-transform: none;
+    color: inherit;
+}
+
+/* Versions table: the card's own borders go with the box; the rows keep
+   their hairlines so the table still reads as tabular. */
+html[data-theme="paper"] .manage-region > .versions-card table {
+    margin: 0;
+}
+
+html[data-theme="paper"] .manage-region > .versions-card th {
+    padding-top: 0;
+}
+
+/* Below the label column's useful width, every row stacks. The fixed
+   flex-basis on the labels has to go too, or it keeps reserving 116px of a
+   320px viewport for one word. */
+@media (max-width: 640px) {
+    html[data-theme="paper"] .manage-region > .vis-banner,
+    html[data-theme="paper"] .manage-region > .versions-card {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    html[data-theme="paper"] .manage-region > .vis-banner > h3,
+    html[data-theme="paper"] .manage-region > .versions-card > h3,
+    html[data-theme="paper"] .manage-region > .vis-banner > :not(h3),
+    html[data-theme="paper"] .manage-region > .versions-card > :not(h3) {
+        grid-column: 1;
+    }
+
+    html[data-theme="paper"] .manage-region > .owner-actions > .owner-actions__label,
+    html[data-theme="paper"] .manage-region > .trust-strip > .trust-strip__label {
+        flex: 1 1 100%;
+        margin-right: 0;
+    }
+
+    html[data-theme="paper"] .manage-region > .trust-strip > .trust-strip__note {
+        margin-left: 0;
+    }
+
+    html[data-theme="paper"] .manage-region > .owner-actions > .btn-danger:first-of-type,
+    html[data-theme="paper"] .manage-region > .trust-strip > .trust-strip__actions {
+        margin-left: 0;
+    }
+}

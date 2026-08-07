@@ -17,6 +17,7 @@ three user-facing endpoints:
 
 Each test runs twice — once on DuckDB, once on real Postgres.
 """
+
 from __future__ import annotations
 
 
@@ -72,6 +73,7 @@ def _grant(gid: str, resource_type: str, resource_id: str, requirement: str) -> 
 # GET /api/stack — effective-stack resolution
 # ---------------------------------------------------------------------------
 
+
 def test_required_grant_is_in_stack_without_subscription(seeded_app_both):
     """A ``required`` data-package grant shows up in the analyst's stack
     with ``in_stack=True`` even without an explicit subscription."""
@@ -93,9 +95,10 @@ def test_required_grant_is_in_stack_without_subscription(seeded_app_both):
     assert items[pkg_id]["in_stack"] is True
 
 
-def test_available_grant_absent_from_stack_until_subscribed(seeded_app_both):
-    """An ``available`` grant is NOT in the stack until the analyst
-    subscribes; after a POST /subscribe it appears."""
+def test_available_grant_in_stack_immediately_materialized_after_subscribe(seeded_app_both):
+    """Auto-membership: an ``available`` grant is in the effective stack
+    immediately (no subscription needed) — ``materialized`` (local-download
+    state) is what a POST /subscribe actually flips."""
     client = seeded_app_both["client"]
     analyst_token = seeded_app_both["analyst_token"]
     headers = {"Authorization": f"Bearer {analyst_token}"}
@@ -104,10 +107,13 @@ def test_available_grant_absent_from_stack_until_subscribed(seeded_app_both):
     pkg_id = _seed_data_package("optional", "Optional bundle")
     _grant(gid, "data_package", pkg_id, "available")
 
-    # Not subscribed yet → not in the effective stack.
+    # Not subscribed yet → already in_stack, not yet materialized.
     r = client.get("/api/stack?type=data_package", headers=headers)
     assert r.status_code == 200, r.text
-    assert pkg_id not in {i["id"] for i in r.json()["items"]}
+    items = {i["id"]: i for i in r.json()["items"]}
+    assert pkg_id in items, items
+    assert items[pkg_id]["in_stack"] is True
+    assert items[pkg_id]["materialized"] is False
 
     # Subscribe.
     r = client.post(
@@ -118,17 +124,20 @@ def test_available_grant_absent_from_stack_until_subscribed(seeded_app_both):
     assert r.status_code == 200, r.text
     assert r.json()["subscribed"] is True
 
-    # Now it's in the stack.
+    # Now it's materialized too.
     r = client.get("/api/stack?type=data_package", headers=headers)
     assert r.status_code == 200, r.text
     items = {i["id"]: i for i in r.json()["items"]}
     assert pkg_id in items, items
     assert items[pkg_id]["in_stack"] is True
+    assert items[pkg_id]["materialized"] is True
 
 
 def test_subscribe_then_unsubscribe_round_trip(seeded_app_both):
-    """POST /subscribe then DELETE /subscription removes the package from
-    the effective stack (idempotent 204 on delete)."""
+    """POST /subscribe then DELETE /subscription drops ``materialized``
+    back to False — the package STAYS in the effective stack throughout
+    (auto-membership: the grant, not the subscription, drives membership).
+    DELETE is idempotent (204)."""
     client = seeded_app_both["client"]
     analyst_token = seeded_app_both["analyst_token"]
     headers = {"Authorization": f"Bearer {analyst_token}"}
@@ -151,7 +160,10 @@ def test_subscribe_then_unsubscribe_round_trip(seeded_app_both):
 
     r = client.get("/api/stack?type=data_package", headers=headers)
     assert r.status_code == 200, r.text
-    assert pkg_id not in {i["id"] for i in r.json()["items"]}
+    items = {i["id"]: i for i in r.json()["items"]}
+    assert pkg_id in items, items
+    assert items[pkg_id]["in_stack"] is True
+    assert items[pkg_id]["materialized"] is False
 
 
 def test_unsubscribe_required_is_rejected(seeded_app_both):

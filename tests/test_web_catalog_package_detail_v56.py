@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import uuid
 
-import pytest
 
 from src.db import get_system_db
 
@@ -39,7 +38,8 @@ def _seed_pkg(**fields) -> str:
         name=fields.pop("name", "Sales bundle"),
         slug=slug,
         description=fields.pop("description", "card desc"),
-        icon=None, color=None,
+        icon=None,
+        color=None,
         created_by=fields.pop("created_by", "admin1"),
         **fields,
     )
@@ -100,14 +100,81 @@ class TestOwnerAndTags:
 
 
 class TestBadges:
-    def test_renders_curated_badge_for_admin_created(self, seeded_app):
-        pid, slug = _seed_pkg(created_by="admin1")
+    def test_org_published_package_shows_the_shared_trust_marker(self, seeded_app, monkeypatch):
+        """v113: the amber derived `Curated` badge is replaced by the SAME trust
+        marker the Library row and the store-item detail page render, in its
+        labelled form (a hero has room for the word).
+
+        Driven by the STORED publisher_kind, not by whether `created_by` happens
+        to be in the Admin group right now — which is the whole point: an admin
+        leaving that group used to un-curate everything they had created."""
+        # Paper only: css/trustmark.css is scoped to it, and `mark()` renders
+        # nothing without `paper=True`. Blue keeps the amber badge — asserted by
+        # test_default_theme_hero_keeps_its_amber_curated_badge below.
+        monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
+        pid, slug = _seed_pkg(created_by="admin1", publisher_kind="organization")
         _grant_everyone(pid)
         r = seeded_app["client"].get(
             f"/catalog/p/{slug}",
             headers=_auth(seeded_app["analyst_token"]),
         )
-        assert "Curated" in r.text
+        body = r.text
+        assert 'class="ds-trust ds-trust--org ds-trust--label"' in body   # icon + word
+        assert 'data-tip="Published by your organization."' in body
+        assert 'aria-label="Published by your organization."' in body
+        # The retired derived badge must not come back. Matched as the rendered
+        # element: the page inlines the detail stylesheet, whose comment still
+        # NAMES the dead class to explain where the claim went.
+        assert 'class="detail-badge detail-badge--curated"' not in body
+        assert ">Curated<" not in body
+
+    def test_default_theme_hero_keeps_its_amber_curated_badge(self, seeded_app, monkeypatch):
+        """The DEFAULT hero is unchanged. `.ds-trust` is paper-only, so blue keeps
+        the amber badge it has always shown — now driven by the stored
+        publisher_kind rather than the creator's live Admin-group membership, so
+        it no longer disappears when an admin leaves the group."""
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        pid, slug = _seed_pkg(created_by="admin1", publisher_kind="organization")
+        _grant_everyone(pid)
+        body = seeded_app["client"].get(
+            f"/catalog/p/{slug}",
+            headers=_auth(seeded_app["analyst_token"]),
+        ).text
+        assert 'class="detail-badge detail-badge--curated"' in body
+        assert 'class="ds-trust' not in body
+
+    def test_user_published_package_shows_no_trust_marker(self, seeded_app):
+        """A package has no verification workflow — there is no reviewer for one to
+        earn a Verified from — so 'Community' would assert a process this entity
+        type does not have. Organization or nothing."""
+        pid, slug = _seed_pkg(created_by="analyst1", publisher_kind="user")
+        _grant_everyone(pid)
+        r = seeded_app["client"].get(
+            f"/catalog/p/{slug}",
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert 'class="ds-trust ds-trust--org' not in r.text
+        assert 'class="ds-trust ds-trust--community' not in r.text
+
+    def test_admin_created_package_is_marked_org_at_creation_not_derived(self, seeded_app):
+        """The create endpoint is `require_admin`-gated, so a package made through
+        it IS the organization publishing. Writing that at creation is what keeps
+        the claim from evaporating when the creating admin's groups change."""
+        r = seeded_app["client"].post(
+            "/api/admin/data-packages",
+            json={"name": "Made By Admin", "slug": "made-by-admin"},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert r.status_code == 201, r.text
+        # The create response is deliberately just {"id": ...}; read the package
+        # back rather than widening that contract for a test.
+        pid = r.json()["id"]
+        got = seeded_app["client"].get(
+            f"/api/admin/data-packages/{pid}",
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert got.status_code == 200, got.text
+        assert got.json()["publisher_kind"] == "organization"
 
     def test_renders_new_badge_for_recent_package(self, seeded_app):
         pid, slug = _seed_pkg(created_by="admin1")
@@ -160,8 +227,11 @@ class TestContentSections:
             f"/catalog/p/{slug}",
             headers=_auth(seeded_app["analyst_token"]),
         )
-        # Section header should not appear when the body is empty.
-        assert "What it is" not in r.text
+        # The long-description block is omitted when the body is empty.
+        # Assert on the markup hook, not the literal "What it is" copy —
+        # that phrase also appears in the shared detail-hero CSS comments
+        # (mirrors the data-badge="new" hook used above).
+        assert 'data-section="long-description"' not in r.text
 
     def test_renders_use_it_when_list(self, seeded_app):
         pid, slug = _seed_pkg(

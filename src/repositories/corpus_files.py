@@ -162,6 +162,25 @@ class CorpusFilesRepository:
             [status, detail_json, file_id],
         )
 
+    def move_to_corpus(self, file_id: str, target_corpus_id: str) -> bool:
+        """Reparent a file into another corpus (the Library's drag-and-drop).
+
+        Returns False if the file doesn't exist. ``path`` is cleared: it is
+        unique per ``(corpus_id, path)`` and describes a location inside the
+        OLD corpus, so carrying it over could collide with an existing file in
+        the target and would misdescribe the file either way.
+        """
+        row = self.get(file_id)
+        if row is None:
+            return False
+        self.conn.execute(
+            "UPDATE corpus_files "
+            "SET corpus_id = ?, path = NULL, updated_at = current_timestamp "
+            "WHERE id = ?",
+            [target_corpus_id, file_id],
+        )
+        return True
+
     def delete(self, file_id: str) -> None:
         """Hard-delete a file row (individual files are not soft-deleted)."""
         self.conn.execute("DELETE FROM corpus_files WHERE id = ?", [file_id])

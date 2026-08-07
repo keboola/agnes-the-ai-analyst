@@ -35,7 +35,7 @@
     scripts           inline page scripts (last in <body>)
 #}
 <!DOCTYPE html>
-<html lang="en" data-theme="{{ instance_theme | default('blue') }}">
+<html lang="en" data-theme="{{ instance_theme | default('blue') }}" data-ui-layout="{{ ui_layout | default('topnav') }}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -48,8 +48,21 @@
     {% for s in custom_scripts | default([]) if s.placement == 'head_start' %}
     {{ s.html | safe }}
     {% endfor %}
+    {# Paper theme ships Inter (the #896 prototype's typeface) from
+       Google Fonts — opt-in only: no external font request unless the
+       instance sets theme=paper. Other themes keep the system stack. #}
+    {% if (instance_theme | default('blue')) == 'paper' %}
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    {% endif %}
+    {# Orb favicon + tagline title ship only under the opt-in redesign (paper/rail); default blue/topnav keeps the original SVG mark and 'Agnes' title. #}
+    {% if (instance_theme | default('blue')) == 'paper' or (ui_layout | default('topnav')) == 'rail' %}
+    <link rel="icon" type="image/png" href="{{ static_url('img/agnes-orb.png') }}">
+    {% else %}
     <link rel="icon" type="image/svg+xml" href="{{ static_url('favicon.svg') }}">
-    <title>{% block title %}{{ config.INSTANCE_NAME or 'Agnes' }}{% endblock %}</title>
+    {% endif %}
+    <title>{% block title %}{{ config.INSTANCE_NAME or (('Agnes — ask and reuse') if (instance_theme | default('blue')) == 'paper' or (ui_layout | default('topnav')) == 'rail' else 'Agnes') }}{% endblock %}</title>
 
     {# CSS load order matters: style-custom.css carries the legacy
        palette + canonical component CSS; design-tokens.css declares
@@ -61,9 +74,31 @@
     <link rel="stylesheet" href="{{ static_url('css/design-tokens.css') }}">
     <link rel="stylesheet" href="{{ static_url('css/components.css') }}">
     <link rel="stylesheet" href="{{ static_url('css/stack_card.css') }}">
-    {# Walking-guide / product-tour overlay styles (inert until tour.js
-       un-hides the overlay). Markup + engine in _tour.html. #}
+    {# Rail chrome (ui_layout=rail) + paper component skin
+       (data-theme=paper). Both sheets are scoped to their activation
+       attribute on <html>, so default topnav/blue instances load them
+       inert with zero visual change. #}
+    <link rel="stylesheet" href="{{ static_url('css/rail.css') }}">
+    <link rel="stylesheet" href="{{ static_url('css/paper-skin.css') }}">
+    {# Shared resource-detail layout (the editorial header + two-column
+       shell every detail page renders through). Same inert-until-opted-in
+       contract as the two sheets above — every selector is scoped to
+       data-theme=paper — and it must load BEFORE head_extra, because each
+       detail page's own detail.styles() block is what it overrides. #}
+    <link rel="stylesheet" href="{{ static_url('css/detail-page.css') }}">
+    <!-- v113: one trust vocabulary (Organization / Verified / Community) for the
+         Library table + grid, catalog cards and every detail hero. Replaced four
+         separate spellings, two of which read from different data. -->
+    <link rel="stylesheet" href="{{ static_url('css/trustmark.css') }}">
+    {# Coach-mark tour engine — inert until a .tour-overlay is injected.
+       Loads after design-tokens.css so --ds-* tokens resolve in tour.css. #}
     <link rel="stylesheet" href="{{ static_url('css/tour.css') }}">
+    {# Conversation row menu (Pin/Rename/Delete) — inert until
+       js/components/chat_row_menu.js injects a .chat-rowmenu. Global, not
+       per-host: the panel is appended to <body>, so neither rail.css's
+       rail-scoped selectors nor chat.css (which only /chat loads) can reach
+       it. Same inert-until-used pattern as tour.css above. #}
+    <link rel="stylesheet" href="{{ static_url('css/chat_row_menu.css') }}">
 
     {% block head_extra %}{% endblock %}
     {% include '_theme.html' ignore missing %}
@@ -80,10 +115,18 @@
        directly: {{ ds.button(...) }}, {% call ds.panel(...) %}…{% endcall %} #}
     {% import '_components.html' as ds %}
 
-    {# Production nav. Once `primary_nav` macro adoption is complete
-       this include is replaced by `{{ ds.primary_nav(...) }}` in
-       `_app_header.html` itself; pages don't need to change. #}
+    {# Production nav — structural chrome switch (instance.ui_layout /
+       AGNES_UI_LAYOUT). "topnav" (default) renders the horizontal
+       header exactly as before; "rail" renders the fixed left sidebar.
+       Instances that don't opt in see byte-identical chrome. #}
+    {% if (ui_layout | default('topnav')) == 'rail' %}
+    {% include '_app_rail.html' %}
+    {% else %}
+    {# Once `primary_nav` macro adoption is complete this include is
+       replaced by `{{ ds.primary_nav(...) }}` in `_app_header.html`
+       itself; pages don't need to change. #}
     {% include '_app_header.html' %}
+    {% endif %}
 
     {# Hero block — full-width, sits OUTSIDE the .container so hero
        gradients can bleed to the viewport edges. Most pages leave it
@@ -116,8 +159,10 @@
         </main>
 
         <footer>
-            <p>&copy; {{ now().year if now is defined else 2026 }}
-               {{ config.INSTANCE_COPYRIGHT or 'AI Harness' }}</p>
+            {# Footer credit is config-driven on every chrome (INSTANCE_COPYRIGHT):
+               the public distribution carries no vendor branding — an instance puts
+               its own name here via config. #}
+            <p>&copy; {{ now().year if now is defined else 2026 }} {{ config.INSTANCE_COPYRIGHT or 'AI Harness' }}</p>
         </footer>
     </div>
     {% endblock %}
@@ -133,8 +178,33 @@
        pages migrated from base.html → base_ds.html keep parity with
        zero behaviour drift. #}
     {% include "_app_scripts.html" %}
-    {# Walking-guide / product-tour overlay (authed-only; self-guarded). #}
-    {% include "_tour.html" %}
+    {# Tour engine boot — lazy: only import tour.js when a pending tour resume
+       is possible for the current page (a cross-page hop always leaves a
+       sessionStorage record behind, so that record is the whole test). Every
+       other entry point imports the module itself: chat_onboarding.js for the
+       first-visit launch and the checklist/replay, skills.html for the
+       one-step builder coach-mark. Keeps idle pages cost-free.
+       Also stamps window._agTourUrl so chat_onboarding.js can dynamic-import
+       tour.js at the versioned URL without a Jinja context. #}
+    {# Telegram bot handle for chat_onboarding.js — it offers the notification
+       channel mid-run and links it inline, and both need the handle the user is
+       told to message. Empty string when the operator hasn't configured a bot,
+       which is the signal to offer nothing at all (an unconfigured instance
+       would otherwise send people to "@your-bot"). `default('', true)` keeps
+       pages whose context builder skips `config` from raising in `tojson`. #}
+    <script type="module">
+      (function () {
+        const tourUrl = "{{ static_url('js/tour.js') }}";
+        window._agTourUrl = tourUrl;
+        window._agTelegramBot = {{ config.TELEGRAM_BOT_USERNAME | default('', true) | tojson }};
+        let pending = null;
+        try { pending = JSON.parse(sessionStorage.getItem('agnes.tour.pending') || 'null'); } catch (_) {}
+        if (!pending) return;
+        import(tourUrl)
+          .then((mod) => mod.resumePendingTour())
+          .catch(() => { /* tour is additive — never block the page */ });
+      })();
+    </script>
     {% block scripts %}{% endblock %}
     {# Operator-injected scripts (placement=body_end) — for vendors that
        explicitly want bottom placement. Admin-only, see

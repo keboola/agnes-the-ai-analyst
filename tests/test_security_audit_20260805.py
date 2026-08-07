@@ -430,6 +430,10 @@ _QUOTED_IDENT_SHAPE_RE = r'(?<![fFrRbB])\\?"\{[^{}"]*\}\\?"'
 # if it matches one of these.
 _NON_SQL_QUOTED_FAMILIES: list[tuple[str, str]] = [
     (r"require_resource_access\(", 'FastAPI path-template argument, e.g. "{collection_id}"'),
+    (
+        r"require_collection_access\(",
+        'FastAPI path-template argument — the COLLECTION-scoped wrapper of require_resource_access, same "{collection_id}" placeholder',
+    ),
     (r'(?i)content-disposition|filename="\{', "HTTP header: quotes are RFC 6266 filename syntax"),
     (r"(?i)etag", "HTTP entity tag: quotes are part of the ETag grammar (RFC 7232)"),
     (r'"\{\}"', "empty JSON object as a literal default / json.loads fallback"),

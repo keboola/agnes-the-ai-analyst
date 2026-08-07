@@ -1,5 +1,7 @@
 """Route tests for the generic authoring-agent studio pages."""
 
+from pathlib import Path
+
 import pytest
 
 DOMAINS = ["data-package", "mcp", "marketplace", "corporate-memory"]
@@ -154,6 +156,241 @@ def test_skill_studio_renders_for_admin(seeded_app):
     assert resp.status_code == 200
     assert "submitDirect: true" in resp.text
     assert 'id="studio-f-skill_md"' in resp.text  # the markdown textarea rendered
+
+
+def test_skills_page_is_the_unified_builder(seeded_app):
+    """/skills IS the builder now, and it builds all three authored kinds.
+
+    The separate "your skills" index was retired first (created items land in
+    the Library); the single-TYPE builder was retired next. The page opens on
+    a type picker, then swaps content per type inside one shell — access
+    picker, numbered sections, one primary action."""
+    c = seeded_app["client"]
+    resp = c.get("/skills", headers=_auth(seeded_app["analyst_token"]))
+    assert resp.status_code == 200
+    body = resp.text
+    # Retired: the index container and its "+ New skill" grid card.
+    assert 'id="sk-list-view"' not in body
+    assert "renderList" not in body
+    # The builder is the whole page.
+    assert 'id="sk-builder-view"' in body
+    assert 'id="sk-categories"' in body  # store-category options island
+    # Step 1 — every supported type is offered, and picking one is what opens
+    # the form (no type ⇒ no builder).
+    # The cards are built client-side from the TYPES table, so assert on the
+    # table + the hook each card carries, not on markup the server never emits.
+    assert "What are you building?" in body
+    assert "data-sk-type" in body
+    assert "var TYPE_ORDER = ['skill', 'plugin', 'agent'];" in body
+    for kind in ("skill", "plugin", "agent"):
+        assert f"key: '{kind}'," in body
+    # Type is a COLLAPSING step inside the form, not a separate picker screen:
+    # one numbering sequence (1 Type → 2 Identity → 3 content), and answering
+    # it collapses to a summary + Change rather than navigating away.
+    assert "data-sk-change" in body
+    assert ">Change<" in body
+    assert "sk-sec--done" in body
+    for n in ("1", "2", "3"):
+        assert f'class="sk-sec-no">{n}<' in body or f'"sk-sec-no">{n}<' in body
+    # Access is a required choice before saving: Private or the whole org.
+    assert 'name="sk-access"' in body
+    assert 'value="private"' in body
+    assert 'value="everyone"' in body
+    assert "Who can use this" in body
+    # One primary action. A draft is explicitly local, never a store write —
+    # "Publish to marketplace" stays gone.
+    assert 'id="sk-save"' in body
+    assert "Save to Library" in body
+    assert "Publish to marketplace" not in body
+    assert 'id="sk-draft"' in body
+    # Saving returns to the Library and highlights the new item.
+    assert "/library?new=" in body
+    # Both publish paths are wired: markdown for skills/agents, multipart for
+    # plugin bundles, and the bundle is validated before it can be saved.
+    assert "/api/store/entities/from-markdown" in body
+    assert "'/api/store/entities'" in body
+    assert "/api/store/entities/preview" in body
+    # Regression: the builder's buttons use the shared .cc-btn styles.
+    assert "css/catalog_card.css" in body
+
+
+def test_markdown_body_can_be_written_or_uploaded(seeded_app):
+    """A skill / shareable agent body can be UPLOADED as a .md, offered as an
+    explicit choice next to writing it.
+
+    The file route existed before this, as a 12.5px dashed strip above a 14-row
+    textarea — read as decoration, so authors who already had a SKILL.md pasted
+    it in by hand. Worse, its "browse" affordance was a <label for> pointing at
+    a `hidden` input: a label is not keyboard-focusable and neither is a hidden
+    input, so the file route could not be reached without a mouse at all."""
+    body = seeded_app["client"].get("/skills", headers=_auth(seeded_app["analyst_token"])).text
+
+    # Both routes, at the same weight, as a pressed-state toggle group.
+    assert "data-sk-mode" in body
+    assert "'Write it here'" in body
+    assert "'Upload a .md file'" in body
+    assert 'aria-pressed="' in body
+    # Reachable by keyboard: a real button opens the hidden input via .click().
+    assert "data-sk-browse" in body
+    assert ">Choose a file<" in body
+    assert 'for="sk-file-input"' not in body  # the label affordance it replaced
+    assert "input.click()" in body
+    # Upload is an INPUT METHOD, not a mode: an uploaded file drops into the
+    # same body the textarea edits, and there is a way back to the editor.
+    assert 'data-sk-mode="write">Edit as text<' in body
+    # An uploaded .md carries its own identity — reading it beats making the
+    # author retype what they just handed over. Blanks only, never a clobber.
+    assert "function parseFrontmatter(" in body
+    assert "function applyFrontmatter(" in body
+    assert "filled in " in body  # the receipt naming which fields were filled
+    # Guards the intake actually needs: text-only, capped, and never a silent
+    # overwrite of work already written.
+    assert "MAX_MD_BYTES" in body
+    assert "is not a Markdown file" in body
+    assert "window.confirm('Replace the '" in body
+    # The plugin bundle is a .zip and cannot be typed, so it gets no toggle —
+    # but it shares the file card, and the same keyboard-reachable browse.
+    assert "'.zip,application/zip'" in body
+
+
+def test_builder_separates_shareable_agents_from_personal_ones(seeded_app):
+    """A shareable agent (a Library resource anyone can install) and a personal
+    agent (configured on /agents, carrying its owner's scopes) are one word
+    apart. The builder must say which one it is making, and point at the other
+    — getting this wrong costs an author a whole draft."""
+    c = seeded_app["client"]
+    body = c.get("/skills", headers=_auth(seeded_app["analyst_token"])).text
+    assert "shareable agent" in body
+    assert 'href="/agents"' in body
+    assert "personal agents" in body
+    # It must not claim the author's own authority travels with the resource.
+    assert "Nothing you write here inherits your access." in body
+
+
+def test_builder_splits_receipts_from_problems(seeded_app):
+    """Feedback rides TWO channels, chosen by "must the author act on it?".
+
+    Everything shared one `.sk-result` span before this, and that span lived
+    inside the action row with `flex: 1 1 100%` — so a multi-issue rejection
+    (~300 characters, because the same "description too short" fired at both
+    component and submission level and carried ZIP-upload advice a Markdown
+    author cannot act on) claimed its own full-width row and pushed Save down
+    the page as it appeared."""
+    body = seeded_app["client"].get("/skills", headers=_auth(seeded_app["analyst_token"])).text
+
+    # The status line that shared one channel and moved the buttons is gone.
+    assert 'id="sk-result"' not in body
+    assert "sk-result { font-size" not in body
+    assert "function setResult(" not in body
+
+    # Receipts → the app-wide toast, out of the layout entirely.
+    assert "window.appToast" in body
+    assert "Draft saved in this browser." in body
+    # …including the one the builder never gave: it used to navigate away and
+    # let the Library imply the save worked.
+    assert "agnes.flash.toast" in body
+    assert "saved to your Library." in body
+    assert "once the automated review passes" in body  # published ≠ private
+
+    # Problems → on the page, attributed, dismissible, jumpable.
+    assert 'id="sk-alerts"' in body
+    assert 'role="alert"' in body
+    assert "data-sk-jump=" in body and ">Take me there<" in body
+    assert "data-sk-dismiss" in body
+    assert "data-sk-err=" in body  # the same fault restated on its own field
+    assert "function issueField(" in body  # baked-tree file path → on-screen field
+
+    # Alert = index (headline), field = detail (whole hint). Not both, twice.
+    assert "function headline(" in body
+    # Advisory phases must not be dressed up as blockers, and hints written for
+    # the ZIP path must not survive onto a write-here surface.
+    assert "var BLOCKING_PHASES = { manifest: 1, content: 1, static_security: 1 };" in body
+    assert "function trimHint(" in body
+    assert "quality" not in body.split("BLOCKING_PHASES = {")[1].split("}")[0]
+
+    # Progress rides the control that started the work, not a status line.
+    assert "busy('sk-save', 'Saving…')" in body
+    assert "busy('sk-check', 'Checking…')" in body
+
+
+def test_global_toast_is_announced_and_dismissable(seeded_app):
+    """The shared toast primitive (window.appToast) is the builder's receipt
+    channel, so it has to be one: announced to a screen reader, dismissable by
+    keyboard, capped, and tolerant of the bare-string call shape eight existing
+    call sites already use (which rendered an EMPTY toast before this)."""
+    app_js = (Path("app/web/static/app.js")).read_text(encoding="utf-8")
+
+    assert 'c.setAttribute("aria-live", "polite")' in app_js
+    assert 'c.setAttribute("role", "status")' in app_js
+    assert 'if (typeof opts === "string") opts = { msg: opts };' in app_js
+    assert "TOAST_MAX" in app_js  # a repeated action can't paper over the page
+    assert 'close.className = "toast-x"' in app_js
+    assert 'close.setAttribute("aria-label", "Dismiss")' in app_js
+    # Hovering is how a long receipt gets read — it must not expire mid-sentence.
+    assert 'el.addEventListener("mouseenter"' in app_js
+
+    css = (Path("app/web/static/style-custom.css")).read_text(encoding="utf-8")
+    assert ".toast-x {" in css
+    assert ".toast-msg {" in css
+    assert "@media (prefers-reduced-motion: reduce)" in css.split(".toast-container {")[1]
+
+
+def test_skills_page_arms_new_skill_spotlight(seeded_app):
+    """/skills still carries the one-step coach-mark that the Marketplace's
+    "Submit a skill or plugin" CTA arrives with (`?spotlight=new-skill`)."""
+    c = seeded_app["client"]
+    body = c.get("/skills", headers=_auth(seeded_app["analyst_token"])).text
+
+    assert "spotlight" in body and "new-skill" in body
+    assert "js/tour.js" in body  # lazy dynamic import of the engine
+    assert "launchTour('skill-builder')" in body
+    # The guard must accept the type step in EITHER state. It briefly required
+    # the name field, which is only in the DOM once a type is chosen — on a
+    # cold arrival (step 1 expanded) the coach-mark had no anchor at all.
+    assert "'[data-sk-type],[data-sk-change]'" in body
+    # One-shot: the param is stripped so a reload doesn't re-pop the coach-mark.
+    assert "history.replaceState" in body
+    assert "maybeSpotlightNew()" in body
+    # The CTA promises "skill or plugin". Plugins are built right here now, so
+    # the onward path is the Plugin type itself — the builder must NOT hand the
+    # author off to the old curated-marketplace guide, a concept the new UI no
+    # longer carries.
+    assert "/marketplace/guide/curated" not in body
+
+
+def test_skill_builder_tour_anchors_on_the_type_step():
+    """The `skill-builder` tour is a single step on /skills, anchored on the
+    TYPE step — the first thing on the page and the first decision to make.
+
+    Anchor history is the point of this guard: it was the "+ New skill" card,
+    then the name field, and the name field broke when type became step 1
+    (that field is not in the DOM until a type is picked, so the coach-mark
+    pointed at nothing). The type step is present in both its states, so the
+    selector must cover the expanded cards AND the collapsed Change button.
+    Single-step tours render in the popover's solo form (no dots / no "explore
+    on my own"), so guard the branch that produces it too."""
+    from pathlib import Path
+
+    js = Path("app/web/static/js/tour.js").read_text()
+    assert "'skill-builder':" in js
+    assert "'[data-sk-type], [data-sk-change]'" in js
+    assert "[data-sk-new]" not in js  # retired anchor
+    assert '[data-sk-field="name"]' not in js  # retired anchor — breaks on cold arrival
+    assert "page: '/skills'" in js
+    # Solo rendering: one step ⇒ 'Got it', no dots, no escape-hatch button.
+    assert "const solo = total === 1;" in js
+    assert "tour-popover-footer--solo" in js
+    assert Path("app/web/static/css/tour.css").read_text().count(".tour-popover-footer--solo"), (
+        "solo footer modifier must be styled or the action row sits left"
+    )
+
+
+def test_skills_index_requires_login(seeded_app):
+    c = seeded_app["client"]
+    resp = c.get("/skills", follow_redirects=False)
+    assert resp.status_code in (302, 307, 401, 403)
+    if resp.status_code in (302, 307):
+        assert "/login" in resp.headers.get("location", "")
 
 
 def test_existing_domains_keep_suggestion_flow(seeded_app):

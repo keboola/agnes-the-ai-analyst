@@ -55,7 +55,12 @@ async function refresh() {
     </tr>`).join("");
 }
 async function killSession(id) {
-  if (!confirm("Kill session " + id + "?")) return;
+  if (!await confirmModal({
+    title: "Kill session?",
+    message: "Session " + id + " will be terminated.",
+    confirmText: "Kill session",
+    danger: true,
+  })) return;
   await fetch("/admin/chat/" + id, { method: "DELETE", credentials: "same-origin" });
   refresh();
 }

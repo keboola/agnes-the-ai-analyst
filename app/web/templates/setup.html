@@ -12,6 +12,14 @@
    no _components.html import is needed. The hidden buttons (`#btn-next-sync`,
    `#btn-dashboard`) use inline `style="display: none;"` rather than the
    `hidden` attr because the JS toggles them via `btn.style.display`. #}
+{# Layout-aware landing wording (#1060). Under the rail layout the Dashboard
+   surface is retired — /dashboard 302s to /chat (or /library). The final
+   button keeps href='/dashboard' (that route resolves the right destination
+   per layout), but its label and the surrounding "dashboard" copy would be a
+   lie under rail, so they soften to the brand name. Topnav renders byte-for-
+   byte as before (guarded by tests/test_ui_layout_theme.py). #}
+{% set _rail = (ui_layout | default('topnav')) == 'rail' %}
+{% set _home_word = (instance_brand or 'Agnes') if _rail else 'your dashboard' %}
 <div class="card">
             <h2 id="wizard-title">Setup {{ instance_brand or "Agnes" }}</h2>
             <p class="login-description" id="wizard-description">
@@ -106,13 +114,13 @@
             <!-- Step 4: First Sync & Done -->
             <div id="step-4" style="display: none;">
                 <p style="font-size: 14px; color: var(--ds-text-muted); margin-bottom: 16px;">
-                    Start the first data sync and go to your dashboard.
+                    Start the first data sync and go to {{ _home_word }}.
                 </p>
                 {{ ds.button('Start First Sync', variant='primary',
                              type='button', id='btn-sync',
                              klass='btn-block',
                              attrs='onclick="triggerSync()"') }}
-                {{ ds.button('Go to Dashboard', variant='primary',
+                {{ ds.button(('Go to ' ~ (instance_brand or 'Agnes')) if _rail else 'Go to Dashboard', variant='primary',
                              href='/dashboard', id='btn-dashboard',
                              klass='btn-block',
                              attrs='style="margin-top: 12px; display: none; text-align: center;"') }}
@@ -125,7 +133,7 @@ const steps = {
     1: { title: 'Setup ' + {{ (instance_brand or "Agnes") | tojson }}, desc: 'Create your admin account to get started.' },
     2: { title: 'Data Source', desc: 'Connect to your data source.' },
     3: { title: 'Discover Tables', desc: 'Find and register tables from your data source.' },
-    4: { title: 'Almost Done', desc: 'Start syncing data and open your dashboard.' },
+    4: { title: 'Almost Done', desc: {{ ('Start syncing data and open ' ~ _home_word ~ '.') | tojson }} },
 };
 
 function showStatus(msg, type) {
@@ -262,7 +270,7 @@ async function triggerSync() {
         await fetch('/api/sync/trigger', { method: 'POST', headers });
         btn.style.display = 'none';
         document.getElementById('btn-dashboard').style.display = 'block';
-        showStatus('Sync started! You can now go to your dashboard.', 'success');
+        showStatus({{ ('Sync started! You can now go to ' ~ _home_word ~ '.') | tojson }}, 'success');
     } catch (err) {
         showStatus(err.message, 'error');
         btn.disabled = false;

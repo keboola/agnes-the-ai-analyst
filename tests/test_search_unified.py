@@ -1,4 +1,4 @@
-"""unified_search — fan-out over chunks + knowledge + catalog cards (K2)."""
+"""unified_search — fan-out over chunks + knowledge + tables + metrics + glossary (K2, #1108)."""
 
 from __future__ import annotations
 
@@ -7,6 +7,25 @@ from unittest.mock import patch
 TABLES = [
     {"id": "t_orders", "name": "orders", "description": "customer orders and revenue", "columns_json": None},
     {"id": "t_web", "name": "web_sessions", "description": "web analytics sessions", "columns_json": None},
+]
+
+METRICS = [
+    {
+        "id": "finance/mrr",
+        "name": "mrr",
+        "display_name": "Monthly Recurring Revenue",
+        "description": "normalized monthly subscription revenue",
+        "synonyms": ["MRR", "recurring revenue"],
+        "category": "finance",
+    },
+    {
+        "id": "product/wau",
+        "name": "wau",
+        "display_name": "Weekly Active Users",
+        "description": "distinct users with a session in 7 days",
+        "synonyms": ["WAU"],
+        "category": "product",
+    },
 ]
 
 
@@ -41,26 +60,82 @@ def _fake_knowledge(query, **kw):
     ]
 
 
-def test_merges_all_three_sources():
+def _no_glossary(query, limit=10):
+    """Default glossary mock — empty, so the base tests keep their 3-type shape."""
+    return []
+
+
+def _fake_glossary(query, limit=10):
+    return [{"id": "g_mrr", "term": "Recurring revenue", "definition": "Revenue that recurs each period."}]
+
+
+def test_merges_all_five_sources():
     from src.search.unified import unified_search
 
     with (
         patch("src.search.unified._chunk_search", _fake_chunks),
         patch("src.search.unified._knowledge_search", _fake_knowledge),
+        patch("src.search.unified._glossary_search", _fake_glossary),
     ):
         hits = unified_search(
-            "invoices orders",
+            "invoices orders revenue",
             corpus_ids=["c1"],
             user_groups=["g1"],
             granted_domains=["d1"],
             tables=TABLES,
+            metrics=METRICS,
             k=10,
         )
     types = {h["type"] for h in hits}
-    assert types == {"chunk", "knowledge", "table"}
+    assert types == {"chunk", "knowledge", "table", "metric", "glossary"}
     table_hit = next(h for h in hits if h["type"] == "table")
     assert table_hit["table_id"] == "t_orders"
     assert "agnes query" in table_hit["pivot_hint"]
+    metric_hit = next(h for h in hits if h["type"] == "metric")
+    assert metric_hit["id"] == "finance/mrr"
+    assert metric_hit["display_name"] == "Monthly Recurring Revenue"
+    glossary_hit = next(h for h in hits if h["type"] == "glossary")
+    assert glossary_hit["term"] == "Recurring revenue"
+    # The DEFINITION text rides along on both types, not just the name. The
+    # header search dropdown renders it as a second line under the hit
+    # (definitionFor() in global_search.js) so that looking a term up finishes
+    # in the panel instead of costing a page load — drop these fields and the
+    # dropdown silently degrades back to a bare link.
+    assert glossary_hit["definition"] == "Revenue that recurs each period."
+    assert metric_hit["description"]
+
+
+def test_glossary_is_public_independent_of_grants():
+    """Glossary is fetched inside (no RBAC), so it appears even with zero grants
+    where the knowledge source is fail-closed."""
+    from src.search.unified import unified_search
+
+    with (
+        patch("src.search.unified._chunk_search", _fake_chunks),
+        patch("src.search.unified._knowledge_search", _fake_knowledge),
+        patch("src.search.unified._glossary_search", _fake_glossary),
+    ):
+        hits = unified_search("revenue", corpus_ids=[], user_groups=[], granted_domains=[], tables=[], metrics=[], k=10)
+    types = {h["type"] for h in hits}
+    assert "glossary" in types  # public
+    assert "knowledge" not in types  # fail-closed with zero grants
+
+
+def test_metrics_absent_when_not_passed():
+    """Metric RBAC pre-filter is the caller's job — an empty/omitted metrics list
+    yields no metric hits."""
+    from src.search.unified import unified_search
+
+    with (
+        patch("src.search.unified._chunk_search", _fake_chunks),
+        patch("src.search.unified._knowledge_search", _fake_knowledge),
+        patch("src.search.unified._glossary_search", _no_glossary),
+    ):
+        hits = unified_search("revenue", corpus_ids=[], user_groups=[], granted_domains=[], tables=[], metrics=[], k=10)
+        # omitted entirely (default None) behaves the same
+        hits2 = unified_search("revenue", corpus_ids=[], user_groups=[], granted_domains=[], tables=[], k=10)
+    assert not any(h["type"] == "metric" for h in hits)
+    assert not any(h["type"] == "metric" for h in hits2)
 
 
 def test_fail_closed_per_source():
@@ -69,8 +144,11 @@ def test_fail_closed_per_source():
     with (
         patch("src.search.unified._chunk_search", _fake_chunks),
         patch("src.search.unified._knowledge_search", _fake_knowledge),
+        patch("src.search.unified._glossary_search", _no_glossary),
     ):
-        hits = unified_search("invoices", corpus_ids=[], user_groups=[], granted_domains=[], tables=[], k=10)
+        hits = unified_search(
+            "invoices", corpus_ids=[], user_groups=[], granted_domains=[], tables=[], metrics=[], k=10
+        )
     assert hits == []
 
 
@@ -86,24 +164,27 @@ def test_k_caps_results_and_order_deterministic():
     with (
         patch("src.search.unified._chunk_search", _fake_chunks),
         patch("src.search.unified._knowledge_search", _fake_knowledge),
+        patch("src.search.unified._glossary_search", _fake_glossary),
     ):
         a = unified_search(
-            "invoices orders",
+            "invoices orders revenue",
             corpus_ids=["c1"],
             user_groups=["g"],
             granted_domains=["d"],
             tables=TABLES,
-            k=2,
+            metrics=METRICS,
+            k=3,
         )
         b = unified_search(
-            "invoices orders",
+            "invoices orders revenue",
             corpus_ids=["c1"],
             user_groups=["g"],
             granted_domains=["d"],
             tables=TABLES,
-            k=2,
+            metrics=METRICS,
+            k=3,
         )
-    assert len(a) == 2
+    assert len(a) == 3
     assert a == b
 
 
@@ -113,6 +194,66 @@ def test_table_scoring_prefers_term_overlap():
     scored = _table_scores("customer orders revenue", TABLES)
     assert scored[0]["table_id"] == "t_orders"
     assert scored[0]["score"] > 0
+
+
+def test_metric_scoring_prefers_term_overlap():
+    from src.search.unified import _metric_scores
+
+    scored = _metric_scores("monthly recurring revenue", METRICS)
+    assert scored[0]["id"] == "finance/mrr"
+    assert scored[0]["score"] > 0
+    # matches on a synonym too
+    syn = _metric_scores("wau", METRICS)
+    assert syn and syn[0]["id"] == "product/wau"
+
+
+def test_semantic_buckets_capped_so_legacy_types_not_displaced():
+    """Metric + glossary buckets are capped at max(2, k//5) so their top-1
+    _minmax score of 1.0 cannot crowd out legacy chunk/knowledge/table hits."""
+    from src.search.unified import unified_search
+
+    # Build many matching metrics and glossary terms to stress the cap.
+    many_metrics = [
+        {
+            "id": f"cat/m{i}",
+            "name": f"metric{i}",
+            "display_name": f"Metric {i}",
+            "description": "revenue orders",
+            "synonyms": [],
+            "category": "cat",
+        }
+        for i in range(10)
+    ]
+
+    def many_glossary(query, limit=10):
+        return [{"id": f"g{i}", "term": f"Term {i}", "definition": "revenue"} for i in range(limit)]
+
+    with (
+        patch("src.search.unified._chunk_search", _fake_chunks),
+        patch("src.search.unified._knowledge_search", _fake_knowledge),
+        patch("src.search.unified._glossary_search", many_glossary),
+    ):
+        hits = unified_search(
+            "revenue orders",
+            corpus_ids=["c1"],
+            user_groups=["g"],
+            granted_domains=["d"],
+            tables=TABLES,
+            metrics=many_metrics,
+            k=10,
+        )
+
+    by_type: dict = {}
+    for h in hits:
+        by_type.setdefault(h["type"], 0)
+        by_type[h["type"]] += 1
+
+    # Cap is max(2, 10//5) = 2 — neither new bucket may take more than 2 slots.
+    assert by_type.get("metric", 0) <= 2
+    assert by_type.get("glossary", 0) <= 2
+    # Legacy types must still appear.
+    assert by_type.get("chunk", 0) >= 1
+    assert by_type.get("table", 0) >= 1
 
 
 def test_none_grants_mean_unfiltered_privileged_viewer():
@@ -128,9 +269,10 @@ def test_none_grants_mean_unfiltered_privileged_viewer():
     with (
         patch("src.search.unified._chunk_search", _fake_chunks),
         patch("src.search.unified._knowledge_search", spy_knowledge),
+        patch("src.search.unified._glossary_search", _no_glossary),
     ):
         hits = unified_search(
-            "invoices", corpus_ids=["c1"], user_groups=None, granted_domains=None, tables=[], k=5
+            "invoices", corpus_ids=["c1"], user_groups=None, granted_domains=None, tables=[], metrics=[], k=5
         )
     assert any(h["type"] == "knowledge" for h in hits)
     assert captured["user_groups"] is None

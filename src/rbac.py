@@ -85,8 +85,9 @@ def can_access_table(
          (session JWT, scheduler, local-dev) never carry the key and read
          as ``'all'`` — see ``_credential_surface``.
       3. **Stack-gated**: the table must belong to at least one data
-         package in the user's stack (required ∪ subscribed). Per-table
-         resource_grants alone NO LONGER grant analyst visibility — the
+         package in the user's stack — auto-membership: required ∪
+         available, no subscription needed (``StackResolver.stack``).
+         Per-table resource_grants alone NO LONGER grant analyst visibility — the
          unified-stack design routes all analyst access through data
          packages. Admins manage access by adding tables to a package +
          granting the package; ad-hoc per-table grants in
@@ -128,6 +129,17 @@ def can_access_table(
 
         if is_user_admin(user_id, conn) and _credential_surface(user) == "all":
             return True
+
+        # Collection-derived tables (uploaded files → SQL-queryable tables, #4)
+        # inherit their owning collection's access — owner OR group share — not
+        # the data-package stack. Mirrors app.auth.access.can_access_collection.
+        from src.repositories import table_registry_repo as _tr_repo
+
+        _row = _tr_repo().get(table_id)
+        if _row and (_row.get("source_type") or "") == "collection":
+            from app.auth.access import can_access_collection
+
+            return can_access_collection(user_id, _row.get("bucket") or "", conn)
 
         from app.services.stack_resolver import StackResolver
         from app.resource_types import ResourceType
@@ -202,8 +214,13 @@ def get_accessible_tables(
 
     Stack-gated for analysts: the set is the union of
       * internal tables (row-level RBAC at query time), and
-      * tables belonging to data packages in the user's stack
-        (required ∪ subscribed).
+      * tables belonging to data packages in the user's stack — auto-
+        membership: required ∪ available, every grant on the caller's
+        groups, regardless of whether the user subscribed to a local copy
+        (``StackResolver.stack``). This is the query-authorization boundary;
+        a local parquet copy is a separate, narrower concern handled by the
+        manifest's per-table ``server_only`` overlay (`agnes pull` skip),
+        not by this function.
     Per-table ``resource_grants(group, 'table', …)`` rows are NO LONGER
     consulted for analyst visibility — see :func:`can_access_table`.
 
@@ -260,6 +277,22 @@ def get_accessible_tables(
             from src.repositories import data_packages_repo as _dp_repo
 
             result = _dp_repo().list_member_table_ids(pkg_ids_set)
+        # Collection-derived tables (#4): uploaded files that became
+        # SQL-queryable tables are visible to the owner + anyone the owning
+        # collection is shared with — not via the data-package stack. Access
+        # tracks accessible_collection_ids (owner ∪ group grants).
+        from app.auth.access import accessible_collection_ids as _acc_cols
+
+        allowed_corpora = _acc_cols(user, conn)  # None == admin (returned above)
+        if allowed_corpora:
+            corpora = set(allowed_corpora)
+            from src.repositories import table_registry_repo as _tr_repo
+
+            for r in _tr_repo().list_all():
+                if (r.get("source_type") or "") == "collection" and r.get("bucket") in corpora:
+                    rid = r.get("id")
+                    if rid and rid not in result:
+                        result.append(rid)
         # Internal tables — always accessible (row-level RBAC at query time).
         from connectors.internal.access import INTERNAL_TABLES
 

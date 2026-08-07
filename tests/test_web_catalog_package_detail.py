@@ -28,23 +28,24 @@ def _make_pkg(slug: str, name: str) -> str:
     conn = get_system_db()
     try:
         return DataPackagesRepository(conn).create(
-            name=name, slug=slug, description=f"{name} desc",
-            icon="📦", color="#fce7f3", created_by="test",
+            name=name,
+            slug=slug,
+            description=f"{name} desc",
+            icon="📦",
+            color="#fce7f3",
+            created_by="test",
         )
     finally:
         conn.close()
 
 
-def _grant_pkg(group_name: str, resource_id: str, requirement: str = "available",
-               users: list[str] | None = None):
+def _grant_pkg(group_name: str, resource_id: str, requirement: str = "available", users: list[str] | None = None):
     from src.db import get_system_db
     from src.repositories.user_group_members import UserGroupMembersRepository
 
     conn = get_system_db()
     try:
-        gid_row = conn.execute(
-            "SELECT id FROM user_groups WHERE name = ?", [group_name]
-        ).fetchone()
+        gid_row = conn.execute("SELECT id FROM user_groups WHERE name = ?", [group_name]).fetchone()
         if not gid_row:
             return
         group_id = gid_row[0]
@@ -92,8 +93,7 @@ class TestCatalogPackageDetail:
 
     def test_analyst_with_grant_sees_header_and_back_link(self, seeded_app):
         pid = _make_pkg("granted-pkg", "Granted pkg")
-        _grant_pkg("Everyone", pid, requirement="available",
-                   users=["analyst1"])
+        _grant_pkg("Everyone", pid, requirement="available", users=["analyst1"])
         c = seeded_app["client"]
         token = seeded_app["analyst_token"]
         resp = c.get("/catalog/p/granted-pkg", headers=_auth(token))
@@ -102,3 +102,31 @@ class TestCatalogPackageDetail:
         assert "Granted pkg" in body
         assert "Granted pkg desc" in body
         assert 'href="/catalog"' in body
+
+    def test_back_link_targets_the_library_under_rail(self, seeded_app, monkeypatch):
+        """Rail retired Marketplace (/catalog) as a destination — it is not in
+        the rail nav, so a caller never arrives from it and "All data packages"
+        must not send them there. The Library's Data packages band is the rail's
+        equivalent, and `?section=` opens it (the bands fold by default)."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        _make_pkg("rail-back-pkg", "Rail back pkg")
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/catalog/p/rail-back-pkg", headers=_auth(token))
+        assert resp.status_code == 200
+        body = resp.text
+        assert 'class="detail-back" href="/library?section=data_package"' in body
+        assert 'class="detail-back" href="/catalog"' not in body
+
+    def test_library_opens_the_section_the_back_link_names(self, seeded_app, monkeypatch):
+        """The back link's `?section=` is only useful if /library acts on it."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/library?section=data_package", headers=_auth(token))
+        assert resp.status_code == 200
+        assert 'const OPEN_SEC = "data_package"' in resp.text
+        # Anything that is not a real section key is dropped, not echoed.
+        bad = c.get('/library?section="+alert(1)+"', headers=_auth(token))
+        assert bad.status_code == 200
+        assert 'const OPEN_SEC = ""' in bad.text

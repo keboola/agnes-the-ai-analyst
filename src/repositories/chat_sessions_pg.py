@@ -48,6 +48,7 @@ def _row_to_session(row) -> ChatSession:
         relay_protocol_version=(
             int(row["relay_protocol_version"]) if row["relay_protocol_version"] is not None else None
         ),
+        pinned_at=row["pinned_at"],
     )
 
 
@@ -107,7 +108,10 @@ class ChatSessionPgRepository:
         sql = "SELECT * FROM chat_sessions WHERE user_email = :user_email"
         if not include_archived:
             sql += " AND archived = FALSE"
-        sql += " ORDER BY last_message_at DESC NULLS LAST, started_at DESC"
+        # Pinned first, most-recently-pinned leading; then plain recency. The
+        # explicit NULLS LAST matters more here than on DuckDB: PG's default for
+        # DESC is NULLS FIRST, which would sort every unpinned row to the top.
+        sql += " ORDER BY pinned_at DESC NULLS LAST, last_message_at DESC NULLS LAST, started_at DESC"
         with self._engine.connect() as conn:
             rows = conn.execute(sa.text(sql), {"user_email": user_email}).mappings().all()
         return [_row_to_session(r) for r in rows]
@@ -151,11 +155,48 @@ class ChatSessionPgRepository:
                 {"id": chat_id},
             )
 
+    def restore_session(self, chat_id: str) -> None:
+        """Un-archive a session. Mirrors ``ChatRepository.restore_session`` —
+        idempotent, and the way back from the Chats page's Archived filter."""
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text("UPDATE chat_sessions SET archived = FALSE WHERE id = :id"),
+                {"id": chat_id},
+            )
+
+    def hard_delete_session(self, chat_id: str) -> bool:
+        """Permanently delete ONE session; returns whether a row existed.
+
+        Mirrors ``ChatRepository.hard_delete_session``. Postgres has
+        ``ON DELETE CASCADE`` on both child tables (``chat_messages`` in
+        migration 0015, ``chat_session_participants`` in 0017), so the deletes
+        the DuckDB sibling has to spell out happen here for free — the
+        observable contract is identical.
+        """
+        with self._engine.begin() as conn:
+            result = conn.execute(
+                sa.text("DELETE FROM chat_sessions WHERE id = :id"),
+                {"id": chat_id},
+            )
+        return bool(result.rowcount)
+
     def set_title(self, chat_id: str, title: str) -> None:
         with self._engine.begin() as conn:
             conn.execute(
                 sa.text("UPDATE chat_sessions SET title = :title WHERE id = :id"),
                 {"title": title, "id": chat_id},
+            )
+
+    def set_pinned(self, chat_id: str, pinned: bool) -> None:
+        """Pin (``pinned_at = now``) or unpin (``pinned_at = NULL``) a session.
+
+        Mirrors ``ChatRepository.set_pinned``: re-pinning re-stamps the
+        timestamp, moving the session to the front of the Pinned group.
+        """
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text("UPDATE chat_sessions SET pinned_at = :ts WHERE id = :id"),
+                {"ts": datetime.now(timezone.utc) if pinned else None, "id": chat_id},
             )
 
     def archive_empty_user_sessions(

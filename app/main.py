@@ -446,6 +446,8 @@ from app.api.memory_mining import (
 )
 from app.api.uploads import router as admin_uploads_router
 from app.api.collections import router as collections_router  # Slice 2: file corpus upload
+from app.api.agents import router as agents_router  # v103: agent registry (Library items)
+from app.api.sharing import router as sharing_router  # owner-initiated Library sharing
 from app.api.knowledge_search import router as knowledge_search_router  # K2: unified search
 from app.api.stack import router as stack_router
 from app.api.stack_views import router as stack_views_router
@@ -489,9 +491,9 @@ from app.api.data_apps import router as data_apps_router
 from app.api.data_apps_git import router as data_apps_git_router
 from app.api.data_apps_proxy import router as data_apps_proxy_router
 from app.web.router import router as web_router
-from app.web.agents_page import router as agents_page_router
 from app.web.router import apps_web_router as data_apps_web_router
 from app.api.chat import router as chat_router
+from app.api.chat_uploads import router as chat_uploads_router
 from app.api.chat_copresence import router as chat_copresence_router
 from app.api.slack import router as slack_router
 from app.api.admin_chat import router as admin_chat_router
@@ -2440,6 +2442,8 @@ def create_app() -> FastAPI:
     app.include_router(memory_mining_admin_router)
     app.include_router(admin_uploads_router)
     app.include_router(collections_router)
+    app.include_router(agents_router)
+    app.include_router(sharing_router)
     app.include_router(knowledge_search_router)
     app.include_router(stack_router)
     app.include_router(stack_views_router)
@@ -2532,6 +2536,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_analytics_router)
     app.include_router(marketplace_server_router)
     app.include_router(chat_router)
+    app.include_router(chat_uploads_router)
     app.include_router(chat_copresence_router)
     app.include_router(slack_router)
     app.include_router(admin_chat_router)
@@ -2598,10 +2603,12 @@ def create_app() -> FastAPI:
     for _plugin_router in _load_plugin_routers(_get_value("plugins", "admin_routers", default=[]) or []):
         app.include_router(_plugin_router)
 
-    # /agents — minimal builder page (Task 10). Own module (like
-    # app/api/agents_admin.py), so must be mounted before web_router's
-    # catch-all route below, same as the plugin/docs routers above.
-    app.include_router(agents_page_router)
+    # /agents is served by the paper-theme redesign builder page in
+    # web_router (app/web/router.py). main's minimal agents_page.py builder
+    # was retired at the merge — the two branches shipped competing /agents
+    # pages, and the redesign one (client-rendered against /api/agents) wins
+    # the URL. main's agent-as-API endpoints (/api/v1/agents, agents_admin,
+    # sessions, …) are untouched.
 
     # Web UI router (must be last — has catch-all routes)
     app.include_router(web_router)
