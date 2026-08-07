@@ -232,3 +232,37 @@ class TestRailClassicCatalogContracts:
         assert "Classic Rail Domain" in body, (
             "classic rail catalog must list granted memory domains (full granted set, same contract as the Data grid)"
         )
+
+    def test_admin_sees_god_mode_on_both_kinds(self, seeded_app):
+        """Classic restores admin god-mode Browse — and it must apply to BOTH
+        server-rendered kinds on the unified page, or an admin sees god-mode
+        Data next to grant-scoped Memory (Devin Review on #1199, round 2).
+        Seed an UNGRANTED package and domain; the admin still sees both."""
+        import uuid
+
+        from src.db import get_system_db
+        from src.repositories.memory_domains import MemoryDomainsRepository
+
+        _make_pkg("ungranted-pkg", "Ungranted Package")
+        conn = get_system_db()
+        try:
+            dom_id = MemoryDomainsRepository(conn).create(
+                name="Ungranted Domain",
+                slug="ungranted-dom",
+                description="d",
+                icon=None,
+                color=None,
+                created_by="test",
+            )
+            item_id = str(uuid.uuid4())
+            conn.execute(
+                "INSERT INTO knowledge_items(id, title, content, status) VALUES (?, 'ki', 'body', 'approved')",
+                [item_id],
+            )
+            MemoryDomainsRepository(conn).add_item(dom_id, item_id, added_by="test")
+        finally:
+            conn.close()
+
+        body = seeded_app["client"].get("/catalog", headers=_auth(seeded_app["admin_token"])).text
+        assert "Ungranted Package" in body, "classic admin god-mode must cover the Data grid"
+        assert "Ungranted Domain" in body, "classic admin god-mode must cover the Memory kind-tab too"
