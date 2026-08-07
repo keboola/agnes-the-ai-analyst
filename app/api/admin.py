@@ -415,6 +415,19 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                 "client you use sends the header."
             ),
         },
+        "source_url_strict": {
+            "kind": "bool",
+            "default": _flag_default("mcp", "source_url_strict", False),
+            "hint": (
+                "Require a registered MCP source's own address to be https to a "
+                "public host, the same bar its OAuth endpoints already meet. Off "
+                "by default, which is not unguarded: link-local, metadata, "
+                "multicast and reserved addresses are always refused, as is "
+                "cleartext http to a public one. Leaving it off is what allows a "
+                "source on your own intranet. Turn it on if every MCP service you "
+                "use is third-party — it makes an internal source unconfigurable."
+            ),
+        },
     },
     "instance": {
         # UI theme — flips `<html data-theme="...">` so the

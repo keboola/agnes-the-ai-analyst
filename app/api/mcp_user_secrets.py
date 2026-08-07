@@ -219,19 +219,6 @@ async def test_my_secret(source_id: str, user: dict = Depends(get_current_user))
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
     if (source.get("scope") or "shared").lower() != "per_user":
         raise HTTPException(status_code=400, detail="source_scope_not_per_user")
-    # This dials the upstream with the CALLER'S OWN credential, so it takes the
-    # same two gates the runtime forwards and the admin probes take: a disabled
-    # source is not dialed, and a url the #1154 policy refuses is not dialed.
-    # Neither was checked here, which made this the one analyst-facing path
-    # that could still reach a refused address — an admin can land one on a row
-    # by patching `{url: <refused>, enabled: false}` (the disabled-row exemption
-    # in admin_mcp allows that deliberately), and an analyst who reconnects
-    # afterwards could then be induced to press Test (Devin Review on #1204).
-    if not source.get("enabled", True):
-        raise HTTPException(status_code=409, detail="mcp_source_disabled")
-    from app.api.admin_mcp import _check_source_url_or_400
-
-    await _check_source_url_or_400(source)
     _require_source_grant(source_id, user)
     try:
         check_rate_limit(source_id, user["id"], _TEST_CONNECTION_RATE_LIMIT_PM)
@@ -245,6 +232,27 @@ async def test_my_secret(source_id: str, user: dict = Depends(get_current_user))
         enforce_per_user_credential(source, user["id"])
     except PerUserCredentialMissing as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    # This dials the upstream with the CALLER'S OWN credential, so it takes the
+    # same two gates the runtime forwards and the admin probes take: a disabled
+    # source is not dialed, and a url the #1154 policy refuses is not dialed.
+    # Neither was checked here, which made this the one analyst-facing path that
+    # could still reach a refused address — an admin can land one on a row by
+    # patching `{url: <refused>, enabled: false}` (the disabled-row exemption in
+    # admin_mcp allows that deliberately), and an analyst who reconnects
+    # afterwards could then be induced to press Test (Devin Review on #1204).
+    #
+    # LAST, not first: the docstring's ordering contract is "all gates before
+    # any upstream call", and these two are the only ones that read state the
+    # caller may not be entitled to. Ahead of the grant check they let any
+    # signed-in user learn whether an arbitrary source is switched off and read
+    # its address out of the error, and forced an unthrottled getaddrinfo per
+    # attempt — ahead of the rate limit, at that.
+    if not source.get("enabled", True):
+        raise HTTPException(status_code=409, detail="mcp_source_disabled")
+    from app.api.admin_mcp import _check_source_url_or_400
+
+    await _check_source_url_or_400(source)
 
     if (source.get("auth_method") or "").lower() == "oauth":
         # OAuth sources have no ``mcp_user_secrets`` row at all — the value
