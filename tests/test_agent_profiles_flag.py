@@ -140,6 +140,23 @@ class TestRouterLevelGuard:
         assert resp.status_code == 403
         assert resp.json()["detail"] == {"kind": "agent_profiles_disabled"}
 
+    def test_builder_crud_router(self, flag_env, monkeypatch):
+        """The /api/agents builder CRUD router (paper-theme redesign) works
+        the same `agents` table as /api/v1/agents* — the kill switch must
+        close it too, or a disabled instance keeps managing agent profiles
+        through the second API."""
+        monkeypatch.setenv("AGNES_AGENT_PROFILES_ENABLED", "0")
+        c = flag_env["client"]
+        resp = c.get("/api/agents", headers=_auth(flag_env["owner_token"]))
+        assert resp.status_code == 403
+        assert resp.json()["detail"] == {"kind": "agent_profiles_disabled"}
+        resp = c.post(
+            "/api/agents",
+            json={"name": "Sneaky", "description": ""},
+            headers=_auth(flag_env["owner_token"]),
+        )
+        assert resp.status_code == 403
+
     def test_re_enabling_restores_access_without_data_loss(self, flag_env, monkeypatch):
         """Data survives a disable/re-enable cycle, like Studio."""
         monkeypatch.setenv("AGNES_AGENT_PROFILES_ENABLED", "0")
@@ -181,3 +198,18 @@ class TestNavVisibility:
         assert resp.status_code == 200
         assert 'href="/agents"' not in resp.text
         assert "href: '/agents'" not in resp.text
+
+    def test_rail_nav_hidden_when_disabled(self, flag_env, monkeypatch):
+        """The rail chrome (`AGNES_UI_LAYOUT=rail`) has its own Agents
+        destination row (`_app_rail.html`) — it must honor the flag like the
+        topnav dropdown and the palette."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        c = flag_env["client"]
+        resp = c.get("/dashboard", headers=_auth(flag_env["owner_token"]))
+        assert resp.status_code == 200
+        assert 'href="/agents"' in resp.text
+
+        monkeypatch.setattr("app.web.router.get_agent_profiles_enabled", lambda: False)
+        resp = c.get("/dashboard", headers=_auth(flag_env["owner_token"]))
+        assert resp.status_code == 200
+        assert 'href="/agents"' not in resp.text
