@@ -153,8 +153,7 @@ grepping the codebase. `app/api/admin.py::_EDITABLE_SECTIONS` is derived
 from the same registry: any config section holding at least one
 `editable=True` switch is automatically writable, so shipping a new
 editable switch can no longer leave its section rejecting saves — the gap
-that shipped `mcp.allow_query_param_token` and `agent_profiles.enabled`
-without a write path.
+that shipped `mcp.allow_query_param_token` without a write path.
 
 ## How to add a switch
 
