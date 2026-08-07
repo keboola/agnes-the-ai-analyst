@@ -13,6 +13,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 
 ### Changed
+- **Topnav content parity extended to the detail pages**: the seven detail templates the redesign restructured in place (`catalog_table_detail`, `catalog_package_detail`, `catalog_recipe_detail`, `marketplace_plugin_detail`, `marketplace_item_detail`, `library_detail`, `memory_domain_detail`) now follow the `/catalog` pattern — rail renders the redesigned kind-coloured detail anatomy, a default topnav instance keeps the pre-redesign page byte-for-byte as a frozen `*_legacy.html` copy. All twelve render sites resolve through a single `_detail_template()` switch (handlers are shared — they pass a superset of the legacy context), and a closed-set guard fails on any bare detail-template literal that would bypass it. Guarded by `tests/test_ui_layout_theme.py::TestDetailPageParity`.
 
 ### Fixed
 
