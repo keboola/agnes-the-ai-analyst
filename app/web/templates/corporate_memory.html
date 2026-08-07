@@ -426,6 +426,15 @@
         btn.disabled = false;
         return;
       }
+      // Deliberately NOT switched to the card vocabulary (#1206). The card
+      // labels describe the purpose — a local copy — while the request that
+      // just succeeded was a subscribe/unsubscribe against /api/stack; the
+      // bytes arrive on the next `agnes pull`. A toast claiming the download
+      // happened would be the one string here that is not true yet. It is
+      // also the only string on the page that has to survive a mode fork:
+      // where membership and local-copy state are separated, "added to your
+      // stack" is what happened either way, and download wording would be
+      // wrong on the side where adding does not download.
       showToast(action === 'add' ? 'Added to stack' : 'Removed from stack');
       _applyStackChange(card, action === 'add');
     } catch (err) {
