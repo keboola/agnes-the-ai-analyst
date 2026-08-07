@@ -311,6 +311,47 @@ def test_no_read_site_restates_the_library_trust_default_as_a_literal():
     assert len(blocks) == 3, f"expected 3 read sites, found {len(blocks)}: {blocks}"
     offenders = [b for b in blocks if b.strip() != "_LIBRARY_TRUST_DEFAULT"]
     assert not offenders, (
-        "these read sites restate the default as a literal instead of using "
-        f"_LIBRARY_TRUST_DEFAULT: {offenders}"
+        f"these read sites restate the default as a literal instead of using _LIBRARY_TRUST_DEFAULT: {offenders}"
     )
+
+
+class TestInventoryExposesSwitchMetadata:
+    """The panel cannot explain a refusal it is not told about."""
+
+    def test_every_row_carries_the_new_fields(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/api/admin/server-config", headers=_auth(token))
+        assert resp.status_code == 200
+        rows = resp.json()["feature_flags"]
+        assert rows, "inventory is empty"
+        for row in rows:
+            assert row["effect"] in ("live", "restart", "deploy")
+            assert isinstance(row["editable"], bool)
+            assert isinstance(row["lock_reason"], str)
+
+    def test_locked_row_carries_its_reason(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/api/admin/server-config", headers=_auth(token))
+        row = next(r for r in resp.json()["feature_flags"] if r["name"] == "data_apps")
+        assert row["editable"] is False
+        assert row["lock_reason"], "a locked switch must explain itself to the operator"
+
+    def test_editable_row_carries_no_reason(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/api/admin/server-config", headers=_auth(token))
+        row = next(r for r in resp.json()["feature_flags"] if r["name"] == "studio")
+        assert row["editable"] is True
+        assert row["lock_reason"] == ""
+
+    def test_existing_fields_are_untouched(self, seeded_app):
+        """PR3 rewrites the panel; until then the current renderer must keep
+        working against the same keys."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/api/admin/server-config", headers=_auth(token))
+        row = resp.json()["feature_flags"][0]
+        for key in ("name", "effective", "source", "default", "env_var", "description"):
+            assert key in row
