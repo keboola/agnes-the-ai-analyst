@@ -93,7 +93,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   mirror. Mirroring per-part objects (and presigning them) would have to change
   the manifest and the CLI together, so it stays out of this change.
 - The admin source-connection probes gained a server-side log trail. `POST /api/admin/source-connections/{id}/test` was fully silent — a failing connection left nothing behind for an operator to read — and now logs every outcome; the tables listing logs bucket/table counts, duration and the resolved scope on success, and the master-token preflight logs a token-redacted WARNING on its 502 (an `HTTPException` is otherwise invisible in server logs). Log lines carry the stack HOST rather than the full `stack_url`, and status or reason rather than response bodies: the token travels in a header, and a proxy-echoed body must not land in the logs. The 502 mapping this branch also carried shipped separately in 0.83.0 via the bucket-scoped-token work, so only the observability is new here.
-- `agnes pull` no longer scaffolds a `server/parquet` + `user/duckdb` tree into an arbitrary current directory when no workspace exists — it errors with a typed hint instead.
+- **BREAKING** `agnes pull` no longer scaffolds a `server/parquet` + `user/duckdb` tree into an arbitrary current directory when no workspace exists — it errors with a typed hint instead. Headless/CI callers that relied on the implicit scaffold (a bare `agnes pull` on a fresh runner) must now name the target: set `AGNES_LOCAL_DIR` or pass `agnes pull --workspace <dir>`. See `docs/HEADLESS_USAGE.md`.
 
 ### Removed
 
