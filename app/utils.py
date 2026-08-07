@@ -84,8 +84,19 @@ def _contained(path: Path, root: Path) -> bool:
         if real.is_relative_to(root.resolve()):
             return True
         for entry in root.iterdir():
-            if entry.is_dir() and real.is_relative_to(entry.resolve()):
-                return True
+            if not entry.is_dir():
+                continue
+            # `extracts/<source>` and `extracts/<source>/data` are both allowed
+            # roots. The rule is not "one level deep" but "path components that
+            # do NOT come from untrusted input": the source directory name is
+            # scanned off disk and `data` is a literal, so an operator may point
+            # either at another volume without weakening anything. The table id
+            # is the only untrusted segment, and it is always the LAST one — so
+            # a link named `<id>.parquet` or `<id>/` still has to resolve inside
+            # one of these roots, and one pointing elsewhere is still refused.
+            for candidate in (entry, entry / "data"):
+                if candidate.is_dir() and real.is_relative_to(candidate.resolve()):
+                    return True
         return False
     except OSError:
         return False

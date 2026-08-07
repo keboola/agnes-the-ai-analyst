@@ -198,6 +198,24 @@ class TestPathContainment:
         assert resolve_local_parquet("ok", "keboola") is not None
         assert local_parquet_size_bytes("ok", "keboola") is not None
 
+    def test_a_symlinked_data_directory_is_still_readable(self, tmp_path, monkeypatch):
+        """One level deeper than the source-dir case, and allowed for the same
+        reason: `data` is a literal path component, not the untrusted segment,
+        so an operator may point it at another volume. The untrusted `<id>` is
+        always the LAST component, and a link named for it is still refused by
+        the tests above (Devin Review on #1198)."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        elsewhere = tmp_path / "volume" / "kbc-data"
+        elsewhere.mkdir(parents=True)
+        pq.write_table(pa.table({"a": [1]}), elsewhere / "ok.parquet")
+        (tmp_path / "extracts" / "keboola").mkdir(parents=True)
+        (tmp_path / "extracts" / "keboola" / "data").symlink_to(elsewhere)
+
+        from app.utils import local_parquet_size_bytes, resolve_local_parquet
+
+        assert resolve_local_parquet("ok", "keboola") is not None
+        assert local_parquet_size_bytes("ok", "keboola") is not None
+
     @pytest.mark.parametrize("pattern", ["*", "?k", "[o]k", "*.parquet", "o*"])
     def test_glob_metacharacter_ids_match_nothing(self, data_dir, pattern):
         """The id is interpolated into a GLOB, not only joined into a path.

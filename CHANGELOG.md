@@ -95,8 +95,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `POST /api/catalog/profile/*/refresh` would have profiled whichever parquet
   the pattern hit and stored it under the requested name. That endpoint built
   its own copy of the lookup rather than calling the resolver, so it took the
-  validation only once it was routed through `resolve_local_parquet` — one
-  lookup with one guard, instead of a fourth hand-rolled glob. Each `extracts/*`
+  validation only once it was routed through `resolve_local_parquet`. Other
+  hand-rolled lookups remain (`app/api/data.py`), but those are reached only
+  behind a stricter allowlist regex applied before any filesystem work, so
+  they were never exposed the way this one was. Each `extracts/*`
   entry counts as a containment root in its own right, so an operator who has
   symlinked a whole extract source onto another volume keeps their tables
   readable — resolving only against `extracts/` would have made every table
