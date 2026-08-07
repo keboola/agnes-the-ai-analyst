@@ -351,24 +351,16 @@ _DANGER_SECTIONS: tuple[str, ...] = ("auth", "server")
 # end-to-end so subagents 2-4 only have to add registry entries — they
 # don't need to touch admin_server_config.html.
 def _flag_default(section: str, key: str, fallback: bool) -> bool:
-    """The default `FEATURE_FLAGS` declares for a flag-backed field.
+    """The default the switch registry declares for a flag-backed field.
 
-    Hand-copying it here is how `chat.approvals_enabled` ended up documented as
-    off-by-default while the registry (and the runtime) had it on — the panel then
-    described the opposite of what the system does, and the unset-boolean renderer
-    turned that wrong default into a wrong written value. Deriving removes the
-    second copy: the registry is already the source of truth for WHICH sections are
-    editable (tests/test_admin_configure_api.py), so it should be the source for
-    their defaults too (Devin Review on #1190).
-
-    `fallback` covers a declared field with no registry entry — a plain config
-    boolean rather than a feature flag.
+    Hand-copying it here is how `chat.approvals_enabled` ended up documented
+    as off-by-default while the registry and the runtime had it on. `fallback`
+    covers a declared field with no registry entry — a plain config boolean
+    rather than a switch.
     """
-    from app.instance_config import FEATURE_FLAGS
-
-    for flag in FEATURE_FLAGS:
-        if flag.config_keys and flag.config_keys[0] == section and flag.config_keys[-1] == key:
-            return flag.default
+    for s in SWITCHES:
+        if s.config_keys == (section, key):
+            return bool(s.default)
     return fallback
 
 
@@ -1374,18 +1366,20 @@ def _feature_flags_inventory() -> List[Dict[str, Any]]:
                 "default": flag.default,
                 "env_var": flag.env_var,
                 "description": flag.description,
+                "effect": flag.effect,
+                "editable": flag.editable,
+                "lock_reason": flag.lock_reason,
             }
         )
     return out
 
 
-#: Registry flags whose runtime value comes from ``load_chat_config`` rather
-#: than ``feature_enabled``, mapped to the ChatConfig attribute holding it.
-#: They need their own view because the two read DIFFERENT sources — the chat
-#: config parses the writable overlay only, ``feature_enabled`` the merged
-#: static+overlay — so resolving them the ordinary way lets the panel report a
-#: value the running chat gate does not use (Devin Review on #1146/#1157).
-_CHAT_RUNTIME_FLAGS = {"chat": "enabled", "chat_approvals": "approvals_enabled"}
+#: Registry switches whose runtime value comes from `load_chat_config` rather
+#: than the merged config, mapped to the ChatConfig attribute holding it.
+#: Derived from `runtime_view` so a third chat-resolved switch cannot be added
+#: without the panel following — the previous hand-written dict was the reason
+#: this needed a Devin Review note on #1146/#1157.
+_CHAT_RUNTIME_FLAGS = {s.name: s.runtime_view for s in SWITCHES if s.runtime_view}
 
 
 def _chat_flag_runtime_view(flag) -> tuple:
