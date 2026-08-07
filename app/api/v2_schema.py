@@ -197,7 +197,7 @@ def build_schema_uncached(
         # the same layout gap the preview surface fixed (Devin Review on #1189).
         # DuckDB expands the returned `<dir>/*.parquet` glob, exactly as the
         # extractor's own master view over the partition dir does.
-        from app.utils import resolve_local_parquet_glob
+        from app.utils import LOCAL_PARQUET_READ_EXPR, resolve_local_parquet_glob
 
         parquet = resolve_local_parquet_glob(table_id, source_type)
         if parquet is None:
@@ -205,7 +205,7 @@ def build_schema_uncached(
         local_conn = _open_duckdb(":memory:")
         try:
             cols = local_conn.execute(
-                "DESCRIBE SELECT * FROM read_parquet(?, union_by_name=true, hive_partitioning=true)",
+                f"DESCRIBE SELECT * FROM {LOCAL_PARQUET_READ_EXPR}",
                 [parquet],
             ).fetchall()
         finally:
