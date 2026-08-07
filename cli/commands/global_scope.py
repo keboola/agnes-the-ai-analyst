@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -54,9 +55,24 @@ def _claude_cmd() -> Optional[list[str]]:
 
 
 def _agnes_binary() -> str:
-    """Absolute path of the agnes launcher (spec §6.1 step 3)."""
-    found = shutil.which("agnes") or sys.argv[0]
-    return str(Path(found).resolve())
+    """Absolute path of the agnes launcher (spec §6.1 step 3).
+
+    Deliberately NOT `.resolve()`d. `shutil.which` already returns an absolute
+    path, and resolving it additionally dereferences the symlink `uv tool
+    install` / `pipx` put in `~/.local/bin` — registering the MCP entry against
+    an executable inside the managed tool venv instead of the stable shim. That
+    is precisely the path shape the dead-launcher repair branch below exists to
+    clean up after: reinstalling or relocating the venv moves the target while
+    the shim stays put, so recording the shim makes the entry survive on its
+    own (Devin on #1184).
+
+    `sys.argv[0]` IS resolved, because it is the fallback for "agnes is not on
+    PATH" and may be relative to the cwd, which the MCP entry cannot be.
+    """
+    found = shutil.which("agnes")
+    if found:
+        return str(Path(found))
+    return str(Path(sys.argv[0]).resolve())
 
 
 def _mcp_entry_info() -> tuple[str, Optional[str]]:
@@ -148,6 +164,43 @@ def _args_are_mcp(args: Optional[str]) -> bool:
 
 def _mcp_entry_state() -> str:
     return _mcp_entry_info()[0]
+
+
+@contextmanager
+def _convergence_lock_or_exit(*, as_json: bool):
+    """Hold the SAME lock `agnes update` holds, for the duration of a manual
+    `enable` / `disable`.
+
+    Both commands and `agnes update`'s `global` step reach `run_convergence`,
+    which git-fetches the shared `~/.agnes/marketplace` clone and rewrites
+    `~/.claude/settings.json` and `~/.claude/CLAUDE.md`. Once the user-level
+    hook is installed, a detached `agnes update` fires from EVERY repository
+    the user opens, so racing a hand-typed `agnes global enable` is ordinary
+    rather than theoretical. The atomic renames rule out torn files; they do
+    not rule out last-writer-wins dropping the other side's hook entry, or a
+    `git reset --hard` interleaving with a plugin reconcile (Devin on #1184).
+
+    `agnes update` treats "someone else holds it" as skip-quietly, which is
+    right for a background convergence. Here it is not: the user typed the
+    command and a silent no-op would look like it worked. So this refuses,
+    says why, and leaves retrying to them.
+
+    `_step_global` already holds this lock when it calls `run_convergence`,
+    which is why the lock lives in the COMMANDS rather than in the shared
+    engine — putting it there would have the update path skip its own step.
+    """
+    from cli.config import _config_dir
+    from cli.lib.push_lock import acquire_path_or_skip
+
+    with acquire_path_or_skip(_config_dir() / "update.lock") as lock:
+        if lock is None:
+            msg = "another `agnes update` or `agnes global` run holds the convergence lock — retry in a moment."
+            if as_json:
+                typer.echo(json.dumps({"report": [{"stage": "lock", "status": "busy", "detail": msg}]}))
+            else:
+                typer.echo(f"error: {msg}", err=True)
+            raise typer.Exit(1)
+        yield
 
 
 #: How long a marketplace clone counts as freshly fetched. Long enough that a
@@ -413,7 +466,7 @@ def enable(
     # echoes progress unsuppressed — sink stdout under --json, mirroring
     # `_step_global` (same bug class as the #1105 review incident).
     sink = contextlib.redirect_stdout(io.StringIO()) if as_json else contextlib.nullcontext()
-    with sink:
+    with _convergence_lock_or_exit(as_json=as_json), sink:
         run_convergence(want_hook=not no_hook, force=force, report=report)
     save_config({"global_scope": True, "global_hook": not no_hook})
     report.append({"stage": "flag", "status": "ok", "detail": "global_scope=true"})
@@ -440,101 +493,102 @@ def disable(
     # keeps the layer marked enabled — see the flag decision at the end.
     left_behind: list[str] = []
 
-    base = _claude_cmd()
-    installed = _list_installed_agnes_plugins("user") if base else None
-    if installed:
-        removed: list[str] = []
-        failed: list[str] = []
-        for name in sorted(installed):
-            result = subprocess.run(
-                [*base, "plugin", "uninstall", f"{name}@agnes", "--scope", "user"],
+    with _convergence_lock_or_exit(as_json=as_json):
+        base = _claude_cmd()
+        installed = _list_installed_agnes_plugins("user") if base else None
+        if installed:
+            removed: list[str] = []
+            failed: list[str] = []
+            for name in sorted(installed):
+                result = subprocess.run(
+                    [*base, "plugin", "uninstall", f"{name}@agnes", "--scope", "user"],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    check=False,
+                )
+                (removed if result.returncode == 0 else failed).append(name)
+            if failed:
+                left_behind.append(f"plugins: {', '.join(failed)}")
+            report.append(
+                {
+                    "stage": "plugins",
+                    "status": "error" if failed else "removed",
+                    "detail": (f"removed {', '.join(removed) or 'none'}; FAILED {', '.join(failed)}")
+                    if failed
+                    else (", ".join(removed) or "none"),
+                }
+            )
+        elif installed is None:
+            left_behind.append("plugins: could not be listed")
+            report.append({"stage": "plugins", "status": "unknown", "detail": "`claude` CLI unavailable — nothing changed"})
+        else:
+            report.append({"stage": "plugins", "status": "ok", "detail": "no user-scope stack plugins installed"})
+
+        state = _mcp_entry_state()
+        if state == "ours" and base:
+            rm = subprocess.run(
+                [*base, "mcp", "remove", MCP_SERVER_NAME, "-s", "user"],
                 capture_output=True,
                 text=True,
-                encoding="utf-8",
-                errors="replace",
                 check=False,
             )
-            (removed if result.returncode == 0 else failed).append(name)
-        if failed:
-            left_behind.append(f"plugins: {', '.join(failed)}")
-        report.append(
-            {
-                "stage": "plugins",
-                "status": "error" if failed else "removed",
-                "detail": (f"removed {', '.join(removed) or 'none'}; FAILED {', '.join(failed)}")
-                if failed
-                else (", ".join(removed) or "none"),
-            }
-        )
-    elif installed is None:
-        left_behind.append("plugins: could not be listed")
-        report.append({"stage": "plugins", "status": "unknown", "detail": "`claude` CLI unavailable — nothing changed"})
-    else:
-        report.append({"stage": "plugins", "status": "ok", "detail": "no user-scope stack plugins installed"})
+            if rm.returncode != 0:
+                left_behind.append("mcp: entry could not be removed")
+            report.append(
+                {
+                    "stage": "mcp",
+                    "status": "removed" if rm.returncode == 0 else "error",
+                    "detail": "user-scope entry removed" if rm.returncode == 0 else f"remove exited {rm.returncode}",
+                }
+            )
+        elif state == "ours" and not base:
+            # `_mcp_entry_state` needs `claude` too, so this is unreachable today;
+            # keep the arm so a future probe change cannot make it fall through to
+            # the "no entry" branch and silently under-report.
+            left_behind.append("mcp: `claude` CLI unavailable")
+            report.append({"stage": "mcp", "status": "unknown", "detail": "`claude` CLI unavailable"})
+        elif state == "foreign":
+            # Not ours to remove, so not something disable owes the user — the
+            # layer we installed is gone either way.
+            report.append(
+                {"stage": "mcp", "status": "skipped", "detail": "entry named 'agnes' is not ours — left in place"}
+            )
+        else:
+            report.append({"stage": "mcp", "status": "ok", "detail": "no entry"})
 
-    state = _mcp_entry_state()
-    if state == "ours" and base:
-        rm = subprocess.run(
-            [*base, "mcp", "remove", MCP_SERVER_NAME, "-s", "user"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if rm.returncode != 0:
-            left_behind.append("mcp: entry could not be removed")
-        report.append(
-            {
-                "stage": "mcp",
-                "status": "removed" if rm.returncode == 0 else "error",
-                "detail": "user-scope entry removed" if rm.returncode == 0 else f"remove exited {rm.returncode}",
-            }
-        )
-    elif state == "ours" and not base:
-        # `_mcp_entry_state` needs `claude` too, so this is unreachable today;
-        # keep the arm so a future probe change cannot make it fall through to
-        # the "no entry" branch and silently under-report.
-        left_behind.append("mcp: `claude` CLI unavailable")
-        report.append({"stage": "mcp", "status": "unknown", "detail": "`claude` CLI unavailable"})
-    elif state == "foreign":
-        # Not ours to remove, so not something disable owes the user — the
-        # layer we installed is gone either way.
-        report.append(
-            {"stage": "mcp", "status": "skipped", "detail": "entry named 'agnes' is not ours — left in place"}
-        )
-    else:
-        report.append({"stage": "mcp", "status": "ok", "detail": "no entry"})
+        rails = remove_rails_block(user_claude_md_path())
+        if rails == "skipped_malformed":
+            left_behind.append("rails: block left in ~/.claude/CLAUDE.md")
+        report.append({"stage": "rails", "status": rails, "detail": str(user_claude_md_path())})
 
-    rails = remove_rails_block(user_claude_md_path())
-    if rails == "skipped_malformed":
-        left_behind.append("rails: block left in ~/.claude/CLAUDE.md")
-    report.append({"stage": "rails", "status": rails, "detail": str(user_claude_md_path())})
+        hook = remove_user_session_hook()
+        if hook == "skipped_malformed":
+            left_behind.append("hook: user-level SessionStart left in settings.json")
+        report.append({"stage": "hook", "status": hook, "detail": "user-level SessionStart"})
 
-    hook = remove_user_session_hook()
-    if hook == "skipped_malformed":
-        left_behind.append("hook: user-level SessionStart left in settings.json")
-    report.append({"stage": "hook", "status": hook, "detail": "user-level SessionStart"})
+        # The flag is the LAST thing written, and only when nothing was left
+        # behind. Flipping it regardless was the real hazard: the skills and the
+        # tool entry keep loading in every repository the user opens, while the
+        # config says the layer is off — so `agnes update` stops converging it and
+        # nothing is left that would ever clean them up. A partial disable is
+        # therefore still "enabled": the layer stays managed, and re-running
+        # `agnes global disable` finishes the job (Devin on #1184).
+        if left_behind:
+            report.append(
+                {
+                    "stage": "flag",
+                    "status": "skipped",
+                    "detail": ("left enabled — still installed: " + "; ".join(left_behind) + ". Fix, then re-run."),
+                }
+            )
+            _print_report(report, as_json=as_json)
+            raise typer.Exit(1)
 
-    # The flag is the LAST thing written, and only when nothing was left
-    # behind. Flipping it regardless was the real hazard: the skills and the
-    # tool entry keep loading in every repository the user opens, while the
-    # config says the layer is off — so `agnes update` stops converging it and
-    # nothing is left that would ever clean them up. A partial disable is
-    # therefore still "enabled": the layer stays managed, and re-running
-    # `agnes global disable` finishes the job (Devin on #1184).
-    if left_behind:
-        report.append(
-            {
-                "stage": "flag",
-                "status": "skipped",
-                "detail": ("left enabled — still installed: " + "; ".join(left_behind) + ". Fix, then re-run."),
-            }
-        )
+        save_config({"global_scope": False, "global_hook": False})
+        report.append({"stage": "flag", "status": "ok", "detail": "global_scope=false"})
         _print_report(report, as_json=as_json)
-        raise typer.Exit(1)
-
-    save_config({"global_scope": False, "global_hook": False})
-    report.append({"stage": "flag", "status": "ok", "detail": "global_scope=false"})
-    _print_report(report, as_json=as_json)
 
 
 @global_app.command("status")
