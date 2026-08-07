@@ -35,7 +35,7 @@ dependencies = [
     # gracefully falls back to HTTP/1.1 if h2 is missing, so this
     # extra is for performance, not correctness.
     "httpx>=0.27.0",
-    "h2>=4.1.0",
+    "h2>=4.4.1",
     "docker>=7.1.0",           # apps-runner sidecar (Docker Engine API)
     # CA bundle (Mozilla roots). Transitively present via httpx, but
     # app/api/cowork_bundle.py imports it directly to ship cacert.pem inside the
