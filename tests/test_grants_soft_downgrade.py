@@ -15,6 +15,18 @@ outside the StackResolver's auto-membership), so that fan-out is unchanged.
 
 import uuid
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _auto_membership_mode(monkeypatch):
+    """This suite pins the AUTO-membership no-fan-out contract, which is
+    opt-in since the classic subscribe model became the default again (spec
+    2026-08-07-default-chrome-ux-parity). The classic fan-out contract lives
+    in tests/test_e2e_stack_rbac.py::TestSoftDowngradeClassicFanOut and
+    tests/test_cli_api_parity.py (classic sibling)."""
+    monkeypatch.setenv("AGNES_STACK_AUTO_MEMBERSHIP", "1")
+
 
 def _auth(token):
     return {"Authorization": f"Bearer {token}"}

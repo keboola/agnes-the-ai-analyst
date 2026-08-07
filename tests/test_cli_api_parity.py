@@ -1180,10 +1180,12 @@ class TestGrantUpdateRequirementParity:
         conn.close()
         return gid, pkg_id, grant_id
 
-    def test_downgrade_parity_no_subscription_fan_out(self, parity_env):
-        """Auto-membership: a required → available downgrade no longer
-        writes user_stack_subscriptions rows on EITHER path — available is
-        already automatically in every granted user's stack."""
+    def test_downgrade_parity_no_subscription_fan_out(self, parity_env, monkeypatch):
+        """Auto-membership (opt-in): a required → available downgrade
+        writes NO user_stack_subscriptions rows on EITHER path — available
+        is already automatically in every granted user's stack. The classic
+        default fans out on both paths identically (sibling below)."""
+        monkeypatch.setenv("AGNES_STACK_AUTO_MEMBERSHIP", "1")
         gid, pkg_id, grant_id = self._setup_with_grant("required")
 
         # API path
@@ -1235,6 +1237,49 @@ class TestGrantUpdateRequirementParity:
         assert api_grants == cli_grants
         # Neither path writes a subscription row anymore.
         assert api_subs == cli_subs == []
+
+    def test_downgrade_parity_classic_fan_out(self, parity_env, monkeypatch):
+        """Classic (default): the required → available downgrade fans out a
+        subscription row per group member — the pre-redesign v49 behavior
+        (spec 2026-08-07-default-chrome-ux-parity) — and BOTH paths land on
+        the identical row set (the fan-out is idempotent, so the CLI re-run
+        over the API-created rows changes nothing)."""
+        monkeypatch.delenv("AGNES_STACK_AUTO_MEMBERSHIP", raising=False)
+        gid, pkg_id, grant_id = self._setup_with_grant("required")
+
+        # API path
+        r = parity_env["client"].put(
+            f"/api/admin/grants/{grant_id}",
+            json={"requirement": "available"},
+            headers=_auth(parity_env["admin_token"]),
+        )
+        assert r.status_code == 200, r.text
+        conn = get_system_db()
+        api_subs = _snapshot_table(
+            conn,
+            "SELECT user_id, resource_type, resource_id FROM user_stack_subscriptions WHERE resource_id = ?",
+            [pkg_id],
+        )
+        # Reset the grant; keep the subscriptions (idempotent fan-out).
+        conn.execute(
+            "UPDATE resource_grants SET requirement = 'required' WHERE id = ?",
+            [grant_id],
+        )
+        conn.close()
+        assert api_subs == [("analyst1", "data_package", pkg_id)]
+
+        # CLI path: 409 → list → PUT requirement update.
+        parity_env["run_cli"](
+            ["admin", "grant", "create", "parity_put_g", "data_package", pkg_id, "--requirement", "available"]
+        )
+        conn = get_system_db()
+        cli_subs = _snapshot_table(
+            conn,
+            "SELECT user_id, resource_type, resource_id FROM user_stack_subscriptions WHERE resource_id = ?",
+            [pkg_id],
+        )
+        conn.close()
+        assert api_subs == cli_subs
 
 
 # ---------------------------------------------------------------------------
