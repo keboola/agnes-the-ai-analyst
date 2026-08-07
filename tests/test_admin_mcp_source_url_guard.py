@@ -246,3 +246,20 @@ def test_the_connectivity_probe_reports_a_refused_url_instead_of_400ing(seeded_a
     body = r.json()
     assert body["ok"] is False
     assert "blocked_range" in (body["error"] or "")
+
+
+def test_materialize_will_not_dial_a_refused_url(seeded_app):
+    """The fourth connector helper. The module header names the group —
+    introspect/classify/test/materialize — and the first three took the guard
+    while this one did not; it dials with the source's real credential on every
+    run (/agnes-review rbac reviewer on #1204). The gap that mattered was an
+    ENABLED legacy row: `extract_source_async` already refuses a disabled one,
+    so the update-path exemption was covered, but a row registered before the
+    guard existed stayed dialable here."""
+    _seed("src_mat1", url="http://169.254.169.254/mcp", transport="http")
+    r = seeded_app["client"].post(
+        "/api/admin/mcp-sources/src_mat1/materialize",
+        headers=_auth(seeded_app),
+    )
+    assert r.status_code == 400, r.text
+    assert "blocked_range" in r.json()["detail"]

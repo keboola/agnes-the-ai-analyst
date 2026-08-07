@@ -1609,6 +1609,19 @@ async def materialize_mcp_source(
     src = src_repo.get(source_id)
     if not src:
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
+    # The FOURTH connector helper, and it dials with the source's real
+    # credential exactly as the other three do. The module header above names
+    # the group — "introspect/classify/test/materialize" — and the first three
+    # took this guard while this one did not, which is the whole failure mode:
+    # the reasoning was written against a remembered list rather than the code
+    # (/agnes-review rbac reviewer on #1204).
+    #
+    # `extract_source_async` refuses a DISABLED source on its own, so the
+    # disabled-row exemption in `update_mcp_source` is covered. What was not is
+    # an ENABLED legacy row carrying a url this policy refuses — registered
+    # before the guard existed, unreachable through introspect/classify/test,
+    # and still fully dialable here on every run.
+    await _check_source_url_or_400(src)
     only_tool_id = payload.tool_id if payload else None
     try:
         # extract_source_async — async-safe; the sync variant wraps

@@ -488,3 +488,89 @@ def test_my_secret_test_endpoint_403_without_oauth_connection(seeded_app):
         headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
     )
     assert r.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# The url / disabled gates on /my-secret/test — ordering, and what they say
+# ---------------------------------------------------------------------------
+
+
+_UPSERT_FIELDS = (
+    "id",
+    "name",
+    "transport",
+    "command",
+    "args",
+    "env",
+    "url",
+    "auth_method",
+    "auth_secret_env",
+    "enabled",
+    "scope",
+    "connect_hint",
+)
+
+
+def _repoint(source_id: str, **fields) -> None:
+    """Re-upsert a seeded source with some fields changed.
+
+    Filtered to `upsert`'s own keyword set — a row carries read-only columns
+    (`created_at`, …) that it does not accept.
+    """
+    conn = get_system_db()
+    row = MCPSourceRepository(conn).get(source_id)
+    merged = {k: v for k, v in {**row, **fields}.items() if k in _UPSERT_FIELDS}
+    MCPSourceRepository(conn).upsert(**merged)
+    conn.close()
+
+
+def test_my_secret_test_checks_the_grant_before_the_url_and_enabled_gates(seeded_app):
+    """Ordering is the contract, and the two new gates sit last on purpose.
+
+    They read state an ungranted caller is not entitled to — whether a source
+    exists in a disabled state, and its literal address via the failure reason.
+    Ahead of the grant check they would answer both to anyone signed in, and
+    ahead of the rate limit they would run an unthrottled `getaddrinfo` per
+    attempt (/agnes-review rbac reviewer on #1204).
+    """
+    _seed_per_user_source(source_id="src_order", grant_to="someone_else")
+    _repoint("src_order", url="http://169.254.169.254/mcp", enabled=False)
+
+    r = seeded_app["client"].post(
+        "/api/mcp/sources/src_order/my-secret/test",
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+    )
+
+    # 403 (no grant) — NOT 409 (disabled) and NOT 400 (url), either of which
+    # would mean a gate that reads privileged state ran first.
+    assert r.status_code == 403, r.text
+
+
+def test_my_secret_test_does_not_leak_the_source_address_to_an_analyst(seeded_app):
+    """An analyst is not an admin. Every other failure branch here returns a
+    friendly sentence and keeps the cause in the log, and `/me/connections`
+    surfaces name/transport/hint but never `url` — so the refusal reason, which
+    embeds the literal address, must not be echoed either."""
+    _seed_per_user_source(source_id="src_leak")
+    # Store a personal credential first: the credential gate runs BEFORE the
+    # url gate, so without this the caller gets 403 and never reaches the
+    # branch under test — the ordering working exactly as intended.
+    seeded_app["client"].put(
+        "/api/mcp/sources/src_leak/my-secret",
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+        json={"value": "my-personal-token"},
+    )
+    _repoint("src_leak", url="http://169.254.169.254/mcp")
+
+    r = seeded_app["client"].post(
+        "/api/mcp/sources/src_leak/my-secret/test",
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+    )
+
+    # Both halves, or this asserts nothing: without the 400 the check never
+    # fired and the address had no way to appear, so an absent-address
+    # assertion alone passes just as happily on a build with no gate at all.
+    assert r.status_code == 400, r.text
+    body = r.text
+    assert "169.254.169.254" not in body, "the source's literal address reached a non-admin caller"
+    assert "blocked_range" not in body, "the raw policy reason reached a non-admin caller"
