@@ -256,7 +256,9 @@
           'c': '/admin/marketplaces',     // (curated)
           'k': '/admin/tokens',           // (keys/tokens)
           'r': '/admin/store/submissions', // (review queue)
+          {% if store_verification_on() %}
           'v': '/admin/store',            // (verification / moderation & trust)
+          {% endif %}
         };
         let pending = false;
         let pendingTimer = null;
@@ -349,7 +351,12 @@
           { label: 'Studio · Suggestions queue',  hint: 'admin',        href: '/admin/studio/suggestions' },
           {% endif %}
           { label: 'Tokens',                      hint: 'admin · g k',  href: '/admin/tokens' },
+          {# Same semantic gate as the topnav mega-menu row and the /admin
+             hub card — all entry points to the Moderation & Trust hub key
+             on store_verification_on() (Devin Review on #1200). #}
+          {% if store_verification_on() %}
           { label: 'Moderation & Trust',          hint: 'admin · g v',  href: '/admin/store' },
+          {% endif %}
           { label: 'Flea Submissions',            hint: 'admin · g r',  href: '/admin/store/submissions' },
           { label: 'Prompts',                     hint: 'admin',        href: '/admin/prompts' },
           { label: '— User-facing —',             hint: 'separator',    href: null },
