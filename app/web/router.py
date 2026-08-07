@@ -1333,13 +1333,16 @@ async def me_ai_connector_page(
     Default chrome keeps the pre-redesign standalone page (frozen
     ``me_cowork_legacy.html``: OAuth connector URL, plugin packages,
     available tools — including the /mcp-connect token fallback link).
-    Under the redesign opt-in the page stays consolidated into
-    /how-it-works#connect via the 302 the redesign shipped (302, not 301: a
-    permanent redirect is cached by the browser forever, so it would be
-    very hard to walk back if the consolidation is revisited)."""
+    Under ANY redesign opt-in — rail layout or paper theme, the same
+    expression the user-menu row keys on — the page stays consolidated into
+    /how-it-works#connect via the 302 the redesign shipped: a paper-on-topnav
+    instance's menu says "Learn how it works", so a bookmark or alias hop
+    must not resurrect the standalone page there (Devin Review on #1200).
+    302, not 301: a permanent redirect is cached by the browser forever, so
+    it would be very hard to walk back if the consolidation is revisited."""
     from fastapi.responses import RedirectResponse
 
-    if get_ui_layout() == "rail":
+    if get_ui_layout() == "rail" or _is_paper_theme():
         return RedirectResponse("/how-it-works#connect", status_code=302)
 
     # Pre-redesign handler body verbatim (the frozen template reads exactly
