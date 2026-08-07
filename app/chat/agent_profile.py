@@ -145,8 +145,14 @@ def _context_skill(agent_row: dict) -> str:
         "memory domains it may use) is scoped by its owner's configuration "
         "in Agnes, not by this file.\n",
     ]
+    # The remember endpoint lives on the flag-guarded agent_memory router, so
+    # with agent profiles disabled every call would 403 — treat flag-off the
+    # same as memory_write_mode='off': don't advertise a tool the sandbox
+    # cannot use (the router guard still enforces regardless of this text).
+    from app.instance_config import get_agent_profiles_enabled
+
     memory_write_mode = agent_row.get("memory_write_mode") or "propose"
-    if memory_write_mode != "off":
+    if memory_write_mode != "off" and get_agent_profiles_enabled():
         lines.append(
             "\n## Remember\n\n"
             "You can save a durable note to your own memory notebook by "
