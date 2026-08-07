@@ -40,6 +40,41 @@ def test_agents_link_in_user_dropdown_for_admin(seeded_app):
     assert 'href="/agents"' in resp.text
 
 
+def test_agents_link_hidden_when_agent_profiles_disabled(seeded_app, monkeypatch):
+    """`can_agent_profiles` (get_agent_profiles_enabled()) gates the same nav
+    entry point — mirrors test_web_studio.py's test_studio_nav_hidden_when_disabled."""
+    monkeypatch.setattr("app.web.router.get_agent_profiles_enabled", lambda: False)
+    c = seeded_app["client"]
+    resp = c.get("/dashboard", headers=_auth(seeded_app["analyst_token"]))
+    assert resp.status_code == 200
+    assert 'href="/agents"' not in resp.text
+    assert "href: '/agents'" not in resp.text  # command palette row too
+
+
+def test_how_it_works_agents_links_hidden_when_agent_profiles_disabled(seeded_app, monkeypatch):
+    """`/how-it-works` carries three more `/agents` links than the chrome does —
+    the TOC footer, the pillars "next" row and the page-foot "Keep going" row.
+
+    They are entry points like any other: with the flag off `GET /agents`
+    redirects home, so leaving them ungated shows an opted-out instance three
+    invitations that silently bounce the user back where they started (Devin
+    Review on #1186). Asserted as a count, so another link added later fails
+    here rather than shipping as a fresh dead end. Four, not three: the page
+    also draws the chrome's own user-dropdown entry, which this PR already
+    gates.
+    """
+    c = seeded_app["client"]
+
+    on = c.get("/how-it-works", headers=_auth(seeded_app["analyst_token"]))
+    assert on.status_code == 200
+    assert on.text.count('href="/agents"') == 4, "this test's premise moved — re-count the links"
+
+    monkeypatch.setattr("app.web.router.get_agent_profiles_enabled", lambda: False)
+    off = c.get("/how-it-works", headers=_auth(seeded_app["analyst_token"]))
+    assert off.status_code == 200
+    assert 'href="/agents"' not in off.text
+
+
 def test_mcp_connect_linked_from_ai_connector_page(seeded_app):
     """The AI Connector page is the only inbound link to /mcp-connect — if this
     fails, the token setup page is unreachable again."""

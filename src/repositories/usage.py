@@ -1817,6 +1817,14 @@ def _registry_identity_keys(registry_rows: list, bq_data_project: Optional[str] 
         if bucket and source_table:
             is_bq = (row.get("source_type") or "") == "bigquery"
             alias = "bq" if is_bq else "kbc"
+            # A pre-fix wizard row stores the FULL `<bucket>.<table>` in
+            # source_table, so composing it raw yields `in.c-main.in.c-main.orders`
+            # and a query naming the REAL path never maps back to this table id —
+            # the usage attribution silently drops it. No-op when there is no
+            # prefix, so it is safe for BigQuery rows too (Devin Review on #1189).
+            from connectors.keboola.storage_api import normalize_source_table
+
+            source_table = normalize_source_table(bucket, source_table)
             if is_bq and project:
                 claim(f"{project}.{bucket}.{source_table}", _KEY_PROJECT_PATH, table_id, order)
             claim(f"{alias}.{bucket}.{source_table}", _KEY_ALIAS_PATH, table_id, order)

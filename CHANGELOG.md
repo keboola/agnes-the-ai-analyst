@@ -12,11 +12,110 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- Per-instance feature flag for Agent profiles (`agent_profiles.enabled` / `AGNES_AGENT_PROFILES_ENABLED`), same mechanism as the Studio flag. Grandfathered on by default; disabling closes the `/agents` builder page, the `/api/v1/agents*` management + runtime API (and its `agnes agent`/`agnes chat` CLI clients) with a 403 `agent_profiles_disabled`, and hides every inbound link to it — the "My agents" nav entry in both chromes, the command-palette row, and the three `/agents` links on `/how-it-works` (which would otherwise be dead ends that bounce the user home). Default-agent seeding, chat attribution, and the broker's agent policy are internal mechanisms and keep working regardless.
+
 ### Changed
 - **Topnav content parity extended to the detail pages**: the seven detail templates the redesign restructured in place (`catalog_table_detail`, `catalog_package_detail`, `catalog_recipe_detail`, `marketplace_plugin_detail`, `marketplace_item_detail`, `library_detail`, `memory_domain_detail`) now follow the `/catalog` pattern — rail renders the redesigned kind-coloured detail anatomy, a default topnav instance keeps the pre-redesign page byte-for-byte as a frozen `*_legacy.html` copy. All twelve render sites resolve through a single `_detail_template()` switch (handlers are shared — they pass a superset of the legacy context), and a closed-set guard fails on any bare detail-template literal that would bypass it. Guarded by `tests/test_ui_layout_theme.py::TestDetailPageParity`.
 
 ### Fixed
 
+- **An agent persona no longer silently strips the platform's data-access rails.** A non-empty `agents.system_prompt` makes `ChatManager._spawn_live` materialize a persona `CLAUDE.md` that *replaces* the workspace one (`WorkdirManager._materialize_profile`) — by design, but it also took the analyst data rails with it. The sandbox still had the `agnes` CLI, the Agnes MCP server, and every granted passthrough tool, yet nothing left told the agent that the organization's data lives behind `agnes catalog`; the observed behavior was an agent hunting through whatever other MCP servers its scope exposed until a human said "use Agnes". `agent_profile.build_profile` now appends a compact `DATA_ACCESS_RAILS` section (discovery chain, "never enumerate from memory", canonical metric lookup, and a pointer to `agnes skills show agnes-data-querying`) to every persona, so a persona overrides the rails' tone and task but never their existence. Affects all four sandbox-spawning surfaces — web chat, Slack DM/thread, `agnes chat <slug>`, and the one-shot agent API (`POST /api/v1/agents/{slug}/responses`), where no human is in the loop to correct it. Agents with no persona are untouched (the workspace `CLAUDE.md` stays symlinked in), as are the built-in authoring profiles in `app/chat/profiles.py`, which are Agnes-authored and already scoped to their own non-analyst task. The `/agents` builder's Identity section now says so, so persona authors know not to restate data instructions in Instructions.
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.83.0] - 2026-08-07
+
+### Added
+
+- Admin "Browse & register tables" now works with bucket-scoped (custom access) Keboola tokens: when the project-wide `/buckets` + `/tables` listings are refused, the endpoint falls back to enumerating the token's own `bucketPermissions` per bucket, so the picker shows exactly the buckets the token can read. The response carries a `scope` field (`"project"` or `"token_buckets"`) and the picker renders a note when the listing is token-limited. Upstream listing failures are logged with the connection id, and network-level errors (DNS, refused connection, TLS) surface as a clean 502 `keboola_storage_api_error` detail instead of a generic 500.
+
+### Changed
+
+### Fixed
+
+- Previewing a partition-synced table no longer claims its first sync is
+  pending. That sync writes `data/<table_id>/<partition>.parquet` — a directory
+  of per-period files — so the single-file lookup found nothing and a healthy,
+  fully-synced table was reported as having no data yet, sending the admin to a
+  sync status page that shows success. The preview now resolves either layout
+  (`resolve_local_parquet_glob`) and reads every partition. An empty partition
+  directory still counts as no data, because that genuinely is the pending case.
+  The schema, scan, catalog-size and distribution surfaces still use the
+  single-file lookup — the first two are a mechanical swap but the catalog needs
+  sizes summed and distribution would need to mirror a directory (with a matching
+  `agnes pull` change), so they are deliberately left for their own change rather
+  than half-done here.
+
+- Pushing column metadata back to Keboola addressed a tableId that does not
+  exist. `POST /api/admin/metadata/{table_id}/push` built its URL from
+  `source_table` alone, but the Storage API addresses a table by
+  `<bucket>.<table>` and the registry keeps the bucket in a separate column — so
+  the request went to `/v2/storage/tables/orders/columns/...` with no bucket, and
+  the feature only ever worked for pre-fix wizard rows whose `source_table` still
+  carried the prefix. The exact inverse of the doubled-prefix bug above.
+
+- The copy-paste query suggestion for a not-yet-materialized table named a
+  nonexistent table for pre-fix wizard rows: it composed
+  `kbc."<bucket>"."<bucket>.<table>"` from the stored reference, so an analyst
+  who copied it got an error instead of data. It strips the prefix now, and the
+  composition ratchet was widened to see this `quote_ident(...)` shape too — the
+  first version only knew the f-string one, which is why this site was missed.
+
+- The admin table browser no longer re-lists every bucket after a transient
+  Keboola failure. Any exception from the project-wide listing triggered the
+  per-bucket fallback, which makes two upstream calls per bucket the token can
+  see — so a brief network blip on a full-access token could stall "Browse &
+  register tables" for minutes on a large project and then label the token as
+  bucket-scoped. The fallback is now entered only for a refusal (401/403), which
+  is the case it exists for; a 5xx or a connection error surfaces as itself. A
+  refusal is also not the only way a scoped token hides the project — some token
+  shapes answer `/v2/storage/buckets` with a 200 and an EMPTY array instead of a
+  403, which was indistinguishable from an empty project, so the picker said "no
+  buckets visible to this token" and the per-bucket path never ran. An empty
+  listing now retries the same way; a genuinely empty project keeps its empty
+  answer, because a token with no `bucketPermissions` has nothing to enumerate.
+
+- Keboola's semantic layer now attaches to tables registered by the pre-fix
+  wizard. `table_lookup_from_registry` keyed its lookup on the raw
+  `source_table`, while `resolve_table_name` builds its key by splitting a
+  Keboola tableId on the last dot — always a bare table name. So a legacy row
+  keyed as `("in.c-main", "in.c-main.orders")` while every lookup asked for
+  `("in.c-main", "orders")`: a permanent miss, and the table silently received no
+  descriptions, metrics or glossary links. The same composition in
+  `connectors/keboola/metadata.py` had the doubled-prefix shape too, so row
+  counts and column metadata went missing for those rows as well. Both now strip
+  the prefix at use, like the export and view paths already did — these were the
+  two sibling sites that sweep missed. Two more turned up in the round after —
+  the audit identity keys in `src/repositories/usage.py` (so a query naming the
+  real Keboola path never mapped back to the table id, silently dropping it from
+  usage attribution) and the `fqn` field a scaffolded `tables/<id>.yml` gets from
+  `src/data_semantics_scaffold.py`. Because that made four review rounds each
+  naming one more call site, a ratchet now finds every
+  `f"{bucket}.{source_table}"` composition and fails unless it routes through the
+  helper somewhere in its enclosing function, or is listed with the reason it is
+  not a Keboola tableId (the BigQuery `project.dataset.table` compositions).
+
+- Previewing a `query_mode='remote'` table no longer blames a failing first
+  sync. `build_sample` special-cased only BigQuery non-materialized rows, so a
+  Keboola row registered remote — the shape this change adds — fell through to
+  the parquet lookup, legitimately found nothing, and was reported as "the first
+  sync is pending or failing", complete with a link to the sync status. Admins
+  went looking for a broken job that does not exist and never will. Remote rows
+  now get their own explanation naming why nothing is materialized, and pointing
+  at `agnes query --remote`. `server_only` rows are deliberately NOT in this
+  branch: that flag suppresses *distribution* to analyst laptops while the
+  server still writes the parquet, so a missing one there is a real failure and
+  keeps saying so — the registration validator rejects `server_only` together
+  with `query_mode='remote'` for the same reason. A genuinely unsynced row still
+  says exactly what it said before.
+
+- The Data-sources wizard registered Keboola tables with the full `bucket.table` id in `source_table` (alongside the separate `bucket` field), so the sync path re-composed `bucket.bucket.table` — every wizard-registered table's materialize then targeted a nonexistent upstream table id and the catalog preview reported "not found". The wizard now sends the bare in-bucket name, and every path that re-composes the source id strips a legacy bucket prefix at use (`normalize_source_table`: the materialize path, the local extract paths, and the `query_mode='remote'` view builder), so rows registered before the fix heal on their next sync without re-registration. The catalog table-detail page applies the same normalization to the displayed source id.
+- A `query_mode='remote'` Keboola row whose view could not be created (an upstream table that no longer exists, or a malformed source id) aborted the whole extraction run for that source: the exception escaped `run()` and skipped the atomic `extract.duckdb` swap, so every other table of that source lost its refresh too. The failure is now isolated to the offending row (`tables_failed` + a logged reason) like every sibling branch already did.
+- Catalog "Preview data" on a registered table whose data hasn't landed yet now explains that the first sync is pending or failing — including the last recorded sync error when there is one — instead of the misleading bare "table not found".
 - **`chat.*` and `studio.enabled` can now actually be set from
   `/admin/server-config`.** `POST /api/admin/server-config` validates the patch
   against a hand-maintained allowlist, and neither section was on it — so a save

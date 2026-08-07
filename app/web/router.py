@@ -43,6 +43,7 @@ from app.instance_config import (
     get_custom_scripts,
     get_data_apps_config,
     get_studio_enabled,
+    get_agent_profiles_enabled,
     feature_enabled,
 )
 from src.repositories import (
@@ -869,6 +870,9 @@ def _build_context(
     # unlike can_chat) — the enclosing `{% if session.user %}` already scopes
     # the nav to signed-in users. The hard gate lives on the routes.
     ctx["can_studio"] = get_studio_enabled()
+    # "My agents" nav entry visibility — instance-level toggle, mirrors
+    # can_studio. The hard gate lives on the /agents route + the API routers.
+    ctx["can_agent_profiles"] = get_agent_profiles_enabled()
     # Flex all extra context values for template compatibility
     # (but skip ones we just populated — extras with the same key win)
     for k, v in extra.items():
@@ -3569,6 +3573,8 @@ async def agents_page(
     Agent definitions themselves persist in the browser for now — a server
     registry is the next iteration, so the page states that plainly rather
     than pretending drafts are shared."""
+    if not get_agent_profiles_enabled():
+        return RedirectResponse("/", status_code=302)
     from app.services.stack_resolver import StackResolver
     from app.resource_types import ResourceType
 
@@ -4010,6 +4016,16 @@ async def catalog_table_detail(
     table = table_repo.get(table_id)
     if not table:
         raise HTTPException(status_code=404, detail="table_not_found")
+
+    # Display healing: rows written by the pre-fix Data-sources wizard carry
+    # the full `bucket.table` id in source_table; the template renders
+    # `bucket`.`source_table`, which would double the bucket prefix. The sync
+    # path strips the prefix at use (normalize_source_table) — mirror it here
+    # so the page shows the id the export actually targets.
+    if table.get("bucket") and table.get("source_table"):
+        from connectors.keboola.storage_api import normalize_source_table
+
+        table = {**table, "source_table": normalize_source_table(table["bucket"], table["source_table"])}
 
     # Find every package that includes this table; gate access on
     # admin god-mode OR a grant on ANY of those packages. Resolve the
@@ -4460,6 +4476,10 @@ def _chrome_ctx(request: Request, user: Optional[dict]) -> dict:
         # survives on pages that render via _chrome_ctx — including the studio
         # pages themselves and the command palette.
         "can_studio": get_studio_enabled(),
+        # "My agents" nav entry visibility — instance-level toggle, mirrors
+        # can_studio (the hard gate lives on the /agents route + the API
+        # routers, this only hides the entry point).
+        "can_agent_profiles": get_agent_profiles_enabled(),
         # Same `config` object as _build_context — templates read
         # config.INSTANCE_NAME in <title> blocks and the header logo, which
         # rendered empty on _chrome_ctx pages ("Studio — " title).

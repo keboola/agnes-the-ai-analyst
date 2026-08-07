@@ -13,6 +13,7 @@ Pipeline per table:
   5. If existing parquet, merge_parquet (concat → drop_duplicates by PK).
   6. If first sync, csv_to_parquet directly.
 """
+
 from __future__ import annotations
 
 import logging
@@ -115,7 +116,8 @@ def merge_parquet(
             "table to sync_strategy='partitioned' (per-partition merge "
             "keeps memory bounded). See CHANGELOG ### Internal for the "
             "OOM caveat.",
-            existing_parquet.name, len(existing_df),
+            existing_parquet.name,
+            len(existing_df),
         )
 
     delta_df = pd.read_csv(new_csv, dtype=str)
@@ -158,8 +160,11 @@ def merge_parquet(
         combined = combined.drop_duplicates(subset=primary_key, keep="last")
         logger.info(
             "merge: %s, %d existing + %d delta rows → %d after dedup on %s",
-            existing_parquet.name, len(existing_df), len(delta_df),
-            len(combined), primary_key,
+            existing_parquet.name,
+            len(existing_df),
+            len(delta_df),
+            len(combined),
+            primary_key,
         )
     else:
         logger.warning(
@@ -218,8 +223,12 @@ def extract_incremental(
     # canonical KBC reference, e.g. `in.c-finance.circle`). Fall back to the
     # registry's `id` only when bucket is empty — the registry id is the
     # slugified agnes view name (e.g. `circle_inc`), NOT a valid KBC ref.
+    from connectors.keboola.storage_api import normalize_source_table
+
     bucket = table_config.get("bucket", "")
-    source_table = table_config.get("source_table") or table_config.get("name")
+    # Strip a legacy bucket prefix (pre-fix Data-sources wizard rows stored the
+    # full KBC id in source_table) so the composition below can't double it.
+    source_table = normalize_source_table(bucket, table_config.get("source_table") or table_config.get("name"))
     if bucket and source_table:
         table_id = f"{bucket}.{source_table}"
     else:
@@ -259,7 +268,9 @@ def extract_incremental(
 
     try:
         export_info = client.export_table(
-            table_id, csv_path, changed_since=changed_since,
+            table_id,
+            csv_path,
+            changed_since=changed_since,
         )
         delta_rows = export_info.get("exported_rows", 0)
 

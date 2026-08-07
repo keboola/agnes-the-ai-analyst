@@ -60,14 +60,28 @@ def require_master_token(storage_client) -> None:
 
 def table_lookup_from_registry(rows: list[dict]) -> dict[tuple[str, str], str]:
     """Build {(bucket, source_table): agnes_view_name} from table_registry
-    rows (from `table_registry_repo().list_by_source("keboola")`)."""
+    rows (from `table_registry_repo().list_by_source("keboola")`).
+
+    Keys are normalized with `normalize_source_table`, because
+    :func:`resolve_table_name` builds its lookup key by splitting a Keboola
+    tableId on the last dot — always a BARE table name. A row registered by the
+    pre-fix wizard stores the full `<bucket>.<table>` in `source_table`, so
+    without normalizing here the key would be
+    `("in.c-main", "in.c-main.orders")` while every lookup asks for
+    `("in.c-main", "orders")`: a permanent miss, and the table silently receives
+    no descriptions, metrics or glossary links. The export and view paths already
+    strip the prefix at use; this is the sibling site they missed
+    (Devin Review on #1189).
+    """
+    from connectors.keboola.storage_api import normalize_source_table
+
     lookup: dict[tuple[str, str], str] = {}
     for row in rows:
         bucket = row.get("bucket")
         source_table = row.get("source_table")
         name = row.get("name")
         if bucket and source_table and name:
-            lookup[(bucket, source_table)] = name
+            lookup[(bucket, normalize_source_table(bucket, source_table))] = name
     return lookup
 
 

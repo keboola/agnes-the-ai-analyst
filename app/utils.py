@@ -70,6 +70,35 @@ def resolve_local_parquet(table_id: str, source_type: str | None = None) -> Path
     return matches[0] if matches else None
 
 
+def resolve_local_parquet_glob(table_id: str, source_type: str | None = None) -> str | None:
+    """A `read_parquet` target for a table, single-file OR partitioned.
+
+    The partitioned sync writes `data/<table_id>/<partition>.parquet` — a
+    DIRECTORY, not `data/<table_id>.parquet` — so `resolve_local_parquet` returns
+    None for a healthy, fully-synced partitioned table. Callers that concluded
+    "no parquet means nothing has landed yet" therefore reported a pending or
+    failing first sync for a table whose every sync had succeeded
+    (Devin Review on #1189).
+
+    Returns the single file path, else a `<dir>/*.parquet` glob DuckDB expands,
+    else None when neither layout exists.
+    """
+    single = resolve_local_parquet(table_id, source_type)
+    if single is not None:
+        return str(single)
+    extracts = get_data_dir() / "extracts"
+    if not extracts.exists():
+        return None
+    candidates = []
+    if source_type:
+        candidates.append(extracts / source_type / "data" / table_id)
+    candidates.extend(p for p in extracts.glob(f"*/data/{table_id}") if p.is_dir())
+    for d in candidates:
+        if d.is_dir() and any(d.glob("*.parquet")):
+            return str(d / "*.parquet")
+    return None
+
+
 def get_marketplaces_dir() -> Path:
     """Path where marketplace git repos are cloned by the nightly sync."""
     return get_data_dir() / "marketplaces"

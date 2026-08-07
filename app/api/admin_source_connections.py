@@ -439,6 +439,76 @@ async def test_connection(
         return {"ok": False, "error": str(exc)[:300]}
 
 
+def _scoped_listing(
+    client: KeboolaStorageClient, connection_id: str
+) -> tuple[Optional[List[dict]], Optional[List[dict]]]:
+    """Per-bucket listing driven by the token's own ``bucketPermissions``.
+
+    Bucket-scoped (custom access) tokens can be refused the project-wide
+    ``/buckets`` + ``/tables`` listings while remaining able to read the
+    buckets they are scoped to. ``/tokens/verify`` works for every token and
+    names those buckets, so enumerate exactly what the token can reach.
+
+    Returns ``(buckets, tables)`` in the same shapes the project-wide
+    listings produce (per-bucket table rows are stamped with a nested
+    ``bucket`` object when the upstream omits it). Returns ``(None, None)``
+    when the token carries no ``bucketPermissions`` — nothing to enumerate
+    from, the caller re-raises the original listing error. When permissions
+    exist but every single bucket fails to list, the last per-bucket error
+    is raised so the caller surfaces a real 502 instead of a silently empty
+    picker.
+    """
+    info = client.verify_token()
+    perms = info.get("bucketPermissions") or {}
+    if not perms:
+        return None, None
+
+    buckets: List[dict] = []
+    tables: List[dict] = []
+    last_exc: Optional[Exception] = None
+    for bucket_id in sorted(perms):
+        try:
+            bucket_tables = client.list_tables(bucket_id)
+        except (StorageApiError, requests.RequestException) as exc:
+            logger.warning(
+                "connection %s: listing tables of bucket %s failed: %s",
+                connection_id,
+                bucket_id,
+                exc,
+            )
+            last_exc = exc
+            continue
+        try:
+            bucket = client.get_bucket(bucket_id)
+        except (StorageApiError, requests.RequestException) as exc:
+            # Table listing worked, so keep going — render the bucket from
+            # its id alone rather than dropping its tables.
+            logger.warning(
+                "connection %s: bucket detail for %s failed (%s); rendering from id",
+                connection_id,
+                bucket_id,
+                exc,
+            )
+            stage, _, rest = bucket_id.partition(".")
+            bucket = {"id": bucket_id, "name": rest or bucket_id, "stage": stage, "description": ""}
+        buckets.append(bucket)
+        for t in bucket_tables:
+            if not isinstance(t, dict):
+                continue
+            if not t.get("bucket"):
+                t["bucket"] = {"id": bucket_id}
+            tables.append(t)
+    if not buckets and last_exc is not None:
+        raise last_exc
+    logger.info(
+        "connection %s: bucket-scoped token fallback listed %d bucket(s), %d table(s)",
+        connection_id,
+        len(buckets),
+        len(tables),
+    )
+    return buckets, tables
+
+
 @router.get("/{connection_id}/tables")
 async def list_connection_tables(
     connection_id: str,
@@ -451,16 +521,25 @@ async def list_connection_tables(
     checkbox list, then registers the selected tables one-by-one via
     ``POST /api/admin/register-table`` with this connection's ``id``.
 
+    Tokens with project-wide read use the project-wide ``/buckets`` +
+    ``/tables`` listings. When those are refused — typically a bucket-scoped
+    (custom access) token — the endpoint falls back to enumerating the
+    token's own ``bucketPermissions`` per bucket, so the picker shows
+    exactly what the token can read (``scope: "token_buckets"`` in the
+    response marks the fallback; the default is ``scope: "project"``).
+
     REST-only — admin-UI helper with no analyst-facing CLI/MCP analogue (see
     ``_EXEMPT`` in ``tests/test_documentation_api_triple_surface.py``).
 
     404 if the connection doesn't exist. 400 if the connection isn't
     ``source_type='keboola'`` (the only source type supported today), if no
     ``stack_url`` is configured, or if no token is resolvable (vault empty,
-    ``token_env`` unset). 502 if the upstream Storage API call fails.
+    ``token_env`` unset). 502 if the upstream Storage API calls fail (both
+    the project-wide listing and the per-bucket fallback).
 
     Returns ``{"buckets": [{"id", "name", "stage", "description", "tables": [
-    {"id", "name", "rows", "size_bytes"}, ...]}, ...]}``.
+    {"id", "name", "rows", "size_bytes"}, ...]}, ...], "scope": "project" |
+    "token_buckets"}``.
     """
     row = source_connections_repo().get(connection_id)
     if row is None:
@@ -481,11 +560,73 @@ async def list_connection_tables(
         )
 
     client = KeboolaStorageClient(url=stack_url, token=token)
+
+    def _project_listing() -> tuple[List[dict], List[dict]]:
+        return client.list_buckets(), client.list_tables()
+
+    scope = "project"
     try:
-        buckets = await run_in_threadpool(client.list_buckets)
-        tables = await run_in_threadpool(client.list_tables)
-    except StorageApiError as exc:
-        raise HTTPException(status_code=502, detail=f"keboola_storage_api_error: {exc}") from exc
+        buckets, tables = await run_in_threadpool(_project_listing)
+    except (StorageApiError, requests.RequestException) as exc:
+        # Only a PERMISSION failure justifies the per-bucket fallback. That loop
+        # makes two upstream calls per bucket the token can see, so on a large
+        # project a transient blip would otherwise stall the admin's "Browse &
+        # register tables" for minutes and then mislabel a full-access token as
+        # `token_buckets`. A 5xx or a connection error is not a scope problem, so
+        # it surfaces as itself (Devin Review on #1189).
+        # Require an EXPLICIT refusal. The first version of this gate read
+        # `status is not None and status not in (401, 403)`, which let a
+        # status-less StorageApiError fall THROUGH to the fallback — the very
+        # case the gate exists to prevent. `_parse_list` always stamps a status
+        # today, so it was unreachable, but the condition said the opposite of
+        # its intent and would have started lying the moment some other path
+        # raised without one (Devin Review on #1189).
+        if getattr(exc, "status", None) not in (401, 403):
+            raise HTTPException(status_code=502, detail=f"keboola_storage_api_error: {exc}") from exc
+        # The client's messages already redact response bodies; the token
+        # itself travels in a header and never appears in the exception.
+        logger.warning(
+            "connection %s: project-wide bucket/table listing was refused (%s); "
+            "retrying per-bucket via the token's bucketPermissions",
+            connection_id,
+            exc,
+        )
+        try:
+            buckets, tables = await run_in_threadpool(_scoped_listing, client, connection_id)
+        except (StorageApiError, requests.RequestException) as scoped_exc:
+            raise HTTPException(status_code=502, detail=f"keboola_storage_api_error: {scoped_exc}") from scoped_exc
+        if buckets is None or tables is None:
+            # Token has no bucketPermissions to enumerate — the original
+            # project-wide failure is the real story.
+            raise HTTPException(status_code=502, detail=f"keboola_storage_api_error: {exc}") from exc
+        scope = "token_buckets"
+    else:
+        # A refusal is not the only way a scoped token hides the project: some
+        # token shapes get a 200 with an EMPTY array from /v2/storage/buckets
+        # instead of a 403. That looked identical to an empty project, so the
+        # picker said "no buckets visible to this token" and the fallback never
+        # ran — the exact case this endpoint's fallback exists for
+        # (Devin Review on #1189).
+        #
+        # Safe for a genuinely empty project: `_scoped_listing` returns
+        # (None, None) when the token carries no bucketPermissions, and we keep
+        # the empty project-wide answer. Cost there is one extra verify_token.
+        if not buckets:
+            try:
+                scoped_buckets, scoped_tables = await run_in_threadpool(_scoped_listing, client, connection_id)
+            except (StorageApiError, requests.RequestException) as scoped_exc:
+                # The project-wide call succeeded, so an empty answer is still a
+                # valid one — don't turn a working (if empty) picker into a 502.
+                logger.warning(
+                    "connection %s: empty project-wide listing, and the per-bucket "
+                    "retry failed too (%s); reporting the empty project view",
+                    connection_id,
+                    scoped_exc,
+                )
+                scoped_buckets = scoped_tables = None
+            if scoped_buckets:
+                buckets, tables = scoped_buckets, scoped_tables or []
+                scope = "token_buckets"
 
     tables_by_bucket: Dict[str, List[Dict[str, Any]]] = {}
     for t in tables:
@@ -516,4 +657,4 @@ async def list_connection_tables(
     for bucket_id, tbls in tables_by_bucket.items():
         result.append({"id": bucket_id, "name": bucket_id, "stage": None, "description": None, "tables": tbls})
 
-    return {"buckets": result}
+    return {"buckets": result, "scope": scope}

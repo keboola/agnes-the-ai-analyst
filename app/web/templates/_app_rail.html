@@ -283,10 +283,15 @@
            the two real builders it fronted are reached from the Library
            header's "+ Add" menu (Build a skill · Build a plugin), which is
            where the create-a-thing paths now live. #}
+        {# Hidden when the instance-level agent-profiles toggle is off
+           (`can_agent_profiles` — same gate as the topnav dropdown entry and
+           the command-palette row; the hard gate lives on the routes). #}
+        {% if can_agent_profiles %}
         <a class="rail-i {% if _on_agents %}on{% endif %}" href="/agents">
             <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="8" width="16" height="12" rx="3.5" stroke="currentColor" stroke-width="1.7"/><path d="M12 4.2v3.8M8.5 20v1.5M15.5 20v1.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="9.3" cy="13.5" r="1.1" fill="currentColor"/><circle cx="14.7" cy="13.5" r="1.1" fill="currentColor"/></svg>
             <span class="rail-i-label">Agents</span>
         </a>
+        {% endif %}
     </div>
 
     {% if session.user.is_admin %}
