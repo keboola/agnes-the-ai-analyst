@@ -35,9 +35,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - **BREAKING-revert: stack auto-membership is now opt-in**
   (`features.stack_auto_membership`, env `AGNES_STACK_AUTO_MEMBERSHIP`,
-  default **off**). The auto-membership stack model the redesign shipped as a
-  breaking change reverts to the classic pre-redesign subscribe model on
-  default instances: membership = required ∪ subscribed grants (all
+  default **off**). **Operators of instances that already adopted
+  auto-membership: keep it with one line — `instance.experience: redesign`
+  (or the flag itself) — ideally set before upgrading.** Until it is set,
+  granted-but-unsubscribed resources leave users' stacks, `agnes pull`
+  manifests and query authorization; nothing is lost meanwhile
+  (`user_stack_subscriptions` rows are interpreted, never rewritten, so
+  flipping the flag restores the exact previous state). The auto-membership
+  stack model the redesign shipped as a breaking change reverts to the
+  classic pre-redesign subscribe model on default instances: membership = required ∪ subscribed grants (all
   downloaded by `agnes pull`), Catalog Browse lists every granted resource
   with its add-to-stack state, admin god-mode Browse returns to the
   user-facing catalog, and a `required → available` grant downgrade again
