@@ -20,6 +20,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+- **DuckDB and Postgres filter duplicate/contradiction candidates on the same status set** (part of #1017). Postgres included `'mandatory'`, DuckDB did not. `mandatory` has been a dead status since v49 — that overload was split into the orthogonal `is_required` boolean and the migration rewrote every such row to `is_required=TRUE, status='approved'` — so the extra value matched nothing and this is a tidy-up rather than the behaviour change the issue anticipated. Worth saying plainly because it is not observable: restoring the third value leaves every functional test green, which is why the new cross-engine coverage in `tests/db_pg/test_knowledge_contract.py` pairs behavioural tests (pinning the set that IS live — approved + pending, Required items included, rejected/archived excluded) with a static check comparing the two backends' SQL literals. The `list_by_domain` half of #1017 is deliberately NOT in this change; see the issue.
 
 ### Security
 

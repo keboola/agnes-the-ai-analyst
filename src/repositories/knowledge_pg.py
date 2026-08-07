@@ -879,7 +879,7 @@ class KnowledgePgRepository:
                 conn.execute(
                     sa.text(
                         """SELECT * FROM knowledge_items
-                       WHERE status IN ('approved', 'mandatory', 'pending')
+                       WHERE status IN ('approved', 'pending')
                          AND (is_personal = FALSE OR is_personal IS NULL)
                          AND domain = :d
                          AND id != :id
@@ -1132,7 +1132,7 @@ class KnowledgePgRepository:
     ) -> List[Dict[str, Any]]:
         sql_parts = [
             """SELECT * FROM knowledge_items
-               WHERE status IN ('approved', 'mandatory', 'pending')
+               WHERE status IN ('approved', 'pending')
                  AND (is_personal = FALSE OR is_personal IS NULL)
                  AND id != :id"""
         ]
