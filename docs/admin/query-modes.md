@@ -32,11 +32,17 @@ Otherwise:
 
 Use it when the data may be *queried* by a group of people but must not be *copied* onto their machines: HR tables, salary data, anything under a residency or retention rule, or simply a table too large to be worth distributing.
 
-| | Analyst runs `agnes query` | Analyst runs `agnes query --remote` | Parquet on laptop | Listed in catalog |
-|---|---|---|---|---|
-| `local` | ✅ local view | ✅ | ✅ | ✅ |
-| `local` + `server_only` | ❌ "table does not exist" | ✅ | ❌ | ✅ |
-| `remote` | ❌ | ✅ | ❌ | ✅ |
+| | Analyst runs `agnes query` | Analyst runs `agnes query --local` | Analyst runs `agnes query --remote` | Parquet on laptop | Listed in catalog |
+|---|---|---|---|---|---|
+| `local` | ✅ local view | ✅ local view | ✅ | ✅ | ✅ |
+| `local` + `server_only` | ✅ falls back server-side | ❌ "table does not exist" | ✅ | ❌ | ✅ |
+| `remote` | ✅ falls back server-side | ❌ "table does not exist" | ✅ | ❌ | ✅ |
+
+The first column is the DEFAULT, `--scope auto`: `agnes query` runs locally
+first and transparently re-runs server-side when the table has no local view,
+printing a `[scope]` note to stderr saying where it ran. The hard failure is
+the `--local` column — `--scope local` is the explicit "do not leave this
+machine" mode, and it is the only one that refuses.
 
 **Register via CLI:**
 
@@ -53,7 +59,9 @@ agnes admin register-table salaries \
 
 `server_only=true` is rejected with `query_mode: remote` — a remote row has no server-stored parquet to suppress, so the pairing is incoherent. Both the CLI and the API validator refuse it.
 
-An analyst who queries a `server_only` table locally gets a "table does not exist" error with a hint pointing at `--remote`; `agnes catalog` surfaces the flag as the `server_only` field and in `fetch_via`.
+An analyst querying a `server_only` table with plain `agnes query` gets their answer: the default `--scope auto` finds no local view and re-runs the query server-side, noting `[scope] '<table>' not found locally — running server-side`. Only `--local` / `--scope local` refuses, with a "table does not exist" error and a hint pointing at `--remote`. `agnes catalog` surfaces the flag as the `server_only` field and in `fetch_via`.
+
+`server_only` is therefore a *distribution* control, not an access control: it stops the parquet reaching the laptop, and RBAC alone decides who may read the data. Do not reach for it to hide a table from someone who has been granted it.
 
 ## Per-source-type reference
 

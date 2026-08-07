@@ -229,9 +229,11 @@ Tables in `agnes catalog` have a `query_mode`:
 
 - **`server_only=true`** (independent of `query_mode`): materialized/local on
   the server but NOT synced to the laptop (`agnes pull` skips it), so there is
-  no local view. Query it server-side via `agnes query --remote "SELECT … FROM
-  <table>"`; local `agnes query` fails with "table does not exist". The catalog
-  surfaces this as the `server_only` field and in `fetch_via`.
+  no local view. Plain `agnes query` still answers — the default `--scope auto`
+  finds no local view and re-runs server-side with a `[scope]` note, exactly as
+  described above. Only `--local` / `--scope local` fails with "table does not
+  exist"; `agnes query --remote` is the explicit form. The catalog surfaces
+  this as the `server_only` field and in `fetch_via`.
 
 ### `agnes snapshot create` workflow (preferred for remote tables)
 
