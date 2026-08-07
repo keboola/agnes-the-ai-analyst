@@ -160,6 +160,80 @@ def _looks_like_bq_rewrite_parse_error(exc: BaseException) -> bool:
     return any(pat in msg for pat in _BQ_REWRITE_PARSE_ERROR_PATTERNS)
 
 
+# Cap on SQL text written to the application log. Matches the 200-char
+# `sql_preview` the audit-log writer already uses, so a query body has one
+# consistent exposure limit across both sinks.
+_SQL_LOG_PREVIEW_CHARS = 200
+
+
+def _bq_error_offset(message: str, sql: str) -> Optional[int]:
+    """Absolute offset into ``sql`` for a BigQuery ``at [line:col]`` suffix.
+
+    BigQuery reports where it stopped parsing, and for the ROLLUP rejection this
+    module logs it is well past any sane preview cap — the motivating message
+    ends ``other grouping elements at [1:657]``. Returns ``None`` when the
+    message carries no position or the position does not exist in ``sql``, so
+    callers fall back to a head preview rather than to a wrong window.
+
+    Both coordinates are 1-based.
+    """
+    m = re.search(r"\[(\d+):(\d+)\]", message or "")
+    if not m:
+        return None
+    line, col = int(m.group(1)), int(m.group(2))
+    raw = sql or ""
+    if line < 1 or col < 1:
+        return None
+    # Walk the RAW string counting only `\n`, rather than `splitlines()` plus
+    # one character per break. `splitlines()` gets this wrong twice: it drops
+    # the `\r` of a CRLF, so the reconstructed offset under-counts by one per
+    # preceding line and the window drifts off the clause BigQuery named; and
+    # it also breaks on separators BigQuery does not treat as line ends
+    # (`\v`, `\f`, `\x1c`, ` `, …), which would mis-split a query that
+    # merely contains one. Real indices into the string the engine parsed are
+    # the only thing `around` can be applied to (Devin Review on #1188).
+    start = 0
+    for _ in range(line - 1):
+        nl = raw.find("\n", start)
+        if nl == -1:
+            return None
+        start = nl + 1
+    offset = start + (col - 1)
+    return offset if offset <= len(raw) else None
+
+
+def _sql_log_preview(sql: str, *, around: Optional[int] = None) -> str:
+    """Truncate SQL for logging. Query literals can carry sensitive values,
+    so the log must never become the one place a full query body lands
+    unbounded.
+
+    ``around`` centers the window on a character offset the engine complained
+    about instead of taking it from the head. Without it, logging a rejected
+    query is self-defeating for exactly the case it was added for: BigQuery
+    rejected at character 657 and the head-200 preview stops long before the
+    clause the operator needs to see. The cap itself is unchanged, so the
+    sensitive-value bound this function exists for still holds — the window
+    moves, it does not grow.
+
+    Whitespace is collapsed AFTER windowing, never before: ``around`` indexes
+    the raw SQL the engine parsed, and collapsing first would shift every offset
+    past the first run of whitespace.
+    """
+    raw = sql or ""
+    text = " ".join(raw.split())
+    if len(text) <= _SQL_LOG_PREVIEW_CHARS:
+        return text
+    if around is None:
+        return text[:_SQL_LOG_PREVIEW_CHARS] + "... [truncated]"
+
+    half = _SQL_LOG_PREVIEW_CHARS // 2
+    start = max(0, min(around - half, max(0, len(raw) - _SQL_LOG_PREVIEW_CHARS)))
+    window = " ".join(raw[start : start + _SQL_LOG_PREVIEW_CHARS].split())
+    lead = "[truncated] ..." if start > 0 else ""
+    tail = "... [truncated]" if start + _SQL_LOG_PREVIEW_CHARS < len(raw) else ""
+    return f"{lead}{window}{tail}"
+
+
 def _hint_for_bq_bad_request(message: str) -> str:
     """Pick the most useful one-line hint for a BigQuery `bad_request`
     error message. The default "column doesn't exist" hint is correct
@@ -171,6 +245,27 @@ def _hint_for_bq_bad_request(message: str) -> str:
     are all reserved). Branch on the BQ message to pick the right hint
     rather than always blaming columns."""
     msg = message.lower()
+    if "only supports rollup" in msg:
+        # DuckDB accepts `GROUP BY a, ROLLUP(b)`; BigQuery requires ROLLUP
+        # to be the sole grouping element. Same dialect-divergence class as
+        # `::INT` casts, but far more confusing: the query is well-formed
+        # DuckDB and runs fine via the ATTACH-catalog path, so the analyst
+        # has no reason to suspect their GROUP BY. Only the dry-run (which
+        # must reach BQ to price the scan) rejects it.
+        #
+        # Deliberately does NOT suggest `GROUP BY ROLLUP(a, b)`: that is a
+        # DIFFERENT query (it adds a grand-total row). GROUPING SETS is the
+        # faithful translation.
+        return (
+            "BigQuery requires ROLLUP to be the only element in a GROUP BY, "
+            "and this query combines it with other grouping elements. DuckDB "
+            "allows that mix, so SQL that runs locally is rejected here. "
+            "Rewrite the GROUP BY as an explicit GROUPING SETS list: "
+            "GROUP BY country, ROLLUP(brand) becomes GROUP BY GROUPING SETS "
+            "((country, brand), (country)). Note that GROUP BY "
+            "ROLLUP(country, brand) is NOT the same query: it adds a "
+            "grand-total row."
+        )
     if "unexpected keyword" in msg or "syntax error" in msg:
         # Plain text — this string is surfaced as JSON `hint:` and printed
         # verbatim by the CLI. No markdown rendering, so avoid backtick
@@ -2025,12 +2120,20 @@ def _bq_quota_and_cap_guard(
                             **(exc.details or {}),
                         },
                     )
+                # Log the rejected SQL itself. Dry-run BQ jobs are not
+                # retained by BigQuery, so once the request is over this
+                # WARNING is the ONLY surviving evidence of what BQ was
+                # actually asked to parse. Without it, triage cannot
+                # distinguish a rewriter bug from user-side dialect drift —
+                # an ambiguity that has cost a full investigation before.
+                # Truncated: see `_sql_log_preview`.
                 logger.warning(
                     "BQ dry-run rejected the rewritten SQL "
                     "(kind=%s, message=%s). Retrying with the user's "
-                    "original SQL.",
+                    "original SQL. rewritten_sql_preview=%r",
                     exc.kind,
                     exc.message,
+                    _sql_log_preview(rewritten_sql, around=_bq_error_offset(exc.message, rewritten_sql)),
                 )
                 try:
                     total_bytes = _bq_dry_run_bytes(bq, sql, user=user, agent_name="query")
