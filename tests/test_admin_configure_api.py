@@ -604,6 +604,14 @@ class TestDocumentedServerConfigKeysAreWritable:
     _NOT_LIVE_WRITABLE = {
         "analytics": "backend choice is governed by the state machine + a data migration, not a live patch",
         "coordination": "process topology; takes effect on restart, and the guide pairs it with a compose change",
+        # Owner decision on #1186 (unlike studio/chat above, which were bugs):
+        # a provisioning-time kill switch flipped by Terraform-written .env,
+        # with no runtime-toggle use case identified. docs/CONFIGURATION.md and
+        # docs/feature-flags.md both state the knob is env-var / hand-edit only.
+        "agent_profiles": (
+            "deliberately env-var-only kill switch — no runtime-toggle use case identified; "
+            "flip via AGNES_AGENT_PROFILES_ENABLED (or the static instance.yaml) + restart"
+        ),
         # Precise version of what used to say "same reason" as chat: the flag
         # itself IS read per request (app/web/router.py:315, :2261,
         # app/api/data_apps_git.py:105), so flipping it live does un-hide the
@@ -775,8 +783,7 @@ class TestDocumentedServerConfigKeysAreWritable:
         from pathlib import Path
 
         tpl = (
-            Path(__file__).resolve().parent.parent
-            / "app" / "web" / "templates" / "admin_server_config.html"
+            Path(__file__).resolve().parent.parent / "app" / "web" / "templates" / "admin_server_config.html"
         ).read_text(encoding="utf-8")
         assert "const v = isUnset ? dflt : !!value;" in tpl, (
             "the bool branch must fall back to the declared default when unset"
