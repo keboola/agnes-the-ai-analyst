@@ -165,3 +165,55 @@ def get_switch(name: str) -> Switch:
     silent `None` would resolve as "off" at the callsite.
     """
     return _BY_NAME[name]
+
+
+def switch_value(name: str) -> Any:
+    """Resolve a switch to its effective value.
+
+    Order, identical for every switch and unchanged from the convention
+    `feature_enabled` established:
+
+        env var  >  server-config overlay  >  instance.yaml base  >  default
+
+    The middle two collapse into one step: `config/loader.py` deep-merges the
+    writable admin overlay over the static base at load time, so `get_value`
+    already returns the fully-resolved value.
+
+    `on_invalid` decides what an unrecognized `select` token does — fall back
+    to the default (the common case) or raise (`analytics.backend`, where a
+    typo must fail loudly at boot rather than silently pick a backend).
+    """
+    # Local import: `app.instance_config` imports this module, so a
+    # module-level import here would be circular. Precedent:
+    # `src/analytics_backend.py::resolve_analytics_backend_name`.
+    import os
+
+    from app.instance_config import coerce_flag_value, get_value
+
+    switch = get_switch(name)
+
+    raw: Any = None
+    if switch.env_var:
+        raw = os.environ.get(switch.env_var)
+    if raw is None and switch.config_keys:
+        raw = get_value(*switch.config_keys, default=None)
+    if raw is None:
+        return switch.default
+
+    if switch.kind == "bool":
+        return coerce_flag_value(raw, switch.default)
+
+    if switch.kind == "int":
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return switch.default
+
+    value = str(raw).strip().lower()
+    if switch.kind == "select" and value not in switch.options:
+        if switch.on_invalid == "raise":
+            raise ValueError(
+                f"invalid value {value!r} for switch {switch.name!r}; expected one of {', '.join(switch.options)}"
+            )
+        return switch.default
+    return value
