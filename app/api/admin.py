@@ -328,6 +328,12 @@ _EDITABLE_SECTIONS: tuple[str, ...] = (
     # HTTP surface (no sidecar, no compose profile), so a live flip is complete
     # and immediate.
     "studio",
+    # `features.*` is the reserved namespace for section-less flags
+    # (docs/feature-flags.md). Its first occupant, stack_auto_membership,
+    # is read per request through feature_enabled() and flips pure request
+    # semantics (StackResolver formulas + the grant-downgrade fan-out), so a
+    # live flip is complete and immediate — same class as `studio`.
+    "features",
 )
 
 # "Danger-zone" sections — flipping these can lock operators out (auth.*) or
@@ -418,6 +424,21 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                 "moderation queue, plus the public suggestion API). Read per "
                 "request, so turning it off hides the nav entries, redirects the "
                 "routes home and 403s the suggestion API immediately."
+            ),
+        },
+    },
+    "features": {
+        "stack_auto_membership": {
+            "kind": "bool",
+            "default": _flag_default("features", "stack_auto_membership", False),
+            "hint": (
+                "Stack membership mode. OFF (classic, the default): membership "
+                "is the subscribe model — required plus subscribed grants, all "
+                "downloaded by agnes pull. ON: auto-membership — every granted "
+                "resource is in the stack immediately; subscribe/unsubscribe "
+                "only control the local copy. Read per request; flips instantly, "
+                "subscriptions are interpreted, never rewritten. The "
+                "instance.experience: redesign preset defaults this ON."
             ),
         },
     },
