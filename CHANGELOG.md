@@ -197,10 +197,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   + `css/tour_legacy.css`, restored `app/web/onboarding.py` steps, and the
   header "?" launcher); and the chat welcome cards keep their pre-redesign
   copy and icons byte-for-byte (`_chat_welcome_cards_legacy.html`). Under
-  the redesign opt-in every one of these keeps the redesigned behavior
-  unchanged. The admin menu's "Moderation & Trust" entry is now gated on
-  `store.verification_enabled` (a semantic gate — with verification off,
-  the default, the hub has nothing to moderate).
+  ANY redesign opt-in — rail layout or paper theme — every one of these
+  keeps the redesigned behavior unchanged: the legacy tour and the
+  standalone connector page key on the same opt-in expression as their nav
+  affordances, so a paper-on-topnav instance gets neither an orphaned tour
+  pop-up nor a resurrected page its menu no longer links. The
+  "Moderation & Trust" hub entry is now gated on
+  `store.verification_enabled` in all three of its entry points — topnav
+  mega-menu, /admin hub card, and the Cmd/Ctrl-K palette (with its `g v`
+  hotkey) — a semantic gate: with verification off, the default, the hub
+  has nothing to moderate.
 
 ### Fixed
 
