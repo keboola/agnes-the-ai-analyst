@@ -784,11 +784,21 @@ a.logo:hover h1 { color: var(--primary); }
     margin-top: 2px;
 }
 
-nav {
-    display: flex;
-    align-items: center;
-    gap: 15px;
-}
+/* The bare `nav { display: flex }` that used to live here is GONE (#1207).
+   It was written for the header, but a bare element selector reaches every
+   <nav> in the app, and a <nav> that does not declare its own `display` got a
+   horizontal row it never asked for — which is how the semantic layer's
+   category sidebar came to lay its buttons out sideways and clip them.
+
+   Removing it rather than scoping it, because it turns out to give the header
+   nothing: `.app-header-nav` and `.app-header-right` both declare
+   display/align-items/gap themselves, and every other nav in the app
+   (`.tab-strip`, `.cfg-sidenav`, `.rail`, `.hiw-toc`) declares its own too.
+   The rule's only remaining effect was on the two navs that declared nothing —
+   `.sl-cat-nav` and `.ad-toc` — and for both, block flow is what they want.
+   Audited across every <nav> in app/web/templates before deleting.
+
+   If a future nav needs the row, it says so on its own class. */
 
 .user-info {
     display: flex;
