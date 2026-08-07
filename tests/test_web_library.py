@@ -464,8 +464,16 @@ def test_library_available_grant_classic_is_not_claimed_in_stack(seeded_app, mon
     body = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
     row = _row_for(body, "Classic Offered Package")
     assert 'data-stack="available"' in row, "unsubscribed available must filter as addable, not in-stack"
-    assert "In Stack" not in row
-    assert "add it from the Catalog" in row
+    assert 'data-stack-badge="' not in row or "In Stack" not in row.split("data-add-to-stack")[0], (
+        "a non-member must not wear the member pill"
+    )
+    # A real Add control wired to the generic subscribe endpoint (JSON body
+    # in data-stack-body), with the post-add state pinned to the LOCKED
+    # member pill (Devin Review on #1199, round 4).
+    assert 'data-add-to-stack="' in row
+    assert 'data-stack-endpoint="/api/stack/subscribe"' in row
+    assert "data-stack-body=" in row and "data_package" in row
+    assert 'data-stack-locked-after="1"' in row
 
     # Subscribing joins the stack — the row becomes a member.
     conn = get_system_db()

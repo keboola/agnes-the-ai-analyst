@@ -91,6 +91,7 @@ class TestFeatureFlagsRegistry:
             "chat_approvals",
             "data_apps",
             "library_show_unverified_trust",
+            "experience",
             "stack_auto_membership",
             "mcp_query_param_token",
             "mcp_source_url_strict",
@@ -98,9 +99,18 @@ class TestFeatureFlagsRegistry:
         }
 
     def test_every_entry_resolves(self, monkeypatch):
+        from app import switches as sw
+
         monkeypatch.setattr(ic, "get_value", lambda *keys, default=None: default)
         for flag in ic.FEATURE_FLAGS:
             monkeypatch.delenv(flag.env_var, raising=False)
+            if flag.kind != "bool":
+                # Non-boolean switches (the `experience` select) resolve
+                # through switch_value, not the boolean feature_enabled.
+                if flag.runtime_view:
+                    continue
+                assert sw.switch_value(flag.name) == flag.default
+                continue
             result = ic.feature_enabled(*flag.config_keys, env_var=flag.env_var, default=flag.default)
             assert isinstance(result, bool)
             assert result == flag.default
