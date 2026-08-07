@@ -214,13 +214,14 @@ def get_accessible_tables(
 
     Stack-gated for analysts: the set is the union of
       * internal tables (row-level RBAC at query time), and
-      * tables belonging to data packages in the user's stack — auto-
-        membership: required ∪ available, every grant on the caller's
-        groups, regardless of whether the user subscribed to a local copy
-        (``StackResolver.stack``). This is the query-authorization boundary;
-        a local parquet copy is a separate, narrower concern handled by the
-        manifest's per-table ``server_only`` overlay (`agnes pull` skip),
-        not by this function.
+      * tables belonging to data packages in the user's stack
+        (``StackResolver.stack``, whose formula forks on
+        ``features.stack_auto_membership`` — classic default: required ∪
+        subscribed-available; auto: every grant on the caller's groups,
+        regardless of subscription). This is the query-authorization
+        boundary; a local parquet copy is a separate, narrower concern
+        handled by the manifest's per-table ``server_only`` overlay
+        (`agnes pull` skip), not by this function.
     Per-table ``resource_grants(group, 'table', …)`` rows are NO LONGER
     consulted for analyst visibility — see :func:`can_access_table`.
 

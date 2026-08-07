@@ -791,13 +791,16 @@ async def update_grant_requirement(
 ):
     """Update the ``requirement`` enum on an existing grant.
 
-    Auto-membership stack model: ``data_package``/``memory_domain`` grants no
-    longer need a soft-downgrade fan-out. Both ``required`` and ``available``
-    are automatically in every granted user's stack (``StackResolver.stack``),
-    so flipping ``required → available`` never drops the resource from
-    anyone's stack — it only lifts the "always downloaded locally" guarantee
-    down to "downloaded once the user subscribes". No ``user_stack_
-    subscriptions`` row needs to be eagerly written to preserve visibility.
+    The ``required → available`` downgrade path depends on the stack
+    membership mode (``features.stack_auto_membership``, spec
+    2026-08-07-default-chrome-ux-parity). Classic (the default): membership
+    is the subscribe model, so the downgrade eagerly fans out
+    ``user_stack_subscriptions`` rows to the group's members — the
+    pre-redesign v49 behavior — or they would silently lose the resource.
+    Auto-membership: both ``required`` and ``available`` are automatically in
+    every granted user's stack (``StackResolver.stack``), so the downgrade
+    only lifts the "always downloaded locally" guarantee and no row is
+    written.
 
     ``marketplace_plugin`` grants are the one remaining exception: plugin
     visibility is resolved by ``resolve_user_marketplace`` off
@@ -846,6 +849,24 @@ async def update_grant_requirement(
                 existing["group_id"],
                 slug,
                 plugin_name,
+            )
+    elif prior == "required" and payload.requirement == "available":
+        # Classic stack mode (spec 2026-08-07-default-chrome-ux-parity, the
+        # default): membership is the subscribe model, so a required →
+        # available downgrade MUST eagerly materialize subscriptions for the
+        # group's members — the pre-redesign v49 fan-out verbatim — or every
+        # member silently loses the resource from their stack. Under
+        # auto-membership the grant itself keeps the resource in every
+        # member's stack, so no row needs writing.
+        from app.instance_config import get_stack_auto_membership
+
+        if not get_stack_auto_membership():
+            from src.repositories import user_stack_subscriptions_repo
+
+            user_stack_subscriptions_repo().subscribe_group_members(
+                existing["group_id"],
+                existing["resource_type"],
+                existing["resource_id"],
             )
 
     _audit(

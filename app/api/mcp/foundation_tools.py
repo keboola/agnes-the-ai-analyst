@@ -512,19 +512,21 @@ def register_foundation_tools(
     async def stack_browse(resource_type: Literal["data_package", "memory_domain"]) -> dict:
         """List every data package or memory domain your groups are granted.
 
-        Every granted resource is automatically in your stack (auto-
-        membership — no subscribe step needed to see or query it); each item
-        is annotated ``in_stack: true`` plus a ``materialized`` flag telling
-        you whether it's ALSO downloaded locally (`agnes pull` fetches it)
-        vs. only queryable server-side. ``catalog`` lists what's actually
-        synced to this workspace; this is the broader discovery surface.
+        By default (classic membership) ``in_stack`` marks the ones already
+        in your stack (required, or subscribed by you) — add the rest with
+        ``stack_subscribe``. When the instance runs auto-membership
+        (``features.stack_auto_membership``), every granted resource is
+        automatically in your stack and ``materialized`` tells you which are
+        ALSO downloaded locally (`agnes pull` fetches them) vs. only
+        queryable server-side. ``catalog`` lists what's actually synced to
+        this workspace; this is the broader discovery surface.
 
         Args:
             resource_type: ``data_package`` or ``memory_domain``.
 
         Returns ``{"items": [{"id", "name", "description", "requirement",
-        "in_stack", "materialized", ...}]}``. Download a local copy of a
-        not-yet-materialized item with ``stack_subscribe``.
+        "in_stack", "materialized", ...}]}``. Add (or, under
+        auto-membership, download) an item with ``stack_subscribe``.
         """
         async with httpx.AsyncClient() as c:
             r = await c.get(
@@ -538,15 +540,16 @@ def register_foundation_tools(
 
     @tool()
     async def stack_subscribe(resource_type: Literal["data_package", "memory_domain"], resource_id: str) -> dict:
-        """Download a local copy of a data package or memory domain already
-        granted to you.
+        """Subscribe to a data package or memory domain granted to you.
 
-        The resource is already in your stack and server-side queryable the
-        moment it's granted (auto-membership) — this only controls whether
-        `agnes pull` ALSO keeps a local copy on disk, the same effect as
-        clicking "Download locally" in the web UI; it applies to all future
-        sessions. Use ``stack_browse`` first to find the ``resource_id`` of a
-        not-yet-materialized (``materialized: false``) item.
+        By default (classic membership) this ADDS the resource to your
+        stack, so `agnes pull` starts downloading it. When the instance runs
+        auto-membership (``features.stack_auto_membership``), the resource is
+        already in your stack the moment it's granted — this then only
+        controls whether `agnes pull` ALSO keeps a local copy on disk, the
+        same effect as clicking "Download locally" in the web UI. Either
+        way it applies to all future sessions. Use ``stack_browse`` first to
+        find the ``resource_id``.
 
         Args:
             resource_type: ``data_package`` or ``memory_domain``.
@@ -573,13 +576,15 @@ def register_foundation_tools(
 
     @tool()
     async def stack_unsubscribe(resource_type: Literal["data_package", "memory_domain"], resource_id: str) -> dict:
-        """Remove the local copy of a data package or memory domain.
+        """Unsubscribe from a data package or memory domain.
 
-        The resource STAYS in your stack (still server-side queryable via
-        ``agnes query --scope auto`` falling back to remote execution) — this
-        only stops `agnes pull` from downloading its parquet/bundle going
-        forward. Required resources cannot be removed this way (the server
-        returns an error) — they're always downloaded, no opt-out. The
+        By default (classic membership) this REMOVES the resource from your
+        stack. When the instance runs auto-membership
+        (``features.stack_auto_membership``), the resource STAYS in your
+        stack (still server-side queryable via ``agnes query --scope auto``
+        falling back to remote execution) — it only stops `agnes pull` from
+        downloading its parquet/bundle going forward. Required resources
+        cannot be removed either way (the server returns an error). The
         already-downloaded local copy persists on disk until the next
         ``agnes pull`` prunes it.
 
