@@ -583,24 +583,43 @@ else
     # H8-NEW: also pass SOURCE_URL on the failed-migration path
     # so cloud-source rollbacks don't wipe the url. Same B4-class
     # outage class as the __rollback site.
-    write_instance_yaml "$SOURCE_BACKEND" "${SOURCE_URL:-}"
-    # Clear the lifecycle flag if the rollback lands on a non-PG state —
-    # otherwise the next applier tick would re-trigger the postgres
-    # lifecycle ("side-car-enabled" / "cloud-only") and leave an orphan
-    # agnes-postgres-1 container running with no data.
-    #
-    # B.3 — Both duckdb and cloud sources lack a side-car lifecycle
-    # need, so both must clear the flag on rollback. The asymmetric
-    # original (duckdb only) silently broke cloud→side_car DR rollback:
-    # instance.yaml said "cloud" but the flag still said
-    # "side-car-enabled", and the next tick re-enabled the postgres
-    # container. For source=side_car we keep the flag as-is because
-    # "side-car-enabled" is still the correct lifecycle.
-    case "$SOURCE_BACKEND" in
-        duckdb|cloud)
-            rm -f "$FLAG"
-            ;;
-    esac
+    # Guarded, not bare. This runs under `set -euo pipefail` with
+    # `trap '__rollback' ERR`, and write_instance_yaml can now exit
+    # non-zero, so a bare call would abort the script right here — before
+    # the flag handling below and before step 4 brings app+scheduler back
+    # up. A failed migration would then take the instance offline and stay
+    # there: `_recover_stuck_jobs` only repairs jobs still in status
+    # `running`, and this one is already `failed`. That is the exact
+    # outage class the comment above names, so the rollback path must be
+    # able to fail without stopping the recovery it exists to perform.
+    if write_instance_yaml "$SOURCE_BACKEND" "${SOURCE_URL:-}"; then
+        # Clear the lifecycle flag if the rollback lands on a non-PG state —
+        # otherwise the next applier tick would re-trigger the postgres
+        # lifecycle ("side-car-enabled" / "cloud-only") and leave an orphan
+        # agnes-postgres-1 container running with no data.
+        #
+        # B.3 — Both duckdb and cloud sources lack a side-car lifecycle
+        # need, so both must clear the flag on rollback. The asymmetric
+        # original (duckdb only) silently broke cloud→side_car DR rollback:
+        # instance.yaml said "cloud" but the flag still said
+        # "side-car-enabled", and the next tick re-enabled the postgres
+        # container. For source=side_car we keep the flag as-is because
+        # "side-car-enabled" is still the correct lifecycle.
+        case "$SOURCE_BACKEND" in
+            duckdb|cloud)
+                rm -f "$FLAG"
+                ;;
+        esac
+    else
+        # The rollback did not reach disk, so instance.yaml still names the
+        # transient `*_in_progress` backend. Leave the flag alone: clearing
+        # it would assert a lifecycle the file does not agree with, and the
+        # pair being consistent is what the next tick reads. Step 4 still
+        # runs, so the instance comes back up on the backend it was already
+        # using — degraded and loud beats offline and silent.
+        update_job "$PENDING_JOB" "failed" "migration failed AND the instance.yaml rollback was refused — backend left at the in-progress value"
+        logger -t agnes-state-applier "Migration job $JOB_ID failed and the instance.yaml rollback FAILED — backend still reads *_in_progress and the lifecycle flag was left as-is; manual intervention needed"
+    fi
 fi
 
 # 4. Bring the app back up. After-state app reads instance.yaml and
