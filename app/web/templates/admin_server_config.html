@@ -562,7 +562,15 @@ function renderLeafInput(fieldId, section, pathSegments, kind, value, opts, isUn
     return `<input id="${fieldId}" type="number" step="any" data-section="${section}" data-key="${escHtml(dottedKey)}" data-path="${dataPath}" data-cast="float" value="${escHtml(v)}">`;
   }
   if (kind === "bool") {
-    const v = !!value;
+    // Unset falls back to the registry default, exactly like the text branch
+    // below — `!!undefined` is false, so a never-configured switch whose real
+    // default is ON rendered as OFF and the next "Save section" wrote that
+    // false back. Concretely: enabling chat also silently disabled tool-call
+    // approvals, and saving the Studio section disabled the Studio surface.
+    // Latent until booleans with a true default became editable
+    // (Devin Review on #1190).
+    const dflt = opts && opts.spec && typeof opts.spec.default === "boolean" ? opts.spec.default : false;
+    const v = isUnset ? dflt : !!value;
     return `<select id="${fieldId}" data-section="${section}" data-key="${escHtml(dottedKey)}" data-path="${dataPath}" data-cast="bool">
       <option value="true" ${v ? "selected" : ""}>true</option>
       <option value="false" ${!v ? "selected" : ""}>false</option>

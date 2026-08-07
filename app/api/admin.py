@@ -314,6 +314,20 @@ _EDITABLE_SECTIONS: tuple[str, ...] = (
     # section the documented remediation 400s and only the env var works
     # (Devin Review on #1183).
     "mcp",
+    # Same bug class as `mcp`, found by deriving the check from FEATURE_FLAGS
+    # instead of from prose (see tests/test_admin_configure_api.py).
+    #
+    # `chat` is the sharper of the two: docs/feature-flags.md states that
+    # app/main.py boots chat from the writable overlay file ALONE, and tells
+    # operators to "enable chat via the /admin/server-config editor (which
+    # writes the overlay) or the AGNES_CHAT_ENABLED env var". Without the
+    # section here, the first of those two documented paths 400s — and the same
+    # holds for `chat.approvals_enabled`.
+    "chat",
+    # `studio` is read per request through feature_enabled() and gates only an
+    # HTTP surface (no sidecar, no compose profile), so a live flip is complete
+    # and immediate.
+    "studio",
 )
 
 # "Danger-zone" sections — flipping these can lock operators out (auth.*) or
@@ -345,11 +359,71 @@ _DANGER_SECTIONS: tuple[str, ...] = ("auth", "server")
 # (data_source.bigquery.billing_project) proves the renderer wiring works
 # end-to-end so subagents 2-4 only have to add registry entries — they
 # don't need to touch admin_server_config.html.
+def _flag_default(section: str, key: str, fallback: bool) -> bool:
+    """The default `FEATURE_FLAGS` declares for a flag-backed field.
+
+    Hand-copying it here is how `chat.approvals_enabled` ended up documented as
+    off-by-default while the registry (and the runtime) had it on — the panel then
+    described the opposite of what the system does, and the unset-boolean renderer
+    turned that wrong default into a wrong written value. Deriving removes the
+    second copy: the registry is already the source of truth for WHICH sections are
+    editable (tests/test_admin_configure_api.py), so it should be the source for
+    their defaults too (Devin Review on #1190).
+
+    `fallback` covers a declared field with no registry entry — a plain config
+    boolean rather than a feature flag.
+    """
+    from app.instance_config import FEATURE_FLAGS
+
+    for flag in FEATURE_FLAGS:
+        if flag.config_keys and flag.config_keys[0] == section and flag.config_keys[-1] == key:
+            return flag.default
+    return fallback
+
+
 _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
+    # Both sections became editable alongside `mcp`; declaring their booleans
+    # here is what makes the panel render a switch instead of a free-text field,
+    # and what keeps them out of the secret redactor via
+    # `_declared_boolean_fields()`.
+    "chat": {
+        "enabled": {
+            "kind": "bool",
+            "default": _flag_default("chat", "enabled", False),
+            "hint": (
+                "Expose the cloud chat surface. app/main.py boots chat from the "
+                "writable server-config overlay alone, so this editor (or "
+                "AGNES_CHAT_ENABLED) is the effective way to turn it on — a value "
+                "set only in the static config/instance.yaml never reaches the "
+                "chat runtime."
+            ),
+        },
+        "approvals_enabled": {
+            "kind": "bool",
+            "default": _flag_default("chat", "approvals_enabled", True),
+            "hint": (
+                "ON by default: a tool call the agent asks about is routed to an "
+                "approval card. Turning it OFF auto-allows those calls instead. "
+                "Resolved from the same overlay-only source as chat.enabled."
+            ),
+        },
+    },
+    "studio": {
+        "enabled": {
+            "kind": "bool",
+            "default": _flag_default("studio", "enabled", True),
+            "hint": (
+                "Expose the authoring Studio (/admin/studio* including the "
+                "moderation queue, plus the public suggestion API). Read per "
+                "request, so turning it off hides the nav entries, redirects the "
+                "routes home and 403s the suggestion API immediately."
+            ),
+        },
+    },
     "mcp": {
         "allow_query_param_token": {
             "kind": "bool",
-            "default": True,
+            "default": _flag_default("mcp", "allow_query_param_token", True),
             "hint": (
                 "Accept an MCP access token in the `?token=` query string as "
                 "well as the Authorization header. Convenient for clients that "
