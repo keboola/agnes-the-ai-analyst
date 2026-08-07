@@ -148,4 +148,3 @@ a theme) and `library.show_unverified_trust` (the trust vocabulary is
 already gated to the paper theme itself). The `/admin/server-config` flag
 inventory leads with the preset's resolved value and labels preset-sourced
 flag defaults with a `preset` badge.
->>>>>>> 9ebe80c0c (feat(stack): classic membership by default — auto-membership behind features.stack_auto_membership)
