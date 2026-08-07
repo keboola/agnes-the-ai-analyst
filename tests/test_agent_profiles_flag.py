@@ -155,7 +155,7 @@ class TestRouterLevelGuard:
 
 class TestWebRedirect:
     def test_agents_page_redirects_home_when_disabled(self, flag_env, monkeypatch):
-        monkeypatch.setattr("app.web.agents_page.get_agent_profiles_enabled", lambda: False)
+        monkeypatch.setattr("app.web.router.get_agent_profiles_enabled", lambda: False)
         c = flag_env["client"]
         resp = c.get("/agents", headers=_auth(flag_env["owner_token"]), follow_redirects=False)
         assert resp.status_code in (302, 307)

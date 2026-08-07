@@ -3549,6 +3549,8 @@ async def agents_page(
     Agent definitions themselves persist in the browser for now — a server
     registry is the next iteration, so the page states that plainly rather
     than pretending drafts are shared."""
+    if not get_agent_profiles_enabled():
+        return RedirectResponse("/", status_code=302)
     from app.services.stack_resolver import StackResolver
     from app.resource_types import ResourceType
 
