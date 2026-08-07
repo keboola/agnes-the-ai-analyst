@@ -347,25 +347,6 @@ def _is_paper_theme() -> bool:
 templates.env.globals["is_paper"] = _is_paper_theme
 
 
-def _store_verification_on() -> bool:
-    """Whether the Store verification workflow is enabled. A Jinja global for
-    the same reasons as `is_paper` above — the admin header's "Moderation &
-    Trust" row is a chrome-level surface rendered on every page, so it can't
-    rely on per-route context. Re-read per call so an admin flipping the
-    setting takes effect without a restart (spec 2026-08-07 wave 2: with
-    verification disabled — the default — the hub has nothing to moderate,
-    so the menu entry is gated on the semantic switch, not on a chrome
-    check)."""
-    try:
-        from app.instance_config import get_store_verification_enabled
-
-        return get_store_verification_enabled()
-    except Exception:
-        return False
-
-
-templates.env.globals["store_verification_on"] = _store_verification_on
-
 
 # The ONE default behind `library.show_unverified_trust`, read off the registry
 # rather than restated at each read site. Three callsites resolve this flag (the

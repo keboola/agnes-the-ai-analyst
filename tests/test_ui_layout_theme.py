@@ -2217,55 +2217,12 @@ class TestDefaultContentParity:
         assert resp.status_code == 302
         assert resp.headers["location"] == "/how-it-works#connect"
 
-    def test_moderation_gate_covers_admin_hub_and_palette(self, web_client, admin_cookie, monkeypatch):
-        """All three entry points to the Moderation & Trust hub — topnav
-        mega-menu row, /admin hub card, Cmd/Ctrl-K palette (+ its `g v`
-        hotkey) — key on the same verification gate; a gate applied in one
-        place but not the others merely hides the row (Devin Review on
-        #1200)."""
-        import app.instance_config as ic
-
-        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
-        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
-        hub = web_client.get("/admin", cookies=admin_cookie).text
-        assert 'href="/admin/store">Moderation' not in hub
-        # The palette + hotkey map render from _app_scripts.html on every page.
-        assert "'v': '/admin/store'" not in hub
-        assert "{ label: 'Moderation & Trust'" not in hub
-
-        monkeypatch.setattr(
-            ic,
-            "get_value",
-            lambda *keys, default=None: True if keys == ("store", "verification_enabled") else default,
-        )
-        hub = web_client.get("/admin", cookies=admin_cookie).text
-        assert 'href="/admin/store">Moderation' in hub
-        assert "'v': '/admin/store'" in hub
-
     def test_topnav_chat_welcome_cards_are_the_frozen_copy(self, web_client, admin_cookie, monkeypatch):
         monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
         monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
         resp = self._chat(web_client, admin_cookie)
         assert "I'm the Agnes data agent." in resp.text, "topnav chat must keep the pre-redesign welcome-card copy"
         assert "📊 Your data" in resp.text, "pre-redesign card icons (emoji) must survive on topnav"
-
-    def test_admin_menu_moderation_row_is_gated_on_verification(self, web_client, admin_cookie, monkeypatch):
-        import app.instance_config as ic
-
-        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
-        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
-        resp = web_client.get("/me/profile", cookies=admin_cookie)
-        assert "Moderation &amp; Trust" not in resp.text, (
-            "with verification off (default) the Moderation & Trust hub row must not render"
-        )
-        monkeypatch.setattr(
-            ic,
-            "get_value",
-            lambda *keys, default=None: True if keys == ("store", "verification_enabled") else default,
-        )
-        resp = web_client.get("/me/profile", cookies=admin_cookie)
-        assert "Moderation &amp; Trust" in resp.text
-
 
 
 class TestDetailPageParity:

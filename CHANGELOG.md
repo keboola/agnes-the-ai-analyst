@@ -54,11 +54,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   paper) instead: the legacy tour and the standalone connector page, so a
   paper-on-topnav instance gets neither an orphaned tour pop-up (its "?"
   launcher is hidden there) nor a page its menu no longer links. The
-  "Moderation & Trust" hub entry is now gated on
-  `store.verification_enabled` in all three of its entry points — topnav
-  mega-menu, /admin hub card, and the Cmd/Ctrl-K palette (with its `g v`
-  hotkey) — a semantic gate: with verification off, the default, the hub
-  has nothing to moderate.
+  admin "Moderation & Trust" menu entry stays ungated (an accepted
+  additive admin link): the hub hosts the submission-review count and
+  curation jump-offs even with Store verification off, and the page
+  itself already hides only its verification section then.
 
 - **BREAKING-revert: stack auto-membership is now opt-in**
   (`features.stack_auto_membership`, env `AGNES_STACK_AUTO_MEMBERSHIP`,

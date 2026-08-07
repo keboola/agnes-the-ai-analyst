@@ -117,15 +117,9 @@
   <div class="admin-hub-card">
     <h2 class="admin-hub-card__title">Agent Experience</h2>
     <div class="admin-hub-links">
-      {# Same semantic gate as the topnav mega-menu row (spec 2026-08-07
-         wave 2): with verification off the hub has nothing to moderate, and
-         a gate applied in one entry point but not the others is merely
-         hiding the row (Devin Review on #1200). #}
-      {% if store_verification_on() %}
       <a class="admin-hub-link" href="/admin/store">Moderation &amp; Trust
         <span class="admin-hub-link__desc">Verification requests, submission review, marketplace curation</span>
       </a>
-      {% endif %}
       <a class="admin-hub-link" href="/admin/marketplaces">Curated Marketplaces</a>
       <a class="admin-hub-link" href="/admin/initial-workspace">Initial Workspace</a>
       <a class="admin-hub-link" href="/admin/news">News</a>
