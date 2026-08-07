@@ -130,3 +130,52 @@ class TestMemoryUnifiedPage:
         body = resp.text
         # Either explicit "ask your admin" or "no memory domains" empty banner.
         assert "ask your admin" in body.lower() or "no memory" in body.lower()
+
+
+class TestTopnavClassicMemoryCardState:
+    """The restored pre-redesign /corporate-memory page, measured rather than
+    reasoned about.
+
+    A review round argued the frozen `corporate_memory_legacy.html` renders
+    every domain as "not in stack", on the grounds that
+    `_memory_domain_entry_dict` no longer emits `in_stack`. It does emit it
+    (`app/web/router.py`, mirroring `entry.materialized`), and in classic mode
+    `browse()` sets `in_stack = materialized`, so the two agree. But this PR
+    is what makes that page the default surface again, so the claim is worth a
+    rendered assertion instead of another round of grepping (Devin on #1199).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _topnav_classic(self, monkeypatch):
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.delenv("AGNES_STACK_AUTO_MEMBERSHIP", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_EXPERIENCE", raising=False)
+
+    def test_a_required_domain_card_reads_as_in_stack(self, seeded_app):
+        dom = _make_domain(slug="req-dom", name="Required Domain")
+        _grant("Everyone", dom, requirement="required", users=["analyst1"])
+
+        body = seeded_app["client"].get(
+            "/corporate-memory", headers=_auth(seeded_app["analyst_token"])
+        ).text
+
+        assert "Required Domain" in body, "precondition: the granted domain renders at all"
+        card = body[body.index("Required Domain") - 3000 : body.index("Required Domain") + 500]
+        assert 'data-in-stack="1"' in card, (
+            "a required domain rendered as NOT in stack — the card would offer "
+            "'+ Add to stack' for something the user cannot remove"
+        )
+
+    def test_an_unsubscribed_available_domain_reads_as_addable(self, seeded_app):
+        """The negative control: without it the assertion above would pass on a
+        build that hardcoded in_stack=1 for every card."""
+        dom = _make_domain(slug="avail-dom", name="Available Domain")
+        _grant("Everyone", dom, requirement="available", users=["analyst1"])
+
+        body = seeded_app["client"].get(
+            "/corporate-memory", headers=_auth(seeded_app["analyst_token"])
+        ).text
+
+        assert "Available Domain" in body
+        card = body[body.index("Available Domain") - 3000 : body.index("Available Domain") + 500]
+        assert 'data-in-stack="0"' in card, "an unsubscribed available domain must stay addable in classic mode"
