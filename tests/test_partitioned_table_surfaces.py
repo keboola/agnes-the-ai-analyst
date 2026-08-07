@@ -176,6 +176,28 @@ class TestPathContainment:
         # …and the source-agnostic fallback must not readmit it either.
         assert resolve_local_parquet("leaky") is None
 
+    def test_a_symlinked_source_directory_is_still_readable(self, tmp_path, monkeypatch):
+        """Containment must not cost an operator a legitimate layout.
+
+        Symlinking a whole extract source onto a larger volume
+        (`extracts/keboola` -> /mnt/big/keboola) is deployment, not an escape —
+        but resolving only against `extracts/` rejected it, and every table
+        under that source read as unsynced on every surface at once (Devin
+        Review on #1198). The link planted INSIDE such a source is still refused
+        by the test above, since it resolves outside its own source root too.
+        """
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        elsewhere = tmp_path / "volume" / "keboola" / "data"
+        elsewhere.mkdir(parents=True)
+        pq.write_table(pa.table({"a": [1]}), elsewhere / "ok.parquet")
+        (tmp_path / "extracts").mkdir()
+        (tmp_path / "extracts" / "keboola").symlink_to(tmp_path / "volume" / "keboola")
+
+        from app.utils import local_parquet_size_bytes, resolve_local_parquet
+
+        assert resolve_local_parquet("ok", "keboola") is not None
+        assert local_parquet_size_bytes("ok", "keboola") is not None
+
     @pytest.mark.parametrize("pattern", ["*", "?k", "[o]k", "*.parquet", "o*"])
     def test_glob_metacharacter_ids_match_nothing(self, data_dir, pattern):
         """The id is interpolated into a GLOB, not only joined into a path.

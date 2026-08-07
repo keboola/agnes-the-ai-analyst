@@ -67,9 +67,26 @@ def _is_safe_table_segment(name: str) -> bool:
 
 def _contained(path: Path, root: Path) -> bool:
     """True when *path* really lives under *root* — resolved, so neither a
-    ``..`` component nor a symlink planted inside the tree escapes it."""
+    ``..`` component nor a symlink planted inside the tree escapes it.
+
+    Each ``extracts/*`` entry counts as a root in its own right. Resolving only
+    against ``extracts`` itself would reject a whole extract SOURCE directory
+    that an operator has symlinked onto another volume
+    (``extracts/keboola`` → ``/mnt/big/keboola``) — deployment layout, not an
+    escape — and every table under such a source would read as unsynced on every
+    surface at once (Devin Review on #1198). Widening to the source roots costs
+    nothing in containment: a link planted INSIDE one of them that points
+    somewhere else resolves outside its own source root too, so it is still
+    refused.
+    """
     try:
-        return path.resolve().is_relative_to(root.resolve())
+        real = path.resolve()
+        if real.is_relative_to(root.resolve()):
+            return True
+        for entry in root.iterdir():
+            if entry.is_dir() and real.is_relative_to(entry.resolve()):
+                return True
+        return False
     except OSError:
         return False
 
