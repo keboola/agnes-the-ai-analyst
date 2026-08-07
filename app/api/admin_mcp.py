@@ -580,6 +580,46 @@ def _require_safe_source_name(name: str) -> None:
         )
 
 
+async def _check_source_url_or_400(row: dict) -> str:
+    """Gate a source row's ``url`` (#1154). Returns the warning to audit, if any.
+
+    No-op for ``stdio``: there the secret goes into the subprocess environment
+    and ``url`` is never dialed — it is inert documentation, and refusing a
+    note nobody connects to would be theatre. Mirrors the same transport test
+    the credential purge uses, so the two agree about when a url is live.
+
+    ``check_source_url`` does a BLOCKING ``getaddrinfo``; this is an ``async
+    def`` handler, so it goes through ``asyncio.to_thread`` rather than
+    stalling the event loop for the resolver timeout — same hazard, and same
+    remedy, as ``set_oauth_client_config``.
+    """
+    if (row.get("transport") or "") not in ("http", "sse"):
+        return ""
+    from app.instance_config import get_mcp_source_url_strict, get_ssrf_allowed_hosts
+    from src.net.mcp_source_url import check_source_url
+
+    strict = get_mcp_source_url_strict()
+    # The SAME allowlist every other admin-configured URL consults
+    # (`_validate_url_not_private` in app/api/admin.py). A host an operator has
+    # already declared trusted must not have to be declared twice.
+    verdict = await asyncio.to_thread(
+        lambda: check_source_url(
+            row.get("url") or "",
+            strict=strict,
+            allowed_hosts=get_ssrf_allowed_hosts(),
+        )
+    )
+    if not verdict.ok:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"url failed validation: {verdict.reason}"
+                + ("" if strict else " (set mcp.source_url_strict to also require https to a public address)")
+            ),
+        )
+    return verdict.warning
+
+
 @router.post("/mcp-sources", status_code=201)
 async def create_mcp_source(
     payload: CreateMCPSourceRequest,
@@ -598,6 +638,11 @@ async def create_mcp_source(
     repo = mcp_sources_repo()
     if repo.get_by_name(name) is not None:
         raise HTTPException(status_code=409, detail="name_exists")
+    # #1154 — see the same call in update_mcp_source. Runs before the row is
+    # written so a refused url never reaches the registry at all.
+    url_warning = await _check_source_url_or_400(
+        {"transport": payload.transport, "url": payload.url},
+    )
     source_id = str(uuid.uuid4())
     try:
         repo.upsert(
@@ -625,7 +670,11 @@ async def create_mcp_source(
         user["id"],
         "mcp_source.create",
         f"mcp_source:{source_id}",
-        {"name": name, "transport": payload.transport},
+        {
+            "name": name,
+            "transport": payload.transport,
+            **({"url_warning": url_warning} if url_warning else {}),
+        },
     )
     return {"id": source_id}
 
@@ -729,6 +778,17 @@ async def update_mcp_source(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
+    # #1154: the source's own url is dialed with a credential attached on EVERY
+    # forward, so it earns the same configuration-time check the OAuth
+    # endpoints get — with a policy that does not outlaw internal MCP servers
+    # (see src/net/mcp_source_url.py for where the line falls and why).
+    #
+    # Placed here for the same reason `validate_source_fields` is: it must sit
+    # AFTER the merge (a patch that only flips transport can make a stored url
+    # live for the first time) and BEFORE the purge, so a request that is about
+    # to 400 cannot destroy credentials on its way out.
+    url_warning = await _check_source_url_or_400(merged)
+
     was_oauth = (existing.get("auth_method") or "").strip().lower() == "oauth"
     still_oauth = (merged.get("auth_method") or "").strip().lower() == "oauth"
     # Repointing `url` sends every stored credential for this source to a
@@ -823,7 +883,16 @@ async def update_mcp_source(
         # audit trail shows a url change and no trace of what it destroyed
         # (review finding on #1124). purged_kinds names WHICH, since the two
         # branches fire independently and cost the operator different things.
-        {"after": after, "credentials_purged": bool(purged), "purged_kinds": purged},
+        # url_warning: an accepted-but-notable url (a credentialed forward to an
+        # internal address). Recorded rather than merely logged so "does this
+        # instance talk to anything on the intranet" is answerable from the
+        # audit trail instead of from a grep over server logs (#1154).
+        {
+            "after": after,
+            "credentials_purged": bool(purged),
+            "purged_kinds": purged,
+            **({"url_warning": url_warning} if url_warning else {}),
+        },
         params_before={"before": before},
     )
     return (
