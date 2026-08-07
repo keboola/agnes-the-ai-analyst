@@ -104,6 +104,15 @@ database:
 YAML
     chown 999:999 "$INSTANCE_YAML"
 fi
+# 0600 unconditionally, not just on the create branch above: the file holds the
+# Postgres URL with its password inline (and whatever credentials an operator
+# put in a connector overlay), lives on the data volume that several non-root
+# containers mount, and root's umask would otherwise leave a freshly created
+# one world-readable. Outside the `if` so a boot also repairs a file created
+# before this line existed, or by an app writer that predates its own chmod.
+# Owner stays uid 999 — the app container and the state applier both run as
+# that uid, so neither loses access.
+chmod 600 "$INSTANCE_YAML" 2>/dev/null || true
 
 # --- 3. App directory + extract host artifacts from the pinned image ---
 APP_DIR="/opt/agnes"

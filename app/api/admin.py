@@ -1599,6 +1599,16 @@ async def update_server_config(
         # auth.* is editable here — half-written file → operator lockout).
         tmp_path = config_path.with_suffix(config_path.suffix + ".tmp")
         tmp_path.write_text(yaml.dump(overlay_payload, default_flow_style=False, sort_keys=False))
+        # 0600 BEFORE the rename, not after: os.replace is atomic, so the
+        # file is never observable at the umask default this way. instance.yaml
+        # holds the Postgres URL (password inline) and any operator-set
+        # connector credentials, yet it was landing world-readable on the data
+        # volume — which several non-root containers mount — while the
+        # equivalent /opt/agnes/.env is 0600. The app and the state applier
+        # both run as uid 999, the file's owner, so nothing legitimate loses
+        # access. Mirrors src/db_state_machine.py::write_backend_state and
+        # scripts/ops/agnes-state-applier.sh, which already do this.
+        os.chmod(tmp_path, 0o600)
         os.replace(tmp_path, config_path)
         logger.info("server-config: wrote %d section(s) to %s", len(request.sections), config_path)
 
@@ -3969,6 +3979,8 @@ async def configure_instance(
         config_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = config_path.with_suffix(config_path.suffix + ".tmp")
         tmp_path.write_text(yaml.dump(overlay, default_flow_style=False, sort_keys=False))
+        # 0600 before the rename — see the server-config editor above.
+        os.chmod(tmp_path, 0o600)
         os.replace(tmp_path, config_path)
         logger.info("Wrote instance config to %s", config_path)
 
