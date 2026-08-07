@@ -585,44 +585,6 @@ class TestDocumentedServerConfigKeysAreWritable:
     (Devin Review on #1183).
     """
 
-    # Sections that are operator-facing config but deliberately NOT live-writable,
-    # each with the reason. A documented section that is neither editable nor
-    # listed here fails the test below — that is the ratchet.
-    #
-    # Two earlier versions of this list were wrong in instructive ways:
-    #   * the first filtered `documented` down to `{"mcp"}` before diffing, so it
-    #     could only ever fail for the one flag it was written for while its
-    #     docstring claimed a general rule (Devin Review on #1183);
-    #   * the second exempted `chat` on the reasoning that "a live flip would not
-    #     take effect" — the opposite of what `docs/feature-flags.md` says. That
-    #     doc tells operators to "enable chat via the `/admin/server-config`
-    #     editor (which writes the overlay) or the `AGNES_CHAT_ENABLED` env var",
-    #     and explains that `app/main.py` boots chat from the OVERLAY FILE ALONE,
-    #     so the editor is the primary documented mechanism, not an ineffective
-    #     one. Both `chat` and `studio` are now editable; the exemption was
-    #     covering a real bug rather than describing a design.
-    _NOT_LIVE_WRITABLE = {
-        "analytics": "backend choice is governed by the state machine + a data migration, not a live patch",
-        "coordination": "process topology; takes effect on restart, and the guide pairs it with a compose change",
-        # Owner decision on #1186 (unlike studio/chat above, which were bugs):
-        # a provisioning-time kill switch flipped by Terraform-written .env,
-        # with no runtime-toggle use case identified. docs/CONFIGURATION.md and
-        # docs/feature-flags.md both state the knob is env-var / hand-edit only.
-        "agent_profiles": (
-            "deliberately env-var-only kill switch — no runtime-toggle use case identified; "
-            "flip via AGNES_AGENT_PROFILES_ENABLED (or the static instance.yaml) + restart"
-        ),
-        # Precise version of what used to say "same reason" as chat: the flag
-        # itself IS read per request (app/web/router.py:315, :2261,
-        # app/api/data_apps_git.py:105), so flipping it live does un-hide the
-        # surface — but the apps_runner sidecar sits behind compose
-        # `profiles: ["apps"]`, so enabling it live can surface a feature whose
-        # backend is absent. Left exempt deliberately, and this reason now says
-        # which half is true.
-        "data_apps": "flag is read per request, but the apps_runner sidecar needs the `apps` compose profile — enabling it live can surface a backend-less feature",
-        "distribution": "documented as an `instance.yaml` + `AGNES_DISTRIBUTION_*` pair, object-store credentials included",
-    }
-
     def _documented_keys(self):
         """`section.key:` pairs the deployment guide writes in backticks.
 
@@ -645,19 +607,44 @@ class TestDocumentedServerConfigKeysAreWritable:
         return set(re.findall(r"`([a-z_]+)\.([a-z_]+):", doc))
 
     def _registry_sections(self):
-        """Sections owned by the `FEATURE_FLAGS` registry.
+        """Sections owned by the switch registry."""
+        from app.switches import SWITCHES
 
-        The structured source of truth, and the one that should have been used
-        from the start: every entry is by construction an operator-facing knob,
-        and `FeatureFlag`'s own docstring calls the registry "everything the
-        `/admin/server-config` inventory panel needs to display a flag" — so the
-        panel shows each of these while the write allowlist may still reject it.
-        Prose can be rewritten or live in a file this test does not read; the
-        registry cannot drift silently.
+        return {s.config_keys[0] for s in SWITCHES if s.config_keys}
+
+    #: Sections the deployment guide documents that own no registry switch YET.
+    #:
+    #: NOT a revival of `_NOT_LIVE_WRITABLE`. That dict answered "why is this
+    #: registered flag not writable?", and the registry now answers it itself via
+    #: `Switch.lock_reason`. What is left is a different and strictly smaller
+    #: question: DEPLOYMENT.md documents these three, but no switch owns them, so
+    #: neither derived set can speak for them.
+    #:
+    #: Temporary by construction. PR2 of this effort registers switches for
+    #: `analytics.backend`, `coordination.backend` and `distribution.signed_urls`;
+    #: `test_no_switch_backed_section_is_still_listed_as_undeclared` below fails
+    #: the moment one of them lands, forcing its removal from here.
+    _DOCUMENTED_BUT_NOT_SWITCH_BACKED = {
+        "analytics": "backend choice is governed by the state machine + a data migration, not a live patch",
+        "coordination": "process topology; takes effect on restart, and the guide pairs it with a compose change",
+        "distribution": "documented as an `instance.yaml` + `AGNES_DISTRIBUTION_*` pair, object-store credentials included",
+    }
+
+    def _locked_sections(self):
+        """Sections whose only switches are locked, each WITH a stated reason.
+
+        Replaces the old `_NOT_LIVE_WRITABLE` dict: the reason now lives on
+        the entry, where the product can show it, instead of in this file
+        where only a test reader ever saw it. A locked switch with an empty
+        `lock_reason` does NOT count as accounted for here — that is what
+        makes `test_every_registry_section_is_editable_or_locked_with_a_reason`
+        below a real check on the reason rather than just on `editable`.
         """
-        from app.instance_config import FEATURE_FLAGS
+        from app.switches import SWITCHES
 
-        return {flag.config_keys[0] for flag in FEATURE_FLAGS if flag.config_keys}
+        editable = {s.config_keys[0] for s in SWITCHES if s.editable and s.config_keys}
+        locked = {s.config_keys[0] for s in SWITCHES if not s.editable and s.config_keys and s.lock_reason.strip()}
+        return locked - editable
 
     def test_the_documented_key_scrape_finds_something(self):
         """Guards the guard: a doc rewrite that changes the backtick convention
@@ -666,40 +653,67 @@ class TestDocumentedServerConfigKeysAreWritable:
         assert len(self._documented_keys()) >= 5
         assert len(self._registry_sections()) >= 4
 
-    def test_every_feature_flag_section_is_editable_or_explicitly_exempt(self):
-        """The registry-derived half of the ratchet.
-
-        Adding a `FeatureFlag` without touching `_EDITABLE_SECTIONS` is the exact
-        shape that shipped `mcp.allow_query_param_token` env-var-only and then
-        `agent_profiles.enabled` after it. Deriving from the registry means a new
-        flag cannot be added without either making its section writable or saying
-        here why it must not be.
-        """
+    def test_every_registry_section_is_editable_or_locked_with_a_reason(self):
         from app.api.admin import _EDITABLE_SECTIONS
 
-        unaccounted = self._registry_sections() - set(_EDITABLE_SECTIONS) - set(self._NOT_LIVE_WRITABLE)
+        unaccounted = self._registry_sections() - set(_EDITABLE_SECTIONS) - self._locked_sections()
         assert not unaccounted, (
-            "FEATURE_FLAGS section neither writable via /admin/server-config nor listed "
-            f"in _NOT_LIVE_WRITABLE with a reason: {sorted(unaccounted)}. The flag panel "
-            "displays it, so a save that 400s is the operator's only signal."
+            "switch section neither writable via /admin/server-config nor backed by a locked "
+            f"switch carrying a lock_reason: {sorted(unaccounted)}. The panel displays it, so "
+            "a save that 400s is the operator's only signal."
         )
+
+    def test_no_locked_section_is_also_editable(self):
+        """Shrinks-only, in its new form: a switch that became editable must
+        clear `lock_reason`, and its section must not appear in both sets."""
+        from app.api.admin import _EDITABLE_SECTIONS
+
+        stale = self._locked_sections() & set(_EDITABLE_SECTIONS)
+        assert not stale, f"now editable — clear lock_reason on: {sorted(stale)}"
+
+    def test_editable_switch_section_derivation_is_pinned(self):
+        """NOT a regression guard: `_EDITABLE_SECTIONS` is defined as
+        `_STATIC_EDITABLE_SECTIONS | {section of every editable switch}`, so
+        this predicate holds by construction for any registry content — it
+        cannot fail no matter what `SWITCHES` contains. It exists to pin the
+        derivation in prose next to the definition it restates, and to make a
+        future rewrite of `_EDITABLE_SECTIONS` that breaks the union show up
+        here. The bug shape this derivation actually prevents (an editable
+        switch shipping section-less, as `mcp.allow_query_param_token` did) is
+        guarded by `test_every_registry_section_is_editable_or_locked_with_a_reason`
+        above, which checks the *registry* against `_EDITABLE_SECTIONS` rather
+        than checking `_EDITABLE_SECTIONS` against itself."""
+        from app.api.admin import _EDITABLE_SECTIONS
+        from app.switches import SWITCHES
+
+        for s in SWITCHES:
+            if s.editable and s.config_keys:
+                assert s.config_keys[0] in _EDITABLE_SECTIONS, (
+                    f"{s.name} is editable but section {s.config_keys[0]!r} is not writable"
+                )
 
     def test_every_documented_section_is_editable_or_explicitly_exempt(self):
         from app.api.admin import _EDITABLE_SECTIONS
 
         documented = {sec for sec, _ in self._documented_keys()}
-        unaccounted = documented - set(_EDITABLE_SECTIONS) - set(self._NOT_LIVE_WRITABLE)
+        unaccounted = (
+            documented - set(_EDITABLE_SECTIONS) - self._locked_sections() - set(self._DOCUMENTED_BUT_NOT_SWITCH_BACKED)
+        )
         assert not unaccounted, (
-            "documented in DEPLOYMENT.md but neither writable via /admin/server-config "
-            f"nor listed in _NOT_LIVE_WRITABLE with a reason: {sorted(unaccounted)}"
+            "documented in DEPLOYMENT.md but neither writable via /admin/server-config, "
+            "nor backed by a locked switch carrying a lock_reason, nor listed in "
+            f"_DOCUMENTED_BUT_NOT_SWITCH_BACKED with a reason: {sorted(unaccounted)}"
         )
 
-    def test_no_stale_exemption(self):
-        """Shrinks-only: a section that became editable must leave the list."""
-        from app.api.admin import _EDITABLE_SECTIONS
+    def test_no_switch_backed_section_is_still_listed_as_undeclared(self):
+        """Shrinks-only. A section that gains a switch must leave the dict —
+        otherwise a stale entry would keep excusing a section the registry can
+        now speak for, which is how the exemption this replaced grew stale."""
+        from app.switches import SWITCHES
 
-        stale = set(self._NOT_LIVE_WRITABLE) & set(_EDITABLE_SECTIONS)
-        assert not stale, f"now editable — drop from _NOT_LIVE_WRITABLE: {sorted(stale)}"
+        owned = {s.config_keys[0] for s in SWITCHES if s.config_keys}
+        stale = owned & set(self._DOCUMENTED_BUT_NOT_SWITCH_BACKED)
+        assert not stale, f"now switch-backed — drop from _DOCUMENTED_BUT_NOT_SWITCH_BACKED: {sorted(stale)}"
 
     def test_every_editable_section_declares_its_fields(self):
         """Editable ⇒ declared. True for all 19 sections today, so it is a real

@@ -18,6 +18,7 @@ import duckdb
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
+from app.switches import SWITCHES
 from src.identifier_validation import (
     is_safe_identifier as _is_safe_identifier,
     is_safe_quoted_identifier as _is_safe_quoted_identifier,
@@ -287,10 +288,17 @@ def _validate_materialize_section(sections: Dict[str, Dict[str, Any]]) -> None:
 # Hot-reload is OUT OF SCOPE for #91 — the response carries
 # `restart_required=True` so the UI can show the banner.
 
-# Sections an admin can mutate. Keep the list explicit so a typo'd section
-# in the request body is rejected loudly instead of being silently merged
-# into the YAML root and confusing future loads.
-_EDITABLE_SECTIONS: tuple[str, ...] = (
+# Sections an admin can mutate.
+#
+# Two halves. `_STATIC_EDITABLE_SECTIONS` are the sections that carry ordinary
+# configuration — hosts, credentials, limits — and own no switch. The rest is
+# DERIVED from the switch registry, so adding an editable switch cannot leave
+# its section unwritable; that omission shipped twice before this was
+# mechanical (`mcp`, then `chat`).
+#
+# A typo'd section in the request body is still rejected loudly rather than
+# being merged into the YAML root.
+_STATIC_EDITABLE_SECTIONS: tuple[str, ...] = (
     "instance",
     "data_source",
     "email",
@@ -304,30 +312,12 @@ _EDITABLE_SECTIONS: tuple[str, ...] = (
     "desktop",
     "corporate_memory",
     "materialize",
-    "guardrails",
-    "library",
     "marketplace",
     "connectors",
-    # The token-in-URL fallback switch is an operator decision, and
-    # docs/DEPLOYMENT.md tells operators to make it here — but this tuple is
-    # what POST /api/admin/server-config validates against, so without the
-    # section the documented remediation 400s and only the env var works
-    # (Devin Review on #1183).
-    "mcp",
-    # Same bug class as `mcp`, found by deriving the check from FEATURE_FLAGS
-    # instead of from prose (see tests/test_admin_configure_api.py).
-    #
-    # `chat` is the sharper of the two: docs/feature-flags.md states that
-    # app/main.py boots chat from the writable overlay file ALONE, and tells
-    # operators to "enable chat via the /admin/server-config editor (which
-    # writes the overlay) or the AGNES_CHAT_ENABLED env var". Without the
-    # section here, the first of those two documented paths 400s — and the same
-    # holds for `chat.approvals_enabled`.
-    "chat",
-    # `studio` is read per request through feature_enabled() and gates only an
-    # HTTP surface (no sidecar, no compose profile), so a live flip is complete
-    # and immediate.
-    "studio",
+)
+
+_EDITABLE_SECTIONS: tuple[str, ...] = tuple(
+    sorted(set(_STATIC_EDITABLE_SECTIONS) | {s.config_keys[0] for s in SWITCHES if s.editable and s.config_keys})
 )
 
 # "Danger-zone" sections — flipping these can lock operators out (auth.*) or
@@ -336,6 +326,7 @@ _EDITABLE_SECTIONS: tuple[str, ...] = (
 # the audit entry can flag the change as high-risk and the UI can surface
 # the right warning copy.
 _DANGER_SECTIONS: tuple[str, ...] = ("auth", "server")
+
 
 # Known-but-optional config fields per section. The /admin/server-config UI
 # uses this registry alongside the YAML payload to render fields the operator
@@ -360,24 +351,16 @@ _DANGER_SECTIONS: tuple[str, ...] = ("auth", "server")
 # end-to-end so subagents 2-4 only have to add registry entries — they
 # don't need to touch admin_server_config.html.
 def _flag_default(section: str, key: str, fallback: bool) -> bool:
-    """The default `FEATURE_FLAGS` declares for a flag-backed field.
+    """The default the switch registry declares for a flag-backed field.
 
-    Hand-copying it here is how `chat.approvals_enabled` ended up documented as
-    off-by-default while the registry (and the runtime) had it on — the panel then
-    described the opposite of what the system does, and the unset-boolean renderer
-    turned that wrong default into a wrong written value. Deriving removes the
-    second copy: the registry is already the source of truth for WHICH sections are
-    editable (tests/test_admin_configure_api.py), so it should be the source for
-    their defaults too (Devin Review on #1190).
-
-    `fallback` covers a declared field with no registry entry — a plain config
-    boolean rather than a feature flag.
+    Hand-copying it here is how `chat.approvals_enabled` ended up documented
+    as off-by-default while the registry and the runtime had it on. `fallback`
+    covers a declared field with no registry entry — a plain config boolean
+    rather than a switch.
     """
-    from app.instance_config import FEATURE_FLAGS
-
-    for flag in FEATURE_FLAGS:
-        if flag.config_keys and flag.config_keys[0] == section and flag.config_keys[-1] == key:
-            return flag.default
+    for s in SWITCHES:
+        if s.config_keys == (section, key):
+            return bool(s.default)
     return fallback
 
 
@@ -1090,10 +1073,7 @@ def _declared_boolean_fields() -> frozenset[str]:
     covered without anyone remembering this failure mode.
     """
     return frozenset(
-        name
-        for section in _KNOWN_FIELDS.values()
-        for name, spec in section.items()
-        if spec.get("kind") == "bool"
+        name for section in _KNOWN_FIELDS.values() for name, spec in section.items() if spec.get("kind") == "bool"
     )
 
 
@@ -1386,18 +1366,33 @@ def _feature_flags_inventory() -> List[Dict[str, Any]]:
                 "default": flag.default,
                 "env_var": flag.env_var,
                 "description": flag.description,
+                "effect": flag.effect,
+                "editable": flag.editable,
+                "lock_reason": flag.lock_reason,
             }
         )
     return out
 
 
-#: Registry flags whose runtime value comes from ``load_chat_config`` rather
-#: than ``feature_enabled``, mapped to the ChatConfig attribute holding it.
-#: They need their own view because the two read DIFFERENT sources — the chat
-#: config parses the writable overlay only, ``feature_enabled`` the merged
-#: static+overlay — so resolving them the ordinary way lets the panel report a
-#: value the running chat gate does not use (Devin Review on #1146/#1157).
-_CHAT_RUNTIME_FLAGS = {"chat": "enabled", "chat_approvals": "approvals_enabled"}
+#: Registry switches whose runtime value comes from `load_chat_config` rather
+#: than the merged config, mapped to the ChatConfig attribute holding it.
+#: Derived from `runtime_view` so a third chat-resolved switch cannot be added
+#: without the panel following — the previous hand-written dict was the reason
+#: this needed a Devin Review note on #1146/#1157.
+#:
+#: Restricted to `config_keys[0] == "chat"`: `_chat_flag_runtime_view` below
+#: reads `raw.get("chat")` and calls `load_chat_config`, so a switch outside
+#: the chat section declaring `runtime_view` would silently resolve against
+#: the wrong section rather than fail. The assertion turns that into a loud
+#: import-time error instead — a non-chat `runtime_view` needs its own
+#: resolver, not a bigger map here.
+_CHAT_RUNTIME_FLAGS = {
+    s.name: s.runtime_view for s in SWITCHES if s.runtime_view and s.config_keys and s.config_keys[0] == "chat"
+}
+assert len(_CHAT_RUNTIME_FLAGS) == sum(1 for s in SWITCHES if s.runtime_view), (
+    "a switch declares runtime_view outside the chat section; _chat_flag_runtime_view "
+    "only knows how to resolve chat.* — give it a dedicated resolver instead of widening this map"
+)
 
 
 def _chat_flag_runtime_view(flag) -> tuple:
