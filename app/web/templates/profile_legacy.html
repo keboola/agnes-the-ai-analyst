@@ -1,0 +1,175 @@
+{% extends "base_page.html" %}
+{% block title %}Profile — {{ config.INSTANCE_NAME }}{% endblock %}
+
+{# Migrated onto base_page.html (Tier 2, issue 367): the hero comes from the
+   page_hero_* vars below (base_page auto-includes _page_hero.html); the body
+   lives in `{% block page %}`. Width is unchanged — the canonical
+   `.container:has(.profile-page) { max-width: 1100px }` rule in style-custom.css
+   still caps the shell because `.profile-page` remains inside the container. #}
+{% set page_hero_eyebrow = "Your account" %}
+{% set page_hero_title = "Profile" %}
+{% set page_hero_subtitle = "Account details and your group memberships." %}
+
+{% block head_extra %}
+<style>
+.group-chip.is-admin       { background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink); font-weight: 600; }
+.group-chip.is-everyone    { background: var(--ds-surface-dim); color: var(--ds-text-secondary); }
+.group-chip.is-google_sync { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
+.group-chip.is-custom      { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
+</style>
+{% endblock %}
+
+{% block page %}
+{# Design-system component macros — the 3 section cards (Account, Group
+   memberships, Effective access) render via `ds.panel(tag='section',
+   title=...)` so each stays an aria-labelled landmark. The Session-
+   troubleshooting `<details>` can't go through the macro (no
+   <details>/<summary> support); it carries `.ds-card` explicitly. `ds` is
+   auto-imported by base_ds.html. #}
+
+<div class="profile-page">
+  {% call ds.panel(title='Account', tag='section',
+                   klass='section-card',
+                   attrs='aria-label="Account details"') %}
+    <div class="account-grid">
+      <span class="k">Email</span>
+      <span class="v">{{ user.email or "—" }}</span>
+      <span class="k">Name</span>
+      <span class="v">{{ user.name or "—" }}</span>
+    </div>
+  {% endcall %}
+
+  {% call ds.panel(title='Group memberships', tag='section',
+                   klass='section-card',
+                   attrs='aria-label="Group memberships"') %}
+    {% if memberships and memberships | length > 0 %}
+    <ul class="groups-list" role="list">
+      {% for m in memberships %}
+      {# Color rule mirrors /admin/users + /admin/users/{id}: name match
+         on the seeded Admin/Everyone wins over origin so an env-mapped
+         system row keeps its canonical color. Hover over the chip
+         reveals the full Workspace email for shortened google_sync
+         display names. #}
+      {% if m.name == "Admin" %}
+        {% set chip_class = "is-admin" %}
+      {% elif m.name == "Everyone" %}
+        {% set chip_class = "is-everyone" %}
+      {% else %}
+        {% set chip_class = "is-" ~ (m.origin or "custom") %}
+      {% endif %}
+      <li class="group-row" role="listitem">
+        <span class="group-chip {{ chip_class }}" title="{{ m.name }}">{{ m.display_name or m.name }}</span>
+        <span class="group-id">via {{ m.source }}{% if m.added_at %} · added {{ m.added_at|string|truncate(16, true, '') }}{% endif %}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <div class="empty-state">
+      <div class="empty-title">No group memberships</div>
+      <div>You're not a member of any groups yet. Ask an admin to add you, or wait for the next Google Workspace sync if you sign in via Google.</div>
+    </div>
+    {% endif %}
+  {% endcall %}
+
+  {% call ds.panel(title='Effective access', tag='section',
+                   klass='section-card',
+                   attrs='aria-label="Effective access"') %}
+    <div id="effective-access-host">
+      <div class="empty-state">
+        <div class="empty-title">Loading…</div>
+      </div>
+    </div>
+  {% endcall %}
+
+  {% if is_admin %}
+  {% call ds.panel(title='Admin mode', tag='section',
+                   klass='section-card',
+                   attrs='aria-label="Admin mode"') %}
+    {% if elevation_paused %}
+      <p>Admin elevation is <strong>paused</strong> for this browser — admin
+      pages refuse, and entity access checks fall back to your explicit group
+      grants, until you re-enable it. Surfaces that read Admin membership
+      directly (the table catalog among them) still show everything: this is a
+      consent gate against accidental god-mode use, not a containment
+      boundary.</p>
+      <button type="button" class="ds-btn" id="elevation-toggle" data-paused="false">
+        Re-enable admin mode
+      </button>
+    {% else %}
+      <p>Admin elevation is <strong>active</strong>: every access check
+      short-circuits to allow. Pause it to make entity checks fall back to your
+      explicit grants and admin pages refuse (a consent gate against accidental
+      god-mode use — you can re-enable it here at any time).</p>
+      <button type="button" class="ds-btn" id="elevation-toggle" data-paused="true">
+        Pause admin mode for this browser
+      </button>
+    {% endif %}
+    <script>
+      document.getElementById("elevation-toggle").addEventListener("click", async (ev) => {
+        const paused = ev.currentTarget.dataset.paused === "true";
+        ev.currentTarget.disabled = true;
+        await fetch("/api/me/elevation", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ paused }),
+        });
+        location.reload();
+      });
+    </script>
+  {% endcall %}
+  {% endif %}
+
+  {% include "_profile_tokens.html" %}
+
+  {# `<details>` can't go through `ds.panel` (the macro doesn't render
+     <details>/<summary>); add `.ds-card` explicitly so the same surface
+     treatment applies. `.section-card` rules override radius+padding. #}
+  <details class="ds-card section-card" aria-label="Session and troubleshooting">
+    <summary>Session &amp; troubleshooting</summary>
+    {% include "_profile_troubleshooting.html" %}
+  </details>
+</div>
+
+<script>
+(function () {
+  const host = document.getElementById("effective-access-host");
+  fetch("/api/me/effective-access", { credentials: "include" })
+    .then(r => r.ok ? r.json() : null)
+    .then(data => {
+      if (!data) {
+        host.innerHTML = `<div class="empty-state">
+          <div class="empty-title">No data</div>
+          <div>Effective-access readout unavailable. Admins can view it at /admin/users/{{ user.id }}.</div>
+        </div>`;
+        return;
+      }
+      // Admins get the same explicit grant breakdown as everyone else —
+      // the runtime still gives Admin god-mode at authorization time, but
+      // this readout audits the actual grant graph (which Admin-group
+      // grants exist, which sibling groups carry them) instead of a flat
+      // "Full access" pill that hid the wiring.
+      if (!data.items || data.items.length === 0) {
+        host.innerHTML = `<div class="empty-state">
+          <div class="empty-title">No resource access yet</div>
+          <div>Resources are granted to groups; ask an admin to add you to one with the access you need.</div>
+        </div>`;
+        return;
+      }
+      let html = `<ul class="grant-list" role="list">`;
+      for (const it of data.items) {
+        const via = it.via_groups.map(g => `<span class="grant-source source-direct">${g.group_name}</span>`).join(" ");
+        html += `<li class="grant-row">
+          <span class="grant-key">${escapeHtml(it.resource_type)} · ${escapeHtml(it.resource_id)}</span>
+          ${via}
+        </li>`;
+      }
+      html += `</ul>`;
+      host.innerHTML = html;
+    })
+    .catch(() => {
+      host.innerHTML = `<div class="empty-state"><div class="empty-title">Failed to load</div></div>`;
+    });
+  function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
+})();
+</script>
+{% endblock %}

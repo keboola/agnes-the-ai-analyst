@@ -205,6 +205,41 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
+- **BREAKING-revert: stack auto-membership is now opt-in**
+  (`features.stack_auto_membership`, env `AGNES_STACK_AUTO_MEMBERSHIP`,
+  default **off**). The auto-membership stack model the redesign shipped as a
+  breaking change reverts to the classic pre-redesign subscribe model on
+  default instances: membership = required ∪ subscribed grants (all
+  downloaded by `agnes pull`), Catalog Browse lists every granted resource
+  with its add-to-stack state, admin god-mode Browse returns to the
+  user-facing catalog, and a `required → available` grant downgrade again
+  eagerly fans out subscriptions so group members keep the resource. Turning
+  the flag on restores the redesign semantics exactly (auto-membership,
+  addable-only Browse reshape, `server_only` manifest overlay, no downgrade
+  fan-out). The flag flips behavior instantly — `user_stack_subscriptions`
+  rows are interpreted, never rewritten. Topnav instances also render the
+  frozen pre-redesign `/catalog` and `/corporate-memory` pages
+  (`catalog_legacy.html`, `corporate_memory_legacy.html`; rail keeps the
+  unified/redesigned pages).
+
+- **Default-chrome instances get their remaining pre-redesign surfaces back**
+  (spec `docs/superpowers/specs/2026-08-07-default-chrome-ux-parity.md`,
+  wave 2). On the default topnav chrome: `/me/profile`, `/me/activity` and
+  `/agents` render frozen pre-redesign copies (`*_legacy.html`;
+  `/agents` restores the pre-redesign "My agents" management page with its
+  original handler logic); `/me/ai-connector` is a real page again (the
+  frozen standalone connector page with the `/mcp-connect` token fallback,
+  with `/me/mcp` + `/me/cowork` aliases redirecting to it) instead of a
+  redirect; the user menu's "AI Connector" row returns; the pre-redesign
+  guided tour ships again (frozen `_tour_legacy.html` + `js/tour_legacy.js`
+  + `css/tour_legacy.css`, restored `app/web/onboarding.py` steps, and the
+  header "?" launcher); and the chat welcome cards keep their pre-redesign
+  copy and icons byte-for-byte (`_chat_welcome_cards_legacy.html`). Under
+  the redesign opt-in every one of these keeps the redesigned behavior
+  unchanged. The admin menu's "Moderation & Trust" entry is now gated on
+  `store.verification_enabled` (a semantic gate — with verification off,
+  the default, the hub has nothing to moderate).
+
 ### Fixed
 
 - Previewing a partition-synced table no longer claims its first sync is
