@@ -1083,6 +1083,25 @@ def get_guardrails_review_model() -> str:
     return resolve_model_tier(raw)
 
 
+def get_mcp_source_url_strict() -> bool:
+    """Whether an MCP source's ``url`` must be https to a public address.
+
+    Reads ``mcp.source_url_strict`` (env ``AGNES_MCP_SOURCE_URL_STRICT``).
+    **Defaults to False**, which is not the same as unguarded: the baseline
+    always refuses link-local / metadata / multicast / reserved addresses and
+    cleartext http to a public one. What the default permits is an MCP source
+    on an INTERNAL address — an organization's own tool server, a developer's
+    localhost — because those are ordinary deployments, and a check that broke
+    them would be traded away rather than adopted.
+
+    Set True to hold a source's url to the same bar as its OAuth endpoints
+    (https, public address). Right for instances that only ever talk to
+    third-party MCP services; it makes an intranet source unconfigurable, so
+    it is opt-in. See ``src/net/mcp_source_url.py``.
+    """
+    return feature_enabled("mcp", "source_url_strict", env_var="AGNES_MCP_SOURCE_URL_STRICT", default=False)
+
+
 def get_guardrails_blocked_quota_per_day() -> int:
     """Per-submitter cap on `blocked_llm` + `review_error` rows in the
     trailing 24h.

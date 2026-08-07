@@ -237,6 +237,26 @@ auth:
 #   # AGNES_SSRF_ALLOWED_HOSTS.
 #   ssrf_allowed_hosts: []
 
+# --- MCP sources (optional) ---
+# mcp:
+#   # Require an MCP source's own `url` to be https to a public, resolvable
+#   # address — the same bar its OAuth endpoints are held to. Every forward to
+#   # an http/sse source dials this url with a user credential attached, so it
+#   # is checked when configured rather than when a caller trips over it.
+#   #
+#   # OFF IS NOT UNGUARDED. Either way Agnes refuses link-local/metadata,
+#   # multicast and reserved addresses, and cleartext http to a public address.
+#   # What `false` additionally permits is a source on an INTERNAL address —
+#   # an organization's own tool server, a developer's localhost — recorded in
+#   # the audit row rather than blocked, because those are ordinary
+#   # deployments. Turn this on for instances that only ever talk to
+#   # third-party MCP services.
+#   #
+#   # Strict mode honours `security.ssrf_allowed_hosts` above, so a single
+#   # on-prem source does not stop an instance from adopting it.
+#   # Env override: AGNES_MCP_SOURCE_URL_STRICT.
+#   source_url_strict: false
+
 # --- Access control (optional) ---
 # access:
 #   # Default admin elevation for BROWSER sessions that have not chosen:
