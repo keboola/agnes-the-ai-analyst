@@ -2001,19 +2001,19 @@ async def catalog(
         )
         return templates.TemplateResponse(request, "catalog_unified.html", ctx)
 
-    # #1206: the same `catalog_card` projection the unified page uses. This
-    # page rendered the legacy `_stack_card` macro over the raw entries, which
-    # has no notion that `in_stack` was re-pointed at the local-download state
-    # by the auto-membership reshape — so a package sat under "My Stack" while
-    # its own button read "Add to stack". `_catalog_card_data` encodes the
-    # distinction once (`action.mode == 'download'`), and both grids read it.
+    # #1206: this page keeps the legacy `_stack_card` macro — its own JS keys on
+    # the `.stack-card__*` class names, so swapping in the unified `catalog_card`
+    # projection here would break add/remove. The macro has no notion on its own
+    # that `in_stack` was re-pointed at the local-download state by the
+    # auto-membership reshape — so a package sat under "My Stack" while its own
+    # button read "Add to stack". The projections that re-point the key now say
+    # so with `in_stack_is_local`, and the macro switches its wording on that
+    # flag rather than on the key name.
     ctx = _build_context(
         request,
         user=user,
         entries=entries,
         stack_entries=stack_entries_adapted,
-        browse_cards=[_catalog_card_data(e) for e in entries],
-        stack_cards=[_catalog_card_data(e) for e in stack_entries_adapted],
         source_type_chips=source_type_chips,
         total_registered_tables=total_registered_tables,
     )

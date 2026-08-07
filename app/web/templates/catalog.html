@@ -629,7 +629,10 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
           const cloneBtn = clone.querySelector('[data-action]');
           if (cloneBtn) {
             cloneBtn.dataset.action = 'remove';
-            cloneBtn.textContent = 'Remove';
+            // Same string the re-label loop above writes, and the same one the
+            // macro renders under `in_stack_is_local` (#1206) — the clone sits
+            // beside its Browse twin, so a divergent label contradicts it.
+            cloneBtn.textContent = 'Remove local copy';
             cloneBtn.classList.remove('stack-card__btn--add');
             cloneBtn.classList.add('stack-card__btn--remove');
             cloneBtn.disabled = false;
