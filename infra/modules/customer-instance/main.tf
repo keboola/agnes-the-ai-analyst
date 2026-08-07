@@ -24,6 +24,8 @@ locals {
     tls_mode     = "none" # dev VMs default to plain HTTP; TLS requires domain
     domain       = ""
     domain_alias = ""
+    ui_layout    = ""
+    theme        = ""
   }
   all_instances = concat(
     [merge(var.prod_instance, { role = "prod" })],
@@ -406,6 +408,8 @@ resource "google_compute_instance" "vm" {
     tls_mode                        = each.value.tls_mode
     domain                          = each.value.domain
     domain_alias                    = each.value.domain_alias
+    ui_layout                       = each.value.ui_layout
+    theme                           = each.value.theme
     acme_email                      = var.acme_email != "" ? var.acme_email : var.seed_admin_email
     data_source                     = var.data_source
     keboola_stack_url               = var.keboola_stack_url

@@ -649,6 +649,12 @@ AGNES_HOME_ROUTE=${home_route}
 %{ if !studio_enabled ~}
 AGNES_STUDIO_ENABLED=false
 %{ endif ~}
+%{ if ui_layout != "" ~}
+AGNES_UI_LAYOUT=${ui_layout}
+%{ endif ~}
+%{ if theme != "" ~}
+AGNES_INSTANCE_THEME=${theme}
+%{ endif ~}
 ACME_EMAIL=$ACME_EMAIL
 GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID
 GOOGLE_CLIENT_SECRET=$GOOGLE_CLIENT_SECRET
