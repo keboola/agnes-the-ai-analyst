@@ -597,6 +597,10 @@ class TestDocumentedServerConfigKeysAreWritable:
     _NOT_LIVE_WRITABLE = {
         "analytics": "backend choice is governed by the state machine + a data migration, not a live patch",
         "coordination": "process topology; takes effect on restart, and the guide pairs it with a compose change",
+        "agent_profiles": (
+            "deliberately env-var-only kill switch — no runtime-toggle use case identified; "
+            "flip via AGNES_AGENT_PROFILES_ENABLED (or the static instance.yaml) + restart"
+        ),
         "chat": "needs the sandbox sidecar / compose profile to match, so a live flip would not take effect",
         "data_apps": "gated on the `apps` compose profile, same reason",
         "distribution": "documented as an `instance.yaml` + `AGNES_DISTRIBUTION_*` pair, object-store credentials included",
