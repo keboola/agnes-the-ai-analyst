@@ -37,6 +37,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
+- **Deflaked `tests/test_orchestrator.py::TestBQMetadataAuth::test_bq_metadata_failure_logs_and_skips`** (seen on CI shard 6/8, xdist worker gw1, on a PR touching no orchestrator or BigQuery code). The test asserted "some ERROR record mentions metadata", but reached that branch only after the orchestrator ran a real `INSTALL bigquery FROM community` — a 55 MB download from the community-extension repository, executed for real because, unlike its sibling in the same class, this test never stubbed the BQ-extension SQL. On a cold `~/.duckdb` cache with eight parallel shards that outran pytest.ini's 60 s `--timeout`, and pytest-timeout's SIGALRM landed *inside* the DuckDB call: DuckDB answers a tripped signal by throwing `RuntimeError("Query interrupted")`, which clobbers the pending `Failed`, so a hard timeout arrived at `_attach_remote_extensions`' `except Exception` as an ordinary error, was logged as `Failed to attach remote source bq: …`, and the test ran to completion having never called `get_metadata_token`. The BQ-extension stub is now a shared helper both tests in the class use (no network on either path), and the assertion pins the specific exception path instead of grepping rendered log text: the metadata callable was invoked exactly once, the `logger.error` call site is matched by format string with the caught `BQMetadataAuthError` identity-checked in its args, the generic attach-failure handler did *not* fire, and no SECRET/ATTACH was issued. Verified by mutation (re-injecting the interrupt fails the test on the "not reached" guard) and by repeated `-n auto` runs under full CPU saturation.
+
 ### Security
 
 
