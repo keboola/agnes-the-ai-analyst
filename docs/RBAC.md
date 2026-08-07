@@ -9,6 +9,23 @@ There is no role hierarchy, no session cache, no implies expansion, no module-au
 
 ---
 
+## What this model does *not* govern
+
+Agnes authorizes **its own entities** — registered tables, data packages, marketplace plugins, memory domains, and the other `ResourceType` values. It does not reach inside the systems it connects to.
+
+A frequent and consequential misreading is that Agnes can scope a connected system's contents — "restrict this agent to one Confluence space", "let this group see only the tickets in project X". It cannot. When Agnes talks to an upstream system it does so as whatever principal the connection was configured with (a service account, an API token, a workload identity), and **that principal's permissions in the target system are the real boundary**. Agnes governs who may reach a connection; the target system governs what that connection can see.
+
+The practical consequences:
+
+- **Scope at the source.** If a group must not see a Confluence space or a Jira project, that restriction belongs on the service account in Confluence/Jira — typically as a second, narrower connection. Granting or withholding the Agnes-side resource is all-or-nothing over whatever the credential can reach.
+- **A shared service account flattens identity.** Everyone reaching a system through one connection is the same principal upstream, which is the point (people without a seat in the upstream tool can still read through it) and also the cost: the upstream audit log records the service account, not the human. Agnes's own audit trail is where per-user attribution survives.
+- **Grants are deterministic and flat.** No nesting, no inheritance, no negative grants. A user's access is the union over their groups — there is no way to express "everything in this package except one table". Split the package instead.
+- **Table-level, not row-level, with one exception.** Grants resolve per table. The internal `agnes_sessions` / `agnes_telemetry` / `agnes_audit` tables are the exception: table-level access is universal and a per-row `WHERE` filter is applied at query time (`src/rbac.py`, `connectors/internal/access.py`). Do not model general row-level security on this — it is specific to those tables.
+
+To limit what an *agent* can reach, use agent scopes (an agent's effective authority is owner grants ∩ agent scope, enforced live at every brokered request) — but the same boundary applies underneath: the agent inherits whatever the connection's upstream principal can see.
+
+---
+
 ## Tables
 
 | Table | Purpose |
