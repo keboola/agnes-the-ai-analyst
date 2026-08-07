@@ -63,7 +63,9 @@ answers it for seven switches out of roughly thirty-five.
 - One registry, one resolver, one parser for every switch in the product.
 - Every switch visible to an admin, with its **effective** value and the
   **source** that produced it.
-- Every switch that can be changed at runtime, changeable from the admin UI.
+- Every switch that can be changed at runtime **and should be**, changeable
+  from the admin UI. Visibility is universal; editability is not — the
+  security posture stays out of the browser.
 - The bug classes above become **structurally impossible**, not test-covered.
 - Zero behavior change for existing instances until an operator changes
   something, with one documented exception (see Migration).
@@ -82,7 +84,7 @@ Three decisions shaped everything below. Each was taken explicitly.
 
 | Decision | Choice | Consequence |
 |---|---|---|
-| Scope | **Everything**, including operational switches | `DEBUG`, rate-limit, self-heal, egress and TLS-verify become yaml-backed and admin-editable, behind a danger gate |
+| Scope | **Everything except the security posture** | Operational switches become yaml-backed and admin-editable behind a danger gate; switches that define the instance's security posture stay env-only and read-only (see *Security-locked switches*) |
 | Env precedence | **Env wins; the UI control locks** | Resolution order is unchanged repo-wide. Infra-managed instances keep Terraform as the source of truth |
 | Non-immediate effect | **Per-entry effect class** | Every entry declares `live` / `restart` / `deploy`; the UI states which, per switch |
 
@@ -103,13 +105,25 @@ class Switch:
     kind: str                    # "bool" | "select" | "int" | "string"
     default: Any
     effect: str                  # "live" | "restart" | "deploy"
-    category: str                # "product" | "operations" | "deploy"
+    category: str                # "product" | "operations" | "locked"
     description: str             # operator-facing, one or two sentences
     options: tuple[str, ...] = ()      # select only; must contain `default`
     danger: bool = False               # confirm dialog + high-risk audit
+    editable: bool = True              # False → inventory-only, never writable
+    lock_reason: str = ""              # required when editable=False
     on_invalid: str = "default"        # "default" | "raise"
     runtime_view: str | None = None    # overlay-only readers (chat)
 ```
+
+`editable` and `effect` are deliberately orthogonal. `effect` states what the
+system *can* do with a new value; `editable` states whether we *let* anyone set
+one. Two different reasons produce the same read-only row:
+
+- **Nothing to write** — `effect="deploy"` entries (`AGNES_ROLE`, Compose
+  profiles) are not sections of `instance.yaml`; they are what the container
+  was started with. `editable=False` follows by construction.
+- **Deliberately locked** — the security-posture switches below. They *could*
+  be written; we choose not to offer it.
 
 `SWITCHES: tuple[Switch, ...]` replaces `FEATURE_FLAGS`.
 
@@ -135,7 +149,7 @@ Nothing below is hand-maintained after this change:
 
 | Derived artifact | Derived from | Bug class it retires |
 |---|---|---|
-| `_EDITABLE_SECTIONS` | sections of all non-`deploy` switches | flag registered but section not editable (`data_apps`, historically `mcp` and `chat`) |
+| `_EDITABLE_SECTIONS` | sections of all `editable=True` switches | flag registered but section not editable (`data_apps`, historically `mcp` and `chat`) |
 | `_KNOWN_FIELDS` for switch-backed keys | `kind`, `options`, `default`, `description` | admin offers fewer values than the resolver accepts (`theme`, `ui_layout`) |
 | Admin panel rows | the registry + resolver | panel and runtime disagreeing |
 | `docs/feature-flags.md` table | the registry | documentation contradicting runtime (`chat.approvals_enabled`) |
@@ -162,6 +176,40 @@ one place.
 therefore read `chat.enabled` and `chat.approvals_enabled` from the same
 overlay-only source the runtime uses, or it reports a value the gate does not
 use. `runtime_view` carries this. It is not leftover complexity to clean up.
+
+### Security-locked switches
+
+A switch that defines the instance's **security posture** is `editable=False`.
+It appears in the inventory with its effective value and a sentence naming
+where it is set — an operator can always *see* it — but there is no control,
+and the API refuses to write it.
+
+The reasoning is not that an admin cannot be trusted. It is that these switches
+have no legitimate runtime-change use case, while a browser-reachable control
+for them turns any single admin mistake, session compromise, or hole in the
+admin surface into a durable downgrade of the instance's defenses that survives
+a restart.
+
+| Switch | What it controls | Why locked |
+|---|---|---|
+| `LOCAL_DEV_MODE` | enables a fake development user, bypassing authentication | one click leaves the instance permanently open without a login |
+| `AGNES_DEBUG_AUTH` | unlocks `/api/me/debug`, an auth-internals diagnostic | the route answers `404` rather than `403` **on purpose**, so its existence is undetectable in production; a UI control defeats that design |
+| `DEBUG` | unlocks `/api/debug/throw` (on-demand exception injection) and the Postgres query panel that logs SQL | reachable fault injection plus query disclosure |
+| `AGNES_AUTH_RATELIMIT_ENABLED` | brute-force protection on login | read per request, so switching it off takes effect instantly — which makes it more dangerous to expose, not less |
+| `AGNES_INSECURE_SKIP_TLS_VERIFY` | certificate verification on outbound calls | disabling verification is never a runtime decision |
+| `EGRESS_BLOCK_PRIVATE` | the egress proxy's private-range block (SSRF defense) | also boot-only in fact: read once in the proxy's `main()`, in a separate process the app cannot restart |
+
+**These six keep their current resolution untouched.** No config key is added,
+no parser is migrated, no yaml path is introduced — they stay env-only exactly
+as they are today. The registry only *describes* them, and the panel reads
+their value through the resolver each already has. This removes them from the
+breaking-change class in Migration as a side effect, including the sharpest
+example (`DEBUG=on`).
+
+`AGNES_RUNNER_FAKE_AGENT` is deliberately **not** in this table. It makes the
+product lie about what it is doing, which is a correctness problem rather than
+a security-posture one, so it stays editable behind the danger gate. Moving it
+here is a one-line change if that judgement is wrong.
 
 ## Admin UI
 
@@ -198,15 +246,17 @@ Each row carries four pieces of information that are nowhere together today:
    (`stored on · running off`) plus the `Restart` chip. The current panel
    cannot express this state at all, and it is exactly where an operator
    reloads the page in confusion.
-3. **Deploy-time** — no control. Effective value plus one sentence naming where
-   it is changed. These entries have no config key because there is nothing to
-   write: they are what the container was started with, not a section of
-   `instance.yaml`.
+3. **Read-only** (`editable=False`) — no control. Effective value, plus one
+   sentence naming where it is set and `lock_reason` explaining why it is not
+   offered here. The row looks the same whether the reason is "nothing to
+   write" (`AGNES_ROLE`) or "deliberately locked" (`DEBUG`); the sentence is
+   what distinguishes them.
 
 ### Grouping and search
 
-Roughly 35 switches is too many for one flat list, so `category` groups them:
-**Product** (~18), **Operations** (~14), **Deploy-time** (3).
+Thirty-five switches is too many for one flat list, so `category` groups them:
+**Product** (18), **Operations** (9), **Locked** (8 — five security-posture
+switches plus `AGNES_ROLE`, `LOCAL_DEV_MODE` and Compose profiles).
 
 A filter box (name / config key / env var) and a **"changed from default"**
 toggle. The latter answers the question an operator asks most often when
@@ -215,10 +265,12 @@ which today is answered by diffing yaml files.
 
 ### Danger gating
 
-`danger=True` rows (TLS verify, rate-limit, egress, self-heal, fake agent) get
-a confirmation dialog that names **the consequence**, not just the switch. The
-existing `confirm_danger` machinery extends from sections to individual
-switches, and the audit entry is flagged high-risk.
+With the security posture locked, the danger gate covers what is left that can
+still hurt: `AGNES_DB_SELF_HEAL`, `AGNES_RUNNER_FAKE_AGENT` and
+`AGNES_BOOTSTRAP_MARKETPLACE`. Those rows get a confirmation dialog that names
+**the consequence**, not just the switch. The existing `confirm_danger`
+machinery extends from sections to individual switches, and the audit entry is
+flagged high-risk.
 
 ### Design-system bindings
 
@@ -250,12 +302,17 @@ operator changes something. Three places where that is not free.
 ### 1. Operational switches move to the permissive parser — BREAKING for junk values
 
 The canonical parser treats unrecognized strings as `true`; the inline parsers
-treat them as `false`. An instance running `DEBUG=on` today has debug logging
-**off** and will have it **on** after migration.
+treat them as `false`. An instance running `AGNES_REBUILD_ON_BOOT=yes` today
+resolves it **off** (the inline check accepts only `1` and `true`) and will
+resolve it **on** after migration.
+
+The blast radius is limited to the nine editable operational switches. The six
+security-locked ones keep their existing resolvers untouched, which removes the
+sharpest case (`DEBUG=on`) from this class entirely.
 
 The permissive parser stays: it is the documented convention and seven existing
-flags depend on it. The risk is handled by a **boot audit** — at startup, any
-switch whose env value is outside the canonical vocabulary
+flags depend on it. The residual risk is handled by a **boot audit** — at
+startup, any switch whose env value is outside the canonical vocabulary
 (`0/false/no/off/1/true/yes/on/""`) logs a `WARNING` naming the switch, the raw
 value, and what it resolved to. The operator sees this in the first lines of
 the log after upgrading rather than inferring it from behavior.
@@ -266,8 +323,10 @@ the log after upgrading rather than inferring it from behavior.
 
 `POST /api/admin/server-config` still accepts
 `{"sections": {"chat": {"enabled": true}}}`. Existing CLI calls and scripts are
-unaffected. The only new responses are `409` (env-pinned) and `400`
-(deploy-class) — both for cases that today silently do nothing.
+unaffected. The only new responses are `409` (env-pinned) and `400
+switch_not_editable` with a reason code distinguishing `not_in_config` from
+`security_locked` — all for cases that today either silently do nothing or,
+for the locked ones, were never reachable through this endpoint at all.
 
 ### 3. Switches leave the section forms
 
@@ -299,7 +358,7 @@ Four PRs. Each leaves the tree consistent and is independently releasable.
 |---|---|---|
 | **1** | `app/switches.py`, `Switch`, `switch_value()`, derived `_EDITABLE_SECTIONS` and `_KNOWN_FIELDS`, covering today's seven flags only | `data_apps` becomes switchable; no new UI |
 | **2** | Absorb the bespoke and enum resolvers (theme, ui_layout, home.show_*, store verification, slack transport, distribution, analytics, coordination) | `paper` and `rail` appear in the admin UI — the main payoff |
-| **3** | Absorb operational env-only switches, danger gating, categories and filter, boot audit | Full 35-switch inventory |
+| **3** | Absorb operational env-only switches, classify the security-locked six as inventory-only, danger gating, categories and filter, boot audit | Full 35-switch inventory |
 | **4** | Paper migration of `/admin/server-config` | The page speaks the redesign's visual language |
 
 ## PR4 — paper migration of the settings page
@@ -353,12 +412,17 @@ The goal is not coverage but making three bug classes impossible.
 ### Registry integrity — `tests/test_switches.py`
 
 No duplicate names, env vars or config keys; `select` entries have non-empty
-`options` with `default` among them; `deploy` entries carry no config key; env
-var names follow the `AGNES_*` convention.
+`options` with `default` among them; `deploy` entries carry no config key;
+`editable=False` entries carry a non-empty `lock_reason`; env var names follow
+the `AGNES_*` convention.
 
 ### Derivation guards — the ones that pay for the refactor
 
-- `_EDITABLE_SECTIONS` ⊇ sections of all non-`deploy` switches.
+- `_EDITABLE_SECTIONS` ⊇ sections of all `editable=True` switches.
+- No `editable=False` switch contributes a section to `_EDITABLE_SECTIONS`, and
+  the six security-locked entries declare no config key at all — so there is no
+  yaml path by which they could be set. This is the guard that keeps the lock
+  from eroding one convenience commit at a time.
 - Every switch-backed `_KNOWN_FIELDS` field's `options` equals the set the
   resolver accepts.
 - The table in `docs/feature-flags.md` equals the registry.
@@ -374,9 +438,11 @@ a difference through.
 
 ### API contract — `tests/test_admin_configure_api.py`
 
-Env-pinned key returns `409` naming the variable; deploy-class switch returns
-`400`; `danger=True` without `confirm_danger` returns `400`; the legacy wire
-format still succeeds.
+Env-pinned key returns `409` naming the variable; an `editable=False` switch
+returns `400 switch_not_editable` with the right reason code; `danger=True`
+without `confirm_danger` returns `400`; the legacy wire format still succeeds.
+One case per security-locked switch, so a future "just make this one
+editable" change has to delete a named test rather than slip through.
 
 ### UI — `tests/test_ui_layout_theme.py`
 
@@ -398,7 +464,7 @@ refactor breaks them, it broke behavior.
 ## Appendix — switch inventory
 
 Thirty-five entries, enumerated. PR3 confirms the operational list against the
-environment-variable audit; the product and deploy lists are complete.
+environment-variable audit; the product and locked lists are complete.
 
 **Product (18):** `studio`, `guardrails`, `chat`, `chat_approvals`,
 `data_apps`, `library_show_unverified_trust`, `mcp_query_param_token`,
@@ -408,24 +474,23 @@ environment-variable audit; the product and deploy lists are complete.
 `distribution.signed_urls`, `analytics.backend`, `coordination.backend`,
 `data_source.type`.
 
-**Operations (14):** `DEBUG`, `AGNES_AUTH_RATELIMIT_ENABLED`,
-`AGNES_DB_SELF_HEAL`, `AGNES_REBUILD_ON_BOOT`, `AGNES_SKIP_CACHE_WARMUP`,
-`AGNES_SKIP_LEGACY_COLLECTOR`, `AGNES_BOOTSTRAP_MARKETPLACE`,
-`AGNES_INSECURE_SKIP_TLS_VERIFY`, `AGNES_DUCKDB_TZ_STRICT`,
-`AGNES_PUSH_NO_GZIP`, `AGNES_NO_UPDATE_CHECK`, `EGRESS_BLOCK_PRIVATE`,
-`AGNES_DEBUG_AUTH`, `AGNES_RUNNER_FAKE_AGENT`.
+**Operations (9), editable behind the danger gate where marked:**
+`AGNES_DB_SELF_HEAL` (danger), `AGNES_RUNNER_FAKE_AGENT` (danger),
+`AGNES_BOOTSTRAP_MARKETPLACE` (danger), `AGNES_REBUILD_ON_BOOT`,
+`AGNES_SKIP_CACHE_WARMUP`, `AGNES_SKIP_LEGACY_COLLECTOR`,
+`AGNES_DUCKDB_TZ_STRICT`, `AGNES_PUSH_NO_GZIP`, `AGNES_NO_UPDATE_CHECK`.
 
-**Deploy-time (3):** `AGNES_ROLE`, `LOCAL_DEV_MODE`, Compose profiles.
+**Locked (8), inventory-only:**
 
-### Two entries that are deliberately not switches
+- *Security posture* — `LOCAL_DEV_MODE`, `AGNES_DEBUG_AUTH`, `DEBUG`,
+  `AGNES_AUTH_RATELIMIT_ENABLED`, `AGNES_INSECURE_SKIP_TLS_VERIFY`,
+  `EGRESS_BLOCK_PRIVATE`. Resolution untouched, env-only, no config key.
+  See *Security-locked switches*.
+- *Nothing to write* — `AGNES_ROLE`, Compose profiles.
 
-- **`AGNES_APPROVALS`** is not an operator switch. It is the environment
-  variable the chat manager builds into the sandbox, derived from the
-  `chat_approvals` switch. Registering it separately would create a second
-  control for one behavior.
-- **`LOCAL_DEV_MODE`** is classified `deploy` rather than `operations` on
-  purpose. It bypasses authentication (`app/auth/dependencies.py`) by enabling
-  a fake development user. If it were writable from the browser, one admin
-  click — or one CSRF hole in the admin surface — would leave the instance
-  permanently open without a login, and the write would survive a restart. It
-  stays visible in the inventory and boot-only in effect.
+### One entry that is deliberately not a switch
+
+**`AGNES_APPROVALS`** is not an operator switch. It is the environment variable
+the chat manager builds into the sandbox, derived from the `chat_approvals`
+switch. Registering it separately would create a second control for one
+behavior — the exact disease this design treats.
