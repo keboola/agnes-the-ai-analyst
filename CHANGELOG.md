@@ -17,9 +17,48 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- **`chat.*` and `studio.enabled` can now actually be set from
+  `/admin/server-config`.** `POST /api/admin/server-config` validates the patch
+  against a hand-maintained allowlist, and neither section was on it — so a save
+  returned 400 and only the env var worked, while the admin panel displayed both
+  flags as if they were editable. For `chat` that was the sharper failure:
+  `docs/feature-flags.md` documents this editor as the way to enable chat
+  ("enable chat via the `/admin/server-config` editor (which writes the overlay)
+  or the `AGNES_CHAT_ENABLED` env var") *and* explains that `app/main.py` boots
+  chat from that overlay file alone, so the documented primary mechanism was the
+  one being rejected. Both sections are now writable, with their booleans
+  declared so the panel renders switches and the secret redactor leaves them
+  alone. Their defaults are read from `FEATURE_FLAGS` rather than re-typed —
+  `chat.approvals_enabled` had been hand-declared as off while the registry and
+  the runtime had it on, so the panel described the opposite of the real
+  behaviour.
+
+- **An unset switch in `/admin/server-config` no longer saves as OFF.** The
+  panel's boolean renderer coerced with `!!value`, and `!!undefined` is `false` —
+  so a setting the operator had never configured rendered OFF regardless of its
+  real default, and the next "Save section" wrote that `false` back. Latent until
+  booleans with a true default became editable, at which point enabling chat also
+  silently disabled tool-call approvals and saving the Studio section disabled
+  the Studio surface. The bool branch now falls back to the declared default when
+  the value is unset, which is what the text branch beside it already did.
+
 ### Removed
 
 ### Internal
+
+- The `/admin/server-config` writability ratchet now derives from the
+  `FEATURE_FLAGS` registry instead of grepping `docs/DEPLOYMENT.md`. The prose
+  scrape added in 0.80.1 missed `agent_profiles.enabled` (documented in
+  `docs/CONFIGURATION.md`, which it did not read) and `chat` / `studio`, and its
+  own exemption list carried a reason for `chat` that contradicted the docs —
+  both symptoms of checking prose for a machine-checkable rule. Widening the
+  scrape to three files was tried and reverted: it matched ordinary prose and
+  produced twelve false positives. The registry cannot drift silently, so a new
+  `FeatureFlag` now fails CI unless its section is either writable or exempt with
+  a stated reason. A second new guard pins "editable ⇒ declared in
+  `_KNOWN_FIELDS`", which held for all 19 sections already and is what stops the
+  half-job where the API accepts a section the panel cannot render and whose
+  booleans escape the mask carve-out.
 
 ### Security
 
