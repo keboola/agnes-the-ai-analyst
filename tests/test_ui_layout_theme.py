@@ -119,6 +119,43 @@ class TestDefaultChromeUnchanged:
         assert "img/agnes-orb.png" not in resp.text
 
 
+class TestRailBodyClearance:
+    """The 240px body padding must be tied to the rail actually rendering.
+
+    `data-ui-layout="rail"` is stamped on <html> from instance config, but the
+    rail nav renders only for a signed-in user — so an unconditional padding
+    survived onto pre-auth pages that have no rail, and `/login/password`
+    centred its card inside a box shifted 240px right of the viewport (#1170).
+    """
+
+    def test_pre_auth_page_carries_no_rail(self, web_client, monkeypatch):
+        """The premise of the fix: on a logged-out page the rail is absent
+        while the layout attribute is still stamped."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/login/password")
+        assert resp.status_code == 200
+        assert 'data-ui-layout="rail"' in resp.text, "layout attribute should still be stamped"
+        assert 'class="rail"' not in resp.text, "the rail nav must not render pre-auth"
+
+    def test_body_clearance_is_conditional_on_the_rail(self, web_client):
+        css = web_client.get("/static/css/rail.css").text
+        assert 'html[data-ui-layout="rail"] body {' not in css, (
+            "unconditional body padding is back — it applies on pre-auth pages that render no rail (#1170)"
+        )
+        assert 'html[data-ui-layout="rail"] body:has(.rail) {' in css
+
+    def test_narrow_override_matches_the_desktop_selector(self, web_client):
+        """`:has()` takes its argument's specificity, so the ≤1024px override
+        must carry `:has(.rail)` too. A plain `body` there would lose to the
+        desktop rule and keep reserving 240px in the top-bar layout — where the
+        rail is a static block and the reservation is pure dead margin."""
+        css = web_client.get("/static/css/rail.css").text
+        narrow = css[css.index("@media (max-width: 1024px)") :]
+        assert 'html[data-ui-layout="rail"] body:has(.rail) {\n        padding-left: 0;' in narrow, (
+            "the narrow-screen override no longer matches the desktop rule's specificity"
+        )
+
+
 class TestRailOptIn:
     def test_rail_layout_swaps_chrome(self, web_client, admin_cookie, monkeypatch):
         # Probe a real rail landing surface (/stack). /dashboard is no longer a
