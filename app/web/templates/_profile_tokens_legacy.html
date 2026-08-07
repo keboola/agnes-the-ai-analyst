@@ -202,7 +202,12 @@
   }
   .token-card.is-revoked,
   .token-card.is-expired {
-    background: #fafbfc;
+    /* Frozen-copy deviation (Devin Review on #1200): the pre-redesign
+       literal #fafbfc is the exact dark-mode contrast bug the living
+       partial just fixed — text follows the theme, the card stays
+       near-white. Carrying the fix into the frozen copy; every other
+       rule here already themes via var(). */
+    background: var(--ds-surface-sunken);
   }
   .token-card.is-revoked .token-name {
     text-decoration: line-through;
