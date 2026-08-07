@@ -67,3 +67,51 @@ def test_tpl_emits_each_env_line_only_when_set():
             f"{env} must be emitted exactly once — a second, unguarded line "
             "would write an empty value and shadow instance.yaml"
         )
+
+
+# ---------------------------------------------------------------------------
+# The Terraform allow-lists must track the app's own resolvers
+# ---------------------------------------------------------------------------
+
+
+def _tf_allowed(field: str) -> set[str]:
+    """The value set `variables.tf` accepts for `field`, read from the
+    `contains([...], ...)` conditions rather than restated here."""
+    import re
+    from pathlib import Path
+
+    tf = (Path(__file__).resolve().parents[1] / "infra/modules/customer-instance/variables.tf").read_text()
+    found: set[str] = set()
+    for m in re.finditer(r"contains\(\[([^\]]*)\],\s*[^)]*\.%s\)" % re.escape(field), tf):
+        found |= {v.strip().strip('"') for v in m.group(1).split(",") if v.strip()}
+    assert found, f"no contains() validation found for {field} — the guard below would pass vacuously"
+    return found
+
+
+def _app_allowed(func_src: str) -> set[str]:
+    """The value set the app's resolver accepts, from its own `not in (...)`."""
+    import re
+
+    m = re.search(r"if value not in \(([^)]*)\):", func_src)
+    assert m, "resolver shape changed — this guard reads its `value not in (...)` line"
+    return {v.strip().strip('"').strip("'") for v in m.group(1).split(",") if v.strip()}
+
+
+def _resolver_src(name: str) -> str:
+    import inspect
+
+    import app.instance_config as ic
+
+    return inspect.getsource(getattr(ic, name))
+
+
+def test_tf_ui_layout_allowlist_matches_the_app():
+    """A theme or layout added to the app but not to `variables.tf` would be
+    rejected at plan time on every instance that tried to adopt it; one
+    removed from the app but left here would apply cleanly and then silently
+    fall back. Neither surface can move alone."""
+    assert _tf_allowed("ui_layout") - {""} == _app_allowed(_resolver_src("get_ui_layout"))
+
+
+def test_tf_theme_allowlist_matches_the_app():
+    assert _tf_allowed("theme") - {""} == _app_allowed(_resolver_src("get_instance_theme"))
