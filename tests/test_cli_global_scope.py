@@ -593,3 +593,54 @@ def test_the_lock_is_released_so_a_second_run_succeeds(env):
     second = CliRunner().invoke(gs_module.global_app, ["enable"])
     assert second.exit_code == 0, second.output
     assert "convergence lock" not in second.output
+
+
+def test_enable_does_not_claim_success_when_a_stage_failed(env):
+    """`run_convergence` records failures instead of raising, so the per-stage
+    `error` rows have to reach the exit code — otherwise a half-installed
+    layer exits 0 under "Global layer enabled" and the engineer finds out
+    later, when the data tools are not there (Devin on #1184)."""
+    env["rec"].scripts.insert(
+        0,
+        (
+            ("claude", "mcp", "add"),
+            subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="nope"),
+        ),
+    )
+
+    result = CliRunner().invoke(gs_module.global_app, ["enable"])
+
+    assert result.exit_code == 1, result.output
+    assert "PARTIALLY enabled" in result.output
+    # The flag IS written — that is what keeps `agnes update` retrying the
+    # pieces that failed. Only the claim of success is withheld.
+    conf = yaml.safe_load((env["cfg_dir"] / "config.yaml").read_text(encoding="utf-8"))
+    assert conf["global_scope"] is True
+
+
+def test_enable_reports_success_when_every_stage_worked(env):
+    result = CliRunner().invoke(gs_module.global_app, ["enable"])
+    assert result.exit_code == 0, result.output
+    assert "Global layer enabled" in result.output
+    assert "PARTIALLY" not in result.output
+
+
+def test_global_is_a_maintenance_command(env, monkeypatch):
+    """`agnes global` holds the same lock `agnes update` does, so the root
+    callback must not spawn the detached updater ahead of it — that child
+    would take the lock and the typed command would abort with "retry in a
+    moment" on the first run after every release (Devin on #1184)."""
+    import sys
+
+    from cli.main import _MAINTENANCE_COMMANDS, _is_maintenance_command
+
+    assert "global" in _MAINTENANCE_COMMANDS
+
+    # It reads `sys.argv` directly — the root callback fires before parsing.
+    for argv, expected in (
+        (["agnes", "global", "enable"], True),
+        (["agnes", "--json", "global", "status"], True),
+        (["agnes", "query", "SELECT 1"], False),
+    ):
+        monkeypatch.setattr(sys, "argv", argv)
+        assert _is_maintenance_command() is expected, argv
