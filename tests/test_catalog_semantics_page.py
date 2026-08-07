@@ -351,3 +351,26 @@ class TestCatalogSemanticsDetailRendering:
         idx = m.group(1)
         assert "average order value" in idx
         assert "aov" in idx
+
+
+class TestCatalogSemanticsSidebarLayout:
+    """#1207: a bare `nav { display: flex; … }` in style-custom.css was
+    written for the header's primary nav but applied to every `<nav>` in the
+    app, including `.sl-cat-nav` here — turning the category list into a
+    horizontal row that got clipped by `.sl-sidebar-body`'s `overflow:
+    hidden`, so a populated semantic layer's sidebar rendered blank. Static
+    CSS check (no `seeded_app`) so it stays independent of the page's actual
+    render."""
+
+    def test_sl_cat_nav_declares_block_layout(self):
+        import re
+        from pathlib import Path
+
+        css = (Path("app/web/templates/catalog_semantics.html")).read_text(encoding="utf-8")
+        m = re.search(r"\.sl-cat-nav\s*\{([^}]*)\}", css)
+        assert m, ".sl-cat-nav rule not found in catalog_semantics.html"
+        body = m.group(1)
+        assert re.search(r"display\s*:\s*block\b", body), (
+            ".sl-cat-nav must declare `display: block` so its category buttons "
+            "stack vertically instead of inheriting the global `nav` flex-row layout"
+        )

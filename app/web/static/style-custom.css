@@ -784,12 +784,6 @@ a.logo:hover h1 { color: var(--primary); }
     margin-top: 2px;
 }
 
-nav {
-    display: flex;
-    align-items: center;
-    gap: 15px;
-}
-
 .user-info {
     display: flex;
     align-items: center;
