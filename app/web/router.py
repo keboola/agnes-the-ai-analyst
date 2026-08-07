@@ -3856,11 +3856,6 @@ async def catalog_package_detail(
     from datetime import datetime, timedelta, timezone as _tz
 
     badges: list[str] = []
-    created_at = pkg.get("created_at")
-    if isinstance(created_at, datetime):
-        ts = created_at if created_at.tzinfo else created_at.replace(tzinfo=_tz.utc)
-        if (datetime.now(_tz.utc) - ts) < timedelta(days=30):
-            badges.append("new")
 
     # The frozen pre-redesign page states the trust claim through this list
     # (its amber `pkg-badge--curated` chip); the redesigned page states it
@@ -3869,11 +3864,24 @@ async def catalog_package_detail(
     # drive it off the STORED publisher_kind, not the retired live
     # Admin-membership derivation, so the legacy page keeps the exact visible
     # state the v114 backfill froze.
+    #
+    # BEFORE the `new` append, not after: the template renders this list in
+    # order, and the page being frozen here rendered "Curated New" (the
+    # pre-redesign router appended curated first — 64cf788). Appending it last
+    # would have flipped a default instance's chips to "New Curated", which is a
+    # visible change on the one page this change set promises to leave alone
+    # (Devin Review on #1195).
     if (
         _detail_template("catalog_package_detail").endswith("_legacy.html")
         and pkg.get("publisher_kind") == "organization"
     ):
         badges.append("curated")
+
+    created_at = pkg.get("created_at")
+    if isinstance(created_at, datetime):
+        ts = created_at if created_at.tzinfo else created_at.replace(tzinfo=_tz.utc)
+        if (datetime.now(_tz.utc) - ts) < timedelta(days=30):
+            badges.append("new")
 
     total_size = sum(t["size_bytes"] for t in tables)
     ctx = _build_context(

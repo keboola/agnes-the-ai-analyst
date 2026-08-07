@@ -153,6 +153,29 @@ class TestBadges:
         assert 'class="ds-trust' not in body
         assert "detail-badge" not in body, "redesigned badge markup must not reach default instances"
 
+    def test_default_theme_hero_keeps_the_original_badge_order(self, seeded_app, monkeypatch):
+        """ "Curated New", not "New Curated".
+
+        The template renders `badges` in list order, and the page a default
+        instance now serves is the FROZEN pre-redesign one — whose router
+        appended `curated` before `new` (64cf788). Recomputing the list in the
+        other order would flip the chips on a page this change set promises to
+        leave identical (Devin Review on #1195). A freshly seeded package is
+        inside the 30-day window, so both chips render and the order is
+        observable.
+        """
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        pid, slug = _seed_pkg(created_by="admin1", publisher_kind="organization")
+        _grant_everyone(pid)
+        body = seeded_app["client"].get(f"/catalog/p/{slug}", headers=_auth(seeded_app["analyst_token"])).text
+        assert 'data-badge="curated"' in body and 'data-badge="new"' in body, (
+            "premise: a fresh org package renders both chips"
+        )
+        assert body.index('data-badge="curated"') < body.index('data-badge="new"'), (
+            "badge order flipped — the frozen page rendered Curated before New"
+        )
+
     def test_user_published_package_shows_no_trust_marker(self, seeded_app):
         """A package has no verification workflow — there is no reviewer for one to
         earn a Verified from — so 'Community' would assert a process this entity
