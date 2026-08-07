@@ -207,3 +207,47 @@ def test_every_overlay_writer_chmods_the_temp_before_the_rename():
         if offenders:
             failures[f"{rel} ({what})"] = offenders
     assert not failures, f"overlay writers renaming without a preceding chmod: {failures}"
+
+
+def test_success_path_does_not_overwrite_the_migrator_terminal_status():
+    """A completed migration must not be reported as a failure.
+
+    The applier's post-migration ``write_instance_yaml`` is NOT the backend
+    flip — ``scripts/db_state_migrator.py`` calls ``write_backend_state``
+    immediately before ``mark_success``, so by the time the applier sees
+    ``FINAL_STATUS=success`` the overlay already names the target. What runs
+    here normalizes ``database.url`` from the migrator's pinned-IP form to the
+    canonical hostname. Losing that leaves a working instance on the right
+    backend, so stamping the job ``failed`` over the migrator's own terminal
+    status would report a migration that moved every row as a failure.
+    """
+    body = APPLIER.read_text()
+    start = body.index('if [ "$FINAL_STATUS" = "success" ]')
+    end = body.index("\nelse\n", start)
+    success_branch = body[start:end]
+    assert 'update_job "$PENDING_JOB" "failed"' not in success_branch, (
+        "the success branch must not mark the job failed — the migrator already "
+        "wrote the terminal status and already flipped the backend"
+    )
+
+
+def test_the_app_refuses_to_boot_on_an_unreadable_overlay():
+    """Same bug class as the applier's, on the read the app itself does.
+
+    ``app/instance_config.py`` wrapped the overlay read in a bare
+    ``except Exception`` that logs "corrupt — falling back to static base
+    config". ``database.backend`` lives in that overlay, so a PermissionError
+    landing there boots an instance whose data is on Postgres onto the DuckDB
+    default and starts writing to the wrong store. At 0644 the read could not
+    fail this way; at 0600 a uid mismatch is enough.
+    """
+    body = Path("app/instance_config.py").read_text()
+    assert "except OSError as exc:" in body, (
+        "the overlay read must separate an unreadable file from a malformed one"
+    )
+    read_at = body.index("overlay_path.read_text()")
+    window = body[read_at : read_at + 1500]
+    assert "raise RuntimeError(" in window, (
+        "an unreadable overlay must refuse to start rather than silently fall back to "
+        "a base config that can name a different database.backend"
+    )

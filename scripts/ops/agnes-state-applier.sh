@@ -585,19 +585,23 @@ if [ "$FINAL_STATUS" = "success" ]; then
     if write_instance_yaml "$TARGET_BACKEND" "$TARGET_URL"; then
         logger -t agnes-state-applier "Migration job $JOB_ID succeeded — flipped instance.yaml backend to $TARGET_BACKEND"
     else
-        # $FLAG is deliberately left holding the TARGET lifecycle here, which
-        # is the opposite of what the rollback branch below does — the two
-        # failures are not mirror images. There, nothing moved: the migration
-        # failed, so the source backend is still the live one and the flag
-        # must follow the file. Here the migration SUCCEEDED — the data is in
-        # the target — and only the config write was refused. Clearing the
-        # flag would tear down the side-car the migrated data now lives in,
-        # turning a fixable "edit one file" into data stranded behind a
-        # container that no longer exists. So the side-car stays up, the
-        # inconsistency is reported rather than papered over, and the remedy
-        # is to repair instance.yaml by hand.
-        update_job "$PENDING_JOB" "failed" "migration completed but instance.yaml could not be rewritten — data is in $TARGET_BACKEND, config still names $SOURCE_BACKEND"
-        logger -t agnes-state-applier "Migration job $JOB_ID succeeded but instance.yaml rewrite FAILED — data is in $TARGET_BACKEND while config still names $SOURCE_BACKEND; lifecycle flag left at the target so the side-car stays up; repair instance.yaml by hand"
+        # NOT marked failed, and the job status is deliberately left alone.
+        # This write is not the flip: the migrator itself calls
+        # `write_backend_state(target_state, url=target_url)` immediately
+        # before `mark_success` (scripts/db_state_migrator.py), so by the time
+        # FINAL_STATUS reads "success" instance.yaml ALREADY names the target
+        # — and it must, since that write goes to the same directory, so a
+        # migrator that could not write it would not have succeeded. What runs
+        # here is a normalization of `database.url` from the migrator's
+        # pinned-IP form back to the canonical hostname. Losing it leaves the
+        # instance on the right backend with a less friendly url, which is a
+        # working state; stamping the job "failed" over the migrator's own
+        # terminal status would report a completed migration as a failure and
+        # send the operator looking for data that moved perfectly well.
+        #
+        # $FLAG likewise stays at the TARGET lifecycle — the data is there and
+        # the side-car must keep running.
+        logger -t agnes-state-applier "Migration job $JOB_ID succeeded; instance.yaml url normalization FAILED — backend is $TARGET_BACKEND as the migrator left it, but database.url still carries the migrator's form rather than the canonical one. Job status left as success; repair the url by hand if it matters."
     fi
 else
     logger -t agnes-state-applier "Migration job $JOB_ID failed — leaving backend on $SOURCE_BACKEND"
