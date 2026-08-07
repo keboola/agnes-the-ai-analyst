@@ -334,7 +334,21 @@ def run_convergence(*, want_hook: bool, force: bool, report: list[dict]) -> None
             }
         )
     else:
-        report.append({"stage": "hook", "status": "skipped", "detail": "--no-hook / global_hook=false"})
+        # CONVERGE, don't merely abstain. Treating `--no-hook` as "do not
+        # install" left a hook a previous `enable` had installed firing in
+        # every repository, while the config said `global_hook: false` and
+        # `status` reported it `ok` — the flag, the report and reality all
+        # disagreeing, with `agnes global disable` (which tears down the whole
+        # layer) as the only way out (Devin on #1184).
+        outcome = remove_user_session_hook()
+        report.append(
+            {
+                "stage": "hook",
+                "status": "removed" if outcome == "removed" else "skipped",
+                "detail": "--no-hook / global_hook=false"
+                + ("; removed the previously installed hook" if outcome == "removed" else ""),
+            }
+        )
 
 
 def _print_report(report: list[dict], *, as_json: bool, trailer: Optional[str] = None) -> None:
