@@ -3,6 +3,8 @@
 from pathlib import Path
 import re
 
+import pytest
+
 
 TEMPLATES = Path("app/web/templates")
 STATIC = Path("app/web/static")
@@ -190,6 +192,142 @@ def test_swept_templates_use_no_raw_hex() -> None:
     assert not offenders, "raw hex literals found in swept templates:\n" + "\n".join(
         f"  {n}: {hs}" for n, hs in offenders.items()
     )
+
+
+# (template, css selector) pairs whose BACKGROUND must resolve through a
+# `--ds-*` token. Narrower than the sweep above on purpose: these are the
+# surfaces where a fixed light background sits under theme-aware text, so a
+# literal there is not a cosmetic drift — it makes the row unreadable in the
+# other theme. #1193 was exactly this: `.token-card.is-revoked` carried a
+# hardcoded near-white while `.token-name` followed `--text-secondary`.
+_THEME_AWARE_SURFACES = (
+    ("_profile_tokens.html", ".token-card.is-revoked"),
+    ("_profile_tokens.html", ".token-card.is-expired"),
+)
+
+
+@pytest.mark.parametrize(("template", "selector"), _THEME_AWARE_SURFACES)
+def test_theme_aware_surface_background_is_tokenized(template: str, selector: str) -> None:
+    text = (TEMPLATES / template).read_text(encoding="utf-8")
+    assert selector in text, f"{template}: selector {selector} disappeared — update _THEME_AWARE_SURFACES"
+    # Grab the rule block this selector opens (selectors may be grouped, so
+    # scan from the selector to the first closing brace after it).
+    start = text.index(selector)
+    block = text[start : text.index("}", start)]
+    backgrounds = re.findall(r"background(?:-color)?\s*:\s*([^;}]+)", block)
+    assert backgrounds, f"{template}: {selector} no longer sets a background — update _THEME_AWARE_SURFACES"
+    for value in backgrounds:
+        assert "var(--ds-" in value, (
+            f"{template}: {selector} background is `{value.strip()}` — must reference a "
+            "--ds-* token so it has a dark-theme value (see #1193)"
+        )
+
+
+# ── Contrast, computed rather than eyeballed ────────────────────────────────
+#
+# A tint/ink pair written as two literals is a LIGHT-THEME pair, and nothing in
+# the review process notices that it stops working when the surface flips. The
+# token-card status pills shipped that way and measured 1.87–2.97:1 against the
+# dark card — the pill naming a token's state was the least readable thing on
+# its row. Structure alone can't catch that (a literal pair looks like any
+# other CSS), so this resolves the tokens and does the arithmetic.
+
+
+def _relative_luminance(rgb: tuple[float, float, float]) -> float:
+    def channel(c: float) -> float:
+        c /= 255
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+    r, g, b = (channel(c) for c in rgb)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _parse_color(value: str) -> tuple[float, float, float, float]:
+    """`#rgb` / `#rrggbb` / `rgba(r, g, b, a)` → (r, g, b, alpha)."""
+    value = value.strip()
+    m = re.fullmatch(r"rgba?\(([^)]+)\)", value)
+    if m:
+        parts = [p.strip() for p in m.group(1).split(",")]
+        r, g, b = (float(p) for p in parts[:3])
+        return r, g, b, float(parts[3]) if len(parts) > 3 else 1.0
+    hexpart = value.lstrip("#")
+    if len(hexpart) == 3:
+        hexpart = "".join(c * 2 for c in hexpart)
+    return (*(int(hexpart[i : i + 2], 16) for i in (0, 2, 4)), 1.0)  # type: ignore[return-value]
+
+
+def _contrast(ink: str, tint: str, surface: str) -> float:
+    """Contrast of `ink` over `tint` composited on `surface`."""
+    ir, ig, ib, _ = _parse_color(ink)
+    tr, tg, tb, ta = _parse_color(tint)
+    sr, sg, sb, _ = _parse_color(surface)
+    bg = tuple(ta * t + (1 - ta) * s for t, s in zip((tr, tg, tb), (sr, sg, sb)))
+    li, lb = _relative_luminance((ir, ig, ib)), _relative_luminance(bg)  # type: ignore[arg-type]
+    hi, lo = max(li, lb), min(li, lb)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def _dark_theme_tokens() -> dict[str, str]:
+    """Every `--ds-*` value a plain `<html data-theme="dark">` page resolves to.
+
+    Dark is declared across MORE THAN ONE `:root[data-theme="dark"]` block (the
+    accents in one, the surfaces in another), so a reader that stops at the
+    first one silently returns light-theme values and the contrast arithmetic
+    comes out meaningless. Blocks are merged in document order, later winning,
+    which is what the cascade does. The
+    `:root[data-theme="dark"][data-theme-variant="blue"]` block is deliberately
+    excluded — it needs a second attribute that the default dark page does not
+    carry, so the anchored `\\s*\\{` match skips it.
+    """
+    css = (STATIC / "css" / "design-tokens.css").read_text(encoding="utf-8")
+    tokens: dict[str, str] = {}
+    blocks = list(re.finditer(r':root\[data-theme="dark"\]\s*\{', css))
+    assert blocks, 'no `:root[data-theme="dark"]` block found — did the token file move?'
+    for m in blocks:
+        block = css[m.end() : css.index("\n}", m.end())]
+        tokens.update({name: value.strip() for name, value in re.findall(r"(--ds-[\w-]+)\s*:\s*([^;]+);", block)})
+    return tokens
+
+
+# Each entry: the pill's tint token, its ink token, and the card it sits on.
+# Dark is the theme the pills failed in and the one the contract pins; the
+# light themes were already passing and are not re-litigated here.
+_PILL_PAIRS = (
+    ("status-active", "--ds-accent-success-bg", "--ds-accent-success-ink"),
+    ("status-expiring", "--ds-accent-warn-bg", "--ds-accent-warn-ink"),
+    ("status-expired", "--ds-accent-danger-bg", "--ds-accent-danger-ink"),
+    ("status-revoked", "--ds-surface-dim", "--ds-text-secondary"),
+)
+
+
+@pytest.mark.parametrize(("pill", "tint_token", "ink_token"), _PILL_PAIRS)
+@pytest.mark.parametrize("card_token", ["--ds-surface", "--ds-surface-sunken"])
+def test_token_status_pills_are_readable_in_dark_theme(
+    pill: str, tint_token: str, ink_token: str, card_token: str
+) -> None:
+    """Both cards, because a revoked token's pill sits on the sunken one."""
+    tokens = _dark_theme_tokens()
+    for token in (tint_token, ink_token, card_token):
+        assert token in tokens, f"{token} has no dark-theme value — the pill would inherit a light-theme colour"
+    ratio = _contrast(tokens[ink_token], tokens[tint_token], tokens[card_token])
+    assert ratio >= 4.5, (
+        f".status-pill.{pill} on {card_token} measures {ratio:.2f}:1 in dark theme "
+        f"({ink_token} on {tint_token}) — below the 4.5:1 floor (see #1193)"
+    )
+
+
+def test_status_pills_reference_tokens_not_literals() -> None:
+    """The structural half: a literal pair is what fails silently on a theme
+    flip, so none may appear on these rules in the first place."""
+    text = (TEMPLATES / "_profile_tokens.html").read_text(encoding="utf-8")
+    for pill, _tint, _ink in _PILL_PAIRS:
+        rules = re.findall(rf"\.status-pill\.{pill}\b[^{{]*\{{([^}}]*)\}}", text)
+        assert rules, f".status-pill.{pill} rule disappeared — update _PILL_PAIRS"
+        for body in rules:
+            assert not re.search(r"#[0-9a-fA-F]{3,6}\b|rgba?\(", body), (
+                f".status-pill.{pill} carries a literal colour (`{body.strip()}`) — "
+                "tint/ink pairs must be --ds-* tokens so they survive a theme flip (#1193)"
+            )
 
 
 def test_no_unprefixed_primary_token_in_templates() -> None:

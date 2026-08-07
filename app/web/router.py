@@ -5304,6 +5304,16 @@ async def marketplace_flea_detail(
     # v37: the Edit button locks while a submission is under review.
     edit_in_flight = bool(quarantine_sub and quarantine_sub.get("status") in ("pending_inline", "pending_llm"))
 
+    # #1177: `hidden` means either "the author chose Private" or "guardrails
+    # quarantined this", and only the submission history separates them. The
+    # owner-actions strip used to read `hidden` as quarantine and lock Archive
+    # — permanently, because a Private row never promotes off `hidden`. Resolve
+    # it with the same predicate the API gate uses so the button and the
+    # endpoint can never disagree.
+    from app.api.store import is_own_unflagged_private
+
+    own_private = is_own_unflagged_private(entity, user.get("id") or "")
+
     # v104 trust strip. `entity_owner_label` resolves the byline the same way
     # the card does (display name → email → username) so the detail page never
     # shows a kebab-case username where the grid showed a real name.
@@ -5332,6 +5342,7 @@ async def marketplace_flea_detail(
         ),
         quarantine_sub=quarantine_sub,
         edit_in_flight=edit_in_flight,
+        own_private=own_private,
         # Where the visitor came from, so the detail page's back link can point
         # home to the right surface (e.g. ?from=skills → the Skill builder).
         from_source=from_source,

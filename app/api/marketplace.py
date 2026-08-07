@@ -301,6 +301,16 @@ class PluginDetailResponse(BaseModel):
     # path can refuse to render the install button when non-approved.
     # Curated entries omit (always live).
     visibility_status: Optional[str] = None
+    # Whether THIS caller's POST /install would be accepted. `visibility_status`
+    # alone cannot answer that: `hidden` is written both by the author choosing
+    # Private and by guardrail quarantine, and only the first is installable —
+    # by its own author, forever, since a Private row never promotes to
+    # `approved`. The front-end used to re-derive the rule as
+    # `visibility_status !== 'approved'`, which permanently disabled the
+    # install button on the author's own Private plugin even though the API
+    # would have accepted it (#1178). Resolved server-side, next to the gate
+    # it mirrors, so the two cannot drift apart again.
+    installable: bool = True
     # Latest submission verdict for the linked entity — populated only
     # for the owner / admin (the same audiences that see the quarantine
     # banner). The banner's auto-refresh JS polls this field so it can
@@ -1895,6 +1905,16 @@ async def flea_detail(
         if latest_sub:
             submission_status = latest_sub.get("status")
 
+    # Mirror POST /api/store/entities/{id}/install's gate so the detail page's
+    # install button reflects what the server would actually do (#1178).
+    from app.api.store import is_own_unflagged_private
+
+    installable = (
+        (entity.get("visibility_status") or "approved") == "approved"
+        or is_admin_user
+        or is_own_unflagged_private(entity, user.get("id") or "")
+    )
+
     return PluginDetailResponse(
         source="flea",
         # Stored on the entity; same two fields the Library row and
@@ -1936,6 +1956,7 @@ async def flea_detail(
         files=_walk_files(plugin_root),
         docs=docs,
         visibility_status=entity.get("visibility_status") or "approved",
+        installable=installable,
         submission_status=submission_status,
         # v49 phase-5: flea telemetry keyed by entity.synthetic_name
         # (rollup `name` column carries the post-rename keyspace, which
