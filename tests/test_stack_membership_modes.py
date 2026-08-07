@@ -92,6 +92,35 @@ class TestClassicMode:
         ids = {e.id for e in StackResolver(seeded).stack("u1", ResourceType.DATA_PACKAGE)}
         assert "pkg_avail" in ids
 
+    def test_browse_admin_uses_the_classic_formula(self, seeded):
+        """The admin god-mode view has its own classic/auto fork, and until
+        now nothing asserted the classic half on either backend: the two web
+        suites that render /catalog and /corporate-memory pin
+        AGNES_STACK_AUTO_MEMBERSHIP=1 in autouse fixtures, so a silent
+        inversion of the two branches would have passed CI
+        (/agnes-review parity reviewer on #1199).
+        """
+        by_id = {e.id: e for e in StackResolver(seeded).browse_admin("u1", ResourceType.DATA_PACKAGE)}
+        assert set(by_id) == {"pkg_req", "pkg_avail", "pkg_sub"}, "admin Browse lists every package"
+        assert by_id["pkg_req"].in_stack is True
+        assert by_id["pkg_sub"].in_stack is True
+        assert by_id["pkg_avail"].in_stack is False, (
+            "an available grant the admin never subscribed to must read as addable in classic mode"
+        )
+        # Classic membership is always local, so the two flags agree.
+        for e in by_id.values():
+            assert e.materialized is e.in_stack
+
+    def test_browse_admin_lists_a_package_with_no_grant_at_all(self, seeded):
+        """god-mode is "everything", not "everything I am granted"."""
+        seeded.execute(
+            "INSERT INTO data_packages(id, slug, name, description, icon, color) "
+            "VALUES ('pkg_none', 'none', 'None', 'd', 'x', '#abc')"
+        )
+        by_id = {e.id: e for e in StackResolver(seeded).browse_admin("u1", ResourceType.DATA_PACKAGE)}
+        assert "pkg_none" in by_id
+        assert by_id["pkg_none"].in_stack is False
+
 
 class TestAutoMembershipMode:
     """Flag on: the 0.82.0 auto-membership semantics, unchanged."""
@@ -109,6 +138,16 @@ class TestAutoMembershipMode:
     def test_browse_marks_everything_in_stack(self, seeded):
         entries = StackResolver(seeded).browse("u1", ResourceType.DATA_PACKAGE)
         assert all(e.in_stack for e in entries)
+
+    def test_browse_admin_counts_available_grants_as_in_stack(self, seeded):
+        """The other half of the fork: auto-membership additionally counts the
+        admin's own `available` grants, with `materialized` still reflecting
+        only required-or-subscribed."""
+        by_id = {e.id: e for e in StackResolver(seeded).browse_admin("u1", ResourceType.DATA_PACKAGE)}
+        assert by_id["pkg_avail"].in_stack is True, "auto-membership counts an unsubscribed available grant"
+        assert by_id["pkg_avail"].materialized is False, "…but it is not a local copy"
+        assert by_id["pkg_req"].materialized is True
+        assert by_id["pkg_sub"].materialized is True
 
     def test_preset_redesign_implies_auto(self, seeded, monkeypatch):
         monkeypatch.delenv("AGNES_STACK_AUTO_MEMBERSHIP", raising=False)
