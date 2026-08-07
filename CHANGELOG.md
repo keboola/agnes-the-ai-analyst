@@ -113,6 +113,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
+- **Every operator switch is declared in one registry, and says why it is or is not editable.** Gating was spread across the `FEATURE_FLAGS` registry, the `_EDITABLE_SECTIONS` write allowlist in `app/api/admin.py`, the `_KNOWN_FIELDS` form metadata beside it, and — for the reason a registered flag was *not* writable — a dict inside `tests/test_admin_configure_api.py`. Four homes for one switch's metadata, and the one an operator most needed (why can I see this and not change it?) was in a test file they will never read. `app/switches.py` now holds a `Switch` per toggle: its config key, env var, type, default, effect class (`live` / `restart` / `deploy`), whether it is editable, and `lock_reason` when it is not. `_EDITABLE_SECTIONS` is derived from it, so adding an editable switch can no longer leave its section rejecting saves — the omission that shipped `mcp.allow_query_param_token` env-var-only and `agent_profiles.enabled` after it. `data_apps` keeps its existing, deliberate restriction (the flag is read per request, but the apps_runner sidecar sits behind the `apps` Compose profile, so a live flip would surface a backend-less feature) — now stated on the switch and returned by `GET /api/admin/server-config`, which gains `effect`, `editable` and `lock_reason` per row. `FEATURE_FLAGS` remains importable from `app.instance_config` and resolves to the same registry; `feature_enabled` is unchanged. No behavior changes on any instance: the editable section set is identical, and `tests/test_feature_flags.py` passes unmodified as the regression net.
+
 ### Fixed
 
 - Previewing a partition-synced table no longer claims its first sync is
