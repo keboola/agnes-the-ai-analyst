@@ -60,6 +60,49 @@ DEPRECATED_CLASSES = {
 }
 
 
+# A bare top-level element selector (`nav { display: flex; … }`) applies to
+# EVERY instance of that tag app-wide, not just the one the author had in
+# mind — the #1207 bug: a `nav {}` rule written for the header's primary nav
+# silently turned `.sl-cat-nav` (the semantic-layer category sidebar) into a
+# horizontal row, clipped by its overflow:hidden parent, reading as blank.
+# `html`/`body`/`*` are foundational. `header`/`footer`/`code` are pre-#367
+# legacy resets and are allowlisted as DEBT, not as innocents: they are the
+# same bug class as the `nav {}` rule this guard was written for, and they are
+# live, not dead. `header {}` (flex + border-bottom + padding) applies to eight
+# bare `<header>` elements across admin_server_config.html,
+# admin_initial_workspace.html and home_not_onboarded.html; `footer {}`
+# (margin + border-top) applies to base_ds.html's bare `<footer>`, i.e. every
+# design-system page. Unpicking them means auditing each call site for a visual
+# change and is out of scope for #1207 — but a future `<header>`/`<footer>`
+# that does not declare its own layout WILL inherit these silently. Narrow the
+# allowlist, don't grow it.
+_BARE_ELEMENT_SELECTOR_ALLOWLIST = {"html", "body", "*", "header", "footer", "code"}
+# Keyframe stop names, not element selectors — `@keyframes … { from { … } to { … } }`.
+_KEYFRAME_STOPS = {"from", "to"}
+_BARE_ELEMENT_SELECTOR_RE = re.compile(r"(?m)^[ \t]*([a-z][a-zA-Z0-9]*)(?:[ \t]*,[ \t]*[a-z][a-zA-Z0-9]*)*[ \t]*\{")
+
+
+def test_no_bare_element_selector_in_style_custom() -> None:
+    """A future bare `nav {}` (or any other unscoped tag selector) must fail
+    the build, not ship — see #1207. Selectors are only "bare" when the
+    element name stands alone (no class/id/attribute/combinator); a
+    descendant or compound selector like `.app-header nav` or `a.logo` is
+    correctly scoped and not flagged."""
+    css = (STATIC / "style-custom.css").read_text(encoding="utf-8")
+    offenders: list[str] = []
+    for m in _BARE_ELEMENT_SELECTOR_RE.finditer(css):
+        selector_line = m.group(0)
+        tags = re.findall(r"[a-z][a-zA-Z0-9]*", selector_line)
+        for tag in tags:
+            if tag in _KEYFRAME_STOPS or tag in _BARE_ELEMENT_SELECTOR_ALLOWLIST:
+                continue
+            offenders.append(f"{tag!r} (line {css.count(chr(10), 0, m.start()) + 1})")
+    assert not offenders, (
+        "bare element selector(s) found in style-custom.css — scope to a class "
+        f"instead of styling every instance of the tag app-wide (#1207): {offenders}"
+    )
+
+
 def test_style_css_deleted() -> None:
     """style.css must stay deleted — all rules live in style-custom.css."""
     assert not (STATIC / "style.css").exists(), "style.css must stay deleted — all rules live in style-custom.css"
