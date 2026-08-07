@@ -114,16 +114,25 @@ def resolve_local_parquet_glob(table_id: str, source_type: str | None = None) ->
     failing first sync for a table whose every sync had succeeded
     (Devin Review on #1189).
 
-    Returns the single file path, else a `<dir>/*.parquet` glob DuckDB expands,
-    else None when neither layout exists.
+    Returns the single file path, a flat `<dir>/*.parquet` glob for the
+    per-period layout, a recursive `<dir>/**/*.parquet` glob for the nested hive
+    layout (`month=YYYY-MM/data.parquet`, Jira), else None when no parquet
+    exists in any of them.
 
-    Deliberately a FLAT `*.parquet` (not `**`), so it covers the per-period
-    layout only. A nested hive directory therefore stays None here rather than
-    yielding a glob that matches nothing — which DuckDB raises on, turning the
-    callers' clean "no data yet" answer into a 500. Hive tables also want
-    `union_by_name` (their part schemas drift), which a bare read target can't
-    carry: `src.profiler` builds its own `**` expression from
-    :func:`resolve_local_partition_dir` instead.
+    Callers MUST read the returned target through
+    ``read_parquet(?, union_by_name=true, hive_partitioning=true)`` — the same
+    expression the Jira extract's own view uses
+    (`connectors/jira/extract_init.py`). Hive part schemas drift month to month,
+    so `union_by_name` is what keeps a recursive glob from failing on the first
+    part that gained a column, and `hive_partitioning` is what turns the
+    `month=` directory segment back into the column the extract view exposes.
+    Both are no-ops for the single-file and flat-partition targets.
+
+    Resolving hive here is what keeps the read surfaces agreeing with the
+    catalog: :func:`local_parquet_size_bytes` already recurses, so leaving hive
+    unresolved here published a size hint for a table that `/api/v2/schema` and
+    `/api/v2/scan` then 404-ed on — an agent reading the catalog concluded the
+    table was queryable when it was not (Devin Review on #1198).
     """
     single = resolve_local_parquet(table_id, source_type)
     if single is not None:
@@ -131,6 +140,8 @@ def resolve_local_parquet_glob(table_id: str, source_type: str | None = None) ->
     for d in _partition_dir_candidates(table_id, source_type):
         if any(d.glob("*.parquet")):
             return str(d / "*.parquet")
+        if any(d.rglob("*.parquet")):
+            return str(d / "**" / "*.parquet")
     return None
 
 
