@@ -378,3 +378,52 @@ def test_a_required_item_is_never_hidden_by_a_stale_dismissal(k_repo):
 
     assert "k_req" in visible, "a Required item was hidden by a dismissal that predates it"
     assert "k_norm" not in visible, "an ordinary dismissed item should stay hidden"
+
+
+def _null_out_is_required(repo, item_id):
+    """Force ``is_required`` to SQL NULL, the way a legacy row carries it.
+
+    ``create()`` always names the column, so no repo call can produce the state
+    this test needs: the PG migration adds ``is_required`` as
+    ``sa.Boolean(), nullable=True`` with no server default and no backfill
+    (migrations/versions/0012_duckdb_v59_parity.py:52-55), so every row written
+    before it ran carries NULL, not FALSE. Reproduce that by hand.
+    """
+    sql = "UPDATE knowledge_items SET is_required = NULL WHERE id = ?"
+    conn = getattr(repo, "conn", None)
+    if conn is not None:
+        conn.execute(sql, [item_id])
+        return
+    from sqlalchemy import text
+
+    with repo._engine.begin() as c:
+        c.execute(text(sql.replace("?", ":id")), {"id": item_id})
+
+
+def test_a_dismissal_still_hides_a_legacy_item_with_null_is_required(k_repo):
+    """Rows predating the ``is_required`` column must still honour dismissals.
+
+    The Required exemption above is expressed as a predicate on ``is_required``.
+    Written as ``= FALSE`` it silently breaks under SQL three-valued logic: a
+    legacy NULL makes the comparison NULL, the correlated dismissal row stops
+    matching, and every item a user dismissed before the v49 migration comes
+    back — on Postgres only, since DuckDB's ``ADD COLUMN ... DEFAULT FALSE``
+    backfills (src/db.py:5104). ``IS NOT TRUE`` is NULL-safe and keeps both
+    backends on the same predicate.
+
+    Regression guard for the fix to the parity change in this PR
+    (Devin review, #1204).
+    """
+    _create_item(k_repo, "k_legacy", title="Item created before is_required existed")
+    _null_out_is_required(k_repo, "k_legacy")
+    k_repo.dismiss("u1", "k_legacy")
+
+    visible = {
+        it["id"]
+        for it in k_repo.list_items(user_groups=[], hide_dismissed=True, dismissed_by_user="u1")
+    }
+
+    assert "k_legacy" not in visible, (
+        "a dismissed legacy item (is_required IS NULL) reappeared — the "
+        "Required exemption predicate is not NULL-safe"
+    )

@@ -263,3 +263,65 @@ def test_materialize_will_not_dial_a_refused_url(seeded_app):
     )
     assert r.status_code == 400, r.text
     assert "blocked_range" in r.json()["detail"]
+
+
+def test_an_unrelated_edit_survives_a_dns_blip_on_a_strict_instance(seeded_app, monkeypatch):
+    """The footgun the module docstring rules out, reintroduced by strict mode.
+
+    Baseline answers an unresolvable host with a warning, so a rename survived
+    a resolver hiccup. Strict turns that into a refusal — and because the check
+    ran on EVERY update, a transient DNS failure made every unrelated PUT
+    (rename, `connect_hint`, `scope`) 400 on a field the admin never touched
+    (Devin on #1204). The fix is to run the check only when the write actually
+    puts an address in front of the credentials.
+    """
+    import app.instance_config as ic
+
+    monkeypatch.setattr(ic, "get_mcp_source_url_strict", lambda: True)
+    _seed("src_blip", url="https://not-up-yet.example/mcp")
+
+    r = seeded_app["client"].put(
+        "/api/admin/mcp-sources/src_blip",
+        headers=_auth(seeded_app),
+        json={"connect_hint": "ask the platform team for a token"},
+    )
+    assert r.status_code == 200, r.text
+
+    # The same instance still refuses to REPOINT at an unresolvable host: the
+    # relaxation is about which writes are policed, not about the verdict.
+    bad = seeded_app["client"].put(
+        "/api/admin/mcp-sources/src_blip",
+        headers=_auth(seeded_app),
+        json={"url": "https://also-not-up.example/mcp"},
+    )
+    assert bad.status_code == 400, bad.text
+    assert "resolvable" in bad.json()["detail"]
+
+
+def test_an_unrelated_edit_does_not_revalidate_an_already_live_url(seeded_app):
+    """The deliberate gap, pinned so it is a decision rather than a surprise.
+
+    An ENABLED row whose url the policy would now refuse — registered before
+    the guard, or before `mcp.source_url_strict` was turned on — keeps its url
+    through an unrelated edit. Re-checking here would fire only on writes that
+    have nothing to do with the url, which is the DNS-blip footgun above; the
+    row is already reachable either way, so this handler is the wrong seam.
+    Closing it properly is a sweep over existing rows.
+    """
+    _seed("src_legacy", url="http://169.254.169.254/mcp", transport="stdio", command="/bin/thing")
+    # stdio→http would make the url live, so that write IS policed …
+    blocked = seeded_app["client"].put(
+        "/api/admin/mcp-sources/src_legacy",
+        headers=_auth(seeded_app),
+        json={"transport": "http"},
+    )
+    assert blocked.status_code == 400, blocked.text
+
+    # … but a row already live with that url survives an unrelated edit.
+    _seed("src_legacy2", url="http://169.254.169.254/mcp")
+    r = seeded_app["client"].put(
+        "/api/admin/mcp-sources/src_legacy2",
+        headers=_auth(seeded_app),
+        json={"connect_hint": "internal"},
+    )
+    assert r.status_code == 200, r.text

@@ -574,3 +574,31 @@ def test_my_secret_test_does_not_leak_the_source_address_to_an_analyst(seeded_ap
     body = r.text
     assert "169.254.169.254" not in body, "the source's literal address reached a non-admin caller"
     assert "blocked_range" not in body, "the raw policy reason reached a non-admin caller"
+
+
+def test_the_disabled_refusal_reads_as_a_sentence_not_a_slug(seeded_app):
+    """`me_connections.html` renders `body.detail` straight into the card's
+    status line (`say(card, body.detail || body.message || …)`), so a machine
+    slug reaches the analyst verbatim. This branch is new — an admin turning a
+    source off is ordinary — and it must read like the other refusals here
+    (Devin on #1204)."""
+    _seed_per_user_source(source_id="src_off_copy")
+    # The credential gate runs first; without a stored secret this 403s and
+    # never reaches the branch under test.
+    seeded_app["client"].put(
+        "/api/mcp/sources/src_off_copy/my-secret",
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+        json={"value": "my-personal-token"},
+    )
+    _repoint("src_off_copy", enabled=False)
+
+    r = seeded_app["client"].post(
+        "/api/mcp/sources/src_off_copy/my-secret/test",
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+    )
+
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert isinstance(detail, str), "a dict detail would render as [object Object]"
+    assert "mcp_source_disabled" not in detail, f"machine slug shown to the analyst: {detail!r}"
+    assert "turned off" in detail

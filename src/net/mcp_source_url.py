@@ -57,6 +57,13 @@ source could never adopt strict mode at all, and an operator who had already
 declared that host trusted for every other admin URL would find the declaration
 did not carry here — the same "the two paths disagree" complaint #1154 is
 about. One allowlist, honoured everywhere.
+
+The exemption is narrow, and deliberately narrower than "skip strict mode": it
+lifts the public-address demand ONLY. An allowlisted host must still be https
+and must still resolve. That is what the allowlist means everywhere else — it
+is an address-class declaration, not a statement about transport or existence
+— and a wider reading would let one listed name opt out of most of the posture
+the operator just turned on.
 """
 
 from __future__ import annotations
@@ -171,15 +178,19 @@ def check_source_url(
 
     # An operator-declared internal host is exempt from strict mode's
     # public-address demand — but NOT from anything else. It still may not be a
-    # metadata endpoint, and it still may not carry credentials in cleartext to
-    # a public address; the allowlist says "this internal host is trusted", not
-    # "skip the checks". Scheme is judged before the exemption for the same
-    # reason.
-    strict_here = strict and host.lower() not in (allowed_hosts or frozenset())
+    # metadata endpoint, it still must be https, and it still must resolve; the
+    # allowlist says "this internal host is trusted", not "skip the checks".
+    #
+    # `security.ssrf_allowed_hosts` is an ADDRESS-CLASS allowlist everywhere
+    # else it is consulted (`_validate_url_not_private`) — it exempts a host
+    # from the private-address refusal and says nothing about transport or
+    # existence. Carrying it into the https and resolvability demands would
+    # widen its established meaning, and would make one listed host quietly
+    # opt out of most of strict mode (/agnes-review + Devin on #1204).
+    strict_public = strict and host.lower() not in (allowed_hosts or frozenset())
 
-    if strict_here and parts.scheme != "https":
+    if strict and parts.scheme != "https":
         return UrlVerdict(False, "strict_mode_requires_https")
-    strict = strict_here
 
     # A literal IP needs no resolver, and MUST be judged even when one is
     # unavailable — `http://169.254.169.254/mcp`, the url the issue is about,
@@ -190,25 +201,27 @@ def check_source_url(
         routable, reach, reason = _classify(literal)
         if not routable:
             return UrlVerdict(False, reason)
-        return _finish(parts.scheme, host, reach, strict=strict)
+        return _finish(parts.scheme, host, reach, strict_public=strict_public)
 
     resolver = _resolver or _default_resolver
     try:
         ips = resolver(host)
-    except socket.gaierror as exc:
+    except (socket.gaierror, UnicodeError) as exc:
         # Unknown, not refused — see the module docstring. Strict mode is where
         # "cannot verify" becomes "will not accept".
+        #
+        # `UnicodeError` is not a stray catch: `socket.getaddrinfo` encodes the
+        # host with the `idna` codec, which raises it ("label empty or too
+        # long") for any DNS label over 63 chars — plain ASCII, no unicode
+        # needed. Uncaught it escapes `asyncio.to_thread` and the admin gets a
+        # 500 instead of the 400 this guard exists to produce (Devin on #1204).
         if strict:
             return UrlVerdict(False, f"strict_mode_requires_resolvable_host: {exc}")
-        return UrlVerdict(
-            True,
-            reach="unknown",
-            warning=f"{host} does not resolve right now, so its address could not be checked ({exc})",
-        )
+        return _unresolved(host, parts.scheme, f"does not resolve right now ({exc})")
     if not ips:
         if strict:
             return UrlVerdict(False, "strict_mode_requires_resolvable_host: no_address")
-        return UrlVerdict(True, reach="unknown", warning=f"{host} resolved to no address")
+        return _unresolved(host, parts.scheme, "resolved to no address")
 
     # EVERY resolved address is judged, not just the one we would connect to:
     # round-robin DNS mixing a public and a private answer is the rebinding
@@ -222,17 +235,41 @@ def check_source_url(
 
     if len(set(reaches)) > 1:
         return UrlVerdict(False, "mixed_public_and_internal_addresses")
-    return _finish(parts.scheme, host, reaches[0], strict=strict)
+    return _finish(parts.scheme, host, reaches[0], strict_public=strict_public)
 
 
-def _finish(scheme: str, host: str, reach: Reach, *, strict: bool) -> UrlVerdict:
+def _unresolved(host: str, scheme: str, detail: str) -> UrlVerdict:
+    """Accept a host whose address class could not be established, loudly.
+
+    `_finish` is never reached on this path, so the cleartext-to-public rule
+    does not get to speak — baseline mode therefore accepts
+    ``http://<name-that-does-not-resolve-yet>/mcp``, and once that name starts
+    resolving publicly every forward carries a credential across the internet
+    in the clear, with no second configuration-time check to catch it.
+
+    Refusing instead would contradict the module's own reasoning (an
+    unresolvable host must stay savable — DNS blips, pre-provisioning), so the
+    warning names the specific risk rather than the generic one. Strict mode is
+    where this becomes a refusal (Devin on #1204).
+    """
+    warning = f"{host} {detail}, so its address could not be checked"
+    if scheme == "http":
+        warning += (
+            "; it is configured for cleartext http, so if that name resolves to a "
+            "public address later, credentialed forwards will cross the internet "
+            "unencrypted — use https unless the host is provably internal"
+        )
+    return UrlVerdict(True, reach="unknown", warning=warning)
+
+
+def _finish(scheme: str, host: str, reach: Reach, *, strict_public: bool) -> UrlVerdict:
     """Apply the scheme×reach rules once the address class is known.
 
     Shared by the literal-IP and the resolved-hostname paths so the two cannot
     drift — the literal path is the one that has to hold when DNS is down, and
     a second copy of these rules is exactly how it would stop matching.
     """
-    if strict and reach != "public":
+    if strict_public and reach != "public":
         return UrlVerdict(False, f"strict_mode_requires_public_address: {host}")
 
     # Cleartext to a public address: the credential would cross the internet in

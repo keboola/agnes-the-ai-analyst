@@ -427,7 +427,7 @@ class KnowledgeRepository:
                 " SELECT 1 FROM knowledge_item_user_dismissed d"
                 " WHERE d.item_id = knowledge_items.id"
                 "   AND d.user_id = ?"
-                "   AND knowledge_items.is_required = FALSE"
+                "   AND knowledge_items.is_required IS NOT TRUE"
                 ")"
             )
             params.append(dismissed_by_user)
@@ -532,7 +532,7 @@ class KnowledgeRepository:
                     " SELECT 1 FROM knowledge_item_user_dismissed d"
                     " WHERE d.item_id = knowledge_items.id"
                     "   AND d.user_id = ?"
-                    "   AND knowledge_items.is_required = FALSE"
+                    "   AND knowledge_items.is_required IS NOT TRUE"
                     ")"
                 )
                 params.append(dismissed_by_user)
@@ -645,7 +645,7 @@ class KnowledgeRepository:
                     " SELECT 1 FROM knowledge_item_user_dismissed d"
                     " WHERE d.item_id = knowledge_items.id"
                     "   AND d.user_id = ?"
-                    "   AND knowledge_items.is_required = FALSE"
+                    "   AND knowledge_items.is_required IS NOT TRUE"
                     ")"
                 )
                 params.append(dismissed_by_user)

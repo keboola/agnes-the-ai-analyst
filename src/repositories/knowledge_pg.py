@@ -298,7 +298,7 @@ class KnowledgePgRepository:
                 " SELECT 1 FROM knowledge_item_user_dismissed d"
                 " WHERE d.item_id = knowledge_items.id"
                 "   AND d.user_id = :dbu"
-                "   AND knowledge_items.is_required = FALSE"
+                "   AND knowledge_items.is_required IS NOT TRUE"
                 ")"
             )
             params["dbu"] = dismissed_by_user
@@ -491,7 +491,7 @@ class KnowledgePgRepository:
                 " SELECT 1 FROM knowledge_item_user_dismissed d"
                 " WHERE d.item_id = knowledge_items.id"
                 "   AND d.user_id = :dbu"
-                "   AND knowledge_items.is_required = FALSE"
+                "   AND knowledge_items.is_required IS NOT TRUE"
                 ")"
             )
             params["dbu"] = dismissed_by_user

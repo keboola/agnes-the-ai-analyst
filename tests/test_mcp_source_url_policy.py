@@ -180,14 +180,30 @@ def test_allowlist_does_not_excuse_the_metadata_endpoint():
 
 
 def test_allowlist_does_not_excuse_cleartext_to_a_public_address():
-    v = check_source_url(
+    """Refused in BOTH modes — but for different reasons, and that is the point.
+
+    Baseline has no https demand, so the refusal here is the always-on
+    cleartext-to-public rule: the allowlist cannot buy a credential a trip
+    across the internet in the clear. Strict refuses the same url earlier, on
+    https, because the allowlist exempts the address class only (#1204). Pinning
+    both keeps the always-on rule asserted where it is actually the operative
+    one — asserting it under strict alone made it hostage to refusal order.
+    """
+    baseline = check_source_url(
+        "http://mcp.internal/mcp",
+        allowed_hosts=frozenset({"mcp.internal"}),
+        _resolver=_res(PUBLIC),
+    )
+    assert not baseline.ok
+    assert baseline.reason == "cleartext_http_to_public_address"
+
+    strict = check_source_url(
         "http://mcp.internal/mcp",
         strict=True,
         allowed_hosts=frozenset({"mcp.internal"}),
         _resolver=_res(PUBLIC),
     )
-    assert not v.ok
-    assert v.reason == "cleartext_http_to_public_address"
+    assert not strict.ok
 
 
 # ── malformed input ─────────────────────────────────────────────────────────
@@ -276,3 +292,94 @@ def test_strict_mode_refuses_an_unresolvable_host():
     v = check_source_url("https://not-up-yet.example/mcp", strict=True, _resolver=_boom)
     assert not v.ok
     assert v.reason.startswith("strict_mode_requires_resolvable_host")
+
+
+# ── the allowlist exempts an address class, and nothing else ────────────────
+
+
+def test_allowlist_does_not_excuse_cleartext_on_an_internal_host_under_strict():
+    """Strict mode still demands https from an allowlisted host.
+
+    `security.ssrf_allowed_hosts` is an ADDRESS-CLASS declaration everywhere
+    else it is read (`_validate_url_not_private`): it says "this internal host
+    is trusted", not "skip the rest". Folding it into the https demand let one
+    listed name opt out of most of the posture the operator had just turned on
+    (Devin on #1204).
+    """
+    v = check_source_url(
+        "http://mcp.internal/mcp",
+        strict=True,
+        allowed_hosts=frozenset({"mcp.internal"}),
+        _resolver=_res(PRIVATE),
+    )
+    assert not v.ok
+    assert v.reason == "strict_mode_requires_https"
+
+
+def test_allowlist_does_not_excuse_an_unresolvable_host_under_strict():
+    """Nor does it assert the host exists — same reason as https above."""
+
+    def _boom(host):
+        raise socket.gaierror("Name or service not known")
+
+    v = check_source_url(
+        "https://mcp.internal/mcp",
+        strict=True,
+        allowed_hosts=frozenset({"mcp.internal"}),
+        _resolver=_boom,
+    )
+    assert not v.ok
+    assert v.reason.startswith("strict_mode_requires_resolvable_host")
+
+
+# ── a malformed host must 400, not 500 ──────────────────────────────────────
+
+
+def test_an_over_long_dns_label_is_a_verdict_not_an_exception():
+    """`socket.getaddrinfo` idna-encodes the host and raises `UnicodeError`
+    — not `gaierror` — for a label over 63 chars. Plain ASCII, no unicode
+    needed. Uncaught it escaped the guard as a 500 (Devin on #1204)."""
+
+    def _idna_boom(host):
+        raise UnicodeError("label empty or too long")
+
+    v = check_source_url(f"https://{'a' * 64}.example/mcp", _resolver=_idna_boom)
+    assert v.ok and v.reach == "unknown"
+
+    strict = check_source_url(f"https://{'a' * 64}.example/mcp", strict=True, _resolver=_idna_boom)
+    assert not strict.ok
+    assert strict.reason.startswith("strict_mode_requires_resolvable_host")
+
+
+def test_the_real_resolver_raises_unicodeerror_for_an_over_long_label():
+    """Pins the premise of the test above against CPython itself, so the
+    injected `_idna_boom` cannot drift into testing a fiction."""
+    with pytest.raises(UnicodeError):
+        socket.getaddrinfo(f"{'a' * 64}.example", None)
+
+
+# ── an unresolvable host still gets told about cleartext ────────────────────
+
+
+def test_unresolvable_http_host_is_warned_about_cleartext():
+    """`_finish` never runs on the unknown path, so the cleartext-to-public
+    rule cannot speak. Baseline still accepts (the module refuses to make a
+    save depend on DNS) but the warning names the actual risk: the name may
+    resolve publicly later, and nothing re-checks (Devin on #1204)."""
+
+    def _boom(host):
+        raise socket.gaierror("Name or service not known")
+
+    v = check_source_url("http://not-yet.example/mcp", _resolver=_boom)
+    assert v.ok and v.reach == "unknown"
+    assert "cleartext" in v.warning and "https" in v.warning
+
+    https = check_source_url("https://not-yet.example/mcp", _resolver=_boom)
+    assert https.ok and "cleartext" not in https.warning
+
+
+def test_host_resolving_to_no_address_gets_the_same_cleartext_warning():
+    """The two unknown paths (`gaierror` and an empty answer) must not drift."""
+    v = check_source_url("http://not-yet.example/mcp", _resolver=_res([]))
+    assert v.ok and v.reach == "unknown"
+    assert "cleartext" in v.warning

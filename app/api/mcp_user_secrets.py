@@ -268,7 +268,14 @@ async def test_my_secret(source_id: str, user: dict = Depends(get_current_user))
     from app.api.admin_mcp import _source_url_verdict
 
     if not source.get("enabled", True):
-        raise HTTPException(status_code=409, detail="mcp_source_disabled")
+        # Human copy, not a machine slug: `me_connections.html` renders
+        # `body.detail` straight into the card's status line, so a bare
+        # `mcp_source_disabled` would reach the analyst as literal snake_case.
+        # Same shape as the url-policy 400 below (Devin on #1204).
+        raise HTTPException(
+            status_code=409,
+            detail=(f"{source.get('name') or source_id} is currently turned off by an admin, so it cannot be tested."),
+        )
     verdict = await _source_url_verdict(source)
     if verdict is not None and not verdict.ok:
         logger.warning(

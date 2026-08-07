@@ -829,7 +829,29 @@ async def update_mcp_source(
     # `mcp_passthrough.py`). It is NOT "never dialed": the admin probes do not
     # consult `enabled`, so they carry their own copy of this check rather than
     # leaning on the flag.
-    if merged.get("enabled"):
+    #
+    # Also skipped when this write does not touch what the check polices. The
+    # guard resolves DNS, so running it on EVERY update makes an unrelated
+    # edit — a rename, a `connect_hint` tweak — fail during a resolver blip;
+    # on a strict instance that is a hard 400 on a field the admin never
+    # touched. The module docstring rules that footgun out by design, and
+    # re-running the check on an unchanged url quietly reintroduced it (Devin
+    # on #1204).
+    #
+    # So the trigger is the same predicate the credential purge below uses —
+    # `url_repointed`, "this write puts a (new) address in front of the
+    # credentials": the url changed, or a stdio row went network and made a
+    # stored url live for the first time. Plus off→on, which does not repoint
+    # anything but does turn the forwards on. What is left over — an already
+    # live row whose url this write does not touch — is the legacy-row case,
+    # and re-validating it here would only ever fire on an edit that had
+    # nothing to do with it; closing that gap is a sweep's job (see the reply
+    # on the runtime-forwards thread), not this handler's.
+    now_network = (merged.get("transport") or "") in ("http", "sse")
+    was_network = (existing.get("transport") or "") in ("http", "sse")
+    url_repointed = now_network and ((existing.get("url") or "") != (merged.get("url") or "") or not was_network)
+    becoming_enabled = bool(merged.get("enabled")) and not bool(existing.get("enabled"))
+    if merged.get("enabled") and (url_repointed or becoming_enabled):
         url_warning = await _check_source_url_or_400(merged)
     else:
         url_warning = ""
@@ -856,9 +878,11 @@ async def update_mcp_source(
     # stored url live for the first time, so a secret minted for a subprocess
     # starts being sent as an `Authorization` header to a host it was never
     # meant for. Same exposure, so the same purge.
-    now_network = (merged.get("transport") or "") in ("http", "sse")
-    was_network = (existing.get("transport") or "") in ("http", "sse")
-    url_repointed = now_network and ((existing.get("url") or "") != (merged.get("url") or "") or not was_network)
+    #
+    # `url_repointed` is computed above, next to the url check, because that
+    # check asks the same question this purge does — "does this write put a
+    # (new) address in front of credentials?" — and two copies of that
+    # predicate would be free to drift apart.
     # The purge runs BEFORE the row is repointed, deliberately. There is no
     # transaction spanning the sources row and the vault tables, so one of the
     # two orders has to lose on a mid-sequence failure — and they do not lose
