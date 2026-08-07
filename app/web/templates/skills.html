@@ -1330,10 +1330,23 @@
      rather than sitting there contradicting the screen. When the last one goes,
      so does the alert. */
   function dropProblem(field) {
-    if (!problems.length) return;
-    var before = problems.length;
-    problems = problems.filter(function (p) { return p.field !== field; });
-    if (problems.length !== before) syncProblems();
+    if (problems.length) {
+      var before = problems.length;
+      problems = problems.filter(function (p) { return p.field !== field; });
+      if (problems.length !== before) syncProblems();
+    }
+    // The stored Check result carries the SAME metadata refusals in
+    // `check.fields`, and the Check panel re-renders from it — so clearing only
+    // `problems` left the panel asserting a name/category the author has since
+    // replaced is still taken, with no way to tell the row was stale short of
+    // re-running Check (Devin Review on #1196). Editing the body drops the whole
+    // result; a metadata edit only invalidates its own row, so the bundle's
+    // component and lint findings beside it survive. Returns whether it dropped
+    // one, so a caller that skips the usual re-render can ask for it.
+    if (!check || !(check.fields || []).length) return false;
+    var n = check.fields.length;
+    check.fields = check.fields.filter(function (f) { return f.field !== field; });
+    return check.fields.length !== n;
   }
   function clearProblems() {
     if (!problems.length) return;
@@ -1876,8 +1889,12 @@
     if (!f || !draft) return;
     draft[f] = e.target.value;
     if (f === 'category') {
-      dropProblem('category');   // answered — stop faulting it, same as any field
+      var staleRow = dropProblem('category');   // answered — stop faulting it, same as any field
       persist();
+      // This branch patches the one preview node by hand rather than
+      // re-rendering on every keystroke — but a dropped Check row lives in the
+      // panel, which only `syncPreview` redraws.
+      if (staleRow) { syncPreview(); return; }
       var el = document.getElementById('sk-pv-cat');
       if (el) el.textContent = draft.category || cfg().label;
       return;

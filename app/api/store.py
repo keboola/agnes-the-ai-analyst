@@ -3831,7 +3831,15 @@ async def delete_entity(
             # already clears archived_at/archived_by and strips the archive-rename
             # suffix to restore the original display name (#518: the old raw
             # UPDATE wrote the frozen DuckDB system file on Postgres instances).
-            store_entities_repo().set_visibility(entity_id, "approved")
+            #
+            # Revert to the status the row ACTUALLY had, never a hardcoded
+            # 'approved'. Until #1177 only an `approved` row could reach this
+            # path, so the literal was accurate; now the author may archive their
+            # own Private (`hidden`) row, and reverting that to 'approved' would
+            # PUBLISH a private entity to the whole organization on a disk error
+            # the author only ever sees as a 500. `entity` was read before
+            # `archive()` ran, so it still carries the pre-archive status.
+            store_entities_repo().set_visibility(entity_id, entity.get("visibility_status") or "approved")
             raise HTTPException(
                 status_code=500,
                 detail="archive_rename_failed",
