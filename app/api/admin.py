@@ -1379,7 +1379,20 @@ def _feature_flags_inventory() -> List[Dict[str, Any]]:
 #: Derived from `runtime_view` so a third chat-resolved switch cannot be added
 #: without the panel following — the previous hand-written dict was the reason
 #: this needed a Devin Review note on #1146/#1157.
-_CHAT_RUNTIME_FLAGS = {s.name: s.runtime_view for s in SWITCHES if s.runtime_view}
+#:
+#: Restricted to `config_keys[0] == "chat"`: `_chat_flag_runtime_view` below
+#: reads `raw.get("chat")` and calls `load_chat_config`, so a switch outside
+#: the chat section declaring `runtime_view` would silently resolve against
+#: the wrong section rather than fail. The assertion turns that into a loud
+#: import-time error instead — a non-chat `runtime_view` needs its own
+#: resolver, not a bigger map here.
+_CHAT_RUNTIME_FLAGS = {
+    s.name: s.runtime_view for s in SWITCHES if s.runtime_view and s.config_keys and s.config_keys[0] == "chat"
+}
+assert len(_CHAT_RUNTIME_FLAGS) == sum(1 for s in SWITCHES if s.runtime_view), (
+    "a switch declares runtime_view outside the chat section; _chat_flag_runtime_view "
+    "only knows how to resolve chat.* — give it a dedicated resolver instead of widening this map"
+)
 
 
 def _chat_flag_runtime_view(flag) -> tuple:

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.switches import SWITCHES, get_switch
+from app.switches import CATEGORIES, EFFECTS, KINDS, ON_INVALID, SWITCHES, get_switch
 
 
 class TestRegistryIntegrity:
@@ -36,11 +36,23 @@ class TestRegistryIntegrity:
 
     def test_effect_is_a_known_value(self):
         for s in SWITCHES:
-            assert s.effect in ("live", "restart", "deploy"), f"{s.name}: {s.effect}"
+            assert s.effect in EFFECTS, f"{s.name}: {s.effect}"
 
     def test_category_is_a_known_value(self):
         for s in SWITCHES:
-            assert s.category in ("product", "operations", "locked"), f"{s.name}: {s.category}"
+            assert s.category in CATEGORIES, f"{s.name}: {s.category}"
+
+    def test_kind_is_a_known_value(self):
+        """Unlike `effect` and `category`, `kind` had no validity test: a
+        typo'd `kind="boolean"` falls past every branch in `switch_value` and
+        returns a lowercased STRING — and `"false"` is truthy at a callsite
+        doing `if switch_value(...)`."""
+        for s in SWITCHES:
+            assert s.kind in KINDS, f"{s.name}: {s.kind}"
+
+    def test_on_invalid_is_a_known_value(self):
+        for s in SWITCHES:
+            assert s.on_invalid in ON_INVALID, f"{s.name}: {s.on_invalid}"
 
     def test_select_entries_declare_options_containing_their_default(self):
         for s in SWITCHES:
@@ -146,28 +158,37 @@ class TestGetSwitch:
 
 
 class TestSwitchValueResolution:
-    """The single resolution order: env > overlay/yaml > default."""
+    """The single resolution order: env > overlay/yaml > default.
+
+    Exercised against `data_apps` / `studio` / `guardrails` rather than
+    `chat`: `chat` declares `runtime_view` (its runtime reads the writable
+    overlay alone via `load_chat_config`, not the merged config `get_value`
+    reads), so `switch_value("chat")` raises — see
+    `TestSwitchValueRefusesRuntimeViewSwitches` below. None of the three used
+    here declare `runtime_view`, so they exercise the generic resolution
+    order untouched by that carve-out.
+    """
 
     def test_default_when_nothing_set(self, monkeypatch):
         import app.switches as sw
 
-        monkeypatch.delenv("AGNES_CHAT_ENABLED", raising=False)
+        monkeypatch.delenv("AGNES_DATA_APPS_ENABLED", raising=False)
         monkeypatch.setattr("app.instance_config.get_value", lambda *k, default=None: default)
-        assert sw.switch_value("chat") is False
+        assert sw.switch_value("data_apps") is False
 
     def test_yaml_wins_over_default(self, monkeypatch):
         import app.switches as sw
 
-        monkeypatch.delenv("AGNES_CHAT_ENABLED", raising=False)
+        monkeypatch.delenv("AGNES_DATA_APPS_ENABLED", raising=False)
         monkeypatch.setattr("app.instance_config.get_value", lambda *k, default=None: True)
-        assert sw.switch_value("chat") is True
+        assert sw.switch_value("data_apps") is True
 
     def test_env_wins_over_yaml(self, monkeypatch):
         import app.switches as sw
 
-        monkeypatch.setenv("AGNES_CHAT_ENABLED", "0")
+        monkeypatch.setenv("AGNES_DATA_APPS_ENABLED", "0")
         monkeypatch.setattr("app.instance_config.get_value", lambda *k, default=None: True)
-        assert sw.switch_value("chat") is False
+        assert sw.switch_value("data_apps") is False
 
     @pytest.mark.parametrize("raw", ["0", "false", "FALSE", "no", "off", ""])
     def test_falsy_env_spellings(self, monkeypatch, raw):
@@ -183,14 +204,42 @@ class TestSwitchValueResolution:
         casing mismatch."""
         import app.switches as sw
 
-        monkeypatch.setenv("AGNES_CHAT_ENABLED", raw)
-        assert sw.switch_value("chat") is True
+        monkeypatch.setenv("AGNES_GUARDRAILS_ENABLED", raw)
+        assert sw.switch_value("guardrails") is True
 
     def test_unknown_switch_raises(self):
         import app.switches as sw
 
         with pytest.raises(KeyError):
             sw.switch_value("no_such_switch")
+
+
+class TestSwitchValueRefusesRuntimeViewSwitches:
+    """`switch_value()` reads the merged config; `chat` and `chat_approvals`
+    do not run from there — `app/main.py` boots them via
+    `load_chat_config(DATA_DIR/state/instance.yaml)`, the writable overlay
+    file alone. Answering from `switch_value()` would be silently wrong
+    (True for an instance that only set the flag in the static base, while
+    the runtime it gates has it off), so it must raise instead."""
+
+    def test_switch_value_chat_raises(self):
+        import app.switches as sw
+
+        with pytest.raises(ValueError, match="chat"):
+            sw.switch_value("chat")
+
+    def test_switch_value_chat_approvals_raises(self):
+        import app.switches as sw
+
+        with pytest.raises(ValueError, match="chat_approvals"):
+            sw.switch_value("chat_approvals")
+
+    def test_non_runtime_view_switch_is_unaffected(self):
+        """Sanity check that the guard is scoped to `runtime_view` switches,
+        not a blanket regression on `switch_value`."""
+        import app.switches as sw
+
+        assert sw.switch_value("studio") is True
 
 
 class TestBackwardCompatibility:
