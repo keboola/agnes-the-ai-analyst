@@ -298,6 +298,15 @@ templates.env.globals["posthog_user_block"] = _posthog_user_block
 # Without this, base_ds.html emits <link href=""> and the page renders unstyled.
 templates.env.globals["static_url"] = _static_url
 
+# Legacy guided-tour steps (spec 2026-08-07 wave 2): the pre-redesign tour —
+# frozen as _tour_legacy.html + js/tour_legacy.js — reads its server-filtered
+# steps off this global, exactly as before the redesign (the module is the
+# restored pre-redesign app/web/onboarding.py; contract guard:
+# tests/test_onboarding_not_outdated.py). Rail keeps the coach-mark engine.
+from app.web.onboarding import steps_for as _onboarding_steps_for  # noqa: E402
+
+templates.env.globals["onboarding_steps"] = _onboarding_steps_for
+
 
 def _data_apps_nav_enabled() -> bool:
     """Whether the "Apps" primary-nav entry should render. Registered as a
@@ -336,6 +345,26 @@ def _is_paper_theme() -> bool:
 
 
 templates.env.globals["is_paper"] = _is_paper_theme
+
+
+def _store_verification_on() -> bool:
+    """Whether the Store verification workflow is enabled. A Jinja global for
+    the same reasons as `is_paper` above — the admin header's "Moderation &
+    Trust" row is a chrome-level surface rendered on every page, so it can't
+    rely on per-route context. Re-read per call so an admin flipping the
+    setting takes effect without a restart (spec 2026-08-07 wave 2: with
+    verification disabled — the default — the hub has nothing to moderate,
+    so the menu entry is gated on the semantic switch, not on a chrome
+    check)."""
+    try:
+        from app.instance_config import get_store_verification_enabled
+
+        return get_store_verification_enabled()
+    except Exception:
+        return False
+
+
+templates.env.globals["store_verification_on"] = _store_verification_on
 
 
 # The ONE default behind `library.show_unverified_trust`, read off the registry
@@ -1294,20 +1323,86 @@ async def how_it_works_page(
 
 
 @router.get("/me/ai-connector", response_class=HTMLResponse)
+async def me_ai_connector_page(
+    request: Request,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """AI Connector — chrome-dependent (spec 2026-08-07 wave 2).
+
+    Default chrome keeps the pre-redesign standalone page (frozen
+    ``me_cowork_legacy.html``: OAuth connector URL, plugin packages,
+    available tools — including the /mcp-connect token fallback link).
+    Under the redesign opt-in the page stays consolidated into
+    /how-it-works#connect via the 302 the redesign shipped (302, not 301: a
+    permanent redirect is cached by the browser forever, so it would be
+    very hard to walk back if the consolidation is revisited)."""
+    from fastapi.responses import RedirectResponse
+
+    if get_ui_layout() == "rail":
+        return RedirectResponse("/how-it-works#connect", status_code=302)
+
+    # Pre-redesign handler body verbatim (the frozen template reads exactly
+    # this context).
+    from app.api.mcp_passthrough import _visible_passthrough_tools
+    from app.api.v2_marketplace import _accessible_plugins, _skills_for_plugin
+    from src.repositories import mcp_sources_repo
+
+    # Backend-aware reads (mcp_sources / tool grants live in Postgres on a PG
+    # instance) — a raw DuckDB conn here showed no MCP tools on Cowork.
+    source_names = {s["id"]: s["name"] for s in mcp_sources_repo().list_all(enabled_only=True)}
+    raw_tools = _visible_passthrough_tools(user)
+    passthrough_tools = []
+    for t in raw_tools:
+        sname = source_names.get(t["source_id"])
+        if sname:
+            passthrough_tools.append(
+                {
+                    "exposed_name": t["exposed_name"],
+                    "description": t.get("description"),
+                    "source_name": sname,
+                }
+            )
+
+    skills = []
+    for plugin in _accessible_plugins(user):
+        skills.extend(_skills_for_plugin(plugin["marketplace_id"], plugin["name"]))
+
+    static_tools = [
+        {"name": "server_info", "description": "Check Agnes connectivity and your account email."},
+        {"name": "catalog", "description": "List all tables available to you — name, query_mode, row count."},
+        {"name": "schema", "description": "Show column names and types for a table."},
+        {"name": "describe", "description": "Schema + sample rows for a table in one call."},
+        {"name": "query", "description": "Execute SQL against Agnes data (DuckDB or BigQuery dialect)."},
+        {"name": "skills", "description": "List marketplace skills you can access — includes full SKILL.md body."},
+    ]
+
+    server_url = str(request.base_url).rstrip("/")
+    ctx = _build_context(
+        request,
+        user=user,
+        conn=conn,
+        is_admin=is_user_admin(user["id"], conn),
+        static_tools=static_tools,
+        passthrough_tools=passthrough_tools,
+        skills=skills,
+        server_url=server_url,
+    )
+    return templates.TemplateResponse(request, "me_cowork_legacy.html", ctx)
+
+
 @router.get("/me/mcp", response_class=HTMLResponse)
 @router.get("/me/cowork", response_class=HTMLResponse)
 async def me_mcp_redirect(request: Request):
-    """Legacy redirects — the standalone AI Connector page and its two older
-    aliases now land on the consolidated page's connect section.
+    """Legacy aliases → /me/ai-connector (which renders the page on default
+    chrome and forwards to /how-it-works#connect under the redesign opt-in).
 
     302, not 301: a permanent redirect is cached by the browser forever, so
-    it would be very hard to walk back if the consolidation is revisited.
-    Promote to 301 after a release of confidence (the same ladder /me/mcp
-    and /me/cowork went through before absorbing into this handler).
+    it would be very hard to walk back if the routing is revisited.
     """
     from fastapi.responses import RedirectResponse
 
-    return RedirectResponse("/how-it-works#connect", status_code=302)
+    return RedirectResponse("/me/ai-connector", status_code=302)
 
 
 @router.get("/mcp-connect", response_class=HTMLResponse)
@@ -1483,7 +1578,11 @@ async def me_activity_page(
         conn=conn,
         is_admin=is_user_admin(user["id"], conn),
     )
-    return templates.TemplateResponse(request, "me_activity.html", ctx)
+    # Rail keeps the redesigned page; topnav renders the frozen pre-redesign
+    # copy (spec 2026-08-07 wave 2 — LEGACY_FROZEN closed set,
+    # TestDefaultContentParity guard). Same handler ctx either way.
+    tmpl = "me_activity.html" if get_ui_layout() == "rail" else "me_activity_legacy.html"
+    return templates.TemplateResponse(request, tmpl, ctx)
 
 
 @router.get("/me/stats", response_class=HTMLResponse)
@@ -3619,6 +3718,46 @@ async def agents_page(
     than pretending drafts are shared."""
     if not get_agent_profiles_enabled():
         return RedirectResponse("/", status_code=302)
+
+    # Default chrome keeps the pre-redesign "My agents" management page —
+    # the builder above is a redesign surface and its ctx diverged, so the
+    # classic branch reproduces the pre-redesign app/web/agents_page.py
+    # logic verbatim over the same repos, rendering the frozen
+    # agents_legacy.html (spec 2026-08-07 wave 2).
+    if get_ui_layout() != "rail":
+        from app.api.agents_admin import _SELECTED_MODE_FIELDS
+        from app.chat.agent_profile import _MEMORY_BUDGET_CHARS, select_in_budget
+        from src.repositories import agent_memories_repo
+
+        mem_repo = agent_memories_repo()
+
+        def _memories_for_panel(agent_id: str) -> list:
+            """Every memory for `agent_id`, each carrying an `in_budget` flag
+            for active rows — the exact same `select_in_budget` split the
+            spawn path uses, so the panel can never show a memory as "in
+            effect" that a live spawn would actually shadow."""
+            memories = mem_repo.list_for_agent(agent_id)
+            active_rows = mem_repo.list_active(agent_id)
+            in_budget, _shadowed = select_in_budget(active_rows, _MEMORY_BUDGET_CHARS)
+            in_budget_ids = {m["id"] for m in in_budget}
+            return [
+                {**m, "in_budget": (m["id"] in in_budget_ids) if m["status"] == "active" else None} for m in memories
+            ]
+
+        from src.repositories import agents_repo as _agents_repo
+
+        rows = _agents_repo().list_for_user(user["id"])
+        agents = [
+            {
+                **row,
+                "token_ready": all(row.get(field) == "selected" for field in _SELECTED_MODE_FIELDS),
+                "memories": _memories_for_panel(row["id"]),
+            }
+            for row in rows
+        ]
+        ctx = _build_context(request, user=user, agents=agents)
+        return templates.TemplateResponse(request, "agents_legacy.html", ctx)
+
     from app.services.stack_resolver import StackResolver
     from app.resource_types import ResourceType
 
@@ -6970,7 +7109,11 @@ async def profile_page(
         google_group_prefix=os.environ.get("AGNES_GOOGLE_GROUP_PREFIX", "").strip(),
         csrf_token=csrf_token,
     )
-    response = templates.TemplateResponse(request, "profile.html", ctx)
+    # Rail keeps the redesigned page; topnav renders the frozen pre-redesign
+    # copy (spec 2026-08-07 wave 2). Current ctx is a superset of what the
+    # legacy template reads (telegram/desktop status are redesign-only).
+    _profile_tmpl = "profile.html" if get_ui_layout() == "rail" else "profile_legacy.html"
+    response = templates.TemplateResponse(request, _profile_tmpl, ctx)
     _set_web_csrf_cookie(response, request, csrf_token)
     return response
 
