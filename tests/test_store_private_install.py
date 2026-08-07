@@ -249,6 +249,39 @@ def test_detail_page_offers_archive_on_an_own_private_entity(web_client: TestCli
     assert "disabled" not in strip, f"Archive rendered disabled:\n{strip}"
 
 
+def test_redesigned_detail_page_offers_archive_on_an_own_private_entity(web_client: TestClient, monkeypatch):
+    """The same unlock, on the look a paper-theme instance actually serves.
+
+    Under the #896 redesign the owner-actions ladder is not the per-template
+    button strip the two tests around this one assert — it is the SHARED
+    ``detail.store_menu()`` macro, which carried its own copy of the gate and
+    kept it pinned to ``visibility_status == 'approved'``. So #1177 was fixed on
+    the legacy look only: on a paper instance the author of a Private entity saw
+    a permanently greyed-out Delete while the API would have accepted the
+    archive (Devin Review on #1196). Asserted on the redesigned render
+    specifically, because the legacy assertions pass either way.
+    """
+    monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
+    owner_id, owner_cookies = _create_user(web_client, "owner@x.com")
+    entity_id, _sub_id = _seed_quarantined_entity(
+        owner_id,
+        "owner@x.com",
+        "paper1",
+        status="approved",
+    )
+
+    r = web_client.get(f"/marketplace/flea/{entity_id}", cookies=owner_cookies)
+    assert r.status_code == 200, r.text
+    assert 'id="owner-archive-btn"' in r.text, (
+        "the redesigned page gives the owner no Archive control on their own Private entity"
+    )
+    assert "Submission is quarantined" not in r.text
+
+    # …and the API the menu item calls actually accepts it, so menu and
+    # endpoint cannot drift apart again.
+    assert web_client.delete(f"/api/store/entities/{entity_id}", cookies=owner_cookies).status_code == 204
+
+
 def test_plugin_detail_page_offers_archive_on_an_own_private_entity(web_client: TestClient):
     """The plugin template, reached through the real Private upload path.
 
