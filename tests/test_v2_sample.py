@@ -553,3 +553,68 @@ class TestByDesignNotLocalTablesDoNotBlameTheSync:
             conn.close()
         assert not isinstance(exc_info.value, v2_sample.TableNotPreviewableError)
         assert "no synced data yet" in exc_info.value.detail
+
+
+class TestPartitionedTablePreview:
+    """A partitioned table lays its data out as a DIRECTORY of per-period files
+    (`data/<table_id>/2025_11.parquet`), so the single-file lookup returned None
+    and `build_sample` reported a pending or failing first sync for a table whose
+    every sync had succeeded (Devin Review on #1189)."""
+
+    def test_glob_resolver_finds_a_partitioned_directory(self, tmp_path, monkeypatch):
+        import pandas as pd
+
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        part_dir = tmp_path / "extracts" / "keboola" / "data" / "kbc_sales"
+        part_dir.mkdir(parents=True)
+        pd.DataFrame({"amount": [1, 2]}).to_parquet(part_dir / "2025_11.parquet")
+        pd.DataFrame({"amount": [3]}).to_parquet(part_dir / "2025_12.parquet")
+
+        from app.utils import resolve_local_parquet, resolve_local_parquet_glob
+
+        assert resolve_local_parquet("kbc_sales", "keboola") is None, "precondition: no single file"
+        target = resolve_local_parquet_glob("kbc_sales", "keboola")
+        assert target is not None and target.endswith("*.parquet"), target
+
+        # ...and DuckDB reads every partition through it.
+        from src.db import _open_duckdb
+
+        c = _open_duckdb(":memory:")
+        try:
+            total = c.execute("SELECT COUNT(*) FROM read_parquet(?)", [target]).fetchone()[0]
+        finally:
+            c.close()
+        assert total == 3, "all partitions must be readable through the glob"
+
+    def test_single_file_layout_still_wins(self, tmp_path, monkeypatch):
+        """The common case must not regress: a plain parquet resolves to the file
+        itself, not to a glob."""
+        import pandas as pd
+
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        data = tmp_path / "extracts" / "keboola" / "data"
+        data.mkdir(parents=True)
+        pd.DataFrame({"a": [1]}).to_parquet(data / "kbc_orders.parquet")
+
+        from app.utils import resolve_local_parquet_glob
+
+        target = resolve_local_parquet_glob("kbc_orders", "keboola")
+        assert target is not None and target.endswith("kbc_orders.parquet")
+        assert "*" not in target
+
+    def test_neither_layout_still_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        (tmp_path / "extracts" / "keboola" / "data").mkdir(parents=True)
+        from app.utils import resolve_local_parquet_glob
+
+        assert resolve_local_parquet_glob("kbc_missing", "keboola") is None
+
+    def test_an_empty_partition_directory_is_not_mistaken_for_data(self, tmp_path, monkeypatch):
+        """A directory with no parquet in it means the sync has not produced a
+        partition yet — that IS the pending-sync case, so it must stay None
+        rather than resolve to a glob matching nothing."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        (tmp_path / "extracts" / "keboola" / "data" / "kbc_empty").mkdir(parents=True)
+        from app.utils import resolve_local_parquet_glob
+
+        assert resolve_local_parquet_glob("kbc_empty", "keboola") is None

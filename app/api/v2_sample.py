@@ -232,9 +232,13 @@ def build_sample(
     else:
         # Resolve by source-name-agnostic lookup — the extract directory is not
         # necessarily the source_type (e.g. the bundled `demo` extract).
-        from app.utils import resolve_local_parquet
+        # `_glob` so a PARTITIONED table resolves too: that sync writes
+        # `data/<table_id>/<partition>.parquet`, a directory, so the single-file
+        # lookup returned None and a healthy fully-synced table was reported as
+        # having a pending or failing first sync (Devin Review on #1189).
+        from app.utils import resolve_local_parquet_glob
 
-        parquet = resolve_local_parquet(table_id, source_type)
+        parquet = resolve_local_parquet_glob(table_id, source_type)
         if parquet is None:
             # The registry row exists (checked above), so this is never "no such
             # table" — but WHY there is no parquet decides what to tell the
@@ -252,7 +256,7 @@ def build_sample(
         try:
             df = c.execute(
                 f"SELECT * FROM read_parquet(?) LIMIT {n}",
-                [str(parquet)],
+                [parquet],
             ).fetchdf()
             rows = df.to_dict(orient="records")
         finally:

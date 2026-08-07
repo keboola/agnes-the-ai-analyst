@@ -574,10 +574,14 @@ async def list_connection_tables(
         # register tables" for minutes and then mislabel a full-access token as
         # `token_buckets`. A 5xx or a connection error is not a scope problem, so
         # it surfaces as itself (Devin Review on #1189).
-        status = getattr(exc, "status", None)
-        if status is not None and status not in (401, 403):
-            raise HTTPException(status_code=502, detail=f"keboola_storage_api_error: {exc}") from exc
-        if isinstance(exc, requests.RequestException):
+        # Require an EXPLICIT refusal. The first version of this gate read
+        # `status is not None and status not in (401, 403)`, which let a
+        # status-less StorageApiError fall THROUGH to the fallback — the very
+        # case the gate exists to prevent. `_parse_list` always stamps a status
+        # today, so it was unreachable, but the condition said the opposite of
+        # its intent and would have started lying the moment some other path
+        # raised without one (Devin Review on #1189).
+        if getattr(exc, "status", None) not in (401, 403):
             raise HTTPException(status_code=502, detail=f"keboola_storage_api_error: {exc}") from exc
         # The client's messages already redact response bodies; the token
         # itself travels in a header and never appears in the exception.

@@ -1104,7 +1104,14 @@ class TestEveryBucketSourceTableCompositionIsNormalized:
         "connectors/keboola/storage_api.py": "the helper's own docstring, quoting the shape it fixes",
     }
 
-    _COMPOSITION_RE = r'\{[a-z_.\[\]"\x27]*bucket[a-z_.\[\]"\x27]*\}\.\{[a-z_.\[\]"\x27]*(source_table|table)[a-z_.\[\]"\x27]*\}'
+    # Two shapes, because the first version of this ratchet only knew the
+    # f-string one and missed `quote_ident(bucket)}.{quote_ident(source_table)`
+    # in the /api/query copy-paste hint — a suggestion naming a table that does
+    # not exist (Devin Review on #1189).
+    _COMPOSITION_RE = (
+        r'\{[a-z_.\[\]"\x27]*bucket[a-z_.\[\]"\x27]*\}\.\{[a-z_.\[\]"\x27]*(source_table|table)[a-z_.\[\]"\x27]*\}'
+        r'|bucket[^\n]{0,40}\}\.\{[^\n]{0,40}source_table'
+    )
 
     def _hits(self):
         import subprocess

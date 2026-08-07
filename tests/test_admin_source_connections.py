@@ -636,6 +636,10 @@ class TestSourceConnectionsTables:
         for boom in (
             StorageApiError("upstream exploded", status=500),
             _requests.ConnectionError("connection reset"),
+            # No status at all: the gate must fail CLOSED. An earlier version
+            # read `status is not None and status not in (401, 403)`, so this
+            # case fell through into the fallback (Devin Review on #1189).
+            StorageApiError("no status stamped"),
         ):
             called = []
             with (

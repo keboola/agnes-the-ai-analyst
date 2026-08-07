@@ -18,6 +18,21 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- Previewing a partition-synced table no longer claims its first sync is
+  pending. That sync writes `data/<table_id>/<partition>.parquet` — a directory
+  of per-period files — so the single-file lookup found nothing and a healthy,
+  fully-synced table was reported as having no data yet, sending the admin to a
+  sync status page that shows success. The preview now resolves either layout
+  (`resolve_local_parquet_glob`) and reads every partition. An empty partition
+  directory still counts as no data, because that genuinely is the pending case.
+
+- The copy-paste query suggestion for a not-yet-materialized table named a
+  nonexistent table for pre-fix wizard rows: it composed
+  `kbc."<bucket>"."<bucket>.<table>"` from the stored reference, so an analyst
+  who copied it got an error instead of data. It strips the prefix now, and the
+  composition ratchet was widened to see this `quote_ident(...)` shape too — the
+  first version only knew the f-string one, which is why this site was missed.
+
 - The admin table browser no longer re-lists every bucket after a transient
   Keboola failure. Any exception from the project-wide listing triggered the
   per-bucket fallback, which makes two upstream calls per bucket the token can
