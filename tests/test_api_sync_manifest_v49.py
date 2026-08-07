@@ -169,13 +169,15 @@ class TestManifestExtensions:
         after = _telemetry_count("sync.pull_started", "analyst1")
         assert after == before + 1
 
-    def test_manifest_download_skip_for_available_package_not_materialized(self, seeded_app):
-        """Auto-membership: a granted-but-not-subscribed ``available``
-        package's table is authorized+listed (both in the typed
-        ``data_packages[]`` section and the flat ``tables`` dict) but
+    def test_manifest_download_skip_for_available_package_not_materialized(self, seeded_app, monkeypatch):
+        """Auto-membership (opt-in): a granted-but-not-subscribed
+        ``available`` package's table is authorized+listed (both in the
+        typed ``data_packages[]`` section and the flat ``tables`` dict) but
         flagged ``server_only`` so `agnes pull` does not fetch its parquet
         — the download-skip is per-user, reusing the existing #607
-        listed-but-not-downloaded mechanism."""
+        listed-but-not-downloaded mechanism. Classic sibling below:
+        the package is absent from the manifest until subscribed."""
+        monkeypatch.setenv("AGNES_STACK_AUTO_MEMBERSHIP", "1")
         gid = _create_group_with_analyst("DLSkip")
         pkg_id = _create_package("dl-skip-pkg", "DlSkipPkg")
         table_id = _register_table("dl_skip_table")
@@ -223,6 +225,57 @@ class TestManifestExtensions:
             .json()
         )
         flat = body["tables"]["dl_skip_table"]
+        assert flat["server_only"] is False
+
+    def test_manifest_classic_excludes_unsubscribed_available_package(self, seeded_app, monkeypatch):
+        """Classic (default) membership: a granted-but-not-subscribed
+        ``available`` package is NOT in the user's stack, so neither the
+        package nor its table appears in the manifest at all — the
+        pre-redesign contract (spec 2026-08-07-default-chrome-ux-parity).
+        Subscribing brings both in, downloadable (no server_only overlay)."""
+        monkeypatch.delenv("AGNES_STACK_AUTO_MEMBERSHIP", raising=False)
+        gid = _create_group_with_analyst("DLClassic")
+        pkg_id = _create_package("dl-classic-pkg", "DlClassicPkg")
+        table_id = _register_table("dl_classic_table")
+        conn = get_system_db()
+        from src.repositories.data_packages import DataPackagesRepository
+        from src.repositories.sync_state import SyncStateRepository
+
+        DataPackagesRepository(conn).add_table(pkg_id, table_id, added_by="test")
+        SyncStateRepository(conn).update_sync(table_id="dl_classic_table", rows=10, file_size_bytes=100, hash="h1")
+        conn.close()
+        _grant(gid, "data_package", pkg_id, "available")
+
+        body = (
+            seeded_app["client"]
+            .get(
+                "/api/sync/manifest",
+                headers=_auth(seeded_app["analyst_token"]),
+            )
+            .json()
+        )
+        assert all(p["slug"] != "dl-classic-pkg" for p in body["data_packages"])
+        assert "dl_classic_table" not in body["tables"]
+
+        # Subscribing joins the stack → package + table appear, downloadable.
+        r = seeded_app["client"].post(
+            "/api/stack/subscribe",
+            json={"resource_type": "data_package", "resource_id": pkg_id},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert r.status_code == 200, r.text
+        body = (
+            seeded_app["client"]
+            .get(
+                "/api/sync/manifest",
+                headers=_auth(seeded_app["analyst_token"]),
+            )
+            .json()
+        )
+        pkg = next(p for p in body["data_packages"] if p["slug"] == "dl-classic-pkg")
+        t = next(x for x in pkg["tables"] if x["id"] == table_id)
+        assert t["server_only"] is False
+        flat = body["tables"]["dl_classic_table"]
         assert flat["server_only"] is False
 
     def test_manifest_required_package_table_always_downloadable(self, seeded_app):
