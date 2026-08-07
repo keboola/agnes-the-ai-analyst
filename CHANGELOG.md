@@ -70,6 +70,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   app-served `/api/data/<id>/download?part=` route, which never consults the
   mirror. Mirroring per-part objects (and presigning them) would have to change
   the manifest and the CLI together, so it stays out of this change.
+- The admin source-connection probes gained a server-side log trail. `POST /api/admin/source-connections/{id}/test` was fully silent — a failing connection left nothing behind for an operator to read — and now logs every outcome; the tables listing logs bucket/table counts, duration and the resolved scope on success, and the master-token preflight logs a token-redacted WARNING on its 502 (an `HTTPException` is otherwise invisible in server logs). Log lines carry the stack HOST rather than the full `stack_url`, and status or reason rather than response bodies: the token travels in a header, and a proxy-echoed body must not land in the logs. The 502 mapping this branch also carried shipped separately in 0.83.0 via the bucket-scoped-token work, so only the observability is new here.
 
 ### Removed
 
