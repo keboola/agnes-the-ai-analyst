@@ -556,3 +556,40 @@ def test_no_hook_is_quiet_when_there_was_no_hook(env):
     result = CliRunner().invoke(gs_module.global_app, ["enable", "--no-hook"])
     assert result.exit_code == 0, result.output
     assert "removed the previously installed hook" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# enable/disable hold the same lock `agnes update` holds
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("cmd", [["enable"], ["disable"]])
+def test_a_held_convergence_lock_refuses_instead_of_no_opping(env, cmd):
+    """`agnes update` treats a held lock as skip-quietly, which is right for a
+    background convergence fired from every repository. For a hand-typed
+    command it is not: a silent no-op looks like it worked. Both mutate the
+    same user-level files, so both take the lock (Devin on #1184)."""
+    from filelock import FileLock
+
+    from cli.config import _config_dir
+
+    lock_file = _config_dir() / "update.lock"
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
+    holder = FileLock(str(lock_file))
+    holder.acquire(timeout=0)
+    try:
+        result = CliRunner().invoke(gs_module.global_app, cmd)
+    finally:
+        holder.release()
+
+    assert result.exit_code == 1, result.output
+    assert "convergence lock" in result.output
+
+
+def test_the_lock_is_released_so_a_second_run_succeeds(env):
+    """A CLI that leaked the lock would make the NEXT run refuse — the shape
+    a bare `__enter__()` without its `__exit__` produces."""
+    assert CliRunner().invoke(gs_module.global_app, ["enable"]).exit_code == 0
+    second = CliRunner().invoke(gs_module.global_app, ["enable"])
+    assert second.exit_code == 0, second.output
+    assert "convergence lock" not in second.output
