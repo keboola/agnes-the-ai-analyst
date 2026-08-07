@@ -21,6 +21,19 @@ Each test runs twice — once on DuckDB, once on real Postgres.
 from __future__ import annotations
 
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _auto_membership_mode(monkeypatch):
+    """This suite pins the AUTO-membership semantics, which are opt-in since
+    the classic subscribe model became the default again (spec
+    2026-08-07-default-chrome-ux-parity). Classic-mode contracts live in
+    tests/test_stack_membership_modes.py (and the classic fan-out siblings in
+    tests/test_e2e_stack_rbac.py / tests/test_cli_api_parity.py)."""
+    monkeypatch.setenv("AGNES_STACK_AUTO_MEMBERSHIP", "1")
+
+
 def _seed_group_with_analyst(group_name: str = "data-team") -> str:
     """Create a group, add ``analyst1`` to it, return the group id."""
     from src.repositories import user_groups_repo, user_group_members_repo
