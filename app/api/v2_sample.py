@@ -26,6 +26,82 @@ _sample_cache = TTLCache(maxsize=512, ttl_seconds=3600)
 _MAX_N = 100
 
 
+class TableNotSyncedError(FileNotFoundError):
+    """Registered row exists but no local data has landed yet.
+
+    Subclasses FileNotFoundError so every existing catch keeps working; the
+    endpoint maps it to a 404 whose detail explains the pending/failing
+    first sync instead of the misleading bare "table not found" (which reads
+    as "registration failed" to the admin who just registered it)."""
+
+    def __init__(self, table_id: str, detail: str):
+        super().__init__(table_id)
+        self.detail = detail
+
+
+class TableNotPreviewableError(TableNotSyncedError):
+    """No parquet, and there never will be one — by design, not by failure.
+
+    ``query_mode='remote'`` only: every query goes live to the upstream source,
+    so nothing is ever materialized. Such rows used to fall into the not-synced
+    branch and be reported as "the first sync is pending or failing", sending an
+    admin to hunt a job that does not exist and never will.
+
+    ``server_only`` is deliberately NOT one of these — it suppresses
+    *distribution* to analyst laptops while the server still materializes the
+    parquet, so a missing one there is a real failure and must keep saying so.
+
+    Subclasses ``TableNotSyncedError`` so every existing catch and the endpoint's
+    404 mapping keep working unchanged; only the explanation differs.
+    """
+
+
+def _not_previewable_detail(table_id: str, *, query_mode: str) -> str:
+    """Explain a `query_mode='remote'` row, which has no server parquet at all.
+
+    ``server_only`` deliberately does NOT belong here, and an earlier version of
+    this fix got that wrong. It is a *distribution* suppressor: the server still
+    materializes the parquet, `agnes pull` just never ships it to a laptop —
+    ``app/api/sync.py`` says as much ("remote tables have no server parquet at
+    all, and server_only ones are deliberately not distributed"), and the
+    registration validator rejects ``server_only`` together with
+    ``query_mode='remote'`` for that reason. So a `server_only` row whose parquet
+    is missing HERE, on the server, is a genuinely pending or failing sync, and
+    telling its admin "no sync is pending" would hide a broken job behind a
+    reassurance (Devin Review on #1189).
+
+    The predicate this originally borrowed from — `sync.py`'s signed-URL gate —
+    lumps the two together correctly, because for *distribution* they coincide.
+    For *previewability on the server* they do not.
+    """
+    return (
+        f"table {table_id!r} is registered with query_mode={query_mode or 'remote'!r}, so it is "
+        "queried at the source and never materialized as a parquet — there is no sample to "
+        f"preview, and no sync is pending. Read it at the source instead: `agnes query --remote "
+        f'"SELECT * FROM {table_id} LIMIT 10"`.'
+    )
+
+
+def _not_synced_detail(table_id: str) -> str:
+    """Explain a registered-but-dataless table, with the last sync error
+    when sync_state recorded one."""
+    detail = (
+        f"table {table_id!r} is registered but has no synced data yet — "
+        "the first sync is pending or failing (see the sync status on "
+        "Admin → Tables)"
+    )
+    try:
+        from src.repositories import sync_state_repo
+
+        state = sync_state_repo().get_table_state(table_id) or {}
+        err = state.get("error") or ""
+        if err:
+            detail += f"; last sync error: {str(err)[:300]}"
+    except Exception:
+        logger.debug("sync_state lookup failed for %s while building sample 404 detail", table_id)
+    return detail
+
+
 def _sanitize_for_json(obj):
     """Recursively replace NaN / ±inf floats with None so the response
     survives JSON serialization. FastAPI's default encoder rejects these
@@ -156,16 +232,31 @@ def build_sample(
     else:
         # Resolve by source-name-agnostic lookup — the extract directory is not
         # necessarily the source_type (e.g. the bundled `demo` extract).
-        from app.utils import resolve_local_parquet
+        # `_glob` so a PARTITIONED table resolves too: that sync writes
+        # `data/<table_id>/<partition>.parquet`, a directory, so the single-file
+        # lookup returned None and a healthy fully-synced table was reported as
+        # having a pending or failing first sync (Devin Review on #1189).
+        from app.utils import resolve_local_parquet_glob
 
-        parquet = resolve_local_parquet(table_id, source_type)
+        parquet = resolve_local_parquet_glob(table_id, source_type)
         if parquet is None:
-            raise FileNotFoundError(table_id)
+            # The registry row exists (checked above), so this is never "no such
+            # table" — but WHY there is no parquet decides what to tell the
+            # viewer. Only `query_mode='remote'` is never materialized: every
+            # query goes live to the upstream source. `server_only` is NOT in
+            # this branch on purpose — it suppresses distribution to analyst
+            # laptops, not materialization here, so a missing parquet for one of
+            # those rows is a real pending/failing sync and must keep saying so.
+            query_mode = row.get("query_mode") or ""
+            if query_mode == "remote":
+                raise TableNotPreviewableError(table_id, _not_previewable_detail(table_id, query_mode=query_mode))
+            # Genuinely "no data has landed yet" — including for server_only.
+            raise TableNotSyncedError(table_id, _not_synced_detail(table_id))
         c = _open_duckdb(":memory:")
         try:
             df = c.execute(
                 f"SELECT * FROM read_parquet(?) LIMIT {n}",
-                [str(parquet)],
+                [parquet],
             ).fetchdf()
             rows = df.to_dict(orient="records")
         finally:
@@ -226,6 +317,8 @@ def sample(
             )
         except Exception:
             logger.exception("audit_log write failed on error path for catalog.sample; continuing")
+        if isinstance(exc, TableNotSyncedError):
+            raise HTTPException(status_code=404, detail=exc.detail)
         if isinstance(exc, FileNotFoundError):
             raise HTTPException(status_code=404, detail=f"table {table_id!r} not found")
         if isinstance(exc, PermissionError):

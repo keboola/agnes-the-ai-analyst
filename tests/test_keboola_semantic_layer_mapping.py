@@ -73,6 +73,42 @@ class TestTableLookupFromRegistry:
             ("in.c-example_source", "contacts"): "crm_contacts",
         }
 
+    def test_legacy_wizard_row_still_matches_the_semantic_layer(self):
+        """A pre-fix wizard row stored the FULL tableId in `source_table`.
+
+        `resolve_table_name` splits a Keboola tableId on the last dot, so it
+        always asks for a BARE table name. Without normalizing the key here, a
+        legacy row keys as `("in.c-main", "in.c-main.orders")` while every lookup
+        asks for `("in.c-main", "orders")` — a permanent miss, and the table
+        silently gets no descriptions, metrics or glossary links. The export and
+        view paths already strip the prefix at use; this was the sibling site
+        they missed (Devin Review on #1189).
+        """
+        rows = [
+            {
+                "bucket": "in.c-example_source",
+                "source_table": "in.c-example_source.orders",  # legacy shape
+                "name": "crm_orders",
+            }
+        ]
+        lookup = table_lookup_from_registry(rows)
+        assert lookup == {("in.c-example_source", "orders"): "crm_orders"}
+        # ...and the end-to-end resolve now finds it.
+        assert resolve_table_name("in.c-example_source.orders", lookup) == "crm_orders"
+
+    def test_normalization_does_not_touch_a_table_named_like_its_bucket(self):
+        """Only a full `<bucket>.` PREFIX is stripped, not a coincidental
+        substring — a bare name that merely starts with the bucket's text
+        without the dot must survive."""
+        rows = [
+            {
+                "bucket": "in.c-main",
+                "source_table": "in.c-main_archive",  # no dot after the bucket
+                "name": "archive",
+            }
+        ]
+        assert table_lookup_from_registry(rows) == {("in.c-main", "in.c-main_archive"): "archive"}
+
     def test_skips_rows_missing_bucket_or_source_table(self):
         rows = [
             {"bucket": None, "source_table": "orders", "name": "x"},

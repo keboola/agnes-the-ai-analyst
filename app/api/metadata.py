@@ -82,7 +82,18 @@ async def push_metadata_to_source(
             detail=f"Push is only supported for keboola tables (table source_type={source_type!r})",
         )
 
-    source_table = table.get("source_table") or table_id
+    # The Storage API addresses a table by its FULL id (`<bucket>.<table>`), and
+    # the registry stores the bucket separately — so `source_table` alone is only
+    # a valid tableId for a legacy wizard row that still carries the prefix. For
+    # a correctly registered row the URL came out as
+    # `/v2/storage/tables/orders/columns/...` with no bucket at all. The exact
+    # inverse of the doubled-prefix bug this PR fixes, and it only ever worked on
+    # the rows that were themselves wrong (Devin Review on #1189).
+    from connectors.keboola.storage_api import normalize_source_table
+
+    _bucket = table.get("bucket") or ""
+    _bare = normalize_source_table(_bucket, table.get("source_table") or table_id)
+    source_table = f"{_bucket}.{_bare}" if _bucket else _bare
     stack_url = os.environ.get("KBC_STACK_URL", "").rstrip("/")
     token = os.environ.get("KBC_STORAGE_TOKEN", "")
 

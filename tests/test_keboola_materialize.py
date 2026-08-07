@@ -88,6 +88,46 @@ def fake_storage_client_csv():
     return client
 
 
+# ---- source_table normalization (pre-fix wizard rows) ----------------------
+
+
+def test_normalize_source_table_strips_bucket_prefix():
+    from connectors.keboola.storage_api import normalize_source_table
+
+    assert normalize_source_table("in.c-sales", "in.c-sales.orders") == "orders"
+    # already bare → unchanged
+    assert normalize_source_table("in.c-sales", "orders") == "orders"
+    # different bucket prefix is NOT stripped (not ours to touch)
+    assert normalize_source_table("in.c-sales", "in.c-other.orders") == "in.c-other.orders"
+    # bucket-name-as-substring must not trigger (prefix match includes the dot)
+    assert normalize_source_table("in.c-sales", "in.c-sales2.orders") == "in.c-sales2.orders"
+    # degenerate inputs pass through
+    assert normalize_source_table("", "in.c-sales.orders") == "in.c-sales.orders"
+    assert normalize_source_table("in.c-sales", "") == ""
+
+
+def test_materialize_query_heals_source_table_with_bucket_prefix(tmp_path, fake_storage_client_parquet):
+    """Rows registered by the pre-fix Data-sources wizard stored the FULL
+    Keboola table id in source_table; composing the export id then doubled
+    the bucket (`in.c-sales.in.c-sales.orders`) and every export 404'd.
+    The materialize path must strip the prefix at use so those rows heal
+    without re-registration."""
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+
+    kbe.materialize_query(
+        table_id="orders",
+        bucket="in.c-sales",
+        source_table="in.c-sales.orders",  # full id, as the pre-fix wizard stored it
+        source_query=None,
+        storage_client=fake_storage_client_parquet,
+        output_dir=output_dir,
+    )
+
+    call_args = fake_storage_client_parquet.prepare_export.call_args
+    assert call_args.args[0] == "in.c-sales.orders"  # NOT in.c-sales.in.c-sales.orders
+
+
 # ---- default parquet path --------------------------------------------------
 
 
@@ -1038,3 +1078,101 @@ def test_retype_preserves_row_order_across_row_groups(tmp_path):
     table = pq.read_table(src)
     assert table.schema.field("id").type == pa.int64()
     assert table.column("id").to_pylist() == list(range(n))
+
+
+class TestEveryBucketSourceTableCompositionIsNormalized:
+    """Ratchet: the fourth round of one finding, closed structurally.
+
+    `f"{bucket}.{source_table}"` reads like it composes a Keboola tableId, and
+    for a row registered by the pre-fix Data-sources wizard it does not — that
+    row stores the FULL id in `source_table`, so the composition doubles the
+    bucket. Review found this in four separate passes, each time naming another
+    call site: the export/view paths, then `semantic_layer` +
+    `connectors/keboola/metadata.py`, then `usage.py` + `data_semantics_scaffold`.
+    Patching the site that was pointed at is what made a fourth round possible.
+
+    This test finds every such composition instead, so a new one has to either
+    route through `normalize_source_table` or be listed below with the reason it
+    is a different thing.
+    """
+
+    # (path prefix, why this composition needs no Keboola normalization)
+    _EXEMPT = {
+        "app/api/admin.py": "BigQuery `project.dataset.table` — bucket is a BQ dataset, not a Keboola bucket",
+        "app/api/query.py": "BigQuery fqn composition (bq_fqn), same reason",
+        "app/api/v2_scan.py": "BigQuery fqn composition (parse_bq_fqn), same reason",
+        "connectors/keboola/storage_api.py": "the helper's own docstring, quoting the shape it fixes",
+    }
+
+    # Two shapes, because the first version of this ratchet only knew the
+    # f-string one and missed `quote_ident(bucket)}.{quote_ident(source_table)`
+    # in the /api/query copy-paste hint — a suggestion naming a table that does
+    # not exist (Devin Review on #1189).
+    _COMPOSITION_RE = (
+        r'\{[a-z_.\[\]"\x27]*bucket[a-z_.\[\]"\x27]*\}\.\{[a-z_.\[\]"\x27]*(source_table|table)[a-z_.\[\]"\x27]*\}'
+        r'|bucket[^\n]{0,40}\}\.\{[^\n]{0,40}source_table'
+    )
+
+    def _hits(self):
+        import subprocess
+
+        proc = subprocess.run(
+            ["git", "grep", "-nP", self._COMPOSITION_RE, "--", "*.py"],
+            capture_output=True,
+            text=True,
+        )
+        return [ln for ln in proc.stdout.splitlines() if ln and not ln.startswith("tests/")]
+
+    def test_the_scan_finds_something(self):
+        """Guards the guard: a refactor that changes the composition idiom would
+        otherwise empty the scan and make the ratchet below pass vacuously."""
+        assert len(self._hits()) >= 6
+
+    def test_every_composition_normalizes_or_is_exempt(self):
+        """A composition is safe when `normalize_source_table` is called anywhere
+        in the ENCLOSING FUNCTION — either right above it, or earlier as the
+        reassignment idiom `materialize_query` uses (it normalizes at the top and
+        rebinds `source_table`, then composes 89 lines later).
+
+        Scoped by function via AST rather than by a line window, which is the
+        point: the first version of this test used a 30-line window and flagged
+        that legitimate case. A window is an arbitrary number; the function is the
+        actual scope the value flows through.
+        """
+        import ast
+        import pathlib
+
+        def enclosing_span(tree, lineno):
+            best = None
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    end = getattr(node, "end_lineno", None)
+                    if end and node.lineno <= lineno <= end:
+                        if best is None or node.lineno > best[0]:
+                            best = (node.lineno, end)
+            return best
+
+        unaccounted = []
+        for hit in self._hits():
+            path, lineno, _ = hit.split(":", 2)
+            if any(path.startswith(p) for p in self._EXEMPT):
+                continue
+            src = pathlib.Path(path).read_text(encoding="utf-8")
+            lines = src.split("\n")
+            span = enclosing_span(ast.parse(src), int(lineno))
+            body = "\n".join(lines[span[0] - 1 : span[1]]) if span else ""
+            if "normalize_source_table" not in body:
+                unaccounted.append(hit)
+
+        assert not unaccounted, (
+            "bucket + source_table composed without normalize_source_table nearby — a "
+            "legacy wizard row doubles the bucket prefix here. Route it through the helper, "
+            "or add its path to _EXEMPT with the reason it is not a Keboola tableId:\n"
+            + "\n".join(unaccounted)
+        )
+
+    def test_no_stale_exemption(self):
+        """Shrinks-only: an exempt path that stopped composing must be dropped."""
+        hits = self._hits()
+        stale = [p for p in self._EXEMPT if not any(h.startswith(p) for h in hits)]
+        assert not stale, f"no longer composes — drop from _EXEMPT: {stale}"

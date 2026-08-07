@@ -1201,8 +1201,16 @@ def _build_materialized_hint(row: dict) -> str:
         # Pick the alias by source_type so the hint is copy-pasteable.
         alias = "bq" if (row.get("source_type") or "") == "bigquery" else "kbc"
         # Not executed — a copy-pasteable hint. Routed through quote_ident anyway
-        # so the suggestion stays valid SQL when a name contains a quote.
-        direct_hint = f" or query the source directly via {alias}.{quote_ident(bucket)}.{quote_ident(source_table)}"
+        # so the suggestion stays valid SQL when a name contains a quote, and
+        # through normalize_source_table so a row registered by the pre-fix
+        # wizard (full `<bucket>.<table>` in source_table) does not suggest
+        # `kbc."in.c-main"."in.c-main.orders"` — a table that does not exist, so
+        # the analyst who copies it gets an error instead of data
+        # (Devin Review on #1189).
+        from connectors.keboola.storage_api import normalize_source_table
+
+        bare = normalize_source_table(bucket, source_table)
+        direct_hint = f" or query the source directly via {alias}.{quote_ident(bucket)}.{quote_ident(bare)}"
     return (
         f"Table {tid!r} is registered as query_mode='materialized' but is "
         f"not yet materialized in this instance's analytics views. Run "
