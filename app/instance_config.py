@@ -141,7 +141,27 @@ def load_instance_config() -> dict:
     overlay_path = _state_dir() / "instance.yaml"
     if overlay_path.exists():
         try:
-            overlay = yaml.safe_load(overlay_path.read_text()) or {}
+            raw = overlay_path.read_text()
+        except OSError as exc:
+            # The file is THERE and we cannot read it. Falling back to the
+            # static base would be the dangerous reading of that: the overlay
+            # is where `database.backend` lives, so an instance whose data is
+            # on Postgres would come up on the DuckDB default and start
+            # writing to the wrong store — silently, with only a log line
+            # calling the file "corrupt". Since instance.yaml went 0600 this
+            # is reachable via a plain uid mismatch rather than only via disk
+            # failure, so it refuses to boot instead, naming the actual cause.
+            # A malformed file keeps the lenient path below: that one is
+            # visible to the operator and repairable through the editor.
+            raise RuntimeError(
+                f"cannot read the instance.yaml overlay at {overlay_path}: {exc}. "
+                "The file exists but is not readable by this process — it is mode 0600, "
+                "so check that the app runs as its owner. Refusing to start on the static "
+                "base config, which would silently use a different `database.backend` than "
+                "the one this instance's data is on."
+            ) from exc
+        try:
+            overlay = yaml.safe_load(raw) or {}
             from config.loader import _resolve_env_refs
 
             overlay = _resolve_env_refs(overlay)
