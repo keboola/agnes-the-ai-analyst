@@ -93,7 +93,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   interpolated into a pattern (`rglob(f"data/{id}.parquet")`), so a `*` or
   `[...]` stopped naming one table and started matching an arbitrary one —
   `POST /api/catalog/profile/*/refresh` would have profiled whichever parquet
-  the pattern hit and stored it under the requested name. Each `extracts/*`
+  the pattern hit and stored it under the requested name. That endpoint built
+  its own copy of the lookup rather than calling the resolver, so it took the
+  validation only once it was routed through `resolve_local_parquet` — one
+  lookup with one guard, instead of a fourth hand-rolled glob. Each `extracts/*`
   entry counts as a containment root in its own right, so an operator who has
   symlinked a whole extract source onto another volume keeps their tables
   readable — resolving only against `extracts/` would have made every table
