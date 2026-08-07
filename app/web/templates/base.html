@@ -117,6 +117,13 @@
     {% block extra_scripts %}{% endblock %}
     {% include "_app_scripts.html" %}
     {% block scripts %}{% endblock %}
+    {# Legacy guided-tour overlay — same include as base_ds.html (spec
+       2026-08-07 wave 2): pre-redesign, base.html shipped the tour on every
+       authed page, so the remaining base.html pages keep it on the default
+       chrome too. #}
+    {% if (ui_layout | default('topnav')) != 'rail' %}
+    {% include "_tour_legacy.html" %}
+    {% endif %}
     {# Operator-injected scripts (placement=body_end) — for vendors that
        explicitly want bottom placement. Admin-only, see
        instance.custom_scripts. #}
