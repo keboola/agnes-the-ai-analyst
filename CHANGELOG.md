@@ -18,6 +18,18 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- Keboola's semantic layer now attaches to tables registered by the pre-fix
+  wizard. `table_lookup_from_registry` keyed its lookup on the raw
+  `source_table`, while `resolve_table_name` builds its key by splitting a
+  Keboola tableId on the last dot — always a bare table name. So a legacy row
+  keyed as `("in.c-main", "in.c-main.orders")` while every lookup asked for
+  `("in.c-main", "orders")`: a permanent miss, and the table silently received no
+  descriptions, metrics or glossary links. The same composition in
+  `connectors/keboola/metadata.py` had the doubled-prefix shape too, so row
+  counts and column metadata went missing for those rows as well. Both now strip
+  the prefix at use, like the export and view paths already did — these were the
+  two sibling sites that sweep missed.
+
 - Previewing a `query_mode='remote'` table no longer blames a failing first
   sync. `build_sample` special-cased only BigQuery non-materialized rows, so a
   Keboola row registered remote — the shape this change adds — fell through to
