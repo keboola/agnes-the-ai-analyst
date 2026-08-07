@@ -38,6 +38,24 @@ def _write_partitions(data_dir, table_id: str) -> dict[str, int]:
     return {p.name: p.stat().st_size for p in part_dir.glob("*.parquet")}
 
 
+def _write_hive_partitions(data_dir, table_id: str) -> None:
+    """Write the NESTED hive layout (``month=YYYY-MM/data.parquet``) the Jira
+    connector produces.
+
+    The December part deliberately carries a column November does not: hive part
+    schemas drift month to month, so a recursive glob only reads without
+    ``union_by_name`` by accident. This is what makes that flag load-bearing
+    rather than decorative.
+    """
+    part_dir = data_dir / table_id
+    nov = pa.table({"v": [1, 2], "d": [datetime.date(2025, 11, 1), datetime.date(2025, 11, 15)]})
+    dec = pa.table({"v": [3], "d": [datetime.date(2025, 12, 1)], "resolution": ["Done"]})
+    for month, tbl in (("2025-11", nov), ("2025-12", dec)):
+        month_dir = part_dir / f"month={month}"
+        month_dir.mkdir(parents=True, exist_ok=True)
+        pq.write_table(tbl, month_dir / "data.parquet")
+
+
 class TestPartitionedSizeBytes:
     """``app.utils.local_parquet_size_bytes`` — one number for either layout."""
 
@@ -187,6 +205,24 @@ class TestSchemaSurface:
         assert {c["name"] for c in payload["columns"]} == {"v", "d"}
         assert payload["sql_flavor"] == "duckdb"
 
+    def test_columns_resolve_from_a_nested_hive_directory(self, tmp_path, monkeypatch):
+        """The catalog already sums hive parts for its size hint, so schema has
+        to resolve the same layout — otherwise the catalog advertises a size for
+        a table this surface 404s on (Devin Review on #1198)."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        _write_hive_partitions(tmp_path / "extracts" / "jira" / "data", "issues")
+
+        from app.api.v2_schema import build_schema_uncached
+
+        row = self._row("issues") | {"source_type": "jira"}
+        payload = build_schema_uncached(conn=None, table_id="issues", bq=object(), row=row)
+
+        names = {c["name"] for c in payload["columns"]}
+        # `resolution` proves union_by_name (only the December part has it);
+        # `month` proves hive_partitioning turned the directory key into a column,
+        # the same shape the Jira extract's own view exposes.
+        assert {"v", "d", "resolution", "month"} <= names
+
     def test_empty_partition_directory_still_not_found(self, tmp_path, monkeypatch):
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         (tmp_path / "extracts" / "keboola" / "data" / "kbc_empty").mkdir(parents=True)
@@ -272,6 +308,17 @@ class TestScanSurface:
         )
 
         assert parse_ipc_bytes(ipc).column("v").to_pylist() == [2, 3]
+
+    def test_scan_reads_every_hive_partition(self, reload_db, tmp_path, monkeypatch):
+        """Same divergence as schema: the nested layout has to be scannable, or
+        the catalog's size hint points at a table scan refuses to read."""
+        _write_hive_partitions(tmp_path / "extracts" / "keboola" / "data", "kbc_sales")
+
+        from app.api.v2_arrow import parse_ipc_bytes
+
+        ipc = self._run(reload_db, monkeypatch, {"table_id": "kbc_sales", "select": ["v"]})
+
+        assert sorted(parse_ipc_bytes(ipc).column("v").to_pylist()) == [1, 2, 3]
 
     def test_empty_partition_directory_still_raises_not_found(self, reload_db, tmp_path, monkeypatch):
         (tmp_path / "extracts" / "keboola" / "data" / "kbc_empty").mkdir(parents=True)
