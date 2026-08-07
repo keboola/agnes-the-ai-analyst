@@ -236,7 +236,7 @@ def build_sample(
         # `data/<table_id>/<partition>.parquet`, a directory, so the single-file
         # lookup returned None and a healthy fully-synced table was reported as
         # having a pending or failing first sync (Devin Review on #1189).
-        from app.utils import resolve_local_parquet_glob
+        from app.utils import LOCAL_PARQUET_READ_EXPR, resolve_local_parquet_glob
 
         parquet = resolve_local_parquet_glob(table_id, source_type)
         if parquet is None:
@@ -255,7 +255,7 @@ def build_sample(
         c = _open_duckdb(":memory:")
         try:
             df = c.execute(
-                f"SELECT * FROM read_parquet(?) LIMIT {n}",
+                f"SELECT * FROM {LOCAL_PARQUET_READ_EXPR} LIMIT {n}",
                 [parquet],
             ).fetchdf()
             rows = df.to_dict(orient="records")

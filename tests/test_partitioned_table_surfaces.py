@@ -325,3 +325,112 @@ class TestScanSurface:
 
         with pytest.raises(FileNotFoundError):
             self._run(reload_db, monkeypatch, {"table_id": "kbc_empty", "select": ["v"]})
+
+
+class TestPreviewSurface:
+    """``/api/v2/sample`` — the surface #1189 taught the partition layout first.
+
+    It is also the one that broke when the resolver learned hive: widening what
+    ``resolve_local_parquet_glob`` can return changed the CONTRACT of its return
+    value, and this caller kept a bare ``read_parquet(?)`` (Devin Review on
+    #1198).
+
+    The symptom is SILENT, not a crash — worth stating precisely, because it
+    decides what this test asserts. On DuckDB 1.5.2 a bare read of a
+    ``**/*.parquet`` target does not raise: hive partitioning is auto-detected,
+    so ``month`` comes back either way. What ``union_by_name=false`` does is take
+    the schema of the FIRST part and drop everything the later ones added — so
+    Preview rendered a Jira table missing whichever columns arrived in a later
+    month, with no error anywhere to say so. Asserting on rows alone would pass
+    against the broken read; the column set is the assertion that bites.
+    """
+
+    @pytest.fixture
+    def reload_db(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        import importlib
+
+        import src.db as db_module
+
+        importlib.reload(db_module)
+        yield db_module
+
+    def _seed(self, conn, table_id: str):
+        from src.db import SYSTEM_ADMIN_GROUP
+        from src.repositories.table_registry import TableRegistryRepository
+        from src.repositories.user_group_members import UserGroupMembersRepository
+        from src.repositories.users import UserRepository
+
+        if UserRepository(conn).get_by_id("admin1") is None:
+            UserRepository(conn).create(id="admin1", email="admin1@test.com", name="Admin")
+        gid = conn.execute("SELECT id FROM user_groups WHERE name = ?", [SYSTEM_ADMIN_GROUP]).fetchone()
+        if gid:
+            UserGroupMembersRepository(conn).add_member("admin1", gid[0], source="system_seed")
+        TableRegistryRepository(conn).register(
+            id=table_id,
+            name=table_id,
+            source_type="keboola",
+            bucket="in.c-main",
+            source_table=table_id,
+            query_mode="local",
+        )
+
+    def test_preview_reads_a_nested_hive_table(self, reload_db, tmp_path, monkeypatch):
+        _write_hive_partitions(tmp_path / "extracts" / "keboola" / "data", "kbc_sales")
+
+        from app.api import v2_sample
+
+        monkeypatch.setattr(v2_sample._sample_cache, "get", lambda *a, **kw: None)
+        monkeypatch.setattr(v2_sample._sample_cache, "set", lambda *a, **kw: None)
+
+        conn = reload_db.get_system_db()
+        try:
+            self._seed(conn, "kbc_sales")
+            payload = v2_sample.build_sample(conn, {"id": "admin1", "email": "a@x.com"}, "kbc_sales", n=10, bq=object())
+        finally:
+            conn.close()
+
+        assert sorted(r["v"] for r in payload["rows"]) == [1, 2, 3]
+        # `resolution` exists only in the December part. Without `union_by_name`
+        # the preview silently drops it — this is the assertion that fails
+        # against a bare `read_parquet(?)`.
+        assert any("resolution" in r for r in payload["rows"]), (
+            "a column that arrived in a later partition is missing from the preview"
+        )
+
+
+class TestReadExpressionContract:
+    """The resolver's return value is only safe read one way, so that way is a
+    shared symbol rather than a sentence in a docstring.
+
+    The docstring version already failed once: the hive branch landed with
+    ``v2_schema`` and ``v2_scan`` updated and ``v2_sample`` left on a bare
+    ``read_parquet(?)``. This asserts the shape rather than the prose, so a
+    fourth caller cannot reintroduce the same gap quietly.
+    """
+
+    CALLERS = ("app/api/v2_sample.py", "app/api/v2_schema.py", "app/api/v2_scan.py")
+
+    def test_no_caller_hand_rolls_the_read_expression(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        offenders = [p for p in self.CALLERS if "read_parquet(?" in (root / p).read_text()]
+
+        assert not offenders, (
+            f"{offenders} build their own read_parquet target; import "
+            "app.utils.LOCAL_PARQUET_READ_EXPR instead so hive tables keep working"
+        )
+
+    def test_every_caller_imports_the_shared_expression(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        missing = [
+            p
+            for p in self.CALLERS
+            if "resolve_local_parquet_glob" in (root / p).read_text()
+            and "LOCAL_PARQUET_READ_EXPR" not in (root / p).read_text()
+        ]
+
+        assert not missing, f"{missing} resolve a local parquet target but do not read it through the contract"

@@ -104,6 +104,25 @@ def resolve_local_partition_dir(table_id: str, source_type: str | None = None) -
     return None
 
 
+#: The read expression EVERY caller of :func:`resolve_local_parquet_glob` must
+#: use, with the resolved target bound as the single `?` parameter.
+#:
+#: A shared symbol rather than a line in a docstring, because the docstring
+#: version did not hold: the hive branch below changed what the resolver can
+#: return, `v2_schema` and `v2_scan` were updated to match, and `v2_sample` —
+#: the third caller — kept a bare `read_parquet(?)` and would have 500-ed on the
+#: first Jira table whose monthly parts disagree about columns (Devin Review on
+#: #1198). Importing the expression makes a fourth caller inherit the contract
+#: instead of having to read about it; `tests/test_partitioned_table_surfaces.py`
+#: asserts no caller reconstructs it by hand.
+#:
+#: `union_by_name` because hive part schemas drift month to month;
+#: `hive_partitioning` because the `month=` directory segment is a column the
+#: connector's own extract view already exposes. Both are no-ops for the
+#: single-file and flat-partition targets.
+LOCAL_PARQUET_READ_EXPR = "read_parquet(?, union_by_name=true, hive_partitioning=true)"
+
+
 def resolve_local_parquet_glob(table_id: str, source_type: str | None = None) -> str | None:
     """A `read_parquet` target for a table, single-file OR partitioned.
 
@@ -120,13 +139,9 @@ def resolve_local_parquet_glob(table_id: str, source_type: str | None = None) ->
     exists in any of them.
 
     Callers MUST read the returned target through
-    ``read_parquet(?, union_by_name=true, hive_partitioning=true)`` — the same
-    expression the Jira extract's own view uses
-    (`connectors/jira/extract_init.py`). Hive part schemas drift month to month,
-    so `union_by_name` is what keeps a recursive glob from failing on the first
-    part that gained a column, and `hive_partitioning` is what turns the
-    `month=` directory segment back into the column the extract view exposes.
-    Both are no-ops for the single-file and flat-partition targets.
+    :data:`LOCAL_PARQUET_READ_EXPR` — the same expression the Jira extract's own
+    view uses (`connectors/jira/extract_init.py`) — rather than a bare
+    ``read_parquet(?)``. See that constant for why it is a shared symbol.
 
     Resolving hive here is what keeps the read surfaces agreeing with the
     catalog: :func:`local_parquet_size_bytes` already recurses, so leaving hive
