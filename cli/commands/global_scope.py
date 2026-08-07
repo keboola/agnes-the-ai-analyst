@@ -470,11 +470,34 @@ def enable(
         run_convergence(want_hook=not no_hook, force=force, report=report)
     save_config({"global_scope": True, "global_hook": not no_hook})
     report.append({"stage": "flag", "status": "ok", "detail": "global_scope=true"})
+
+    # `run_convergence` records failures rather than raising (its docstring is
+    # explicit), so the per-stage `error` rows have to reach the exit code
+    # here or a half-installed layer exits 0 under the line "Global layer
+    # enabled" — and the engineer only finds out later, when the data tools
+    # are not there (Devin on #1184).
+    #
+    # The FLAG is still written, unlike in `disable`. The two are not
+    # symmetric: leaving the layer marked on is what keeps `agnes update`
+    # converging it, so the pieces that failed get retried on their own. What
+    # must not survive is the claim of success.
+    failed = [r for r in report if r.get("status") == "error"]
     _print_report(
         report,
         as_json=as_json,
-        trailer="Global layer enabled — restart Claude Code sessions to pick it up.",
+        trailer=(
+            "Global layer enabled — restart Claude Code sessions to pick it up."
+            if not failed
+            else (
+                "Global layer PARTIALLY enabled — "
+                + ", ".join(f"{r['stage']} failed" for r in failed)
+                + ". It stays enabled so `agnes update` keeps retrying; re-run "
+                "`agnes global enable` once the cause is fixed."
+            )
+        ),
     )
+    if failed:
+        raise typer.Exit(1)
 
 
 @global_app.command("disable")
@@ -522,7 +545,9 @@ def disable(
             )
         elif installed is None:
             left_behind.append("plugins: could not be listed")
-            report.append({"stage": "plugins", "status": "unknown", "detail": "`claude` CLI unavailable — nothing changed"})
+            report.append(
+                {"stage": "plugins", "status": "unknown", "detail": "`claude` CLI unavailable — nothing changed"}
+            )
         else:
             report.append({"stage": "plugins", "status": "ok", "detail": "no user-scope stack plugins installed"})
 
