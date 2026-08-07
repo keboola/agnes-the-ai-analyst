@@ -729,7 +729,8 @@
                      'title': 'Download this plugin as a single zip to upload in Claude Cowork (claude.ai)'}] %}
   {% if entity and (is_owner or is_admin) %}
     {{ detail.store_menu(entity, is_owner=is_owner, is_admin=is_admin,
-                         edit_in_flight=edit_in_flight, before=_cowork) }}
+                         edit_in_flight=edit_in_flight, own_private=own_private,
+                         before=_cowork) }}
   {% else %}
     {{ detail.menu(_cowork) }}
   {% endif %}
