@@ -416,3 +416,119 @@ def test_an_anchored_workspace_no_longer_suppresses_the_refresh(tmp_path):
     # Both cases here have an anchored workspace; only staleness decides.
     assert gs_module._clone_is_stale(stale) is True
     assert gs_module._clone_is_stale(fresh) is False
+
+
+# ---------------------------------------------------------------------------
+# A partial disable stays ENABLED — the off flag is written last, or not at all
+# ---------------------------------------------------------------------------
+
+
+def _seed_one_installed_plugin(env, *, uninstall_rc=0):
+    """`plugin list` reports one user-scope plugin; `plugin uninstall` returns
+    `uninstall_rc`. Also pins the `mcp get` answer so the entry is ours."""
+    env["rec"].scripts.insert(
+        0,
+        (
+            ("claude", "mcp", "get"),
+            subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout=(
+                    "agnes:\n  Scope: User config (available in all your projects)\n"
+                    f"  Command: {env['agnes_bin']}\n  Args: mcp\n"
+                ),
+                stderr="",
+            ),
+        ),
+    )
+    env["rec"].scripts.insert(
+        0,
+        (
+            ("claude", "plugin", "list", "--json"),
+            subprocess.CompletedProcess(
+                args=[],
+                returncode=0,
+                stdout='[{"id": "alpha@agnes", "version": "1.0.0", "projectPath": null, "scope": "user"}]',
+                stderr="",
+            ),
+        ),
+    )
+    env["rec"].scripts.insert(
+        0,
+        (
+            ("claude", "plugin", "uninstall"),
+            subprocess.CompletedProcess(args=[], returncode=uninstall_rc, stdout="", stderr="boom"),
+        ),
+    )
+
+
+def test_a_failed_uninstall_keeps_the_layer_marked_enabled(env):
+    """Flipping the flag regardless was the hazard: the skills and the tool
+    entry keep loading in EVERY repository the user opens, while the config
+    says the layer is off — so `agnes update` stops converging it and nothing
+    is left that would ever clean them up. A partial disable is still enabled
+    (Devin on #1184).
+    """
+    CliRunner().invoke(gs_module.global_app, ["enable"])
+    _seed_one_installed_plugin(env, uninstall_rc=1)
+
+    result = CliRunner().invoke(gs_module.global_app, ["disable"])
+
+    assert result.exit_code == 1, result.output
+    conf = yaml.safe_load((env["cfg_dir"] / "config.yaml").read_text(encoding="utf-8"))
+    assert conf.get("global_scope") is not False, "the layer was marked off while its plugins are still installed"
+    assert "alpha" in result.output
+
+
+def test_a_clean_disable_still_writes_the_flag(env):
+    """The other half — the gate must not block the ordinary path."""
+    CliRunner().invoke(gs_module.global_app, ["enable"])
+    _seed_one_installed_plugin(env, uninstall_rc=0)
+
+    result = CliRunner().invoke(gs_module.global_app, ["disable"])
+
+    assert result.exit_code == 0, result.output
+    conf = yaml.safe_load((env["cfg_dir"] / "config.yaml").read_text(encoding="utf-8"))
+    assert conf["global_scope"] is False
+
+
+def test_disable_without_the_claude_cli_does_not_claim_success(env, monkeypatch):
+    """`claude` gone means nothing could be listed, let alone removed."""
+    CliRunner().invoke(gs_module.global_app, ["enable"])
+    monkeypatch.setattr(gs_module, "_claude_cmd", lambda: None)
+
+    result = CliRunner().invoke(gs_module.global_app, ["disable"])
+
+    assert result.exit_code == 1, result.output
+    conf = yaml.safe_load((env["cfg_dir"] / "config.yaml").read_text(encoding="utf-8"))
+    assert conf.get("global_scope") is not False
+
+
+# ---------------------------------------------------------------------------
+# Ownership survives a change in how `claude mcp get` renders the args
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "args_line",
+    [
+        "mcp",  # today's rendering
+        '["mcp"]',  # JSON array
+        '"mcp"',  # quoted scalar
+        " mcp ",  # padded
+        None,  # line absent — folded into Command:
+    ],
+)
+def test_args_rendering_variants_all_read_as_ours(args_line):
+    """`mcp get` has no `--json`, so this is screen-scraping. An exact
+    `== "mcp"` test would flip EVERY enrolled machine to `foreign` the day
+    `claude` changes the rendering — convergence reports `skipped`, `status`
+    reports `drifted`, and `disable` declines to remove its own entry
+    (Devin on #1184)."""
+    assert gs_module._args_are_mcp(args_line) is True
+
+
+@pytest.mark.parametrize("args_line", ["serve", "mcp --port 9", '["mcp","--port"]', "mcp serve"])
+def test_a_genuinely_different_invocation_is_still_foreign(args_line):
+    """Tolerant about rendering, not about what is being run."""
+    assert gs_module._args_are_mcp(args_line) is False
