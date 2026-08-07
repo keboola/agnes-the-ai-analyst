@@ -90,36 +90,72 @@ value the runtime does not use.
 
 ## The registry
 
-`app/instance_config.py::FEATURE_FLAGS` is a tuple of `FeatureFlag` entries
-— `name`, `config_keys`, `env_var`, `default`, `description` — one per flag
-resolved through `feature_enabled`. It backs the read-only **Feature flags**
-panel on `/admin/server-config` (fed by the `feature_flags` block in
-`GET /api/admin/server-config`), so an operator can see every flag's
-effective value and where it came from (`env` / `config` / `default`)
-without grepping the codebase.
+`app/switches.py::SWITCHES` is a tuple of `Switch` entries, one per
+operator-facing toggle. Each entry declares:
 
-## How to add a flag
+- `name`, `config_keys`, `env_var` — identity and where the value can come
+  from, in the resolution order above.
+- `kind`, `default`, `options` — every switch today is `kind="bool"`;
+  `options` is for the `select` switches (`theme`, `ui_layout`, …) landing in
+  a later PR.
+- `effect` — what the running system can do with a new value: `live` (read
+  per request — a save takes effect immediately), `restart` (read at boot —
+  a save is stored and applies after a restart), or `deploy` (not a section
+  of `instance.yaml` at all; it's what the container was started with, so
+  there is nothing to write).
+- `category` — the settings-panel display group (`product` / `operations` /
+  `locked`), independent of `editable`: a `product` row can still be
+  read-only.
+- `editable` / `lock_reason` — whether the admin UI offers a write path for
+  this switch, and, when it doesn't, the operator-facing reason: nothing to
+  write (`effect="deploy"`), a deliberate security lock, or an unmet
+  dependency. Every switch in the table below is editable except
+  `data_apps`: the flag itself is read per request, but the `apps_runner`
+  sidecar it gates sits behind the `apps` Compose profile, so flipping it
+  live would surface a feature with no backend running.
+- `description` — the operator-facing summary shown in the panel and in the
+  table below.
 
-1. Pick a name and decide: does the feature own a config section
-   (`<section>.enabled`), or is it small enough for `features.<name>`?
-2. At the read site, call `feature_enabled(*keys, env_var="AGNES_<SECTION>_ENABLED", default=...)`
-   instead of hand-rolling `os.environ.get(...)` / `get_value(...)`.
-3. Append an entry to `FEATURE_FLAGS` in `app/instance_config.py` with a short
+`app.instance_config.FEATURE_FLAGS` is the same tuple under its historical
+name (`FeatureFlag` is an alias for `Switch`), so existing imports and the
+resolution helper below keep working unchanged.
+
+The registry backs the read-only **Feature flags** panel on
+`/admin/server-config` (fed by the `feature_flags` block in
+`GET /api/admin/server-config`), so an operator can see every switch's
+effective value, where it came from (`env` / `config` / `default`), and
+whether they can change it — and why not, when they can't — without
+grepping the codebase. `app/api/admin.py::_EDITABLE_SECTIONS` is derived
+from the same registry: any config section holding at least one
+`editable=True` switch is automatically writable, so shipping a new
+editable switch can no longer leave its section rejecting saves — the gap
+that shipped `mcp.allow_query_param_token` and `agent_profiles.enabled`
+without a write path.
+
+## How to add a switch
+
+1. Pick a name and config key: does the switch own a config section
+   (`<section>.enabled`), or is it small enough for `features.<name>`? Also
+   decide its `effect` (`live` / `restart` / `deploy`) and whether it's
+   `editable` — most switches are; give the others a `lock_reason`.
+2. At the read site, call `switch_value("<name>")` instead of hand-rolling
+   `os.environ.get(...)` / `get_value(...)`.
+3. Append a `Switch` entry to `SWITCHES` in `app/switches.py` with a short
    operator-facing `description`.
 4. Add a row to this doc's flag list below (or update the section it belongs
    to) so operators reading `docs/feature-flags.md` see it without reading
    the registry source.
-5. See `CONTRIBUTING.md`'s sync-map — a new user-visible feature flag is a
+5. See `CONTRIBUTING.md`'s sync-map — a new user-visible switch is a
    tracked row there too.
 
 ## Current flags
 
-| Flag | Config key | Env var | Default | Notes |
-|---|---|---|---|---|
-| `studio` | `studio.enabled` | `AGNES_STUDIO_ENABLED` | `true` | Grandfathered — shipped enabled before this convention. |
-| `guardrails` | `guardrails.enabled` | `AGNES_GUARDRAILS_ENABLED` | `true` | Grandfathered. Env override added in #1022 (new, additive). |
-| `chat` | `chat.enabled` | `AGNES_CHAT_ENABLED` | `false` | New feature — off by default. |
-| `chat_approvals` | `chat.approvals_enabled` | `AGNES_CHAT_APPROVALS_ENABLED` | `true` | Operator kill-switch for interactive approval prompts. Off denies ask-flagged tool calls instantly instead of waiting for a human. |
-| `data_apps` | `data_apps.enabled` | `AGNES_DATA_APPS_ENABLED` | `false` | New feature — off by default. |
-| `library_show_unverified_trust` | `library.show_unverified_trust` | `AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST` | `true` | 'Community' trust marker for unverified Store items in the Library, so every row states its provenance (Organization / Verified / Community) and none is left silently unlabelled. On by default: the whole trust vocabulary is gated to the paper theme, so upgrade parity for a default blue instance comes from that gate, not from this flag. Set `false` for the older reading, where an unverified item is marked by the ABSENCE of a marker. |
-| `mcp_query_param_token` | `mcp.allow_query_param_token` | `AGNES_MCP_ALLOW_QUERY_PARAM_TOKEN` | `true` | Grandfathered on. Accepts the MCP bearer token as `?token=` on SSE GET for header-incapable clients; the token then appears in every request log (CWE-598). Turn off when all MCP clients send the `Authorization` header. **Unlike the other flags here its default is the permissive state, so an unrecognized value — `disabled`, `n` — silently leaves it on; use `false`/`off`/`no`/`0` and verify via `effective`.** |
+| Flag | Config key | Env var | Default | Editable | Notes |
+|---|---|---|---|---|---|
+| `studio` | `studio.enabled` | `AGNES_STUDIO_ENABLED` | `true` | yes | Grandfathered — shipped enabled before this convention. |
+| `guardrails` | `guardrails.enabled` | `AGNES_GUARDRAILS_ENABLED` | `true` | yes | Grandfathered. Env override added in #1022 (new, additive). |
+| `chat` | `chat.enabled` | `AGNES_CHAT_ENABLED` | `false` | yes | New feature — off by default. |
+| `chat_approvals` | `chat.approvals_enabled` | `AGNES_CHAT_APPROVALS_ENABLED` | `true` | yes | Operator kill-switch for interactive approval prompts. Off denies ask-flagged tool calls instantly instead of waiting for a human. |
+| `data_apps` | `data_apps.enabled` | `AGNES_DATA_APPS_ENABLED` | `false` | no — apps_runner sidecar needs the `apps` Compose profile | New feature — off by default. |
+| `library_show_unverified_trust` | `library.show_unverified_trust` | `AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST` | `true` | yes | 'Community' trust marker for unverified Store items in the Library, so every row states its provenance (Organization / Verified / Community) and none is left silently unlabelled. On by default: the whole trust vocabulary is gated to the paper theme, so upgrade parity for a default blue instance comes from that gate, not from this flag. Set `false` for the older reading, where an unverified item is marked by the ABSENCE of a marker. |
+| `mcp_query_param_token` | `mcp.allow_query_param_token` | `AGNES_MCP_ALLOW_QUERY_PARAM_TOKEN` | `true` | yes | Grandfathered on. Accepts the MCP bearer token as `?token=` on SSE GET for header-incapable clients; the token then appears in every request log (CWE-598). Turn off when all MCP clients send the `Authorization` header. **Unlike the other flags here its default is the permissive state, so an unrecognized value — `disabled`, `n` — silently leaves it on; use `false`/`off`/`no`/`0` and verify via `effective`.** |
