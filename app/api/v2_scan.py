@@ -501,7 +501,7 @@ def run_scan(
             # per-period parquets, for which the single-file lookup returned
             # None and a healthy fully-synced table 404-ed here (Devin Review on
             # #1189). DuckDB expands the `<dir>/*.parquet` glob it returns.
-            from app.utils import resolve_local_parquet_glob
+            from app.utils import LOCAL_PARQUET_READ_EXPR, resolve_local_parquet_glob
 
             parquet = resolve_local_parquet_glob(req.table_id, source_type)
             if parquet is None:
@@ -509,7 +509,7 @@ def run_scan(
             local = _open_duckdb(":memory:")
             try:
                 projection = ", ".join(quote_ident(c) for c in req.select) if req.select else "*"
-                sql = f"SELECT {projection} FROM read_parquet(?, union_by_name=true, hive_partitioning=true)"
+                sql = f"SELECT {projection} FROM {LOCAL_PARQUET_READ_EXPR}"
                 if safe_where:
                     sql += f" WHERE {safe_where}"
                 if req.order_by:
