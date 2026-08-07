@@ -1053,6 +1053,7 @@ function buildSidenav(sections) {
 function flagSourceBadge(source) {
   if (source === "env") return '<span style="color: #2a8c4a;">env</span>';
   if (source === "config") return '<span style="color: #6366f1;">config</span>';
+  if (source === "preset") return '<span style="color: #b45309;">preset</span>';
   return '<span style="color: #888;">default</span>';
 }
 
@@ -1066,7 +1067,9 @@ function renderFeatureFlags(flags) {
   const rows = flags.map(f => `
     <tr>
       <td><code>${escHtml(f.name)}</code></td>
-      <td>${f.effective ? '<span style="color: #2a8c4a;">&#10003; on</span>' : '<span style="color: #888;">&#10007; off</span>'}</td>
+      <td>${f.value_label !== undefined
+            ? `<code>${escHtml(f.value_label)}</code>`
+            : (f.effective ? '<span style="color: #2a8c4a;">&#10003; on</span>' : '<span style="color: #888;">&#10007; off</span>')}</td>
       <td>${flagSourceBadge(f.source)}</td>
       <td><code>${escHtml(f.env_var)}</code></td>
       <td style="color: var(--text-secondary, #6b7280);">${escHtml(f.description)}</td>
