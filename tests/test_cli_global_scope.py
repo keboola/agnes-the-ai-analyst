@@ -532,3 +532,27 @@ def test_args_rendering_variants_all_read_as_ours(args_line):
 def test_a_genuinely_different_invocation_is_still_foreign(args_line):
     """Tolerant about rendering, not about what is being run."""
     assert gs_module._args_are_mcp(args_line) is False
+
+
+def test_no_hook_removes_a_previously_installed_hook(env):
+    """`run_convergence` converges — `--no-hook` is a declared state, not an
+    abstention. Treating it as "do not install" left the updater firing in
+    every repository while the config said `global_hook: false` and `status`
+    reported it `ok`, with `agnes global disable` (which tears down the whole
+    layer) as the only way to stop it (Devin on #1184)."""
+    CliRunner().invoke(gs_module.global_app, ["enable"])
+    cfg = json.loads(env["settings"].read_text(encoding="utf-8"))
+    assert cfg.get("hooks", {}).get("SessionStart"), "precondition: the first enable installed the hook"
+
+    result = CliRunner().invoke(gs_module.global_app, ["enable", "--no-hook"])
+
+    assert result.exit_code == 0, result.output
+    cfg = json.loads(env["settings"].read_text(encoding="utf-8"))
+    assert not cfg.get("hooks", {}).get("SessionStart"), "the opted-out hook is still installed"
+
+
+def test_no_hook_is_quiet_when_there_was_no_hook(env):
+    """The other half — nothing installed, nothing to report as removed."""
+    result = CliRunner().invoke(gs_module.global_app, ["enable", "--no-hook"])
+    assert result.exit_code == 0, result.output
+    assert "removed the previously installed hook" not in result.output
