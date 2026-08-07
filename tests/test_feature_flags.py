@@ -261,6 +261,28 @@ class TestServerConfigFeatureFlagsInventory:
         assert flags["stack_auto_membership"]["effective"] is False
         assert flags["stack_auto_membership"]["source"] == "env"
 
+    def test_known_fields_defaults_follow_the_preset(self, seeded_app, monkeypatch):
+        """The EDITABLE registry must render the preset-implied default for
+        unset preset-coupled fields — a static literal there means a redesign
+        instance sees the stack switch OFF / theme `blue` and a routine
+        "Save section" silently persists the classic values over the preset
+        (Devin Review on #1199)."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+
+        monkeypatch.delenv("AGNES_INSTANCE_EXPERIENCE", raising=False)
+        kf = c.get("/api/admin/server-config", headers=_auth(token)).json()["known_fields"]
+        assert kf["features"]["stack_auto_membership"]["default"] is False
+        assert kf["instance"]["theme"]["default"] == "blue"
+
+        monkeypatch.setenv("AGNES_INSTANCE_EXPERIENCE", "redesign")
+        kf = c.get("/api/admin/server-config", headers=_auth(token)).json()["known_fields"]
+        assert kf["features"]["stack_auto_membership"]["default"] is True
+        assert kf["instance"]["theme"]["default"] == "paper"
+        # The select must offer every value the resolver accepts — a lagging
+        # option list can only write values that erase a working choice.
+        assert set(kf["instance"]["theme"]["options"]) == {"blue", "navy", "dark", "auto", "paper"}
+
     def test_env_source_reflected(self, seeded_app, monkeypatch):
         monkeypatch.setenv("AGNES_STUDIO_ENABLED", "0")
         c = seeded_app["client"]

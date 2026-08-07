@@ -438,13 +438,22 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
         # `app/instance_config.py::get_instance_theme()`.
         "theme": {
             "kind": "select",
-            "options": ["blue", "navy"],
+            # Full valid set per get_instance_theme() — a select whose
+            # options lag the resolver can only write values that erase an
+            # operator's working choice.
+            "options": ["blue", "navy", "dark", "auto", "paper"],
+            # Static registry default; `_known_fields_resolved()` patches it
+            # per request to the preset-implied default so the panel never
+            # renders (and a save never persists) a value the runtime
+            # doesn't use (Devin Review on #1199).
             "default": "blue",
             "hint": (
-                "Page-hero colour scheme. `blue` (default) uses the "
-                "brand-blue hero + blue CTAs. `navy` opts into the "
-                "darker palette with the dark navy hero gradient + "
-                "mint-green CTAs and eyebrow accents."
+                "UI palette. `blue` (default) uses the brand-blue hero + "
+                "blue CTAs; `navy` the darker palette with mint-green CTAs; "
+                "`dark` the dark scheme; `auto` follows the OS; `paper` the "
+                "prototype-derived light look (redesign). The "
+                "`instance.experience: redesign` preset defaults this to "
+                "`paper`."
             ),
         },
         # Operator-injected HTML/JS blocks rendered into base.html.
@@ -1339,6 +1348,30 @@ def _ensure_bq_optional_fields(sections: Dict[str, Any]) -> None:
 _UNSET = object()
 
 
+def _known_fields_resolved() -> dict:
+    """Per-request view of ``_KNOWN_FIELDS`` with preset-aware defaults.
+
+    The registry's ``default`` literals are what the panel renders for an
+    UNSET field — and what "Save section" then persists verbatim
+    (``collectSection`` posts every rendered leaf). For the preset-coupled
+    knobs a static literal is therefore a footgun: on an
+    ``instance.experience: redesign`` instance the switch would render OFF
+    (runtime: ON) and a routine section save would silently flip the whole
+    instance back to the classic model / blue theme (Devin Review on
+    #1199 — the same failure mode the #1190 unset-boolean fix addressed).
+    Patch the coupled leaves at request time from the same preset helpers
+    the runtime getters resolve through.
+    """
+    import copy
+
+    from app.instance_config import preset_flag_default, preset_knob_default
+
+    fields = copy.deepcopy(_KNOWN_FIELDS)
+    fields["features"]["stack_auto_membership"]["default"] = preset_flag_default("stack_auto_membership")
+    fields["instance"]["theme"]["default"] = preset_knob_default("theme")
+    return fields
+
+
 def _feature_flags_inventory() -> List[Dict[str, Any]]:
     """Read-only snapshot of every registered feature flag (#1022).
 
@@ -1505,7 +1538,7 @@ async def get_server_config(
         # Subagents 2-4 populate the bodies; the renderer ships now so the
         # mechanism is wired end-to-end and adding entries is purely a
         # data-edit in `_KNOWN_FIELDS` above.
-        "known_fields": _KNOWN_FIELDS,
+        "known_fields": _known_fields_resolved(),
         # Read-only feature-flag inventory (#1022 canonicalization) — every
         # flag registered in app.instance_config.FEATURE_FLAGS, its effective
         # value, and where it resolved from. Toggling still happens through
