@@ -27,7 +27,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   chat from that overlay file alone, so the documented primary mechanism was the
   one being rejected. Both sections are now writable, with their booleans
   declared so the panel renders switches and the secret redactor leaves them
-  alone.
+  alone. Their defaults are read from `FEATURE_FLAGS` rather than re-typed —
+  `chat.approvals_enabled` had been hand-declared as off while the registry and
+  the runtime had it on, so the panel described the opposite of the real
+  behaviour.
+
+- **An unset switch in `/admin/server-config` no longer saves as OFF.** The
+  panel's boolean renderer coerced with `!!value`, and `!!undefined` is `false` —
+  so a setting the operator had never configured rendered OFF regardless of its
+  real default, and the next "Save section" wrote that `false` back. Latent until
+  booleans with a true default became editable, at which point enabling chat also
+  silently disabled tool-call approvals and saving the Studio section disabled
+  the Studio surface. The bool branch now falls back to the declared default when
+  the value is unset, which is what the text branch beside it already did.
 
 ### Removed
 
