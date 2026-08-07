@@ -119,14 +119,17 @@
   {% endcall %}
   {% endif %}
 
-  {% include "_profile_tokens.html" %}
+  {# Frozen-copy retarget: the redesign restyled the living
+     _profile_tokens.html / _profile_troubleshooting.html partials, so the
+     legacy page includes their frozen pre-redesign copies. #}
+  {% include "_profile_tokens_legacy.html" %}
 
   {# `<details>` can't go through `ds.panel` (the macro doesn't render
      <details>/<summary>); add `.ds-card` explicitly so the same surface
      treatment applies. `.section-card` rules override radius+padding. #}
   <details class="ds-card section-card" aria-label="Session and troubleshooting">
     <summary>Session &amp; troubleshooting</summary>
-    {% include "_profile_troubleshooting.html" %}
+    {% include "_profile_troubleshooting_legacy.html" %}
   </details>
 </div>
 
