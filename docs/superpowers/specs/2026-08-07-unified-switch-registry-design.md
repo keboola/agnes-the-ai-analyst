@@ -31,12 +31,16 @@ a convention; the rest were each invented at their callsite.
 
 ### Concrete damage this has already caused
 
-- **`data_apps` cannot be turned on from the admin UI.** It is a registered
-  feature flag, but its section is missing from `_EDITABLE_SECTIONS`, so the
-  panel displays it while `POST /api/admin/server-config` rejects the write
-  with `400 unknown section`. This is the third instance of the same bug class
-  — the code comments at `mcp` and `chat` document the two earlier ones, both
-  found in review rather than by a guard.
+- **Switch metadata lives in a fourth place: a dict inside a test file.**
+  `tests/test_admin_configure_api.py::_NOT_LIVE_WRITABLE` holds the reason each
+  registered flag is *not* writable — for `data_apps`, that the flag is read
+  per request but the `apps_runner` sidecar sits behind the `apps` Compose
+  profile, so a live flip can surface a feature whose backend is absent. That
+  rationale is correct and the ratchet around it is sound (it derives from the
+  registry, not from prose, and `test_no_stale_exemption` keeps it
+  shrinks-only). The problem is location: an operator who tries to enable data
+  apps and cannot sees no reason anywhere in the product, because the
+  explanation is in a test. Metadata about a switch belongs on the switch.
 - **The theme selector lies.** `_KNOWN_FIELDS` offers `blue` and `navy`;
   `get_instance_theme` accepts `blue`, `navy`, `dark`, `auto`, `paper`. The
   redesign (#896/#1104) shipped `paper` and `rail` with **no way to enable
@@ -124,6 +128,16 @@ one. Two different reasons produce the same read-only row:
   was started with. `editable=False` follows by construction.
 - **Deliberately locked** — the security-posture switches below. They *could*
   be written; we choose not to offer it.
+- **Unmet dependency** — `data_apps`, whose flag is genuinely read per request
+  but whose `apps_runner` sidecar sits behind the `apps` Compose profile, so a
+  live flip can surface a feature with no backend. This reason exists today in
+  `tests/test_admin_configure_api.py::_NOT_LIVE_WRITABLE`; PR1 moves it, and
+  every other entry in that dict, onto `lock_reason` so the product can state
+  it where the operator is standing.
+
+`editable` is independent of `category`: a **Product** row can be read-only.
+`data_apps` stays under Product, where an operator looks for it, and renders
+with its reason instead of a control.
 
 `SWITCHES: tuple[Switch, ...]` replaces `FEATURE_FLAGS`.
 
@@ -149,7 +163,7 @@ Nothing below is hand-maintained after this change:
 
 | Derived artifact | Derived from | Bug class it retires |
 |---|---|---|
-| `_EDITABLE_SECTIONS` | sections of all `editable=True` switches | flag registered but section not editable (`data_apps`, historically `mcp` and `chat`) |
+| `_EDITABLE_SECTIONS` | sections of all `editable=True` switches | flag registered but section not editable (historically `mcp`, then `chat`) — today caught by a ratchet whose exemption reasons live in a test dict; this moves both the rule and the reason onto the entry |
 | `_KNOWN_FIELDS` for switch-backed keys | `kind`, `options`, `default`, `description` | admin offers fewer values than the resolver accepts (`theme`, `ui_layout`) |
 | Admin panel rows | the registry + resolver | panel and runtime disagreeing |
 | `docs/feature-flags.md` table | the registry | documentation contradicting runtime (`chat.approvals_enabled`) |
@@ -356,7 +370,7 @@ Four PRs. Each leaves the tree consistent and is independently releasable.
 
 | PR | Content | Visible result |
 |---|---|---|
-| **1** | `app/switches.py`, `Switch`, `switch_value()`, derived `_EDITABLE_SECTIONS` and `_KNOWN_FIELDS`, covering today's seven flags only | `data_apps` becomes switchable; no new UI |
+| **1** | `app/switches.py`, `Switch`, `switch_value()`, derived `_EDITABLE_SECTIONS` and `_KNOWN_FIELDS`, covering today's seven flags only; `_NOT_LIVE_WRITABLE` folds into `lock_reason` | every flag states in the product why it is or is not editable; no new UI |
 | **2** | Absorb the bespoke and enum resolvers (theme, ui_layout, home.show_*, store verification, slack transport, distribution, analytics, coordination) | `paper` and `rail` appear in the admin UI — the main payoff |
 | **3** | Absorb operational env-only switches, classify the security-locked six as inventory-only, danger gating, categories and filter, boot audit | Full 35-switch inventory |
 | **4** | Paper migration of `/admin/server-config` | The page speaks the redesign's visual language |
@@ -423,6 +437,12 @@ the `AGNES_*` convention.
   the six security-locked entries declare no config key at all — so there is no
   yaml path by which they could be set. This is the guard that keeps the lock
   from eroding one convenience commit at a time.
+- The existing ratchet in `tests/test_admin_configure_api.py` keeps working
+  against the new source: `_registry_sections()` reads `SWITCHES`, and
+  `_NOT_LIVE_WRITABLE` is replaced by `editable=False` plus `lock_reason`.
+  `test_no_stale_exemption` survives as "a switch that became editable must
+  clear its `lock_reason`", so the shrinks-only property is preserved rather
+  than reinvented.
 - Every switch-backed `_KNOWN_FIELDS` field's `options` equals the set the
   resolver accepts.
 - The table in `docs/feature-flags.md` equals the registry.
@@ -467,7 +487,8 @@ Thirty-five entries, enumerated. PR3 confirms the operational list against the
 environment-variable audit; the product and locked lists are complete.
 
 **Product (18):** `studio`, `guardrails`, `chat`, `chat_approvals`,
-`data_apps`, `library_show_unverified_trust`, `mcp_query_param_token`,
+`data_apps` (`editable=False` — unmet sidecar dependency, see above),
+`library_show_unverified_trust`, `mcp_query_param_token`,
 `instance.theme`, `instance.ui_layout`, `instance.home_route`,
 `instance.home.show_automode`, `instance.home.show_status_frame`,
 `store.verification_enabled`, `chat.slack.transport`,
