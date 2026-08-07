@@ -93,7 +93,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   interpolated into a pattern (`rglob(f"data/{id}.parquet")`), so a `*` or
   `[...]` stopped naming one table and started matching an arbitrary one —
   `POST /api/catalog/profile/*/refresh` would have profiled whichever parquet
-  the pattern hit and stored it under the requested name.
+  the pattern hit and stored it under the requested name. Each `extracts/*`
+  entry counts as a containment root in its own right, so an operator who has
+  symlinked a whole extract source onto another volume keeps their tables
+  readable — resolving only against `extracts/` would have made every table
+  under such a source read as unsynced on every surface at once, while a link
+  planted *inside* a source is still refused.
 
 ## [0.83.0] - 2026-08-07
 
