@@ -221,7 +221,13 @@ class TestBadges:
     def test_omits_new_badge_for_old_package(self, seeded_app):
         from datetime import datetime, timedelta, timezone
 
-        pid, slug = _seed_pkg(created_by="admin1")
+        # publisher_kind explicitly: the badge is driven by the STORED value
+        # now, not by the creator's live Admin-group membership, and the repo
+        # default is 'user'. The old version seeded the default and asserted
+        # `"Curated" in body`, which passed on the admin nav's "Curated
+        # Marketplaces" menu label rather than on any badge — so it asserted
+        # nothing about the thing it names (Devin Review on #1195).
+        pid, slug = _seed_pkg(created_by="admin1", publisher_kind="organization")
         _grant_everyone(pid)
         conn = get_system_db()
         conn.execute(
@@ -233,9 +239,9 @@ class TestBadges:
             f"/catalog/p/{slug}",
             headers=_auth(seeded_app["analyst_token"]),
         )
-        # Curated badge still present (admin1 is in Admin group), New is gone.
+        # Curated badge still present, New is gone.
         body = r.text
-        assert "Curated" in body
+        assert 'data-badge="curated"' in body
         # Use a class hook so we don't match the literal word "New" in
         # other UI copy (e.g. "New Recipe").
         assert 'data-badge="new"' not in body
