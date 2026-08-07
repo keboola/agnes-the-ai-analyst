@@ -80,6 +80,62 @@ def test_get_or_create_default_idempotent(repo):
     assert len(repo.list_for_user("u1")) == 1
 
 
+def test_get_or_create_default_revives_soft_deleted(repo):
+    """A soft-deleted default agent is revived, not re-inserted.
+
+    The `(owner_user_id, slug)` UNIQUE spans soft-deleted rows, so the
+    seeded `slug='default'` row survives deletion. Re-inserting it would
+    raise a ConstraintException on EVERY subsequent call — permanently
+    breaking web chat, whose session create resolves the default agent
+    first (`app/api/chat.py::_default_agent_id`).
+    """
+    d1 = repo.get_or_create_default("u1")
+    repo.soft_delete(d1["id"])
+    assert repo.get_by_id(d1["id"])["deleted_at"] is not None
+
+    revived = repo.get_or_create_default("u1")
+    assert revived["id"] == d1["id"]  # same row, history preserved
+    assert revived["is_default"] is True
+    assert revived["deleted_at"] is None
+    assert len(repo.list_for_user("u1")) == 1
+
+
+def test_get_or_create_default_revives_a_default_seeded_under_a_suffixed_slug(repo):
+    """The revive keys on `is_default`, not on the literal slug.
+
+    When a live non-default agent already holds `slug='default'`, the seeder
+    lands the default on `default-2`. A slug-keyed revive would miss that
+    tombstone, strand the id `chat_sessions.agent_id` points at, and seed a
+    fresh duplicate on every delete cycle.
+    """
+    repo.create(id="squatter", owner_user_id="u1", name="Default", slug="default")
+    seeded = repo.get_or_create_default("u1")
+    assert seeded["slug"] == "default-2"
+
+    repo.soft_delete(seeded["id"])
+    revived = repo.get_or_create_default("u1")
+
+    assert revived["id"] == seeded["id"]  # same row, not a duplicate
+    assert revived["deleted_at"] is None
+    # No third agent was invented.
+    assert len(repo.list_for_user("u1")) == 2
+
+
+def test_get_or_create_default_sidesteps_live_default_slug(repo):
+    """A live non-default agent already holding `slug='default'` is left alone.
+
+    Reviving it would silently promote one of the owner's own agents to be
+    their default. Seed the new default under the next free slug instead.
+    """
+    repo.create(id="a1", owner_user_id="u1", name="Default", slug="default")
+
+    seeded = repo.get_or_create_default("u1")
+    assert seeded["id"] != "a1"
+    assert seeded["is_default"] is True
+    assert seeded["slug"] != "default"
+    assert repo.get_by_id("a1")["is_default"] is False
+
+
 def test_scope_replace_all(repo):
     repo.create(id="a1", owner_user_id="u1", name="A", slug="x")
     repo.set_scope("a1", [("plugin", "p1"), ("table", "t1")])
@@ -94,6 +150,56 @@ def test_update_whitelist(repo):
     assert row["name"] == "B" and row["plugins_mode"] == "selected"
     with pytest.raises(ValueError):
         repo.update("a1", owner_user_id="u2")  # not whitelisted
+
+
+def test_builder_superset_roundtrip(repo):
+    """v111 paper-theme builder superset — create + update + read the authored
+    fields on the same canonical row that holds main's agent-as-API columns."""
+    repo.create(
+        id="a1",
+        owner_user_id="u1",
+        name="Analyst",
+        slug="analyst",
+        system_prompt="be precise",
+        role="data analyst",
+        tone="warm",
+        greeting="hi there",
+        knowledge='["k1", "k2"]',
+        plugins='["p1"]',
+        surfaces='{"chat": true}',
+        status="ready",
+    )
+    row = repo.get_by_id("a1")
+    assert row["role"] == "data analyst"
+    assert row["tone"] == "warm"
+    assert row["greeting"] == "hi there"
+    assert row["knowledge"] == '["k1", "k2"]'
+    assert row["plugins"] == '["p1"]'
+    assert row["surfaces"] == '{"chat": true}'
+    assert row["status"] == "ready"
+    # The builder maps instructions -> system_prompt on the same table.
+    assert row["system_prompt"] == "be precise"
+
+    # Superset columns are whitelisted for update; the JSON payloads are opaque.
+    repo.update("a1", role="senior analyst", knowledge='["k3"]', status="draft")
+    row = repo.get_by_id("a1")
+    assert row["role"] == "senior analyst"
+    assert row["knowledge"] == '["k3"]'
+    assert row["status"] == "draft"
+
+
+def test_builder_defaults_and_slug_picker(repo):
+    """A create with no builder fields lands the column DEFAULTs, and the slug
+    picker sees tombstones via include_deleted."""
+    repo.create(id="a1", owner_user_id="u1", name="A", slug="x")
+    row = repo.get_by_id("a1")
+    assert row["tone"] == "concise"
+    assert row["knowledge"] == "[]"
+    assert row["surfaces"] == "{}"
+    assert row["status"] == "draft"
+    repo.soft_delete("a1")
+    assert repo.get_by_slug("u1", "x") is None
+    assert repo.get_by_slug("u1", "x", include_deleted=True) is not None
 
 
 def test_scope_snapshot_roundtrip(repo):

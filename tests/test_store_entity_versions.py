@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import io
 import json
-import re
 import zipfile
 from pathlib import Path
 
@@ -107,6 +106,37 @@ def _upload_clean(client, cookies, name="ed1"):
         "/api/store/entities",
         files={"file": ("s.zip", _make_skill_zip(name), "application/zip")},
         data={"type": "skill", "description": _OK_DESC},
+        cookies=cookies,
+    )
+    assert r.status_code == 201, r.text
+    return r.json()["id"]
+
+
+def _make_plugin_zip(plugin_name: str, inner_skill: str = "dummy") -> bytes:
+    """Minimal flea plugin bundle — mirrors test_marketplace_api's helper.
+
+    A ``type='plugin'`` entity renders marketplace_plugin_detail.html, a
+    different template from the skill page, so ordering guards need this
+    to reach it (see router.marketplace_flea_detail).
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(
+            ".claude-plugin/plugin.json",
+            json.dumps({"name": plugin_name, "description": _OK_DESC, "version": "0.1"}),
+        )
+        zf.writestr(
+            f"skills/{inner_skill}/SKILL.md",
+            f"---\nname: {inner_skill}\ndescription: {_OK_DESC}\n---\n\n" + ("Body line explaining the skill. " * 12),
+        )
+    return buf.getvalue()
+
+
+def _upload_clean_plugin(client, cookies, name="pl1"):
+    r = client.post(
+        "/api/store/entities",
+        files={"file": ("p.zip", _make_plugin_zip(name), "application/zip")},
+        data={"type": "plugin", "description": _OK_DESC},
         cookies=cookies,
     )
     assert r.status_code == 201, r.text
@@ -2837,30 +2867,229 @@ class TestFullLifecycleFromInstaller:
 
 
 class TestItemDetailHeroPlaceholder:
-    """The flea skill/agent detail hero must reuse the card grid's
-    name-derived, type-tinted placeholder (#791). Regression guard for the
-    hardcoded ``{{ 'SK' if kind == 'skill' else 'AG' }}`` that survived on
-    marketplace_item_detail.html after #791 tinted every other surface —
-    the detail hero showed a generic dark "SK" glyph instead of the same
-    name-derived initials + type tint as the tile the user clicked from.
+    """The flea skill/agent detail hero rides the shared detail scaffold
+    (#896): a per-kind dark gradient whose accent resolves from the
+    ``--ds-kind-<kind>`` token on the ``.detail`` scope, with the shared
+    per-kind glyph tile as the cover placeholder (JS overlays a curator
+    cover when present). Regression guard against a future revert to the
+    bespoke macOS-"window" hero + hardcoded initials placeholder.
     """
 
-    def test_flea_skill_hero_name_derived_initials_and_type_tint(self, web_client):
+    def test_flea_skill_hero_uses_shared_kind_scaffold(self, web_client):
         _, owner_cookies = _create_user(web_client, "heroinit@x.com")
-        # Multi-word slug → distinctive derived glyph ("SD"), not "SK".
         eid = _upload_clean(web_client, owner_cookies, name="sales-dashboard")
         r = web_client.get(f"/marketplace/flea/{eid}", cookies=owner_cookies)
         assert r.status_code == 200, r.text
 
-        m = re.search(
-            r'<div\s+class="([^"]*)"\s+id="hero-window-body"\s*>([^<]*)</div>',
-            r.text,
-        )
-        assert m, "hero-window-body element not found in rendered detail HTML"
-        cls, text = m.group(1), m.group(2).strip()
+        # Root .detail scope carries the per-kind token so the shared dark
+        # hero renders green for skills.
+        assert 'data-kind="skill"' in r.text
+        assert "var(--ds-kind-skill)" in r.text
+        # The shared icon tile is the cover placeholder; the bespoke macOS
+        # window + name-derived initials are gone.
+        assert 'id="hero-icon"' in r.text
+        assert 'id="hero-window-body"' not in r.text
 
-        assert "hero-window-body--skill" in cls, f"skill hero must carry the type-tint class (green); got class={cls!r}"
-        assert text == "SD", (
-            "hero placeholder must show name-derived initials 'SD' for "
-            f"'sales-dashboard', not a generic per-kind glyph; got {text!r}"
+
+class TestDetailBackLink:
+    """The detail-page back link is pinned to the top (above the review banner
+    + versions card, not mid-page) and honors ?from=skills → Skill builder."""
+
+    def test_back_link_renders_above_versions_card(self, web_client):
+        _, owner_cookies = _create_user(web_client, "backpos@x.com")
+        eid = _upload_clean(web_client, owner_cookies, name="backpos")
+        r = web_client.get(f"/marketplace/flea/{eid}", cookies=owner_cookies)
+        assert r.status_code == 200
+        # Owner sees the versions card; the back link must render BEFORE it
+        # (top of page) rather than after it (the mid-page regression).
+        assert "detail-back" in r.text and "versions-card" in r.text
+        assert r.text.index("detail-back") < r.text.index("versions-card")
+
+    def test_from_skills_returns_to_skill_builder(self, web_client):
+        _, owner_cookies = _create_user(web_client, "backfrom@x.com")
+        eid = _upload_clean(web_client, owner_cookies, name="backfrom")
+        r = web_client.get(f"/marketplace/flea/{eid}?from=skills", cookies=owner_cookies)
+        assert r.status_code == 200
+        assert 'href="/skills"' in r.text
+        assert "Skill builder" in r.text
+
+    def test_default_back_link_is_not_skill_builder(self, web_client):
+        _, owner_cookies = _create_user(web_client, "backdef@x.com")
+        eid = _upload_clean(web_client, owner_cookies, name="backdef")
+        r = web_client.get(f"/marketplace/flea/{eid}", cookies=owner_cookies)
+        assert r.status_code == 200
+        # No ?from → the back link targets the marketplace, never /skills.
+        assert 'href="/skills"' not in r.text
+
+
+class TestDetailTrustBadgeAndManageRegion:
+    """The hero states the trust claim; the owner/admin blocks are one region.
+
+    Both are paper-only. Blue keeps the badge and the four separate blocks it
+    has always rendered — the design system forbids changing the look of an
+    instance that has not opted in, so every assertion here comes in pairs.
+    """
+
+    @staticmethod
+    def _get(client, cookies, eid, theme, monkeypatch):
+        monkeypatch.setenv("AGNES_INSTANCE_THEME", theme)
+        r = client.get(f"/marketplace/flea/{eid}", cookies=cookies)
+        assert r.status_code == 200
+        return r.text
+
+    @pytest.mark.parametrize(
+        "upload,label",
+        [(_upload_clean, "skill"), (_upload_clean_plugin, "plugin")],
+    )
+    def test_paper_hero_carries_trust_not_the_retired_source_badge(self, web_client, monkeypatch, upload, label):
+        _, cookies = _create_user(web_client, f"trust-{label}@x.com")
+        eid = upload(web_client, cookies, name=f"trust{label}")
+
+        # The Community marker is opt-in (`library.show_unverified_trust`,
+        # default off for upgrade parity — the default itself is guarded in
+        # test_web_library_store_entities.py). What THIS test pins is where
+        # the claim renders once an instance opts in: the hero title row,
+        # not the retired source badge.
+        monkeypatch.setenv("AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST", "true")
+        paper = self._get(web_client, cookies, eid, "paper", monkeypatch)
+        # The marker rides the TITLE ROW, rendered server-side by the shared
+        # hero like every other detail page. It used to live in a <template>
+        # for the hydration script to lift into the pill row, because this page
+        # hand-wrote its own header; now that it renders through
+        # `detail.hero(trust=…)`, there is nothing to lift.
+        assert '<template id="hero-trust-mark">' not in paper, (
+            "the trust marker is server-rendered into the header now, not hydrated"
         )
+        title_row = paper.split('class="detail-hero__title-row"', 1)[1].split("</div>", 1)[0]
+        assert 'class="ds-trust ds-trust--community' in title_row, "a fresh user upload is Community"
+        assert "ds-trust--label" in title_row, "labelled form, not the bare glyph"
+        # The resource type is named in words beside it, from the same header.
+        assert 'class="detail-type"' in title_row
+        # ...and the retired source badge is gone from the pill row, on both
+        # templates: the server no longer writes it and the hydration script
+        # skips it whenever the header carries the claim
+        # (`data-trust-in-header`).
+        pill_row = paper.split('id="hero-pills"', 1)[1].split("</div>", 1)[0]
+        assert "pill flea" not in pill_row
+        assert "pill curated" not in pill_row
+        assert 'data-trust-in-header="1"' in paper
+
+    @pytest.mark.parametrize(
+        "upload,label",
+        [(_upload_clean, "skill"), (_upload_clean_plugin, "plugin")],
+    )
+    def test_blue_keeps_the_source_badge_and_grows_no_trust_template(self, web_client, monkeypatch, upload, label):
+        _, cookies = _create_user(web_client, f"bluetrust-{label}@x.com")
+        eid = upload(web_client, cookies, name=f"bluetrust{label}")
+
+        blue = self._get(web_client, cookies, eid, "blue", monkeypatch)
+        # No template means the JS falls through to the Curated/Flea literal
+        # and nothing renders the paper vocabulary — the badge a blue instance
+        # has always shown is exactly what it still gets.
+        assert '<template id="hero-trust-mark">' not in blue
+        assert 'class="ds-trust' not in blue
+        # The skill page server-renders its badge into the pill row; the plugin
+        # page builds the row in JS from the same literal.
+        assert ('<span class="pill flea">' in blue) or ('pill flea">Flea</span>' in blue)
+
+    @pytest.mark.parametrize(
+        "upload,label",
+        [(_upload_clean, "skill"), (_upload_clean_plugin, "plugin")],
+    )
+    def test_paper_moves_the_owner_tools_into_the_menu_and_the_rail(self, web_client, monkeypatch, upload, label):
+        """The owner/admin blocks stop being an interruption between the header
+        and the content.
+
+        They used to be three separately-styled blocks wedged there — a status
+        banner, an action strip and a bordered versions card — which one shared
+        `.manage-region` wrapper unified as far as CSS could. The detail-page
+        template answers it properly instead: the Edit / Archive / Hard-delete
+        ladder is the header's overflow menu (`detail.store_menu`, shared with
+        the other store surface), version history is a rail timeline (the same
+        `timeline()` every activity list uses), and only the quarantine banner
+        stays in the flow, because it is an alert about the page.
+        """
+        _, cookies = _create_user(web_client, f"mgr-{label}@x.com")
+        eid = upload(web_client, cookies, name=f"mgr{label}")
+
+        paper = self._get(web_client, cookies, eid, "paper", monkeypatch)
+        # No wrapper, and none of the blocks it used to wrap.
+        assert "manage-region" not in paper
+        assert '<div class="owner-actions">' not in paper
+        assert '<div class="versions-card">' not in paper
+        # The ladder is in the header's overflow menu…
+        assert '<details class="detail-menu">' in paper
+        menu = paper.split('<details class="detail-menu">', 1)[1].split("</details>", 1)[0]
+        assert ">Edit<" in menu
+        assert ">Archive<" in menu
+        # …and the history is a rail timeline, restorable through the same
+        # `restoreVersion()` the bordered card always called.
+        assert 'class="detail-timeline"' in paper
+        assert "data-restore-version=" in paper or "v1 · current" in paper
+
+    @pytest.mark.parametrize(
+        "upload,label",
+        [(_upload_clean, "skill"), (_upload_clean_plugin, "plugin")],
+    )
+    def test_blue_renders_no_manage_region(self, web_client, monkeypatch, upload, label):
+        _, cookies = _create_user(web_client, f"bluemgr-{label}@x.com")
+        eid = upload(web_client, cookies, name=f"bluemgr{label}")
+
+        blue = self._get(web_client, cookies, eid, "blue", monkeypatch)
+        assert "manage-region" not in blue
+        # ...but the blocks it would have wrapped still render, unchanged.
+        assert '<div class="owner-actions">' in blue
+        assert "versions-card" in blue
+
+    def test_non_owner_gets_no_empty_region(self, web_client, monkeypatch):
+        """The wrapper repeats the owner/admin gate its contents self-guard on.
+
+        Without that, a stranger on an approved item would get a hairline and a
+        "Manage" heading introducing nothing.
+        """
+        _, owner_cookies = _create_user(web_client, "mgrowner@x.com")
+        eid = _upload_clean(web_client, owner_cookies, name="mgrstranger")
+        _, other_cookies = _create_user(web_client, "mgrother@x.com")
+
+        paper = self._get(web_client, other_cookies, eid, "paper", monkeypatch)
+        assert "manage-region" not in paper
+
+
+class TestDetailHeroOrdering:
+    """The kind-tinted hero IS the page header, so it renders first — the
+    owner/admin strip (actions + versions card) follows it. Previously the
+    strip rendered above the hero, pushing the header of a freshly published
+    skill below three other cards."""
+
+    @staticmethod
+    def _assert_order(body: str) -> None:
+        # Anchor on the markup, not the class name — the same names also
+        # appear in the page's <style> blocks.
+        back = '<a class="detail-back"'
+        hero = '<div class="detail-hero detail-hero--paneled">'
+        strip = '<div class="owner-actions">'
+        versions = '<div class="versions-card">'
+        for marker in (back, hero, strip, versions):
+            assert marker in body, marker
+        assert body.index(back) < body.index(hero) < body.index(strip) < body.index(versions)
+
+    def test_hero_renders_above_owner_strip(self, web_client):
+        _, owner_cookies = _create_user(web_client, "heropos@x.com")
+        eid = _upload_clean(web_client, owner_cookies, name="heropos")
+        r = web_client.get(f"/marketplace/flea/{eid}", cookies=owner_cookies)
+        assert r.status_code == 200
+        self._assert_order(r.text)
+
+    def test_hero_renders_above_owner_strip_on_the_plugin_page(self, web_client):
+        """Same contract, other template.
+
+        A ``type='plugin'`` entity renders marketplace_plugin_detail.html
+        instead of marketplace_item_detail.html, so the skill-entity test
+        above never covered it — and the plugin page shipped with the
+        Manage strip + Versions card stacked *above* its own title.
+        """
+        _, owner_cookies = _create_user(web_client, "heroplug@x.com")
+        eid = _upload_clean_plugin(web_client, owner_cookies, name="heroplug")
+        r = web_client.get(f"/marketplace/flea/{eid}", cookies=owner_cookies)
+        assert r.status_code == 200
+        self._assert_order(r.text)

@@ -782,6 +782,15 @@ def run_pull(
             # listed-but-not-downloaded behavior, except remote rows aren't
             # even counted (no server parquet exists at all); a server_only
             # row HAS a server parquet, we just don't ship it.
+            #
+            # This flag is now ALSO set per-user (not just via the registry's
+            # global admin flag) by the auto-membership stack model: a table
+            # in a granted-but-not-subscribed ``available`` data package is
+            # authorized (listed in `authorized_names` above) but not yet
+            # materialized, so the server OR's `server_only` into its flat
+            # manifest entry for this caller (`app/api/sync.py:
+            # _build_data_packages_section`). Subscribing (`agnes stack add`)
+            # clears it on the next manifest fetch.
             if info.get("server_only"):
                 continue
             # Partitioned tables (partitioned distribution) are a directory of
@@ -1607,6 +1616,37 @@ def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path, blocked_names: set
                         )
                     except duckdb.Error:
                         continue
+
+        # Workspace-local uploaded tables (chat "+" upload → register_as_table):
+        # a self-contained `uploads/extract.duckdb` holds materialized tables.
+        # ATTACH it read-only and copy each table into analytics.duckdb so
+        # `agnes query` reaches it in-session — the extract.duckdb's tables are
+        # materialized (not views over external files), so this survives the
+        # workspace→sandbox sync. A view referencing the attached catalog would
+        # dangle once the connection closes, hence the materialize. A missing or
+        # broken file is a no-op (never aborts the parquet rebuild above).
+        uploads_extract = workspace / "uploads" / "extract.duckdb"
+        if uploads_extract.exists():
+            try:
+                conn.execute(f"ATTACH '{uploads_extract.resolve()}' AS _uploads (READ_ONLY)")
+                try:
+                    up_tables = conn.execute(
+                        "SELECT table_name FROM information_schema.tables "
+                        "WHERE table_catalog='_uploads' AND table_type='BASE TABLE' "
+                        "AND table_name <> '_meta'"
+                    ).fetchall()
+                    for (t_name,) in up_tables:
+                        try:
+                            conn.execute(
+                                f"CREATE OR REPLACE TABLE {quote_ident(t_name)} "
+                                f"AS SELECT * FROM _uploads.{quote_ident(t_name)}"
+                            )
+                        except duckdb.Error:
+                            continue
+                finally:
+                    conn.execute("DETACH _uploads")
+            except duckdb.Error:
+                pass
 
         return _register_snapshot_views(conn, workspace, blocked_names)
     finally:

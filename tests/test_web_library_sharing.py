@@ -1,0 +1,926 @@
+"""Library sharing + the agent registry (v103).
+
+Three things ship together here and are locked in one place:
+
+  - ``/api/agents`` — the server-side agent registry that replaced the Agent
+    builder's localStorage-only store, so an agent is a real Library item.
+  - ``/api/sharing`` — OWNER-initiated sharing. Everything in
+    ``app/api/access.py`` is ``require_admin``; this is the counterpart that
+    lets the creator of an item share it with groups they belong to. The
+    security-relevant invariants are ownership and group containment.
+  - ``/library`` — the renamed, widened former ``/artefacts``, listing
+    artefacts + skills with per-row visibility. Agents are deliberately NOT
+    listed there (they have their own home at ``/agents``), but they remain
+    real registry rows whose grants ``/api/agents`` honours.
+
+Skills are deliberately NOT grant-shareable: an approved store entity is
+already readable by every authenticated user, so a grant row on one would be
+read by nothing. ``/api/sharing/skill/...`` must 404 rather than pretend.
+"""
+
+from __future__ import annotations
+import pytest
+
+import re
+from pathlib import Path
+
+
+@pytest.fixture(autouse=True)
+def _rail_layout(monkeypatch):
+    """This file exercises the RAIL redesign's unified /library. Topnav keeps
+    the legacy collections page (the /catalog pattern) — guarded by
+    tests/test_ui_layout_theme.py::TestDefaultContentParity."""
+    monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+
+
+def _auth(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _create_collection(seeded_app, name: str, token: str) -> dict:
+    r = seeded_app["client"].post("/api/collections", json={"name": name}, headers=_auth(token))
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def _create_agent(seeded_app, token: str, **fields) -> dict:
+    payload = {"name": "Test Agent"}
+    payload.update(fields)
+    r = seeded_app["client"].post("/api/agents", json=payload, headers=_auth(token))
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def _group_with_member(user_id: str, group_name: str) -> str:
+    """Create ``group_name`` (if absent) and put ``user_id`` in it."""
+    from src.db import get_system_db
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from src.repositories.user_groups import UserGroupsRepository
+
+    conn = get_system_db()
+    groups = UserGroupsRepository(conn)
+    grp = groups.get_by_name(group_name) or groups.create(name=group_name, description="test", created_by="test")
+    members = UserGroupMembersRepository(conn)
+    if not members.has_membership(user_id, grp["id"]):
+        members.add_member(user_id, grp["id"], source="admin", added_by="test")
+    return grp["id"]
+
+
+def _bare_group(group_name: str) -> str:
+    """A group the caller is NOT a member of."""
+    from src.db import get_system_db
+    from src.repositories.user_groups import UserGroupsRepository
+
+    groups = UserGroupsRepository(get_system_db())
+    grp = groups.get_by_name(group_name) or groups.create(name=group_name, description="test", created_by="test")
+    return grp["id"]
+
+
+# ---------------------------------------------------------------------------
+# Agent registry
+# ---------------------------------------------------------------------------
+
+
+def test_agent_create_list_patch_delete_roundtrip(seeded_app):
+    c = seeded_app["client"]
+    tok = seeded_app["admin_token"]
+
+    a = _create_agent(seeded_app, tok, name="Revenue Analyst", role="Finance", knowledge=["col_x"])
+    assert a["id"].startswith("agt_")
+    assert a["slug"] == "revenue-analyst"
+    assert a["mine"] is True
+    # Web chat is the always-on baseline surface.
+    assert a["surfaces"]["web"] is True
+
+    listed = c.get("/api/agents", headers=_auth(tok)).json()["agents"]
+    assert any(x["id"] == a["id"] for x in listed)
+
+    patched = c.patch(f"/api/agents/{a['id']}", json={"name": "Renamed", "plugins": ["p1"]}, headers=_auth(tok))
+    assert patched.status_code == 200
+    assert patched.json()["name"] == "Renamed"
+    assert patched.json()["plugins"] == ["p1"]
+
+    assert c.delete(f"/api/agents/{a['id']}", headers=_auth(tok)).status_code == 204
+    assert c.get(f"/api/agents/{a['id']}", headers=_auth(tok)).status_code == 404
+
+
+def test_agent_slug_collision_gets_suffix_not_conflict(seeded_app):
+    """Two agents may share a name — duplicates are ordinary for user-named
+    things, so the second gets `-2` rather than a 409."""
+    tok = seeded_app["admin_token"]
+    first = _create_agent(seeded_app, tok, name="Analyst")
+    second = _create_agent(seeded_app, tok, name="Analyst")
+    assert first["slug"] == "analyst"
+    assert second["slug"] == "analyst-2"
+
+
+def test_agent_slug_freed_name_reuses_suffix_after_delete(seeded_app):
+    """Deleting an agent must not poison its slug for the next one.
+
+    ``delete`` is a SOFT delete (``deleted_at``), but the ``slug`` UNIQUE
+    constraint spans deleted rows on both backends — so the free-slug search
+    has to see them. It previously used the default (live-rows-only) lookup,
+    which reported the freed slug as available and drove the INSERT into
+    ``ConstraintException`` → 500. Create-delete-create is the ordinary path
+    for an untitled draft (the "+ Build an agent" button mints one every
+    click), so this fired on the second click of a fresh workspace."""
+    c = seeded_app["client"]
+    tok = seeded_app["admin_token"]
+
+    first = _create_agent(seeded_app, tok, name="Recycled")
+    assert first["slug"] == "recycled"
+    assert c.delete(f"/api/agents/{first['id']}", headers=_auth(tok)).status_code == 204
+
+    # 201, not 500 — and the slug steps around the soft-deleted row.
+    second = _create_agent(seeded_app, tok, name="Recycled")
+    assert second["slug"] == "recycled-2"
+
+    # The unnamed-draft case the builder actually hits (slug falls back to
+    # "agent"), twice over, with a delete in between.
+    d1 = _create_agent(seeded_app, tok, name="")
+    assert c.delete(f"/api/agents/{d1['id']}", headers=_auth(tok)).status_code == 204
+    d2 = _create_agent(seeded_app, tok, name="")
+    assert d1["slug"] != d2["slug"]
+
+
+def test_agent_default_cannot_be_deleted(seeded_app):
+    """The seeded default agent is not deletable through the builder.
+
+    It is listed like any other agent (``list_for_user`` returns it first), so
+    the Library's delete control reaches it. Deleting it used to break web chat
+    outright: every session create resolves the default first, and that lookup
+    re-inserted a row whose ``slug='default'`` still collided with the
+    soft-deleted tombstone — a permanent 500 on ``POST /api/chat/sessions``.
+    The repository now revives the tombstone instead of raising, but the delete
+    still has no business succeeding: the agent would vanish from the Library
+    and silently reappear on the owner's next chat. `/api/v1/agents` has
+    refused this since the agent-as-API work; the builder router must match.
+    """
+    from src.repositories import agents_repo
+
+    c = seeded_app["client"]
+    tok = seeded_app["admin_token"]
+
+    default_id = agents_repo().get_or_create_default("admin1")["id"]
+    listed = c.get("/api/agents", headers=_auth(tok)).json()["agents"]
+    assert any(x["id"] == default_id for x in listed), "default agent is reachable in the Library"
+
+    r = c.delete(f"/api/agents/{default_id}", headers=_auth(tok))
+    assert r.status_code == 400
+    assert r.json()["detail"] == "default_agent_undeletable"
+
+    # Still live, and still the default.
+    assert agents_repo().get_by_id(default_id)["deleted_at"] is None
+    assert c.get(f"/api/agents/{default_id}", headers=_auth(tok)).status_code == 200
+
+
+def test_agent_wire_shape_marks_the_default_and_page_hides_its_delete(seeded_app):
+    """`is_default` reaches the browser, and the page uses it.
+
+    The API refuses to delete the seeded default (400
+    `default_agent_undeletable`). Without the flag on the wire the page renders
+    a delete control anyway, and clicking it optimistically removes the row,
+    fails, restores it, and toasts a bare "HTTP 400" — so the guard reads as a
+    glitch. Assert both halves: the projection, and that the two render sites
+    branch on it.
+    """
+    from pathlib import Path
+
+    from src.repositories import agents_repo
+
+    c = seeded_app["client"]
+    tok = seeded_app["admin_token"]
+    default_id = agents_repo().get_or_create_default("admin1")["id"]
+
+    listed = c.get("/api/agents", headers=_auth(tok)).json()["agents"]
+    by_id = {a["id"]: a for a in listed}
+    assert by_id[default_id]["is_default"] is True
+    # A user-created agent is not the default — the flag has to discriminate.
+    mine = _create_agent(seeded_app, tok, name="Ordinary")
+    assert c.get(f"/api/agents/{mine['id']}", headers=_auth(tok)).json()["is_default"] is False
+
+    tpl = Path("app/web/templates/agents.html").read_text(encoding="utf-8")
+    assert tpl.count("a.is_default") >= 2, "both the list card and the builder header must branch on is_default"
+
+
+def test_agent_named_default_does_not_claim_the_reserved_slug(seeded_app):
+    """`"default"` belongs to the seeded default agent, not to a user-named one.
+
+    The builder derives its slug from a typed name, so "Default" is suffixed
+    rather than rejected (the governance router 400s `slug_reserved` instead).
+    Left unreserved, an ordinary name could claim the slug before the owner's
+    first chat seeded the real default — and
+    `POST /api/v1/agents/default/responses` would then address the user's agent.
+    """
+    a = _create_agent(seeded_app, seeded_app["admin_token"], name="Default")
+    assert a["slug"] == "default-2"
+
+
+def test_agent_patch_cannot_reassign_ownership(seeded_app):
+    """A hostile payload can't move an agent to another owner or hijack a slug."""
+    tok = seeded_app["admin_token"]
+    a = _create_agent(seeded_app, tok, name="Owned")
+    r = seeded_app["client"].patch(
+        f"/api/agents/{a['id']}",
+        json={"created_by": "analyst1", "slug": "hijacked", "id": "agt_evil", "name": "Still Mine"},
+        headers=_auth(tok),
+    )
+    assert r.status_code == 200
+    assert r.json()["created_by"] == a["created_by"]
+    assert r.json()["slug"] == a["slug"]
+    assert r.json()["name"] == "Still Mine"
+
+
+def test_agent_is_private_to_owner_until_shared(seeded_app):
+    """Another user can neither list nor read an unshared agent (404, so the
+    endpoint never confirms it exists)."""
+    a = _create_agent(seeded_app, seeded_app["admin_token"], name="Secret Bot")
+    other = _auth(seeded_app["analyst_token"])
+    assert seeded_app["client"].get(f"/api/agents/{a['id']}", headers=other).status_code == 404
+    listed = seeded_app["client"].get("/api/agents", headers=other).json()["agents"]
+    assert all(x["id"] != a["id"] for x in listed)
+
+
+def test_shared_agent_becomes_readable_but_not_writable(seeded_app):
+    """A grant conveys USE, not authorship: the grantee can read the agent but
+    may not edit or delete it. This is also what makes agent grants real rather
+    than decorative — the read path honours them."""
+    c = seeded_app["client"]
+    a = _create_agent(seeded_app, seeded_app["admin_token"], name="Team Bot")
+    gid = _group_with_member("analyst1", "lib-agent-share-grp")
+
+    r = c.put(f"/api/sharing/agent/{a['id']}", json={"group_ids": [gid]}, headers=_auth(seeded_app["admin_token"]))
+    assert r.status_code == 200, r.text
+    assert r.json()["visibility"] == "shared"
+
+    other = _auth(seeded_app["analyst_token"])
+    assert c.get(f"/api/agents/{a['id']}", headers=other).status_code == 200
+    listed = c.get("/api/agents", headers=other).json()["agents"]
+    assert any(x["id"] == a["id"] and x["mine"] is False for x in listed)
+    # Read-only for the grantee.
+    assert c.patch(f"/api/agents/{a['id']}", json={"name": "Hijack"}, headers=other).status_code == 404
+    assert c.delete(f"/api/agents/{a['id']}", headers=other).status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Sharing API
+# ---------------------------------------------------------------------------
+
+
+def test_share_targets_include_everyone(seeded_app):
+    r = seeded_app["client"].get("/api/sharing/groups", headers=_auth(seeded_app["admin_token"]))
+    assert r.status_code == 200
+    targets = r.json()
+    assert targets, "expected at least the Everyone group"
+    everyone = [t for t in targets if t["is_everyone"]]
+    assert len(everyone) == 1
+    assert "workspace" in everyone[0]["name"].lower()
+
+
+def test_collection_share_cycles_private_shared_workspace(seeded_app):
+    """The three visibility states are reachable and reversible through one
+    idempotent PUT, for the artefact kind."""
+    from src.db import SYSTEM_EVERYONE_GROUP
+
+    c = seeded_app["client"]
+    tok = seeded_app["admin_token"]
+    col = _create_collection(seeded_app, "Shareable Deck", tok)
+
+    assert c.get(f"/api/sharing/collection/{col['id']}", headers=_auth(tok)).json()["visibility"] == "private"
+
+    gid = _group_with_member("analyst1", "lib-col-share-grp")
+    r = c.put(f"/api/sharing/collection/{col['id']}", json={"group_ids": [gid]}, headers=_auth(tok))
+    assert r.json()["visibility"] == "shared"
+
+    everyone = _bare_group(SYSTEM_EVERYONE_GROUP)
+    r = c.put(f"/api/sharing/collection/{col['id']}", json={"group_ids": [everyone]}, headers=_auth(tok))
+    assert r.json()["visibility"] == "workspace"
+
+    # Empty list = private again.
+    r = c.put(f"/api/sharing/collection/{col['id']}", json={"group_ids": []}, headers=_auth(tok))
+    assert r.json()["visibility"] == "private"
+    assert r.json()["group_ids"] == []
+
+
+def test_share_is_idempotent(seeded_app):
+    c = seeded_app["client"]
+    tok = seeded_app["admin_token"]
+    col = _create_collection(seeded_app, "Idem Deck", tok)
+    gid = _group_with_member("analyst1", "lib-idem-grp")
+    first = c.put(f"/api/sharing/collection/{col['id']}", json={"group_ids": [gid]}, headers=_auth(tok)).json()
+    second = c.put(f"/api/sharing/collection/{col['id']}", json={"group_ids": [gid]}, headers=_auth(tok)).json()
+    assert first["group_ids"] == second["group_ids"] == [gid]
+
+
+def test_non_owner_cannot_read_or_change_sharing(seeded_app):
+    """Sharing state of someone else's item is 404 — not 403 — so ownership
+    can't be probed."""
+    c = seeded_app["client"]
+    col = _create_collection(seeded_app, "Not Yours", seeded_app["admin_token"])
+    other = _auth(seeded_app["analyst_token"])
+    assert c.get(f"/api/sharing/collection/{col['id']}", headers=other).status_code == 404
+    assert c.put(f"/api/sharing/collection/{col['id']}", json={"group_ids": []}, headers=other).status_code == 404
+
+
+def test_cannot_share_into_a_group_you_are_not_in(seeded_app):
+    """Group containment: a non-admin owner may only target their own groups,
+    so they can't push content at a team they aren't part of."""
+    c = seeded_app["client"]
+    tok = seeded_app["analyst_token"]
+    col = _create_collection(seeded_app, "Analyst Own Deck", tok)
+    foreign = _bare_group("lib-foreign-grp")
+    r = c.put(f"/api/sharing/collection/{col['id']}", json={"group_ids": [foreign]}, headers=_auth(tok))
+    assert r.status_code == 403
+    assert r.json()["detail"] == "group_not_shareable"
+
+
+def test_owner_unshare_preserves_an_admin_grant(seeded_app):
+    """An owner clearing their own sharing must not revoke a grant an admin
+    made to a group the owner isn't in."""
+    from src.db import get_system_db
+    from src.repositories.resource_grants import ResourceGrantsRepository
+
+    c = seeded_app["client"]
+    tok = seeded_app["analyst_token"]
+    col = _create_collection(seeded_app, "Admin Granted Deck", tok)
+    admin_grp = _bare_group("lib-admin-only-grp")
+    grants = ResourceGrantsRepository(get_system_db())
+    grants.create(group_id=admin_grp, resource_type="collection", resource_id=col["id"], assigned_by="admin")
+
+    # The owner sets their own (empty) desired state.
+    r = c.put(f"/api/sharing/collection/{col['id']}", json={"group_ids": []}, headers=_auth(tok))
+    assert r.status_code == 200
+    # The admin's grant survives, so the item is still shared.
+    assert admin_grp in r.json()["group_ids"]
+    assert r.json()["visibility"] == "shared"
+
+
+def test_skill_is_not_grant_shareable(seeded_app):
+    """Skills share via the Store (approved => readable by everyone), so the
+    grant endpoint must refuse them instead of writing a dead grant row."""
+    r = seeded_app["client"].get("/api/sharing/skill/anything", headers=_auth(seeded_app["admin_token"]))
+    assert r.status_code == 404
+    assert r.json()["detail"] == "resource_not_shareable"
+
+
+def test_sharing_unknown_resource_is_404(seeded_app):
+    r = seeded_app["client"].get("/api/sharing/agent/agt_missing", headers=_auth(seeded_app["admin_token"]))
+    assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# The Library page
+# ---------------------------------------------------------------------------
+
+
+def test_library_lists_artefacts_with_visibility_but_not_agents(seeded_app):
+    """One table for the caller's things — artefacts (and skills) with a type
+    facet and a visibility chip. Agents are excluded: they live on /agents."""
+    tok = seeded_app["admin_token"]
+    _create_collection(seeded_app, "Quarterly Deck", tok)
+    _create_agent(seeded_app, tok, name="Library Bot")
+
+    text = seeded_app["client"].get("/library", headers=_auth(tok)).text
+    assert "Quarterly Deck" in text
+    assert 'data-kind="artefact"' in text
+    # Visibility chip + the share affordance for the grant-backed artefact kind.
+    assert "lib-vis--private" in text
+    assert 'data-share-type="collection"' in text
+    # The agent exists in the registry but is NOT a Library row.
+    assert "Library Bot" not in text
+    assert 'data-kind="agent"' not in text
+
+
+def test_shared_agent_visibility_is_reported_by_the_sharing_api(seeded_app):
+    """Agents aren't Library rows, so their shared state is asserted where it
+    actually surfaces: the sharing API (and, for use, /api/agents)."""
+    tok = seeded_app["admin_token"]
+    a = _create_agent(seeded_app, tok, name="Shared Bot")
+    gid = _group_with_member("analyst1", "lib-vis-grp")
+    seeded_app["client"].put(f"/api/sharing/agent/{a['id']}", json={"group_ids": [gid]}, headers=_auth(tok))
+
+    state = seeded_app["client"].get(f"/api/sharing/agent/{a['id']}", headers=_auth(tok)).json()
+    assert state["visibility"] == "shared"
+    assert gid in state["group_ids"]
+
+
+def test_agent_shared_with_me_is_not_in_my_library(seeded_app):
+    """A shared agent is usable via /api/agents but must not leak into the
+    grantee's Library listing."""
+    a = _create_agent(seeded_app, seeded_app["admin_token"], name="Borrowed Bot")
+    gid = _group_with_member("analyst1", "lib-borrow-grp")
+    seeded_app["client"].put(
+        f"/api/sharing/agent/{a['id']}", json={"group_ids": [gid]}, headers=_auth(seeded_app["admin_token"])
+    )
+    other = _auth(seeded_app["analyst_token"])
+    listed = seeded_app["client"].get("/api/agents", headers=other).json()["agents"]
+    assert any(x["id"] == a["id"] for x in listed)
+    assert "Borrowed Bot" not in seeded_app["client"].get("/library", headers=other).text
+
+
+def test_library_offers_grid_view_toggle(seeded_app):
+    """Table is the default view; a grid toggle + its projection target ship
+    with the page (the shared .fbar-view control, as on My Stack)."""
+    _create_collection(seeded_app, "View Toggle Deck", seeded_app["admin_token"])
+    text = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"])).text
+    assert 'class="fbar-view"' in text
+    assert 'data-view="table"' in text and 'data-view="grid"' in text
+    assert 'aria-pressed="true"' in text  # table active by default
+    # ONE table for the whole list (the groups are its tbodies), and a parallel
+    # grid container holding one grid per group — a grid cannot nest in a tbody,
+    # so the two views are separate structures wearing the same group headers.
+
+    # One table + one grid per GROUP, both inside the group's own section, so the
+    # view toggle and the grouping compose (there is no page-level pair).
+    groups = re.findall(r'<section class="fbar-group lib-group[^"]*" data-lib-sec="([^"]+)"', text)
+    assert groups
+    assert text.count('class="lib-tablewrap"') == len(groups)
+    assert text.count('class="fbar-grid"') == len(groups)
+
+
+def test_library_add_actions_live_behind_one_menu(seeded_app):
+    """A single "+ Add" chevron button fronts every add path; there is no
+    separate per-kind button in the header, and no agent entry."""
+    text = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"])).text
+    assert 'id="lib-new-btn"' in text
+    assert 'id="lib-new-menu"' in text
+    for label in ("Build a skill", "Build a plugin", "Upload a file"):
+        assert f"<span>{label}</span>" in text
+    assert "Build an agent" not in text
+    # Every row goes to the one builder at /skills, so no row is marked WIP.
+    assert "lib-wip" not in text
+    # The connect banner is a page-level note under the header, never inside
+    # the header row itself.
+    assert 'class="cbn cbn--bar"' in text
+    head = text.split('class="lib-head"', 1)[1].split("</div>", 1)[0]
+    assert 'class="cbn cbn--bar"' not in head
+
+
+def test_search_and_new_ride_the_toolbar(seeded_app):
+    """Search and "+ Add" sit in the toolbar dock by default — search first in
+    the controls row, "+ Add" last — and NOT in the page header.
+
+    They used to ride the header, on the reasoning that they act on the whole
+    Library rather than on the list the toolbar narrows. The header scrolls away,
+    so that put the two most-reached-for controls in the one place that leaves the
+    viewport, and a scroll-driven script had to ferry the real nodes into the dock
+    and back. The dock is on screen at every scroll position, so it is the only
+    home either control needs.
+    """
+    # One item, so the type sections actually render — they are what bounds the
+    # count row below (an empty Library renders no `data-lib-sec`).
+    _create_collection(seeded_app, "Row Anchor", seeded_app["admin_token"])
+    text = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"])).text
+
+    # The header holds the title block and nothing else: no search, no "+ Add",
+    # and no leftover action row for a script to observe.
+    head = text.split('class="lib-head"', 1)[1].split('class="cbn cbn--bar"', 1)[0]
+    assert 'id="lib-search"' not in head
+    assert 'id="lib-new-btn"' not in head
+    assert 'class="lib-actions"' not in text
+
+    # The controls row carries both, at its two ends, with the list controls
+    # between them. Bounded by the dock's own closing markup rather than by the
+    # chips row — the chips sit ABOVE the bar, so slicing to `id="lib-chips"`
+    # would run to the end of the document and assert nothing.
+    bar = text.split('class="fbar" role="group"', 1)[1].split("</div></div>", 1)[0]
+    for kept in (
+        'id="lib-search"',
+        'id="lib-filter-btn"',
+        'id="lib-sort"',
+        'class="fbar-view"',
+        'id="lib-new-btn"',
+        'id="lib-new-menu"',
+    ):
+        assert kept in bar
+    assert bar.index('id="lib-search"') < bar.index('id="lib-filter-btn"')
+    assert bar.index('class="fbar-view"') < bar.index('id="lib-new-btn"')
+    # The search box keeps its own landmark now that the bar around it is a
+    # `group` rather than a `search`.
+    assert 'class="fbar__search" role="search"' in bar
+    # The bar takes no `--center`: search is a flex control, so there is no free
+    # space for centring to distribute. The chips row above it still centres.
+    assert 'class="fbar fbar--center"' not in text
+    assert 'class="fbar-chips fbar-chips--center"' in text
+
+    # The count row carries the count alone.
+    row = text.split('class="lib-section-head"', 1)[1].split("data-lib-sec=", 1)[0]
+    assert 'id="lib-item-count"' in row
+    assert 'id="lib-new-btn"' not in row
+
+    # Page order: header → dock → count row → groups, and INSIDE the dock the
+    # applied-filter chips come before the controls that produced them.
+    assert text.index('class="lib-head"') < text.index('class="fbar-dock"')
+    assert text.index('class="fbar-dock"') < text.index('id="lib-chips"')
+    assert text.index('id="lib-chips"') < text.index('class="fbar" role="group"')
+    assert text.index('class="fbar" role="group"') < text.index('class="lib-section-head"')
+    assert text.index('class="lib-section-head"') < text.index("data-lib-sec=")
+
+
+FILTER_TOOLBAR_CSS = Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "css" / "filter_toolbar.css"
+
+
+def _css_rule(sheet: str, selector: str, containing: str = "") -> str:
+    """The declaration block of the rule matching ``selector``, and ``containing``.
+
+    Splits on braces rather than searching for ``f"{selector} {{"``: the veil's
+    three layers share one comma-separated box rule, so a plain string search for
+    ``.fbar-dock__veil::after {`` matches that rule's last selector line instead
+    of the layer's own block. ``containing`` then picks between the several rules
+    a selector legitimately has — the shared box versus that layer's own blur.
+    """
+    for chunk in sheet.split("}"):
+        if "{" not in chunk:
+            continue
+        head, body = chunk.rsplit("{", 1)
+        head = re.sub(r"/\*.*?\*/", "", head, flags=re.S)
+        if selector in {s.strip() for s in head.split(",")} and containing in body:
+            return body
+    raise AssertionError(f"no rule for {selector!r} containing {containing!r}")
+
+
+def test_toolbar_is_a_floating_bottom_dock(seeded_app):
+    """The filter/sort controls ride the SHARED dock component (`.fbar-dock` in
+    filter_toolbar.css — /chats renders the same one), with the applied-filter
+    chips as the card's TOP row.
+
+    Four things make that work and are worth pinning, because each one silently
+    breaks something a caller can see:
+
+      * both rows live in ONE card (`.fbar-dock__card`), chips first;
+      * the FOOTER reserves room below itself — clearance on the list alone
+        leaves the footer as the one element stuck under the card at the bottom
+        of the scroll, fully covered and unreachable;
+      * every menu the dock opens is re-anchored upward — a menu still hanging
+        off `top: 100%` renders below the viewport floor. That includes the
+        page's own "+ Add" menu, which is not one of the `.fbar-*` family;
+      * the frosted veil saturates at the VIEWPORT FLOOR and fades its blur
+        RADIUS across three stacked layers. Both halves were real bugs: a band
+        that reached full strength at the card's top edge drew a visible line
+        across the page there, and fading one uniformly-blurred layer's opacity
+        ghosted a sharp copy under a blurred one and saturated on a line too.
+    """
+    _create_collection(seeded_app, "Dock Anchor", seeded_app["admin_token"])
+    text = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"])).text
+
+    # One card, chips row first, controls row second.
+    card = text.split('class="fbar-dock__card"', 1)[1].split('class="lib-section-head"', 1)[0]
+    assert card.index('id="lib-chips"') < card.index('class="fbar" role="group"')
+
+    shared = FILTER_TOOLBAR_CSS.read_text(encoding="utf-8")
+    assert "position: fixed;" in shared.split(".fbar-dock {", 1)[1].split("}", 1)[0]
+    # The whole page — footer included — scrolls clear of the dock.
+    assert "body:has(.fbar-dock) footer { margin-bottom:" in shared
+    # The fade above the card needs ROOM — it is the distance over which the
+    # dissolve happens, and a short one is what made earlier versions read as a
+    # drawn line rather than as a gradient. Generous distance, faint effect.
+    assert 'class="fbar-dock__veil"' in text
+    reach = int(shared.split("--fbar-dock-reach:", 1)[1].split("px", 1)[0].strip())
+    assert 32 <= reach <= 72, f"fade distance {reach}px is outside the dissolve range"
+    # The band is anchored to the VIEWPORT, not to the frame, and bottoms out at
+    # the floor. That is the no-visible-edge guard: full strength happens off the
+    # bottom of the screen, where no live content sits beside it to compare
+    # against, so the only on-screen transition is the long dissolve at the top.
+    band = _css_rule(shared, ".fbar-dock__veil", containing="position: fixed")
+    assert "bottom: 0;" in band, "the band must reach the viewport floor"
+    # Its height is a formula, so the dissolve keeps its shape when the chips row
+    # makes the card taller.
+    for part in ("--fbar-dock-reach", "--fbar-dock-inset", "--fbar-dock-card", "--fbar-dock-chips"):
+        assert part in band.split("height:", 1)[1].split(";", 1)[0]
+    # Rail-aware, because the dock's stacking context sits above the rail and a
+    # band at left: 0 would blur the sidebar.
+    assert 'html[data-ui-layout="rail"] .fbar-dock__veil { left: 240px; }' in shared
+
+    # Three layers, each a stronger blur admitted over a shorter distance. That
+    # is what fades the RADIUS; one masked layer only fades opacity and leaves a
+    # ghosted copy saturating on a visible line.
+    radii, held_off, stops = [], [], []
+    for layer in (".fbar-dock__veil", ".fbar-dock__veil::before", ".fbar-dock__veil::after"):
+        block = _css_rule(shared, layer, containing="backdrop-filter: blur(")
+        radii.append(float(block.split("backdrop-filter: blur(", 1)[1].split("px", 1)[0]))
+        held_off.append("transparent 35%" in block or "transparent 55%" in block)
+        # Every ramp saturates at the band's own end — the viewport floor.
+        assert "black 100%)" in block
+        # A SMOOTHSTEP, not a two-stop line: the intermediate stops keep the slope
+        # shallow at both ends, and a steep end is what reads as an edge.
+        ramp = block.split("mask-image: linear-gradient(to bottom,", 1)[1]
+        stops.append(ramp.count("color-mix(in srgb, black"))
+    assert radii == sorted(radii), f"layers must climb in blur radius, got {radii}"
+    # The peak is the FLOOR's strength, which is off-screen; what must stay true
+    # is that it is bounded and that the layers climb toward it.
+    assert max(radii) <= 6, f"peak blur crept up to {max(radii)}px"
+    assert all(n >= 2 for n in stops), f"every ramp needs intermediate stops, got {stops}"
+    # The two stronger layers are absent from the top of the band.
+    assert held_off[1] and held_off[2], "the stronger layers must be held off the top"
+
+    # Exactly one layer carries the tint, and it dissolves upward from nothing.
+    tinted = [
+        layer
+        for layer in (".fbar-dock__veil", ".fbar-dock__veil::before", ".fbar-dock__veil::after")
+        if "background:" in _css_rule(shared, layer, containing="backdrop-filter: blur(")
+    ]
+    assert tinted == [".fbar-dock__veil"], f"one tint layer, got {tinted}"
+    assert "background: linear-gradient(to bottom,\n    transparent 0," in band
+    # Upward-opening menus: the shared one, and the page's own "+ Add".
+    page_css = text.split("{% endblock %}", 1)[0]
+    for rule, css in ((".fbar-dock .fbar-menu {", shared), (".fbar-dock .lib-new__menu {", page_css)):
+        block = css.split(rule, 1)[1].split("}", 1)[0]
+        assert "top: auto;" in block
+        assert "bottom: calc(100%" in block
+
+
+def test_dock_card_hugs_its_controls_in_every_state(seeded_app):
+    """The card is sized by what is in it, always.
+
+    It used to take a definite `min(900px, 100%)` in the state where search and
+    "+ Add" were in it, and push those two onto its edges with a pair of auto
+    margins, so the list controls would stay on the card's centre line. With a
+    handful of middle controls that left ~300px of free space for the margins to
+    absorb and the dock rendered as a wide empty bar with a button stranded at
+    each end. A floating card has nothing beside it to line up with, so there is
+    no centre line to hold — only one consistent gap between its own controls.
+
+    Keeping it intrinsic is also what gives the resize animation something to
+    interpolate: with a definite width most state changes moved nothing."""
+    _create_collection(seeded_app, "Dock Hug", seeded_app["admin_token"])
+    page_css = (
+        seeded_app["client"]
+        .get("/library", headers=_auth(seeded_app["admin_token"]))
+        .text.split("{% endblock %}", 1)[0]
+    )
+    shared = FILTER_TOOLBAR_CSS.read_text(encoding="utf-8")
+
+    # No definite width, and no arms to pad it out.
+    assert ".fbar-dock__card { width:" not in shared
+    for css, gap_maker in (
+        (shared, ".fbar-dock__card .fbar__search { margin-right: auto; }"),
+        (page_css, ".fbar-dock .lib-new { margin-left: auto;"),
+    ):
+        assert gap_maker not in css, f"auto margin reopens the whitespace hole: {gap_maker}"
+    # Search takes a shrinkable basis in the dock; "+ Add" is content-sized.
+    assert ".fbar-dock__card .fbar__search { flex: 0 1 240px;" in shared
+    assert ".fbar-dock .lib-new { flex: 0 0 auto; }" in page_css
+
+    # The card still animates between the shapes it hugs into.
+    assert "animating = true" in page_css or "libDockCard.animate(" in page_css
+
+
+def test_library_title_carries_no_setup_caveat(seeded_app):
+    """The caveat never rides the TITLE: no `.pnote` panel under the lede, and no
+    status pill beside the `h1`. The page opens on its own name and inventory.
+
+    Narrowed from "this copy appears nowhere on the page". The Library now carries
+    a deliberate, TEMPORARY product statement in `.lib-headnotes`
+    (``library_prep_warning()`` in ``library.html``) — an amber banner telling
+    every reader the inventory is still being filled. That is a product decision,
+    made knowingly, and it reverses the earlier one this test used to enforce:
+    a standing condition does not earn a marker next to the h1.
+
+    Both halves of that reasoning still hold, and both are still asserted — the
+    banner is a sibling of the lede, not an ornament on the title. What is no
+    longer asserted is the blanket copy ban, which cannot distinguish "a pill
+    stapled to the heading" from "a banner in the notes stack". When the content
+    backlog clears, delete ``library_prep_warning()`` and its call site; nothing
+    else depends on it.
+    """
+    text = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"])).text
+    # Neither the panel nor the pill that replaced it — markup, CSS and JS.
+    assert 'class="pnote"' not in text
+    assert "lib-status" not in text
+    # The title stands alone, directly ahead of the lede.
+    assert "<h1>Library</h1>" in text
+    assert text.index("<h1>Library</h1>") < text.index('class="lede"')
+    # Where the note lives now: beside the item count, as list metadata. Not a
+    # panel, not a row above the list, and not a pill on the h1 (the two bans
+    # above still catch that).
+    assert 'class="lib-count-note"' in text
+    assert ">More coming soon<" in text
+    assert text.index('class="lede"') < text.index('class="lib-count-note"')
+    # It reads as GROWTH, not as a caveat: no warn vocabulary, no "incomplete",
+    # and no cue to explain itself away. The Library is being filled, which is
+    # good news — dressing good news in amber is what the old versions got wrong.
+    assert "lib-strip" not in text
+    assert "lib-soon" not in text
+    # Copy checks run against the VISIBLE page: the page-local <style> block
+    # documents the wording this replaced, and a whole-document substring search
+    # would match that commentary rather than anything a reader sees.
+    body = re.sub(r"<(style|script)\b.*?</\1>", "", text, flags=re.S | re.I)
+    assert "may be incomplete" not in body
+    assert "still being prepared" not in body
+    assert "What this means" not in body
+    # The elaboration is reachable without hover: fast tooltip + accessible name.
+    note = text[text.index('class="lib-count-note"') :]
+    note = note[: note.index("</span>")]
+    assert "data-tip=" in note
+    assert "aria-label=" in note
+
+
+def test_more_coming_note_is_a_sibling_of_the_count_not_a_child(seeded_app):
+    """The note sits BESIDE `#lib-item-count`, never inside it.
+
+    Not a style preference — a correctness constraint. The shared filter toolbar
+    rewrites that element's text on every facet change (`count: { el:
+    '#lib-item-count', noun: 'item' }`), rendering e.g. "14 of 41 items". Anything
+    nested inside the count is destroyed by the first click of a filter, and the
+    failure is invisible server-side: the page ships correct HTML and loses the
+    note only once the user interacts. So the structure is pinned here.
+    """
+    text = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"])).text
+
+    count_at = text.index('id="lib-item-count"')
+    note_at = text.index('class="lib-count-note"')
+    assert count_at < note_at, "the note follows the count"
+
+    # The count element closes BEFORE the note opens — i.e. they are siblings.
+    count_close = text.index("</span>", count_at)
+    assert count_close < note_at, (
+        "the note is nested inside #lib-item-count; the filter toolbar's count "
+        "rewrite will delete it on the first facet click"
+    )
+    # Both inside the one count row.
+    head_at = text.index('class="lib-section-head"')
+    assert head_at < count_at
+
+
+def test_data_apps_schedule_is_a_badge_on_the_files_band(seeded_app):
+    """Data apps ship INTO Files first, so the schedule rides the Files band's own
+    label — not a panel in the page head.
+
+    It has been three things now, and each move was for the same reason: a
+    roadmap note must not be mistaken for inventory, and must not cost the
+    inventory its space. It was a band inside the list (read as a sixth openable
+    section), then an info banner in the head-notes stack (which, stacked under
+    the prep caveat, put ~200px of un-actionable reading above the first row).
+    A badge on the section the kind will actually appear in says the same thing
+    for one line of chrome, and deletes itself when the kind ships.
+
+    `group_toggle()` renders it, so the table band and the grid band both carry
+    it from one place — that shared macro is the point, and is why there is no
+    per-layout assertion here."""
+    _create_collection(seeded_app, "Soon Badge Anchor", seeded_app["admin_token"])
+    text = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"])).text
+
+    # The badge, on a band label, with the full sentence reachable — `data-tip`
+    # for pointer + keyboard, `aria-label` for a screen reader. Never `title`.
+    assert 'class="fbar-group__soon"' in text
+    assert ">Data apps coming soon<" in text
+    assert "Hosted apps that run next to your data will appear here." in text
+    assert "link an existing one" in text
+    assert "Nothing to do yet." in text
+
+    badge_at = text.index('class="fbar-group__soon"')
+    badge = text[badge_at : text.index("</span>", badge_at)]
+    assert "data-tip=" in badge
+    assert "aria-label=" in badge
+
+    # It is INSIDE the list now, on the Files band — after the list opens, and
+    # inside a group toggle rather than floating in the page head.
+    assert text.index('class="lib-list"') < badge_at
+    toggle_at = text.rindex('class="fbar-grouptoggle"', 0, badge_at)
+    toggle = text[toggle_at:badge_at]
+    assert 'data-sec-toggle="files"' in toggle, "the badge belongs to the Files band"
+
+    # The panels it replaced are gone — markup and CSS both.
+    assert "lib-soon" not in text
+    assert "lib-apps" not in text
+    # One badge, not one per page state.
+    assert text.count('class="fbar-group__soon"') == 1
+
+
+# ---------------------------------------------------------------------------
+# The Library also lists what has been SHARED WITH the caller
+# ---------------------------------------------------------------------------
+
+
+def _grant(group_id: str, resource_type: str, resource_id: str) -> None:
+    from src.db import get_system_db
+    from src.repositories.resource_grants import ResourceGrantsRepository
+
+    grants = ResourceGrantsRepository(get_system_db())
+    if not grants.has_grant([group_id], resource_type, resource_id):
+        grants.create(group_id=group_id, resource_type=resource_type, resource_id=resource_id, assigned_by="admin")
+
+
+def test_library_lists_granted_resources_of_every_kind(seeded_app):
+    """The Library answers "what do I have?" across kinds: the caller's own
+    artefacts PLUS the governed data packages, memory domains and recipes
+    granted to one of their groups."""
+    from src.repositories import data_packages_repo, memory_domains_repo, recipes_repo
+
+    gid = _group_with_member("analyst1", "lib-access-grp")
+    pkg = data_packages_repo().create(
+        name="Sales Data",
+        slug="lib-sales",
+        description="Governed sales tables",
+        icon=None,
+        color=None,
+        created_by="admin",
+    )
+    dom = memory_domains_repo().create(
+        name="Pricing Memory",
+        slug="lib-pricing",
+        description="How we price",
+        icon=None,
+        color=None,
+        created_by="admin",
+    )
+    rec = recipes_repo().create(
+        slug="lib-churn",
+        title="Churn Recipe",
+        description="How to compute churn",
+        icon=None,
+        color=None,
+        sql_template=None,
+        related_table_ids=None,
+        created_by="admin",
+    )
+    _grant(gid, "data_package", pkg)
+    _grant(gid, "memory_domain", dom)
+    _grant(gid, "recipe", rec)
+
+    text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
+    assert "Sales Data" in text
+    assert "Pricing Memory" in text
+    assert "Churn Recipe" in text
+    for type_key in ("data_package", "memory_domain", "recipe"):
+        assert f'data-type="{type_key}"' in text
+    # They arrived by a grant, so the Source facet says so...
+    assert 'data-origin="granted"' in text
+    # ...and they are tagged as shared with the caller, not owned by them.
+    assert 'data-ownership="shared_with_me"' in text
+
+
+def test_granted_rows_link_to_the_individual_item(seeded_app):
+    """A Library row is ONE item, so it opens that item's page — never the
+    generic listing. Memory rows used to hand every domain the same
+    /corporate-memory href, which lost which row was clicked; ?source=library
+    additionally makes the drill-down's back link return here."""
+    from src.repositories import data_packages_repo, memory_domains_repo
+
+    gid = _group_with_member("analyst1", "lib-drilldown-grp")
+    pkg = data_packages_repo().create(
+        name="Drilldown Data",
+        slug="lib-drill-data",
+        description=None,
+        icon=None,
+        color=None,
+        created_by="admin",
+    )
+    dom = memory_domains_repo().create(
+        name="Drilldown Memory",
+        slug="lib-drill-memory",
+        description=None,
+        icon=None,
+        color=None,
+        created_by="admin",
+    )
+    _grant(gid, "data_package", pkg)
+    _grant(gid, "memory_domain", dom)
+
+    text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
+    assert "/catalog/p/lib-drill-data" in text
+    assert "/memory/d/lib-drill-memory?source=library" in text
+
+
+def test_granted_resources_are_not_reshareable_by_the_caller(seeded_app):
+    """A granted resource is an admin's to share, not the recipient's — so its
+    row carries no Share action (only the explain-sharing affordance)."""
+    from src.repositories import data_packages_repo
+
+    gid = _group_with_member("analyst1", "lib-noreshare-grp")
+    pkg = data_packages_repo().create(
+        name="Locked Package",
+        slug="lib-locked",
+        description="d",
+        icon=None,
+        color=None,
+        created_by="admin",
+    )
+    _grant(gid, "data_package", pkg)
+
+    text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
+    assert "Locked Package" in text
+    # The data-package row is not owner-shareable.
+    assert 'data-share-type="data_package"' not in text
+    # And the sharing API refuses it outright (not a shareable type).
+    r = seeded_app["client"].put(
+        f"/api/sharing/data_package/{pkg}", json={"group_ids": []}, headers=_auth(seeded_app["analyst_token"])
+    )
+    assert r.status_code == 404
+
+
+def test_library_excludes_resources_not_granted_to_me(seeded_app):
+    """No grant → not in my Library (the page is access-scoped, not a catalogue
+    of everything in the instance)."""
+    from src.repositories import data_packages_repo
+
+    data_packages_repo().create(
+        name="Ungranted Package",
+        slug="lib-ungranted",
+        description="d",
+        icon=None,
+        color=None,
+        created_by="admin",
+    )
+    text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
+    assert "Ungranted Package" not in text

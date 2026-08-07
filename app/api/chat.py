@@ -25,7 +25,7 @@ from app.chat.types import Surface
 from app.coordination.base import CoordinationUnavailable
 from app.coordination.factory import coordination
 from app.resource_types import ResourceType
-from src.repositories import agents_repo
+from src.repositories import agents_repo, user_journey_repo
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -36,6 +36,29 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 # gated create/reissue endpoints). Admins short-circuit via god-mode. The
 # resource is a singleton, so the path template is the fixed id "chat".
 require_chat_access = require_resource_access(ResourceType.CHAT, "chat")
+
+
+def _reject_restricted_principal(user: object, what: str) -> None:
+    """403 a co-session / agent-session caller before the handler subscripts ``user``.
+
+    ``require_resource_access`` returns whatever principal it authorized, and for
+    a restricted principal that is a FROZEN DATACLASS
+    (``SessionPrincipal`` / ``AgentPrincipal``), not a dict — see
+    ``app/auth/access.py`` where the two branches diverge. So ``user["email"]``
+    raises ``TypeError: 'SessionPrincipal' object is not subscriptable`` and the
+    caller gets a 500 where it should get a 403.
+
+    Semantically these operations have no restricted-principal meaning anyway: a
+    co-session has no single identity to own a conversation or an onboarding
+    journey, and an agent-session must not mutate its owner's. ``app/api/stack.py``
+    added the identical guard for the identical hazard in this same change
+    (``_reject_co_session``) — this is that guard for the chat routes, which were
+    missed (review of #1104).
+    """
+    from app.auth.session_principal import PRINCIPAL_TYPES
+
+    if isinstance(user, PRINCIPAL_TYPES):
+        raise HTTPException(403, f"co_session cannot {what}")
 
 
 # WS auth tickets ride the coordination backend (single-use KV with TTL) —
@@ -153,9 +176,173 @@ async def list_sessions(
             "last_message_at": s.last_message_at.isoformat() if s.last_message_at else None,
             "message_count": s.message_count,
             "paused": s.sandbox_paused_at is not None,
+            # Pin state for the history panel's Pinned group. `pinned_at` is
+            # also exposed so a client can order pins itself; the repo already
+            # returns pinned-first, so the flag alone is enough for the rail.
+            "pinned": s.pinned_at is not None,
+            "pinned_at": s.pinned_at.isoformat() if s.pinned_at else None,
         }
         for s in rows
     ]
+
+
+class PinSessionBody(BaseModel):
+    pinned: bool
+
+
+@router.put("/sessions/{chat_id}/pin")
+async def set_session_pinned(
+    chat_id: str,
+    body: PinSessionBody,
+    request: Request,
+    user: dict = Depends(require_chat_access),
+):
+    """Pin or unpin a conversation in the caller's history panel.
+
+    Ownership-gated the same way as archive/messages: 404 (never 403) when the
+    session doesn't exist or belongs to someone else, so the endpoint can't be
+    used to probe for other users' session ids. Idempotent — pinning an already
+    pinned session just re-stamps ``pinned_at``, which re-orders it to the front
+    of the Pinned group.
+    """
+    _reject_restricted_principal(user, "pin a conversation")
+    repo = _get_repo(request)
+    s = repo.get_session(chat_id)
+    if s is None or s.user_email != user["email"]:
+        raise HTTPException(404)
+    repo.set_pinned(chat_id, body.pinned)
+    return {"id": chat_id, "pinned": body.pinned}
+
+
+# Long enough for a descriptive sentence, short enough that the row's own
+# ellipsis stays the thing that truncates it in the UI. The auto-title path
+# (Haiku) already produces titles well inside this.
+_TITLE_MAX = 200
+
+
+class RenameSessionBody(BaseModel):
+    title: str
+
+
+@router.put("/sessions/{chat_id}/title")
+async def rename_session(
+    chat_id: str,
+    body: RenameSessionBody,
+    request: Request,
+    user: dict = Depends(require_chat_access),
+):
+    """Rename a conversation from the history panel's row menu.
+
+    ``set_title`` already existed for the Haiku auto-title path; this is the
+    user-driven route to the same column. Ownership-gated like the sibling
+    per-session routes (404, never 403).
+
+    The title is stripped and length-capped here rather than in the repo: the
+    auto-title path is a trusted internal caller, this one is user input. An
+    all-whitespace title is a 400 rather than a silent no-op — the row would
+    otherwise render as "Untitled chat" with no explanation.
+    """
+    _reject_restricted_principal(user, "rename a conversation")
+    title = body.title.strip()
+    if not title:
+        raise HTTPException(
+            status_code=400,
+            detail={"kind": "invalid_title", "hint": "Title cannot be empty."},
+        )
+    if len(title) > _TITLE_MAX:
+        raise HTTPException(
+            status_code=400,
+            detail={"kind": "invalid_title", "hint": f"Title cannot exceed {_TITLE_MAX} characters."},
+        )
+    repo = _get_repo(request)
+    s = repo.get_session(chat_id)
+    if s is None or s.user_email != user["email"]:
+        raise HTTPException(404)
+    repo.set_title(chat_id, title)
+    return {"id": chat_id, "title": title}
+
+
+async def _kill_quietly(request: Request, chat_id: str, *, reason: str) -> None:
+    """Stop a session's sandbox if there is a manager to ask, and never fail for
+    it.
+
+    Archiving and deleting are BOOKKEEPING on a row; stopping the runner is
+    tidying up after it. So a missing manager (chat configured but no provider
+    wired — the common local/dev shape) must not turn "archive this conversation"
+    into a 503, and neither must a kill that throws. ``_get_manager`` is the
+    right guard for the endpoints that need a live sandbox to do their job at
+    all; these two do not.
+    """
+    mgr = getattr(request.app.state, "chat_manager", None)
+    if mgr is None:
+        return
+    try:
+        await mgr.kill(chat_id, reason=reason)
+    except Exception:
+        logger.exception("kill on %s failed for %s", reason, chat_id)
+
+
+class ArchiveSessionBody(BaseModel):
+    archived: bool
+
+
+@router.put("/sessions/{chat_id}/archived")
+async def set_session_archived(
+    chat_id: str,
+    body: ArchiveSessionBody,
+    request: Request,
+    user: dict = Depends(require_chat_access),
+):
+    """Archive or restore a conversation from the Chats page (/chats).
+
+    ``DELETE /sessions/{chat_id}`` has always been a soft delete (it flips
+    ``archived`` and kills the sandbox), but nothing listed archived rows, so
+    the state had no name in the UI and no way back. This is the explicit,
+    two-directional route: ``{"archived": true}`` archives (killing the sandbox
+    exactly as the DELETE path does — an archived conversation must not keep a
+    sandbox warm), ``{"archived": false}`` restores.
+
+    Ownership-gated like every sibling per-session route: 404, never 403, so the
+    endpoint cannot be used to probe for other users' session ids. Idempotent in
+    both directions.
+    """
+    _reject_restricted_principal(user, "archive a conversation")
+    repo = _get_repo(request)
+    s = repo.get_session(chat_id)
+    if s is None or s.user_email != user["email"]:
+        raise HTTPException(404)
+    if body.archived:
+        await _kill_quietly(request, chat_id, reason="user_archive")
+        repo.archive_session(chat_id)
+    else:
+        repo.restore_session(chat_id)
+    return {"id": chat_id, "archived": body.archived}
+
+
+@router.delete("/sessions/{chat_id}/permanent", status_code=204)
+async def delete_session_permanently(
+    chat_id: str,
+    request: Request,
+    user: dict = Depends(require_chat_access),
+):
+    """Permanently delete a conversation and its messages.
+
+    The counterpart to the reversible archive above: with Archive a named state
+    the Chats page can list and undo, Delete has to mean the row is gone. The
+    plain ``DELETE /sessions/{chat_id}`` keeps its long-standing soft-archive
+    behavior — every existing caller (the chat page and rail row menus) is
+    unchanged.
+
+    Same ownership gate (404, never 403) and the same sandbox kill first: the
+    row is about to go, so a runner still holding it would be orphaned.
+    """
+    _reject_restricted_principal(user, "delete a conversation")
+    repo = _get_repo(request)
+    s = repo.get_session(chat_id)
+    if s is None or s.user_email != user["email"]:
+        raise HTTPException(404)
+    await _kill_quietly(request, chat_id, reason="user_delete")
+    repo.hard_delete_session(chat_id)
 
 
 @router.get("/skills")
@@ -184,6 +371,40 @@ async def list_skills(
     """
     skills = merged_skills(BUNDLED_TEMPLATE_DIR, conn, user)
     return {"skills": skills, "commands": list_recognized_commands()}
+
+
+class JourneyUpdateBody(BaseModel):
+    """Partial update — every field optional; only the ones present change."""
+
+    first_asked: Optional[bool] = None
+    stack_setup_done: Optional[bool] = None
+    explored_stack: Optional[bool] = None
+    catalog_discovered: Optional[bool] = None
+    use_anywhere: Optional[bool] = None
+    onboarded: Optional[bool] = None
+    successful_answers: Optional[int] = None
+
+
+@router.get("/journey")
+async def get_journey(
+    user: dict = Depends(require_chat_access),
+):
+    """Return the caller's own onboarding journey state (self-scoped —
+    the RBAC gate is the chat-access resource; there is no cross-user
+    read/write here since the repo call is always keyed off the caller's
+    own ``user["id"]``)."""
+    _reject_restricted_principal(user, "read an onboarding journey")
+    return user_journey_repo().get(user["id"])
+
+
+@router.put("/journey")
+async def update_journey(
+    body: JourneyUpdateBody,
+    user: dict = Depends(require_chat_access),
+):
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    _reject_restricted_principal(user, "update an onboarding journey")
+    return user_journey_repo().update(user["id"], **fields)
 
 
 @router.post("/sessions/{chat_id}/ticket", status_code=201)

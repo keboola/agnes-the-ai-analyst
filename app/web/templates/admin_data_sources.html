@@ -544,7 +544,12 @@ async function testConn(id) {
 async function deleteConn(id) {
   const conn = _connections.find(c => c.id === id);
   const name = conn ? (conn.name || "") : "";
-  if (!confirm(`Delete "${name}"? This cannot be undone.`)) return;
+  if (!await confirmModal({
+    title: "Delete data connection?",
+    message: `"${name}" will be removed. This cannot be undone.`,
+    confirmText: "Delete",
+    danger: true,
+  })) return;
   try {
     const r = await fetch(`${API_CONNECTIONS}/${id}`, { method: "DELETE", credentials: "include" });
     if (r.ok || r.status === 204) {

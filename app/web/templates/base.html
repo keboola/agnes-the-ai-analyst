@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="{{ instance_theme | default('blue') }}">
+<html lang="en" data-theme="{{ instance_theme | default('blue') }}" data-ui-layout="{{ ui_layout | default('topnav') }}">
 <head>
     {# HTML5 requires <meta charset> within the first 1024 bytes; any
        operator-injected snippet must come AFTER charset + viewport to
@@ -16,7 +16,19 @@
     {% for s in custom_scripts | default([]) if s.placement == 'head_start' %}
     {{ s.html | safe }}
     {% endfor %}
+    {# Paper theme ships Inter from Google Fonts — opt-in only,
+       mirrors base_ds.html. #}
+    {% if (instance_theme | default('blue')) == 'paper' %}
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    {% endif %}
+    {# Orb favicon ships only under the opt-in redesign (paper/rail); default blue/topnav keeps the original SVG mark. #}
+    {% if (instance_theme | default('blue')) == 'paper' or (ui_layout | default('topnav')) == 'rail' %}
+    <link rel="icon" type="image/png" href="{{ static_url('img/agnes-orb.png') }}">
+    {% else %}
     <link rel="icon" type="image/svg+xml" href="{{ static_url('favicon.svg') }}">
+    {% endif %}
     <title>{% block title %}Data Analyst Portal{% endblock %}</title>
     <link rel="stylesheet" href="{{ static_url('style-custom.css') }}">
     {# Design-system tokens (`--ds-*`) — opt-in green/navy palette used
@@ -32,9 +44,21 @@
     {# Shared stack card styles — drives /catalog + /memory Browse/My Stack
        cards (matches marketplace.html .mp-card visual language). #}
     <link rel="stylesheet" href="{{ static_url('css/stack_card.css') }}">
-    {# Walking-guide / product-tour overlay styles (inert until tour.js
-       un-hides the overlay). Markup + engine in _tour.html. #}
-    <link rel="stylesheet" href="{{ static_url('css/tour.css') }}">
+    {# Rail chrome (ui_layout=rail) + paper component skin
+       (data-theme=paper) — attribute-scoped, inert for default
+       topnav/blue instances. Mirrors base_ds.html. #}
+    <link rel="stylesheet" href="{{ static_url('css/rail.css') }}">
+    <link rel="stylesheet" href="{{ static_url('css/paper-skin.css') }}">
+    {# Shared resource-detail layout — same attribute-scoped contract.
+       Loaded here too because catalog_package_detail.html and the other
+       catalog detail pages still extend this base. Must stay ABOVE
+       head_extra: the detail pages' own detail.styles() block is what it
+       overrides. Mirrors base_ds.html. #}
+    <link rel="stylesheet" href="{{ static_url('css/detail-page.css') }}">
+    <!-- v113: one trust vocabulary (Organization / Verified / Community) for the
+         Library table + grid, catalog cards and every detail hero. Replaced four
+         separate spellings, two of which read from different data. -->
+    <link rel="stylesheet" href="{{ static_url('css/trustmark.css') }}">
     {# app.js loaded by _app_header.html itself so pages that include
        the header directly without extending base.html (e.g. admin_tables)
        still get the nav-dropdown wiring. #}
@@ -48,7 +72,11 @@
     {% endfor %}
 </head>
 <body {% block body_attrs %}{% endblock %}>
+    {% if (ui_layout | default('topnav')) == 'rail' %}
+    {% include '_app_rail.html' %}
+    {% else %}
     {% include '_app_header.html' %}
+    {% endif %}
 
     {# `layout` block: pages opt out of the narrow .container wrap by overriding
        this entire block (e.g. dashboard.html renders its own full-width <main
@@ -73,6 +101,9 @@
         </main>
 
         <footer>
+            {# Footer credit is config-driven on every chrome (INSTANCE_COPYRIGHT):
+               the public distribution carries no vendor branding — an instance puts
+               its own name here via config. #}
             <p>&copy; {{ now().year if now is defined else 2024 }} {{ config.INSTANCE_COPYRIGHT or 'AI Harness' }}</p>
         </footer>
     </div>
@@ -85,8 +116,6 @@
        other admin/user page (#L85). #}
     {% block extra_scripts %}{% endblock %}
     {% include "_app_scripts.html" %}
-    {# Walking-guide / product-tour overlay (authed-only; self-guarded). #}
-    {% include "_tour.html" %}
     {% block scripts %}{% endblock %}
     {# Operator-injected scripts (placement=body_end) — for vendors that
        explicitly want bottom placement. Admin-only, see

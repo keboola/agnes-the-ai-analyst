@@ -7,11 +7,11 @@
  */
 
 :root {
-  --obs-bg:        var(--surface, #fff);
-  --obs-fg:        var(--text-primary, #111827);
-  --obs-muted:     var(--text-secondary, #6b7280);
-  --obs-border:    var(--border, #e5e7eb);
-  --obs-soft:      var(--border-light, #f3f4f6);
+  --obs-bg:        var(--ds-surface);
+  --obs-fg:        var(--ds-text-primary);
+  --obs-muted:     var(--ds-text-secondary);
+  --obs-border:    var(--ds-border);
+  --obs-soft:      var(--ds-border-light);
   --obs-ok:        var(--ds-accent-success-ink);
   --obs-ok-bg:     var(--ds-accent-success-bg);
   --obs-err:       var(--ds-accent-danger-ink);
@@ -137,8 +137,8 @@
 .obs-result-err { color: var(--obs-err); background: var(--obs-err-bg); padding: 2px 6px; border-radius: 4px; font-size: 11px; }
 .obs-source-pill { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 11px;
   text-transform: lowercase; letter-spacing: 0.2px; background: var(--obs-soft); color: var(--obs-muted); }
-.obs-source-pill.is-scheduler { background: #ede9fe; color: #5b21b6; }
-.obs-source-pill.is-cli       { background: #dbeafe; color: #1e40af; }
+.obs-source-pill.is-scheduler { background: var(--ds-kind-agent-soft); color: var(--ds-kind-agent); }
+.obs-source-pill.is-cli       { background: var(--ds-kind-library-soft); color: var(--ds-kind-library); }
 .obs-source-pill.is-web       { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
 .obs-empty { padding: 40px 16px; text-align: center; color: var(--obs-muted); font-size: 13px; }
 .obs-table-footer {

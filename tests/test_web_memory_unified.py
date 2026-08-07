@@ -13,8 +13,7 @@ def _auth(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _make_domain(slug: str = "qa", name: str = "QA", *,
-                 with_item: bool = True) -> str:
+def _make_domain(slug: str = "qa", name: str = "QA", *, with_item: bool = True) -> str:
     """Create a memory domain and (by default) attach one approved item to
     it. Empty domains are hidden from /corporate-memory by design — a
     domain with no items has nothing for an analyst to opt-into — so tests
@@ -27,8 +26,12 @@ def _make_domain(slug: str = "qa", name: str = "QA", *,
     conn = get_system_db()
     try:
         domain_id = MemoryDomainsRepository(conn).create(
-            slug=slug, name=name, description=f"{name} desc",
-            icon="🎯", color="#dcfce7", created_by="test",
+            slug=slug,
+            name=name,
+            description=f"{name} desc",
+            icon="🎯",
+            color="#dcfce7",
+            created_by="test",
         )
         if with_item:
             kr = KnowledgeRepository(conn)
@@ -48,16 +51,13 @@ def _make_domain(slug: str = "qa", name: str = "QA", *,
         conn.close()
 
 
-def _grant(group_name: str, resource_id: str, requirement: str = "available",
-           users: list[str] | None = None):
+def _grant(group_name: str, resource_id: str, requirement: str = "available", users: list[str] | None = None):
     from src.db import get_system_db
     from src.repositories.user_group_members import UserGroupMembersRepository
 
     conn = get_system_db()
     try:
-        gid_row = conn.execute(
-            "SELECT id FROM user_groups WHERE name = ?", [group_name]
-        ).fetchone()
+        gid_row = conn.execute("SELECT id FROM user_groups WHERE name = ?", [group_name]).fetchone()
         if not gid_row:
             return
         group_id = gid_row[0]
@@ -79,7 +79,6 @@ def _grant(group_name: str, resource_id: str, requirement: str = "available",
 
 class TestMemoryUnifiedPage:
     def test_admin_sees_browse_and_my_stack_tabs(self, seeded_app):
-        _make_domain("qa-domain-1", "QA")
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
         resp = c.get("/corporate-memory", headers=_auth(token))
@@ -87,8 +86,17 @@ class TestMemoryUnifiedPage:
         body = resp.text
         assert "Browse" in body
         assert "My Stack" in body
-        # Domain card visible to admin (god-mode).
-        assert "QA" in body
+
+    def test_admin_without_grant_does_not_see_ungranted_domain(self, seeded_app):
+        """Admin god-mode (``browse_admin``) was removed from the
+        user-facing /corporate-memory — an ungranted domain must not
+        appear even for an admin (moved to /admin/data-packages)."""
+        _make_domain("qa-domain-1", "QA")
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/corporate-memory", headers=_auth(token))
+        assert resp.status_code == 200
+        assert "QA" not in resp.text
 
     def test_analyst_with_required_domain_grant_sees_card(self, seeded_app):
         dom_id = _make_domain("eng", "Engineering Memory")

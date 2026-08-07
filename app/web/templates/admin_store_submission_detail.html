@@ -38,12 +38,12 @@
     display: inline-block; padding: 2px 8px; border-radius: 999px;
     font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
   }
-  .badge.pass, .badge.safe, .badge.low, .badge.approved      { background: #d1fae5; color: #065f46; }
-  .badge.warn, .badge.medium                                  { background: #fef3c7; color: #92400e; }
-  .badge.fail, .badge.high, .badge.critical, .badge.blocked_inline, .badge.blocked_llm, .badge.review_error { background: #fee2e2; color: #991b1b; }
-  .badge.pending_inline, .badge.pending_llm                   { background: #fef3c7; color: #92400e; }
-  .badge.overridden                                           { background: #dbeafe; color: #1e40af; }
-  .badge.archived                                             { background: #e5e7eb; color: #374151; }
+  .badge.pass, .badge.safe, .badge.low, .badge.approved      { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
+  .badge.warn, .badge.medium                                  { background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink); }
+  .badge.fail, .badge.high, .badge.critical, .badge.blocked_inline, .badge.blocked_llm, .badge.review_error { background: var(--ds-accent-danger-bg); color: var(--ds-accent-danger-ink); }
+  .badge.pending_inline, .badge.pending_llm                   { background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink); }
+  .badge.overridden                                           { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
+  .badge.archived                                             { background: var(--ds-surface-dim); color: var(--ds-text-secondary); }
   .badge.deleted                                              { background: #4b5563; color: #f3f4f6; }
 
   table.data-table code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
@@ -52,19 +52,19 @@
   .det-summary { font-size: 14px; line-height: 1.5; margin: 8px 0 12px 0; }
   .det-error-box {
     padding: 10px 12px; border-radius: 6px;
-    background: #fee2e2; color: #991b1b; font-size: 13px;
+    background: var(--ds-accent-danger-bg); color: var(--ds-accent-danger-ink); font-size: 13px;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     word-break: break-word;
   }
   .det-recommendation {
     padding: 10px 12px; border-radius: 6px;
-    background: #dbeafe; color: #1e40af; font-size: 13px;
+    background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); font-size: 13px;
     margin-top: 8px;
   }
 
   .override-block {
     padding: 10px 12px; border-radius: 6px;
-    background: #dbeafe; color: #1e40af;
+    background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink);
     font-size: 13px;
   }
 
@@ -94,18 +94,18 @@
   .pending-banner {
     margin-top: 8px; margin-bottom: 12px;
     padding: 12px 16px;
-    background: #fef3c7; color: #92400e;
-    border: 1px solid #fde68a; border-radius: 8px;
+    background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink);
+    border: 1px solid var(--ds-accent-warn-line); border-radius: 8px;
     font-size: 13px; display: flex; align-items: center; gap: 10px;
   }
   .pending-banner .spinner {
     width: 14px; height: 14px;
-    border: 2px solid #fcd34d; border-top-color: #92400e;
+    border: 2px solid color-mix(in srgb, var(--ds-accent-warn-ink) 40%, transparent); border-top-color: var(--ds-accent-warn-ink);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .pending-banner .elapsed { color: #92400e; opacity: 0.7; font-variant-numeric: tabular-nums; margin-left: auto; }
+  .pending-banner .elapsed { color: var(--ds-accent-warn-ink); opacity: 0.7; font-variant-numeric: tabular-nums; margin-left: auto; }
 
 
 </style>
@@ -119,12 +119,20 @@
 
   {% if sub.status in ['pending_inline','pending_llm'] %}
   <div class="pending-banner" id="pendingBanner">
+    {% if guardrails_llm_ready %}
     <div class="spinner" aria-hidden="true"></div>
     <div>
       <strong>Review in progress</strong> — checks running against the bundle.
       Page auto-refreshes when verdict lands.
     </div>
-    <span class="elapsed" id="pendingElapsed" data-since="{{ sub.updated_at.isoformat() if sub.updated_at else '' }}">0s</span>
+    <span class="elapsed" id="pendingElapsed" data-since="{{ sub.updated_at.strftime('%Y-%m-%dT%H:%M:%SZ') if sub.updated_at else '' }}">0s</span>
+    {% else %}
+    <div>
+      <strong>Waiting for admin action</strong> — no LLM provider is configured,
+      so the automated review cannot run. Override to publish manually, or configure
+      an API key and use <em>Retry review</em>.
+    </div>
+    {% endif %}
   </div>
   {% endif %}
 
@@ -181,7 +189,7 @@
         <dd>
           {%- if sub.updated_at -%}
           <time datetime="{{ sub.updated_at.isoformat() }}">{{ sub.updated_at.strftime("%Y-%m-%d %H:%M:%S") }} UTC</time>
-          <span class="relative" data-rel-since="{{ sub.updated_at.isoformat() }}"
+          <span class="relative" data-rel-since="{{ sub.updated_at.strftime('%Y-%m-%dT%H:%M:%SZ') }}"
                 style="display:block; font-size:11px; color: var(--text-secondary, #9ca3af);">just now</span>
           {%- endif -%}
         </dd>
@@ -356,7 +364,7 @@
             {% if row.params.restored_from_version_no %}<span class="actor"> · from v{{ row.params.restored_from_version_no }}</span>{% endif %}
           {% endif %}
         </span>
-        <span class="relative" data-rel-since="{{ row.timestamp.isoformat() if row.timestamp else '' }}">just now</span>
+        <span class="relative" data-rel-since="{{ row.timestamp.strftime('%Y-%m-%dT%H:%M:%SZ') if row.timestamp else '' }}">just now</span>
       </li>
       {% endfor %}
     </ul>

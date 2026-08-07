@@ -13,30 +13,30 @@
   }
   .gp-search {
     padding: 8px 12px 8px 32px; min-width: 280px;
-    border: 1px solid var(--border, #e5e7eb); border-radius: 8px;
+    border: 1px solid var(--ds-border, #e4e7ee); border-radius: 8px;
     font-size: 13px;
     background: var(--ds-surface) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2'><circle cx='11' cy='11' r='8'/><path d='m21 21-4.35-4.35'/></svg>") no-repeat 10px center;
   }
 
 
   .gp-name {
-    font-weight: 500; color: var(--text-primary, #111827);
+    font-weight: 500; color: var(--ds-text-primary, #111827);
     text-decoration: none;
   }
   .gp-name:hover { color: var(--ds-primary, #4338ca); text-decoration: underline; }
   .gp-name-sub {
     display: block;
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
-    font-size: 11px; font-weight: 400; color: var(--text-secondary, #6b7280);
+    font-size: 11px; font-weight: 400; color: var(--ds-text-secondary, #6b7280);
     margin-top: 2px;
   }
   .gp-desc {
-    color: var(--text-secondary, #6b7280); font-size: 12px;
+    color: var(--ds-text-secondary, #6b7280); font-size: 12px;
     max-width: 380px;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .count-cell { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-secondary, #4b5563); font-weight: 500; }
-  .date-cell { color: var(--text-secondary, #6b7280); font-size: 12px; white-space: nowrap; }
+  .count-cell { text-align: right; font-variant-numeric: tabular-nums; color: var(--ds-text-secondary, #4b5563); font-weight: 500; }
+  .date-cell { color: var(--ds-text-secondary, #6b7280); font-size: 12px; white-space: nowrap; }
 
   .origin-chip {
     display: inline-block;
@@ -44,27 +44,27 @@
     font-size: 10px; font-weight: 600;
     text-transform: uppercase; letter-spacing: 0.4px;
   }
-  .origin-system     { background: #fef3c7; color: #92400e; }
-  .origin-custom     { background: #ede9fe; color: #6d28d9; }
-  .origin-google_sync { background: #dcfce7; color: #166534; }
+  .origin-system     { background: var(--ds-accent-warn-bg, #fef3c7); color: var(--ds-accent-warn-ink, #92400e); }
+  .origin-custom     { background: var(--ds-kind-agent-soft, #ede9fe); color: var(--ds-kind-agent, #6d28d9); }
+  .origin-google_sync { background: var(--ds-accent-success-bg, #dcfce7); color: var(--ds-accent-success-ink, #166534); }
 
   .gp-actions { display: flex; gap: 6px; justify-content: flex-end; }
   .icon-btn {
     padding: 5px 10px; border-radius: 6px; font-size: 12px;
-    border: 1px solid var(--border, #e5e7eb); background: var(--surface, #fff);
-    cursor: pointer; color: var(--text-primary, #111827);
+    border: 1px solid var(--ds-border, #e4e7ee); background: var(--ds-surface, #fff);
+    cursor: pointer; color: var(--ds-text-primary, #111827);
     text-decoration: none;
   }
-  .icon-btn:hover { background: var(--border-light, #f9fafb); }
-  .icon-btn.danger { color: #b91c1c; border-color: #fecaca; }
-  .icon-btn.danger:hover { background: #fef2f2; }
+  .icon-btn:hover { background: var(--ds-surface-dim, #f9fafb); }
+  .icon-btn.danger { color: var(--ds-accent-danger-ink, #b91c1c); border-color: var(--ds-accent-danger-bg, #fecaca); }
+  .icon-btn.danger:hover { background: var(--ds-accent-danger-bg, #fef2f2); }
   .icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
   .gp-loading, .gp-empty {
     padding: 40px 16px; text-align: center;
-    color: var(--text-secondary, #6b7280); font-size: 13px;
+    color: var(--ds-text-secondary, #6b7280); font-size: 13px;
   }
-  .gp-empty .big { font-size: 15px; font-weight: 600; color: var(--text-primary, #111827); margin-bottom: 4px; }
+  .gp-empty .big { font-size: 15px; font-weight: 600; color: var(--ds-text-primary, #111827); margin-bottom: 4px; }
 
   /* `.gp-btn` / `.gp-btn.primary` rules deleted — toolbar button
      renders via `ds.button(variant='primary')` carrying canonical
@@ -78,18 +78,18 @@
   }
   .modal-backdrop.is-open { display: flex; }
   .modal-card {
-    background: var(--surface, #fff); border-radius: 12px;
+    background: var(--ds-surface, #fff); border-radius: 12px;
     padding: 24px; width: 100%; max-width: 480px;
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
     max-height: 90vh; overflow-y: auto;
   }
   .modal-card h3 { margin: 0 0 6px; font-size: 17px; font-weight: 600; }
-  .modal-card p.sub { margin: 0 0 18px; font-size: 13px; color: var(--text-secondary, #6b7280); }
-  .modal-card label { display: block; font-size: 12px; font-weight: 500; color: var(--text-secondary, #6b7280); margin: 12px 0 6px; }
+  .modal-card p.sub { margin: 0 0 18px; font-size: 13px; color: var(--ds-text-secondary, #6b7280); }
+  .modal-card label { display: block; font-size: 12px; font-weight: 500; color: var(--ds-text-secondary, #6b7280); margin: 12px 0 6px; }
   .modal-card input[type="text"], .modal-card textarea {
-    width: 100%; padding: 9px 12px; border: 1px solid var(--border, #e5e7eb);
+    width: 100%; padding: 9px 12px; border: 1px solid var(--ds-border, #e4e7ee);
     border-radius: 8px; font-size: 13px; box-sizing: border-box;
-    background: var(--surface, #fff); color: var(--text-primary, #111827);
+    background: var(--ds-surface, #fff); color: var(--ds-text-primary, #111827);
     font-family: inherit;
   }
   .modal-card textarea { min-height: 60px; resize: vertical; }
@@ -107,8 +107,8 @@
     pointer-events: auto; max-width: 380px;
   }
   .toast.show { opacity: 1; transform: translateY(0); }
-  .toast.success { background: #047857; }
-  .toast.error { background: #b91c1c; }
+  .toast.success { background: var(--ds-accent-success-line, #047857); }
+  .toast.error { background: var(--ds-accent-danger-line, #b91c1c); }
 </style>
 {% endblock %}
 
@@ -274,7 +274,7 @@ function render() {
     const isGoogleManaged = !!g.is_google_managed;
     const isReadOnly = g.is_system || isGoogleManaged;
     const actions = isReadOnly
-      ? `<span style="color:#9ca3af;font-size:11px">read-only</span>`
+      ? `<span style="color:var(--ds-text-muted,#9ca3af);font-size:11px">read-only</span>`
       : `<button class="icon-btn" data-action="edit">Edit</button>
          <button class="icon-btn danger" data-action="delete">Delete</button>`;
     // Subtitle rules for the name cell:

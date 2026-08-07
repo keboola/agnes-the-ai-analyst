@@ -323,6 +323,74 @@
         "title": "AdminTokenItem",
         "type": "object"
       },
+      "AgentCreate": {
+        "properties": {
+          "greeting": {
+            "default": "",
+            "title": "Greeting",
+            "type": "string"
+          },
+          "instructions": {
+            "default": "",
+            "title": "Instructions",
+            "type": "string"
+          },
+          "knowledge": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Knowledge",
+            "type": "array"
+          },
+          "name": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Name",
+            "type": "string"
+          },
+          "plugins": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Plugins",
+            "type": "array"
+          },
+          "role": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Role",
+            "type": "string"
+          },
+          "status": {
+            "default": "draft",
+            "maxLength": 30,
+            "title": "Status",
+            "type": "string"
+          },
+          "surfaces": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "boolean"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Surfaces"
+          },
+          "tone": {
+            "default": "concise",
+            "maxLength": 50,
+            "title": "Tone",
+            "type": "string"
+          }
+        },
+        "title": "AgentCreate",
+        "type": "object"
+      },
       "AgentResponseRequest": {
         "properties": {
           "background": {
@@ -368,6 +436,125 @@
           "input"
         ],
         "title": "AgentResponseRequest",
+        "type": "object"
+      },
+      "AgentUpdate": {
+        "description": "All fields optional \u2014 a PATCH sends only what changed.",
+        "properties": {
+          "greeting": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Greeting"
+          },
+          "instructions": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instructions"
+          },
+          "knowledge": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Knowledge"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "plugins": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plugins"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "maxLength": 30,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "surfaces": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "boolean"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Surfaces"
+          },
+          "tone": {
+            "anyOf": [
+              {
+                "maxLength": 50,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tone"
+          }
+        },
+        "title": "AgentUpdate",
         "type": "object"
       },
       "AnalystInitialWorkspaceResponse": {
@@ -475,6 +662,19 @@
           "mode"
         ],
         "title": "AppliedRequest",
+        "type": "object"
+      },
+      "ArchiveSessionBody": {
+        "properties": {
+          "archived": {
+            "title": "Archived",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "archived"
+        ],
+        "title": "ArchiveSessionBody",
         "type": "object"
       },
       "BannerResponse": {
@@ -595,6 +795,40 @@
         "title": "Body_admin_contribute_skill_submit_admin_contribute_skill_post",
         "type": "object"
       },
+      "Body_chat_upload_api_chat_uploads_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/UploadKind"
+          },
+          "register_as_table": {
+            "default": false,
+            "title": "Register As Table",
+            "type": "boolean"
+          },
+          "table_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Table Name"
+          }
+        },
+        "required": [
+          "file",
+          "kind"
+        ],
+        "title": "Body_chat_upload_api_chat_uploads_post",
+        "type": "object"
+      },
       "Body_confirm_cli_auth_start_post": {
         "properties": {
           "port": {
@@ -615,6 +849,11 @@
       },
       "Body_create_entity_api_store_entities_post": {
         "properties": {
+          "access": {
+            "default": "everyone",
+            "title": "Access",
+            "type": "string"
+          },
           "category": {
             "anyOf": [
               {
@@ -1296,6 +1535,61 @@
           }
         },
         "title": "ChatSecretsBody",
+        "type": "object"
+      },
+      "ChatUploadResponse": {
+        "properties": {
+          "artefact_slug": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artefact Slug"
+          },
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "hint": {
+            "title": "Hint",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "table_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Table Name"
+          },
+          "workspace_path": {
+            "title": "Workspace Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "filename",
+          "workspace_path",
+          "size_bytes",
+          "kind",
+          "hint"
+        ],
+        "title": "ChatUploadResponse",
         "type": "object"
       },
       "ClaudeMdResponse": {
@@ -2090,6 +2384,15 @@
       "CreateFromMarkdownBody": {
         "description": "JSON contract for markdown-first publishing (studio Skill Builder /\nAgent Builder).",
         "properties": {
+          "access": {
+            "default": "everyone",
+            "enum": [
+              "private",
+              "everyone"
+            ],
+            "title": "Access",
+            "type": "string"
+          },
           "category": {
             "anyOf": [
               {
@@ -2117,9 +2420,25 @@
             "title": "Dry Run",
             "type": "boolean"
           },
+          "include_llm": {
+            "default": false,
+            "title": "Include Llm",
+            "type": "boolean"
+          },
           "name": {
             "title": "Name",
             "type": "string"
+          },
+          "precheck_verdict_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Precheck Verdict Token"
           },
           "skill_md": {
             "title": "Skill Md",
@@ -3135,6 +3454,21 @@
         "title": "DeployScriptRequest",
         "type": "object"
       },
+      "DisplayNameRequest": {
+        "properties": {
+          "name": {
+            "description": "New display name (max 120 chars).",
+            "maxLength": 120,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "DisplayNameRequest",
+        "type": "object"
+      },
       "DocEntry": {
         "description": "One doc file shipped alongside a Store entity. URL points at the\nserving endpoint (``/api/store/entities/<id>/docs/<filename>``).",
         "properties": {
@@ -3174,6 +3508,11 @@
             ],
             "title": "Lint"
           },
+          "llm_error": {
+            "default": false,
+            "title": "Llm Error",
+            "type": "boolean"
+          },
           "llm_findings": {
             "anyOf": [
               {
@@ -3185,6 +3524,17 @@
               }
             ],
             "title": "Llm Findings"
+          },
+          "llm_safe": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Llm Safe"
           },
           "would_publish": {
             "title": "Would Publish",
@@ -3888,6 +4238,11 @@
             "title": "Plugin Name",
             "type": "string"
           },
+          "publisher_kind": {
+            "default": "user",
+            "title": "Publisher Kind",
+            "type": "string"
+          },
           "relpath": {
             "title": "Relpath",
             "type": "string"
@@ -3932,6 +4287,11 @@
             },
             "title": "Use Cases",
             "type": "array"
+          },
+          "verification_state": {
+            "default": "none",
+            "title": "Verification State",
+            "type": "string"
           },
           "video_url": {
             "anyOf": [
@@ -4192,6 +4552,90 @@
           "suggested"
         ],
         "title": "IwtFilesResponse",
+        "type": "object"
+      },
+      "JourneyUpdateBody": {
+        "description": "Partial update \u2014 every field optional; only the ones present change.",
+        "properties": {
+          "catalog_discovered": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Catalog Discovered"
+          },
+          "explored_stack": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Explored Stack"
+          },
+          "first_asked": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Asked"
+          },
+          "onboarded": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Onboarded"
+          },
+          "stack_setup_done": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stack Setup Done"
+          },
+          "successful_answers": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Successful Answers"
+          },
+          "use_anywhere": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Use Anywhere"
+          }
+        },
+        "title": "JourneyUpdateBody",
         "type": "object"
       },
       "KnobEntry": {
@@ -4466,6 +4910,22 @@
             ],
             "title": "Photo Url"
           },
+          "publisher_kind": {
+            "default": "user",
+            "title": "Publisher Kind",
+            "type": "string"
+          },
+          "publisher_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publisher Name"
+          },
           "source": {
             "enum": [
               "curated",
@@ -4508,6 +4968,11 @@
               "plugin"
             ],
             "title": "Type",
+            "type": "string"
+          },
+          "verification_state": {
+            "default": "none",
+            "title": "Verification State",
             "type": "string"
           },
           "version": {
@@ -5057,6 +5522,20 @@
         "title": "MigrateRequest",
         "type": "object"
       },
+      "MoveFileBody": {
+        "properties": {
+          "target_collection_id": {
+            "minLength": 1,
+            "title": "Target Collection Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target_collection_id"
+        ],
+        "title": "MoveFileBody",
+        "type": "object"
+      },
       "MySecretBody": {
         "properties": {
           "value": {
@@ -5436,6 +5915,19 @@
         "title": "PersonalFlagRequest",
         "type": "object"
       },
+      "PinSessionBody": {
+        "properties": {
+          "pinned": {
+            "title": "Pinned",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "pinned"
+        ],
+        "title": "PinSessionBody",
+        "type": "object"
+      },
       "PluginDetailResponse": {
         "description": "Unified detail response for a plugin (curated *or* flea).\n\nFrontend-side switching is purely cosmetic \u2014 `source` controls the\nCurated/Flea pill, photo URL fallback path, and owner label.",
         "properties": {
@@ -5658,6 +6150,11 @@
             "title": "Plugin Name",
             "type": "string"
           },
+          "publisher_kind": {
+            "default": "user",
+            "title": "Publisher Kind",
+            "type": "string"
+          },
           "released_at": {
             "anyOf": [
               {
@@ -5752,6 +6249,11 @@
             },
             "title": "Use Cases",
             "type": "array"
+          },
+          "verification_state": {
+            "default": "none",
+            "title": "Verification State",
+            "type": "string"
           },
           "version": {
             "anyOf": [
@@ -6126,6 +6628,23 @@
           "content"
         ],
         "title": "PromptPutRequest",
+        "type": "object"
+      },
+      "PublisherUpdateRequest": {
+        "properties": {
+          "publisher_kind": {
+            "enum": [
+              "organization",
+              "user"
+            ],
+            "title": "Publisher Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "publisher_kind"
+        ],
+        "title": "PublisherUpdateRequest",
         "type": "object"
       },
       "PullConfirmRequest": {
@@ -6629,6 +7148,19 @@
         "title": "RememberBody",
         "type": "object"
       },
+      "RenameSessionBody": {
+        "properties": {
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "title": "RenameSessionBody",
+        "type": "object"
+      },
       "RescopeSurfaceResponse": {
         "properties": {
           "email": {
@@ -6938,6 +7470,20 @@
         "title": "SetScopeRequest",
         "type": "object"
       },
+      "SetSharesRequest": {
+        "properties": {
+          "group_ids": {
+            "description": "Desired end state: the groups this item should be shared with. Empty = private.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Group Ids",
+            "type": "array"
+          }
+        },
+        "title": "SetSharesRequest",
+        "type": "object"
+      },
       "SetupTokenItem": {
         "properties": {
           "created_at": {
@@ -6959,6 +7505,60 @@
           "expires_at"
         ],
         "title": "SetupTokenItem",
+        "type": "object"
+      },
+      "ShareStateResponse": {
+        "properties": {
+          "group_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Group Ids",
+            "type": "array"
+          },
+          "resource_id": {
+            "title": "Resource Id",
+            "type": "string"
+          },
+          "resource_type": {
+            "title": "Resource Type",
+            "type": "string"
+          },
+          "visibility": {
+            "description": "private | shared | workspace",
+            "title": "Visibility",
+            "type": "string"
+          }
+        },
+        "required": [
+          "resource_type",
+          "resource_id",
+          "visibility"
+        ],
+        "title": "ShareStateResponse",
+        "type": "object"
+      },
+      "ShareTargetResponse": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "is_everyone": {
+            "title": "Is Everyone",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "is_everyone"
+        ],
+        "title": "ShareTargetResponse",
         "type": "object"
       },
       "SkillEntry": {
@@ -7185,6 +7785,22 @@
             ],
             "title": "Photo Url"
           },
+          "publisher_kind": {
+            "default": "user",
+            "title": "Publisher Kind",
+            "type": "string"
+          },
+          "publisher_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publisher Name"
+          },
           "rating": {
             "anyOf": [
               {
@@ -7242,6 +7858,33 @@
               }
             ],
             "title": "Updated At"
+          },
+          "verification_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verification Note"
+          },
+          "verification_state": {
+            "default": "none",
+            "title": "Verification State",
+            "type": "string"
+          },
+          "verified_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verified At"
           },
           "version": {
             "title": "Version",
@@ -9091,6 +9734,15 @@
         "title": "UpdateUserRequest",
         "type": "object"
       },
+      "UploadKind": {
+        "enum": [
+          "data",
+          "image",
+          "document"
+        ],
+        "title": "UploadKind",
+        "type": "string"
+      },
       "UseCase": {
         "description": "One \"When to use it\" example from marketplace-metadata.json.\nCurator-authored: friendly title + 1-2-sentence description + the\nliteral prompt the user would paste into Claude Code.",
         "properties": {
@@ -9324,6 +9976,35 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "VerificationUpdateRequest": {
+        "properties": {
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "verification_state": {
+            "enum": [
+              "verified",
+              "changes_requested",
+              "none"
+            ],
+            "title": "Verification State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "verification_state"
+        ],
+        "title": "VerificationUpdateRequest",
         "type": "object"
       },
       "VerifyRequest": {
@@ -10681,6 +11362,56 @@
         ]
       }
     },
+    "/admin/data-packages": {
+      "get": {
+        "description": "Admin audit view \u2014 every Data Package + Memory Domain, regardless of\ngrant.\n\nThe Catalog reshape (follow-up to auto-membership) removed\n``browse_admin`` god-mode from the user-facing /catalog and\n/corporate-memory pages \u2014 both now show the same grant-scoped,\naddable-only view for every visitor. This page is where the old\n\"see everything\" audit affordance moved to: admins still need a full\ninventory (which packages/domains exist, how many tables they bundle,\nwhether an empty package needs table assignment) independent of their\nown group grants.",
+        "operationId": "admin_data_packages_admin_data_packages_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Data Packages",
+        "tags": [
+          "web"
+        ]
+      }
+    },
     "/admin/data-sources": {
       "get": {
         "description": "\"Add data source\" wizard (#755): paste a Keboola project's connection\nURL + storage token, validate, then browse buckets/tables and register\nthe ones you want \u2014 no SSH, no config-file edits. Also the home for\nper-project \"Set as default\" and \"Rotate token\" controls \u2014 the single\nplace to manage a Keboola connection end to end.\n\nDistinct from /admin/mcp-sources (MCP tool servers Agnes calls at\nruntime) and from /admin/datasource-credentials (GWS/BQ instance\nsecrets) \u2014 this page owns Keboola project connect/browse/register/\ndefault/rotate. Passes ``vault_key_configured`` so the template can\nrender the same blocking banner as /admin/datasource-credentials when\n``AGNES_VAULT_KEY`` is absent (the wizard can't store a secret without\nit).",
@@ -11696,6 +12427,56 @@
         ]
       }
     },
+    "/admin/store": {
+      "get": {
+        "description": "Moderation & Trust \u2014 one admin surface for entity verification,\nsubmission review, and marketplace curation.\n\nLists Store entities awaiting verification (``verification_state='requested'``)\nwith a direct link to each entity's detail page, where the Verify /\nRequest changes / Archive / Override actions live. The pre-publish\nsubmission queue and marketplace curation are surfaced as links (count +\njump-off), not rebuilt here. ``/admin/store`` is the natural parent of the\n``/admin/store/submissions`` review queue.",
+        "operationId": "admin_moderation_hub_page_admin_store_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Moderation Hub Page",
+        "tags": [
+          "web"
+        ]
+      }
+    },
     "/admin/store/lint": {
       "get": {
         "description": "Curator view of advisory skill-lint findings (#687).\n\nFindings are rendered server-side (grouped per entity); the page's JS only\ndrives the \"Audit now\" and per-row Dismiss mutations against the admin lint\nAPI. Dismissed findings are hidden unless ``?include_dismissed=true``.",
@@ -12526,6 +13307,7 @@
     },
     "/agents": {
       "get": {
+        "description": "Agents \u2014 build a focused assistant out of the caller's own stack.\n\nWork-in-progress surface (rail item carries a WIP badge). The builder's\ningredient lists are REAL and RBAC-scoped: knowledge sources are the data\npackages + memory domains resolved from the caller's stack (same\n``StackResolver`` reads as /stack), and capabilities hydrate client-side\nfrom ``/api/marketplace/items?tab=my`` (the caller's subscribed plugins).\nAgent definitions themselves persist in the browser for now \u2014 a server\nregistry is the next iteration, so the page states that plainly rather\nthan pretending drafts are shared.",
         "operationId": "agents_page_agents_get",
         "parameters": [
           {
@@ -15864,7 +16646,7 @@
         ]
       },
       "put": {
-        "description": "Update the ``requirement`` enum on an existing grant.\n\nv49 \u2014 Section 4.5 of the unified-stack design (soft downgrade): when\ntransitioning ``required \u2192 available`` we eagerly materialize a\n``user_stack_subscriptions`` row for every user currently in the\ngranted group, so the resource stays in their stack instead of\nsilently disappearing on the next refresh. ``marketplace_plugin``\ngrants fan out into ``user_plugin_optouts`` instead \u2014 that is the\nsubscription table ``resolve_user_marketplace`` reads.\n\nBoth writes route through the ``src.repositories`` factory so they hit\nthe active backend (Postgres when configured) \u2014 the old raw\n``INSERT ... SELECT`` on a DuckDB ``_get_db`` connection wrote the\nfrozen DuckDB system file on PG instances (#518), so the subscriptions\nnever materialized and the \"single transaction\" guarantee was already\nvoid across backends.\n\nGoing the other direction (``available \u2192 required``) is a no-op for\nsubscriptions \u2014 required is the always-in-stack tier and the\nStackResolver treats required ids as in_stack regardless of any\nsubscription row.",
+        "description": "Update the ``requirement`` enum on an existing grant.\n\nAuto-membership stack model: ``data_package``/``memory_domain`` grants no\nlonger need a soft-downgrade fan-out. Both ``required`` and ``available``\nare automatically in every granted user's stack (``StackResolver.stack``),\nso flipping ``required \u2192 available`` never drops the resource from\nanyone's stack \u2014 it only lifts the \"always downloaded locally\" guarantee\ndown to \"downloaded once the user subscribes\". No ``user_stack_\nsubscriptions`` row needs to be eagerly written to preserve visibility.\n\n``marketplace_plugin`` grants are the one remaining exception: plugin\nvisibility is resolved by ``resolve_user_marketplace`` off\n``user_plugin_optouts``, a separate (opt-out, not opt-in) mechanism\noutside the StackResolver's auto-membership \u2014 so a ``required \u2192\navailable`` downgrade there still fans out eagerly to keep every group\nmember's served set from silently shrinking.",
         "operationId": "update_grant_requirement_api_admin_grants__grant_id__put",
         "parameters": [
           {
@@ -26981,6 +27763,312 @@
         ]
       }
     },
+    "/api/agents": {
+      "get": {
+        "description": "The caller's agents plus any shared into a group they belong to.\n\nDeliberately NOT admin god-mode: an admin sees their own agent list here,\nnot every agent in the instance (that audit view is /admin/access).",
+        "operationId": "list_agents_api_agents_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Agents",
+        "tags": [
+          "agents"
+        ]
+      },
+      "post": {
+        "description": "Create an agent owned by (and private to) the caller.\n\nAn unnamed agent is legal \u2014 the builder creates the row first and the user\nnames it as they go, so a blank name must not 422 the whole flow.",
+        "operationId": "create_agent_api_agents_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Agent",
+        "tags": [
+          "agents"
+        ]
+      }
+    },
+    "/api/agents/{agent_id}": {
+      "delete": {
+        "description": "Soft-delete an agent the caller owns, and drop its grants.\n\nGrants are removed too, so a later agent can never inherit a dangling\ngrant through id reuse and /admin/access shows no orphan rows.\n\nThe seeded default agent is exempt: it is infrastructure every web chat\nsession is attributed to (``app/api/chat.py::_default_agent_id``), not a\nuser artifact, so deleting it would make the agent vanish from the Library\nand silently reappear on the next chat. `/api/v1/agents` refuses this for\nthe same reason (``agents_admin.py::delete_agent``).",
+        "operationId": "delete_agent_api_agents__agent_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Agent",
+        "tags": [
+          "agents"
+        ]
+      },
+      "get": {
+        "description": "One agent \u2014 owner, grantee, or admin.",
+        "operationId": "get_agent_api_agents__agent_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Agent",
+        "tags": [
+          "agents"
+        ]
+      },
+      "patch": {
+        "description": "Patch an agent the caller owns. Only supplied fields change.",
+        "operationId": "update_agent_api_agents__agent_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Agent",
+        "tags": [
+          "agents"
+        ]
+      }
+    },
     "/api/auth/exchange-setup-token": {
       "post": {
         "description": "Exchange a one-time setup token for a regular PAT.\n\nThis endpoint requires **no prior authentication** \u2014 the setup token\nembedded in the bundle IS the authentication credential.\n\nSecurity properties:\n- Token is matched by SHA-256 hash, never stored or logged in plaintext.\n- Single-use: atomically marked used on first consumption.\n- Short-lived: 24 h TTL enforced server-side regardless of client clock.\n- On success, the setup token is consumed and cannot be replayed.",
@@ -27405,6 +28493,121 @@
         ]
       }
     },
+    "/api/chat/journey": {
+      "get": {
+        "description": "Return the caller's own onboarding journey state (self-scoped \u2014\nthe RBAC gate is the chat-access resource; there is no cross-user\nread/write here since the repo call is always keyed off the caller's\nown ``user[\"id\"]``).",
+        "operationId": "get_journey_api_chat_journey_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Journey",
+        "tags": [
+          "chat"
+        ]
+      },
+      "put": {
+        "operationId": "update_journey_api_chat_journey_put",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JourneyUpdateBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Journey",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
     "/api/chat/sessions": {
       "get": {
         "operationId": "list_sessions_api_chat_sessions_get",
@@ -27576,6 +28779,79 @@
         ]
       }
     },
+    "/api/chat/sessions/{chat_id}/archived": {
+      "put": {
+        "description": "Archive or restore a conversation from the Chats page (/chats).\n\n``DELETE /sessions/{chat_id}`` has always been a soft delete (it flips\n``archived`` and kills the sandbox), but nothing listed archived rows, so\nthe state had no name in the UI and no way back. This is the explicit,\ntwo-directional route: ``{\"archived\": true}`` archives (killing the sandbox\nexactly as the DELETE path does \u2014 an archived conversation must not keep a\nsandbox warm), ``{\"archived\": false}`` restores.\n\nOwnership-gated like every sibling per-session route: 404, never 403, so the\nendpoint cannot be used to probe for other users' session ids. Idempotent in\nboth directions.",
+        "operationId": "set_session_archived_api_chat_sessions__chat_id__archived_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chat_id",
+            "required": true,
+            "schema": {
+              "title": "Chat Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArchiveSessionBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Session Archived",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
     "/api/chat/sessions/{chat_id}/messages": {
       "get": {
         "operationId": "list_messages_api_chat_sessions__chat_id__messages_get",
@@ -27654,6 +28930,137 @@
         ]
       }
     },
+    "/api/chat/sessions/{chat_id}/permanent": {
+      "delete": {
+        "description": "Permanently delete a conversation and its messages.\n\nThe counterpart to the reversible archive above: with Archive a named state\nthe Chats page can list and undo, Delete has to mean the row is gone. The\nplain ``DELETE /sessions/{chat_id}`` keeps its long-standing soft-archive\nbehavior \u2014 every existing caller (the chat page and rail row menus) is\nunchanged.\n\nSame ownership gate (404, never 403) and the same sandbox kill first: the\nrow is about to go, so a runner still holding it would be orphaned.",
+        "operationId": "delete_session_permanently_api_chat_sessions__chat_id__permanent_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chat_id",
+            "required": true,
+            "schema": {
+              "title": "Chat Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Session Permanently",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/api/chat/sessions/{chat_id}/pin": {
+      "put": {
+        "description": "Pin or unpin a conversation in the caller's history panel.\n\nOwnership-gated the same way as archive/messages: 404 (never 403) when the\nsession doesn't exist or belongs to someone else, so the endpoint can't be\nused to probe for other users' session ids. Idempotent \u2014 pinning an already\npinned session just re-stamps ``pinned_at``, which re-orders it to the front\nof the Pinned group.",
+        "operationId": "set_session_pinned_api_chat_sessions__chat_id__pin_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chat_id",
+            "required": true,
+            "schema": {
+              "title": "Chat Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PinSessionBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Session Pinned",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
     "/api/chat/sessions/{chat_id}/ticket": {
       "post": {
         "description": "Mint a fresh WS ticket for an EXISTING session.\n\nPOST /api/chat/sessions creates a new session every time. When the user\nclicks an old conversation in the sidebar after their WS dropped, the\nfrontend needs a way to re-attach to the SAME chat_id (so history\ncontext continues, message threading is preserved) rather than start\na new one. This endpoint is that path: 404 if the session doesn't\nexist or belongs to someone else, otherwise the same ticket+url shape\nthat ``create_session`` returns.",
@@ -27717,6 +29124,79 @@
         ]
       }
     },
+    "/api/chat/sessions/{chat_id}/title": {
+      "put": {
+        "description": "Rename a conversation from the history panel's row menu.\n\n``set_title`` already existed for the Haiku auto-title path; this is the\nuser-driven route to the same column. Ownership-gated like the sibling\nper-session routes (404, never 403).\n\nThe title is stripped and length-capped here rather than in the repo: the\nauto-title path is a trusted internal caller, this one is user input. An\nall-whitespace title is a 400 rather than a silent no-op \u2014 the row would\notherwise render as \"Untitled chat\" with no explanation.",
+        "operationId": "rename_session_api_chat_sessions__chat_id__title_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "chat_id",
+            "required": true,
+            "schema": {
+              "title": "Chat Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameSessionBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rename Session",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
     "/api/chat/skills": {
       "get": {
         "description": "Server-normalized skills + commands catalog for the composer's slash menu.\n\n``{\"skills\": [{name, description, source}], \"commands\": [{name, description}]}``.\n\nTwo sources are merged server-side (see ``app.chat.skills_catalog`` for the\nfull rationale): skills shipped in the bundled chat workspace template\n(``source=\"bundled\"``) and the caller's RBAC-filtered marketplace/store\nplugin skills (``source=\"marketplace\"``) \u2014 the same set\n``app/chat/runner.py``'s ``_bootstrap_marketplace`` installs into the live\nsandbox. **Shadowing**: when a skill name is present in both sources, the\nmarketplace entry wins (it is the more user-specific grant). Either source\nfailing to list degrades non-fatally \u2014 a warning is logged and the other\nsource's skills still come back.\n\n``commands`` is currently always empty: neither ``app/chat/runner.py`` nor\nthe bundled workspace template recognize any slash command today (checked,\nnot assumed \u2014 see ``list_recognized_commands``'s docstring). Nothing is\ninvented ahead of an actual implementation.",
@@ -27766,6 +29246,72 @@
           }
         },
         "summary": "List Skills",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/api/chat/uploads": {
+      "post": {
+        "description": "Upload a file into your chat workspace.\n\nThe file lands under ``uploads/`` in your per-user workspace so it is\navailable in your next chat sandbox session (synced on spawn).\n\nArgs (multipart/form-data):\n    file: The file to upload.\n    kind: One of ``data``, ``image``, ``document``.\n    register_as_table: When ``true`` (data files only), register the file\n        as a workspace-local queryable table so ``agnes query`` can reach\n        it in-session.  Does NOT mutate the server admin table_registry.\n    table_name: Optional name for the registered table.  Defaults to the\n        filename stem (sanitized).\n\nReturns:\n    workspace_path: Workspace-relative path of the uploaded file.\n    filename: Sanitized filename on disk.\n    size_bytes: Number of bytes written.\n    kind: Echoed kind.\n    table_name: Name of the registered table (null when not registered).\n    hint: Next-step hint pointing to ``agnes query`` or the chat sandbox.",
+        "operationId": "chat_upload_api_chat_uploads_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_chat_upload_api_chat_uploads_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatUploadResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Chat Upload",
         "tags": [
           "chat"
         ]
@@ -28150,7 +29696,7 @@
         ]
       },
       "post": {
-        "description": "Create a new file corpus (admin only).\n\nReturns the created collection object (id, slug, name, \u2026).\n``slug`` is auto-generated from ``name`` when omitted, and an explicit\n``slug`` is normalised to a URL-safe form (``[a-z0-9-]``) so it always\nresolves via ``/library/{slug}``; a collision on the unique slug index\nreturns **409**.",
+        "description": "Create a new file corpus (any authenticated user).\n\nThe corpus is owned by the creator (``created_by``) and is private to\nthem \u2014 reachable via ownership without a ``resource_grants`` row (see\n``can_access_collection``). Admins may additionally grant a corpus to\ngroups to share it.\n\nReturns the created collection object (id, slug, name, \u2026).\n``slug`` is auto-generated from ``name`` when omitted, and an explicit\n``slug`` is normalised to a URL-safe form (``[a-z0-9-]``) so it always\nresolves via ``/library/{slug}``; a collision on the unique slug index\nreturns **409**.",
         "operationId": "create_collection_api_collections_post",
         "parameters": [
           {
@@ -28303,7 +29849,7 @@
     },
     "/api/collections/{collection_id}": {
       "delete": {
-        "description": "Soft-delete a collection (admin only).\n\nSets ``deleted_at``; the collection becomes invisible on GET list and\nreturns 404 on entity-scoped reads. Derived table_registry rows, parquets,\nand extract.duckdb views are purged synchronously (they are regenerable from\nthe uploaded files; soft-delete of the collection is treated as hard-delete\nfor the derived rows).",
+        "description": "Soft-delete a collection (owner or admin).\n\nThe creator can delete their own upload; admins can delete any. Sets\n``deleted_at``; the collection becomes invisible on GET list and\nreturns 404 on entity-scoped reads. Derived table_registry rows, parquets,\nand extract.duckdb views are purged synchronously (they are regenerable from\nthe uploaded files; soft-delete of the collection is treated as hard-delete\nfor the derived rows).",
         "operationId": "delete_collection_api_collections__collection_id__delete",
         "parameters": [
           {
@@ -28616,6 +30162,232 @@
           }
         },
         "summary": "Delete File",
+        "tags": [
+          "collections"
+        ]
+      }
+    },
+    "/api/collections/{collection_id}/files/{file_id}/move": {
+      "post": {
+        "description": "Move a file into another collection \u2014 the Library's drag-and-drop.\n\nGated on BOTH ends: the path dependency proves access to the source, and\nthe target is re-checked here (otherwise a caller could push a file into\nsomeone else's collection).\n\nWhen the source collection is left empty it is soft-deleted: a single-file\nartefact IS its file in the Library, so dragging that file into a folder\nmust not strand an empty husk in the listing.",
+        "operationId": "move_file_api_collections__collection_id__files__file_id__move_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "collection_id",
+            "required": true,
+            "schema": {
+              "title": "Collection Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "title": "File Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MoveFileBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Move File",
+        "tags": [
+          "collections"
+        ]
+      }
+    },
+    "/api/collections/{collection_id}/files/{file_id}/preview": {
+      "get": {
+        "description": "What to show for this file, and how \u2014 the modal's single fetch.\n\nReturns a `kind` the client renders directly:\n\n* ``image`` / ``pdf`` \u2014 fetch ``raw_url`` and let the browser draw it.\n* ``text`` \u2014 ``text`` holds the preview (source for textual uploads, the\n  ingested text for formats whose bytes aren't readable), ``truncated``\n  says a glance is all this is.\n* ``none`` \u2014 nothing to show yet; ``reason`` says why, in the words the\n  modal shows the caller.\n\nDeliberately one endpoint for every format: the client should not have to\nknow which extensions are streamable, which are text and which are only\npreviewable once ingestion has run.",
+        "operationId": "preview_file_api_collections__collection_id__files__file_id__preview_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "collection_id",
+            "required": true,
+            "schema": {
+              "title": "Collection Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "title": "File Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview File",
+        "tags": [
+          "collections"
+        ]
+      }
+    },
+    "/api/collections/{collection_id}/files/{file_id}/raw": {
+      "get": {
+        "description": "Stream a browser-renderable file inline (images + PDF only).\n\nServes ONLY the closed ``_PREVIEW_INLINE_MEDIA`` set, with the media type\ntaken from that map rather than from anything the uploader controls, plus\n``nosniff`` so a mislabelled body can't be re-interpreted as HTML. Any\nother extension is 415 with a pointer at the text preview \u2014 this endpoint\nis a viewer, not a download route.",
+        "operationId": "raw_file_api_collections__collection_id__files__file_id__raw_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "collection_id",
+            "required": true,
+            "schema": {
+              "title": "Collection Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "title": "File Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Raw File",
         "tags": [
           "collections"
         ]
@@ -30913,7 +32685,7 @@
     },
     "/api/knowledge/search": {
       "get": {
-        "description": "One query across documents, the knowledge base, and the table catalog.\n\nResults are typed (``chunk | knowledge | table``); table hits carry a\npivot hint (query via SQL) instead of rows. Everything is filtered to the\ncaller's grants, fail-closed per source.\n\n``retrieval`` (``hybrid | lexical_only``) labels the chunk engine's mode:\n``lexical_only`` means the embeddings extra is absent and document chunks\nwere ranked without semantic scoring (#898). Knowledge and table hits are\nlexical by design and unaffected.",
+        "description": "One query across documents, the knowledge base, and the table catalog.\n\nResults are typed (``chunk | knowledge | table | metric | glossary``); table hits carry a\npivot hint (query via SQL) instead of rows. Everything is filtered to the\ncaller's grants, fail-closed per source.\n\n``retrieval`` (``hybrid | lexical_only``) labels the chunk engine's mode:\n``lexical_only`` means the embeddings extra is absent and document chunks\nwere ranked without semantic scoring (#898). Knowledge and table hits are\nlexical by design and unaffected.",
         "operationId": "knowledge_search_api_knowledge_search_get",
         "parameters": [
           {
@@ -30991,7 +32763,7 @@
     },
     "/api/marketplace/categories": {
       "get": {
-        "description": "Per-tab category list with non-zero counts.\n\nSource of categories: union of ``STORE_CATEGORIES`` and any non-empty\n``marketplace_plugins.category`` values in the caller's RBAC scope.\nCategories with zero matching items are omitted (the frontend hides\nthem this way).",
+        "description": "Per-tab category list with non-zero counts.\n\nSource of categories: union of ``STORE_CATEGORIES`` and any non-empty\n``marketplace_plugins.category`` values in the caller's RBAC scope.\nCategories with zero matching items are omitted (the frontend hides\nthem this way).\n\n``browse`` (v104, the unified shelf) sums BOTH sources so the category rail\nannotates the same result set the grid renders.",
         "operationId": "list_categories_api_marketplace_categories_get",
         "parameters": [
           {
@@ -31001,6 +32773,7 @@
             "schema": {
               "default": "curated",
               "enum": [
+                "browse",
                 "curated",
                 "flea",
                 "my"
@@ -31925,12 +33698,54 @@
             "schema": {
               "default": "curated",
               "enum": [
+                "browse",
                 "curated",
                 "flea",
                 "my"
               ],
               "title": "Tab",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "publisher",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "organization",
+                    "me",
+                    "other_users"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Publisher"
+            }
+          },
+          {
+            "in": "query",
+            "name": "verification",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "verified",
+                    "unverified"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Verification"
             }
           },
           {
@@ -33563,6 +35378,70 @@
         "summary": "Disconnect Oauth",
         "tags": [
           "mcp-oauth-connect"
+        ]
+      }
+    },
+    "/api/me/display-name": {
+      "patch": {
+        "description": "Update the calling user's display name.\n\nAuth: any authenticated user; the update is scoped to their own row.\nEmail stays unchanged \u2014 it is the identity key from the auth provider\nand may only change through the provider's own flow.\n\nGoogle Workspace sync only sets ``name`` at account *creation* (first\nsign-in), not on subsequent logins or group-sync runs, so a manually-\nset name is never overwritten by the sync process.\n\nReturns ``{\"status\": \"ok\", \"name\": \"<new name>\"}`` on success.",
+        "operationId": "patch_display_name_api_me_display_name_patch",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DisplayNameRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch Display Name",
+        "tags": [
+          "me"
         ]
       }
     },
@@ -37769,6 +39648,222 @@
         ]
       }
     },
+    "/api/sharing/groups": {
+      "get": {
+        "description": "Groups the caller may share into \u2014 their own memberships + Everyone.\n\nDrives the Library's Share dialog. An admin sees every group.",
+        "operationId": "list_share_targets_api_sharing_groups_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ShareTargetResponse"
+                  },
+                  "title": "Response List Share Targets Api Sharing Groups Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Share Targets",
+        "tags": [
+          "sharing"
+        ]
+      }
+    },
+    "/api/sharing/{resource_type}/{resource_id}": {
+      "get": {
+        "description": "Current sharing state of one Library item.",
+        "operationId": "get_share_state_api_sharing__resource_type___resource_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "resource_type",
+            "required": true,
+            "schema": {
+              "title": "Resource Type",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "resource_id",
+            "required": true,
+            "schema": {
+              "title": "Resource Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShareStateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Share State",
+        "tags": [
+          "sharing"
+        ]
+      },
+      "put": {
+        "description": "Set which groups a Library item is shared with (idempotent).\n\n``group_ids: []`` makes the item private again. Grants to groups outside\nthe caller's shareable set are preserved \u2014 see ``set_shares``.",
+        "operationId": "put_share_state_api_sharing__resource_type___resource_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "resource_type",
+            "required": true,
+            "schema": {
+              "title": "Resource Type",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "resource_id",
+            "required": true,
+            "schema": {
+              "title": "Resource Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetSharesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShareStateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Share State",
+        "tags": [
+          "sharing"
+        ]
+      }
+    },
     "/api/slack/bind": {
       "post": {
         "operationId": "bind_slack_api_slack_bind_post",
@@ -37909,7 +40004,7 @@
     },
     "/api/stack": {
       "get": {
-        "description": "Return the user's effective stack for the given resource type.\n\nEffective stack = required \u222a (subscribed \u2229 available). Required entries\nalways count as in_stack; available entries only if the user has a\nsubscription row.",
+        "description": "Return the user's effective stack for the given resource type.\n\nAuto-membership: effective stack = required \u222a available \u2014 every grant on\nthe caller's groups, no subscription needed. Every item is\n``in_stack: true``; ``materialized`` additionally flags whether it's ALSO\nkept as a local copy (`agnes pull` downloads it) \u2014 always true for\nrequired, true for available only once subscribed.",
         "operationId": "list_stack_api_stack_get",
         "parameters": [
           {
@@ -37970,9 +40065,182 @@
         ]
       }
     },
+    "/api/stack/artefacts/candidates": {
+      "get": {
+        "description": "List every artefact eligible for the \"Add artefacts to Stack\" picker:\ncollections accessible to the caller (owned, or shared with them/their\nteam, or workspace-published) that are NOT already in their Stack.\n\n``total_accessible`` counts every accessible artefact regardless of\nStack membership, distinguishing \"no artefacts exist at all\" from \"all\naccessible artefacts are already in your Stack\" for the picker's empty\nstates. Small dataset per caller in practice (mirrors /artefacts, which\nalso fetches everything server-side) \u2014 the caller's search/visibility\nfilter runs client-side over this list, no server-side ``q`` param.",
+        "operationId": "stack_artefact_candidates_api_stack_artefacts_candidates_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stack Artefact Candidates",
+        "tags": [
+          "stack"
+        ]
+      }
+    },
+    "/api/stack/artefacts/{corpus_id}": {
+      "delete": {
+        "description": "Remove an artefact from the caller's Stack \u2014 drops agent access only.\n\nThe artefact itself, its files, ownership and sharing are untouched;\nthis only deletes the ``user_stack_subscriptions`` membership row. No\n\"required\" concept exists for artefacts, so there is no 400 case (unlike\nthe data_package/memory_domain unsubscribe endpoint) \u2014 always 204.",
+        "operationId": "remove_artefact_from_stack_api_stack_artefacts__corpus_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove Artefact From Stack",
+        "tags": [
+          "stack"
+        ]
+      },
+      "post": {
+        "description": "Add an artefact (a ``file_corpora`` collection) to the caller's Stack\nso the default agent can use it. 404 if the collection doesn't exist\n(or is soft-deleted); 403 if the caller cannot access it (not owned, not\nshared with one of their groups, not workspace-published). Idempotent \u2014\nadding an already-in-stack artefact just re-confirms membership.\n\nReturns the same catalog-card shape My Stack renders (``card``), so the\npicker/Artefacts-page JS can insert the new row live without a reload.",
+        "operationId": "add_artefact_to_stack_api_stack_artefacts__corpus_id__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "corpus_id",
+            "required": true,
+            "schema": {
+              "title": "Corpus Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Artefact To Stack",
+        "tags": [
+          "stack"
+        ]
+      }
+    },
     "/api/stack/browse": {
       "get": {
-        "description": "List every resource of ``type`` the caller could add to their stack.\n\nUnlike ``GET /api/stack`` (effective stack only), this returns the full\nRBAC-granted candidate set \u2014 required + available \u2014 each annotated with\nan ``in_stack`` flag so an analyst's Claude can tell what is already\nsubscribed and what is still available to add. This is the\n\"what could I add\" discovery surface (issue #621).\n\nScoped per-user by ``StackResolver.browse`` (group grants only), so the\nonly authorization gate is authentication \u2014 no extra RBAC dependency.",
+        "description": "List every resource of ``type`` the caller could see (RBAC-granted).\n\nAuto-membership means this is now equivalent in scope to ``GET\n/api/stack`` (required + available, no separate opt-in tier) \u2014 it's kept\nas a discovery surface so callers who want the full candidate set (issue\n#621) don't have to reason about the difference. Each item carries\n``in_stack: true`` and a ``materialized`` flag so an analyst's Claude can\ntell what is already downloaded locally vs. only server-side queryable.\n\nScoped per-user by ``StackResolver.browse`` (group grants only), so the\nonly authorization gate is authentication \u2014 no extra RBAC dependency.",
         "operationId": "browse_stack_api_stack_browse_get",
         "parameters": [
           {
@@ -38035,7 +40303,7 @@
     },
     "/api/stack/subscribe": {
       "post": {
-        "description": "Opt in to an ``available`` grant. Refuses to subscribe if the resource\nis required (it's already in the stack \u2014 clients shouldn't bother).",
+        "description": "Download a local copy of an ``available`` resource already in the\nstack. Refuses to subscribe if the resource is required (it's always\ndownloaded automatically \u2014 clients shouldn't bother).",
         "operationId": "subscribe_api_stack_subscribe_post",
         "parameters": [
           {
@@ -38099,7 +40367,7 @@
     },
     "/api/stack/subscription/{resource_type}/{resource_id}": {
       "delete": {
-        "description": "Opt out of an ``available`` grant. Returns 400 ``cannot_remove_required``\nwhen the resource is required for any of the user's groups.\n\nReturns 204 No Content on success \u2014 DELETE idempotency convention\nenforced by the API design rules test. Callers should treat 204 as\n\"removed\", 400 + ``cannot_remove_required`` as \"still subscribed\nbecause Required tier blocks opt-out\".",
+        "description": "Remove the local copy of an ``available`` resource \u2014 the resource\nstays in the stack (still queryable server-side), only the download is\ndropped. Returns 400 ``cannot_remove_required`` when the resource is\nrequired for any of the user's groups (required is always downloaded,\nno opt-out).\n\nReturns 204 No Content on success \u2014 DELETE idempotency convention\nenforced by the API design rules test. Callers should treat 204 as\n\"local copy removed\", 400 + ``cannot_remove_required`` as \"still\ndownloaded because Required tier blocks opt-out\".",
         "operationId": "unsubscribe_api_stack_subscription__resource_type___resource_id__delete",
         "parameters": [
           {
@@ -38435,6 +40703,42 @@
                 }
               ],
               "title": "Owner"
+            }
+          },
+          {
+            "description": "Publisher facet: 'organization' | 'me' | 'other_users'. 'me'/'other_users' are a per-request split of user-published items against the caller.",
+            "in": "query",
+            "name": "publisher",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Publisher facet: 'organization' | 'me' | 'other_users'. 'me'/'other_users' are a per-request split of user-published items against the caller.",
+              "title": "Publisher"
+            }
+          },
+          {
+            "description": "Verification facet: 'verified' | 'unverified'. 'unverified' is the union of the non-positive states \u2014 a filter value only, never a label rendered on a card.",
+            "in": "query",
+            "name": "verification",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Verification facet: 'verified' | 'unverified'. 'unverified' is the union of the non-positive states \u2014 a filter value only, never a label rendered on a card.",
+              "title": "Verification"
             }
           },
           {
@@ -39267,6 +41571,81 @@
         ]
       }
     },
+    "/api/store/entities/{entity_id}/publisher": {
+      "put": {
+        "description": "Publish an entity as the organization, or hand it back to its author.\n\nAdmin-only, and deliberately an explicit action rather than something\nderived from the owner's Admin-group membership: membership is mutable and\nre-synced from the identity provider, so a derived value would silently\nreclassify already-published skills when an author changes groups.",
+        "operationId": "set_entity_publisher_api_store_entities__entity_id__publisher_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "schema": {
+              "title": "Entity Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublisherUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoreEntityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Entity Publisher",
+        "tags": [
+          "store"
+        ]
+      }
+    },
     "/api/store/entities/{entity_id}/rate": {
       "post": {
         "description": "Cast / change / clear the caller's thumbs up/down vote on an entity.\n\n``vote``: ``1`` = up, ``-1`` = down, ``0`` = clear the caller's vote.\nOne vote per (entity, user): re-voting replaces the prior value in place.\nReturns the updated ``{up, down, my_vote}`` aggregate.",
@@ -39400,6 +41779,146 @@
           }
         },
         "summary": "Get Entity Status",
+        "tags": [
+          "store"
+        ]
+      }
+    },
+    "/api/store/entities/{entity_id}/verification": {
+      "put": {
+        "description": "Admin verdict: Verify \u00b7 Request changes \u00b7 Remove verification.\n\nReturns 409 on an organization-published entity \u2014 it already carries the\nstronger claim, so a checkmark on top would invent a fourth trust tier.",
+        "operationId": "set_entity_verification_api_store_entities__entity_id__verification_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "schema": {
+              "title": "Entity Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerificationUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoreEntityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Entity Verification",
+        "tags": [
+          "store"
+        ]
+      }
+    },
+    "/api/store/entities/{entity_id}/verification/request": {
+      "post": {
+        "description": "Author asks the org to look at their shared item.\n\nOnly the owner may ask, and only for something other people can actually\nsee: a private item needs no verification because nobody else can discover\nit. Idempotent \u2014 asking twice leaves the state at 'requested'.",
+        "operationId": "request_entity_verification_api_store_entities__entity_id__verification_request_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "entity_id",
+            "required": true,
+            "schema": {
+              "title": "Entity Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoreEntityResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Request Entity Verification",
         "tags": [
           "store"
         ]
@@ -45220,6 +47739,56 @@
         ]
       }
     },
+    "/chats": {
+      "get": {
+        "description": "Chats \u2014 the caller's conversations, in one manageable list.\n\nThe rail carries New chat, the pinned shelf and a handful of recent\nconversations; past that a 240px column cannot answer \"where is the analysis\nI ran three weeks ago\" or \"clear out everything I started and abandoned\".\nThis page is that surface, and it deliberately reuses the Library's\nstructure \u2014 prominent search in the header, one filter/sort dock, scannable\nrows \u2014 so the two inventories read as the same product.\n\nSame gate as /chat: chat has to be enabled AND the caller must hold the chat\ngrant; both failures bounce home rather than 403, matching the chat page (the\nrail hides the link for them too, so this guards a direct URL hit).\n\nRendering is server-side; search, the four segments (All / Pinned / Shared /\nArchived), the Agent + Source facets, sort, the table \u21c4 grid switch, the\nrow actions and the bulk bar are all client-side over those rows\n(static/js/chats_page.js).",
+        "operationId": "chats_page_chats_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Chats Page",
+        "tags": [
+          "web"
+        ]
+      }
+    },
     "/cli/auth/exchange": {
       "post": {
         "description": "Trade a single-use code for a real Personal Access Token.\n\nNo session required \u2014 the code itself is the bearer of authority, and it\nwas minted only after an authenticated browser confirmation.",
@@ -45874,32 +48443,10 @@
         ]
       }
     },
-    "/install": {
+    "/how-it-works": {
       "get": {
-        "description": "Backwards-compat redirect: /install \u2192 /setup (302).\n\nUsing 302 (temporary) rather than 301 (permanent) so browsers/proxies\ndon't cache indefinitely \u2014 if the path ever changes again, cached 301s\nrequire manual cache clearing to recover.",
-        "operationId": "install_redirect_install_get",
-        "responses": {
-          "200": {
-            "content": {
-              "text/html": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Install Redirect",
-        "tags": [
-          "web"
-        ]
-      }
-    },
-    "/library": {
-      "get": {
-        "description": "Library \u2014 the caller's accessible file Collections (bring-your-files).",
-        "operationId": "library_library_get",
+        "description": "The single orientation page: what {brand} is, what it knows for you,\nwhere you can use it, how to connect each surface, and where your data\ngoes \u2014 one scroll with a sticky table of contents.\n\nConsolidates what used to be split across /home's \"Four places, one\nworkspace\" + first-session narrative and the standalone AI Connector\npage. The connector content is not summarized here, it LIVES here\n(``#connect`` / ``#cli`` / ``#reference``), so there is exactly one\nsource of truth for \"how do I connect\" \u2014 the two pages had already\ndrifted (\"four places\" vs. six tool tabs). ``#connect`` is one section\nwith two large tabs, the MCP connector and the CLI; ``#cli`` is the\nanchor of the second tab, which the page's script opens on arrival.\n``/me/ai-connector`` and its legacy aliases redirect to ``#connect``.\n\nAny authenticated user; nothing on the page is admin-gated.",
+        "operationId": "how_it_works_page_how_it_works_get",
         "parameters": [
           {
             "in": "header",
@@ -45940,7 +48487,79 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Library",
+        "summary": "How It Works Page",
+        "tags": [
+          "web"
+        ]
+      }
+    },
+    "/install": {
+      "get": {
+        "description": "Backwards-compat redirect: /install \u2192 /setup (302).\n\nUsing 302 (temporary) rather than 301 (permanent) so browsers/proxies\ndon't cache indefinitely \u2014 if the path ever changes again, cached 301s\nrequire manual cache clearing to recover.",
+        "operationId": "install_redirect_install_get",
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Install Redirect",
+        "tags": [
+          "web"
+        ]
+      }
+    },
+    "/library": {
+      "get": {
+        "description": "Library \u2014 everything the caller has: artefacts, skills, and agents.\n\nThis is the renamed and widened former ``/artefacts`` surface. It answers\n\"what do I have?\" across every kind Agnes governs \u2014 the caller's own things\nplus everything shared with them:\n\n  - **Artefacts** \u2014 ``file_corpora`` uploads: images, documents, data\n    files, and multi-file collections, whether *uploaded* by a person or\n    *generated* by an agent (the Source facet).\n  - **Skills** \u2014 the caller's own store entities of type ``skill``, i.e.\n    what the Skill builder (/skills) publishes.\n  - **Granted resources** \u2014 governed **data packages**, **memory\n    domains**, **recipes** and curated **marketplace plugins** granted to\n    one of the caller's groups, plus the community-store items they have\n    **installed**. These are not the caller's to re-share, so they carry no\n    Share action; the grant belongs to an admin.\n\nAgents are deliberately NOT here \u2014 they have their own home at ``/agents``\n(they are still real server-side rows in the v103 ``agents`` registry, and\n``/api/agents`` reads honour agent grants; the Library just isn't their\nlisting surface).\n\nScope is grant-aware: items you OWN plus anything shared into a group you\nbelong to, tagged ``mine`` / ``shared_with_me`` / ``shared_by_me`` so the\ntoolbar can slice by ownership. Deliberately NOT admin god-mode \u2014 an admin\nstill sees their own Library, not every item in the instance (the audit\nview is /admin/access).\n\nEvery row carries its real visibility (Private / Shared / Workspace) and,\nfor the grant-backed kinds, a Share action writing through\n``PUT /api/sharing/{resource_type}/{resource_id}``. Skills are the\nexception: an approved store entity is already readable by every\nauthenticated user, so the row reports that state rather than offering a\ngroup grant nothing would read.\n\nRendering is server-side; the toolbar (search, ownership segments, Type +\nSource facets, sort, and the table \u21c4 grid switch) is client-side over\nthose rows.\n\nTOPNAV keeps the pre-redesign page: the unified Library above is part of\nthe rail redesign, and a default instance's /library must keep rendering\nthe legacy \"Your collections\" page byte-for-byte (the /catalog pattern \u2014\nclassic template on topnav, redesigned one under rail; guarded by\ntests/test_ui_layout_theme.py::TestDefaultContentParity). The legacy\nbranch below is main's pre-merge handler verbatim.",
+        "operationId": "library_page_library_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Library Page",
         "tags": [
           "web"
         ]
@@ -46000,6 +48619,74 @@
           }
         },
         "summary": "Library Detail",
+        "tags": [
+          "web"
+        ]
+      }
+    },
+    "/library/{slug}/f/{file_id}": {
+      "get": {
+        "description": "One file inside a collection \u2014 its own detail page.\n\nA single-file artefact IS its collection, so it keeps using\n``/library/{slug}``; this route serves the files *inside* a folder, which\npreviously had no page of their own. Reachable by anyone who can reach the\nparent collection OR who holds a grant on the file itself (per-file\nsharing), so a file shared out of a folder is actually openable.\n\n404 for missing AND for no-access, matching the collection contract, so the\nURL space can't be probed.",
+        "operationId": "library_file_detail_library__slug__f__file_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "title": "File Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Library File Detail",
         "tags": [
           "web"
         ]
@@ -46527,6 +49214,22 @@
             "schema": {
               "title": "Entity Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From"
             }
           },
           {
@@ -47066,26 +49769,8 @@
     },
     "/me/ai-connector": {
       "get": {
-        "description": "User-facing AI Connector page: OAuth connector URL, plugin packages, and available tools.",
-        "operationId": "me_cowork_page_me_ai_connector_get",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          }
-        ],
+        "description": "Legacy redirects \u2014 the standalone AI Connector page and its two older\naliases now land on the consolidated page's connect section.\n\n302, not 301: a permanent redirect is cached by the browser forever, so\nit would be very hard to walk back if the consolidation is revisited.\nPromote to 301 after a release of confidence (the same ladder /me/mcp\nand /me/cowork went through before absorbing into this handler).",
+        "operationId": "me_mcp_redirect_me_ai_connector_get",
         "responses": {
           "200": {
             "content": {
@@ -47096,19 +49781,9 @@
               }
             },
             "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
           }
         },
-        "summary": "Me Cowork Page",
+        "summary": "Me Mcp Redirect",
         "tags": [
           "web"
         ]
@@ -47166,7 +49841,7 @@
     },
     "/me/cowork": {
       "get": {
-        "description": "Legacy redirects \u2014 /me/mcp and /me/cowork \u2192 /me/ai-connector.",
+        "description": "Legacy redirects \u2014 the standalone AI Connector page and its two older\naliases now land on the consolidated page's connect section.\n\n302, not 301: a permanent redirect is cached by the browser forever, so\nit would be very hard to walk back if the consolidation is revisited.\nPromote to 301 after a release of confidence (the same ladder /me/mcp\nand /me/cowork went through before absorbing into this handler).",
         "operationId": "me_mcp_redirect_me_cowork_get",
         "responses": {
           "200": {
@@ -47188,7 +49863,7 @@
     },
     "/me/mcp": {
       "get": {
-        "description": "Legacy redirects \u2014 /me/mcp and /me/cowork \u2192 /me/ai-connector.",
+        "description": "Legacy redirects \u2014 the standalone AI Connector page and its two older\naliases now land on the consolidated page's connect section.\n\n302, not 301: a permanent redirect is cached by the browser forever, so\nit would be very hard to walk back if the consolidation is revisited.\nPromote to 301 after a release of confidence (the same ladder /me/mcp\nand /me/cowork went through before absorbing into this handler).",
         "operationId": "me_mcp_redirect_me_mcp_get",
         "responses": {
           "200": {
@@ -47704,6 +50379,56 @@
         ]
       }
     },
+    "/skills": {
+      "get": {
+        "description": "Builder \u2014 one authoring surface for skills, plugins and shareable agents.\n\nFormerly the single-type Skill Builder. Two in-page steps: a TYPE PICKER,\nthen a type-adapted BUILDER that keeps one shell (identity, access,\nnumbered sections, live preview, advisory check) and swaps only the\ncontent section and its validation.\n\nMarkdown types (skill, agent) publish to\n``POST /api/store/entities/from-markdown``; plugins are real ZIP bundles\nand publish to the multipart ``POST /api/store/entities``. Both honour the\nbuilder's private/everyone ``access`` choice, and both run the same quota,\nguardrail and review pipeline. Category options come from the shared store\ntaxonomy.\n\nThe route keeps its ``/skills`` path: it is the target of the Marketplace\n\"submit\" CTA, the ``?from=skills`` detail back-link and the tour anchors.\n``?type=skill|plugin|agent`` deep-links past the picker.",
+        "operationId": "skills_page_skills_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Skills Page",
+        "tags": [
+          "web"
+        ]
+      }
+    },
     "/slack/bind": {
       "get": {
         "description": "Render the Slack-identity binding CONFIRMATION page (no state change).\n\nSecurity audit F2: the actual bind used to happen on this GET, gated only by\na ``SameSite=Lax`` auth cookie \u2014 a classic CSRF sink. An attacker who owns a\nSlack identity could DM the bot for a code, then send a logged-in victim\n``/slack/bind?code=<attacker_code>``; the top-level GET rode the victim's\ncookie and bound the ATTACKER's Slack to the VICTIM's Agnes account\n(cross-user impersonation). This GET now only shows a confirm button that\nPOSTs back with a per-request double-submit CSRF token; the redeem lives in\n:func:`slack_bind_confirm`.\n\nAn unauthenticated visitor is bounced to sign-in and lands back here (``next=``).",
@@ -47816,6 +50541,56 @@
           }
         },
         "summary": "Slack Bind Confirm",
+        "tags": [
+          "web"
+        ]
+      }
+    },
+    "/stack": {
+      "get": {
+        "description": "Unified My Stack (rail layout / #896 prototype IA) \u2014 the caller's\npersonal workspace: \"Everything in your Stack\", one inventory table\nover every kind \u2014 Data (data packages), Plugins (hydrated client-side\nfrom /api/marketplace/items?tab=my), Memory (memory domains), Uploads\n(private file collections). Growing the stack happens on /catalog,\nwhich carries the \"Recommended for you\" row.\n\nReachable under any layout; the rail's \"My Stack\" entry points here.",
+        "operationId": "my_stack_page_stack_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "My Stack Page",
         "tags": [
           "web"
         ]

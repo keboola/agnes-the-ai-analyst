@@ -89,6 +89,12 @@ class ChatSession(Base):
     # Tier 1 restart-invariant reuse). NULL = unknown/legacy — see
     # app.chat.types.RELAY_PROTOCOL_VERSION's docstring for the full story.
     relay_protocol_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # v111: user-pinned conversations. NULL = not pinned; a timestamp records
+    # when the pin happened so the history panel orders pins most-recent-first.
+    # Deliberately un-indexed — the DuckDB sibling cannot index a column it
+    # UPDATEs after chat_messages rows exist (1.5.3 FK+index bug), and pin state
+    # is only read as part of one user's list (idx_chat_sessions_user covers it).
+    pinned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         Index("idx_chat_sessions_user", "user_email", "last_message_at"),

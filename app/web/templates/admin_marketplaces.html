@@ -39,7 +39,7 @@
   .mp-branch-pill {
     display: inline-block; padding: 2px 8px; border-radius: 999px;
     font-size: 11px; font-weight: 500;
-    background: #e0e7ff; color: #3730a3;
+    background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink);
     font-family: var(--font-mono, ui-monospace, monospace);
   }
   /* v87: pinned ref (tag/commit) badge — amber so it visually reads as
@@ -47,23 +47,23 @@
   .mp-ref-pill {
     display: inline-block; padding: 2px 8px; border-radius: 999px;
     font-size: 11px; font-weight: 500;
-    background: #fef3c7; color: #92400e;
+    background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink);
     font-family: var(--font-mono, ui-monospace, monospace);
   }
   .mp-sha { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; color: var(--text-primary, #111827); }
   .mp-muted { color: var(--text-secondary, #9ca3af); }
   .mp-err-badge {
     display: inline-block; padding: 2px 8px; border-radius: 999px;
-    background: #fee2e2; color: #b91c1c;
+    background: var(--ds-accent-danger-bg); color: var(--ds-accent-danger-ink);
     font-size: 11px; font-weight: 500;
     cursor: help;
   }
-  .mp-ok-dot { color: #047857; font-weight: 600; }
+  .mp-ok-dot { color: var(--ds-accent-success-ink); font-weight: 600; }
   .mp-token-dot {
     display: inline-block; width: 10px; height: 10px; border-radius: 50%;
-    background: #cbd5e1;
+    background: var(--ds-border);
   }
-  .mp-token-dot.has-token { background: #10b981; }
+  .mp-token-dot.has-token { background: var(--ds-accent-success-ink); }
 
   .date-cell { color: var(--text-secondary, #6b7280); font-size: 12px; white-space: nowrap; }
 
@@ -75,10 +75,10 @@
     text-decoration: none; line-height: 1.4;
     white-space: nowrap;
   }
-  .icon-btn:hover { color: var(--text-primary, #111827); border-color: #cbd5e1; background: #f9fafb; }
-  .icon-btn.primary { color: var(--ds-primary, #6366f1); border-color: #c7d2fe; }
-  .icon-btn.primary:hover { background: #eef2ff; }
-  .icon-btn.danger:hover { color: #b91c1c; border-color: #fecaca; background: #fef2f2; }
+  .icon-btn:hover { color: var(--text-primary, #111827); border-color: var(--ds-border); background: var(--ds-surface-dim); }
+  .icon-btn.primary { color: var(--ds-primary, #6366f1); border-color: color-mix(in srgb, var(--ds-primary) 30%, transparent); }
+  .icon-btn.primary:hover { background: var(--ds-primary-light); }
+  .icon-btn.danger:hover { color: var(--ds-accent-danger-ink); border-color: var(--ds-accent-danger-line); background: var(--ds-accent-danger-bg); }
   .icon-btn[disabled] { opacity: 0.5; cursor: wait; }
 
   .mp-empty, .mp-loading {
@@ -117,15 +117,15 @@
   .sync-result {
     margin: 12px 0;
     padding: 12px; border-radius: 8px;
-    background: #f0fdf4; border: 1px solid #bbf7d0;
+    background: var(--ds-accent-success-bg); border: 1px solid var(--ds-accent-success-line);
     font-family: var(--font-mono, ui-monospace, monospace);
     font-size: 12px; word-break: break-all;
   }
-  .sync-result.err { background: #fef2f2; border-color: #fecaca; }
+  .sync-result.err { background: var(--ds-accent-danger-bg); border-color: var(--ds-accent-danger-line); }
 
   .mp-plugin-count {
     display: inline-block; min-width: 22px; padding: 2px 8px;
-    border-radius: 999px; background: #ede9fe; color: #5b21b6;
+    border-radius: 999px; background: var(--ds-kind-plugin-soft, #ede9fe); color: var(--ds-kind-plugin, #5b21b6);
     font-size: 11px; font-weight: 600; text-align: center;
   }
 
@@ -152,7 +152,7 @@
   }
   .plugin-source {
     display: inline-block; padding: 1px 6px; border-radius: 4px;
-    background: #f3f4f6; color: #374151; font-size: 10px; font-weight: 500;
+    background: var(--ds-surface-dim); color: var(--ds-text-secondary); font-size: 10px; font-weight: 500;
     text-transform: uppercase; letter-spacing: 0.3px;
   }
   .plugin-desc {
@@ -171,7 +171,7 @@
      "system" semantic reads consistently across the admin surface. */
   .plugin-system-pill {
     display: inline-block; padding: 1px 7px; border-radius: 999px;
-    background: #fef3c7; color: #92400e;
+    background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink);
     font-size: 10px; font-weight: 600;
     text-transform: uppercase; letter-spacing: 0.4px;
   }
@@ -183,21 +183,21 @@
      the org-policy semantic stays visually consistent across surfaces. */
   .plugin-system-btn {
     display: inline-flex; align-items: center; gap: 5px;
-    background: #fff; border: 1px solid #fbbf24;
+    background: var(--ds-surface); border: 1px solid var(--ds-accent-warn-line);
     border-radius: 6px; padding: 5px 11px; font-size: 11px;
     font-weight: 600; cursor: pointer;
-    color: #92400e; white-space: nowrap;
+    color: var(--ds-accent-warn-ink); white-space: nowrap;
     transition: background 0.15s, border-color 0.15s, color 0.15s;
   }
   .plugin-system-btn svg { display: block; flex-shrink: 0; }
   .plugin-system-btn:hover {
-    background: #fffbeb; border-color: #f59e0b; color: #78350f;
+    background: color-mix(in srgb, var(--ds-accent-warn-bg) 60%, transparent); border-color: var(--ds-accent-warn-line); color: var(--ds-accent-warn-ink);
   }
   .plugin-system-btn.is-system {
-    background: #fef3c7; border-color: #fcd34d; color: #92400e;
+    background: var(--ds-accent-warn-bg); border-color: var(--ds-accent-warn-line); color: var(--ds-accent-warn-ink);
   }
   .plugin-system-btn.is-system:hover {
-    background: #fde68a; border-color: #f59e0b; color: #78350f;
+    background: color-mix(in srgb, var(--ds-accent-warn-bg) 80%, var(--ds-accent-warn-ink)); border-color: var(--ds-accent-warn-line); color: var(--ds-accent-warn-ink);
   }
   .plugin-system-btn[disabled] { opacity: 0.5; cursor: wait; }
   /* v78: when a plugin is admin-disabled the system button is locked so a
@@ -259,8 +259,8 @@
     pointer-events: auto; max-width: 380px;
   }
   .toast.show { opacity: 1; transform: translateY(0); }
-  .toast.success { background: #047857; }
-  .toast.error { background: #b91c1c; }
+  .toast.success { background: var(--ds-accent-success-ink); }
+  .toast.error { background: var(--ds-accent-danger-ink); }
 </style>
 {% endblock %}
 
@@ -330,11 +330,11 @@
     <label for="new-description">Description (optional)</label>
     <textarea id="new-description" autocomplete="off"></textarea>
 
-    <label for="new-curator-name">Curator full name <span style="color:#b91c1c">*</span></label>
+    <label for="new-curator-name">Curator full name <span style="color:var(--ds-accent-danger-ink)">*</span></label>
     <input id="new-curator-name" type="text" placeholder="e.g. Jane Doe" required autocomplete="off">
     <div class="help">The named person accountable for what's in this marketplace. Surfaced on plugin cards and detail pages.</div>
 
-    <label for="new-curator-email">Curator email <span style="color:#b91c1c">*</span></label>
+    <label for="new-curator-email">Curator email <span style="color:var(--ds-accent-danger-ink)">*</span></label>
     <input id="new-curator-email" type="email" placeholder="e.g. jane.doe@example.com" required autocomplete="off">
 
     <label for="new-token">GitHub PAT (optional — private repos only)</label>
@@ -735,7 +735,7 @@ async function openDetails(id, name) {
     body.querySelectorAll('[data-action="toggle-disabled"]').forEach(el =>
       el.addEventListener("change", () => toggleDisabled(el, id, name)));
   } catch (e) {
-    body.innerHTML = `<div class="empty" style="color:#b91c1c;">Failed to load plugins: ${esc(e.message)}</div>`;
+    body.innerHTML = `<div class="empty" style="color:var(--ds-accent-danger-ink);">Failed to load plugins: ${esc(e.message)}</div>`;
   }
 }
 

@@ -168,6 +168,7 @@
                        items. #}
                     <section class="app-admin-menu-col">
                         <div class="app-admin-menu-section">Moderation queues</div>
+                        <a class="app-nav-menu-item {% if _path == '/admin/store' %}is-active{% endif %}" role="menuitem" href="/admin/store">Moderation &amp; Trust</a>
                         <a class="app-nav-menu-item {% if _path.startswith('/admin/corporate-memory') %}is-active{% endif %}" role="menuitem" href="/admin/corporate-memory">Curated memory reviews</a>
                         <a class="app-nav-menu-item {% if _path.startswith('/admin/store/submissions') %}is-active{% endif %}" role="menuitem" href="/admin/store/submissions">Flea Submissions</a>
                         <div class="app-admin-menu-section">Marketplace &amp; knowledge distribution</div>
@@ -193,17 +194,6 @@
         </div>
         {% endif %}
 
-        {# Re-open the onboarding tour from anywhere. tour.js binds
-           [data-tour-start]; the same hook is on the /me/profile button. #}
-        <button type="button" class="app-onboarding-launch" data-tour-start
-                title="Take a tour" aria-label="Take a tour">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.7"/>
-                <path d="M9.5 9.2a2.6 2.6 0 1 1 3.4 2.5c-.6.2-.9.6-.9 1.2v.6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-                <circle cx="12" cy="16.4" r="1" fill="currentColor"/>
-            </svg>
-        </button>
-
         <div class="app-user-menu" id="userMenu">
             <button type="button" class="app-user-menu-trigger" id="userMenuTrigger"
                     data-tour="user-menu"
@@ -227,15 +217,29 @@
                     {% endif %}
                 </div>
                 <a class="app-user-menu-item {% if _path == '/me/profile' %}is-active{% endif %}" role="menuitem" href="/me/profile">Profile</a>
-                {# My agents — the agent-profile builder (/agents, see
-                   app/web/agents_page.py). A per-user resource list like
-                   "My connections", so it belongs here rather than in the
-                   primary nav or the admin mega-menu (instance authoring of
+                {# My agents — the agent-profile builder (/agents, served by
+                   app/web/router.py's agents_page route). A per-user resource
+                   list like "My connections", so it belongs here rather than in
+                   the primary nav or the admin mega-menu (instance authoring of
                    agents is Studio's /admin/studio/agent). This is the page's
                    only nav entry point — guarded by
                    tests/test_web_nav_agents.py. #}
                 <a class="app-user-menu-item {% if _path == '/agents' %}is-active{% endif %}" role="menuitem" href="/agents">My agents</a>
-                <a class="app-user-menu-item {% if _path.startswith('/me/ai-connector') or _path.startswith('/me/cowork') or _path.startswith('/me/mcp') %}is-active{% endif %}" role="menuitem" href="/me/ai-connector">AI Connector</a>
+                {# The redesign dropped the "AI Connector" link (the connector
+                   content now lives in /how-it-works#connect) and added
+                   "Learn how it works" (tests/test_web_nav_cowork.py). "My
+                   connections" (#1086) stays — tests/test_web_nav_me_connections
+                   requires it here.
+
+                   Repointed from /home to /how-it-works: /home is a CLI install
+                   wizard titled "Setup", which is not what this label promises.
+                   The LABEL is deliberately unchanged here — topnav is the
+                   default chrome, and changing its visible text would change
+                   the look of every existing instance (guarded by
+                   tests/test_ui_layout_theme.py). The rail chrome, which is
+                   opt-in, gets the clearer "How {brand} works" wording as a
+                   nav row of its own. #}
+                <a class="app-user-menu-item {% if _path == '/how-it-works' %}is-active{% endif %}" role="menuitem" href="/how-it-works">Learn how it works</a>
                 <a class="app-user-menu-item {% if _path.startswith('/me/connections') %}is-active{% endif %}" role="menuitem" href="/me/connections">My connections</a>
                 <a class="app-user-menu-item {% if _path.startswith('/me/activity') %}is-active{% endif %}" role="menuitem" href="/me/activity">My activity</a>
                 {# /news needs a NON-admin entry point. Its other two are

@@ -1575,12 +1575,27 @@ class TestReportsSmoke:
 # ---------------------------------------------------------------------------
 
 KNOWN_UNTESTED = {
-    # Agent-profile builder page (Task 10) — self-contained web page, tested
-    # in tests/test_agents_page.py (chrome/list/auth) rather than duplicated
-    # in this PG smoke harness. The management API it drives
-    # (/api/v1/agents/*) is covered separately in
-    # tests/test_agents_management_api.py.
+    # Agent-builder page (paper-theme redesign) — self-contained web page,
+    # covered in tests/test_ui_layout_theme.py (chrome/list/auth/actions)
+    # rather than duplicated in this PG smoke harness. The builder API it
+    # drives (/api/agents/*) rides main's canonical agents table; the
+    # agent-as-API management surface (/api/v1/agents/*) is covered separately
+    # in tests/test_agents_management_api.py.
     "GET /agents",
+    # Self-service display-name edit (#1036) — auth-scoped one-field PATCH on
+    # the caller's own row; the repo method behind it (users.update_display_name)
+    # is contract-tested on both backends in tests/db_pg/test_users_contract.py,
+    # so it isn't duplicated in this parameter-free smoke sweep (it also needs a
+    # request body).
+    "PATCH /api/me/display-name",
+    # Store publisher + verification trust line (paper-theme redesign) — all
+    # parameterized mutations requiring a body, behaviorally covered in
+    # tests/test_store_publisher_verification.py (publisher set, verify /
+    # request-changes, request-verification, RBAC, org-published invariants);
+    # not duplicated in this parameter-free smoke sweep.
+    "PUT /api/store/entities/{entity_id}/publisher",
+    "PUT /api/store/entities/{entity_id}/verification",
+    "POST /api/store/entities/{entity_id}/verification/request",
     # Chat sandbox secret broker (2026-07-14 incident) — internal
     # sandbox→server routes, ticket-authed, never parameter-free (require a
     # POST body + a valid broker ticket), so they have no place in this
@@ -1641,6 +1656,21 @@ KNOWN_UNTESTED = {
     "GET /api/collections/{collection_id}/files",
     "DELETE /api/collections/{collection_id}/files/{file_id}",
     "POST /api/collections/{collection_id}/files/{file_id}/reingest",
+    # Library file preview — both routes need a real (collection_id, file_id)
+    # pair AND a blob on disk, so neither belongs in this parameter-free sweep.
+    # They add no repo method or migration (reads go through corpus_files_repo /
+    # corpus_chunks_repo, both already parity-covered). Behaviour covered in
+    # tests/test_api_collections.py::TestFilePreview — each `kind`, truncation,
+    # the .html inline refusal (415), wrong-collection/unknown-file 404,
+    # no-access 404, per-file sharing, SessionPrincipal intersection — and the
+    # web wiring in tests/test_web_library_files_folders.py.
+    "GET /api/collections/{collection_id}/files/{file_id}/preview",
+    "GET /api/collections/{collection_id}/files/{file_id}/raw",
+    # Chat composer "+" upload (#966) — multipart file upload, chat-access
+    # gated. Behaviour covered in tests/test_chat_uploads.py (happy path,
+    # register-as-table + end-to-end query, oversize/415/path-traversal/unauth
+    # rejections); not a parameter-free route for this smoke sweep.
+    "POST /api/chat/uploads",
     "GET /library",
     "GET /library/{slug}",
     # Authoring studio + suggestion queue + memory-mining consent — covered by
@@ -1658,6 +1688,12 @@ KNOWN_UNTESTED = {
     "POST /api/studio/memory-mining/consent",
     "POST /api/admin/memory-mining/run",
     "GET /me/memory-mining",
+    # Admin Moderation & Trust hub (#1118) — the one admin surface linking
+    # entity verification, submission review, and marketplace curation.
+    # Behaviour covered by tests/test_admin_moderation_hub.py +
+    # tests/test_web_nav_moderation_hub.py; it's an admin web page, not a fit
+    # for the parameter-free smoke sweep.
+    "GET /admin/store",
     # Skill-linter admin moderation surface (v89, #687) — findings list,
     # full-corpus audit, per-finding dismiss. Behaviour covered by
     # tests/test_store_lint_api.py + tests/test_web_store_lint.py; the audit
@@ -1666,6 +1702,10 @@ KNOWN_UNTESTED = {
     "GET /api/admin/store/lint-findings",
     "POST /api/admin/store/lint-audit",
     "POST /api/admin/store/lint-dismiss",
+    # Moderation & Trust hub — an admin card index over the Store review
+    # queue. Behaviour covered by tests/test_admin_moderation_hub.py +
+    # tests/test_web_nav_moderation_hub.py.
+    "GET /admin/store",
     # Skill contribution — admin web-form flow + REST/MCP triple-surface
     # (paste a SKILL.md, publish it to the contributed marketplace). Core logic
     # covered by tests/test_skill_contribution.py and
@@ -1882,6 +1922,18 @@ KNOWN_UNTESTED = {
     "GET /admin/workspace-prompt",
     # HTML web pages — covered by separate UI test suite
     "GET /activity-center",
+    # Admin audit view over all Data Packages / Memory Domains (catalog
+    # reshape) — rendering covered by tests/test_web_catalog_reshape.py.
+    "GET /admin/data-packages",
+    # Agent builder (rail-layout WIP surface) — rendering covered by
+    # tests/test_ui_layout_theme.py::TestRailOptIn.
+    "GET /agents",
+    # Personal artefacts page (rail-layout IA) — rendering covered by
+    # tests/test_ui_layout_theme.py::TestRailOptIn.
+    "GET /artefacts",
+    # Knowledge-search chat landing (#896) — rendering covered by
+    # tests/test_web_ask_landing.py.
+    "GET /ask",
     "GET /catalog",
     "GET /catalog/p/{slug}",
     # Semantic-layer browser (#853 + glossary) — covered by
@@ -1890,12 +1942,18 @@ KNOWN_UNTESTED = {
     "GET /catalog/r/{slug}",
     "GET /catalog/t/{table_id}",
     "GET /chat",
+    # Chats inventory page — rendering, filters, row states and bulk actions
+    # covered by tests/test_web_chats_page.py.
+    "GET /chats",
     "GET /corporate-memory",
     "GET /dashboard",
     "GET /docs",
     "GET /documentation/api",
     "GET /first-time-setup",
     "GET /home",
+    # Static explainer page. Covered by tests/test_web_how_it_works.py +
+    # tests/test_web_nav_cowork.py.
+    "GET /how-it-works",
     "GET /install",
     "GET /login",
     "GET /login/email",
@@ -1930,6 +1988,9 @@ KNOWN_UNTESTED = {
     "GET /setup",
     "GET /setup-advanced",
     "GET /slack/bind",
+    # Unified My Stack page (rail-layout IA, #896) — rendering covered by
+    # tests/test_ui_layout_theme.py::TestRailOptIn.
+    "GET /stack",
     "GET /store/examples",
     "GET /store/new",
     "GET /webhooks/jira/health",
@@ -2166,6 +2227,18 @@ KNOWN_UNTESTED = {
     "GET /api/chat/sessions/{chat_id}/messages",
     "GET /api/chat/{session_id}/messages",
     "GET /api/chat/skills",  # tested in tests/test_chat_skills_endpoint.py
+    "GET /api/chat/journey",  # tested in tests/test_chat_api.py
+    "PUT /api/chat/journey",  # tested in tests/test_chat_api.py
+    # History row menu — pin/unpin and rename. Both are self-scoped writes on
+    # the caller's own session; tested in tests/test_chat_pin_conversations.py.
+    "PUT /api/chat/sessions/{chat_id}/pin",
+    "PUT /api/chat/sessions/{chat_id}/title",
+    # Chats page (/chats) archive lifecycle — archive/restore and permanent
+    # delete, self-scoped writes on the caller's own session (404, never 403);
+    # behaviour covered in tests/test_web_chats_page.py on both backends'
+    # session repos (tests/db_pg/test_chat_pg.py), not parameter-free.
+    "PUT /api/chat/sessions/{chat_id}/archived",
+    "DELETE /api/chat/sessions/{chat_id}/permanent",
     "POST /api/chat/sessions/{chat_id}/ticket",
     "POST /api/chat/{session_id}/fork",
     "POST /api/chat/{session_id}/invite",
@@ -2248,6 +2321,31 @@ KNOWN_UNTESTED = {
     "GET /api/stack",
     "GET /api/stack/browse",
     "POST /api/stack/subscribe",
+    # Library files-as-folders: per-file detail page + drag-to-move, both
+    # covered by tests/test_web_library_files_folders.py (DuckDB) and, for the
+    # repository layer, tests/db_pg/test_corpus_files_contract.py.
+    "GET /library/{slug}/f/{file_id}",
+    "POST /api/collections/{collection_id}/files/{file_id}/move",
+    # Library: agent registry (v103) + owner-initiated sharing — covered by
+    # tests/test_web_library_sharing.py (DuckDB) and, for the repository layer,
+    # the cross-engine tests/db_pg/test_agents_contract.py; no dedicated PG
+    # smoke class yet, same convention as the stack rows below.
+    "GET /api/agents",
+    "POST /api/agents",
+    "GET /api/agents/{agent_id}",
+    "PATCH /api/agents/{agent_id}",
+    "DELETE /api/agents/{agent_id}",
+    "GET /api/sharing/groups",
+    "GET /api/sharing/{resource_type}/{resource_id}",
+    "PUT /api/sharing/{resource_type}/{resource_id}",
+    # Skill builder index page (HTML surface, no PG-specific behaviour).
+    "GET /skills",
+    # Add artefacts to My Stack — covered by tests/test_web_stack_artefacts.py
+    # (DuckDB) + tests/test_cli_api_parity.py (add/remove parity); no
+    # dedicated PG smoke class yet, same convention as the stack rows above.
+    "DELETE /api/stack/artefacts/{corpus_id}",
+    "GET /api/stack/artefacts/candidates",
+    "POST /api/stack/artefacts/{corpus_id}",
     # Store version restore
     "POST /api/store/entities/{entity_id}/versions/{version_no}/restore",
     # Sync (pull-confirm / settings)

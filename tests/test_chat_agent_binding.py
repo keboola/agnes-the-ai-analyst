@@ -128,3 +128,26 @@ def test_web_session_create_attributes_to_default_agent(agent_binding_env) -> No
     persisted = repo.get_session(session_id)
     assert persisted is not None
     assert persisted.agent_id == expected_default
+
+
+def test_web_session_create_survives_deleted_default_agent(agent_binding_env) -> None:
+    """Soft-deleting the default agent must not brick session creation.
+
+    Regression: the seeded default keeps ``slug='default'`` after a soft
+    delete, and ``(owner_user_id, slug)`` is UNIQUE across deleted rows, so
+    ``get_or_create_default`` used to raise a ConstraintException on every
+    later call — surfacing as a permanent "Could not start chat: 500" for
+    that user, unrecoverable without hand-editing the database.
+    """
+    client, repo = agent_binding_env
+    from src.repositories import agents_repo
+
+    original = agents_repo().get_or_create_default(TEST_USER["id"])["id"]
+    agents_repo().soft_delete(original)
+
+    r = client.post("/api/chat/sessions", json={})
+    assert r.status_code == 201
+
+    persisted = repo.get_session(r.json()["id"])
+    assert persisted is not None
+    assert persisted.agent_id == original  # revived, not re-seeded

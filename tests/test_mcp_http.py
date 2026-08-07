@@ -294,6 +294,12 @@ class TestToolRegistration:
             # Web chat composer slash-menu catalog (issue #780). Triple-surface
             # with GET /api/chat/skills + `agnes chat skills`.
             "chat_skills",
+            # Chat composer "+" upload (#966) — upload a file into the chat
+            # workspace without leaving the conversation. Triple-surface with
+            # POST /api/chat/uploads + `agnes chat upload`. The server-hosted
+            # variant refuses by-path reads (client-side stdio does the actual
+            # file read); see app/api/mcp/foundation_tools.py.
+            "chat_upload_file",
             # Markdown-first skill publish (studio Skill Builder, issue #688).
             # Triple-surface with POST /api/store/entities/from-markdown +
             # `agnes store publish-md`.
@@ -334,6 +340,11 @@ class TestToolRegistration:
             "data_app_get",
             "data_app_deploy",
             "data_app_logs",
+            # "Add artefacts to My Stack" — triple-surface with
+            # /api/stack/artefacts* + `agnes stack artefacts list/add/remove`.
+            "stack_artefacts_candidates",
+            "stack_artefact_add",
+            "stack_artefact_remove",
             # Wave 3B draft-iteration model (Task 8) — create/delete a draft
             # copy of a prod app on an iteration branch, and mint a fresh git
             # push credential. Triple-surface with /api/data-apps/{slug}/drafts*

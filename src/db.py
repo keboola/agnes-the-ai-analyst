@@ -48,7 +48,13 @@ from src.duckdb_conn import _open_duckdb  # noqa: F401, E402  (re-export)
 
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 
-SCHEMA_VERSION = 109
+# Merge of main's ladder (→109: outbound MCP OAuth sources tables) with the
+# paper-theme branch's schema additions restacked on top: 110
+# file_corpora.origin, 111 store_entities trust columns, 112 agents builder
+# superset columns, 113 chat_sessions.pinned_at, 114
+# data_packages.publisher_kind (the stored trust axis that retired the
+# render-time-derived `curated` badge).
+SCHEMA_VERSION = 114
 
 # v96: data_apps registry (hosted user web apps). Extracted as a shared
 # module-level constant so the fresh-install DDL (appended to
@@ -91,6 +97,55 @@ CREATE TABLE IF NOT EXISTS data_apps (
     last_deploy_at  TIMESTAMP,
     created_at      TIMESTAMP DEFAULT current_timestamp,
     updated_at      TIMESTAMP DEFAULT current_timestamp
+);
+"""
+
+# v101: agent profiles + agent-as-API foundation (spec
+# docs/superpowers/specs/2026-07-21-agent-profiles-and-agent-api-design.md).
+#
+# The paper-theme agent-builder's fields (role/tone/greeting/knowledge/plugins/
+# surfaces/status) were merged as a SUPERSET onto this, main's canonical table
+# (added on upgrade by _v111_to_v112); the builder maps created_by→owner_user_id
+# and instructions→system_prompt, so those reuse the columns above rather than
+# duplicating them.
+#
+# Shared constant (same reasoning as _DATA_APPS_CREATE_SQL) so the fresh-install
+# DDL spliced into _SYSTEM_SCHEMA below and the rebuild in
+# _heal_legacy_agents_table execute the identical CREATE TABLE — a heal that
+# hand-copied the shape would drift the moment a column is added here.
+_AGENTS_CREATE_SQL = """
+-- No secondary indexes anywhere here — see the _v94_to_v95 ART-index
+-- incident note; chat_sessions.agent_id especially must stay unindexed.
+CREATE TABLE IF NOT EXISTS agents (
+    id                   VARCHAR PRIMARY KEY,
+    owner_user_id        VARCHAR NOT NULL,
+    name                 VARCHAR NOT NULL,
+    slug                 VARCHAR NOT NULL,
+    description          TEXT,
+    system_prompt        TEXT,
+    model                VARCHAR,
+    token_budget_monthly BIGINT,
+    plugins_mode         VARCHAR NOT NULL DEFAULT 'all',
+    connections_mode     VARCHAR NOT NULL DEFAULT 'all',
+    tables_mode          VARCHAR NOT NULL DEFAULT 'all',
+    memory_mode          VARCHAR NOT NULL DEFAULT 'all',
+    memory_write_mode    VARCHAR NOT NULL DEFAULT 'propose',
+    is_default           BOOLEAN NOT NULL DEFAULT FALSE,
+    -- v110: paper-theme agent-builder superset. role/tone/greeting are authored
+    -- profile fields; knowledge/plugins/surfaces are opaque id-list JSON the
+    -- builder owns (never joined in SQL); status is the builder's draft|ready
+    -- lifecycle.
+    role                 VARCHAR,
+    tone                 VARCHAR DEFAULT 'concise',
+    greeting             TEXT,
+    knowledge            TEXT DEFAULT '[]',
+    plugins              TEXT DEFAULT '[]',
+    surfaces             TEXT DEFAULT '{}',
+    status               VARCHAR DEFAULT 'draft',
+    created_at           TIMESTAMP DEFAULT current_timestamp,
+    updated_at           TIMESTAMP DEFAULT current_timestamp,
+    deleted_at           TIMESTAMP,
+    UNIQUE (owner_user_id, slug)
 );
 """
 
@@ -708,9 +763,25 @@ CREATE TABLE IF NOT EXISTS data_packages (
     --   example_questions       — JSON list of analyst questions
     --                             surfaced as a package-level prompt
     --                             panel.
-    -- Badges (`curated` / `new`) are NOT persisted columns — they're
-    -- derived at render time from creator group + created_at age, so
-    -- backdating or admin-status changes pick up automatically.
+    -- v113: publisher_kind ('user' | 'organization') — the SAME stored
+    -- trust axis store_entities carries, so a package and a skill make
+    -- the same claim the same way and the Library / catalog / detail
+    -- surfaces can render one shared marker for both.
+    --
+    -- This REPLACES the derived `curated` badge, which was computed at
+    -- render time from "is the creator currently in the Admin group".
+    -- That reading is not a property of the PACKAGE: an admin who leaves
+    -- the Admin group silently un-curated everything they had ever
+    -- created. It is the exact derivation ``store_entities.publisher_kind``
+    -- was introduced to avoid (see the v104 columns below) — group
+    -- membership is mutable and re-synced from the identity provider, so
+    -- a derived trust claim reclassifies published content behind the
+    -- admin's back. Stored, set explicitly, and migrated from whatever the
+    -- derivation happened to say at upgrade time.
+    --
+    -- `new` REMAINS derived from created_at age — that one genuinely is a
+    -- function of the clock and nothing else.
+    publisher_kind  VARCHAR DEFAULT 'user',
     owner_name      VARCHAR,
     owner_team      VARCHAR,
     tags            VARCHAR,
@@ -996,6 +1067,39 @@ CREATE TABLE IF NOT EXISTS store_entities (
     title             VARCHAR NOT NULL,
     tagline           VARCHAR,
     synthetic_name    VARCHAR NOT NULL,
+    -- v104: publisher + verification — the card's trust line ("Skill · by
+    -- Anna Nováková" / "Skill · Your organization").
+    --
+    -- `publisher_kind` answers "who stands behind this", and is deliberately
+    -- STORED rather than derived from the owner's current Admin-group
+    -- membership: groups are mutable and re-synced nightly from the identity
+    -- provider, so a derived value would silently reclassify an author's
+    -- published skills the moment they moved out of the Admin group. Only an
+    -- explicit admin "publish as the organization" action writes
+    -- 'organization'. Curated marketplace_plugins rows need no column — the
+    -- admin act of registering the marketplace already makes every plugin in
+    -- it organization-published, so the projection layer hard-codes it.
+    --
+    -- The verification columns are the org's advisory review of a
+    -- USER-published item. Two invariants, both asserted in tests:
+    --   1. publisher_kind='organization' ⇒ verification_state='none'. An org
+    --      item carries the stronger claim; a checkmark on top of it would
+    --      invent a fourth trust tier.
+    --   2. Verification NEVER gates reads. It is a chip and a filter value,
+    --      never a predicate in _enforce_visibility or the listing clause —
+    --      the moment it gates, it is the old approval queue again.
+    -- 'requested' / 'changes_requested' are author-visible workflow states;
+    -- other users see only 'verified' (or nothing at all — there is no
+    -- "Unverified" label, by design, since it would print on ~every card on
+    -- an instance with no reviewer).
+    publisher_kind    VARCHAR NOT NULL DEFAULT 'user'
+                      CHECK (publisher_kind IN ('organization','user')),
+    verification_state VARCHAR NOT NULL DEFAULT 'none'
+                      CHECK (verification_state IN
+                             ('none','requested','verified','changes_requested')),
+    verified_at       TIMESTAMP,
+    verified_by       VARCHAR,
+    verification_note TEXT,
     created_at        TIMESTAMP DEFAULT current_timestamp,
     updated_at        TIMESTAMP DEFAULT current_timestamp,
     UNIQUE (owner_user_id, name)
@@ -1311,7 +1415,14 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
     -- Deliberately unindexed: this table already carries idx_chat_sessions_user
     -- and DuckDB's ART-index maintenance is the exact incident class
     -- _v94_to_v95 exists to fix, so no new secondary index goes on this column.
-    agent_id          VARCHAR
+    agent_id          VARCHAR,
+    -- v112: user-pinned conversations. NULL = not pinned; a timestamp records
+    -- WHEN it was pinned so the history panel can order pins most-recent-first
+    -- rather than by an arbitrary tiebreak. Deliberately unindexed for the same
+    -- reason as agent_id above — and doubly so here, since this column IS
+    -- UPDATEd after chat_messages rows exist (the DuckDB 1.5.3 FK+index bug
+    -- would turn every pin click into a false FK violation).
+    pinned_at         TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_chat_sessions_user
     ON chat_sessions(user_email, last_message_at);
@@ -1409,6 +1520,7 @@ CREATE TABLE IF NOT EXISTS file_corpora (
     name VARCHAR NOT NULL,
     description VARCHAR,
     created_by VARCHAR NOT NULL,
+    origin VARCHAR NOT NULL DEFAULT 'uploaded',
     created_at TIMESTAMP DEFAULT current_timestamp,
     updated_at TIMESTAMP DEFAULT current_timestamp,
     deleted_at TIMESTAMP
@@ -1544,6 +1656,22 @@ CREATE TABLE IF NOT EXISTS store_lint_entity_state (
     linted_at    TIMESTAMP NOT NULL
 );
 
+-- v97: user_journey_state — per-user onboarding "journey" progress
+-- (backend foundation for chat-driven onboarding). One row per user;
+-- absent row means the caller should treat the user as fresh (defaults
+-- live in the repository, not the schema).
+CREATE TABLE IF NOT EXISTS user_journey_state (
+    user_id             VARCHAR PRIMARY KEY,
+    first_asked         BOOLEAN NOT NULL DEFAULT FALSE,
+    stack_setup_done    BOOLEAN NOT NULL DEFAULT FALSE,
+    explored_stack      BOOLEAN NOT NULL DEFAULT FALSE,
+    catalog_discovered  BOOLEAN NOT NULL DEFAULT FALSE,
+    use_anywhere        BOOLEAN NOT NULL DEFAULT FALSE,
+    onboarded           BOOLEAN NOT NULL DEFAULT FALSE,
+    successful_answers  INTEGER NOT NULL DEFAULT 0,
+    updated_at          TIMESTAMP NOT NULL DEFAULT current_timestamp
+);
+
 -- glossary_terms: v93. Keboola semantic-glossary import destination
 -- (docs/superpowers/specs/2026-07-17-keboola-glossary-import-design.md).
 -- id = "keboola/{model_uuid}/{slug(term)}" for Keboola-sourced rows, or
@@ -1613,31 +1741,9 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS idx_jobs_claim ON jobs(status, priority, run_after);
 CREATE INDEX IF NOT EXISTS idx_jobs_idem ON jobs(idempotency_key);
 
--- v101: agent profiles + agent-as-API foundation (spec
--- docs/superpowers/specs/2026-07-21-agent-profiles-and-agent-api-design.md).
--- No secondary indexes anywhere here — see the _v94_to_v95 ART-index
--- incident note; chat_sessions.agent_id especially must stay unindexed.
-CREATE TABLE IF NOT EXISTS agents (
-    id                   VARCHAR PRIMARY KEY,
-    owner_user_id        VARCHAR NOT NULL,
-    name                 VARCHAR NOT NULL,
-    slug                 VARCHAR NOT NULL,
-    description          TEXT,
-    system_prompt        TEXT,
-    model                VARCHAR,
-    token_budget_monthly BIGINT,
-    plugins_mode         VARCHAR NOT NULL DEFAULT 'all',
-    connections_mode     VARCHAR NOT NULL DEFAULT 'all',
-    tables_mode          VARCHAR NOT NULL DEFAULT 'all',
-    memory_mode          VARCHAR NOT NULL DEFAULT 'all',
-    memory_write_mode    VARCHAR NOT NULL DEFAULT 'propose',
-    is_default           BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at           TIMESTAMP DEFAULT current_timestamp,
-    updated_at           TIMESTAMP DEFAULT current_timestamp,
-    deleted_at           TIMESTAMP,
-    UNIQUE (owner_user_id, slug)
-);
-
+"""
+    + _AGENTS_CREATE_SQL
+    + """
 CREATE TABLE IF NOT EXISTS agent_scope (
     agent_id  VARCHAR NOT NULL,
     item_type VARCHAR NOT NULL,
@@ -6166,6 +6272,7 @@ def _v81_to_v82(conn: duckdb.DuckDBPyConnection) -> None:
             name VARCHAR NOT NULL,
             description VARCHAR,
             created_by VARCHAR NOT NULL,
+            origin VARCHAR NOT NULL DEFAULT 'uploaded',
             created_at TIMESTAMP DEFAULT current_timestamp,
             updated_at TIMESTAMP DEFAULT current_timestamp,
             deleted_at TIMESTAMP
@@ -6691,28 +6798,520 @@ def _v96_to_v97(conn: duckdb.DuckDBPyConnection) -> None:
 
 
 def _v97_to_v98(conn: duckdb.DuckDBPyConnection) -> None:
-    """v97→v98: ``chat_sessions.relay_protocol_version`` — restart-invariant
-    sandbox reuse (Tier 1, chat-over-E2B architecture pass).
+    """v97→v98: ``chat_sessions.relay_protocol_version`` (restart-invariant
+    sandbox reuse) **and** ``user_journey_state`` (chat-driven onboarding).
 
-    Persists the relay protocol version the runner bound to a session's
-    ``sandbox_id``/``runner_pid`` refs speaks. Previously this fact lived
-    only in the in-process ``ChatManager._known_protocol_sessions`` set,
-    which is always empty right after a restart — forcing every resumable
-    session to be destroyed and fresh-spawned rather than reconnected, even
-    though its paused sandbox and runner were perfectly fine. NULL (every
-    existing row) means unknown/legacy, preserving the exact same
-    conservative fresh-spawn behavior until a session is next spawned/
-    resumed and the column gets stamped by ``set_sandbox_ref``.
+    Both landed as v98 — the relay column on main, the journey table on the
+    paper-theme branch (which replaced this function's body rather than
+    stacking after it). The merged step does BOTH so a ≤v97 database climbs
+    into the same schema either lineage produced; each half is idempotent.
+    Databases already past 98 that climbed the *branch* ladder are missing
+    the relay column — ``_heal_stranded_ladder_columns`` repairs those — and
+    ones that climbed *main's* ladder are missing the journey table, which
+    ``_v113_to_v114`` re-asserts (every pre-merge database is < 114).
 
-    Idempotent ADD COLUMN IF NOT EXISTS — safe on fresh and upgrade paths.
-    Un-indexed, matching the other two sandbox-ref columns (DuckDB 1.5.3
+    Relay column: NULL (every existing row) means unknown/legacy, preserving
+    conservative fresh-spawn behavior until ``set_sandbox_ref`` stamps it.
+    Un-indexed, matching the other sandbox-ref columns (DuckDB 1.5.3
     FK+index bug — see the ``chat_sessions`` DDL comment in
-    ``_SYSTEM_SCHEMA``).
+    ``_SYSTEM_SCHEMA``). Fresh installs get both objects from
+    ``_SYSTEM_SCHEMA`` (no-op here).
     """
     cols = {r[1] for r in conn.execute("PRAGMA table_info('chat_sessions')").fetchall()}
     if "relay_protocol_version" not in cols:
         conn.execute("ALTER TABLE chat_sessions ADD COLUMN relay_protocol_version INTEGER")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_journey_state (
+            user_id             VARCHAR PRIMARY KEY,
+            first_asked         BOOLEAN NOT NULL DEFAULT FALSE,
+            stack_setup_done    BOOLEAN NOT NULL DEFAULT FALSE,
+            explored_stack      BOOLEAN NOT NULL DEFAULT FALSE,
+            catalog_discovered  BOOLEAN NOT NULL DEFAULT FALSE,
+            use_anywhere        BOOLEAN NOT NULL DEFAULT FALSE,
+            onboarded           BOOLEAN NOT NULL DEFAULT FALSE,
+            successful_answers  INTEGER NOT NULL DEFAULT 0,
+            updated_at          TIMESTAMP NOT NULL DEFAULT current_timestamp
+        )
+    """)
     conn.execute("UPDATE schema_version SET version = 98")
+
+
+def _v109_to_v110(conn: duckdb.DuckDBPyConnection) -> None:
+    """v109→v110: add ``file_corpora.origin`` (``uploaded`` | ``generated``).
+
+    Provenance for the Artefacts toolbar's Source facet. Every existing
+    artefact is user-uploaded, so the column defaults to ``'uploaded'``; the
+    future agent-generated-artefact writer sets ``'generated'``. Idempotent
+    ``ADD COLUMN IF NOT EXISTS`` guarded on table existence — a no-op on fresh
+    installs (``_SYSTEM_SCHEMA`` already declares the column).
+
+    Restacked twice from the paper-theme branch onto main's ladder (v107→v108
+    after main's data_apps-linked step claimed v108, then v109→v110 after
+    main's mcp-oauth step claimed v109).
+    """
+    exists = conn.execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'file_corpora'").fetchone()
+    if exists:
+        conn.execute("ALTER TABLE file_corpora ADD COLUMN IF NOT EXISTS origin VARCHAR DEFAULT 'uploaded'")
+    conn.execute("UPDATE schema_version SET version = 110")
+
+
+def _v110_to_v111(conn: duckdb.DuckDBPyConnection) -> None:
+    """v110→v111: ``store_entities`` publisher + verification columns.
+
+    Backfill intent: every pre-v111 row is a user upload (the "publish as the
+    organization" action ships with this version), so ``publisher_kind``
+    defaults to ``'user'`` and ``verification_state`` to ``'none'`` — which is
+    also the state that renders NO chip, so the upgrade is visually inert.
+
+    Idempotent ``ADD COLUMN IF NOT EXISTS`` guarded on table existence; a no-op
+    on fresh installs where ``_SYSTEM_SCHEMA`` already declares the columns.
+    The DDL lives in :func:`_add_store_entity_trust_columns` so the heal path can
+    reuse it **without** re-stamping the version — see
+    :func:`_heal_store_entity_trust_columns`.
+
+    Restacked twice from the paper-theme branch onto main's ladder (v108→v109
+    after main's data_apps-linked step claimed v108, then v110→v111 after
+    main's mcp-oauth step claimed v109).
+    """
+    _add_store_entity_trust_columns(conn)
+    conn.execute("UPDATE schema_version SET version = 111")
+
+
+def _v111_to_v112(conn: duckdb.DuckDBPyConnection) -> None:
+    """v111→v112: agents builder superset columns.
+
+    Combines the paper-theme agent-builder's authored fields onto main's
+    ``agents`` table so both the agent-as-API backend (main) and the /agents
+    builder (paper-theme) read one table: ``role``/``tone``/``greeting`` plus
+    the ``knowledge``/``plugins``/``surfaces`` id-list payloads (JSON text) and
+    ``status`` (draft | ready). ``created_by`` maps to main's ``owner_user_id``
+    and ``instructions`` to ``system_prompt`` in the repository layer, so no
+    duplicate columns are added for those.
+
+    Idempotent ``ADD COLUMN IF NOT EXISTS`` guarded on table existence — a no-op
+    on fresh installs where ``_SYSTEM_SCHEMA`` already declares them.
+
+    Restacked twice from the paper-theme branch onto main's ladder (v109→v110
+    after main's data_apps-linked step claimed v108, then v111→v112 after
+    main's mcp-oauth step claimed v109).
+    """
+    exists = conn.execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'agents'").fetchone()
+    if exists:
+        conn.execute("ALTER TABLE agents ADD COLUMN IF NOT EXISTS role VARCHAR")
+        conn.execute("ALTER TABLE agents ADD COLUMN IF NOT EXISTS tone VARCHAR DEFAULT 'concise'")
+        conn.execute("ALTER TABLE agents ADD COLUMN IF NOT EXISTS greeting TEXT")
+        conn.execute("ALTER TABLE agents ADD COLUMN IF NOT EXISTS knowledge TEXT DEFAULT '[]'")
+        conn.execute("ALTER TABLE agents ADD COLUMN IF NOT EXISTS plugins TEXT DEFAULT '[]'")
+        conn.execute("ALTER TABLE agents ADD COLUMN IF NOT EXISTS surfaces TEXT DEFAULT '{}'")
+        conn.execute("ALTER TABLE agents ADD COLUMN IF NOT EXISTS status VARCHAR DEFAULT 'draft'")
+    conn.execute("UPDATE schema_version SET version = 112")
+
+
+def _v112_to_v113(conn: duckdb.DuckDBPyConnection) -> None:
+    """v112→v113: add ``chat_sessions.pinned_at`` (user-pinned conversations).
+
+    NULL = not pinned, which is every pre-v113 row — so the upgrade is visually
+    inert (the history panel renders no Pinned group until the user pins
+    something). A timestamp rather than a boolean so pins order
+    most-recently-pinned-first.
+
+    The column is deliberately NOT indexed: it is UPDATEd on every pin/unpin,
+    which on DuckDB 1.5.3 happens long after ``chat_messages`` rows exist for
+    the session — indexing it would trip the FK+index false-violation bug that
+    already forces ``last_message_at`` / ``message_count`` to be derived at read
+    time (see the ``chat_sessions`` DDL in ``_SYSTEM_SCHEMA``).
+
+    Idempotent ``ADD COLUMN IF NOT EXISTS`` guarded on table existence — a no-op
+    on fresh installs where ``_SYSTEM_SCHEMA`` already declares the column.
+    """
+    exists = conn.execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'chat_sessions'").fetchone()
+    if exists:
+        conn.execute("ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMP")
+    # 113, not 112: this step has been renumbered on every restack (originally
+    # _v110_to_v111, then _v111_to_v112, now _v112_to_v113 after main's
+    # mcp-oauth step claimed v109), and the stamp has to move with each rename.
+    # The fresh-install branch runs the steps unguarded with no tail stamp of
+    # its own, so whatever the LAST step writes is the version the database
+    # ends on — a stale stamp here strands every DB one short of SCHEMA_VERSION
+    # and re-runs the whole ladder on every boot.
+    conn.execute("UPDATE schema_version SET version = 113")
+
+
+def _add_data_package_publisher_column(conn: duckdb.DuckDBPyConnection) -> None:
+    """The v114 column DDL + backfill, with no version stamp.
+
+    Split from the versioned step for the same reason as
+    :func:`_add_store_entity_trust_columns`: a stamp in here would downgrade
+    any instance already past 114 if a repair ever called it.
+
+    The backfill is the whole point of the step. Before v114 a package's trust
+    claim was *derived* on every render from "is ``created_by`` currently in the
+    Admin group", so the upgrade must freeze whatever that derivation said at
+    this moment into the column — otherwise every existing admin-created package
+    would silently drop from Organization to Community on upgrade, which is a
+    visible downgrade of a claim nobody asked to change.
+
+    It resolves Admin membership through the same repositories the API uses
+    rather than a hand-written JOIN: ``created_by`` holds a user id on some rows
+    and an email on others (the API looks up both — see ``_badges_for``), and the
+    Admin group is seeded ``is_system`` with its membership possibly written by
+    the Google sync, so a raw two-table JOIN gets this wrong on a Postgres
+    instance exactly as it did before (that bug is why ``_badges_for`` routes
+    through the factory today).
+    """
+    exists = conn.execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'data_packages'").fetchone()
+    if not exists:
+        return
+    conn.execute("ALTER TABLE data_packages ADD COLUMN IF NOT EXISTS publisher_kind VARCHAR DEFAULT 'user'")
+    # Pre-existing rows read NULL, not the DEFAULT (which applies to inserts
+    # only), so normalize first and let the backfill promote from there.
+    conn.execute("UPDATE data_packages SET publisher_kind = 'user' WHERE publisher_kind IS NULL")
+
+    # Backfill in PLAIN SQL, on this same connection.
+    #
+    # It must NOT go through the repositories, however much the request-time
+    # equivalent (``_badges_for``) has to: this runs inside ``_ensure_schema``,
+    # while the single DuckDB writer is already held by ``conn``. Calling
+    # ``users_repo()`` here re-enters the connection layer and asks for that same
+    # writer, and the process hangs before "Application startup complete" — no
+    # error, no traceback, just a server that never comes up. Learned the hard
+    # way; the v104 sibling below is pure SQL for the same reason.
+    #
+    # Matches the Alembic sibling's predicate, including both shapes of
+    # ``created_by`` seen in the wild — a user id on some rows, an email on
+    # others. Guarded on the RBAC tables: without them every row stays 'user'.
+    have = {
+        r[0]
+        for r in conn.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_name IN ('users', 'user_groups', 'user_group_members')"
+        ).fetchall()
+    }
+    if not {"users", "user_groups", "user_group_members"} <= have:
+        return
+    # ``users.email`` is guarded separately from the table itself. A database
+    # climbing the ladder from a very old schema reaches this step with whatever
+    # ``users`` looked like when it was created, which can be id-only — and
+    # DuckDB reports the missing column as ``Referenced table "u" not found``,
+    # naming the alias rather than the column, so the failure reads like a
+    # malformed query instead of an absent column. Match on id alone in that
+    # case: an id-only ``users`` cannot carry an email for ``created_by`` to
+    # have been written from, so the arm is dead weight, not lost coverage.
+    user_cols = {
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'users'"
+        ).fetchall()
+    }
+    created_by_match = "u.id = data_packages.created_by"
+    if "email" in user_cols:
+        created_by_match = f"({created_by_match} OR u.email = data_packages.created_by)"
+    conn.execute(
+        f"""
+        UPDATE data_packages
+           SET publisher_kind = 'organization'
+         WHERE created_by IS NOT NULL
+           AND EXISTS (
+                 SELECT 1
+                   FROM users u
+                   JOIN user_group_members m ON m.user_id = u.id
+                   JOIN user_groups g        ON g.id = m.group_id
+                  WHERE g.name = 'Admin'
+                    AND {created_by_match}
+               )
+        """
+    )
+
+
+def _heal_data_package_publisher_column(conn: duckdb.DuckDBPyConnection) -> None:
+    """Ensure ``data_packages.publisher_kind`` exists, whatever the stamp says.
+
+    Same repair, same reason, as :func:`_heal_store_entity_trust_columns`:
+    ``schema_version`` is not evidence that a versioned step ran. The ladder's
+    tail stamps ``SCHEMA_VERSION`` unconditionally, so a database opened by a
+    build where the constant had already been bumped to 114 but ``_v113_to_v114``
+    did not yet exist (or was not yet wired into the ladder) gets marked 114
+    **without** the column — and is then skipped forever, because
+    ``current < 114`` is false.
+
+    It fails at query time with ``Binder Error: Referenced column
+    "publisher_kind" not found``, and only on the paths that name the column, so
+    it looks intermittent: the catalog and the package detail page 500 while a
+    bare ``SELECT *`` keeps working. This is not hypothetical — it happened
+    during development of this step's original v113 numbering, in the window
+    between bumping the constant and wiring the step.
+
+    Deployed instances cannot hit it (constant and step ship in one commit), but
+    development and multi-worktree checkouts can. Presence of the column is
+    checked directly: one ``information_schema`` read per boot, authoritative,
+    and immune to a wrong stamp in either direction.
+    """
+    exists = conn.execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'data_packages'").fetchone()
+    if not exists:
+        return
+    has_col = conn.execute(
+        "SELECT 1 FROM information_schema.columns WHERE table_name = 'data_packages' AND column_name = 'publisher_kind'"
+    ).fetchone()
+    if has_col:
+        return
+    _add_data_package_publisher_column(conn)
+
+
+def _v113_to_v114(conn: duckdb.DuckDBPyConnection) -> None:
+    """v113→v114: add ``data_packages.publisher_kind`` and backfill it.
+
+    Turns the render-time-derived `curated` badge into the same stored trust
+    axis ``store_entities`` already carries, so every surface can render one
+    shared Organization / Verified / Community marker instead of four different
+    vocabularies for overlapping claims. See
+    :func:`_add_data_package_publisher_column` for why the derivation had to go
+    and what the backfill preserves.
+
+    Idempotent: ``ADD COLUMN IF NOT EXISTS`` guarded on table existence, and a
+    no-op on fresh installs where ``_SYSTEM_SCHEMA`` already declares the column
+    (the backfill then finds no rows).
+
+    Also re-asserts ``user_journey_state``: that table's ladder home is
+    ``_v97_to_v98``, a step every pre-merge database is already stamped past —
+    main's lineage never created it (the branch put it there), so the first
+    step the *merged* ladder is guaranteed to run must carry it too. CREATE
+    TABLE IF NOT EXISTS — a no-op wherever v98 or ``_SYSTEM_SCHEMA`` already
+    made it.
+    """
+    _add_data_package_publisher_column(conn)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_journey_state (
+            user_id             VARCHAR PRIMARY KEY,
+            first_asked         BOOLEAN NOT NULL DEFAULT FALSE,
+            stack_setup_done    BOOLEAN NOT NULL DEFAULT FALSE,
+            explored_stack      BOOLEAN NOT NULL DEFAULT FALSE,
+            catalog_discovered  BOOLEAN NOT NULL DEFAULT FALSE,
+            use_anywhere        BOOLEAN NOT NULL DEFAULT FALSE,
+            onboarded           BOOLEAN NOT NULL DEFAULT FALSE,
+            successful_answers  INTEGER NOT NULL DEFAULT 0,
+            updated_at          TIMESTAMP NOT NULL DEFAULT current_timestamp
+        )
+    """)
+    conn.execute("UPDATE schema_version SET version = 114")
+
+
+def _add_store_entity_trust_columns(conn: duckdb.DuckDBPyConnection) -> None:
+    """The v111 column DDL on its own, with no version stamp.
+
+    Shared by ``_v110_to_v111`` (the ladder step) and
+    :func:`_heal_store_entity_trust_columns` (the stamp-independent repair).
+    Keeping the stamp out of here matters: a heal that called the versioned step
+    directly would write ``version = 111`` and silently DOWNGRADE the stamp on any
+    instance already past 111.
+    """
+    exists = conn.execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'store_entities'").fetchone()
+    if not exists:
+        return
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS publisher_kind VARCHAR DEFAULT 'user'")
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS verification_state VARCHAR DEFAULT 'none'")
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS verified_at TIMESTAMP")
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS verified_by VARCHAR")
+    conn.execute("ALTER TABLE store_entities ADD COLUMN IF NOT EXISTS verification_note TEXT")
+    # Backfill deliberately, even though it looks redundant. DuckDB (measured
+    # on 1.5.2) DOES apply an ADD COLUMN default to pre-existing rows, so these
+    # UPDATEs are no-ops today — this comment used to claim the opposite, and a
+    # wrong belief about it is what makes the next heal author guess. Keeping
+    # them costs one no-op statement and removes the guess: a column added with
+    # no DEFAULT still reads NULL, and nothing here should depend on which
+    # engine version normalises what (Devin Review on #1158).
+    conn.execute("UPDATE store_entities SET publisher_kind = 'user' WHERE publisher_kind IS NULL")
+    conn.execute("UPDATE store_entities SET verification_state = 'none' WHERE verification_state IS NULL")
+
+
+def _heal_store_entity_trust_columns(conn: duckdb.DuckDBPyConnection) -> None:
+    """Ensure ``store_entities``' v111 trust columns exist, whatever the stamp says.
+
+    ``schema_version`` is not sufficient evidence that a versioned step ran. The
+    ladder's tail stamps ``SCHEMA_VERSION`` unconditionally, so a database opened
+    by a build where ``SCHEMA_VERSION`` had already been bumped but the matching
+    ``_v110_to_v111`` step did not yet exist gets marked past 111 **without** the
+    columns — and is then skipped forever, because ``current < 111`` is false. It
+    then fails at query time with ``Binder Error: Referenced column
+    "publisher_kind" not found``, but only on the code paths that name the column
+    in a WHERE (a bare ``SELECT *`` keeps working, which is what makes it look
+    intermittent).
+
+    Deployed instances cannot hit this — constant and step ship in the same
+    commit — but development and multi-worktree checkouts can, and the same class
+    of stranding already required two heal steps (``_v99_to_v100``,
+    ``_v100_to_v101``). Rather than add a third version bump, the presence of the
+    columns is checked directly: cheap (one ``information_schema`` read per
+    boot), authoritative, and immune to a wrong stamp in either direction.
+    """
+    exists = conn.execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'store_entities'").fetchone()
+    if not exists:
+        return
+    cols = {
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'store_entities'"
+        ).fetchall()
+    }
+    if "publisher_kind" in cols and "verification_state" in cols:
+        return
+    logger.warning(
+        "store_entities is missing its v111 trust columns despite schema_version "
+        "— healing (see _heal_store_entity_trust_columns)"
+    )
+    _add_store_entity_trust_columns(conn)
+
+
+def _heal_stranded_ladder_columns(conn: duckdb.DuckDBPyConnection) -> None:
+    """Add back the plain columns the paper-theme renumbering stranded.
+
+    :func:`_heal_legacy_agents_table` repairs the ``agents`` *table* for a DB
+    that reached the merge already stamped past 101 — but ``_v100_to_v101`` also
+    adds two ``agent_id`` columns, and the same skip drops those on the floor.
+    ``chat_sessions.agent_id`` is the one that hurts: every chat read and write
+    names it, so the whole surface 500s with ``Binder Error: Table "s" does not
+    have a column named "agent_id"`` while the instance otherwise looks healthy
+    (``/api/health`` reports ``db_schema: ok`` — the stamp *is* at the head).
+
+    The renumbering shifted more than one step underneath these DBs, so the same
+    treatment is owed to every plain-column addition in the affected range:
+    ``sync_state.parts`` (v100) and the ``data_apps`` draft (v99) + linked (v108)
+    columns. Structural steps are already covered by the sibling heals; these are
+    the ones that are pure ``ADD COLUMN``.
+
+    Stamp-independent and idempotent, for the reasons in
+    :func:`_heal_store_entity_trust_columns` — the stamp is exactly the evidence
+    that is wrong here. Unlike ``DROP COLUMN``, DuckDB has no problem adding a
+    column to a table carrying indexes or inbound foreign keys, so no dependent
+    parking is needed.
+    """
+    # (table, column, DDL) — verbatim from the ladder steps that own them, so a
+    # healed DB is indistinguishable from a cleanly-migrated one.
+    stranded = [
+        ("chat_sessions", "agent_id", "VARCHAR"),  # _v100_to_v101
+        ("personal_access_tokens", "agent_id", "VARCHAR"),  # _v100_to_v101
+        ("sync_state", "parts", "JSON"),  # _v99_to_v100
+        ("data_apps", "parent_app_id", "VARCHAR DEFAULT ''"),  # _v98_to_v99
+        ("data_apps", "is_draft", "BOOLEAN DEFAULT FALSE"),  # _v98_to_v99
+        ("data_apps", "draft_branch", "VARCHAR DEFAULT ''"),  # _v98_to_v99
+        ("data_apps", "external_url", "VARCHAR"),  # _v107_to_v108
+        ("data_apps", "source_ref", "VARCHAR"),  # _v107_to_v108
+        ("data_apps", "managed", "BOOLEAN DEFAULT FALSE"),  # _v107_to_v108
+        ("data_apps", "description_override", "TEXT"),  # _v107_to_v108
+        # _v105_to_v106. Without it every PAT mint fails — including the CLI
+        # sign-in exchange — on exactly the databases this heal repairs, so
+        # leaving it out would fix chat and leave the operator locked out of
+        # the CLI (Devin Review on #1158).
+        ("personal_access_tokens", "surface", "VARCHAR DEFAULT 'all'"),
+        ("usage_session_summary", "uploaded_at", "TIMESTAMP"),  # _v104_to_v105
+        ("file_corpora", "origin", "VARCHAR DEFAULT 'uploaded'"),  # _v109_to_v110
+        ("chat_sessions", "pinned_at", "TIMESTAMP"),  # _v112_to_v113
+        # _v97_to_v98's relay half. The paper-theme branch REPLACED that step's
+        # body with the journey table, so a database that climbed the branch
+        # ladder past 98 is stamped at the head yet missing main's column —
+        # and every chat spawn/resume names it via set_sandbox_ref.
+        ("chat_sessions", "relay_protocol_version", "INTEGER"),  # _v97_to_v98
+    ]
+    # The seven agents.* columns those steps also add are NOT listed here:
+    # _heal_legacy_agents_table rebuilds that table from the canonical DDL,
+    # which carries them. tests/test_db_schema_version.py derives this
+    # comparison from the ladder and fails if a future step adds a column that
+    # neither heal covers — this list drifted twice before that guard existed
+    # (Devin Review on #1158).
+
+    present: dict[str, set[str]] = {}
+    for table, column, ddl in stranded:
+        if table not in present:
+            exists = conn.execute("SELECT 1 FROM information_schema.tables WHERE table_name = ?", [table]).fetchone()
+            present[table] = (
+                {
+                    r[0]
+                    for r in conn.execute(
+                        "SELECT column_name FROM information_schema.columns WHERE table_name = ?",
+                        [table],
+                    ).fetchall()
+                }
+                if exists
+                else set()
+            )
+        # Empty set means the table itself is absent — nothing to heal, and the
+        # fresh-install path will declare the column from _SYSTEM_SCHEMA anyway.
+        if not present[table] or column in present[table]:
+            continue
+        logger.warning(
+            "%s is missing %s despite schema_version — healing (see _heal_stranded_ladder_columns)",
+            table,
+            column,
+        )
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+        present[table].add(column)
+
+    # `managed` is NOT NULL in the fresh-install DDL, but DuckDB cannot ADD
+    # COLUMN with a constraint, so the ladder normalizes instead — same as
+    # _v107_to_v108. Rows predating the column read NULL, not the DEFAULT.
+    if "managed" in present.get("data_apps", set()):
+        conn.execute("UPDATE data_apps SET managed = FALSE WHERE managed IS NULL")
+
+
+def _heal_legacy_agents_table(conn: duckdb.DuckDBPyConnection) -> None:
+    """Rebuild a pre-merge paper-theme ``agents`` table into main's canonical shape.
+
+    Stamp-independent, for the same reason as
+    :func:`_heal_store_entity_trust_columns`: the damage is invisible to
+    ``schema_version``. Before the two agent features were combined (PR #1113)
+    the paper-theme branch owned its own ``agents`` table — ``created_by`` /
+    ``instructions`` / globally-UNIQUE ``slug``, created at *its* v103. A
+    database built by that branch therefore reaches the merge already stamped
+    past 101, so ``_v100_to_v101`` (whose ``CREATE TABLE IF NOT EXISTS`` would
+    otherwise have laid down main's shape) never runs, and ``_v109_to_v110``
+    finds every superset column already present and adds nothing. The table
+    stays in the old shape forever while the repository layer
+    (``src/repositories/agents.py``) writes the canonical one — so every
+    ``POST /api/agents`` dies with ``Binder Error: Table "agents" does not have
+    a column with name "owner_user_id"`` and the /agents builder's "Build an
+    agent" button 500s.
+
+    No deployed instance can be in this state (main never shipped the old
+    shape), but every checkout that ran the paper-theme branch before the merge
+    is — which is what makes this a heal rather than a ladder step.
+
+    The rebuild is a rename → recreate → copy → drop, not a column shuffle:
+    ``created_by`` → ``owner_user_id`` and ``instructions`` → ``system_prompt``
+    are the mappings the repository already assumes, the columns main adds
+    (description/model/token_budget_monthly/…) take their declared defaults, and
+    the old global ``UNIQUE (slug)`` is strictly stronger than the new
+    ``UNIQUE (owner_user_id, slug)`` so no row can collide on the way in.
+    """
+    exists = conn.execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'agents'").fetchone()
+    if not exists:
+        return
+    cols = {
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'agents'"
+        ).fetchall()
+    }
+    # Canonical already (the overwhelmingly common case) — or something else
+    # entirely, which this heal must not touch.
+    if "owner_user_id" in cols or "created_by" not in cols:
+        return
+    logger.warning(
+        "agents is in the pre-merge paper-theme shape despite schema_version "
+        "— rebuilding onto the canonical shape (see _heal_legacy_agents_table)"
+    )
+    conn.execute("DROP TABLE IF EXISTS agents_legacy_heal")
+    conn.execute("ALTER TABLE agents RENAME TO agents_legacy_heal")
+    conn.execute(_AGENTS_CREATE_SQL)
+    conn.execute("""
+        INSERT INTO agents
+        (id, owner_user_id, name, slug, system_prompt,
+         role, tone, greeting, knowledge, plugins, surfaces, status,
+         created_at, updated_at, deleted_at)
+        SELECT id, created_by, name, slug, instructions,
+               role, tone, greeting, knowledge, plugins, surfaces, status,
+               created_at, updated_at, deleted_at
+        FROM agents_legacy_heal
+    """)
+    conn.execute("DROP TABLE agents_legacy_heal")
 
 
 def _v98_to_v99(conn: duckdb.DuckDBPyConnection) -> None:
@@ -7447,9 +8046,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # _SYSTEM_SCHEMA already declares it on fresh installs (no-op
             # ALTER here).
             _v96_to_v97(conn)
-            # v97→v98: chat_sessions.relay_protocol_version (Tier 1
-            # restart-invariant sandbox reuse). _SYSTEM_SCHEMA already
-            # declares it on fresh installs (no-op ALTER here).
+            # v97→v98: chat_sessions.relay_protocol_version (restart-invariant
+            # sandbox reuse) + user_journey_state table (chat-driven onboarding
+            # backend foundation). _SYSTEM_SCHEMA already declares both on
+            # fresh installs (no-op here).
             _v97_to_v98(conn)
             # v98→v99: data_apps draft model (parent_app_id, is_draft,
             # draft_branch). _SYSTEM_SCHEMA already declares the columns on
@@ -7495,6 +8095,27 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # since the tables aren't in _SYSTEM_SCHEMA (fresh installs get
             # them from this same call).
             _v108_to_v109(conn)
+            # --- paper-theme branch schema, restacked on top of main's ladder ---
+            # v109→v110: file_corpora.origin (uploaded | generated). No-op on
+            # fresh installs — _SYSTEM_SCHEMA already declares the column.
+            _v109_to_v110(conn)
+            # v110→v111: store_entities publisher_kind + verification_state
+            # (+ verified_at/by/note). No-op on fresh installs — _SYSTEM_SCHEMA
+            # already declares the columns.
+            _v110_to_v111(conn)
+            # v111→v112: agents builder superset columns (role/tone/greeting/
+            # knowledge/plugins/surfaces/status) — combines the paper-theme
+            # agent-builder fields onto main's agents table. No-op on fresh
+            # installs — _SYSTEM_SCHEMA already declares them.
+            _v111_to_v112(conn)
+            # v112→v113: chat_sessions.pinned_at (pinned conversations). No-op
+            # on fresh installs — _SYSTEM_SCHEMA already declares the column.
+            _v112_to_v113(conn)
+            # v113→v114: data_packages.publisher_kind, replacing the derived
+            # `curated` badge with the stored trust axis store_entities uses.
+            # No-op on fresh installs — _SYSTEM_SCHEMA already declares the
+            # column, and the backfill then finds no rows to promote.
+            _v113_to_v114(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -7766,6 +8387,16 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v107_to_v108(conn)
             if current < 109:
                 _v108_to_v109(conn)
+            if current < 110:
+                _v109_to_v110(conn)
+            if current < 111:
+                _v110_to_v111(conn)
+            if current < 112:
+                _v111_to_v112(conn)
+            if current < 113:
+                _v112_to_v113(conn)
+            if current < 114:
+                _v113_to_v114(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
@@ -7825,6 +8456,48 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
     # seeding here would side-channel state writes into the wrong backend.
     if get_schema_version(conn) <= SCHEMA_VERSION and not _state_backend_is_pg():
         _seed_system_groups(conn)
+
+    # Same reasoning as the seed above — this has to live OUTSIDE the
+    # `if current < SCHEMA_VERSION` migration guard. A DB already stamped at
+    # SCHEMA_VERSION skips the entire ladder, so a stamp written by a build that
+    # lacked the matching v104 step can never be repaired from inside it. Checks
+    # for the columns directly instead of trusting the stamp; one
+    # information_schema read per connect. See
+    # _heal_store_entity_trust_columns.
+    #
+    # _heal_legacy_agents_table is the same class of repair one step further —
+    # there the stamp is not merely ahead of a missing column but ahead of a
+    # whole pre-merge table SHAPE (see its docstring), so it too checks the
+    # columns directly rather than trusting the version.
+    #
+    # _heal_stranded_ladder_columns closes the rest of that same gap: the
+    # renumbering skipped whole steps, not just the agents table, so the plain
+    # ADD COLUMNs those steps carried (chat_sessions.agent_id above all) need
+    # the same stamp-independent treatment.
+    if not _state_backend_is_pg():
+        _heal_store_entity_trust_columns(conn)
+        _heal_data_package_publisher_column(conn)
+        _heal_legacy_agents_table(conn)
+        _heal_stranded_ladder_columns(conn)
+        # Flush whatever the heals just wrote. The post-migration CHECKPOINT
+        # above sits inside `if current < SCHEMA_VERSION`, and a stranded DB
+        # is stamped AT the head — so on precisely the databases these heals
+        # exist for, that checkpoint never runs and their ALTER TABLE ... ADD
+        # COLUMN statements stay in the WAL. That is the exact shape the
+        # migration checkpoint documents as able to leave system.duckdb
+        # unrecoverable on a cross-version WAL replay after an abrupt restart
+        # (Devin Review on #1158). Unconditional and best-effort: a no-op
+        # checkpoint on an unchanged DB is cheap, and deciding whether any
+        # heal altered anything would put the correctness of a corruption
+        # guard behind four independent return values.
+        try:
+            conn.execute("CHECKPOINT")
+        except Exception as e:
+            logger.warning(
+                "Post-heal CHECKPOINT failed (%s); repaired columns may sit in the WAL. "
+                "Shut this process down cleanly before any container restart.",
+                e,
+            )
 
 
 def get_schema_version(conn: duckdb.DuckDBPyConnection) -> int:

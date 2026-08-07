@@ -2,25 +2,37 @@
 
 Endpoints:
 
-  POST   /api/collections                         require_admin
+  POST   /api/collections                         auth (owned by creator)
   GET    /api/collections                         auth (RBAC-filtered list)
-  GET    /api/collections/{collection_id}         require_resource_access(COLLECTION, "{collection_id}")
-  DELETE /api/collections/{collection_id}         require_admin
-  POST   /api/collections/{collection_id}/files   require_resource_access(COLLECTION, "{collection_id}")
-  GET    /api/collections/{collection_id}/files   require_resource_access(COLLECTION, "{collection_id}")
+  GET    /api/collections/{collection_id}         require_collection_access("{collection_id}")
+  DELETE /api/collections/{collection_id}         owner or admin
+  POST   /api/collections/{collection_id}/files   require_collection_access("{collection_id}")
+  GET    /api/collections/{collection_id}/files   require_collection_access("{collection_id}")
   DELETE /api/collections/{collection_id}/files/{file_id}
-                                                  require_resource_access(COLLECTION, "{collection_id}")
+                                                  require_collection_access("{collection_id}")
   POST   /api/collections/{collection_id}/files/{file_id}/reingest
-                                                  require_resource_access(COLLECTION, "{collection_id}")
+                                                  require_collection_access("{collection_id}")
+  GET    /api/collections/{collection_id}/files/{file_id}/preview
+                                                  collection access OR corpus_file grant
+  GET    /api/collections/{collection_id}/files/{file_id}/raw
+                                                  collection access OR corpus_file grant
 
-RBAC model: collection **create/delete** = admin-only; file **upload/list/delete**
-and collection **read** = any user whose groups hold an explicit
-``resource_grants`` row for ``(collection, <collection_id>)``. Admins
-short-circuit every grant check.
+RBAC model: **create** = any authenticated user (the corpus is owned by its
+creator and private to them); **delete** = owner or admin; file
+**upload/list/delete** and collection **read** = admin, owner
+(``created_by``), or any user whose groups hold an explicit
+``resource_grants`` row for ``(collection, <collection_id>)`` (see
+``can_access_collection``). Admins short-circuit every grant check.
 
-Fail-closed: the GET list returns only collections the caller can access;
-unknown collections on entity-scoped endpoints return 404 (not 403) so callers
-cannot probe for existence of collections they are not granted.
+Fail-closed: the GET list returns only collections the caller can access
+(granted + owned); unknown collections on entity-scoped endpoints return 404
+(not 403) so callers cannot probe for existence of collections they cannot
+access.
+
+The two **preview** endpoints widen the read rule by one case — a grant on the
+``corpus_file`` itself also grants them — because a file shared out of a folder
+has to be viewable by the person it was shared with, who holds no grant on the
+parent collection.
 """
 
 from __future__ import annotations
@@ -34,14 +46,15 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPExcepti
 from pydantic import BaseModel, Field
 
 from app.auth.access import (
-    require_admin,
-    require_resource_access,
+    accessible_collection_ids,
+    can_access_collection,
+    is_user_admin,
+    require_collection_access,
 )
 from app.auth.dependencies import get_current_user
-from app.resource_types import ResourceType
+from app.services.journey import mark_journey
 from src.corpus_allowlist import classify
 from src.file_storage import delete_corpus_file, store_corpus_file
-from src.rbac import get_accessible_ids
 from src.sql_ident import quote_ident
 from src.repositories import (
     corpus_chunks_repo,
@@ -137,9 +150,14 @@ def _file_out(row: dict) -> dict:
 @router.post("", status_code=201)
 async def create_collection(
     payload: CreateCollectionRequest,
-    user: dict = Depends(require_admin),
+    user: dict = Depends(get_current_user),
 ):
-    """Create a new file corpus (admin only).
+    """Create a new file corpus (any authenticated user).
+
+    The corpus is owned by the creator (``created_by``) and is private to
+    them — reachable via ownership without a ``resource_grants`` row (see
+    ``can_access_collection``). Admins may additionally grant a corpus to
+    groups to share it.
 
     Returns the created collection object (id, slug, name, …).
     ``slug`` is auto-generated from ``name`` when omitted, and an explicit
@@ -174,19 +192,23 @@ async def create_collection(
 
     row = repo.get(corpus_id)
     logger.info("collection created id=%s slug=%s by=%s", corpus_id, slug, user.get("email"))
+    # Onboarding step "Add or share something": bringing your own knowledge in
+    # starts here — the Library's upload flow creates the collection first, then
+    # posts the files into it.
+    mark_journey(user.get("id"), catalog_discovered=True)
     return _collection_out(row)
 
 
 def _accessible_corpus_ids(user) -> list[str]:
     """The collection ids the caller may access (fail-closed).
 
-    Resolves the grant set **once** via ``get_accessible_ids`` (admin -> None
+    Resolves the set **once** via ``accessible_collection_ids`` (admin -> None
     => every collection; ``SessionPrincipal`` co-session callers get their
-    intersection set; other non-admins get only granted collections) instead
-    of a per-row ``can_access`` check. Goes through the repository factory
+    intersection set; other non-admins get granted collections plus the ones
+    they own) instead of a per-row check. Goes through the repository factory
     (no raw DuckDB conn) → correct on the Postgres backend.
     """
-    allowed = get_accessible_ids(user, ResourceType.COLLECTION.value)
+    allowed = accessible_collection_ids(user)
     rows = file_corpora_repo().list()
     if allowed is None:
         return [r["id"] for r in rows]
@@ -198,7 +220,7 @@ async def list_collections(
     user=Depends(get_current_user),
 ):
     """List collections accessible to the caller (fail-closed)."""
-    allowed = get_accessible_ids(user, ResourceType.COLLECTION.value)  # None => admin
+    allowed = accessible_collection_ids(user)  # None => admin
     rows = [r for r in file_corpora_repo().list() if allowed is None or r["id"] in allowed]
     return {"items": [_collection_out(r) for r in rows]}
 
@@ -232,7 +254,7 @@ async def search_collections(
 @router.get("/{collection_id}")
 async def get_collection(
     collection_id: str,
-    user=Depends(require_resource_access(ResourceType.COLLECTION, "{collection_id}")),
+    user=Depends(require_collection_access("{collection_id}")),
 ):
     """Return a collection's metadata + file list.
 
@@ -399,11 +421,12 @@ def _purge_derived_tabular_row_for_file(corpus_id: str, file_id: str) -> None:
 @router.delete("/{collection_id}", status_code=204)
 async def delete_collection(
     collection_id: str,
-    user: dict = Depends(require_admin),
+    user: dict = Depends(get_current_user),
 ):
-    """Soft-delete a collection (admin only).
+    """Soft-delete a collection (owner or admin).
 
-    Sets ``deleted_at``; the collection becomes invisible on GET list and
+    The creator can delete their own upload; admins can delete any. Sets
+    ``deleted_at``; the collection becomes invisible on GET list and
     returns 404 on entity-scoped reads. Derived table_registry rows, parquets,
     and extract.duckdb views are purged synchronously (they are regenerable from
     the uploaded files; soft-delete of the collection is treated as hard-delete
@@ -412,6 +435,8 @@ async def delete_collection(
     row = file_corpora_repo().get(collection_id)
     if not row:
         raise HTTPException(status_code=404, detail="collection_not_found")
+    if not is_user_admin(user["id"]) and row.get("created_by") != user["id"]:
+        raise HTTPException(status_code=403, detail="collection_not_owned")
     _schedule_derived_purge(collection_id)
     file_corpora_repo().soft_delete(collection_id)
     logger.info("collection deleted id=%s by=%s", collection_id, user.get("email"))
@@ -489,7 +514,7 @@ async def upload_files(
     background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),
     paths: Optional[List[str]] = Form(None),
-    user=Depends(require_resource_access(ResourceType.COLLECTION, "{collection_id}")),
+    user=Depends(require_collection_access("{collection_id}")),
 ):
     """Upload one or more files into a collection.
 
@@ -669,7 +694,7 @@ async def upload_files(
 @router.get("/{collection_id}/files")
 async def list_files(
     collection_id: str,
-    user=Depends(require_resource_access(ResourceType.COLLECTION, "{collection_id}")),
+    user=Depends(require_collection_access("{collection_id}")),
 ):
     """List all files in a collection (all processing statuses)."""
     corpus = file_corpora_repo().get(collection_id)
@@ -679,11 +704,77 @@ async def list_files(
     return {"files": [_file_out(f) for f in files]}
 
 
+class MoveFileBody(BaseModel):
+    target_collection_id: str = Field(min_length=1)
+
+
+@router.post("/{collection_id}/files/{file_id}/move")
+async def move_file(
+    collection_id: str,
+    file_id: str,
+    payload: MoveFileBody,
+    user=Depends(require_collection_access("{collection_id}")),
+):
+    """Move a file into another collection — the Library's drag-and-drop.
+
+    Gated on BOTH ends: the path dependency proves access to the source, and
+    the target is re-checked here (otherwise a caller could push a file into
+    someone else's collection).
+
+    When the source collection is left empty it is soft-deleted: a single-file
+    artefact IS its file in the Library, so dragging that file into a folder
+    must not strand an empty husk in the listing.
+    """
+    target_id = payload.target_collection_id
+    if target_id == collection_id:
+        raise HTTPException(status_code=400, detail="same_collection")
+
+    cf_repo = corpus_files_repo()
+    fc_repo = file_corpora_repo()
+    row = cf_repo.get(file_id)
+    if not row or row.get("corpus_id") != collection_id:
+        raise HTTPException(status_code=404, detail="file_not_found")
+
+    target = fc_repo.get(target_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="target_not_found")
+    if not is_user_admin(user["id"]) and not can_access_collection(user["id"], target_id):
+        # 404, not 403 — same reason as everywhere else here: never confirm the
+        # existence of a collection the caller can't reach.
+        raise HTTPException(status_code=404, detail="target_not_found")
+
+    if not cf_repo.move_to_corpus(file_id, target_id):
+        raise HTTPException(status_code=404, detail="file_not_found")
+
+    source_emptied = False
+    try:
+        if not cf_repo.list_for_corpus(collection_id):
+            fc_repo.soft_delete(collection_id)
+            source_emptied = True
+    except Exception as e:
+        logger.warning("move_file: could not tidy empty source %s: %s", collection_id, e)
+
+    logger.info(
+        "corpus_file moved file_id=%s from=%s to=%s by=%s (source_emptied=%s)",
+        file_id,
+        collection_id,
+        target_id,
+        user.get("email"),
+        source_emptied,
+    )
+    return {
+        "file_id": file_id,
+        "collection_id": target_id,
+        "source_collection_id": collection_id,
+        "source_emptied": source_emptied,
+    }
+
+
 @router.delete("/{collection_id}/files/{file_id}", status_code=204)
 async def delete_file(
     collection_id: str,
     file_id: str,
-    user=Depends(require_resource_access(ResourceType.COLLECTION, "{collection_id}")),
+    user=Depends(require_collection_access("{collection_id}")),
 ):
     """Delete a file from a collection.
 
@@ -727,7 +818,7 @@ async def reingest_file(
     collection_id: str,
     file_id: str,
     background_tasks: BackgroundTasks,
-    user=Depends(require_resource_access(ResourceType.COLLECTION, "{collection_id}")),
+    user=Depends(require_collection_access("{collection_id}")),
 ):
     """Re-run ingestion for one file (after a fix, a new extractor, or a
     pre-status-honesty backfill).
@@ -787,3 +878,282 @@ async def reingest_file(
         cf_repo.set_status(file_id, status="pending", detail={"reason": "reingest requested"})
 
     return {**_file_out(cf_repo.get(file_id))}
+
+
+# ---------------------------------------------------------------------------
+# Preview — "what IS this file?" without a download
+# ---------------------------------------------------------------------------
+
+# Formats the browser can render itself, served as the real bytes. Deliberately
+# a CLOSED map, not "everything that isn't text": uploads accept `html` (and a
+# bundle can carry anything), and serving attacker-authored HTML/SVG inline
+# from our own origin is stored XSS against every viewer of the collection.
+# Anything absent here is previewed as TEXT or not at all — never streamed
+# inline with a type the browser will execute.
+_PREVIEW_INLINE_MEDIA: dict[str, str] = {
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "pdf": "application/pdf",
+}
+
+# Extensions whose stored bytes ARE the text. Everything else that is not in
+# `_PREVIEW_INLINE_MEDIA` (docx, xlsx, pptx, parquet, epub, zip …) previews
+# through the text ingestion already extracted into `corpus_chunks`, which is
+# the only text that exists for those formats. `html` lands here on purpose:
+# shown as source, in a `<pre>`, never rendered.
+_PREVIEW_TEXTUAL_EXTS: frozenset[str] = frozenset(
+    {"txt", "md", "csv", "tsv", "json", "jsonl", "html", "rtf", "eml", "log", "yaml", "yml"}
+)
+
+# A preview is a glance, not the file: cap what we read off disk AND what we
+# return, so a 100 MiB CSV can't turn a modal into a 100 MiB response.
+_PREVIEW_READ_MAX_BYTES = 512 * 1024
+_PREVIEW_MAX_CHARS = 20_000
+
+
+def _readable_file_or_404(collection_id: str, file_id: str, user: dict) -> dict:
+    """The file's row, if this caller may read it — else 404.
+
+    Mirrors the per-file access rule the web detail page uses: the parent
+    collection's access (admin / owner / group grant) OR a grant on the file
+    itself, so a file shared *out* of a folder stays previewable by the person
+    it was shared with. 404 (never 403) for missing AND for no-access, matching
+    the rest of this module so the URL space can't be probed.
+    """
+    from app.auth.session_principal import PRINCIPAL_TYPES
+    from app.resource_types import ResourceType
+
+    if not file_corpora_repo().get(collection_id):
+        raise HTTPException(status_code=404, detail="collection_not_found")
+    row = corpus_files_repo().get(file_id)
+    if not row or row.get("corpus_id") != collection_id:
+        raise HTTPException(status_code=404, detail="file_not_found")
+
+    if isinstance(user, PRINCIPAL_TYPES):
+        # A co-session / agent-session caller is not a user dict: its authority
+        # IS its intersection — no admin short-circuit, and the per-file grant
+        # below never widens it (that would hand an agent a file its scope
+        # doesn't name). Fail-closed when the type isn't in the intersection.
+        from src.rbac import get_accessible_ids
+
+        allowed = get_accessible_ids(user, ResourceType.COLLECTION.value) or frozenset()
+        if collection_id in allowed:
+            return row
+        raise HTTPException(status_code=404, detail="file_not_found")
+
+    if can_access_collection(user["id"], collection_id):
+        return row
+
+    from src.repositories import resource_grants_repo
+
+    try:
+        granted = set(resource_grants_repo().list_resource_ids_for_user(user["id"], ResourceType.CORPUS_FILE.value))
+    except Exception:  # pragma: no cover - grant lookup is best-effort
+        granted = set()
+    if file_id in granted:
+        return row
+    raise HTTPException(status_code=404, detail="file_not_found")
+
+
+def _blob_path_or_none(row: dict):
+    """Resolve a row's blob to a real file inside the corpus storage root.
+
+    `storage_path` is written by ``store_corpus_file`` (never by a caller), but
+    it is still a filesystem path read out of the database: realpath-contain it
+    under ``${DATA_DIR}/file_corpora`` so a bad row can never make this
+    endpoint serve, say, ``/etc/passwd``.
+
+    Returns ``None`` when there is no readable blob — a row can legitimately
+    carry no path (an oversize or empty upload is recorded ``rejected`` with
+    ``storage_path=None`` but still keeps the extension derived from its
+    filename), and a path can outlive its bytes. Callers decide whether that is
+    fatal: serving raw bytes has nothing to send, but a *preview* still has the
+    extracted text and the status sentence to fall back on.
+    """
+    from pathlib import Path
+
+    from src.db import _get_data_dir
+
+    raw = row.get("storage_path")
+    if not raw:
+        return None
+    root = (_get_data_dir() / "file_corpora").resolve()
+    path = Path(raw).resolve()
+    if not path.is_relative_to(root) or not path.is_file():
+        return None
+    return path
+
+
+def _blob_path_or_404(row: dict):
+    """``_blob_path_or_none`` for the callers that cannot degrade gracefully."""
+    path = _blob_path_or_none(row)
+    if path is None:
+        raise HTTPException(status_code=404, detail="file_blob_missing")
+    return path
+
+
+def _extracted_text(file_id: str) -> str:
+    """Joined chunk text for a file — the only text a docx/xlsx/pdf-scan has."""
+    chunks = corpus_chunks_repo().list_for_file(file_id)
+    if not chunks:
+        return ""
+    out: list[str] = []
+    total = 0
+    for c in chunks:
+        text = (c.get("text") or "").strip()
+        if not text:
+            continue
+        out.append(text)
+        total += len(text)
+        if total >= _PREVIEW_MAX_CHARS:
+            break
+    return "\n\n".join(out)
+
+
+@router.get("/{collection_id}/files/{file_id}/preview")
+async def preview_file(
+    collection_id: str,
+    file_id: str,
+    user=Depends(get_current_user),
+):
+    """What to show for this file, and how — the modal's single fetch.
+
+    Returns a `kind` the client renders directly:
+
+    * ``image`` / ``pdf`` — fetch ``raw_url`` and let the browser draw it.
+    * ``text`` — ``text`` holds the preview (source for textual uploads, the
+      ingested text for formats whose bytes aren't readable), ``truncated``
+      says a glance is all this is.
+    * ``none`` — nothing to show yet; ``reason`` says why, in the words the
+      modal shows the caller.
+
+    Deliberately one endpoint for every format: the client should not have to
+    know which extensions are streamable, which are text and which are only
+    previewable once ingestion has run.
+    """
+    row = _readable_file_or_404(collection_id, file_id, user)
+    ext = (row.get("file_type") or "").lower()
+    base = {
+        "file_id": file_id,
+        "collection_id": collection_id,
+        "filename": row.get("filename"),
+        "file_type": ext or None,
+        "size_bytes": row.get("size_bytes"),
+        "raw_url": None,
+        "text": None,
+        "truncated": False,
+        "source": None,
+        "reason": None,
+    }
+
+    if ext in _PREVIEW_INLINE_MEDIA:
+        _blob_path_or_404(row)  # 404 now beats a broken <img> in the modal
+        return {
+            **base,
+            "kind": "image" if ext != "pdf" else "pdf",
+            "raw_url": f"/api/collections/{collection_id}/files/{file_id}/raw",
+        }
+
+    # Textual formats read their own bytes when they have them. A missing blob
+    # is NOT fatal here: an oversize or empty upload is recorded `rejected` with
+    # storage_path=None yet keeps the extension from its filename, so 404ing
+    # would render the modal's generic "could not be loaded" for exactly the
+    # rows whose status sentence ("rejected during ingestion…") is the useful
+    # answer — and would throw away extracted text that is already in the DB.
+    # Fall through to the same two outcomes every non-textual format gets.
+    # Inline media above keeps its 404: there, a broken <img> is worse.
+    path = _blob_path_or_none(row) if ext in _PREVIEW_TEXTUAL_EXTS else None
+    if path is not None:
+        with path.open("rb") as fh:
+            # One byte past the cap: enough to know the file continues.
+            data = fh.read(_PREVIEW_READ_MAX_BYTES + 1)
+        clipped = len(data) > _PREVIEW_READ_MAX_BYTES
+        text = data[:_PREVIEW_READ_MAX_BYTES].decode("utf-8", errors="replace")
+        truncated = clipped or len(text) > _PREVIEW_MAX_CHARS
+        return {
+            **base,
+            "kind": "text",
+            "text": text[:_PREVIEW_MAX_CHARS],
+            "truncated": truncated,
+            "source": "file",
+        }
+
+    text = _extracted_text(file_id)
+    if text:
+        return {
+            **base,
+            "kind": "text",
+            "text": text[:_PREVIEW_MAX_CHARS],
+            "truncated": len(text) > _PREVIEW_MAX_CHARS,
+            "source": "extracted",
+        }
+
+    status = row.get("processing_status") or "pending"
+    reason = {
+        "pending": "This file hasn't been indexed yet — its text preview appears once ingestion runs.",
+        "processing": "Indexing is running — its text preview appears when it finishes.",
+        "rejected": "This file was rejected during ingestion, so there is no text to preview.",
+        "needs_review": "This file needs review before its text can be previewed.",
+    }.get(status, "No preview is available for this format.")
+    return {**base, "kind": "none", "reason": reason}
+
+
+@router.get("/{collection_id}/files/{file_id}/raw")
+async def raw_file(
+    collection_id: str,
+    file_id: str,
+    user=Depends(get_current_user),
+):
+    """Stream a browser-renderable file inline (images + PDF only).
+
+    Serves ONLY the closed ``_PREVIEW_INLINE_MEDIA`` set, with the media type
+    taken from that map rather than from anything the uploader controls, plus
+    ``nosniff`` so a mislabelled body can't be re-interpreted as HTML. Any
+    other extension is 415 with a pointer at the text preview — this endpoint
+    is a viewer, not a download route.
+    """
+    from fastapi.responses import FileResponse
+
+    row = _readable_file_or_404(collection_id, file_id, user)
+    ext = (row.get("file_type") or "").lower()
+    media = _PREVIEW_INLINE_MEDIA.get(ext)
+    if not media:
+        raise HTTPException(
+            status_code=415,
+            detail=(
+                f"no inline preview for '.{ext or 'unknown'}' — "
+                f"GET /api/collections/{collection_id}/files/{file_id}/preview for its text"
+            ),
+        )
+    path = _blob_path_or_404(row)
+    return FileResponse(
+        path=str(path),
+        media_type=media,
+        headers={
+            # The blob is named `<sha256><ext>` on disk; `inline` keeps it in
+            # the viewer, and the sanitized filename is only a display hint.
+            "Content-Disposition": f'inline; filename="{_safe_download_name(row)}"',
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, max-age=60",
+            # The app-wide defaults are `X-Frame-Options: DENY` +
+            # `frame-ancestors 'none'`, which would block the modal's own PDF
+            # iframe — same-origin framing included. Narrow both to SELF (never
+            # wider) for this one response; SecurityHeadersMiddleware applies
+            # its defaults with setdefault, so these win. Images don't need it
+            # (an <img> is not framing), but one rule for the endpoint beats a
+            # per-extension header set.
+            "X-Frame-Options": "SAMEORIGIN",
+            "Content-Security-Policy": "frame-ancestors 'self'; object-src 'none'; base-uri 'none'",
+        },
+    )
+
+
+def _safe_download_name(row: dict) -> str:
+    """Quote-free, path-free filename for a Content-Disposition header."""
+    from pathlib import Path
+
+    name = Path(row.get("filename") or "file").name
+    return re.sub(r"[^A-Za-z0-9._ -]", "_", name) or "file"

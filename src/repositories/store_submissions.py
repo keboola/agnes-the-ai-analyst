@@ -38,6 +38,26 @@ VALID_STATUSES = {
     "archived",
 }
 
+# Verdicts that mean "guardrail review REJECTED this bundle".
+#
+# The serve chokepoint (``user_store_installs.list_for_user``) probes for these
+# to tell a deliberately-Private entity apart from a quarantined one: both land
+# as ``store_entities.visibility_status = 'hidden'``, so the status alone cannot
+# separate "the author chose Private" from "review blocked this".
+#
+# ``review_error`` is deliberately NOT here — it means the review reached no
+# verdict at all (timeout, or no LLM credentials configured on the instance).
+# Counting it as a rejection would silently stop every Private upload from
+# reaching its own author's Stack on an instance without LLM credentials, and
+# the bundle in question is one the author wrote and can only ever serve to
+# themselves.
+BLOCKING_SUBMISSION_STATUSES = ("blocked_inline", "blocked_llm")
+
+# Same set as an inlinable SQL literal list, so the DuckDB and Postgres
+# siblings of the install repo cannot drift apart. Values are fixed
+# identifiers defined here, never caller input.
+BLOCKING_SUBMISSION_STATUS_SQL = ", ".join(f"'{s}'" for s in BLOCKING_SUBMISSION_STATUSES)
+
 
 class StoreSubmissionsRepository:
     def __init__(self, conn: duckdb.DuckDBPyConnection):
@@ -82,13 +102,20 @@ class StoreSubmissionsRepository:
                  created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
-                sub_id, entity_id, submitter_id, submitter_email, type, name,
-                version, status,
+                sub_id,
+                entity_id,
+                submitter_id,
+                submitter_email,
+                type,
+                name,
+                version,
+                status,
                 json.dumps(inline_checks) if inline_checks is not None else None,
                 json.dumps(llm_findings) if llm_findings is not None else None,
                 int(file_size) if file_size is not None else None,
                 bundle_sha256,
-                now, now,
+                now,
+                now,
             ],
         )
         return sub_id
@@ -115,9 +142,7 @@ class StoreSubmissionsRepository:
             [entity_id],
         ).fetchone()[0]
         self.conn.execute(
-            "UPDATE store_submissions "
-            "   SET status = 'deleted', updated_at = ? "
-            "WHERE entity_id = ?",
+            "UPDATE store_submissions    SET status = 'deleted', updated_at = ? WHERE entity_id = ?",
             [datetime.now(timezone.utc), entity_id],
         )
         return int(before)
@@ -138,7 +163,9 @@ class StoreSubmissionsRepository:
         )
 
     def count_blocked_for_submitter_since(
-        self, submitter_id: str, since,
+        self,
+        submitter_id: str,
+        since,
     ) -> int:
         """Spam-quota helper. Counts submissions by ``submitter_id`` whose
         verdict is ``blocked_llm`` or ``review_error`` newer than
@@ -219,10 +246,7 @@ class StoreSubmissionsRepository:
             placeholders = ",".join("?" for _ in self._TERMINAL_STATUSES)
             where_clauses.append(f"status NOT IN ({placeholders})")
             params.extend(self._TERMINAL_STATUSES)
-        sql = (
-            f"UPDATE store_submissions SET {', '.join(sets)} "
-            f"WHERE {' AND '.join(where_clauses)}"
-        )
+        sql = f"UPDATE store_submissions SET {', '.join(sets)} WHERE {' AND '.join(where_clauses)}"
         result = self.conn.execute(sql, params)
         # DuckDB returns a relation with the rowcount in row 0, col 0
         # for an UPDATE. fetchone() is the portable way to read it.
@@ -389,9 +413,7 @@ class StoreSubmissionsRepository:
         return int(row[0]) if row else 0
 
     def get(self, id: str) -> Optional[Dict[str, Any]]:
-        rows = self.conn.execute(
-            "SELECT * FROM store_submissions WHERE id = ?", [id]
-        ).fetchall()
+        rows = self.conn.execute("SELECT * FROM store_submissions WHERE id = ?", [id]).fetchall()
         if not rows:
             return None
         columns = [d[0] for d in self.conn.description]
@@ -457,9 +479,9 @@ class StoreSubmissionsRepository:
     # the explicit dict eliminates the footgun.
     _SORT_COLUMNS: Dict[str, str] = {
         "created_at": "epoch(s.created_at)",
-        "file_size":  "COALESCE(s.file_size, 0)",
-        "status":     "s.status",
-        "name":       "LOWER(s.name)",
+        "file_size": "COALESCE(s.file_size, 0)",
+        "status": "s.status",
+        "name": "LOWER(s.name)",
     }
 
     def list_for_admin(
@@ -538,9 +560,7 @@ class StoreSubmissionsRepository:
             # Default view: hide both lifecycle-end states so the queue
             # stays focused on actionable rows. Chip routing opts back
             # in by passing lifecycle='archived' or 'deleted'.
-            clauses.append(
-                "(e.visibility_status IS NULL OR e.visibility_status != 'archived')"
-            )
+            clauses.append("(e.visibility_status IS NULL OR e.visibility_status != 'archived')")
             clauses.append("s.status != 'deleted'")
 
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
@@ -550,9 +570,7 @@ class StoreSubmissionsRepository:
         # store_submissions(entity_id) (idx_store_submissions_entity)
         # already covers the JOIN key — no schema change needed.
         total_row = self.conn.execute(
-            f"SELECT COUNT(*) FROM store_submissions s "
-            f"LEFT JOIN store_entities e ON e.id = s.entity_id "
-            f"{where}",
+            f"SELECT COUNT(*) FROM store_submissions s LEFT JOIN store_entities e ON e.id = s.entity_id {where}",
             params,
         ).fetchone()
         total = int(total_row[0]) if total_row else 0

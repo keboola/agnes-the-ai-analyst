@@ -205,6 +205,26 @@ class CorpusFilesPgRepository:
                 {"status": status, "detail": detail_json, "id": file_id},
             )
 
+    def move_to_corpus(self, file_id: str, target_corpus_id: str) -> bool:
+        """Reparent a file into another corpus (the Library's drag-and-drop).
+
+        Returns False if the file doesn't exist. ``path`` is cleared — see the
+        DuckDB twin for why.
+        """
+        row = self.get(file_id)
+        if row is None:
+            return False
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "UPDATE corpus_files "
+                    "SET corpus_id = :cid, path = NULL, updated_at = CURRENT_TIMESTAMP "
+                    "WHERE id = :id"
+                ),
+                {"cid": target_corpus_id, "id": file_id},
+            )
+        return True
+
     def delete(self, file_id: str) -> None:
         """Hard-delete a file row (individual files are not soft-deleted)."""
         with self._engine.begin() as conn:

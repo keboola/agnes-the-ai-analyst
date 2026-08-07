@@ -1,146 +1,633 @@
-{% extends "base_page.html" %}
+{% extends "base_index.html" %}
+{% import "macros/_icon.html" as ico %}
+{# Profile — the caller's own account.
+
+   Visual language is the BUILDER's (`skills.html` / `agents.html`), not the
+   old `base_page.html` hero: one unbroken --ds-surface via base_index.html,
+   an identity-led head band, then `.dsec` cards whose anatomy is a 1:1
+   port of `.sk-sec` / `.ag-sec` (26px badge · 15px sentence-case h3 · 12.5px
+   sub · right-aligned count · hairline-separated body). Before this the page
+   floated a blue gradient hero over a grey canvas and titled every card in
+   uppercase micro-caps — two vocabularies no other redesigned surface still
+   speaks.
+
+   The badge is an ICON, not a number: the builder numbers its sections
+   because they are an ordered flow, and these are independent facets of one
+   account.
+
+   `.pf-bgrid` mirrors the builder's `minmax(0,1fr) 320px` split — the aside
+   carries the account read-out the retired "Account" card used to hold, in
+   the builder's own `.pf-pv-row` key/value anatomy. Troubleshooting sits
+   BELOW the grid, full width: its 200px/1fr KV grids and code blocks do not
+   fit a 320px column.
+
+   The legacy `.profile-page` / `.section-card` / `.account-grid` rules in
+   style-custom.css are left alone on purpose — `how_it_works.html`,
+   `admin_user_detail.html` and `admin_mcp_tool_grants.html` still use them. #}
 {% block title %}Profile — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{# Migrated onto base_page.html (Tier 2, issue 367): the hero comes from the
-   page_hero_* vars below (base_page auto-includes _page_hero.html); the body
-   lives in `{% block page %}`. Width is unchanged — the canonical
-   `.container:has(.profile-page) { max-width: 1100px }` rule in style-custom.css
-   still caps the shell because `.profile-page` remains inside the container. #}
-{% set page_hero_eyebrow = "Your account" %}
-{% set page_hero_title = "Profile" %}
-{% set page_hero_subtitle = "Account details and your group memberships." %}
-
 {% block head_extra %}
+{# Three shared sheets, no page-local copies:
+     section_card.css   the `.dsec` collapsible section card + head anatomy
+                        (also used by /me/activity)
+     catalog_card.css   `.cc-btn` / `.cc-btn--primary`, the builder's control
+     filter_toolbar.css `.fbar`, the toolbar /library and /stack render #}
+<link rel="stylesheet" href="{{ static_url('css/section_card.css') }}">
+<link rel="stylesheet" href="{{ static_url('css/catalog_card.css') }}">
+<link rel="stylesheet" href="{{ static_url('css/filter_toolbar.css') }}">
 <style>
-.group-chip.is-admin       { background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink); font-weight: 600; }
-.group-chip.is-everyone    { background: var(--ds-surface-dim); color: var(--ds-text-secondary); }
-.group-chip.is-google_sync { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
-.group-chip.is-custom      { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
+  /* Page chrome only — every colour rides a --ds-* token. The person's own
+     identity (avatar, aside head) uses the --ds-agnes platform accent, the
+     same accent the builder spends on the thing being built; actions stay on
+     --ds-primary. */
+
+  /* ── Head band: identity-led ── */
+  /* Identity only — no action side any more, so no `space-between`. */
+  .pf-head { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin: 2px 0 0; padding-bottom: 24px; }
+  .pf-id { display: flex; align-items: center; gap: 14px; min-width: 0; }
+  .pf-ava { width: 52px; height: 52px; border-radius: 14px; background: var(--ds-agnes-soft); color: var(--ds-agnes); display: grid; place-items: center; flex-shrink: 0; font-size: 18px; font-weight: 700; letter-spacing: 0.02em; }
+  .pf-id-txt { min-width: 0; }
+  .pf-kicker { font-size: 12px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ds-agnes); }
+  .pf-name-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 2px 0 0; }
+  .pf-head h1 { font-size: 24px; margin: 0; overflow-wrap: anywhere; }
+  .pf-head-mail { font-size: 14px; color: var(--ds-text-secondary); margin: 4px 0 0; word-break: break-all; }
+
+  /* Inline display-name editor. Lives in the head now, on the name it edits
+     — it used to sit in an "Account" card two sections below the title. */
+  .pf-name-view { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .pf-name-edit { display: none; align-items: center; gap: 8px; }
+  .pf-name-edit.visible { display: flex; }
+  .pf-name-view.hidden { display: none; }
+  .pf-name-input { font: inherit; font-size: 20px; font-weight: 650; min-width: 0; width: min(320px, 60vw);
+                   padding: 4px 10px; border: 1px solid var(--ds-primary); border-radius: 9px;
+                   background: var(--ds-surface); color: var(--ds-text-primary); outline: none; }
+  .pf-name-input:focus { box-shadow: 0 0 0 3px var(--ds-primary-light); }
+  /* 13px ghost, not a .cc-btn: it sits ON the h1 line, and a 38px control
+     beside a 24px heading reads as the page's primary action. */
+  .pf-edit-btn { font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; padding: 4px 11px;
+                 border-radius: var(--ds-radius-btn); border: 1px solid var(--ds-border);
+                 background: var(--ds-surface); color: var(--ds-text-secondary); }
+  .pf-edit-btn:hover { border-color: var(--ds-primary); color: var(--ds-primary); }
+  /* The "open the editor" affordance is an icon, not a word: it sits on the h1
+     line next to the name it edits, where the pencil is unambiguous and a
+     28px square stays quieter than the 24px heading beside it. Save/Cancel
+     keep their labels — those two commit or discard, and an icon pair there
+     would be a guess. */
+  .pf-edit-icon { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+                  width: 28px; height: 28px; padding: 0; cursor: pointer;
+                  border-radius: var(--ds-radius-btn); border: 1px solid var(--ds-border);
+                  background: var(--ds-surface); color: var(--ds-text-muted); }
+  .pf-edit-icon svg { width: 15px; height: 15px; }
+  .pf-edit-icon:hover { border-color: var(--ds-primary); color: var(--ds-primary); }
+  .pf-name-err { display: none; font-size: 12.5px; color: var(--ds-accent-danger-ink); margin: 6px 0 0; }
+
+  /* ── Two-column body, same split as the builder ──
+     `minmax(0, …)` in BOTH rules, not just the two-column one: a bare `1fr` is
+     `minmax(auto, 1fr)`, so the track refuses to shrink below its content's
+     min-content width and the column blows out of the grid. The tokens list
+     (a flex row with a fixed-basis usage column) is wide enough to do it, and
+     the symptom is the whole page gaining a horizontal scrollbar. */
+  .pf-bgrid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 22px; align-items: start; }
+  @media (max-width: 980px) { .pf-bgrid { grid-template-columns: minmax(0, 1fr); } }
+
+  /* Section cards are the SHARED `.dsec` component (css/section_card.css),
+     loaded above — nothing about them is page-local any more, so /me/activity
+     renders the identical card and head. */
+
+  /* ── Rows (port of .ag-row) — one hairline-separated list per section ──
+     The row WRAPS, and nothing in it is unshrinkable. Every part of it can be
+     arbitrarily long — a Workspace group name is an email address, a resource
+     id is user-authored, a resource can be granted by several groups at once —
+     and a row that could not give way pushed the whole page into a horizontal
+     scroll (the one thing the layout must never do). */
+  .pf-list { list-style: none; margin: 0; padding: 0; }
+  .pf-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; padding: 12px 0; border-bottom: 1px solid var(--ds-border); }
+  .pf-row:last-child { border-bottom: none; padding-bottom: 2px; }
+  .pf-row-body { flex: 1 1 12rem; min-width: 0; }
+  .pf-row-name { font-size: 14px; font-weight: 600; color: var(--ds-text-primary); overflow-wrap: anywhere; }
+  .pf-row-meta { font-size: 12.5px; color: var(--ds-text-muted); margin-top: 2px; }
+  .pf-mono { font-family: var(--ds-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 13px; }
+
+  /* Group chips — the shared vocabulary used on /admin/users and
+     /admin/users/{id}, so a group wears one colour across the product. The
+     name stays on one line (a wrapped pill reads as two chips) and ellipsises
+     instead; the full value is on the chip's `title` either way. */
+  .group-chip { font-size: 12.5px; font-weight: 600; border-radius: var(--ds-radius-pill); padding: 3px 11px; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+  .group-chip.is-admin       { background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink); }
+  .group-chip.is-everyone    { background: var(--ds-surface-sunken); color: var(--ds-text-secondary); }
+  .group-chip.is-google_sync { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
+  .group-chip.is-custom      { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
+
+  /* Effective-access rows: the resource kind is a categorical tag, so it rides
+     the --ds-kind-* sticker palette rather than the brand primary — and it
+     rides the RIGHT one, so a data package and a plugin are not the same
+     colour here while they differ everywhere else in the product. Unmapped
+     types (chat, collection, slack_channel, …) fall through to the neutral
+     base, which is honest: they have no categorical colour anywhere yet. */
+  .pf-kind { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; border-radius: var(--ds-radius-pill); padding: 1px 8px; background: var(--ds-surface-sunken); color: var(--ds-text-secondary); flex-shrink: 0; }
+  .pf-kind--data   { background: var(--ds-kind-data-soft);    color: var(--ds-kind-data); }
+  .pf-kind--plugin { background: var(--ds-kind-plugin-soft);  color: var(--ds-kind-plugin); }
+  .pf-kind--memory { background: var(--ds-kind-memory-soft);  color: var(--ds-kind-memory); }
+  .pf-kind--recipe { background: var(--ds-kind-recipe-soft);  color: var(--ds-kind-recipe); }
+  .pf-kind--agent  { background: var(--ds-kind-agent-soft);   color: var(--ds-kind-agent); }
+  .pf-kind--file   { background: var(--ds-kind-library-soft); color: var(--ds-kind-library); }
+  /* Shrinkable + wrappable: a resource can arrive via several groups, and this
+     block sits at the end of a row that must not force a page-wide scroll. */
+  .pf-via { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; min-width: 0; margin-left: auto; }
+  .pf-via-g { font-size: 11.5px; font-weight: 600; border-radius: var(--ds-radius-pill); padding: 2px 9px; background: var(--ds-surface-sunken); color: var(--ds-text-secondary); border: 1px solid var(--ds-border); }
+
+  /* ── Notification channels ── */
+  .pf-notif-list { list-style: none; margin: 0; padding: 0; }
+  .pf-notif-row { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--ds-border); }
+  .pf-notif-row:last-child { border-bottom: none; padding-bottom: 2px; }
+  .pf-notif-icon { width: 34px; height: 34px; border-radius: 10px; flex-shrink: 0; display: grid; place-items: center; background: var(--ds-surface-sunken); color: var(--ds-text-secondary); }
+  .pf-notif-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+  .pf-notif-name { font-weight: 600; font-size: 14px; color: var(--ds-text-primary); }
+  .pf-notif-beta { margin-left: 6px; font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: 2px 7px; border-radius: var(--ds-radius-pill); background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
+  .pf-notif-state { font-size: 12.5px; }
+  .pf-notif-state.is-linked { color: var(--ds-accent-success-ink); font-weight: 600; }
+  .pf-notif-state.is-off { color: var(--ds-text-muted); }
+  .pf-notif-verify { display: none; padding: 2px 0 14px; border-bottom: 1px solid var(--ds-border); }
+  .pf-notif-verify.visible { display: block; }
+  .pf-notif-verify ol { margin: 0 0 10px; padding-left: 18px; color: var(--ds-text-secondary); font-size: 13px; line-height: 1.6; }
+  .pf-notif-verify code { background: var(--ds-surface-sunken); padding: 1px 5px; border-radius: 4px; }
+  .pf-notif-verify-row { display: flex; gap: 8px; }
+  .pf-notif-verify-row input { flex: 1; max-width: 170px; font: inherit; font-size: 14px; padding: 0 12px; height: 38px; border: 1px solid var(--ds-border); border-radius: var(--ds-radius-btn); background: var(--ds-surface); color: var(--ds-text-primary); }
+  .pf-notif-verify-row input:focus { outline: 2px solid var(--ds-primary); outline-offset: -1px; }
+  .pf-notif-err { display: none; margin-top: 8px; font-size: 12.5px; color: var(--ds-accent-danger-ink); }
+  .pf-notif-note { margin: 14px 0 0; padding-top: 12px; font-size: 12.5px; border-top: 1px solid var(--ds-border); color: var(--ds-text-muted); }
+
+  /* ── Aside (port of .sk-preview / .ag-preview) ── */
+  .pf-aside { position: sticky; top: 18px; display: flex; flex-direction: column; gap: 14px; }
+  .pf-aside h3 { font-size: 14px; margin: 0 0 10px; }
+  .pf-pv-card { background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 14px; box-shadow: var(--ds-shadow-md); overflow: hidden; }
+  .pf-pv-meta { margin: 0; }
+  .pf-pv-row { display: flex; justify-content: space-between; gap: 10px; padding: 9px 14px; font-size: 12.5px; border-bottom: 1px solid var(--ds-border); }
+  .pf-pv-row:last-child { border-bottom: none; }
+  .pf-pv-k { color: var(--ds-text-secondary); flex-shrink: 0; }
+  .pf-pv-v { color: var(--ds-text-primary); font-weight: 550; text-align: right; min-width: 0; word-break: break-word; }
+  /* Three separate buttons, NOT a hairline-separated list inside one card.
+     Read as a list, the three rows looked like the aside's own read-only
+     `.pf-pv-row` key/values one card above them — same card, same hairlines,
+     nothing saying "press me". Each is now its own bordered, rounded, shadowed
+     surface with a trailing chevron: the gap between them is what makes three
+     targets legible as three targets, and the arrow is what says each one
+     leaves the page. */
+  .pf-links { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .pf-link { display: flex; align-items: center; gap: 10px; padding: 12px 13px; font-size: 13px; font-weight: 600;
+             color: var(--ds-text-primary); text-decoration: none;
+             background: var(--ds-surface); border: 1px solid var(--ds-border);
+             border-radius: var(--ds-radius-btn); box-shadow: var(--ds-shadow-sm); }
+  .pf-link:hover { background: var(--ds-surface-dim); border-color: var(--ds-primary); color: var(--ds-primary); }
+  .pf-link svg { width: 15px; height: 15px; color: var(--ds-text-muted); flex-shrink: 0; }
+  .pf-link:hover svg { color: var(--ds-primary); }
+  /* `margin-left:auto` on the arrow, not `flex:1` on the label — the label
+     wraps to two lines at a narrow aside, and a stretched label would drag the
+     arrow off the first line's baseline. */
+  .pf-link-go { margin-left: auto; }
+
+  /* The troubleshooting partial still emits the shared `.empty-state`; give it
+     the section body's own rhythm so it doesn't inherit the retired
+     `.section-card` spacing. */
+  .pf-tsec .empty-state { padding: 12px 0 2px; font-size: 13px; color: var(--ds-text-muted); }
+
+  /* The tokens partial keeps its own internals (table, chips, modals) but
+     wears the section card + head anatomy above. */
+  #tokens { scroll-margin-top: calc(var(--app-header-height) + var(--space-4)); }
+  #notifications { scroll-margin-top: calc(var(--app-header-height) + var(--space-4)); }
 </style>
 {% endblock %}
 
-{% block page %}
-{# Design-system component macros — the 3 section cards (Account, Group
-   memberships, Effective access) render via `ds.panel(tag='section',
-   title=...)` so each stays an aria-labelled landmark. The Session-
-   troubleshooting `<details>` can't go through the macro (no
-   <details>/<summary> support); it carries `.ds-card` explicitly. `ds` is
-   auto-imported by base_ds.html. #}
-
-<div class="profile-page">
-  {% call ds.panel(title='Account', tag='section',
-                   klass='section-card',
-                   attrs='aria-label="Account details"') %}
-    <div class="account-grid">
-      <span class="k">Email</span>
-      <span class="v">{{ user.email or "—" }}</span>
-      <span class="k">Name</span>
-      <span class="v">{{ user.name or "—" }}</span>
+{% block page_head %}
+<div class="pf-head">
+  <div class="pf-id">
+    {# Initials, derived in the template so the avatar needs no upload flow. #}
+    <span class="pf-ava" aria-hidden="true">
+      {%- set _parts = (user.name or user.email or '?').split() -%}
+      {%- if _parts | length > 1 -%}
+        {{ (_parts[0][0] ~ _parts[1][0]) | upper }}
+      {%- else -%}
+        {{ (user.name or user.email or '?')[:2] | upper }}
+      {%- endif -%}
+    </span>
+    <div class="pf-id-txt">
+      <div class="pf-kicker">Your account</div>
+      {# The `<h1>` holds the NAME and nothing else. The Edit button and the
+         editor are siblings of it, not children: `<button>` and `<input>` are
+         valid phrasing content inside a heading, but they join its accessible
+         name, so the page's only h1 announced as "Jamie Rivera Edit". #}
+      <div class="pf-name-row">
+        <span class="pf-name-view" id="pf-name-view">
+          <h1 id="pf-name-text">{{ user.name or "—" }}</h1>
+          <button type="button" class="pf-edit-icon" onclick="pfEditName()"
+                  aria-label="Edit display name" title="Edit display name">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+          </button>
+        </span>
+        <span class="pf-name-edit" id="pf-name-edit" aria-label="Edit display name form">
+          <input type="text" id="pf-name-input" class="pf-name-input"
+                 value="{{ user.name or '' }}" maxlength="120"
+                 aria-label="Display name" autocomplete="off">
+          <button type="button" class="pf-edit-btn" id="pf-save-btn" onclick="pfSaveName()">Save</button>
+          <button type="button" class="pf-edit-btn" onclick="pfCancelName()">Cancel</button>
+        </span>
+      </div>
+      <p class="pf-head-mail">{{ user.email or "—" }}</p>
+      <p class="pf-name-err" id="pf-name-err" role="alert"></p>
     </div>
-  {% endcall %}
+  </div>
+  {# No head actions. The head's only job is to say whose account this is (and
+     let you rename it) — its one button was "Activity", which the Elsewhere
+     buttons in the aside already link, so the head was spending the page's most
+     prominent slot on a duplicate. "My stack" briefly sat here too — /stack is
+     NOT a destination in this IA (#1088, demoted out of the rail), and the
+     Library's own "In stack only" toggle answers the same question against a
+     superset of the same rows; Elsewhere links that view instead. #}
+</div>
+{% endblock %}
 
-  {% call ds.panel(title='Group memberships', tag='section',
-                   klass='section-card',
-                   attrs='aria-label="Group memberships"') %}
-    {% if memberships and memberships | length > 0 %}
-    <ul class="groups-list" role="list">
-      {% for m in memberships %}
-      {# Color rule mirrors /admin/users + /admin/users/{id}: name match
-         on the seeded Admin/Everyone wins over origin so an env-mapped
-         system row keeps its canonical color. Hover over the chip
-         reveals the full Workspace email for shortened google_sync
-         display names. #}
-      {% if m.name == "Admin" %}
-        {% set chip_class = "is-admin" %}
-      {% elif m.name == "Everyone" %}
-        {% set chip_class = "is-everyone" %}
-      {% else %}
-        {% set chip_class = "is-" ~ (m.origin or "custom") %}
-      {% endif %}
-      <li class="group-row" role="listitem">
-        <span class="group-chip {{ chip_class }}" title="{{ m.name }}">{{ m.display_name or m.name }}</span>
-        <span class="group-id">via {{ m.source }}{% if m.added_at %} · added {{ m.added_at|string|truncate(16, true, '') }}{% endif %}</span>
-      </li>
-      {% endfor %}
-    </ul>
-    {% else %}
-    <div class="empty-state">
-      <div class="empty-title">No group memberships</div>
-      <div>You're not a member of any groups yet. Ask an admin to add you, or wait for the next Google Workspace sync if you sign in via Google.</div>
-    </div>
+{% block page_surface %}
+<div class="pf-bgrid">
+  <div>
+    {# ── Groups ───────────────────────────────────────────────────────── #}
+    {# Each section's head carries a SUMMARY of its contents (the count, the
+       channel state), so a collapsed section still answers its own question
+       and the caller can close what they aren't here for without losing the
+       headline. #}
+    <details class="dsec" aria-label="Group memberships">
+      <summary>
+        <div class="dsec-head">
+          <span class="dsec-ico">{{ ico.icon('users', 14) }}</span>
+          <div class="dsec-grow">
+            <h3>Groups</h3>
+            <div class="dsec-sub">Everything you can reach in Agnes is granted to a group you belong to.</div>
+          </div>
+          <span class="dsec-sum">{{ memberships | length }} {{ 'group' if (memberships | length) == 1 else 'groups' }}</span>
+          <span class="dsec-chev">{{ ico.icon('chevron', 16) }}</span>
+        </div>
+      </summary>
+      <div class="dsec-body">
+        {% if memberships and memberships | length > 0 %}
+        <ul class="pf-list" role="list">
+          {% for m in memberships %}
+          {# Color rule mirrors /admin/users + /admin/users/{id}: name match
+             on the seeded Admin/Everyone wins over origin so an env-mapped
+             system row keeps its canonical color. Hover over the chip
+             reveals the full Workspace email for shortened google_sync
+             display names. #}
+          {% if m.name == "Admin" %}
+            {% set chip_class = "is-admin" %}
+          {% elif m.name == "Everyone" %}
+            {% set chip_class = "is-everyone" %}
+          {% else %}
+            {% set chip_class = "is-" ~ (m.origin or "custom") %}
+          {% endif %}
+          <li class="pf-row" role="listitem">
+            <span class="group-chip {{ chip_class }}" title="{{ m.name }}">{{ m.display_name or m.name }}</span>
+            <span class="pf-row-body">
+              {# Plain English, not the raw `source` slug the row used to
+                 print in monospace. #}
+              <span class="pf-row-meta">
+                {%- if m.source == 'google_sync' -%}Synced from Google Workspace
+                {%- elif m.source == 'auto' -%}Automatic — everyone here is a member
+                {%- elif m.source == 'admin' -%}Added by an admin
+                {%- else -%}Added via {{ m.source }}{%- endif -%}
+                {%- if m.added_at %} · {{ m.added_at | string | truncate(10, true, '') }}{% endif -%}
+              </span>
+            </span>
+          </li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <div class="dsec-empty">
+          <strong>No group memberships</strong>
+          You're not a member of any groups yet. Ask an admin to add you, or wait for the next Google Workspace sync if you sign in via Google.
+        </div>
+        {% endif %}
+      </div>
+    </details>
+
+    {# ── Effective access ─────────────────────────────────────────────── #}
+    <details class="dsec" aria-label="Effective access">
+      <summary>
+        <div class="dsec-head">
+          <span class="dsec-ico">{{ ico.icon('shield-check', 14) }}</span>
+          <div class="dsec-grow">
+            <h3>Effective access</h3>
+            <div class="dsec-sub">The resources those groups actually carry, and which group brings each one.</div>
+          </div>
+          <span class="dsec-sum" id="pf-access-sum"></span>
+          <span class="dsec-chev">{{ ico.icon('chevron', 16) }}</span>
+        </div>
+      </summary>
+      <div class="dsec-body">
+        <div id="effective-access-host">
+          <div class="dsec-empty">Loading…</div>
+        </div>
+      </div>
+    </details>
+
+    {# ── Notifications ────────────────────────────────────────────────── #}
+    {# Telegram link/unlink hit the existing /api/telegram/* endpoints; the
+       desktop row is an informational private-beta placeholder (no
+       self-serve link flow yet). `telegram_status` / `desktop_status` come
+       from the /me/profile route.
+
+       `id="notifications"` is a PUBLIC ANCHOR: the in-chat notification
+       nudge and the onboarding checklist's "Choose where Agnes reaches you"
+       sub-action both deep-link `/me/profile#notifications`. Don't rename
+       it. #}
+    {# Collapsed like every other section. The two deep links still land OPEN:
+       the script at the foot of the page opens whichever section the URL
+       fragment names (or contains), so `#notifications` still answers the
+       "choose where Agnes reaches you" hand-off rather than showing a closed
+       drawer. #}
+    <details class="dsec" id="notifications" aria-label="Notification channels">
+      <summary>
+        <div class="dsec-head">
+          <span class="dsec-ico">{{ ico.icon('chat', 14) }}</span>
+          <div class="dsec-grow">
+            <h3>Notifications</h3>
+            <div class="dsec-sub">Where Agnes reaches you when a long-running analysis finishes or needs input.</div>
+          </div>
+          <span class="dsec-sum">{% if telegram_status.linked or desktop_status.linked %}Connected{% else %}Not set up{% endif %}</span>
+          <span class="dsec-chev">{{ ico.icon('chevron', 16) }}</span>
+        </div>
+      </summary>
+      <div class="dsec-body">
+        <ul class="pf-notif-list" role="list">
+          {# The Telegram row is CONFIGURATION-GATED. Without
+             TELEGRAM_BOT_USERNAME the link instructions used to read
+             "message @your-bot", i.e. a dead end — and since Agnes now
+             actively offers this channel mid-run, a dead end would be
+             offered rather than merely stumbled upon. An already-linked
+             user keeps the row (and its Unlink) even if the operator later
+             drops the env var, so the link never becomes un-manageable. #}
+          {% if config.TELEGRAM_BOT_USERNAME or telegram_status.linked %}
+          <li class="pf-notif-row">
+            <span class="pf-notif-icon" aria-hidden="true">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/></svg>
+            </span>
+            <span class="pf-notif-meta">
+              <span class="pf-notif-name">Telegram</span>
+              {% if telegram_status.linked %}
+              <span class="pf-notif-state is-linked">Connected</span>
+              {% else %}
+              <span class="pf-notif-state is-off">Not linked</span>
+              {% endif %}
+            </span>
+            {% if telegram_status.linked %}
+            <button type="button" class="cc-btn" onclick="unlinkChannel('telegram')">Unlink</button>
+            {% elif config.TELEGRAM_BOT_USERNAME %}
+            <button type="button" class="cc-btn cc-btn--primary" onclick="showTelegramVerify()">Link</button>
+            {% endif %}
+          </li>
+          {% if config.TELEGRAM_BOT_USERNAME %}
+          <li id="telegramVerify" class="pf-notif-verify">
+            <ol>
+              <li>Message <code>/start</code> to <strong>@{{ config.TELEGRAM_BOT_USERNAME }}</strong> on Telegram</li>
+              <li>Enter the 6-digit verification code it replies with</li>
+            </ol>
+            <div class="pf-notif-verify-row">
+              <input type="text" id="verifyCode" placeholder="6-digit code" maxlength="6" inputmode="numeric" autocomplete="one-time-code">
+              <button type="button" class="cc-btn cc-btn--primary" id="verifyBtn" onclick="verifyTelegram()">Verify</button>
+            </div>
+            <div id="telegramError" class="pf-notif-err" role="alert"></div>
+          </li>
+          {% endif %}
+          {% endif %}
+          <li class="pf-notif-row">
+            <span class="pf-notif-icon" aria-hidden="true">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+            </span>
+            <span class="pf-notif-meta">
+              <span class="pf-notif-name">macOS app<span class="pf-notif-beta">private beta</span></span>
+              {% if desktop_status.linked %}
+              <span class="pf-notif-state is-linked">Connected</span>
+              {% else %}
+              <span class="pf-notif-state is-off">Not linked</span>
+              {% endif %}
+            </span>
+            {% if desktop_status.linked %}
+            <button type="button" class="cc-btn" onclick="unlinkChannel('desktop')">Unlink</button>
+            {% endif %}
+          </li>
+        </ul>
+        {# With Telegram unconfigured and the macOS app still invite-only,
+           this panel has no actionable row at all — say why rather than
+           leaving a heading over two inert lines. #}
+        {% if not config.TELEGRAM_BOT_USERNAME and not telegram_status.linked %}
+        <p class="pf-notif-note">Telegram isn't configured on this instance yet — ask your admin to enable it if you'd like Agnes to reach you there.</p>
+        {% endif %}
+      </div>
+    </details>
+
+    {# ── Personal access tokens (the partial carries its own .dsec) ─── #}
+    {% include "_profile_tokens.html" %}
+
+    {# ── Session & troubleshooting ────────────────────────────────────── #}
+    {# `<details>` can't take the section markup above (its head has to be a
+       <summary>), so it re-uses the same `.dsec` classes with the head
+       rendered inside the summary. It stays in this column rather than
+       spanning the grid: a wider last card reads as a different page zone,
+       and the partial's 200px/1fr key/value grids fit this measure. #}
+    <details class="dsec pf-tsec" aria-label="Session and troubleshooting">
+      <summary>
+        <div class="dsec-head">
+          <span class="dsec-ico">{{ ico.icon('tools', 14) }}</span>
+          <div class="dsec-grow">
+            <h3>Session &amp; troubleshooting</h3>
+            <div class="dsec-sub">Decoded session claims and the last Google-sync snapshot.</div>
+          </div>
+          <span class="dsec-chev">{{ ico.icon('chevron', 16) }}</span>
+        </div>
+      </summary>
+      <div class="dsec-body">
+        {% include "_profile_troubleshooting.html" %}
+      </div>
+    </details>
+
+    {# ── Admin mode (elevation consent gate, #1146) ───────────────────── #}
+    {# Open while paused: the reduced-privilege state must stay visible, not
+       sit behind a collapsed drawer an admin forgot about. #}
+    {% if is_admin %}
+    <details class="dsec" aria-label="Admin mode" {% if elevation_paused %}open{% endif %}>
+      <summary>
+        <div class="dsec-head">
+          <span class="dsec-ico">{{ ico.icon('shield-check', 14) }}</span>
+          <div class="dsec-grow">
+            <h3>Admin mode</h3>
+            <div class="dsec-sub">{% if elevation_paused %}Paused for this browser — running on your explicit grants.{% else %}Active — every access check short-circuits to allow.{% endif %}</div>
+          </div>
+          <span class="dsec-chev">{{ ico.icon('chevron', 16) }}</span>
+        </div>
+      </summary>
+      <div class="dsec-body">
+        {% if elevation_paused %}
+        <p>Admin elevation is <strong>paused</strong> for this browser — admin
+        pages refuse, and entity access checks fall back to your explicit group
+        grants, until you re-enable it. Surfaces that read Admin membership
+        directly (the table catalog among them) still show everything: this is a
+        consent gate against accidental god-mode use, not a containment
+        boundary.</p>
+        <button type="button" class="cc-btn" id="elevation-toggle" data-paused="false">
+          Re-enable admin mode
+        </button>
+        {% else %}
+        <p>Admin elevation is <strong>active</strong>: every access check
+        short-circuits to allow. Pause it to make entity checks fall back to your
+        explicit grants and admin pages refuse (a consent gate against accidental
+        god-mode use — you can re-enable it here at any time).</p>
+        <button type="button" class="cc-btn" id="elevation-toggle" data-paused="true">
+          Pause admin mode for this browser
+        </button>
+        {% endif %}
+        <script>
+          document.getElementById("elevation-toggle").addEventListener("click", async (ev) => {
+            const paused = ev.currentTarget.dataset.paused === "true";
+            ev.currentTarget.disabled = true;
+            await fetch("/api/me/elevation", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ paused }),
+            });
+            location.reload();
+          });
+        </script>
+      </div>
+    </details>
     {% endif %}
-  {% endcall %}
+  </div>
 
-  {% call ds.panel(title='Effective access', tag='section',
-                   klass='section-card',
-                   attrs='aria-label="Effective access"') %}
-    <div id="effective-access-host">
-      <div class="empty-state">
-        <div class="empty-title">Loading…</div>
+  {# ── Aside: the account read-out the retired "Account" card held ───── #}
+  <aside class="pf-aside" aria-label="Account summary">
+    <div>
+      <h3>At a glance</h3>
+      <div class="pf-pv-card">
+        <div class="pf-pv-meta">
+          <div class="pf-pv-row"><span class="pf-pv-k">Email</span><span class="pf-pv-v">{{ user.email or "—" }}</span></div>
+          <div class="pf-pv-row"><span class="pf-pv-k">Display name</span><span class="pf-pv-v" id="pf-aside-name">{{ user.name or "—" }}</span></div>
+          <div class="pf-pv-row"><span class="pf-pv-k">Member since</span><span class="pf-pv-v">{{ (user_record.created_at | string | truncate(10, true, '')) if user_record.created_at else "—" }}</span></div>
+          <div class="pf-pv-row"><span class="pf-pv-k">Groups</span><span class="pf-pv-v">{{ memberships | length }}</span></div>
+          <div class="pf-pv-row"><span class="pf-pv-k">Resources</span><span class="pf-pv-v" id="pf-aside-access">—</span></div>
+          <div class="pf-pv-row"><span class="pf-pv-k">Administrator</span><span class="pf-pv-v">{{ "Yes" if is_admin else "No" }}</span></div>
+        </div>
       </div>
     </div>
-  {% endcall %}
-
-  {% if is_admin %}
-  {% call ds.panel(title='Admin mode', tag='section',
-                   klass='section-card',
-                   attrs='aria-label="Admin mode"') %}
-    {% if elevation_paused %}
-      <p>Admin elevation is <strong>paused</strong> for this browser — admin
-      pages refuse, and entity access checks fall back to your explicit group
-      grants, until you re-enable it. Surfaces that read Admin membership
-      directly (the table catalog among them) still show everything: this is a
-      consent gate against accidental god-mode use, not a containment
-      boundary.</p>
-      <button type="button" class="ds-btn" id="elevation-toggle" data-paused="false">
-        Re-enable admin mode
-      </button>
-    {% else %}
-      <p>Admin elevation is <strong>active</strong>: every access check
-      short-circuits to allow. Pause it to make entity checks fall back to your
-      explicit grants and admin pages refuse (a consent gate against accidental
-      god-mode use — you can re-enable it here at any time).</p>
-      <button type="button" class="ds-btn" id="elevation-toggle" data-paused="true">
-        Pause admin mode for this browser
-      </button>
-    {% endif %}
-    <script>
-      document.getElementById("elevation-toggle").addEventListener("click", async (ev) => {
-        const paused = ev.currentTarget.dataset.paused === "true";
-        ev.currentTarget.disabled = true;
-        await fetch("/api/me/elevation", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ paused }),
-        });
-        location.reload();
-      });
-    </script>
-  {% endcall %}
-  {% endif %}
-
-  {% include "_profile_tokens.html" %}
-
-  {# `<details>` can't go through `ds.panel` (the macro doesn't render
-     <details>/<summary>); add `.ds-card` explicitly so the same surface
-     treatment applies. `.section-card` rules override radius+padding. #}
-  <details class="ds-card section-card" aria-label="Session and troubleshooting">
-    <summary>Session &amp; troubleshooting</summary>
-    {% include "_profile_troubleshooting.html" %}
-  </details>
+    <div>
+      <h3>Elsewhere</h3>
+      {# No wrapping `.pf-pv-card` — each link IS its own card now.
+         `/library?stack=in_stack` — NOT `/stack`. The Stack page is no
+         longer a destination in this IA (#1088); the Library's "In stack
+         only" toggle arrives pressed on that deep link and reads the same
+         StackResolver.browse() rows. #}
+      <ul class="pf-links" role="list">
+        <li><a class="pf-link" href="/me/activity">{{ ico.icon('rows', 15) }}<span>Your activity &amp; sessions</span>{{ ico.icon('chevron-right', 15, 'pf-link-go') }}</a></li>
+        <li><a class="pf-link" href="/library?stack=in_stack">{{ ico.icon('package', 15) }}<span>What Agnes is using</span>{{ ico.icon('chevron-right', 15, 'pf-link-go') }}</a></li>
+        <li><a class="pf-link" href="/library">{{ ico.icon('folder', 15) }}<span>Library</span>{{ ico.icon('chevron-right', 15, 'pf-link-go') }}</a></li>
+      </ul>
+    </div>
+  </aside>
 </div>
 
+{% endblock %}
+
+{% block scripts %}
 <script>
+// ── Deep links open their section ───────────────────────────────────────────
+// Sections are collapsed by default, so a URL fragment has to be able to open
+// the one it points at — otherwise `/me/profile#notifications` (the in-chat
+// nudge and the onboarding checklist both send people there) and
+// `/me/profile#tokens` land on a closed drawer, which reads as "the thing you
+// were sent here for isn't here".
+//
+// Opens the target itself when it IS a section, and any section CONTAINING the
+// target otherwise, so an anchor deeper inside a section still works. Runs on
+// load and on hashchange (an in-page link fires no navigation), and re-scrolls
+// after opening because the browser measured the offset while it was closed.
+(function () {
+  function revealHash() {
+    const id = decodeURIComponent((location.hash || "").slice(1));
+    if (!id) return;
+    const target = document.getElementById(id);
+    if (!target) return;
+    const sec = target.closest("details.dsec") || (target.matches("details.dsec") ? target : null);
+    if (sec && !sec.open) { sec.open = true; }
+    target.scrollIntoView({ block: "start" });
+  }
+  window.addEventListener("hashchange", revealHash);
+  revealHash();
+})();
+
+// ── Display name inline edit ────────────────────────────────────────────────
+function pfEditName() {
+  document.getElementById("pf-name-view").classList.add("hidden");
+  const editEl = document.getElementById("pf-name-edit");
+  editEl.classList.add("visible");
+  const inp = document.getElementById("pf-name-input");
+  // Always seed the input from the currently displayed name, so reopening the
+  // editor after a Cancel (or a Save) never shows abandoned/stale text. The
+  // view renders "—" (em dash) as the empty-name placeholder — treat it as "".
+  const cur = document.getElementById("pf-name-text").textContent.trim();
+  inp.value = (cur === "—") ? "" : cur;
+  inp.focus();
+  inp.select();
+}
+
+function pfCancelName() {
+  document.getElementById("pf-name-edit").classList.remove("visible");
+  document.getElementById("pf-name-view").classList.remove("hidden");
+  document.getElementById("pf-name-err").style.display = "none";
+}
+
+async function pfSaveName() {
+  const inp = document.getElementById("pf-name-input");
+  const errEl = document.getElementById("pf-name-err");
+  const btn = document.getElementById("pf-save-btn");
+  const name = inp.value;
+  errEl.style.display = "none";
+  btn.disabled = true;
+  btn.textContent = "Saving…";
+  try {
+    const resp = await fetch("/api/me/display-name", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (resp.ok) {
+      const saved = data.name ?? name.trim();
+      document.getElementById("pf-name-text").textContent = saved || "—";
+      // The aside restates the same field; keep the two in step without a
+      // reload.
+      const aside = document.getElementById("pf-aside-name");
+      if (aside) { aside.textContent = saved || "—"; }
+      btn.disabled = false;
+      btn.textContent = "Save";
+      pfCancelName();
+      return;
+    }
+    errEl.textContent = data.detail || "Failed to save name.";
+    errEl.style.display = "block";
+  } catch (_e) {
+    errEl.textContent = "Network error. Please try again.";
+    errEl.style.display = "block";
+  }
+  btn.disabled = false;
+  btn.textContent = "Save";
+}
+
+// ── Effective access ───────────────────────────────────────────────────────
 (function () {
   const host = document.getElementById("effective-access-host");
+  const sum = document.getElementById("pf-access-sum");
+  const asideCount = document.getElementById("pf-aside-access");
   fetch("/api/me/effective-access", { credentials: "include" })
     .then(r => r.ok ? r.json() : null)
     .then(data => {
       if (!data) {
-        host.innerHTML = `<div class="empty-state">
-          <div class="empty-title">No data</div>
-          <div>Effective-access readout unavailable. Admins can view it at /admin/users/{{ user.id }}.</div>
-        </div>`;
+        host.innerHTML = `<div class="dsec-empty"><strong>No data</strong>
+          Effective-access readout unavailable. Admins can view it at /admin/users/{{ user.id }}.</div>`;
         return;
       }
       // Admins get the same explicit grant breakdown as everyone else —
@@ -148,28 +635,106 @@
       // this readout audits the actual grant graph (which Admin-group
       // grants exist, which sibling groups carry them) instead of a flat
       // "Full access" pill that hid the wiring.
-      if (!data.items || data.items.length === 0) {
-        host.innerHTML = `<div class="empty-state">
-          <div class="empty-title">No resource access yet</div>
-          <div>Resources are granted to groups; ask an admin to add you to one with the access you need.</div>
-        </div>`;
+      const items = data.items || [];
+      if (sum) {
+        sum.textContent = items.length === 1 ? "1 resource" : `${items.length} resources`;
+      }
+      if (asideCount) { asideCount.textContent = String(items.length); }
+      if (items.length === 0) {
+        host.innerHTML = `<div class="dsec-empty"><strong>No resource access yet</strong>
+          Resources are granted to groups; ask an admin to add you to one with the access you need.</div>`;
         return;
       }
-      let html = `<ul class="grant-list" role="list">`;
-      for (const it of data.items) {
-        const via = it.via_groups.map(g => `<span class="grant-source source-direct">${g.group_name}</span>`).join(" ");
-        html += `<li class="grant-row">
-          <span class="grant-key">${escapeHtml(it.resource_type)} · ${escapeHtml(it.resource_id)}</span>
-          ${via}
+      // Map ResourceType -> the categorical accent that type already wears in
+      // the Library, the Catalog and the builder, so nothing changes colour
+      // between here and where the resource actually lives.
+      const KIND_ACCENT = {
+        data_package: "data", table: "data",
+        marketplace_plugin: "plugin", store_entity: "plugin",
+        memory_domain: "memory", memory_item: "memory",
+        recipe: "recipe", agent: "agent", corpus_file: "file",
+      };
+      let html = `<ul class="pf-list" role="list">`;
+      for (const it of items) {
+        const via = it.via_groups
+          .map(g => `<span class="pf-via-g">${escapeHtml(g.group_name)}</span>`)
+          .join("");
+        const accent = KIND_ACCENT[it.resource_type];
+        const kindCls = "pf-kind" + (accent ? ` pf-kind--${accent}` : "");
+        html += `<li class="pf-row">
+          <span class="${kindCls}">${escapeHtml(String(it.resource_type).replace(/_/g, " "))}</span>
+          <span class="pf-row-body"><span class="pf-row-name pf-mono">${escapeHtml(it.resource_id)}</span></span>
+          <span class="pf-via">${via}</span>
         </li>`;
       }
       html += `</ul>`;
       host.innerHTML = html;
     })
     .catch(() => {
-      host.innerHTML = `<div class="empty-state"><div class="empty-title">Failed to load</div></div>`;
+      host.innerHTML = `<div class="dsec-empty"><strong>Failed to load</strong>
+        The effective-access readout could not be fetched. Reload to try again.</div>`;
     });
   function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
 })();
+
+// ── Notification channels ──────────────────────────────────────────────────
+// Hit the same /api/telegram/* + /api/{channel}/unlink endpoints; reload on
+// success so the server-rendered link state re-derives.
+function showTelegramVerify() {
+  const el = document.getElementById("telegramVerify");
+  if (el) { el.classList.toggle("visible"); }
+}
+
+async function verifyTelegram() {
+  const code = (document.getElementById("verifyCode").value || "").trim();
+  const errorEl = document.getElementById("telegramError");
+  const btn = document.getElementById("verifyBtn");
+  errorEl.style.display = "none";
+  if (!code || code.length !== 6) {
+    errorEl.textContent = "Please enter a 6-digit code.";
+    errorEl.style.display = "block";
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = "Verifying…";
+  try {
+    const resp = await fetch("/api/telegram/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: code }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (resp.ok) {
+      location.reload();
+      return;
+    }
+    errorEl.textContent = data.error || "Verification failed.";
+    errorEl.style.display = "block";
+  } catch (e) {
+    errorEl.textContent = "Network error. Please try again.";
+    errorEl.style.display = "block";
+  }
+  btn.disabled = false;
+  btn.textContent = "Verify";
+}
+
+async function unlinkChannel(channel) {
+  const label = channel === "telegram" ? "Telegram" : "macOS app";
+  if (!(await confirmModal(`Unlink ${label}? You will stop receiving notifications.`))) return;
+  try {
+    const resp = await fetch(`/api/${channel}/unlink`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+    if (resp.ok) {
+      location.reload();
+    } else {
+      const data = await resp.json().catch(() => ({}));
+      await alertModal(data.error || "Failed to unlink.");
+    }
+  } catch (e) {
+    await alertModal("Failed to unlink. Please try again.");
+  }
+}
 </script>
 {% endblock %}
