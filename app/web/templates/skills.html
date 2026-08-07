@@ -595,6 +595,13 @@
     var n = (draft.name || '').trim();
     if (!n) return { ok: false, msg: 'Lowercase letters, numbers and hyphens — e.g. ' + cfg().nameExample + '.' };
     if (!NAME_RE.test(n)) return { ok: false, msg: 'Must start with a letter and use only lowercase letters, numbers and hyphens.', err: true };
+    // This hint only ever judged SHAPE, which was the whole story while the
+    // only other verdict on the name arrived at save time on a page that had
+    // already navigated away. Now that Check reports availability too, an
+    // unqualified "Looks good." sits directly above "You already have
+    // something called that" — the field arguing with itself. The specific
+    // refusal is the better sentence, so the affirmative one stands down.
+    if (problems.some(function (p) { return p.field === 'name'; })) return { ok: true, msg: '' };
     return { ok: true, msg: 'Looks good.' };
   }
   // Gate for Save to Library: a valid name plus this type's content.
