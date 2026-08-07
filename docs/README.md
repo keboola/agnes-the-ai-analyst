@@ -36,7 +36,8 @@ Deploying, configuring, and running an Agnes instance.
 - [`RBAC.md`](RBAC.md) — access control: groups, members, resource grants
 - [`auth-google-oauth.md`](auth-google-oauth.md) — Google OAuth setup + operator gotchas
 - [`auth-groups.md`](auth-groups.md) — Google Workspace group sync
-- [`admin/query-modes.md`](admin/query-modes.md) — table registration query modes
+- [`admin/query-modes.md`](admin/query-modes.md) — table registration query modes, and `server_only` for queryable-but-never-distributed tables
+- [`admin/collections-vs-data-packages.md`](admin/collections-vs-data-packages.md) — uploading files vs. registering a live source
 - [`agent-setup-prompt.md`](agent-setup-prompt.md) — customize the `/setup` page banner
 - [`agent-workspace-prompt.md`](agent-workspace-prompt.md) — customize the generated analyst `CLAUDE.md`
 - [`initial-workspace-override.md`](initial-workspace-override.md) — per-instance analyst-workspace skeleton override

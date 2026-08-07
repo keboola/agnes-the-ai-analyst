@@ -13,6 +13,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 
 - Per-instance feature flag for Agent profiles (`agent_profiles.enabled` / `AGNES_AGENT_PROFILES_ENABLED`), same mechanism as the Studio flag. Grandfathered on by default; disabling closes the `/agents` builder page, the `/api/v1/agents*` management + runtime API (and its `agnes agent`/`agnes chat` CLI clients) with a 403 `agent_profiles_disabled`, and hides every inbound link to it — the "My agents" nav entry in both chromes, the command-palette row, and the three `/agents` links on `/how-it-works` (which would otherwise be dead ends that bounce the user home). Default-agent seeding, chat attribution, and the broker's agent policy are internal mechanisms and keep working regardless.
+- `agnes admin register-table --server-only` — CLI surface for the `server_only` distribution flag (#607). The flag keeps a `local`/`materialized` table synced and queryable server-side while excluding its parquet from `agnes pull`, which is the answer for data that may be queried but must not be copied onto laptops. It has existed as a REST field since schema v74 but had no CLI flag and no documentation, so the only documented way to set it was a raw API call. Pairing it with `--query-mode remote` fails client-side with the same rationale the API validator gives, before the round-trip.
+- `docs/admin/collections-vs-data-packages.md` — when to upload files versus register a live source. Both surface under Library, which makes them look like alternatives; the deciding question is who updates the content when it changes.
 
 ### Changed
 
@@ -23,6 +25,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Removed
 
 ### Internal
+
+- `docs/RBAC.md` gained a "What this model does *not* govern" section, and `docs/admin/query-modes.md` documents `server_only` as the second axis alongside `query_mode`. Both close gaps that repeatedly cause the same misunderstanding in evaluations: that Agnes filters access *inside* connected systems (it does not — the connection's upstream principal is the boundary), and that querying data requires distributing it (it does not — that is what `server_only` is for).
 
 ### Security
 
