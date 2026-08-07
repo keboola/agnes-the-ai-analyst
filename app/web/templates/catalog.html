@@ -128,7 +128,11 @@
     <button class="pill is-active" data-filter="all">All</button>
     <button class="pill" data-filter="required">Required</button>
     <button class="pill" data-filter="available">Available</button>
-    <button class="pill" data-filter="in_stack">In stack</button>
+    {# Label matches the cards: the filter keys off local-copy state, which is
+       what `in_stack` means after the auto-membership reshape. Calling it
+       "In stack" put a 3 beside a My Stack tab reading 29 (#1206). The
+       data-filter VALUE stays `in_stack` — JS and card markup key on it. #}
+    <button class="pill" data-filter="in_stack">Downloaded</button>
     {% if source_type_chips %}
     <span style="margin-left: 12px; color: var(--text-secondary); font-size: 12px;">Source:</span>
     {% for st in source_type_chips %}
@@ -581,8 +585,10 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
           if (!inStackBadge) {
             inStackBadge = document.createElement('div');
             inStackBadge.className = 'stack-card__req-badge stack-card__req-badge--instack';
-            inStackBadge.title = 'In your stack';
-            inStackBadge.textContent = 'In stack';
+            // Wording tracks the macro's `in_stack_is_local` switch (#1206);
+            // on this page every card carries the local-download semantics.
+            inStackBadge.title = 'A local copy is downloaded';
+            inStackBadge.textContent = 'Downloaded';
             c.insertBefore(inStackBadge, c.firstChild);
           }
         } else if (inStackBadge && !isRequired) {
@@ -592,8 +598,8 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
         const actionBtn = c.querySelector('[data-action]');
         if (actionBtn) {
           actionBtn.dataset.action = becameInStack ? 'remove' : 'add';
-          // Mirror the macro's footer text — "Remove" / "+ Add to stack".
-          actionBtn.textContent = becameInStack ? 'Remove' : '+ Add to stack';
+          // Mirror the macro's footer text under `in_stack_is_local` (#1206).
+          actionBtn.textContent = becameInStack ? 'Remove local copy' : 'Download locally';
           actionBtn.classList.toggle('stack-card__btn--add', !becameInStack);
           actionBtn.classList.toggle('stack-card__btn--remove', becameInStack);
           actionBtn.disabled = false;

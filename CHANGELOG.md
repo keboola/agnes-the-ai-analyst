@@ -12,6 +12,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+### Fixed
+- **The Catalog no longer shows three contradictory numbers for one concept.** After the auto-membership reshape `in_stack` carries the local-download state, not stack membership — every granted package is in the stack by definition. The key name still said the old thing, so the card macro read it that way: a package sat under **My Stack** while its own button invited you to "Add to stack", and the "In stack" filter chip reported 3 beside a tab badge reading 29. The projections that re-point the key now say so (`in_stack_is_local`), the card macro switches its wording on that flag rather than guessing from the key name, the chip reads **Downloaded**, and the client-side re-label after an add/remove was updated in lockstep — left alone it would have undone the fix on the first click. Consumers that never re-pointed `in_stack` omit the flag and keep the old wording. Closes #1206.
+
+### Changed
+
 - Per-instance feature flag for Agent profiles (`agent_profiles.enabled` / `AGNES_AGENT_PROFILES_ENABLED`), same mechanism as the Studio flag. Grandfathered on by default; disabling closes the `/agents` builder page, the `/api/v1/agents*` management + runtime API (and its `agnes agent`/`agnes chat` CLI clients) with a 403 `agent_profiles_disabled`, and hides every inbound link to it — the "My agents" nav entry in both chromes, the command-palette row, and the three `/agents` links on `/how-it-works` (which would otherwise be dead ends that bounce the user home). Default-agent seeding, chat attribution, and the broker's agent policy are internal mechanisms and keep working regardless.
 
 ### Changed
