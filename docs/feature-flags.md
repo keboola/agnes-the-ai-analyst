@@ -84,9 +84,13 @@ for the same reason and with the same consequences: the chat gate reads it off
 `load_chat_config`, so setting it in the static base config alone has no effect
 — use the `/admin/server-config` editor or `AGNES_CHAT_APPROVALS_ENABLED`. Both
 flags resolve their panel row through `_chat_flag_runtime_view`
-(`app/api/admin.py`), which is keyed off a `{flag name: ChatConfig attribute}`
-map — a third chat-resolved flag belongs in that map, or the panel will report a
-value the runtime does not use.
+(`app/api/admin.py`), fed by `_CHAT_RUNTIME_FLAGS` — a `{flag name: ChatConfig
+attribute}` map derived from each switch's `runtime_view` field (see
+`Switch.runtime_view` below), not hand-maintained. A third chat-resolved flag
+needs only `runtime_view` set on its `Switch` entry — the map, and the panel
+row, follow automatically. `switch_value()` refuses to resolve any switch that
+declares `runtime_view` (it raises `ValueError` rather than silently reading
+the wrong source) — see the caveat under "How to add a switch" below.
 
 ## The registry
 
@@ -98,6 +102,11 @@ operator-facing toggle. Each entry declares:
 - `kind`, `default`, `options` — every switch today is `kind="bool"`;
   `options` is for the `select` switches (`theme`, `ui_layout`, …) landing in
   a later PR.
+- `on_invalid` — what a `select` switch does with a token not in `options`:
+  `"default"` (the default) falls back to `default` silently, `"raise"`
+  fails loudly at read time instead of guessing wrong (use for a switch
+  where a bad value is worse than a crash, e.g. a backend selector). Ignored
+  for non-`select` kinds.
 - `effect` — what the running system can do with a new value: `live` (read
   per request — a save takes effect immediately), `restart` (read at boot —
   a save is stored and applies after a restart), or `deploy` (not a section
@@ -109,16 +118,31 @@ operator-facing toggle. Each entry declares:
 - `editable` / `lock_reason` — whether the admin UI offers a write path for
   this switch, and, when it doesn't, the operator-facing reason: nothing to
   write (`effect="deploy"`), a deliberate security lock, or an unmet
-  dependency. Every switch in the table below is editable except
-  `data_apps`: the flag itself is read per request, but the `apps_runner`
-  sidecar it gates sits behind the `apps` Compose profile, so flipping it
-  live would surface a feature with no backend running.
+  dependency. `editable` has no default — every entry states it explicitly,
+  because `POST /api/admin/server-config` validates only the section name
+  and then deep-merges the patch, so `editable=True` on one switch exposes
+  every key in that switch's section, not just the switch's own key. Every
+  switch in the table below is editable except `data_apps`: the flag itself
+  is read per request, but the `apps_runner` sidecar it gates sits behind
+  the `apps` Compose profile, so flipping it live would surface a feature
+  with no backend running.
+- `danger` — marks a switch whose flip is high-risk enough to warrant its
+  own confirmation copy in the panel — the per-switch analog of the
+  section-level `_DANGER_SECTIONS` gate in `app/api/admin.py` (`auth`,
+  `server`). Not consumed anywhere yet; reserved for a future per-switch
+  confirmation dialog. Every switch today leaves it at the default `False`.
+- `runtime_view` — non-`None` for a switch whose *running* value is not read
+  from the merged config, per the "Two exceptions" above: the `ChatConfig`
+  attribute name holding the resolved flag (`chat` and `chat_approvals` are
+  the current two). `switch_value()` raises `ValueError` for any switch that
+  sets this rather than risk returning a value the runtime does not
+  actually use — see "How to add a switch" below.
 - `description` — the operator-facing summary shown in the panel and in the
   table below.
 
 `app.instance_config.FEATURE_FLAGS` is the same tuple under its historical
 name (`FeatureFlag` is an alias for `Switch`), so existing imports and the
-resolution helper below keep working unchanged.
+resolution helper above keep working unchanged.
 
 The registry backs the read-only **Feature flags** panel on
 `/admin/server-config` (fed by the `feature_flags` block in
@@ -139,7 +163,16 @@ without a write path.
    decide its `effect` (`live` / `restart` / `deploy`) and whether it's
    `editable` — most switches are; give the others a `lock_reason`.
 2. At the read site, call `switch_value("<name>")` instead of hand-rolling
-   `os.environ.get(...)` / `get_value(...)`.
+   `os.environ.get(...)` / `get_value(...)`. **Caveat:** this only works if
+   the switch's runtime actually reads the merged config `switch_value()`
+   resolves from. If your read site instead boots from its own
+   caller-supplied config — as `chat` and `chat_approvals` do, from
+   `load_chat_config(DATA_DIR/state/instance.yaml)`, the writable overlay
+   file alone — declare `runtime_view` on the `Switch` entry instead (step 3)
+   and give the panel its own resolver alongside `_chat_flag_runtime_view`
+   in `app/api/admin.py`. `switch_value()` raises `ValueError` for any
+   switch that sets `runtime_view`, so this cannot be discovered by a quiet
+   wrong answer — only by the exception.
 3. Append a `Switch` entry to `SWITCHES` in `app/switches.py` with a short
    operator-facing `description`.
 4. Add a row to this doc's flag list below (or update the section it belongs
