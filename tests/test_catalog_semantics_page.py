@@ -326,6 +326,38 @@ class TestCatalogSemanticsDetailRendering:
         assert 'href="javascript:' not in body
         assert "<script>alert(2)</script>" not in body
 
+    def test_html_blob_description_does_not_leak_tags_into_the_preview(self, seeded_app):
+        """A metric imported from OpenMetadata stores rich HTML in the same
+        column a hand-authored one uses for markdown. Rendered as pure
+        markdown, the blob was escaped into entities — leaving the tag-strip
+        nothing to remove — and then unescaped back, so the analyst read the
+        characters `<p><strong>` in the preview."""
+        import re
+
+        _make_metric(description="<p><strong>Live Deals</strong> - deals currently live.</p>")
+        body = self._page(seeded_app)
+        m = re.search(r'<div class="sl-row__desc">([^<]*)</div>', body)
+        assert m, "plain-text preview div missing"
+        preview = m.group(1)
+        assert "Live Deals - deals currently live." in preview
+        assert "&lt;" not in preview and "&gt;" not in preview
+
+    def test_html_blob_description_renders_as_markup_in_the_detail(self, seeded_app):
+        """Same input, other projection: the detail shows bold text rather
+        than the literal characters of the tag."""
+        _make_metric(description="<p><strong>Live Deals</strong> - deals currently live.</p>")
+        body = self._page(seeded_app)
+        assert "<strong>Live Deals</strong>" in body
+        assert "&lt;strong&gt;" not in body
+
+    def test_html_blob_description_is_still_sanitized(self, seeded_app):
+        """Accepting HTML from the source widens what is displayed, never
+        what is allowed — the nh3 allowlist is the same one."""
+        _make_metric(description='<p onclick="steal()">hi</p><script>alert(3)</script>')
+        body = self._page(seeded_app)
+        assert "onclick" not in body
+        assert "alert(3)" not in body
+
     def test_meta_line_shows_type_unit_grain_and_dimensions(self, seeded_app):
         _make_metric(
             type="ratio",

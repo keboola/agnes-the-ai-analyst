@@ -7,6 +7,9 @@ Two stages:
    are enabled because they show up routinely in `long_description` /
    `sample_interaction.assistant`. Linkify is OFF — curators write explicit
    links; auto-linking bare strings adds attack surface without value here.
+   Callers whose stored text may itself BE html rather than markdown pass
+   `html_source=True` for a second renderer that does pass raw HTML through
+   to stage 2 — see the `render_safe` docstring for when that is right.
 
 2. **Sanitize** — funnel the rendered HTML through `nh3` (Rust-backed ammonia
    allowlist) so anything the renderer let through that we don't want
@@ -15,7 +18,8 @@ Two stages:
 
 Used by `app/api/marketplace.py` to pre-render `description` and
 `sample_interaction.assistant` from `marketplace-metadata.json` before the
-HTML lands in `PluginDetailResponse`. The template injects with `{{ x | safe }}`
+HTML lands in `PluginDetailResponse`, and by the `/catalog/semantics` metric
+rows (`html_source=True` there). The template injects with `{{ x | safe }}`
 trusting the stored value — no second-pass sanitization on render.
 """
 
@@ -35,6 +39,16 @@ from markdown_it import MarkdownIt
 # from becoming clickable links.
 _md = (
     MarkdownIt("commonmark", {"html": False, "linkify": False})
+    .enable("table")
+    .enable("strikethrough")
+)
+
+# Same renderer with raw HTML pass-through, for stored text that may itself
+# BE html rather than markdown (`html_source=True` below). Safety still rests
+# on the same nh3 allowlist — the difference is only whether a `<strong>` in
+# the source becomes markup or becomes the visible characters `<strong>`.
+_md_html_source = (
+    MarkdownIt("commonmark", {"html": True, "linkify": False})
     .enable("table")
     .enable("strikethrough")
 )
@@ -64,17 +78,25 @@ _ALLOWED_ATTRIBUTES: dict[str, set[str]] = {
 _ALLOWED_URL_SCHEMES: set[str] = {"http", "https", "mailto"}
 
 
-def render_safe(markdown: Optional[str]) -> str:
+def render_safe(markdown: Optional[str], *, html_source: bool = False) -> str:
     """Render curator-authored markdown to sanitized HTML.
 
     Returns ``""`` for ``None`` or empty input. The output is safe to inject
     into a template with `{{ x | safe }}` — every attack surface markdown-it
     leaves open (raw `<script>`, `javascript:` URLs, event handlers) is
     stripped by nh3 before return.
+
+    ``html_source=True`` for stored text whose dialect is not guaranteed to be
+    markdown — a metric description imported from OpenMetadata, which "stores
+    descriptions as rich HTML", sits in the same column as a hand-authored
+    markdown one. Raw HTML then renders as markup instead of as its own escaped
+    characters; the nh3 allowlist is identical either way, so this widens what
+    is *displayed*, never what is *allowed*. Leave it off for curator-authored
+    content, where pasted HTML showing up as literal text is the intended tell.
     """
     if not markdown:
         return ""
-    html = _md.render(markdown)
+    html = (_md_html_source if html_source else _md).render(markdown)
     return nh3.clean(
         html,
         tags=_ALLOWED_TAGS,
@@ -93,7 +115,7 @@ _BLOCK_BOUNDARY_RE = re.compile(
 )
 
 
-def render_plain(markdown: Optional[str]) -> str:
+def render_plain(markdown: Optional[str], *, html_source: bool = False) -> str:
     """Plain-text projection of ``render_safe`` output.
 
     For one-line previews and client-side filter indexes where markup,
@@ -102,10 +124,17 @@ def render_plain(markdown: Optional[str]) -> str:
     strip every remaining tag (nh3 with an empty allowlist), unescape
     entities back to text, collapse whitespace. The result is data, not
     HTML: inject with normal Jinja escaping, never ``| safe``.
+
+    ``html_source`` carries the same meaning as in ``render_safe``, and this
+    projection is why it exists: without it an HTML-blob input is escaped by
+    the renderer into entities, so the tag-strip below finds no tags to
+    remove and the closing ``unescape`` hands them back as visible ``<p>``
+    / ``<strong>`` characters — markup surviving into the one place that
+    promises none.
     """
     if not markdown:
         return ""
-    html = _BLOCK_BOUNDARY_RE.sub(" ", render_safe(markdown))
+    html = _BLOCK_BOUNDARY_RE.sub(" ", render_safe(markdown, html_source=html_source))
     text = html_lib.unescape(nh3.clean(html, tags=set()))
     return " ".join(text.split())
 
