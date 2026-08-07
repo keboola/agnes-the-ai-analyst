@@ -121,3 +121,37 @@ def test_applier_propagates_a_refused_rewrite_to_its_caller():
     assert "if write_instance_yaml " in body, (
         "the post-migration success path must branch on the rewrite actually succeeding before it logs the flip"
     )
+
+
+def test_every_write_instance_yaml_call_site_is_guarded():
+    """A refused rewrite must never abort the applier mid-run.
+
+    The applier runs under ``set -euo pipefail`` with ``trap '__rollback'
+    ERR``. Once ``write_instance_yaml`` can exit non-zero, a *bare* call
+    terminates the script at that point — and the two places it is called
+    during a migration are followed by the lifecycle-flag handling and by
+    step 4, which brings app+scheduler back up. Aborting there takes the
+    instance offline and leaves it there: ``_recover_stuck_jobs`` only
+    repairs jobs still in status ``running``, and a failed migration's job
+    is already ``failed``.
+
+    So every call site must either consume the status (``if …``) or discard
+    it explicitly (``|| true``). A bare call is the bug.
+    """
+    lines = APPLIER.read_text().splitlines()
+    bare = [
+        (n, line.strip())
+        for n, line in enumerate(lines, 1)
+        # the call, not the definition, a comment, or a log line mentioning it
+        if "write_instance_yaml " in line
+        and not line.strip().startswith("#")
+        and "write_instance_yaml() {" not in line
+        and "logger" not in line
+        and "echo" not in line
+        and not line.strip().startswith("if ")
+        and "|| true" not in line
+    ]
+    assert not bare, (
+        "unguarded write_instance_yaml call(s) — under `set -e` + the ERR trap "
+        f"a refused rewrite aborts the applier before app+scheduler restart: {bare}"
+    )
