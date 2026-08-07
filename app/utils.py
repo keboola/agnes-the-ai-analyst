@@ -51,8 +51,18 @@ def _is_safe_table_segment(name: str) -> bool:
     separator before the handler runs, so a multi-segment escape is not
     reachable over HTTP — but that is a property of the transport, not a
     containment guarantee these helpers may lean on.
+
+    Glob metacharacters are rejected for a second reason: the id is not only
+    joined into a path, it is INTERPOLATED INTO A GLOB PATTERN —
+    ``extracts.rglob(f"data/{table_id}.parquet")`` here and in
+    ``app/api/catalog.py``, plus ``extracts.glob(f"*/data/{table_id}")`` below.
+    A `*` or `[...]` therefore stops naming one table and starts matching an
+    arbitrary one, so `POST /api/catalog/profile/*/refresh` would profile
+    whichever parquet the pattern happened to hit and store it under the
+    requested name (Devin Review on #1198). No identifier this repo registers —
+    Keboola, BigQuery or Jira — can legitimately contain them.
     """
-    return bool(name) and name not in (".", "..") and not set(name) & {"/", "\\", "\x00"}
+    return bool(name) and name not in (".", "..") and not set(name) & {"/", "\\", "\x00", "*", "?", "[", "]"}
 
 
 def _contained(path: Path, root: Path) -> bool:
@@ -90,7 +100,14 @@ def resolve_local_parquet(table_id: str, source_type: str | None = None) -> Path
         return None
     if source_type and _is_safe_table_segment(source_type):
         direct = extracts / source_type / "data" / f"{table_id}.parquet"
-        if direct.exists():
+        # Contained like every other candidate. The fast path returned `direct`
+        # unchecked while the rglob fallback below and every
+        # `_partition_dir_candidates` result were filtered — so a symlink
+        # planted at `extracts/<source_type>/data/<id>.parquet` was the one way
+        # back out of the tree, and it fed straight into
+        # `resolve_local_parquet_glob` and the read surfaces (Devin Review
+        # on #1198). A fast path may skip work, not the check.
+        if direct.exists() and _contained(direct, extracts):
             return direct
     matches = [p for p in extracts.rglob(f"data/{table_id}.parquet") if _contained(p, extracts)]
     return matches[0] if matches else None

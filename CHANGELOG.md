@@ -86,7 +86,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   multi-segment escape was not reachable over HTTP — routing rejects an encoded
   separator before the handler runs — but that is a property of the transport,
   not something these helpers should lean on. A symlink planted inside the
-  extracts tree no longer resolves out of it either.
+  extracts tree no longer resolves out of it either — including one planted at
+  the `source_type` fast path, which returned its hit before any containment
+  check while every other candidate was filtered. The id is also rejected when
+  it carries glob metacharacters: it is not merely joined into a path, it is
+  interpolated into a pattern (`rglob(f"data/{id}.parquet")`), so a `*` or
+  `[...]` stopped naming one table and started matching an arbitrary one —
+  `POST /api/catalog/profile/*/refresh` would have profiled whichever parquet
+  the pattern hit and stored it under the requested name.
 
 ## [0.83.0] - 2026-08-07
 
