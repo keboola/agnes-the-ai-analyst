@@ -223,6 +223,81 @@ class TestDistributionMirrorHandler:
         _run_distribution_mirror({})  # must not raise, must not touch boto3
 
 
+class TestPartitionedTablesAreNotMirrored:
+    """A partitioned table stores its data as a DIRECTORY of per-period parquets,
+    while the mirror addresses exactly one ``<table_id>.parquet`` object per
+    table. It is deliberately left out of the object-store mirror — analysts
+    still receive it, per-part, over the app-served ``/api/data/<id>/download
+    ?part=`` route (``cli/lib/pull.py::_sync_partitioned_table``), so this is a
+    presign acceleration gap, not a distribution gap.
+
+    Pinned because the mirror used to reach the same outcome by ACCIDENT: the
+    single-file lookup found nothing and it logged "no on-disk parquet found",
+    the same message a genuinely broken sync produces. Operators reading that
+    warning were being told a healthy table was broken.
+    """
+
+    @pytest.fixture
+    def partitioned_env(self, mirror_env):
+        from src.repositories import sync_state_repo, table_registry_repo
+
+        data = mirror_env["data_dir"] / "extracts" / "keboola" / "data" / "kbc_sales"
+        data.mkdir(parents=True)
+        (data / "2025_11.parquet").write_bytes(b"nov-part")
+        (data / "2025_12.parquet").write_bytes(b"dec-part")
+        parts = [
+            {"path": "2025_11.parquet", "hash": _md5(b"nov-part"), "size_bytes": 8},
+            {"path": "2025_12.parquet", "hash": _md5(b"dec-part"), "size_bytes": 8},
+        ]
+        table_registry_repo().register(id="kbc_sales", name="kbc_sales", source_type="keboola", query_mode="local")
+        sync_state_repo().update_sync(
+            table_id="kbc_sales",
+            rows=3,
+            file_size_bytes=16,
+            hash="rollup-of-the-parts",
+            parts=parts,
+        )
+        return mirror_env
+
+    def test_partitioned_table_is_skipped_without_warning(self, partitioned_env, monkeypatch, caplog):
+        fake = FakeObjectStore()
+        monkeypatch.setattr("src.object_store.object_store", lambda: fake)
+
+        from app.worker.kinds import _run_distribution_mirror
+        from src.distribution import MIRROR_INDEX_KEY
+
+        with caplog.at_level("WARNING", logger="app.worker.kinds"):
+            _run_distribution_mirror({})
+
+        assert "kbc_sales.parquet" not in fake.objects
+        assert "kbc_sales" not in json.loads(fake.objects[MIRROR_INDEX_KEY])["tables"]
+        assert not [r for r in caplog.records if r.levelname == "WARNING" and "kbc_sales" in r.getMessage()]
+
+    def test_single_file_tables_alongside_it_still_mirror(self, partitioned_env, monkeypatch):
+        fake = FakeObjectStore()
+        monkeypatch.setattr("src.object_store.object_store", lambda: fake)
+
+        from app.worker.kinds import _run_distribution_mirror
+
+        _run_distribution_mirror({})
+
+        assert {key for _, key, _ in fake.put_file_calls} == {"orders.parquet", "sales_report.parquet"}
+
+    def test_a_genuinely_missing_single_file_parquet_still_warns(self, mirror_env, monkeypatch, caplog):
+        """The warning must keep firing where it is true: a non-partitioned
+        table whose parquet is gone."""
+        (mirror_env["data_dir"] / "extracts" / "keboola" / "data" / "orders.parquet").unlink()
+        fake = FakeObjectStore()
+        monkeypatch.setattr("src.object_store.object_store", lambda: fake)
+
+        from app.worker.kinds import _run_distribution_mirror
+
+        with caplog.at_level("WARNING", logger="app.worker.kinds"):
+            _run_distribution_mirror({})
+
+        assert [r for r in caplog.records if r.levelname == "WARNING" and "orders" in r.getMessage()]
+
+
 class TestMirrorIndexHelpers:
     def test_write_then_read_round_trips(self):
         fake = FakeObjectStore()

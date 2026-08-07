@@ -112,17 +112,30 @@ def refresh_profile(
     # Check table-level access
     if not can_access_table(user, table_name, conn):
         raise HTTPException(status_code=403, detail=f"Access denied to table '{table_name}'")
+    from app.utils import resolve_local_parquet, resolve_local_partition_dir
     from src.profiler import profile_table, TableInfo
 
-    data_dir = _get_data_dir()
-    extracts_dir = data_dir / "extracts"
-    candidates = list(extracts_dir.rglob(f"data/{table_name}.parquet"))
-    if not candidates:
+    # The single-file lookup goes through `resolve_local_parquet` rather than a
+    # fourth hand-rolled `rglob(f"data/{name}.parquet")`. The name arrives on
+    # the request path and was pasted straight into that pattern, so it was not
+    # naming a table so much as searching for one: `*` matched whichever parquet
+    # came first and stored ITS statistics under the requested name, and none of
+    # the segment validation or realpath containment the resolvers gained
+    # applied here (Devin Review on #1198). This endpoint resolves a target
+    # before the registry is consulted, so it cannot lean on a row existing.
+    #
+    # A partitioned table is a DIRECTORY of per-period parquets, so the
+    # single-file lookup finds nothing for one that is perfectly synced.
+    # `profile_table` takes the directory as-is (it builds a recursive `**`
+    # read expression from it), which is exactly what the scheduled profiling
+    # run already passes — only this manual refresh could not reach it.
+    target = resolve_local_parquet(table_name) or resolve_local_partition_dir(table_name)
+    if target is None:
         raise HTTPException(status_code=404, detail=f"No parquet for '{table_name}'")
 
     try:
         table_info = TableInfo(name=table_name, table_id=table_name)
-        profile = profile_table(table_info, candidates[0], [], {}, {})
+        profile = profile_table(table_info, target, [], {}, {})
         profile_repo().save(table_name, profile)
         return {"status": "ok", "table": table_name, "columns": len(profile.get("columns", {}))}
     except Exception as e:
