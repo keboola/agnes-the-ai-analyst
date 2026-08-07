@@ -77,14 +77,15 @@ def _chat_jwt_secret_ok(chat_config) -> bool:
     ``JWT_SECRET_KEY`` (unset or shorter than 32 bytes).
 
     The chat path mints session JWTs that authenticate the sandboxed
-    runner back to the Agnes server.  If ``JWT_SECRET_KEY`` is unset, the
-    auth layer falls back to the public test constant
-    (``test-jwt-secret-key-minimum-32-chars!!`` — committed in jwt.py for
-    local-dev convenience).  A production deployment that flips
-    ``chat.enabled: true`` without setting a real secret would mint and
-    verify tokens against that constant — anyone who reads the source
-    could mint runner JWTs.  Refuse to enable chat in that state and
-    surface a fatal log so the operator knows why.
+    runner back to the Agnes server.  ``app.auth.jwt._get_secret_key`` is
+    fail-closed — production without ``JWT_SECRET_KEY`` refuses to boot,
+    and local dev signs with an auto-generated per-instance key — so this
+    gate is the narrower, earlier check: it names chat as the reason and
+    logs it, rather than letting the deployment die at lifespan with a
+    generic message, and it rejects a key local dev would otherwise accept
+    (auto-generated or shorter than 32 bytes).  Anything reachable here is
+    a misconfiguration, never the committed test constant: that one is
+    gated on ``TESTING=1`` in jwt.py and reachable from no server path.
 
     Returns True when chat is disabled (irrelevant) or when the secret is
     set and >= 32 bytes; False otherwise.

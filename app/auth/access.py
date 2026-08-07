@@ -675,10 +675,16 @@ def mint_session_jwt(user_email: str, chat_id: str, *, ttl_seconds: int = 3600) 
     dependency (app/auth/pat_resolver.py calls UserRepository.get_by_id on
     the ``sub`` claim), so ``sub`` MUST be the user's UUID — not the email.
 
-    Secret is read from the ``JWT_SECRET_KEY`` environment variable —
-    the same key used by the rest of the auth layer (see app/auth/jwt.py).
+    Encoded with the canonical auth secret (app/auth/jwt) so verify_token
+    decodes it in every env — same contract as ``mint_co_session_jwt``. Not a
+    bare ``JWT_SECRET_KEY`` env read: that skips the fail-closed resolver,
+    signs with the committed dev constant when the var is unset, and under
+    local dev misses the auto-generated key (never exported to the env) that
+    the verifier actually holds.
     """
     import jwt  # PyJWT — already a project dependency
+
+    from app.auth.jwt import ALGORITHM, get_signing_secret
     from src.repositories import users_repo
 
     # Factory-routed: honors use_pg() so a Postgres instance reads the live
@@ -697,11 +703,7 @@ def mint_session_jwt(user_email: str, chat_id: str, *, ttl_seconds: int = 3600) 
         "chat_session_id": chat_id,
         "email": user_email,
     }
-    secret = os.environ.get(
-        "JWT_SECRET_KEY",
-        "test-jwt-secret-key-minimum-32-chars!!",
-    )
-    return jwt.encode(payload, secret, algorithm="HS256")
+    return jwt.encode(payload, get_signing_secret(), algorithm=ALGORITHM)
 
 
 def mint_co_session_jwt(session_id: str, *, ttl: int = 3600) -> str:
