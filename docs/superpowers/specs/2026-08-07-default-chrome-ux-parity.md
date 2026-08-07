@@ -81,7 +81,7 @@ built-in default`:
 | `instance.ui_layout` | `topnav` | `rail` |
 | `instance.theme` | `blue` | `paper` |
 | `features.stack_auto_membership` | `false` | `true` |
-| `library.show_unverified_trust` | `false` | `true` |
+| `library.show_unverified_trust` | not preset-coupled — the trust vocabulary is gated to the paper theme at every `mark()` callsite, so default-chrome parity comes from the theme gate itself; the flag keeps its registry default either way | |
 | `store.verification_enabled` | `false` | `false` — stays a deliberate governance opt-in (it needs a reviewer, not a theme) |
 
 `experience: redesign` is therefore the one-line switch to the full new

@@ -27,6 +27,14 @@ instance:
                                      # When it differs from `brand`, the /home hero appends
                                      # "Call me <brand_short>." after the title. Defaults to
                                      # `brand`. Env override: AGNES_INSTANCE_BRAND_SHORT.
+  # experience: "classic"           # ONE-LINE experience preset: classic (default) |
+                                     # redesign. Changes only the DEFAULTS of the coupled
+                                     # knobs — `redesign` implies ui_layout=rail,
+                                     # theme=paper and features.stack_auto_membership=true;
+                                     # classic (or absent) is byte-for-byte the
+                                     # pre-redesign experience. Any per-knob setting below
+                                     # (env or yaml) still wins. Env override:
+                                     # AGNES_INSTANCE_EXPERIENCE.
   # theme: "blue"                    # UI palette: blue (default) | navy | dark | auto |
                                      # paper (prototype-derived light look: paper canvas,
                                      # emerald accent, pill CTAs). Env override:
@@ -268,6 +276,21 @@ auth:
 #   # PATs, service tokens) is never subject to this default — it has no
 #   # cookie jar to re-elevate with. See docs/RBAC.md.
 #   admin_default_elevation: "elevated"
+
+# --- Feature flags (optional) ---
+# See docs/feature-flags.md for the full inventory and resolution order.
+# features:
+#   stack_auto_membership: true      # Stack membership mode. false (classic, the
+#                                    # default): membership is the subscribe model —
+#                                    # required plus subscribed grants, all downloaded
+#                                    # by `agnes pull` — exactly the pre-redesign
+#                                    # behavior. true: auto-membership — every granted
+#                                    # resource is in the stack immediately;
+#                                    # subscribe/unsubscribe only control the local
+#                                    # copy. Part of the redesign trio (ui_layout=rail,
+#                                    # theme=paper, this flag) — set all three at once
+#                                    # with `instance.experience: redesign` above. Env
+#                                    # override: AGNES_STACK_AUTO_MEMBERSHIP.
 
 # --- Library & Store trust vocabulary (optional, opt-in) ---
 # Both default to false so a routine upgrade never changes what existing
