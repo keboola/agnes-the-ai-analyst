@@ -17,6 +17,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - Per-instance feature flag for Agent profiles (`agent_profiles.enabled` / `AGNES_AGENT_PROFILES_ENABLED`), same mechanism as the Studio flag. Grandfathered on by default; disabling closes the `/agents` builder page, the `/api/v1/agents*` management + runtime API (and its `agnes agent`/`agnes chat` CLI clients) with a 403 `agent_profiles_disabled`, and hides every inbound link to it — the "My agents" nav entry in both chromes, the command-palette row, and the three `/agents` links on `/how-it-works` (which would otherwise be dead ends that bounce the user home). Default-agent seeding, chat attribution, and the broker's agent policy are internal mechanisms and keep working regardless.
 - `agnes admin register-table --server-only` — CLI surface for the `server_only` distribution flag (#607). The flag keeps a `local`/`materialized` table synced and queryable server-side while excluding its parquet from `agnes pull`, which is the answer for data that may be queried but must not be copied onto laptops. It has existed as a REST field since schema v74 but had no CLI flag and no documentation, so the only documented way to set it was a raw API call. Pairing it with `--query-mode remote` fails client-side with the same rationale the API validator gives, before the round-trip.
 - `docs/admin/collections-vs-data-packages.md` — when to upload files versus register a live source. Both surface under Library, which makes them look like alternatives; the deciding question is who updates the content when it changes.
+- `agnes global enable|disable|status` — user-scope (all-repositories) layer: stack plugins installed with `claude plugin install --scope user`, an `agnes` user-scope stdio MCP entry, a marker-fenced rails block in `~/.claude/CLAUDE.md`, and (by default; `--no-hook` opts out) a user-level SessionStart hook running the detached `agnes update`. `agnes update` re-converges the layer via a new `global` step, and `agnes refresh-marketplace` gains `--target user|project` (the `user` target performs no per-repository writes). New docs page: `docs/global-distribution.md`.
 
 - **`instance.experience` preset** (`classic` | `redesign`, env
   `AGNES_INSTANCE_EXPERIENCE`) — the one-line adoption switch for the
@@ -86,6 +87,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **Softened the "check `PLATFORM_SETUP.md` first" banner** on QUICKSTART / DEPLOYMENT / ONBOARDING / HEADLESS_USAGE. `PLATFORM_SETUP.md` is a ~170-line day-2 playbook (marketplaces, scheduler cadence, telemetry, privacy posture, daily routine), not a superset of the docs pointing at it — sending a first-time reader there ahead of the quick start pointed them away from what they needed. Part of #1192.
 
 - **Newline preservation in modal copy is opt-in.** `white-space: pre-wrap` on `.modal-card` headings and sub-lines exists so a message handed to `alertModal` / `confirmModal` / `promptModal` keeps its `\n` line breaks, the way the native dialogs they replace did. Applied to every `.modal-card` on the instance, it also reformatted **static** copy in templates, where newlines and indentation are source formatting — the Add-user helper paragraph, written across three template lines for readability, rendered as three jaggedly-indented lines instead of one wrapped paragraph. `modal.js` now stamps `data-preserve-newlines` on the cards it builds and the rule is scoped to that attribute, so the dialogs that need the behaviour keep it and authored markup is free to wrap however it reads best. Closes #1171.
+- CLI data commands (`query --local`, `pull`, `snapshot`, `status`, `disk-info`, `explore`, `statusline`, `mark-private`) and the stdio MCP server (`query_local`, `pull`) now fall back to the workspace anchored by `agnes init` when run outside a workspace directory — Agnes data access works from any repository. `AGNES_LOCAL_DIR` still overrides; behavior inside a workspace is unchanged. `agnes pull` gains `--workspace <dir>`.
 
 ### Fixed
 
@@ -181,6 +183,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   mirror. Mirroring per-part objects (and presigning them) would have to change
   the manifest and the CLI together, so it stays out of this change.
 - The admin source-connection probes gained a server-side log trail. `POST /api/admin/source-connections/{id}/test` was fully silent — a failing connection left nothing behind for an operator to read — and now logs every outcome; the tables listing logs bucket/table counts, duration and the resolved scope on success, and the master-token preflight logs a token-redacted WARNING on its 502 (an `HTTPException` is otherwise invisible in server logs). Log lines carry the stack HOST rather than the full `stack_url`, and status or reason rather than response bodies: the token travels in a header, and a proxy-echoed body must not land in the logs. The 502 mapping this branch also carried shipped separately in 0.83.0 via the bucket-scoped-token work, so only the observability is new here.
+- `agnes pull` no longer scaffolds a `server/parquet` + `user/duckdb` tree into an arbitrary current directory when no workspace exists — it errors with a typed hint instead.
 
 ### Removed
 
@@ -708,15 +711,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ## [0.80.1] - 2026-08-06
 
 ### Added
-- `agnes global enable|disable|status` — user-scope (all-repositories) layer: stack plugins installed with `claude plugin install --scope user`, an `agnes` user-scope stdio MCP entry, a marker-fenced rails block in `~/.claude/CLAUDE.md`, and (by default; `--no-hook` opts out) a user-level SessionStart hook running the detached `agnes update`. `agnes update` re-converges the layer via a new `global` step, and `agnes refresh-marketplace` gains `--target user|project` (the `user` target performs no per-repository writes). New docs page: `docs/global-distribution.md`.
 
 ### Changed
 
-- CLI data commands (`query --local`, `pull`, `snapshot`, `status`, `disk-info`, `explore`, `statusline`, `mark-private`) and the stdio MCP server (`query_local`, `pull`) now fall back to the workspace anchored by `agnes init` when run outside a workspace directory — Agnes data access works from any repository. `AGNES_LOCAL_DIR` still overrides; behavior inside a workspace is unchanged. `agnes pull` gains `--workspace <dir>`.
-
 ### Fixed
-
-- `agnes pull` no longer scaffolds a `server/parquet` + `user/duckdb` tree into an arbitrary current directory when no workspace exists — it errors with a typed hint instead.
 
 ### Removed
 
