@@ -39,6 +39,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   sync status page that shows success. The preview now resolves either layout
   (`resolve_local_parquet_glob`) and reads every partition. An empty partition
   directory still counts as no data, because that genuinely is the pending case.
+  The schema, scan, catalog-size and distribution surfaces still use the
+  single-file lookup — the first two are a mechanical swap but the catalog needs
+  sizes summed and distribution would need to mirror a directory (with a matching
+  `agnes pull` change), so they are deliberately left for their own change rather
+  than half-done here.
+
+- Pushing column metadata back to Keboola addressed a tableId that does not
+  exist. `POST /api/admin/metadata/{table_id}/push` built its URL from
+  `source_table` alone, but the Storage API addresses a table by
+  `<bucket>.<table>` and the registry keeps the bucket in a separate column — so
+  the request went to `/v2/storage/tables/orders/columns/...` with no bucket, and
+  the feature only ever worked for pre-fix wizard rows whose `source_table` still
+  carried the prefix. The exact inverse of the doubled-prefix bug above.
 
 - The copy-paste query suggestion for a not-yet-materialized table named a
   nonexistent table for pre-fix wizard rows: it composed
