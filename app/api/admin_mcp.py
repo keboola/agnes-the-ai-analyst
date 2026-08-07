@@ -1161,6 +1161,20 @@ async def register_oauth_client(
     clients_repo = mcp_source_oauth_clients_repo()
     existing = clients_repo.get(source_id)
 
+    # This is the fifth path that dials the source's own url, and it
+    # deliberately does NOT take `_check_source_url_or_400`. It does not need
+    # it: `build_oauth_http_client()` is https-only and SSRF-safe, which is a
+    # strictly tighter guard than the source-url policy — adding the policy on
+    # top could only ever loosen nothing and refuse more.
+    #
+    # The two do disagree, in the opposite direction from #1154: the SSRF-safe
+    # client refuses an intranet address that the source-url policy allows on
+    # purpose (see src/net/mcp_source_url.py on why an internal MCP server is
+    # an ordinary deployment). So an OAuth source on an internal address
+    # cannot complete RFC 9728 discovery, whatever `mcp.source_url_strict`
+    # says. That is intended: discovery negotiates with an authorization
+    # server, and relaxing the client to reach one on the intranet would give
+    # up the guard that makes every OAuth hop safe (Devin on #1204).
     try:
         async with build_oauth_http_client() as http_client:
             resource_meta = await discover_protected_resource_metadata(src["url"], client=http_client)
