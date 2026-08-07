@@ -3959,15 +3959,22 @@ async def catalog_semantics(
     accessible_ids = get_accessible_tables(user, conn)
     allowed = None if accessible_ids is None else set(accessible_ids)
     metrics = [m for m in metric_repo().list() if _first_inaccessible_table(m, allowed) is None]
-    # Two projections of the (markdown-authored) description: sanitized HTML
-    # for the expanded detail, plain text for the one-line row preview and
-    # the client-side filter index. Metric descriptions carry the business
-    # definition; the detail must show it, not just the SQL.
+    # Two projections of the description: sanitized HTML for the expanded
+    # detail, plain text for the one-line row preview and the client-side
+    # filter index. Metric descriptions carry the business definition; the
+    # detail must show it, not just the SQL.
+    #
+    # ``html_source=True`` because this column holds two dialects. Metrics
+    # hand-authored in docs/metrics/*.yaml are markdown; metrics imported
+    # from OpenMetadata are rich HTML (connectors/openmetadata/transformer.py
+    # says so, and strips it for its own plain-text field). Rendered as pure
+    # markdown, the HTML ones escaped into entities and then unescaped back
+    # into visible `<p><strong>` characters in both projections.
     metrics = [
         {
             **m,
-            "description_html": render_safe(m.get("description")),
-            "description_text": render_plain(m.get("description")),
+            "description_html": render_safe(m.get("description"), html_source=True),
+            "description_text": render_plain(m.get("description"), html_source=True),
         }
         for m in metrics
     ]
