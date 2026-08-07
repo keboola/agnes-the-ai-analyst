@@ -32,10 +32,24 @@ agnes query "SELECT 1"
   env:
     AGNES_TOKEN: ${{ secrets.AGNES_TOKEN }}
     AGNES_SERVER: https://agnes.example.com
+    # Required on a fresh runner: `agnes pull` refuses to download into a
+    # directory that is not a workspace, and a runner has none. Naming the
+    # target explicitly is what turns the refusal into a scaffold.
+    AGNES_LOCAL_DIR: ${{ github.workspace }}/agnes-data
   run: |
     uv tool install "$AGNES_SERVER/cli/wheel/agnes.whl"
     agnes pull
 ```
+
+`agnes pull --workspace <dir>` is the per-invocation equivalent of
+`AGNES_LOCAL_DIR`, for pipelines that sync more than one workspace.
+
+Without either, `agnes pull` exits 1 with
+`No workspace found — run 'agnes init' first, or pass --workspace <dir> /
+set AGNES_LOCAL_DIR`. That is deliberate: an analyst standing in an
+unrelated repository should not have a `server/parquet` + `user/duckdb`
+tree scaffolded into it. CI is the case that wants the scaffold, so CI
+says where.
 
 ## Revoke
 
