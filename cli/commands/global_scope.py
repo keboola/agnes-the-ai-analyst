@@ -14,6 +14,7 @@ import json
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -61,9 +62,21 @@ def _agnes_binary() -> str:
 def _mcp_entry_info() -> tuple[str, Optional[str]]:
     """(`'ours' | 'foreign' | 'absent'`, registered command path or None).
 
-    `claude mcp get agnes` prints "Command: <path>" and "Args: <args>".
-    Ours == the command's basename is the agnes launcher AND the args are
-    exactly the `mcp` subcommand. The output header always contains the
+    `claude mcp get agnes` prints "Scope: <scope>", "Command: <path>" and
+    "Args: <args>".
+
+    SCOPE FIRST. `mcp get` takes no scope flag — it resolves the name across
+    every scope and answers with whichever it finds. This layer only ever
+    writes user scope (`--scope user` / `-s user` below), so a hit at project
+    or local scope is not our entry and must not be mistaken for one: an
+    engineer with a per-project `agnes` entry in some repo's `.mcp.json`
+    would otherwise make `enable` believe the all-repositories entry was
+    already registered and skip creating it, leaving the global layer
+    silently without its MCP server (Devin on #1184). Entries at different
+    scopes coexist, so a non-user hit reads as "absent" here.
+
+    Then ours == the command's basename is the agnes launcher AND the args
+    are exactly the `mcp` subcommand. The output header always contains the
     literal "agnes" (it is the lookup name), so matching on the whole
     output would classify ANY same-named entry as ours — the basename
     check is the actual discriminator (review finding on the first cut).
@@ -83,12 +96,22 @@ def _mcp_entry_info() -> tuple[str, Optional[str]]:
         return "absent", None
     command: Optional[str] = None
     args: Optional[str] = None
+    scope: Optional[str] = None
     for line in (result.stdout or "").splitlines():
         stripped = line.strip()
         if stripped.startswith("Command:"):
             command = stripped[len("Command:") :].strip() or None
         elif stripped.startswith("Args:"):
             args = stripped[len("Args:") :].strip()
+        elif stripped.startswith("Scope:"):
+            scope = stripped[len("Scope:") :].strip()
+    # `Scope: User config (available in all your projects)` — matched on the
+    # leading words so the parenthetical gloss is free to change. A `claude`
+    # too old to print the line at all leaves `scope` None; treat that as
+    # absent rather than assuming user scope, since assuming would resurrect
+    # exactly the skip-the-registration bug.
+    if scope is None or not scope.lower().startswith("user config"):
+        return "absent", None
     is_ours = (
         command is not None and Path(command).name.lower() in ("agnes", "agnes.exe", "agnes.cmd") and args == "mcp"
     )
@@ -97,6 +120,41 @@ def _mcp_entry_info() -> tuple[str, Optional[str]]:
 
 def _mcp_entry_state() -> str:
     return _mcp_entry_info()[0]
+
+
+#: How long a marketplace clone counts as freshly fetched. Long enough that a
+#: burst of session starts does not fetch repeatedly, short enough that a stack
+#: change an admin made this morning reaches the user today.
+_CLONE_FRESH_SECONDS = 6 * 3600
+
+
+def _clone_is_stale(clone_dir: Path) -> bool:
+    """True when nothing has fetched this clone recently.
+
+    Replaces a `workspace_root`-is-unset gate, which asked the wrong question.
+    That gate assumed anyone WITH an anchored workspace has their clone kept
+    current by the workspace marketplace step — but an engineer who anchored a
+    workspace once and then works all day in other repositories, the exact
+    persona this layer exists for, never runs that step. Their user-scope
+    stack silently froze at whatever the clone last held (Devin on #1184).
+
+    Freshness is the question actually being asked, and it self-balances
+    across personas: `_step_marketplace` runs BEFORE the global step in
+    `agnes update`, so a workspace user reaches here with a just-fetched clone
+    and skips, while a global-only user reaches here with a stale one and
+    refreshes. Neither fetches twice.
+
+    `FETCH_HEAD` is written by every `git fetch`; a clone that has only ever
+    been cloned has none, so `HEAD` stands in. Neither readable — treat as
+    stale and let the refresh decide.
+    """
+    for name in ("FETCH_HEAD", "HEAD"):
+        try:
+            age = time.time() - (clone_dir / ".git" / name).stat().st_mtime
+        except OSError:
+            continue
+        return age > _CLONE_FRESH_SECONDS
+    return True
 
 
 def run_convergence(*, want_hook: bool, force: bool, report: list[dict]) -> None:
@@ -131,11 +189,11 @@ def run_convergence(*, want_hook: bool, force: bool, report: list[dict]) -> None
                     "detail": f"bootstrap exit={getattr(exc, 'exit_code', 1)}",
                 }
             )
-    elif not load_config().get("workspace_root"):
-        # Pure-MCP persona (enable without any anchored workspace): the
-        # workspace marketplace step — the only place that fetches the
-        # clone — never runs for them, so stack changes would stay frozen
-        # at bootstrap. Do the cheap drift-check + refresh here.
+    elif _clone_is_stale(CLONE_DIR):
+        # The workspace marketplace step is the only other place that fetches
+        # the clone, so when it has not run recently, stack changes stay
+        # frozen at whatever the clone last held. Do the cheap drift-check +
+        # refresh here.
         try:
             refresh_marketplace(check=True, bootstrap=False, target="user")
         except typer.Exit as exc:
