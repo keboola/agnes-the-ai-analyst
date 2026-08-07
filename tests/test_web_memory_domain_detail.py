@@ -123,10 +123,14 @@ class TestMemoryDomainDetail:
         assert "/catalog?kind=memory" not in body
         assert 'href="/corporate-memory"' not in body
 
-    def test_back_link_returns_to_the_library_when_opened_from_it(self, seeded_app):
+    def test_back_link_returns_to_the_library_when_opened_from_it(self, seeded_app, monkeypatch):
         # Library rows link in with ?source=library — sending the visitor
         # "back" to the memory listing would strand them on a page they never
-        # opened, so the hero returns to the surface they came from.
+        # opened, so the hero returns to the surface they came from. The
+        # library-aware back link lives in the REDESIGNED detail hero — a
+        # default instance serves the frozen pre-redesign page instead
+        # (tests/test_ui_layout_theme.py::TestDetailPageParity).
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         dom_id = _make_domain("ops-from-lib", "Ops From Library")
         _make_item("ops_lib_item_1", "Ops lib runbook", dom_id)
         c = seeded_app["client"]

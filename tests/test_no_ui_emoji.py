@@ -37,7 +37,17 @@ ALLOWLIST: set[str] = set()
 # drift — including cosmetic emoji sweeps — and they retire together with the
 # topnav chrome. A CLOSED set on purpose: a new template cannot dodge the ban
 # by taking a `_legacy` name (test_legacy_exemption_is_a_closed_set).
-LEGACY_FROZEN: set[str] = {"library_legacy.html", "marketplace_legacy.html"}
+LEGACY_FROZEN: set[str] = {
+    "library_legacy.html",
+    "marketplace_legacy.html",
+    "catalog_table_detail_legacy.html",
+    "catalog_package_detail_legacy.html",
+    "catalog_recipe_detail_legacy.html",
+    "marketplace_plugin_detail_legacy.html",
+    "marketplace_item_detail_legacy.html",
+    "library_detail_legacy.html",
+    "memory_domain_detail_legacy.html",
+}
 
 
 def _in_scope(rel: str) -> bool:

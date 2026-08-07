@@ -387,6 +387,30 @@ def _show_unverified_trust() -> bool:
 templates.env.globals["show_unverified_trust_enabled"] = _show_unverified_trust
 
 
+def _detail_template(base: str) -> str:
+    """Resolve a resource DETAIL page to its layout's template.
+
+    The redesign restructured the detail pages in place (the kind-coloured
+    hero + ``macros/_detail.html`` anatomy). Rail renders those; topnav keeps
+    the pre-redesign page as a frozen ``<base>_legacy.html`` copy — the same
+    contract the /catalog and /library LIST pages follow, extended to the
+    detail level so a default instance's upgrade changes nothing it renders.
+    Every detail render site must resolve through here (guarded by
+    tests/test_ui_layout_theme.py::TestDetailPageParity — a bare
+    ``"<base>.html"`` literal in this module fails the sweep). The handlers
+    are shared: they were verified to pass a superset of the legacy
+    templates' context, so only the template name switches.
+
+    Keyed on the SAME opt-in condition the base templates use for the
+    redesign chrome (rail layout OR paper theme) — the detail anatomy was
+    previously gated in-template on ``is_paper`` alone, and a layout-only
+    key here would strand a paper-without-rail instance on the legacy pages.
+    """
+    if get_ui_layout() == "rail" or get_instance_theme() == "paper":
+        return f"{base}.html"
+    return f"{base}_legacy.html"
+
+
 #: Where a detail page's back link goes in the RAIL layout, per Library
 #: section key. The rail retired Marketplace (/catalog) as a destination —
 #: it is not in the nav and a caller never arrives from it — so a detail
@@ -3832,6 +3856,27 @@ async def catalog_package_detail(
     from datetime import datetime, timedelta, timezone as _tz
 
     badges: list[str] = []
+
+    # The frozen pre-redesign page states the trust claim through this list
+    # (its amber `pkg-badge--curated` chip); the redesigned page states it
+    # through its own publisher marker instead. Scope the append to the
+    # legacy path so the retired chip cannot resurface on the redesign — and
+    # drive it off the STORED publisher_kind, not the retired live
+    # Admin-membership derivation, so the legacy page keeps the exact visible
+    # state the v114 backfill froze.
+    #
+    # BEFORE the `new` append, not after: the template renders this list in
+    # order, and the page being frozen here rendered "Curated New" (the
+    # pre-redesign router appended curated first — 64cf788). Appending it last
+    # would have flipped a default instance's chips to "New Curated", which is a
+    # visible change on the one page this change set promises to leave alone
+    # (Devin Review on #1195).
+    if (
+        _detail_template("catalog_package_detail").endswith("_legacy.html")
+        and pkg.get("publisher_kind") == "organization"
+    ):
+        badges.append("curated")
+
     created_at = pkg.get("created_at")
     if isinstance(created_at, datetime):
         ts = created_at if created_at.tzinfo else created_at.replace(tzinfo=_tz.utc)
@@ -3850,7 +3895,7 @@ async def catalog_package_detail(
         total_size_display=_human_size(total_size) if total_size else None,
         badges=badges,
     )
-    return templates.TemplateResponse(request, "catalog_package_detail.html", ctx)
+    return templates.TemplateResponse(request, _detail_template("catalog_package_detail"), ctx)
 
 
 @router.get("/library/{slug}/f/{file_id}", response_class=HTMLResponse)
@@ -3952,7 +3997,7 @@ async def library_detail(
         collection_visibility=visibility_for(ResourceType.COLLECTION.value, col["id"]),
         can_share=is_admin or owner_id == user["id"],
     )
-    return templates.TemplateResponse(request, "library_detail.html", ctx)
+    return templates.TemplateResponse(request, _detail_template("library_detail"), ctx)
 
 
 @router.get("/catalog/t/{table_id}", response_class=HTMLResponse)
@@ -4102,7 +4147,7 @@ async def catalog_table_detail(
         sample_questions=(table.get("sample_questions") or []),
         things_to_know=table.get("things_to_know") or "",
     )
-    return templates.TemplateResponse(request, "catalog_table_detail.html", ctx)
+    return templates.TemplateResponse(request, _detail_template("catalog_table_detail"), ctx)
 
 
 @router.get("/catalog/r/{slug}", response_class=HTMLResponse)
@@ -4144,7 +4189,7 @@ async def catalog_recipe_detail(
         recipe=recipe,
         related_tables=related_tables,
     )
-    return templates.TemplateResponse(request, "catalog_recipe_detail.html", ctx)
+    return templates.TemplateResponse(request, _detail_template("catalog_recipe_detail"), ctx)
 
 
 def _human_size(n: int) -> str:
@@ -4407,7 +4452,7 @@ async def memory_domain_detail(
         # ?source=library). Same value the view event already carries.
         source=source_hint,
     )
-    return templates.TemplateResponse(request, "memory_domain_detail.html", ctx)
+    return templates.TemplateResponse(request, _detail_template("memory_domain_detail"), ctx)
 
 
 def _chrome_ctx(request: Request, user: Optional[dict]) -> dict:
@@ -5357,7 +5402,7 @@ async def marketplace_flea_detail(
         )
         return templates.TemplateResponse(
             request,
-            "marketplace_plugin_detail.html",
+            _detail_template("marketplace_plugin_detail"),
             ctx,
         )
 
@@ -5370,7 +5415,7 @@ async def marketplace_flea_detail(
     )
     return templates.TemplateResponse(
         request,
-        "marketplace_item_detail.html",
+        _detail_template("marketplace_item_detail"),
         ctx,
     )
 
@@ -5400,7 +5445,7 @@ async def marketplace_curated_detail(
     )
     return templates.TemplateResponse(
         request,
-        "marketplace_plugin_detail.html",
+        _detail_template("marketplace_plugin_detail"),
         ctx,
     )
 
@@ -5427,7 +5472,7 @@ async def marketplace_curated_skill_detail(
     )
     return templates.TemplateResponse(
         request,
-        "marketplace_item_detail.html",
+        _detail_template("marketplace_item_detail"),
         ctx,
     )
 
@@ -5454,7 +5499,7 @@ async def marketplace_curated_agent_detail(
     )
     return templates.TemplateResponse(
         request,
-        "marketplace_item_detail.html",
+        _detail_template("marketplace_item_detail"),
         ctx,
     )
 
@@ -5500,7 +5545,7 @@ async def marketplace_flea_skill_detail(
     )
     return templates.TemplateResponse(
         request,
-        "marketplace_item_detail.html",
+        _detail_template("marketplace_item_detail"),
         ctx,
     )
 
@@ -5543,7 +5588,7 @@ async def marketplace_flea_agent_detail(
     )
     return templates.TemplateResponse(
         request,
-        "marketplace_item_detail.html",
+        _detail_template("marketplace_item_detail"),
         ctx,
     )
 
