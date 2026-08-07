@@ -486,22 +486,50 @@ class TestByDesignNotLocalTablesDoNotBlameTheSync:
         assert "query_mode='remote'" in detail
         assert "--remote" in detail, "must point at the way to actually read it"
 
-    def test_server_only_row_is_not_described_as_a_pending_sync(self, reload_db):
-        detail = self._detail_for(
-            reload_db, "kbc_srv_only", query_mode="materialized", server_only=True
-        )
-        assert "first sync" not in detail, detail
-        assert "server-only" in detail
-        assert "--remote" in detail
+    def test_server_only_still_blames_the_sync_because_the_server_does_copy_it(self, reload_db):
+        """`server_only` suppresses DISTRIBUTION, not materialization.
 
-    def test_server_only_takes_precedence_over_query_mode_wording(self, reload_db):
-        """A row can be both; `server_only` is the more specific explanation and
-        matches what /api/v2/catalog's fetch_hint already says about it."""
-        detail = self._detail_for(
-            reload_db, "kbc_both", query_mode="remote", server_only=True
-        )
-        assert "server-only" in detail
-        assert "query_mode=" not in detail
+        The server still writes the parquet — `app/api/sync.py` says as much
+        ("remote tables have no server parquet at all, and server_only ones are
+        deliberately not distributed"), and the registration validator rejects
+        `server_only` together with `query_mode='remote'` for exactly that
+        reason. So a missing parquet HERE is a real pending or failing sync. An
+        earlier version of this fix lumped it in with remote and reassured the
+        admin that nothing was wrong, hiding a broken job (Devin Review on
+        #1189).
+
+        The predicate that was borrowed from — sync.py's signed-URL gate —
+        combines the two correctly, because for DISTRIBUTION they coincide. For
+        previewability on the server they do not.
+        """
+        from app.api import v2_sample
+
+        conn = reload_db.get_system_db()
+        try:
+            _ensure_admin1(conn)
+            self._register(conn, "kbc_srv_only", query_mode="materialized", server_only=True)
+            user = {"id": "admin1", "email": "a@x.com"}
+            with pytest.raises(v2_sample.TableNotSyncedError) as exc_info:
+                v2_sample.build_sample(conn, user, "kbc_srv_only", n=5, bq=_bq())
+        finally:
+            conn.close()
+        assert not isinstance(exc_info.value, v2_sample.TableNotPreviewableError)
+        assert "no synced data yet" in exc_info.value.detail
+
+    def test_server_only_with_remote_is_rejected_at_registration(self):
+        """Why there is no "both" case to disambiguate: the combination cannot
+        be persisted. An earlier test asserted a precedence rule between the two
+        by writing straight to the repository, bypassing this validator — a test
+        for a state the product does not allow."""
+        import pytest as _pytest
+
+        from app.api.admin import RegisterTableRequest
+
+        with _pytest.raises(ValueError, match="server_only"):
+            RegisterTableRequest(
+                id="x", name="x", source_type="keboola", bucket="in.c-main",
+                source_table="orders", query_mode="remote", server_only=True,
+            )
 
     def test_still_a_not_synced_error_so_existing_catches_and_the_404_hold(self, reload_db):
         from app.api import v2_sample

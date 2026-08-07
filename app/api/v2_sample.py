@@ -40,38 +40,45 @@ class TableNotSyncedError(FileNotFoundError):
 
 
 class TableNotPreviewableError(TableNotSyncedError):
-    """No local parquet, and there never will be one — by design, not by failure.
+    """No parquet, and there never will be one — by design, not by failure.
 
-    A ``query_mode='remote'`` row is queried at the source and a ``server_only``
-    row is deliberately skipped by ``agnes pull``, so neither is ever
-    materialized locally. Both used to fall into the not-synced branch and be
-    reported as "the first sync is pending or failing", sending an admin to hunt
-    a sync job that does not exist and never will (Devin Review on #1189).
+    ``query_mode='remote'`` only: every query goes live to the upstream source,
+    so nothing is ever materialized. Such rows used to fall into the not-synced
+    branch and be reported as "the first sync is pending or failing", sending an
+    admin to hunt a job that does not exist and never will.
+
+    ``server_only`` is deliberately NOT one of these — it suppresses
+    *distribution* to analyst laptops while the server still materializes the
+    parquet, so a missing one there is a real failure and must keep saying so.
 
     Subclasses ``TableNotSyncedError`` so every existing catch and the endpoint's
     404 mapping keep working unchanged; only the explanation differs.
     """
 
 
-def _not_previewable_detail(table_id: str, *, server_only: bool, query_mode: str) -> str:
-    """Explain a row that is never local, and point at the way to read it.
+def _not_previewable_detail(table_id: str, *, query_mode: str) -> str:
+    """Explain a `query_mode='remote'` row, which has no server parquet at all.
 
-    Deliberately reuses the vocabulary `/api/v2/catalog`'s `_fetch_hint` already
-    shows for these rows ("server-only — not synced locally; query via
-    `agnes query --remote`") so the preview and the catalog do not describe the
-    same table two different ways.
+    ``server_only`` deliberately does NOT belong here, and an earlier version of
+    this fix got that wrong. It is a *distribution* suppressor: the server still
+    materializes the parquet, `agnes pull` just never ships it to a laptop —
+    ``app/api/sync.py`` says as much ("remote tables have no server parquet at
+    all, and server_only ones are deliberately not distributed"), and the
+    registration validator rejects ``server_only`` together with
+    ``query_mode='remote'`` for that reason. So a `server_only` row whose parquet
+    is missing HERE, on the server, is a genuinely pending or failing sync, and
+    telling its admin "no sync is pending" would hide a broken job behind a
+    reassurance (Devin Review on #1189).
+
+    The predicate this originally borrowed from — `sync.py`'s signed-URL gate —
+    lumps the two together correctly, because for *distribution* they coincide.
+    For *previewability on the server* they do not.
     """
-    if server_only:
-        why = "is server-only, so `agnes pull` never copies it to a local parquet"
-    else:
-        why = (
-            f"is registered with query_mode={query_mode or 'remote'!r}, so it is queried at "
-            "the source and never materialized locally"
-        )
     return (
-        f"table {table_id!r} {why} — there is no local sample to preview, and no sync is "
-        f'pending. Read it server-side instead: `agnes query --remote "SELECT * FROM {table_id} '
-        'LIMIT 10"`.'
+        f"table {table_id!r} is registered with query_mode={query_mode or 'remote'!r}, so it is "
+        "queried at the source and never materialized as a parquet — there is no sample to "
+        f"preview, and no sync is pending. Read it at the source instead: `agnes query --remote "
+        f'"SELECT * FROM {table_id} LIMIT 10"`.'
     )
 
 
@@ -231,20 +238,15 @@ def build_sample(
         if parquet is None:
             # The registry row exists (checked above), so this is never "no such
             # table" — but WHY there is no parquet decides what to tell the
-            # viewer. `server_only` / `query_mode='remote'` rows are never
-            # materialized locally by design; the same predicate gates the
-            # signed-URL path in `app/api/sync.py`.
+            # viewer. Only `query_mode='remote'` is never materialized: every
+            # query goes live to the upstream source. `server_only` is NOT in
+            # this branch on purpose — it suppresses distribution to analyst
+            # laptops, not materialization here, so a missing parquet for one of
+            # those rows is a real pending/failing sync and must keep saying so.
             query_mode = row.get("query_mode") or ""
-            if bool(row.get("server_only")) or query_mode == "remote":
-                raise TableNotPreviewableError(
-                    table_id,
-                    _not_previewable_detail(
-                        table_id,
-                        server_only=bool(row.get("server_only")),
-                        query_mode=query_mode,
-                    ),
-                )
-            # Genuinely "no data has landed yet".
+            if query_mode == "remote":
+                raise TableNotPreviewableError(table_id, _not_previewable_detail(table_id, query_mode=query_mode))
+            # Genuinely "no data has landed yet" — including for server_only.
             raise TableNotSyncedError(table_id, _not_synced_detail(table_id))
         c = _open_duckdb(":memory:")
         try:

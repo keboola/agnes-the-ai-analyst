@@ -18,18 +18,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
-- Previewing a table that is never copied to this server no longer blames a
-  failing first sync. `build_sample` special-cased only BigQuery
-  non-materialized rows, so a Keboola row registered `query_mode='remote'` — the
-  shape this change adds — and any `server_only` row fell through to the local
-  parquet lookup, legitimately found nothing, and were reported as "the first
+- Previewing a `query_mode='remote'` table no longer blames a failing first
+  sync. `build_sample` special-cased only BigQuery non-materialized rows, so a
+  Keboola row registered remote — the shape this change adds — fell through to
+  the parquet lookup, legitimately found nothing, and was reported as "the first
   sync is pending or failing", complete with a link to the sync status. Admins
-  went looking for a broken sync job that does not exist and never will. Those
-  rows now get their own explanation naming why they have no local sample, and
-  pointing at `agnes query --remote` — the same wording `/api/v2/catalog`'s fetch
-  hint already uses for them, so the preview and the catalog stop describing one
-  table two different ways. A genuinely unsynced local row still says exactly
-  what it said before.
+  went looking for a broken job that does not exist and never will. Remote rows
+  now get their own explanation naming why nothing is materialized, and pointing
+  at `agnes query --remote`. `server_only` rows are deliberately NOT in this
+  branch: that flag suppresses *distribution* to analyst laptops while the
+  server still writes the parquet, so a missing one there is a real failure and
+  keeps saying so — the registration validator rejects `server_only` together
+  with `query_mode='remote'` for the same reason. A genuinely unsynced row still
+  says exactly what it said before.
 
 - The Data-sources wizard registered Keboola tables with the full `bucket.table` id in `source_table` (alongside the separate `bucket` field), so the sync path re-composed `bucket.bucket.table` — every wizard-registered table's materialize then targeted a nonexistent upstream table id and the catalog preview reported "not found". The wizard now sends the bare in-bucket name, and every path that re-composes the source id strips a legacy bucket prefix at use (`normalize_source_table`: the materialize path, the local extract paths, and the `query_mode='remote'` view builder), so rows registered before the fix heal on their next sync without re-registration. The catalog table-detail page applies the same normalization to the displayed source id.
 - A `query_mode='remote'` Keboola row whose view could not be created (an upstream table that no longer exists, or a malformed source id) aborted the whole extraction run for that source: the exception escaped `run()` and skipped the atomic `extract.duckdb` swap, so every other table of that source lost its refresh too. The failure is now isolated to the offending row (`tables_failed` + a logged reason) like every sibling branch already did.
