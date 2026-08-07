@@ -630,7 +630,19 @@ async def list_connection_tables(
         # its intent and would have started lying the moment some other path
         # raised without one (Devin Review on #1189).
         if getattr(exc, "status", None) not in (401, 403):
-            raise HTTPException(status_code=502, detail=f"keboola_storage_api_error: {exc}") from exc
+            # An HTTPException leaves no server-side trace, unlike the catch-all
+            # 500 this path replaced — so a transport failure (DNS, refused
+            # connection, read timeout, TLS) was visible only to the admin who
+            # happened to click. Redacted: the message can echo a proxy's reply,
+            # and `_redact` is what keeps a token out of the log line.
+            redacted = client._redact(exc)
+            logger.warning(
+                "tables listing failed for connection %s (%s): %s",
+                connection_id,
+                _log_host(stack_url),
+                redacted,
+            )
+            raise HTTPException(status_code=502, detail=f"keboola_storage_api_error: {redacted}") from exc
         # The client's messages already redact response bodies; the token
         # itself travels in a header and never appears in the exception.
         logger.warning(
