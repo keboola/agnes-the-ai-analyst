@@ -6193,9 +6193,16 @@ details.section-card > summary {
 .modal-card input:focus, .modal-card select:focus { outline: 2px solid var(--ds-primary, #6366f1); outline-offset: -1px; }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
 /* Preserve newlines in helper-supplied messages — native alert/confirm/
-   prompt rendered \n as line breaks (e.g. bulleted error lists). The
-   page-local admin_users copy never needed this (its modals are static). */
-.modal-card h3, .modal-card p.sub { white-space: pre-wrap; }
+   prompt rendered \n as line breaks (e.g. bulleted error lists).
+   OPT-IN, via the attribute modal.js stamps on the cards it builds. The
+   rule used to be unscoped, and the comment already knew that was wrong
+   ("the page-local admin_users copy never needed this") — it just had no
+   way to say so in a selector. Unscoped, it also hit STATIC modal copy in
+   templates, where the newlines and indentation are source formatting: a
+   helper paragraph written across three template lines rendered as three
+   jaggedly-indented lines instead of one wrapped paragraph (#1171). */
+.modal-card[data-preserve-newlines] h3,
+.modal-card[data-preserve-newlines] p.sub { white-space: pre-wrap; }
 
 /* Shared inline-icon glyphs (macros/_icon.html) — replaces the pictographic
    emoji we used to inline. Nudge the baseline so an icon sits centered next
