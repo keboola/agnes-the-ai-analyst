@@ -124,7 +124,10 @@ def test_a_source_with_a_refused_url_can_still_be_turned_off(seeded_app):
     was turned on) carries a url the check now refuses. Validating on every
     update made the source unmodifiable — including the update that DISABLES
     it, i.e. the one action that removes the risk (Devin Review on #1204).
-    A disabled source is never dialed, so there is nothing to protect there.
+    Disabling stops the two runtime forwards, which re-fetch the row and
+    refuse on `enabled`. It does not by itself stop the admin probes — those
+    are guarded separately, see
+    `test_the_admin_probe_will_not_dial_a_refused_url`.
     """
     _seed("src_off1", url="http://169.254.169.254/mcp", transport="stdio", command="/bin/thing")
     r = seeded_app["client"].put(
@@ -198,3 +201,27 @@ def test_unrelated_edit_survives_an_unresolvable_host(seeded_app):
         json={"name": "src_up4_renamed"},
     )
     assert r.status_code == 200, r.text
+
+
+def test_the_admin_probe_will_not_dial_a_refused_url(seeded_app):
+    """The probes are a dial, not a read.
+
+    `introspect` / `classify` / `test` all connect to the source with a
+    credential attached, and unlike the two runtime forwards they never
+    re-check `enabled` — so they were the one path that could still reach a
+    url the guard refuses, which is exactly what made "a disabled source is
+    never dialed" too strong a justification for skipping the check on
+    disabled rows (Devin Review on #1204).
+    """
+    _seed("src_probe1", url="http://169.254.169.254/mcp", transport="stdio", command="/bin/thing")
+    seeded_app["client"].put(
+        "/api/admin/mcp-sources/src_probe1",
+        headers=_auth(seeded_app),
+        json={"transport": "http", "enabled": False},
+    )
+    r = seeded_app["client"].post(
+        "/api/admin/mcp-sources/src_probe1/introspect",
+        headers=_auth(seeded_app),
+    )
+    assert r.status_code == 400, r.text
+    assert "blocked_range" in r.json()["detail"]

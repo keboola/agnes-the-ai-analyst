@@ -789,13 +789,19 @@ async def update_mcp_source(
     # to 400 cannot destroy credentials on its way out.
     #
     # Skipped when the result is DISABLED. The check exists to stop a rejected
-    # address becoming reachable; a disabled source is not dialed at all, so
-    # enforcing it there protects nothing and instead traps the operator: a
-    # source registered before this guard (or before `mcp.source_url_strict`
-    # was turned on) would 400 on every update, including the update that turns
-    # it OFF — the one action that actually removes the risk (Devin Review on
-    # #1204). Remediation is now coherent: disable, fix the url, re-enable —
-    # and re-enabling validates, so nothing reaches a live state unchecked.
+    # address becoming reachable, and enforcing it on a row being turned off
+    # instead traps the operator: a source registered before this guard (or
+    # before `mcp.source_url_strict` was turned on) would 400 on every update,
+    # including the update that turns it OFF — the one action that reduces the
+    # risk (Devin Review on #1204). Remediation is now coherent: disable, fix
+    # the url, re-enable — and re-enabling validates, so nothing reaches a live
+    # state unchecked.
+    #
+    # What `enabled=False` actually buys is the two RUNTIME forwards, which
+    # re-fetch the row and refuse (`mcp/tools_generator.py`,
+    # `mcp_passthrough.py`). It is NOT "never dialed": the admin probes do not
+    # consult `enabled`, so they carry their own copy of this check rather than
+    # leaning on the flag.
     if merged.get("enabled"):
         url_warning = await _check_source_url_or_400(merged)
     else:
@@ -1448,6 +1454,13 @@ async def introspect_mcp_source(
     src = src_repo.get(source_id)
     if not src:
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
+    # A probe DIALS the source, with a credential attached, exactly as a
+    # forward does — so it takes the same configuration-time check. Without
+    # this the admin probes were the one path that could reach a url the
+    # guard refuses: the two runtime forwards re-fetch the row and stop on
+    # `enabled`, but these do not, so "a disabled source is never dialed"
+    # held for the forwards and not for here (Devin Review on #1204).
+    await _check_source_url_or_400(src)
     try:
         # introspect_source_async — async-safe; the sync variant calls
         # asyncio.run() which blows up inside FastAPI's running loop.
@@ -1476,6 +1489,13 @@ async def classify_mcp_source(
     src = src_repo.get(source_id)
     if not src:
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
+    # A probe DIALS the source, with a credential attached, exactly as a
+    # forward does — so it takes the same configuration-time check. Without
+    # this the admin probes were the one path that could reach a url the
+    # guard refuses: the two runtime forwards re-fetch the row and stop on
+    # `enabled`, but these do not, so "a disabled source is never dialed"
+    # held for the forwards and not for here (Devin Review on #1204).
+    await _check_source_url_or_400(src)
     try:
         from connectors.mcp.client import list_tools_async as _list_tools_async
 
@@ -1517,6 +1537,13 @@ async def test_mcp_source(
     src = src_repo.get(source_id)
     if not src:
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
+    # A probe DIALS the source, with a credential attached, exactly as a
+    # forward does — so it takes the same configuration-time check. Without
+    # this the admin probes were the one path that could reach a url the
+    # guard refuses: the two runtime forwards re-fetch the row and stop on
+    # `enabled`, but these do not, so "a disabled source is never dialed"
+    # held for the forwards and not for here (Devin Review on #1204).
+    await _check_source_url_or_400(src)
     try:
         tools = await mcp_extractor.introspect_source_async(src, caller_user_id=_probe_caller_user_id(src, user))
         result = {"ok": True, "tool_count": len(tools), "error": None}
