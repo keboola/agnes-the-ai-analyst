@@ -57,6 +57,17 @@ variable "prod_instance" {
     # connector URLs keep resolving through a domain cutover instead of
     # failing the TLS handshake. Clear it once the old DNS record is retired.
     domain_alias = optional(string, "")
+    # Chrome the web UI renders in. Per-VM (not module-wide) for the same
+    # reason as dispatcher_enabled / data_apps_enabled below: the redesign is
+    # rolled out dev-first, previewed on a dev VM, and promoted to prod only
+    # once it looks right. Empty (the default) writes NO env line, so the
+    # instance keeps whatever `instance.ui_layout` / `instance.theme` says in
+    # instance.yaml — or the app's own default when that is unset too.
+    #   ui_layout: "" | "topnav" (app default) | "rail"
+    #   theme:     "" | "blue" (app default) | "navy" | "dark" | "auto" | "paper"
+    # Pair rail + paper for the full redesign look.
+    ui_layout = optional(string, "")
+    theme     = optional(string, "")
     # Container memory caps written to /opt/agnes/.env and read by
     # docker-compose.yml (mem_limit: $${AGNES_APP_MEM_LIMIT:-4g}). Defaults
     # match the compose defaults; raise on a larger VM together with the
@@ -114,6 +125,11 @@ variable "dev_instances" {
     # this object type: Terraform silently drops attributes absent from the
     # type, so a bare entry in a caller's list would never reach the module.
     domain_alias = optional(string, "")
+    # Per-VM chrome — see prod_instance.ui_layout / .theme. Same "must be on
+    # the type" rule: Terraform silently drops attributes absent from the
+    # type, so a bare entry in a caller's list would never reach the module.
+    ui_layout = optional(string, "")
+    theme     = optional(string, "")
     # Role label used by per-VM OAuth secret naming
     # (var.oauth_secret_name_template `{role}` placeholder), VM tagging in
     # downstream cron/log filters, and dev_defaults selection. Defaults to
