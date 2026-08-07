@@ -18,6 +18,7 @@ import duckdb
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
+from app.switches import SWITCHES
 from src.identifier_validation import (
     is_safe_identifier as _is_safe_identifier,
     is_safe_quoted_identifier as _is_safe_quoted_identifier,
@@ -287,10 +288,17 @@ def _validate_materialize_section(sections: Dict[str, Dict[str, Any]]) -> None:
 # Hot-reload is OUT OF SCOPE for #91 — the response carries
 # `restart_required=True` so the UI can show the banner.
 
-# Sections an admin can mutate. Keep the list explicit so a typo'd section
-# in the request body is rejected loudly instead of being silently merged
-# into the YAML root and confusing future loads.
-_EDITABLE_SECTIONS: tuple[str, ...] = (
+# Sections an admin can mutate.
+#
+# Two halves. `_STATIC_EDITABLE_SECTIONS` are the sections that carry ordinary
+# configuration — hosts, credentials, limits — and own no switch. The rest is
+# DERIVED from the switch registry, so adding an editable switch cannot leave
+# its section unwritable; that omission shipped twice before this was
+# mechanical (`mcp`, then `chat`).
+#
+# A typo'd section in the request body is still rejected loudly rather than
+# being merged into the YAML root.
+_STATIC_EDITABLE_SECTIONS: tuple[str, ...] = (
     "instance",
     "data_source",
     "email",
@@ -304,30 +312,12 @@ _EDITABLE_SECTIONS: tuple[str, ...] = (
     "desktop",
     "corporate_memory",
     "materialize",
-    "guardrails",
-    "library",
     "marketplace",
     "connectors",
-    # The token-in-URL fallback switch is an operator decision, and
-    # docs/DEPLOYMENT.md tells operators to make it here — but this tuple is
-    # what POST /api/admin/server-config validates against, so without the
-    # section the documented remediation 400s and only the env var works
-    # (Devin Review on #1183).
-    "mcp",
-    # Same bug class as `mcp`, found by deriving the check from FEATURE_FLAGS
-    # instead of from prose (see tests/test_admin_configure_api.py).
-    #
-    # `chat` is the sharper of the two: docs/feature-flags.md states that
-    # app/main.py boots chat from the writable overlay file ALONE, and tells
-    # operators to "enable chat via the /admin/server-config editor (which
-    # writes the overlay) or the AGNES_CHAT_ENABLED env var". Without the
-    # section here, the first of those two documented paths 400s — and the same
-    # holds for `chat.approvals_enabled`.
-    "chat",
-    # `studio` is read per request through feature_enabled() and gates only an
-    # HTTP surface (no sidecar, no compose profile), so a live flip is complete
-    # and immediate.
-    "studio",
+)
+
+_EDITABLE_SECTIONS: tuple[str, ...] = tuple(
+    sorted(set(_STATIC_EDITABLE_SECTIONS) | {s.config_keys[0] for s in SWITCHES if s.editable and s.config_keys})
 )
 
 # "Danger-zone" sections — flipping these can lock operators out (auth.*) or
@@ -336,6 +326,7 @@ _EDITABLE_SECTIONS: tuple[str, ...] = (
 # the audit entry can flag the change as high-risk and the UI can surface
 # the right warning copy.
 _DANGER_SECTIONS: tuple[str, ...] = ("auth", "server")
+
 
 # Known-but-optional config fields per section. The /admin/server-config UI
 # uses this registry alongside the YAML payload to render fields the operator
@@ -1090,10 +1081,7 @@ def _declared_boolean_fields() -> frozenset[str]:
     covered without anyone remembering this failure mode.
     """
     return frozenset(
-        name
-        for section in _KNOWN_FIELDS.values()
-        for name, spec in section.items()
-        if spec.get("kind") == "bool"
+        name for section in _KNOWN_FIELDS.values() for name, spec in section.items() if spec.get("kind") == "bool"
     )
 
 
