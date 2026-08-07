@@ -70,6 +70,40 @@ def resolve_local_parquet(table_id: str, source_type: str | None = None) -> Path
     return matches[0] if matches else None
 
 
+def _partition_dir_candidates(table_id: str, source_type: str | None) -> list[Path]:
+    """Directories a partitioned table's parts could live in, best guess first.
+
+    Mirrors :func:`resolve_local_parquet`'s source-name-agnostic lookup for the
+    DIRECTORY layout: `source_type` (when supplied) is the fast path, then any
+    `extracts/*/data/<table_id>` directory. Returns existing directories only.
+    """
+    extracts = get_data_dir() / "extracts"
+    if not extracts.exists():
+        return []
+    out: list[Path] = []
+    if source_type:
+        fast = extracts / source_type / "data" / table_id
+        if fast.is_dir():
+            out.append(fast)
+    out.extend(p for p in extracts.glob(f"*/data/{table_id}") if p.is_dir() and p not in out)
+    return out
+
+
+def resolve_local_partition_dir(table_id: str, source_type: str | None = None) -> Path | None:
+    """The DIRECTORY holding a partitioned table's parts, or ``None``.
+
+    For callers that want the directory itself rather than a read target —
+    e.g. the profiler, which builds its own recursive read expression from it.
+    Recursive existence check, so the nested hive layout
+    (``month=YYYY-MM/data.parquet``, Jira) counts as parts too. A directory
+    holding no parquet yet is ``None``: that is the pending-first-sync case.
+    """
+    for d in _partition_dir_candidates(table_id, source_type):
+        if any(d.rglob("*.parquet")):
+            return d
+    return None
+
+
 def resolve_local_parquet_glob(table_id: str, source_type: str | None = None) -> str | None:
     """A `read_parquet` target for a table, single-file OR partitioned.
 
@@ -82,21 +116,46 @@ def resolve_local_parquet_glob(table_id: str, source_type: str | None = None) ->
 
     Returns the single file path, else a `<dir>/*.parquet` glob DuckDB expands,
     else None when neither layout exists.
+
+    Deliberately a FLAT `*.parquet` (not `**`), so it covers the per-period
+    layout only. A nested hive directory therefore stays None here rather than
+    yielding a glob that matches nothing — which DuckDB raises on, turning the
+    callers' clean "no data yet" answer into a 500. Hive tables also want
+    `union_by_name` (their part schemas drift), which a bare read target can't
+    carry: `src.profiler` builds its own `**` expression from
+    :func:`resolve_local_partition_dir` instead.
     """
     single = resolve_local_parquet(table_id, source_type)
     if single is not None:
         return str(single)
-    extracts = get_data_dir() / "extracts"
-    if not extracts.exists():
-        return None
-    candidates = []
-    if source_type:
-        candidates.append(extracts / source_type / "data" / table_id)
-    candidates.extend(p for p in extracts.glob(f"*/data/{table_id}") if p.is_dir())
-    for d in candidates:
-        if d.is_dir() and any(d.glob("*.parquet")):
+    for d in _partition_dir_candidates(table_id, source_type):
+        if any(d.glob("*.parquet")):
             return str(d / "*.parquet")
     return None
+
+
+def local_parquet_size_bytes(table_id: str, source_type: str | None = None) -> int | None:
+    """Total on-disk bytes of a table's data, single-file OR partitioned.
+
+    The size counterpart of :func:`resolve_local_parquet_glob`: callers that
+    ``stat()``-ed the single file lost the number entirely for a partitioned
+    table (a directory has no meaningful ``st_size``), so a healthy table
+    reported no size at all. A partitioned table's size is the SUM over its
+    parts — the same rollup the extractor writes into ``_meta.size_bytes`` and
+    the orchestrator into ``sync_state.file_size_bytes``, so all three agree.
+
+    Recurses, so the nested hive layout (``month=YYYY-MM/data.parquet``) is
+    summed too. Returns ``None`` — never ``0`` — when no parquet exists in
+    either layout: a partition directory holding no part yet is the
+    pending-first-sync case, and ``0`` would read as "synced, and empty".
+    """
+    single = resolve_local_parquet(table_id, source_type)
+    if single is not None:
+        return single.stat().st_size
+    part_dir = resolve_local_partition_dir(table_id, source_type)
+    if part_dir is None:
+        return None
+    return sum(p.stat().st_size for p in part_dir.rglob("*.parquet"))
 
 
 def get_marketplaces_dir() -> Path:
