@@ -301,7 +301,7 @@ prior art.
 
 - [`ONBOARDING.md`](ONBOARDING.md) — Tier 2, Pattern A walkthrough
 - [`DEPLOYMENT.md`](DEPLOYMENT.md) — Terraform vs Docker Compose
-- [`PLATFORM_SETUP.md`](PLATFORM_SETUP.md) — consolidated operator playbook
+- [`PLATFORM_SETUP.md`](PLATFORM_SETUP.md) — day-2 operator playbook
 - [`marketplace.md`](marketplace.md) — Tier 3 internals
 - [`curated-marketplace-format.md`](curated-marketplace-format.md) — Tier 3 authoring
 - [`initial-workspace-override.md`](initial-workspace-override.md) — Tier 4 contract

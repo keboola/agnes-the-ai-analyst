@@ -103,11 +103,18 @@
   }
   .token-card:hover {
     box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
-    border-color: #cbd5e1;
+    /* One step stronger than the resting border, in both themes — the
+       literal `#cbd5e1` it replaces stayed light-slate on a dark card. */
+    border-color: var(--ds-text-disabled);
   }
+  /* Dead tokens read as recessed, not as a lighter card. The literal
+     `#fafbfc` this used to carry never adapted, so in dark theme the
+     card kept a near-white background under the light `--text-secondary`
+     text below — the row went unreadable exactly where it mattered
+     least to shout. `--ds-surface-sunken` has both theme values. */
   .token-card.is-revoked,
   .token-card.is-expired {
-    background: #fafbfc;
+    background: var(--ds-surface-sunken);
   }
   .token-card.is-revoked .token-name {
     text-decoration: line-through;
@@ -194,9 +201,9 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .token-usage.soon .usage-main   { color: #c2410c; }
-  .token-usage.expired .usage-main{ color: #b91c1c; }
-  .token-usage.strike .usage-main { text-decoration: line-through; color: #9ca3af; font-weight: 400; }
+  .token-usage.soon .usage-main   { color: var(--ds-accent-warn-ink); }
+  .token-usage.expired .usage-main{ color: var(--ds-accent-danger-ink); }
+  .token-usage.strike .usage-main { text-decoration: line-through; color: var(--ds-text-muted); font-weight: 400; }
 
   .token-aside {
     display: flex;
@@ -222,14 +229,21 @@
     width: 7px; height: 7px; border-radius: 50%;
     flex-shrink: 0;
   }
-  .status-pill.status-active     { background: rgba(22, 163, 74, 0.12);  color: #15803d; }
-  .status-pill.status-active     .pill-dot { background: #16a34a; }
-  .status-pill.status-expiring   { background: rgba(234, 88, 12, 0.12);  color: #c2410c; }
-  .status-pill.status-expiring   .pill-dot { background: #ea580c; }
-  .status-pill.status-expired    { background: rgba(220, 38, 38, 0.12);  color: #b91c1c; }
-  .status-pill.status-expired    .pill-dot { background: #dc2626; }
-  .status-pill.status-revoked    { background: rgba(107, 114, 128, 0.12); color: #4b5563; }
-  .status-pill.status-revoked    .pill-dot { background: #6b7280; }
+  /* Each pill is a tint + an ink, and the pair has to hold in every theme.
+     The literals these replace were a light-theme pair only: measured against
+     the dark card they ran 1.87–2.97:1, i.e. the pill naming a token's state
+     was the least readable thing on the row. The `--ds-accent-*` pairs are
+     theme-resolved (see design-tokens.css) and clear 6.4–8.5:1 in dark.
+     `revoked` has no accent — it is the absence of a state — so it takes the
+     neutral surface/secondary pair, same as the Everyone group chip. */
+  .status-pill.status-active     { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
+  .status-pill.status-active     .pill-dot { background: var(--ds-accent-success-line); }
+  .status-pill.status-expiring   { background: var(--ds-accent-warn-bg);    color: var(--ds-accent-warn-ink); }
+  .status-pill.status-expiring   .pill-dot { background: var(--ds-accent-warn-line); }
+  .status-pill.status-expired    { background: var(--ds-accent-danger-bg);  color: var(--ds-accent-danger-ink); }
+  .status-pill.status-expired    .pill-dot { background: var(--ds-accent-danger-line); }
+  .status-pill.status-revoked    { background: var(--ds-surface-dim);       color: var(--ds-text-secondary); }
+  .status-pill.status-revoked    .pill-dot { background: var(--ds-text-muted); }
 
   /* ── Revoke button ─────────────────────────────────────────────────────── */
   .revoke-btn {
@@ -983,13 +997,16 @@ function renderCard(t, now) {
   const createdRel = relTime(t.created_at);
   let expPart = "";
   if (t.revoked_at) {
-    expPart = `<span style="color:#6b7280;">Revoked ${esc(relTime(t.revoked_at))}</span>`;
+    // Tokens, not literals: this line sits on the recessed revoked/expired
+    // card, so a fixed light-theme ink is precisely what goes unreadable
+    // once that card takes its dark-theme background.
+    expPart = `<span style="color:var(--ds-text-muted);">Revoked ${esc(relTime(t.revoked_at))}</span>`;
   } else if (exp) {
     const delta = exp.getTime() - now;
     if (delta < 0) {
-      expPart = `<span style="color:#b91c1c;font-weight:500;">Expired ${esc(relTime(t.expires_at))}</span>`;
+      expPart = `<span style="color:var(--ds-accent-danger-ink);font-weight:500;">Expired ${esc(relTime(t.expires_at))}</span>`;
     } else if (delta < SEVEN_DAYS) {
-      expPart = `<span style="color:#c2410c;font-weight:500;">Expires ${esc(relTime(t.expires_at))}</span>`;
+      expPart = `<span style="color:var(--ds-accent-warn-ink);font-weight:500;">Expires ${esc(relTime(t.expires_at))}</span>`;
     } else {
       expPart = `Expires ${esc(relTime(t.expires_at))}`;
     }
