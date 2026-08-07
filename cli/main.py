@@ -123,6 +123,13 @@ _MAINTENANCE_COMMANDS = frozenset(
         "push",
         "refresh-marketplace",
         "init",
+        # `agnes global` converges the same artifacts `agnes update` does and
+        # now holds the same `update.lock`. Left off this list, an out-of-date
+        # CLI would spawn the detached updater from `_root` first, that child
+        # would take the lock, and the command the user actually typed would
+        # abort with "retry in a moment" — on the first run after a release,
+        # every time (Devin on #1184).
+        "global",
     }
 )
 
