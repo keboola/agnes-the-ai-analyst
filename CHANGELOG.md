@@ -32,7 +32,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   directory of parts and the nightly run passes it one; only this manual
   refresh could not find it. An empty partition directory still counts as "no
   data yet" on every one of these surfaces, because that genuinely is the
-  pending-first-sync case.
+  pending-first-sync case. Both partition layouts are covered — the flat
+  per-period one and the NESTED hive one (`month=YYYY-MM/data.parquet`) the Jira
+  connector writes. Resolving hive on the read surfaces is what keeps them
+  agreeing with the catalog, whose size hint sums parts recursively: covering
+  only the flat layout would have published a size for a Jira table that schema
+  and scan still 404-ed on, and an agent reading the catalog would have
+  concluded it was queryable. Hive parts are read through
+  `union_by_name` + `hive_partitioning` — the same expression the Jira extract's
+  own view uses — so part schemas that drift month to month still union, and the
+  `month=` directory key comes back as a column rather than being dropped.
 
 - The distribution mirror no longer warns that a healthy partitioned table has
   "no on-disk parquet" — the same message a genuinely broken sync produces. Such
