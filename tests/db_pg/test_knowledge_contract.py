@@ -339,3 +339,42 @@ def test_required_items_are_still_candidates(k_repo, ops_domain):
         )
     }
     assert "cand-required" in found
+
+
+# ---------------------------------------------------------------------------
+# Dismissal guard — a Required item is never hidden by a stale dismissal
+# ---------------------------------------------------------------------------
+
+
+def test_a_required_item_is_never_hidden_by_a_stale_dismissal(k_repo):
+    """The governance hard rule, asserted on BOTH backends.
+
+    A user may dismiss an item while it is ordinary; an admin may later mark it
+    Required. The dismissal row outlives that change, so the `hide_dismissed`
+    subquery has to exempt Required items — otherwise the item vanishes from
+    that user's `list_items`/`search` AND from the agent context bundle, which
+    is the whole point of the Required tier.
+
+    Postgres guarded this with `status != 'mandatory'`, a literal the v49
+    migration retired: it split that overload into `is_required` and rewrote
+    every legacy row, so nothing matches `'mandatory'` any more and the guard
+    was dead — always true, protecting nothing. DuckDB used the live column and
+    was correct. Neither the old contract test nor CI caught it, because the
+    only assertion lived in a DuckDB-only unit test and the static check here
+    matched `status IN (...)` clauses, which this guard is not
+    (/agnes-review parity reviewer on #1204).
+    """
+    _create_item(k_repo, "k_req", title="Required item")
+    _create_item(k_repo, "k_norm", title="Ordinary item")
+    k_repo.dismiss("u1", "k_req")
+    k_repo.dismiss("u1", "k_norm")
+    # Required only AFTER the dismissal — that ordering is the bug's shape.
+    k_repo.set_is_required("k_req", True)
+
+    visible = {
+        it["id"]
+        for it in k_repo.list_items(user_groups=[], hide_dismissed=True, dismissed_by_user="u1")
+    }
+
+    assert "k_req" in visible, "a Required item was hidden by a dismissal that predates it"
+    assert "k_norm" not in visible, "an ordinary dismissed item should stay hidden"
