@@ -664,7 +664,7 @@
 {% set _menu %}
 {% if detail.redesign and entity and (is_owner or is_admin) %}
   {{ detail.store_menu(entity, is_owner=is_owner, is_admin=is_admin,
-                       edit_in_flight=edit_in_flight) }}
+                       edit_in_flight=edit_in_flight, own_private=own_private) }}
 {% endif %}
 {% endset %}
 
