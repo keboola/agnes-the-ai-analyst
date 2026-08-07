@@ -644,3 +644,102 @@ def test_global_is_a_maintenance_command(env, monkeypatch):
     ):
         monkeypatch.setattr(sys, "argv", argv)
         assert _is_maintenance_command() is expected, argv
+
+
+# ---------------------------------------------------------------------------
+# "the probe did not answer" is not "there is no entry"
+# ---------------------------------------------------------------------------
+
+
+def test_missing_server_exits_nonzero_and_reads_as_absent(monkeypatch, env):
+    """The one non-zero exit that IS an answer.
+
+    `claude mcp get <name>` exits 1 for a name it does not know, printing
+    `No MCP server named "<name>".` — verified against `claude` 2.1.220. That
+    is a real answer and must stay `absent`, or convergence would treat every
+    first-ever enable as a failed probe.
+    """
+    monkeypatch.setattr(
+        gs_module.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout='No MCP server named "agnes". Configured servers: foo, bar\n',
+            stderr="",
+        ),
+    )
+    assert gs_module._mcp_entry_info() == ("absent", None)
+
+
+def test_other_nonzero_exit_reads_as_unknown_not_absent(monkeypatch, env):
+    """Any other non-zero exit is a failed probe, not an answer.
+
+    `mcp get` connects to the server rather than only reading config, so a
+    registered entry whose server fails to start exits non-zero too. Calling
+    that `absent` is what let `disable` report "no entry" for an entry it had
+    simply failed to see.
+    """
+    monkeypatch.setattr(
+        gs_module.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="Error: connection refused\n"
+        ),
+    )
+    assert gs_module._mcp_entry_info() == ("unknown", None)
+
+
+def test_probe_timeout_reads_as_unknown(monkeypatch, env):
+    def _boom(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="claude mcp get agnes", timeout=1)
+
+    monkeypatch.setattr(gs_module.subprocess, "run", _boom)
+    assert gs_module._mcp_entry_info() == ("unknown", None)
+
+
+def test_probe_is_bounded_by_a_timeout(monkeypatch, env):
+    """Unbounded, this blocks the convergence lock from every session start."""
+    seen = {}
+
+    def _capture(*a, **k):
+        seen.update(k)
+        return subprocess.CompletedProcess(args=[], returncode=1, stdout='No MCP server named "agnes".', stderr="")
+
+    monkeypatch.setattr(gs_module.subprocess, "run", _capture)
+    gs_module._mcp_entry_info()
+    assert seen.get("timeout"), "`claude mcp get` must carry a timeout on the SessionStart-hook path"
+
+
+def test_claude_missing_reads_as_unknown(monkeypatch, env):
+    """No CLI means no answer — the same distinction, from the other end."""
+    monkeypatch.setattr(gs_module, "_claude_cmd", lambda: None)
+    assert gs_module._mcp_entry_info() == ("unknown", None)
+
+
+def test_disable_does_not_flip_the_flag_when_the_probe_did_not_answer(env, monkeypatch):
+    """The hazard the flag-last ordering exists to prevent.
+
+    An unanswered probe reported as "no entry" adds nothing to `left_behind`,
+    so the off-flag gets written while a registered user-scope entry keeps
+    loading in every repository the user opens — and with the layer marked
+    off, `agnes update` stops converging it, so nothing would ever remove it.
+    """
+    CliRunner().invoke(gs_module.global_app, ["enable"])
+    monkeypatch.setattr(gs_module, "_mcp_entry_state", lambda: "unknown")
+
+    result = CliRunner().invoke(gs_module.global_app, ["disable"])
+
+    assert result.exit_code == 1, result.output
+    conf = yaml.safe_load((env["cfg_dir"] / "config.yaml").read_text(encoding="utf-8"))
+    assert conf.get("global_scope") is not False
+
+
+def test_status_does_not_traceback_on_an_unknown_probe(env, monkeypatch):
+    """`agnes global status` reports what it saw; it must not raise."""
+    monkeypatch.setattr(gs_module, "_mcp_entry_info", lambda: ("unknown", None))
+    result = CliRunner().invoke(gs_module.global_app, ["status", "--json"])
+    assert result.exit_code in (0, 1), result.output
+    doc = json.loads(result.stdout)
+    mcp = next(a for a in doc["artifacts"] if a["artifact"] == "mcp")
+    assert mcp["state"] == "unknown"

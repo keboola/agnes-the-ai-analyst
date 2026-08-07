@@ -39,6 +39,14 @@ global_app = typer.Typer(help="Manage the user-scope (all-repositories) Agnes la
 
 MCP_SERVER_NAME = "agnes"
 
+# Ceiling for the `claude mcp get` probe. Generous, because the subcommand
+# connects to the server rather than only reading config and the agnes stdio
+# server pays a cold start on heavy Python imports — the point is a bound, not
+# a tight one. What it protects is the convergence lock: the probe runs from
+# the user-level SessionStart hook in every repository, inside `agnes update`,
+# and an unbounded wait would hold that lock for the life of the process.
+_MCP_PROBE_TIMEOUT_S = 30.0
+
 
 def _verify_credentials() -> bool:
     """One cheap authenticated probe — same as `agnes init` step 2."""
@@ -76,7 +84,7 @@ def _agnes_binary() -> str:
 
 
 def _mcp_entry_info() -> tuple[str, Optional[str]]:
-    """(`'ours' | 'foreign' | 'absent'`, registered command path or None).
+    """(`'ours' | 'foreign' | 'absent' | 'unknown'`, command path or None).
 
     `claude mcp get agnes` prints "Scope: <scope>", "Command: <path>" and
     "Args: <args>".
@@ -96,20 +104,46 @@ def _mcp_entry_info() -> tuple[str, Optional[str]]:
     literal "agnes" (it is the lookup name), so matching on the whole
     output would classify ANY same-named entry as ours — the basename
     check is the actual discriminator (review finding on the first cut).
+
+    `'unknown'` means the probe itself did not answer — `claude` is missing,
+    the call timed out, or it exited non-zero for a reason other than the
+    entry not existing. That is NOT the same as `'absent'`, and conflating
+    the two let `disable` report "no entry" for a registered entry it had
+    failed to see, then write the off-flag and leave it running forever
+    (Devin on #1184) — the exact hazard the flag-last ordering exists to
+    prevent. `claude mcp get` distinguishes them itself: a genuinely missing
+    server exits non-zero with `No MCP server named "<name>"`, so anything
+    else non-zero is a failed probe rather than an answer. The plugin path
+    already draws this line with `installed is None`; this is its sibling.
     """
     base = _claude_cmd()
     if base is None:
-        return "absent", None
-    result = subprocess.run(
-        [*base, "mcp", "get", MCP_SERVER_NAME],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
+        return "unknown", None
+    try:
+        result = subprocess.run(
+            [*base, "mcp", "get", MCP_SERVER_NAME],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            # `mcp get` connects to the server rather than just reading config
+            # (its output carries a `Status:` line), and the agnes stdio server
+            # has a noticeable cold start. Once the user-level hook is
+            # installed this runs on every session start in every repository,
+            # inside `agnes update` while it holds the convergence lock — an
+            # unbounded wait there would hold that lock for the life of the
+            # process and stall every later convergence. Bounded like the git
+            # network calls elsewhere in this package.
+            timeout=_MCP_PROBE_TIMEOUT_S,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return "unknown", None
     if result.returncode != 0:
-        return "absent", None
+        combined = f"{result.stdout or ''}\n{result.stderr or ''}"
+        if f'No MCP server named "{MCP_SERVER_NAME}"' in combined:
+            return "absent", None
+        return "unknown", None
     command: Optional[str] = None
     args: Optional[str] = None
     scope: Optional[str] = None
@@ -350,13 +384,24 @@ def run_convergence(*, want_hook: bool, force: bool, report: list[dict]) -> None
         if base is None:
             report.append({"stage": "mcp", "status": "error", "detail": "`claude` CLI not on PATH"})
         else:
-            if state == "foreign":
-                subprocess.run(
-                    [*base, "mcp", "remove", MCP_SERVER_NAME, "-s", "user"],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
+            # Remove before add on EVERY arm that reaches here, not just
+            # `foreign`. Convergence has to be idempotent, and `mcp add`
+            # refusing a name that already exists would otherwise make each
+            # run report an error: `enable` exiting 1 with "PARTIALLY
+            # enabled", `status` saying `mcp missing`, and `agnes update`'s
+            # global step logging `status=error` on every single session
+            # start (Devin on #1184). The two arms that get here without a
+            # known entry are precisely the ones that cannot rule one out —
+            # `absent` from a `claude` too old to print the `Scope:` line,
+            # and `unknown` from a probe that did not answer. A remove that
+            # finds nothing is a cheap no-op; the add that follows is then
+            # unconditionally safe.
+            subprocess.run(
+                [*base, "mcp", "remove", MCP_SERVER_NAME, "-s", "user"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
             result = subprocess.run(
                 [*base, "mcp", "add", "--scope", "user", MCP_SERVER_NAME, "--", _agnes_binary(), "mcp"],
                 capture_output=True,
@@ -580,6 +625,19 @@ def disable(
             report.append(
                 {"stage": "mcp", "status": "skipped", "detail": "entry named 'agnes' is not ours — left in place"}
             )
+        elif state == "unknown":
+            # The probe did not answer, so we cannot say there is nothing to
+            # remove. Reporting "no entry" here would be a guess, and a wrong
+            # guess is the expensive direction: it adds nothing to
+            # `left_behind`, the off-flag gets written, and a registered
+            # user-scope entry keeps loading in every repository the user
+            # opens while the config says the layer is off — with `agnes
+            # update` no longer converging it, nothing would ever clean it up.
+            # Same distinction the plugin path draws with `installed is None`.
+            left_behind.append("mcp: entry state could not be determined")
+            report.append(
+                {"stage": "mcp", "status": "unknown", "detail": "`claude mcp get` did not answer — nothing removed"}
+            )
         else:
             report.append({"stage": "mcp", "status": "ok", "detail": "no entry"})
 
@@ -660,7 +718,13 @@ def status(
         artifacts.append(
             {
                 "artifact": "mcp",
-                "state": {"ours": "ok", "foreign": "drifted", "absent": "missing"}[mcp_state],
+                # `unknown` is its own state, not folded into `missing`:
+                # status reports what it observed, and "the probe did not
+                # answer" is a different thing to tell an operator than "the
+                # entry is not there". A `.get` rather than a subscript so a
+                # future state cannot turn `agnes global status` into a
+                # KeyError traceback.
+                "state": {"ours": "ok", "foreign": "drifted", "absent": "missing"}.get(mcp_state, "unknown"),
                 "detail": f"`claude mcp get {MCP_SERVER_NAME}` -> {mcp_state}",
             }
         )
