@@ -28,7 +28,15 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `connectors/keboola/metadata.py` had the doubled-prefix shape too, so row
   counts and column metadata went missing for those rows as well. Both now strip
   the prefix at use, like the export and view paths already did — these were the
-  two sibling sites that sweep missed.
+  two sibling sites that sweep missed. Two more turned up in the round after —
+  the audit identity keys in `src/repositories/usage.py` (so a query naming the
+  real Keboola path never mapped back to the table id, silently dropping it from
+  usage attribution) and the `fqn` field a scaffolded `tables/<id>.yml` gets from
+  `src/data_semantics_scaffold.py`. Because that made four review rounds each
+  naming one more call site, a ratchet now finds every
+  `f"{bucket}.{source_table}"` composition and fails unless it routes through the
+  helper somewhere in its enclosing function, or is listed with the reason it is
+  not a Keboola tableId (the BigQuery `project.dataset.table` compositions).
 
 - Previewing a `query_mode='remote'` table no longer blames a failing first
   sync. `build_sample` special-cased only BigQuery non-materialized rows, so a
