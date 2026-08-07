@@ -432,6 +432,22 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
         },
     },
     "instance": {
+        # Experience preset — registry-backed (app/switches.py `experience`,
+        # kind select); declared here so the panel renders a select rather
+        # than a free-text field. Resolved by
+        # `app/instance_config.py::get_experience()` via `switch_value`.
+        "experience": {
+            "kind": "select",
+            "options": ["classic", "redesign"],
+            "default": "classic",
+            "hint": (
+                "One-line redesign adoption preset. `redesign` changes the "
+                "DEFAULTS of the coupled knobs — ui_layout → rail, theme → "
+                "paper, features.stack_auto_membership → on; any per-knob "
+                "setting still wins. `classic` (the default) is byte-for-byte "
+                "the pre-redesign experience."
+            ),
+        },
         # UI theme — flips `<html data-theme="...">` so the
         # design-system tokens (`--ds-*`) switch palettes via CSS
         # without any markup change. Resolved by
@@ -1435,6 +1451,12 @@ def _feature_flags_inventory() -> List[Dict[str, Any]]:
         }
     ]
     for flag in FEATURE_FLAGS:
+        if flag.name == "experience":
+            # The preset's registry entry is kind="select" — the leading
+            # string-valued row above already renders it (value_label +
+            # effective-as-redesign); running it through the boolean
+            # ``feature_enabled`` below would coerce "classic" to True.
+            continue
         if flag.name in _CHAT_RUNTIME_FLAGS:
             effective, source = _chat_flag_runtime_view(flag)
         else:

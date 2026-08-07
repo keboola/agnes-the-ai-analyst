@@ -3069,9 +3069,21 @@ async def library_page(
             else:
                 items[-1]["stack_title"] = _GRANTED_STACK_TOOLTIP
         else:
+            # Classic non-member: a real Add control, not a dead pill (Devin
+            # Review on #1199, round 4). The generic subscribe endpoint takes
+            # a JSON body, so the row carries it (`data-stack-body`) for the
+            # shared click handler; after a successful add the row is a
+            # MEMBER — locked like every other granted member (the drop
+            # surface is the Catalog/Stack pages), which
+            # `data-stack-locked-after` tells the handler to render.
+            import json as _json
+
             items[-1]["stack_state"] = "available"
-            items[-1]["stack_locked"] = True
-            items[-1]["stack_title"] = "Granted to you, but not in your Stack — add it from the Catalog"
+            items[-1]["stack_addable"] = True
+            items[-1]["stack_endpoint"] = "/api/stack/subscribe"
+            items[-1]["stack_body"] = _json.dumps({"resource_type": type_key, "resource_id": item_id})
+            items[-1]["stack_locked_after_add"] = True
+            items[-1]["stack_title"] = "Granted to you, but not in your Stack — add it to make it queryable"
 
     # Governed data packages + memory domains — StackResolver.browse() is
     # exactly "required ∪ available for my groups" for these two types.

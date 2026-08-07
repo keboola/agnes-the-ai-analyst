@@ -371,15 +371,14 @@ def get_experience() -> str:
     nothing an operator did not opt into.
 
     Resolution: ``AGNES_INSTANCE_EXPERIENCE`` env > ``instance.experience``
-    in instance.yaml > ``"classic"``.
+    in instance.yaml > ``"classic"`` — delegated to the ``experience`` entry
+    in :data:`app.switches.SWITCHES` (kind ``select``,
+    ``on_invalid="default"``), so the preset rides the same registry every
+    operator switch is derived from instead of a hand-rolled lookup pair.
     """
-    raw = os.environ.get("AGNES_INSTANCE_EXPERIENCE")
-    if raw is None:
-        raw = get_value("instance", "experience", default="classic")
-    if not isinstance(raw, str):
-        return "classic"
-    value = raw.strip().lower()
-    return value if value in ("classic", "redesign") else "classic"
+    from app.switches import switch_value
+
+    return switch_value("experience")
 
 
 #: Feature flags whose DEFAULT follows the ``instance.experience`` preset.
