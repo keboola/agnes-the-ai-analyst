@@ -16,6 +16,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- **An agent persona no longer silently strips the platform's data-access rails.** A non-empty `agents.system_prompt` makes `ChatManager._spawn_live` materialize a persona `CLAUDE.md` that *replaces* the workspace one (`WorkdirManager._materialize_profile`) — by design, but it also took the analyst data rails with it. The sandbox still had the `agnes` CLI, the Agnes MCP server, and every granted passthrough tool, yet nothing left told the agent that the organization's data lives behind `agnes catalog`; the observed behavior was an agent hunting through whatever other MCP servers its scope exposed until a human said "use Agnes". `agent_profile.build_profile` now appends a compact `DATA_ACCESS_RAILS` section (discovery chain, "never enumerate from memory", canonical metric lookup, and a pointer to `agnes skills show agnes-data-querying`) to every persona, so a persona overrides the rails' tone and task but never their existence. Affects all four sandbox-spawning surfaces — web chat, Slack DM/thread, `agnes chat <slug>`, and the one-shot agent API (`POST /api/v1/agents/{slug}/responses`), where no human is in the loop to correct it. Agents with no persona are untouched (the workspace `CLAUDE.md` stays symlinked in), as are the built-in authoring profiles in `app/chat/profiles.py`, which are Agnes-authored and already scoped to their own non-analyst task. The `/agents` builder's Identity section now says so, so persona authors know not to restate data instructions in Instructions.
+
 ### Removed
 
 ### Internal
