@@ -2154,6 +2154,53 @@ class TestDefaultContentParity:
         assert 'id="agnesTour"' not in resp.text
         assert "tour_legacy.js" not in resp.text
 
+    def test_paper_topnav_does_not_ship_the_legacy_tour(self, web_client, admin_cookie, monkeypatch):
+        """The overlay must key on the same condition as its header launcher
+        (`not is_paper()`) — shipped without the launcher, the intro modal
+        auto-pops once with no way to ever reopen it (Devin Review on #1200)."""
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
+        resp = web_client.get("/me/profile", cookies=admin_cookie)
+        assert 'id="agnesTour"' not in resp.text
+        assert "tour_legacy.js" not in resp.text
+        assert "data-tour-start" not in resp.text
+
+    def test_paper_topnav_ai_connector_stays_consolidated(self, web_client, admin_cookie, monkeypatch):
+        """The route keys on the same opt-in expression as the user-menu row:
+        under paper-on-topnav the menu says "Learn how it works", so a
+        bookmark or /me/mcp alias hop must not resurrect the standalone
+        page (Devin Review on #1200)."""
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
+        resp = web_client.get("/me/ai-connector", cookies=admin_cookie, follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/how-it-works#connect"
+
+    def test_moderation_gate_covers_admin_hub_and_palette(self, web_client, admin_cookie, monkeypatch):
+        """All three entry points to the Moderation & Trust hub — topnav
+        mega-menu row, /admin hub card, Cmd/Ctrl-K palette (+ its `g v`
+        hotkey) — key on the same verification gate; a gate applied in one
+        place but not the others merely hides the row (Devin Review on
+        #1200)."""
+        import app.instance_config as ic
+
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        hub = web_client.get("/admin", cookies=admin_cookie).text
+        assert 'href="/admin/store">Moderation' not in hub
+        # The palette + hotkey map render from _app_scripts.html on every page.
+        assert "'v': '/admin/store'" not in hub
+        assert "{ label: 'Moderation & Trust'" not in hub
+
+        monkeypatch.setattr(
+            ic,
+            "get_value",
+            lambda *keys, default=None: True if keys == ("store", "verification_enabled") else default,
+        )
+        hub = web_client.get("/admin", cookies=admin_cookie).text
+        assert 'href="/admin/store">Moderation' in hub
+        assert "'v': '/admin/store'" in hub
+
     def test_topnav_chat_welcome_cards_are_the_frozen_copy(self, web_client, admin_cookie, monkeypatch):
         monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
         monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
