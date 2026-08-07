@@ -2019,6 +2019,15 @@ async def catalog(
             memory_cards=memory_card_models,
             recommended_cards=recommended_cards,
             default_kind=default_kind,
+            # The lede describes what the Data/Memory tabs actually contain,
+            # and that differs by membership mode. Under auto-membership a
+            # grant IS stack membership, so those tabs hold only what you do
+            # NOT have and "granted data lives in My Stack, not here" is true.
+            # Under classic a grant is an invitation you have not accepted, so
+            # the same tabs list granted-but-unsubscribed resources and that
+            # sentence would contradict the grid right under it — the rail +
+            # classic combination this PR makes reachable (Devin on #1199).
+            auto_membership=auto_membership,
         )
         return templates.TemplateResponse(request, "catalog_unified.html", ctx)
 
