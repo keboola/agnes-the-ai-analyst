@@ -953,7 +953,7 @@ def _reconcile_with_manifest(
         )
         if result.returncode != 0:
             typer.echo(
-                f"warn: `claude plugin update {plugin_ref}` exited {result.returncode}.",
+                f"warn: `claude plugin update {plugin_ref} --scope {target}` exited {result.returncode}.",
                 err=True,
             )
             if result.stderr:
