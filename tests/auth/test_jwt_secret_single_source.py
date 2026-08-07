@@ -18,19 +18,31 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# Every tree that runs inside a serving process. ``scripts/`` is deliberately
+# out: its two ``setdefault("JWT_SECRET_KEY", …)`` bootstraps (OpenAPI snapshot,
+# baseline seeder) are one-shot dev/CI entrypoints that mint nothing a server
+# will ever verify, so scanning them would only buy a grandfather list.
 SCAN_DIRS = ("app", "cli", "services", "src", "connectors")
 
 # The one module allowed to spell the fallback: it *is* the resolver.
 _ALLOWED = ("app/auth/jwt.py",)
 
-# ``os.environ.get("JWT_SECRET_KEY", "…")`` / ``environ.get(…)``, in any
-# line-wrapping — the real finding (app/auth/access.py) spanned four lines.
+# Both stdlib spellings (``os.environ.get`` — the repo's convention — and
+# ``os.getenv``), both fallback forms (default argument and ``… or "literal"``),
+# in any line-wrapping: the real finding (app/auth/access.py) spanned four
+# lines. Matching only the spelling that happened to occur would let the same
+# bug back in under the other one.
+#
 # The default must be a NON-empty literal: ``environ.get("JWT_SECRET_KEY", "")``
 # is an is-it-configured probe that fails closed (app/main.py's chat gate), not
 # a signing key.
 _FALLBACK_RE = re.compile(
-    r"""environ(?:\.get|\.setdefault)?\(\s*["']JWT_SECRET_KEY["']\s*,\s*["'][^"']""",
+    r"""(?:environ(?:\.get|\.setdefault)?|getenv)\(\s*["']JWT_SECRET_KEY["']\s*"""
+    r"""(?:,\s*["'][^"']|\)\s*or\s*["'][^"'])""",
 )
 
 
@@ -96,11 +108,36 @@ def test_no_hardcoded_jwt_secret_fallback_outside_the_resolver():
     )
 
 
-def test_ratchet_detects_a_planted_fallback(tmp_path):
+@pytest.mark.parametrize(
+    "planted",
+    [
+        # the real finding's exact shape — argument default, wrapped over 4 lines
+        'secret = os.environ.get(\n    "JWT_SECRET_KEY",\n    "test-jwt-secret-key-minimum-32-chars!!",\n)\n',
+        'secret = os.environ.get("JWT_SECRET_KEY", "test-jwt-secret-key-minimum-32-chars!!")\n',
+        # the other stdlib spelling — absent from this repo today, one edit away
+        'secret = os.getenv("JWT_SECRET_KEY", "test-jwt-secret-key-minimum-32-chars!!")\n',
+        # the or-fallback form
+        'secret = os.environ.get("JWT_SECRET_KEY") or "test-jwt-secret-key-minimum-32-chars!!"\n',
+    ],
+)
+def test_ratchet_detects_a_planted_fallback(tmp_path, planted):
     """The detector must fail on a known-bad file — a guard that matches
     nothing passes vacuously forever."""
-    planted = tmp_path / "planted.py"
-    planted.write_text(
-        'secret = os.environ.get(\n    "JWT_SECRET_KEY",\n    "test-jwt-secret-key-minimum-32-chars!!",\n)\n'
-    )
-    assert _scan([planted])
+    path = tmp_path / "planted.py"
+    path.write_text(planted)
+    assert _scan([path])
+
+
+@pytest.mark.parametrize(
+    "benign",
+    [
+        # is-it-configured probe: empty default, fails closed (app/main.py)
+        'secret = os.environ.get("JWT_SECRET_KEY", "")\n',
+        # no fallback at all — the canonical resolver's own read
+        'env_key = os.environ.get("JWT_SECRET_KEY")\n',
+    ],
+)
+def test_ratchet_ignores_reads_without_a_literal_key(tmp_path, benign):
+    path = tmp_path / "benign.py"
+    path.write_text(benign)
+    assert not _scan([path])
