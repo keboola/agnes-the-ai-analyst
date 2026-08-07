@@ -329,6 +329,67 @@ def test_plugin_detail_page_offers_archive_on_an_own_private_entity(web_client: 
     assert web_client.delete(f"/api/store/entities/{entity_id}", cookies=cookies).status_code == 204
 
 
+def test_no_quarantine_banner_on_an_own_private_entity(web_client: TestClient):
+    """The banner was the fourth surface reading `hidden` as quarantine.
+
+    For the author's own Private row it fell to the "Hidden" fallback, whose
+    copy says "nobody can install it" — false since #1178, and rendered directly
+    above the now-enabled "+ Add to my stack" (Devin Review on #1196). A
+    genuinely quarantined entity must keep its banner, which the test below
+    covers.
+    """
+    owner_id, owner_cookies = _create_user(web_client, "owner@x.com")
+    entity_id, _sub_id = _seed_quarantined_entity(
+        owner_id,
+        "owner@x.com",
+        "nobanner1",
+        status="approved",
+    )
+
+    r = web_client.get(f"/marketplace/flea/{entity_id}", cookies=owner_cookies)
+    assert r.status_code == 200, r.text
+    assert "vis-banner" not in r.text, "the quarantine banner still greets the author of a Private entity"
+    assert "nobody can install it" not in r.text
+
+
+def test_failed_archive_rollback_keeps_a_private_entity_private(web_client: TestClient, monkeypatch):
+    """A disk error during archive must not publish the thing being archived.
+
+    The soft-archive path renames the baked tree after flipping the row, and
+    reverts the row if that rename raises. The revert used to hardcode
+    ``'approved'`` — accurate while only an approved row could reach it, but
+    #1177 lets the author archive their own Private (``hidden``) row, and
+    reverting THAT to ``approved`` publishes a private entity to the whole
+    organization off an error the author only sees as a 500 (Devin Review on
+    #1196). The revert now restores the row's actual pre-archive status.
+    """
+    from src.repositories import store_entities_repo
+
+    owner_id, owner_cookies = _create_user(web_client, "owner@x.com")
+    entity_id, _sub_id = _seed_quarantined_entity(
+        owner_id,
+        "owner@x.com",
+        "rollback1",
+        status="approved",
+    )
+    assert store_entities_repo().get(entity_id)["visibility_status"] == "hidden", (
+        "premise: the own-Private row sits at 'hidden'"
+    )
+
+    from app.api import store as store_api
+
+    def _boom(**kwargs):
+        raise OSError("disk went away mid-rename")
+
+    monkeypatch.setattr(store_api, "_rename_baked_tree", _boom)
+
+    r = web_client.delete(f"/api/store/entities/{entity_id}", cookies=owner_cookies)
+    assert r.status_code == 500, r.text
+
+    after = store_entities_repo().get(entity_id)["visibility_status"]
+    assert after == "hidden", f"a failed archive published the private entity as {after!r}"
+
+
 def test_detail_page_still_locks_a_genuinely_quarantined_entity(web_client: TestClient):
     """The other half of the same gate — the page must keep refusing where the
     API refuses, or the owner gets a live button that 403s."""
