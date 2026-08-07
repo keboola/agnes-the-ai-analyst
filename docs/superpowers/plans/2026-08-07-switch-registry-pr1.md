@@ -692,7 +692,44 @@ Replace the `_NOT_LIVE_WRITABLE` dict and `test_no_stale_exemption` in `tests/te
                 )
 ```
 
-Keep `test_the_documented_key_scrape_finds_something`, `_documented_keys` and `test_every_documented_section_is_editable_or_explicitly_exempt` — but the latter subtracts `_NOT_LIVE_WRITABLE`, which no longer exists, so change that one line to subtract `self._locked_sections()` instead.
+Keep `test_the_documented_key_scrape_finds_something`, `_documented_keys` and `test_every_documented_section_is_editable_or_explicitly_exempt`.
+
+**`_NOT_LIVE_WRITABLE` serves two ratchets, not one** — this cost a blocked task round during execution, so do not repeat the mistake. The registry-derived test asks "why is this registered flag not writable?", which `lock_reason` now answers. The documentation-derived test asks a different question about sections scraped from `docs/DEPLOYMENT.md`, and three of the old dict's four keys — `analytics`, `coordination`, `distribution` — own no switch in PR1's registry, so deleting the dict outright leaves that test with nothing to subtract and it fails.
+
+Add a second, strictly smaller dict for exactly those three, scoped to the documentation ratchet only, carrying the three original reason strings **verbatim** from the dict you deleted:
+
+```python
+    #: Sections the deployment guide documents that own no registry switch YET.
+    #:
+    #: NOT a revival of `_NOT_LIVE_WRITABLE`. That dict answered "why is this
+    #: registered flag not writable?", and the registry now answers it itself via
+    #: `Switch.lock_reason`. What is left is a different and strictly smaller
+    #: question: DEPLOYMENT.md documents these three, but no switch owns them, so
+    #: neither derived set can speak for them.
+    #:
+    #: Temporary by construction. PR2 registers switches for `analytics.backend`,
+    #: `coordination.backend` and `distribution.signed_urls`, and the shrinks-only
+    #: guard below fails the moment one lands, forcing its removal from here.
+    _DOCUMENTED_BUT_NOT_SWITCH_BACKED = {
+        "analytics": "backend choice is governed by the state machine + a data migration, not a live patch",
+        "coordination": "process topology; takes effect on restart, and the guide pairs it with a compose change",
+        "distribution": "documented as an `instance.yaml` + `AGNES_DISTRIBUTION_*` pair, object-store credentials included",
+    }
+
+    def test_no_switch_backed_section_is_still_listed_as_undeclared(self):
+        """Shrinks-only. A section that gains a switch must leave the dict —
+        otherwise a stale entry would keep excusing a section the registry can
+        now speak for, which is how the exemption this replaced grew stale."""
+        from app.switches import SWITCHES
+
+        owned = {s.config_keys[0] for s in SWITCHES if s.config_keys}
+        stale = owned & set(self._DOCUMENTED_BUT_NOT_SWITCH_BACKED)
+        assert not stale, f"now switch-backed — drop from _DOCUMENTED_BUT_NOT_SWITCH_BACKED: {sorted(stale)}"
+```
+
+`test_every_documented_section_is_editable_or_explicitly_exempt` then subtracts **both** `self._locked_sections()` and `set(self._DOCUMENTED_BUT_NOT_SWITCH_BACKED)`. `test_every_registry_section_is_editable_or_locked_with_a_reason` subtracts **only** `self._locked_sections()` — the new dict must never weaken the registry-derived ratchet, and that separation is the point.
+
+Do not add these three to `_STATIC_EDITABLE_SECTIONS` instead. Their own recorded reasons say they must not be live-writable, and it would widen the write allowlist — Step 5 would report `added: ['analytics', 'coordination', 'distribution']`, the one outcome this task exists to prevent.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -700,7 +737,7 @@ Keep `test_the_documented_key_scrape_finds_something`, `_documented_keys` and `t
 .venv/bin/pytest tests/test_admin_configure_api.py -q -k "registry_section or locked_section or editable_switch_section"
 ```
 
-Expected: FAIL — `_locked_sections()` returns `{"data_apps"}` while `analytics`, `coordination` and `distribution` (which were in `_NOT_LIVE_WRITABLE` but own no switch in PR1's registry) are no longer subtracted anywhere. The documented-key test may fail for those three; that is the expected intermediate state and Step 3 resolves it.
+Expected: FAIL — `_locked_sections()` returns `{"data_apps"}`, and the derivation in Step 3 does not exist yet. `test_every_documented_section_is_editable_or_explicitly_exempt` passes only once `_DOCUMENTED_BUT_NOT_SWITCH_BACKED` from Step 1 is in place; if you skipped that dict, this is where you find out.
 
 - [ ] **Step 3: Derive `_EDITABLE_SECTIONS`**
 
