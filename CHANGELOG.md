@@ -35,6 +35,44 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **An agent persona no longer silently strips the platform's data-access rails.** A non-empty `agents.system_prompt` makes `ChatManager._spawn_live` materialize a persona `CLAUDE.md` that *replaces* the workspace one (`WorkdirManager._materialize_profile`) — by design, but it also took the analyst data rails with it. The sandbox still had the `agnes` CLI, the Agnes MCP server, and every granted passthrough tool, yet nothing left told the agent that the organization's data lives behind `agnes catalog`; the observed behavior was an agent hunting through whatever other MCP servers its scope exposed until a human said "use Agnes". `agent_profile.build_profile` now appends a compact `DATA_ACCESS_RAILS` section (discovery chain, "never enumerate from memory", canonical metric lookup, and a pointer to `agnes skills show agnes-data-querying`) to every persona, so a persona overrides the rails' tone and task but never their existence. Affects all four sandbox-spawning surfaces — web chat, Slack DM/thread, `agnes chat <slug>`, and the one-shot agent API (`POST /api/v1/agents/{slug}/responses`), where no human is in the loop to correct it. Agents with no persona are untouched (the workspace `CLAUDE.md` stays symlinked in), as are the built-in authoring profiles in `app/chat/profiles.py`, which are Agnes-authored and already scoped to their own non-analyst task. The `/agents` builder's Identity section now says so, so persona authors know not to restate data instructions in Instructions.
 - **A failed action on `/admin/users` says what went wrong, instead of showing the envelope it arrived in.** Five handlers interpolated the raw response body into the toast, so creating a user with an address that already exists read `Failed: {"detail":"User with this email already exists"}` — the sentence was right there and nothing unwrapped it. All five now share one `errorText(r)` helper that reads FastAPI's `detail`, prefers the human half of the `{code, hint}` shape other routers answer with, and falls back to the status code when the body is not JSON at all (a proxy's HTML error page, which the raw-body version would have pasted into the toast wholesale). Closes #1172.
 - **The login card is centred on rail-layout instances.** `rail.css` reserved 240px of body padding whenever `data-ui-layout="rail"` was stamped on `<html>` — but the rail nav itself renders only for a signed-in user, so on pre-auth pages the reservation survived with nothing to reserve for, and `/login/password` centred its card inside a box shifted a rail's width to the right. The clearance is now tied to the rail actually being present (`body:has(.rail)`), with the ≤1024px override kept at matching specificity so the top-bar layout still drops the padding. Closes #1170.
+- The remaining read surfaces now see a partition-synced table's data, the way
+  the preview already did in 0.83.0. That sync stores a table as a DIRECTORY of
+  per-period parquets, so the single-file lookup found nothing and a healthy,
+  fully-synced table looked empty everywhere else too: `GET /api/v2/schema/<id>`
+  404-ed, `POST /api/v2/scan` 404-ed, and the catalog's `rough_size_hint` came
+  back `null`. Schema and scan now resolve either layout and read every
+  partition; the catalog reports the SUM of the partition sizes — the same
+  rollup the extractor writes to `_meta.size_bytes` and the sync state to
+  `file_size_bytes`, so the three agree. `POST /api/catalog/profile/<table>
+  /refresh` reaches such a table too — the profiler always understood a
+  directory of parts and the nightly run passes it one; only this manual
+  refresh could not find it. An empty partition directory still counts as "no
+  data yet" on every one of these surfaces, because that genuinely is the
+  pending-first-sync case. Both partition layouts are covered — the flat
+  per-period one and the NESTED hive one (`month=YYYY-MM/data.parquet`) the Jira
+  connector writes. Resolving hive on the read surfaces is what keeps them
+  agreeing with the catalog, whose size hint sums parts recursively: covering
+  only the flat layout would have published a size for a Jira table that schema
+  and scan still 404-ed on, and an agent reading the catalog would have
+  concluded it was queryable. Hive parts are read through
+  `union_by_name` + `hive_partitioning` — the same expression the Jira extract's
+  own view uses — so part schemas that drift month to month still union, and the
+  `month=` directory key comes back as a column rather than being dropped. That
+  expression is one shared constant (`app.utils.LOCAL_PARQUET_READ_EXPR`) rather
+  than three hand-written copies, because the resolver's return value is only
+  safe to read one way and a docstring saying so did not hold: preview, schema
+  and scan all resolve through it, and the preview one would otherwise have kept
+  a bare `read_parquet(?)` and silently served a Jira table missing whichever
+  columns first appeared in a later month — no error, just absent data.
+
+- The distribution mirror no longer warns that a healthy partitioned table has
+  "no on-disk parquet" — the same message a genuinely broken sync produces. Such
+  a table is now skipped deliberately: the object-store mirror addresses one
+  `<table_id>.parquet` object per table, and a partitioned table has none.
+  Analysts are unaffected — `agnes pull` already syncs it part-by-part over the
+  app-served `/api/data/<id>/download?part=` route, which never consults the
+  mirror. Mirroring per-part objects (and presigning them) would have to change
+  the manifest and the CLI together, so it stays out of this change.
 
 ### Removed
 
@@ -42,6 +80,33 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+- The local-parquet resolvers now validate the table id as a single path
+  segment and realpath-contain the result under `${DATA_DIR}/extracts`. They
+  build a filesystem path out of a name that arrives on a request path, and
+  resolving a DIRECTORY (the partitioned layout) made that a wider read than
+  the single-file lookup ever was: `..` reached the extract source root, which
+  the resolvers would then recursively glob for every parquet beneath it. A
+  multi-segment escape was not reachable over HTTP — routing rejects an encoded
+  separator before the handler runs — but that is a property of the transport,
+  not something these helpers should lean on. A symlink planted inside the
+  extracts tree no longer resolves out of it either — including one planted at
+  the `source_type` fast path, which returned its hit before any containment
+  check while every other candidate was filtered. The id is also rejected when
+  it carries glob metacharacters: it is not merely joined into a path, it is
+  interpolated into a pattern (`rglob(f"data/{id}.parquet")`), so a `*` or
+  `[...]` stopped naming one table and started matching an arbitrary one —
+  `POST /api/catalog/profile/*/refresh` would have profiled whichever parquet
+  the pattern hit and stored it under the requested name. That endpoint built
+  its own copy of the lookup rather than calling the resolver, so it took the
+  validation only once it was routed through `resolve_local_parquet`. Other
+  hand-rolled lookups remain (`app/api/data.py`), but those are reached only
+  behind a stricter allowlist regex applied before any filesystem work, so
+  they were never exposed the way this one was. Each `extracts/*`
+  entry counts as a containment root in its own right, so an operator who has
+  symlinked a whole extract source onto another volume keeps their tables
+  readable — resolving only against `extracts/` would have made every table
+  under such a source read as unsynced on every surface at once, while a link
+  planted *inside* a source is still refused.
 
 ## [0.83.0] - 2026-08-07
 
