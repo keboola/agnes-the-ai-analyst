@@ -233,3 +233,98 @@ def test_subscribe_without_grant_is_forbidden(seeded_app_both):
     )
     assert r.status_code == 403, r.text
     assert r.json()["detail"] == "no_grant"
+
+
+# ---------------------------------------------------------------------------
+# Classic (default) membership mode — the pre-redesign subscribe model, on
+# BOTH backends. These override the module's auto-membership autouse fixture
+# per test (spec 2026-08-07-default-chrome-ux-parity: "asserted per mode via
+# the env var, on both backends where repos are involved"): every fresh or
+# upgraded instance runs classic, so the classic HTTP flows — membership
+# resolution AND the restored grant-downgrade fan-out — must be exercised
+# against real Postgres, not just DuckDB.
+# ---------------------------------------------------------------------------
+
+
+def _grant_with_id(gid: str, resource_type: str, resource_id: str, requirement: str) -> str:
+    from src.repositories import resource_grants_repo
+
+    return resource_grants_repo().create(
+        group_id=gid,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        assigned_by="admin1",
+        requirement=requirement,
+    )
+
+
+def test_classic_available_grant_joins_stack_only_after_subscribe(seeded_app_both, monkeypatch):
+    """Classic: an unsubscribed ``available`` grant is browsable but NOT a
+    stack member; POST /subscribe joins the stack (membership op)."""
+    monkeypatch.delenv("AGNES_STACK_AUTO_MEMBERSHIP", raising=False)
+    client = seeded_app_both["client"]
+    headers = {"Authorization": f"Bearer {seeded_app_both['analyst_token']}"}
+
+    gid = _seed_group_with_analyst("classic-team")
+    pkg_id = _seed_data_package("classic-opt", "Classic optional")
+    _grant(gid, "data_package", pkg_id, "available")
+
+    r = client.get("/api/stack?type=data_package", headers=headers)
+    assert r.status_code == 200, r.text
+    assert pkg_id not in {i["id"] for i in r.json()["items"]}, (
+        "classic: unsubscribed available grant must NOT be a stack member"
+    )
+
+    r = client.get("/api/stack/browse?type=data_package", headers=headers)
+    assert r.status_code == 200, r.text
+    browse = {i["id"]: i for i in r.json()["items"]}
+    assert pkg_id in browse
+    assert browse[pkg_id]["in_stack"] is False
+
+    r = client.post(
+        "/api/stack/subscribe",
+        json={"resource_type": "data_package", "resource_id": pkg_id},
+        headers=headers,
+    )
+    assert r.status_code == 200, r.text
+
+    r = client.get("/api/stack?type=data_package", headers=headers)
+    items = {i["id"]: i for i in r.json()["items"]}
+    assert pkg_id in items
+    assert items[pkg_id]["in_stack"] is True
+    assert items[pkg_id]["materialized"] is True, "classic members are always local"
+
+
+def test_classic_downgrade_fans_out_subscriptions(seeded_app_both, monkeypatch):
+    """Classic: PUT /api/admin/grants/{id} required → available eagerly
+    writes a subscription row per group member (the restored v49 fan-out in
+    app/api/access.py), so nobody silently loses the resource — asserted on
+    whichever backend this run configured, via the repo factory."""
+    monkeypatch.delenv("AGNES_STACK_AUTO_MEMBERSHIP", raising=False)
+    client = seeded_app_both["client"]
+    analyst_headers = {"Authorization": f"Bearer {seeded_app_both['analyst_token']}"}
+    admin_headers = {"Authorization": f"Bearer {seeded_app_both['admin_token']}"}
+
+    gid = _seed_group_with_analyst("classic-downgrade-team")
+    pkg_id = _seed_data_package("classic-dg", "Classic downgrade")
+    grant_id = _grant_with_id(gid, "data_package", pkg_id, "required")
+
+    r = client.put(
+        f"/api/admin/grants/{grant_id}",
+        json={"requirement": "available"},
+        headers=admin_headers,
+    )
+    assert r.status_code == 200, r.text
+
+    from src.repositories import user_stack_subscriptions_repo
+
+    subs = user_stack_subscriptions_repo().list_for_user("analyst1", "data_package")
+    assert pkg_id in subs, f"classic downgrade must fan out a subscription row (got {subs})"
+
+    # …so the member still sees the package, now as available + in_stack.
+    r = client.get("/api/stack?type=data_package", headers=analyst_headers)
+    assert r.status_code == 200, r.text
+    items = {i["id"]: i for i in r.json()["items"]}
+    assert pkg_id in items, "analyst lost the package after classic soft downgrade"
+    assert items[pkg_id]["requirement"] == "available"
+    assert items[pkg_id]["in_stack"] is True
