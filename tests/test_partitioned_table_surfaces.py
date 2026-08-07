@@ -111,6 +111,71 @@ class TestPartitionedSizeBytes:
         assert local_parquet_size_bytes("kbc_missing", "keboola") is None
 
 
+class TestPathContainment:
+    """A table id reaches these resolvers straight off a request path, and the
+    DIRECTORY layout made them a far wider read primitive than the single-file
+    lookup was: the old one at least pinned the last segment to
+    `<id>.parquet`, while a directory is recursively globbed for every parquet
+    under it. So the id must be a plain path segment resolving inside
+    `extracts/` — `..` alone reaches the extract source root, and the routing
+    layer refusing `%2F` today is transport luck, not a containment guarantee
+    (`/agnes-review`, RBAC reviewer on #1198)."""
+
+    @pytest.fixture
+    def data_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        data = tmp_path / "extracts" / "keboola" / "data"
+        data.mkdir(parents=True)
+        pq.write_table(pa.table({"a": [1]}), data / "ok.parquet")
+        (tmp_path / "outside").mkdir()
+        pq.write_table(pa.table({"secret": [1]}), tmp_path / "outside" / "leak.parquet")
+        return tmp_path
+
+    @pytest.mark.parametrize("evil", ["..", ".", "../..", "../../../outside", "a/b", "a\\b", ""])
+    def test_traversal_ids_resolve_to_nothing(self, data_dir, evil):
+        from app.utils import (
+            local_parquet_size_bytes,
+            resolve_local_parquet,
+            resolve_local_parquet_glob,
+            resolve_local_partition_dir,
+        )
+
+        assert resolve_local_partition_dir(evil) is None
+        assert resolve_local_parquet_glob(evil) is None
+        assert local_parquet_size_bytes(evil) is None
+        assert resolve_local_parquet(evil) is None
+
+    def test_a_symlink_out_of_the_extracts_tree_is_not_followed(self, data_dir):
+        """Containment is checked on the REAL path, so a link planted inside
+        `extracts/` cannot hand a caller a directory outside it."""
+        (data_dir / "extracts" / "keboola" / "data" / "linked").symlink_to(data_dir / "outside")
+
+        from app.utils import local_parquet_size_bytes, resolve_local_partition_dir
+
+        assert resolve_local_partition_dir("linked") is None
+        assert local_parquet_size_bytes("linked") is None
+
+    def test_an_evil_id_does_not_profile_anything(self, data_dir, monkeypatch):
+        """End to end on the one surface that resolves a directory without a
+        registry-existence check first."""
+        import importlib
+
+        import src.db as db_module
+        from fastapi import HTTPException
+
+        importlib.reload(db_module)
+        from app.api import catalog
+
+        monkeypatch.setattr(catalog, "can_access_table", lambda *a, **kw: True)
+        conn = db_module.get_system_db()
+        try:
+            with pytest.raises(HTTPException) as exc_info:
+                catalog.refresh_profile("..", user={"id": "admin1"}, conn=conn)
+        finally:
+            conn.close()
+        assert exc_info.value.status_code == 404
+
+
 class TestCatalogSizeHint:
     """``/api/v2/catalog``'s ``rough_size_hint`` for a partitioned row."""
 
