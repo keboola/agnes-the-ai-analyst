@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 import httpx
@@ -85,6 +87,11 @@ def master_secret_key(connection_id: str) -> str:
     a separate slot from the plain storage token (see ``SecretBody.kind``).
     Shared with the semantic-layer sync (which requires a master token)."""
     return f"{connection_id}:master"
+
+
+def _log_host(stack_url: str) -> str:
+    """Hostname of a connection's stack_url for log lines (never the token)."""
+    return urlsplit(stack_url).hostname or stack_url
 
 
 def _with_secret_status(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -354,7 +361,14 @@ async def set_connection_secret(
             # two named types map to a 502 storage_api_error; an unrelated
             # programming error should surface as a 500, not be mistaken for
             # an upstream outage.
-            raise HTTPException(status_code=502, detail=f"storage_api_error: {client._redact(exc)}") from exc
+            redacted = client._redact(exc)
+            logger.warning(
+                "master-token preflight failed for connection %s (%s): %s",
+                connection_id,
+                _log_host(stack_url),
+                redacted,
+            )
+            raise HTTPException(status_code=502, detail=f"storage_api_error: {redacted}") from exc
         if not info.get("isMasterToken"):
             # Reuse require_master_token's exact message rather than duplicating
             # it — it already fetched isMasterToken, so hand it the cached
@@ -419,23 +433,56 @@ async def test_connection(
         # so a stored-but-now-rebound host is caught, not just at store time.
         _validate_stack_url(config, required=True)
     except HTTPException as exc:
-        return {"ok": False, "error": exc.detail if isinstance(exc.detail, str) else "invalid stack_url"}
+        err = exc.detail if isinstance(exc.detail, str) else "invalid stack_url"
+        logger.info("connection test for %s: failed — %s", connection_id, err)
+        return {"ok": False, "error": err}
     stack_url = (config.get("stack_url") or "").rstrip("/")
 
     token = _resolve_token(connection_id, row)
     if not token:
+        logger.info(
+            "connection test for %s (%s): failed — no token available",
+            connection_id,
+            _log_host(stack_url),
+        )
         return {"ok": False, "error": "no token available (vault empty, token_env unset)"}
 
     url = f"{stack_url}/v2/storage?exclude=components"
+    # Outcome log lines carry the status/reason but never the response body —
+    # a proxy-echoed token must not land in server logs (the body still goes
+    # to the admin client, same as before).
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(url, headers={"X-StorageApi-Token": token})
         if resp.status_code == 200:
             data = resp.json()
             project_name = data.get("owner", {}).get("name") or data.get("name") or ""
+            # project_name is response-body content — it goes to the caller
+            # but deliberately NOT into the log line (see comment above).
+            logger.info(
+                "connection test for %s (%s): ok",
+                connection_id,
+                _log_host(stack_url),
+            )
             return {"ok": True, "project_name": project_name}
+        logger.info(
+            "connection test for %s (%s): failed — HTTP %d",
+            connection_id,
+            _log_host(stack_url),
+            resp.status_code,
+        )
         return {"ok": False, "error": f"HTTP {resp.status_code}: {resp.text[:200]}"}
     except Exception as exc:
+        # Scrub the resolved token before logging (replace, then cap, so a
+        # token straddling the cap can't survive). The client-visible error
+        # keeps its pre-existing shape — the caller is the admin who
+        # configured this token, the aggregated server log is not.
+        logger.info(
+            "connection test for %s (%s): failed — %s",
+            connection_id,
+            _log_host(stack_url),
+            str(exc).replace(token, "<redacted-storage-token>")[:300],
+        )
         return {"ok": False, "error": str(exc)[:300]}
 
 
@@ -565,6 +612,7 @@ async def list_connection_tables(
         return client.list_buckets(), client.list_tables()
 
     scope = "project"
+    started = time.monotonic()
     try:
         buckets, tables = await run_in_threadpool(_project_listing)
     except (StorageApiError, requests.RequestException) as exc:
@@ -582,7 +630,19 @@ async def list_connection_tables(
         # its intent and would have started lying the moment some other path
         # raised without one (Devin Review on #1189).
         if getattr(exc, "status", None) not in (401, 403):
-            raise HTTPException(status_code=502, detail=f"keboola_storage_api_error: {exc}") from exc
+            # An HTTPException leaves no server-side trace, unlike the catch-all
+            # 500 this path replaced — so a transport failure (DNS, refused
+            # connection, read timeout, TLS) was visible only to the admin who
+            # happened to click. Redacted: the message can echo a proxy's reply,
+            # and `_redact` is what keeps a token out of the log line.
+            redacted = client._redact(exc)
+            logger.warning(
+                "tables listing failed for connection %s (%s): %s",
+                connection_id,
+                _log_host(stack_url),
+                redacted,
+            )
+            raise HTTPException(status_code=502, detail=f"keboola_storage_api_error: {redacted}") from exc
         # The client's messages already redact response bodies; the token
         # itself travels in a header and never appears in the exception.
         logger.warning(
@@ -627,6 +687,19 @@ async def list_connection_tables(
             if scoped_buckets:
                 buckets, tables = scoped_buckets, scoped_tables or []
                 scope = "token_buckets"
+
+    # Outcome trail for a probe that is otherwise invisible server-side.
+    # Host, not stack_url, and counts, not content: the token travels in a
+    # header and a proxy-echoed body must never reach the logs.
+    logger.info(
+        "tables listing for connection %s (%s): %d buckets, %d tables in %.1fs (scope=%s)",
+        connection_id,
+        _log_host(stack_url),
+        len(buckets),
+        len(tables),
+        time.monotonic() - started,
+        scope,
+    )
 
     tables_by_bucket: Dict[str, List[Dict[str, Any]]] = {}
     for t in tables:
