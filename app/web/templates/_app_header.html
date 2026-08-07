@@ -168,15 +168,13 @@
                        items. #}
                     <section class="app-admin-menu-col">
                         <div class="app-admin-menu-section">Moderation queues</div>
-                        {# Semantic gate, not a chrome check (spec 2026-08-07
-                           wave 2): the Moderation & Trust hub moderates the
-                           Store verification workflow — with verification
-                           disabled (the default) it has nothing to moderate,
-                           so the row only renders once the operator enables
-                           store.verification_enabled. #}
-                        {% if store_verification_on() %}
+                        {# Ungated on purpose (spec 2026-08-07, accepted
+                           deviations): the hub hosts the submission-review
+                           count and curation jump-offs even with Store
+                           verification disabled, so hiding the row would
+                           unlink live content; the page itself hides its
+                           verification section when the switch is off. #}
                         <a class="app-nav-menu-item {% if _path == '/admin/store' %}is-active{% endif %}" role="menuitem" href="/admin/store">Moderation &amp; Trust</a>
-                        {% endif %}
                         <a class="app-nav-menu-item {% if _path.startswith('/admin/corporate-memory') %}is-active{% endif %}" role="menuitem" href="/admin/corporate-memory">Curated memory reviews</a>
                         <a class="app-nav-menu-item {% if _path.startswith('/admin/store/submissions') %}is-active{% endif %}" role="menuitem" href="/admin/store/submissions">Flea Submissions</a>
                         <div class="app-admin-menu-section">Marketplace &amp; knowledge distribution</div>
