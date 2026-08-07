@@ -1,0 +1,2873 @@
+/* Resource detail page — ONE editorial layout for every resource type.
+ *
+ * Data packages, Skills, Plugins, Uploads, Files, Collections, Agents,
+ * Memory domains, Recipes and whatever comes next all render through the
+ * shared scaffold in `templates/macros/_detail.html`. This sheet is what
+ * makes them look like one product: the same header, the same two-column
+ * shell, the same sections, the same tables, the same motion. A resource
+ * type differs ONLY in its accent colour (`--kind`, remapped onto the
+ * --ds-resource-* family by the paper block in design-tokens.css), its
+ * glyph, and its metadata.
+ *
+ * What changed, and why:
+ *
+ *   The scaffold's own styles (`detail.styles()`, emitted inline per page)
+ *   paint a full-bleed saturated gradient slab as the page header, with
+ *   nested frosted-glass panels inside it and every section below in a
+ *   bordered card. Three surface levels deep, and a plugin (violet slab)
+ *   next to a skill (green slab) read as two unrelated products. The
+ *   header alone spent ~260px before the first line of content.
+ *
+ *   Here the header is EDITORIAL: page ground, no container, no fill. The
+ *   resource colour survives as an accent — a tinted glyph tile, a soft
+ *   radial wash, a whisper of dot texture — never as a background. Sections
+ *   are separated by whitespace and hairlines instead of being boxed, which
+ *   removes the card-inside-card nesting entirely. Roughly 150px of vertical
+ *   space comes back above the fold.
+ *
+ * Every selector carries `html[data-theme="paper"]` on purpose, twice over:
+ *
+ *   1. The redesign is opt-in. Default (blue/topnav) instances load this
+ *      sheet inert and render exactly as they did — see the guard in
+ *      tests/test_ui_layout_theme.py, which is what keeps that true.
+ *   2. Each page's `detail.styles()` block loads from `head_extra`, i.e.
+ *      AFTER this sheet. The attribute selector out-specifies it, so these
+ *      rules win without a single `!important`.
+ *
+ * The vocabulary is the scaffold's existing `.detail-*` classes wherever
+ * one already exists, so all nine detail pages pick the new look up
+ * without markup churn; `.detail-cols`, `.detail-side*`, `.detail-stats`,
+ * `.detail-timeline`, `.detail-related` and `.detail-menu` are the net-new
+ * pieces the shared macros emit.
+ */
+
+/* ── Page rhythm ──────────────────────────────────────────────────────
+   One spacing scale for the whole page, on an 8pt grid, declared once so
+   the header, the columns and the sections cannot drift apart. */
+html[data-theme="paper"] .detail {
+    --rdet-gap-section: 40px;   /* between content sections */
+    --rdet-gap-block: 24px;     /* between blocks inside a section */
+    --rdet-gap-row: 8px;
+    --rdet-radius: 14px;        /* the 12–16px band; tiles use 12px */
+    --rdet-aside-w: 296px;
+    --rdet-aside-top: 24px;     /* sticky offset for the right rail */
+    --rdet-read: 68ch;          /* comfortable reading measure for prose */
+    --rdet-motion: var(--ds-motion-fast, .16s) var(--ds-ease-standard, ease);
+}
+
+/* ── Back navigation ──────────────────────────────────────────────────
+   Quiet by default, and it commits to the resource accent on hover — the
+   one place the accent marks a control, because "back to Skills" IS the
+   resource. */
+html[data-theme="paper"] .detail-back {
+    gap: 4px;
+    margin-bottom: 20px;
+    font-size: 12.5px;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    color: var(--ds-text-muted);
+    transition: color var(--rdet-motion), transform var(--rdet-motion);
+}
+
+html[data-theme="paper"] .detail-back:hover {
+    color: var(--kind);
+    transform: translateX(-2px);
+}
+
+/* ── Header ───────────────────────────────────────────────────────────
+   The former hero. Sits ON the page canvas: no fill, no border, no
+   shadow, no radius — the accent arrives as texture and a glyph, and the
+   hairline at the bottom is what says "the header ends here".
+
+   `--compact` and the default showcase variant resolve to the SAME thing:
+   one header language for utility pages and showcase pages alike was the
+   point of the exercise, so the scaffold's two-variant split collapses
+   here rather than being carried forward. */
+html[data-theme="paper"] .detail-hero,
+html[data-theme="paper"] .detail-hero--compact {
+    display: block;
+    padding: 0 0 24px;
+    margin-bottom: 32px;
+    background: none;
+    border: 0;
+    border-bottom: 1px solid var(--ds-border);
+    border-radius: 0;
+    box-shadow: none;
+    color: var(--ds-text-primary);
+    /* The scaffold clips the header because the gradient slab's dot and wave
+       layers bleed past its rounded corners. Paper removes those layers
+       (`.detail-hero__deco { display: none }` below), so the only thing left
+       for `overflow: hidden` to clip is the overflow MENU — a popover
+       absolutely positioned below the trigger, which is inside this box and so
+       got cut off at the header's bottom edge. Nothing here overflows any
+       more; the clip has to go with the layers it existed for. */
+    overflow: visible;
+    /* …and once it escapes the clip it has to WIN, which needs saying out loud.
+       The entrance animation below (`rdet-rise`, fill-mode `both`) leaves this
+       element's computed transform as an identity matrix rather than `none` —
+       and any transform, identity included, creates a stacking context. So the
+       menu panel's own `z-index: 40` is sealed inside the header and cannot
+       compete with anything outside it. `.detail-aside` is a stacking context
+       too (it is `position: sticky`, and carries the same filled matrix), sits
+       at `z-index: auto`, and comes LATER in the DOM — so it painted over the
+       header and everything in it regardless of what the panel asked for.
+       Ordering two accidental stacking contexts by source order is a coin
+       toss; these two declarations are the page stating which is on top. */
+    z-index: 2;
+}
+
+/* Both ambient layers are gone, and this is the deliberate choice rather
+   than an omission.
+
+   An earlier pass kept them: a soft radial wash of the resource accent in
+   the top-left plus the dot grid at ~3%. On a warm paper canvas neither
+   survived the trip. The wash had no edge sharp enough to read as a shape
+   and no area flat enough to read as a fill, so it landed as a smudge
+   behind the title — the exact thing an editorial header is trying not to
+   be — and the dots at a legible strength turned the header back into a
+   decorated box.
+
+   The accent now arrives only where it carries meaning: the glyph tile,
+   the type badge, the section glyphs. That is what the reference set
+   (Linear, Vercel, Stripe) actually does — those headers are flat, and the
+   colour is in the marks, not behind them. */
+html[data-theme="paper"] .detail-hero .detail-hero__deco { display: none; }
+
+html[data-theme="paper"] .detail-hero__bar {
+    gap: 16px;
+    align-items: flex-start;
+}
+
+/* Glyph tile — with the ambient layers gone this is where the resource
+   colour lives, so it earns real craft rather than a flat swatch: the tint
+   falls off very slightly top-to-bottom, an inset highlight lifts the top
+   edge, and the rim is a touch stronger than a hairline. Small enough to
+   be felt rather than seen, which is the point — it reads as a physical
+   chip on the page instead of a coloured rectangle. 48px, down from the
+   slab's 60px white-on-colour panel. */
+html[data-theme="paper"] .detail-hero .detail-hero__icon {
+    width: 48px;
+    height: 48px;
+    border-radius: 13px;
+    background:
+        linear-gradient(180deg,
+            color-mix(in srgb, var(--kind-soft) 88%, white) 0%,
+            var(--kind-soft) 100%);
+    border: 1px solid color-mix(in srgb, var(--kind) 26%, transparent);
+    color: var(--kind);
+    box-shadow: inset 0 1px 0 color-mix(in srgb, white 70%, transparent);
+    transition: transform var(--rdet-motion), box-shadow var(--rdet-motion);
+}
+
+html[data-theme="paper"] .detail-hero .detail-hero__icon:hover {
+    box-shadow:
+        inset 0 1px 0 color-mix(in srgb, white 70%, transparent),
+        0 2px 8px color-mix(in srgb, var(--kind) 16%, transparent);
+}
+
+html[data-theme="paper"] .detail-hero .detail-hero__icon svg {
+    width: 24px;
+    height: 24px;
+}
+
+/* A curator screenshot stays a framed thumbnail, just calmer. */
+html[data-theme="paper"] .detail-hero .detail-hero__icon--cover {
+    width: 108px;
+    height: 62px;
+    border-radius: 12px;
+    background: var(--ds-surface-dim);
+}
+
+/* Title — the biggest thing on the page, and the tight negative tracking
+   the paper theme uses on headlines. */
+html[data-theme="paper"] .detail-hero__title-row {
+    gap: 10px;
+    margin-top: 1px;
+}
+
+html[data-theme="paper"] .detail-hero__title-row h1 {
+    font-size: 30px;
+    font-weight: 650;
+    line-height: 1.18;
+    letter-spacing: -0.022em;
+    color: var(--ds-text-primary);
+}
+
+/* Type badge — what kind of resource this is, in its own colour. The
+   text is the accent ink on the accent tint, so it is never colour-only:
+   the word is always there for anyone who can't see the hue. */
+html[data-theme="paper"] .detail-type {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex: none;
+    height: 22px;
+    padding: 0 9px;
+    border-radius: var(--ds-radius-pill);
+    background: var(--kind-soft);
+    border: 1px solid color-mix(in srgb, var(--kind) 20%, transparent);
+    color: var(--kind);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+html[data-theme="paper"] .detail-type svg {
+    width: 12px;
+    height: 12px;
+}
+
+html[data-theme="paper"] .detail-badge {
+    height: 22px;
+    padding: 0 9px;
+    font-size: 10.5px;
+    letter-spacing: 0.04em;
+}
+
+/* Curated ships as a hardcoded amber pair in the scaffold; route it
+   through the theme's own warn vocabulary. */
+html[data-theme="paper"] .detail-badge--curated {
+    background: var(--ds-accent-warn-bg);
+    border: 1px solid var(--ds-accent-warn-line);
+    color: var(--ds-accent-warn-ink);
+}
+
+html[data-theme="paper"] .detail-hero__desc {
+    margin-top: 10px;
+    max-width: var(--rdet-read);
+    color: var(--ds-text-secondary);
+    font-size: 15px;
+    line-height: 1.6;
+}
+
+html[data-theme="paper"] .detail-hero__owner {
+    margin-top: 8px;
+    color: var(--ds-text-muted);
+    font-size: 13px;
+}
+
+html[data-theme="paper"] .detail-hero__owner strong {
+    color: var(--ds-text-secondary);
+    font-weight: 600;
+}
+
+/* Tags — neutral, not accent-tinted. The type badge already carries the
+   resource colour beside the title; repeating it on every tag turns the
+   header into a colour field and costs the badge its meaning. */
+html[data-theme="paper"] .detail-hero__tags {
+    gap: 6px;
+    margin-top: 14px;
+}
+
+html[data-theme="paper"] .detail-tag {
+    padding: 3px 9px;
+    background: var(--ds-surface-dim);
+    border: 1px solid var(--ds-border-light);
+    border-radius: var(--ds-radius-pill);
+    color: var(--ds-text-secondary);
+    font-size: 11.5px;
+    font-weight: 500;
+    transition: border-color var(--rdet-motion), color var(--rdet-motion);
+}
+
+html[data-theme="paper"] a.detail-tag:hover {
+    border-color: color-mix(in srgb, var(--kind) 40%, transparent);
+    color: var(--kind);
+}
+
+/* Metadata row — small, muted, dot-separated facts. Deliberately the
+   quietest line in the header: it is what you check, not what you read. */
+html[data-theme="paper"] .detail-hero__meta,
+html[data-theme="paper"] .detail-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 14px;
+    margin-top: 16px;
+    color: var(--ds-text-muted);
+    font-size: 12.5px;
+}
+
+html[data-theme="paper"] .detail-hero__meta > span,
+html[data-theme="paper"] .detail-meta > span {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+}
+
+html[data-theme="paper"] .detail-hero__meta svg,
+html[data-theme="paper"] .detail-meta svg {
+    width: 14px;
+    height: 14px;
+    color: var(--ds-text-disabled);
+}
+
+/* ── Header actions ───────────────────────────────────────────────────
+   ONE filled control per header. The scaffold retinted every button to
+   white-on-colour for the slab; on the canvas they revert to the design
+   system's own variants, and the secondary ones go quiet so the primary
+   action is unmistakable. */
+html[data-theme="paper"] .detail-hero__actions {
+    gap: 8px;
+    padding-top: 2px;
+    /* The marketplace pages stack their action area into a COLUMN so the
+       post-install hint can sit under the buttons. That predates the overflow
+       menu, and it put the menu trigger on a line of its own below the
+       primary action — the one control every other detail page keeps beside
+       it. Here the header is a row again, and the hint claims a full row of
+       its own instead, which is what it actually wanted. */
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+}
+
+html[data-theme="paper"] .detail-hero__actions > .stack-hint,
+html[data-theme="paper"] .detail-hero__actions > .helper {
+    flex-basis: 100%;
+}
+
+html[data-theme="paper"] .detail-hero__actions .btn,
+html[data-theme="paper"] .detail-hero__actions .detail-ask {
+    border-radius: var(--ds-radius-btn);
+    transition: background var(--rdet-motion), border-color var(--rdet-motion),
+                color var(--rdet-motion), box-shadow var(--rdet-motion);
+}
+
+html[data-theme="paper"] .detail-hero__actions .btn-primary,
+html[data-theme="paper"] .detail-hero__actions .btn.primary,
+html[data-theme="paper"] .detail-hero__actions .btn-install {
+    background: var(--ds-primary);
+    border: 1px solid var(--ds-primary);
+    color: var(--ds-text-inverse);
+    box-shadow: none;
+}
+
+html[data-theme="paper"] .detail-hero__actions .btn-primary:hover,
+html[data-theme="paper"] .detail-hero__actions .btn.primary:hover,
+html[data-theme="paper"] .detail-hero__actions .btn-install:hover {
+    background: var(--ds-primary-dark);
+    border-color: var(--ds-primary-dark);
+    color: var(--ds-text-inverse);
+}
+
+html[data-theme="paper"] .detail-hero__actions .btn-secondary,
+html[data-theme="paper"] .detail-hero__actions .btn-danger,
+html[data-theme="paper"] .detail-hero__actions .btn-required {
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    color: var(--ds-text-secondary);
+}
+
+html[data-theme="paper"] .detail-hero__actions .btn-secondary:hover {
+    border-color: var(--ds-text-muted);
+    color: var(--ds-text-primary);
+}
+
+/* Destructive actions commit to danger on hover, not on load — the
+   colour arrives with the intent. */
+html[data-theme="paper"] .detail-hero__actions .btn-danger:hover:not([disabled]) {
+    background: var(--ds-accent-danger-bg);
+    border-color: var(--ds-accent-danger-line);
+    color: var(--ds-accent-danger-ink);
+}
+
+/* Ask Agnes — under paper the assistant accent IS the brand sky, so a
+   filled Ask Agnes beside a filled primary is two identical fills
+   competing for one glance. It becomes an outlined control in the
+   assistant's colour: same voice, and the header keeps one filled CTA.
+   When it is the ONLY action (`:only-child`) it may fill, because then
+   it is the page's primary action. */
+html[data-theme="paper"] .detail-hero__actions .detail-ask {
+    background: var(--ds-assistant-soft);
+    border: 1px solid color-mix(in srgb, var(--ds-assistant) 34%, transparent);
+    color: var(--ds-assistant-dark);
+}
+
+html[data-theme="paper"] .detail-hero__actions .detail-ask:hover {
+    background: color-mix(in srgb, var(--ds-assistant) 18%, var(--ds-surface));
+    border-color: color-mix(in srgb, var(--ds-assistant) 55%, transparent);
+    color: var(--ds-assistant-dark);
+}
+
+html[data-theme="paper"] .detail-hero__actions .detail-ask:only-child {
+    background: var(--ds-assistant);
+    border-color: var(--ds-assistant);
+    color: var(--ds-text-inverse);
+}
+
+html[data-theme="paper"] .detail-hero__actions .detail-ask:only-child:hover {
+    background: var(--ds-assistant-dark);
+    border-color: var(--ds-assistant-dark);
+    color: var(--ds-text-inverse);
+}
+
+html[data-theme="paper"] .detail-edit-icon {
+    width: 34px;
+    height: 34px;
+    border-radius: var(--ds-radius-pill);
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    color: var(--ds-text-muted);
+    transition: border-color var(--rdet-motion), color var(--rdet-motion);
+}
+
+html[data-theme="paper"] .detail-edit-icon:hover {
+    background: var(--ds-surface);
+    border-color: var(--ds-text-muted);
+    color: var(--ds-text-primary);
+}
+
+/* ── Overflow menu ────────────────────────────────────────────────────
+   Secondary actions live here, not in the header row. Built on
+   <details>/<summary> so it opens with no JavaScript and closes on Esc
+   for free; `.detail-menu` is `position: relative` and the panel is
+   absolutely placed, so it never reflows the header when it opens. */
+html[data-theme="paper"] .detail-menu {
+    position: relative;
+    flex: none;
+}
+
+html[data-theme="paper"] .detail-menu > summary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    border-radius: var(--ds-radius-pill);
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    color: var(--ds-text-muted);
+    cursor: pointer;
+    list-style: none;
+    transition: border-color var(--rdet-motion), color var(--rdet-motion);
+}
+
+html[data-theme="paper"] .detail-menu > summary::-webkit-details-marker { display: none; }
+html[data-theme="paper"] .detail-menu > summary::marker { content: ""; }
+
+html[data-theme="paper"] .detail-menu > summary:hover,
+html[data-theme="paper"] .detail-menu[open] > summary {
+    border-color: var(--ds-text-muted);
+    color: var(--ds-text-primary);
+}
+
+html[data-theme="paper"] .detail-menu > summary svg {
+    width: 16px;
+    height: 16px;
+}
+
+html[data-theme="paper"] .detail-menu__panel {
+    position: absolute;
+    z-index: 40;
+    top: calc(100% + 6px);
+    right: 0;
+    min-width: 208px;
+    padding: 6px;
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: 12px;
+    box-shadow: var(--ds-shadow-md);
+    animation: rdet-menu-in var(--ds-motion-fast, .16s) var(--ds-ease-enter, ease) both;
+}
+
+@keyframes rdet-menu-in {
+    from { opacity: 0; transform: translateY(-4px); }
+    to   { opacity: 1; transform: none; }
+}
+
+html[data-theme="paper"] .detail-menu__item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 8px 10px;
+    border: 0;
+    border-radius: 8px;
+    background: none;
+    color: var(--ds-text-primary);
+    font: inherit;
+    font-size: 13.5px;
+    text-align: left;
+    text-decoration: none;
+    cursor: pointer;
+    transition: background var(--rdet-motion), color var(--rdet-motion);
+}
+
+html[data-theme="paper"] .detail-menu__item svg {
+    width: 15px;
+    height: 15px;
+    flex: none;
+    color: var(--ds-text-muted);
+}
+
+html[data-theme="paper"] .detail-menu__item:hover {
+    background: var(--ds-surface-dim);
+}
+
+html[data-theme="paper"] .detail-menu__item--danger { color: var(--ds-accent-danger-ink); }
+html[data-theme="paper"] .detail-menu__item--danger svg { color: var(--ds-accent-danger-ink); }
+html[data-theme="paper"] .detail-menu__item--danger:hover { background: var(--ds-accent-danger-bg); }
+
+html[data-theme="paper"] .detail-menu__item[disabled],
+html[data-theme="paper"] .detail-menu__item[aria-disabled="true"] {
+    color: var(--ds-text-disabled);
+    cursor: default;
+    pointer-events: none;
+}
+
+html[data-theme="paper"] .detail-menu__sep {
+    height: 1px;
+    margin: 5px 4px;
+    background: var(--ds-border-light);
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   Marketplace heroes — skill/agent (`.item-detail`) + plugin
+   (`.plugin-detail`)
+   ══════════════════════════════════════════════════════════════════════
+   These two pages hand-write the hero markup instead of calling
+   `detail.hero()`, because their content arrives from a detail XHR and
+   the header is full of per-id hydration slots. They still use the
+   scaffold's `.detail-hero*` classes, so the editorial header above
+   applies to them — but every piece of ink INSIDE their header was
+   authored white-on-gradient (`rgba(255,255,255,…)`, `#fff`). On the
+   light editorial header that ink is invisible, so each of those
+   declarations needs an answer here. This block is that answer, and
+   nothing more: the same ink hierarchy the macro-driven pages get.
+
+   `html[data-theme="paper"] .item-detail .x` (0,0,3,1) out-specifies the
+   pages' own `.item-detail .x` (0,0,2,0), so no `!important` is needed
+   even though their <style> blocks load after this sheet. */
+
+html[data-theme="paper"] .item-detail .hero-tagline,
+html[data-theme="paper"] .plugin-detail .tagline {
+    max-width: var(--rdet-read);
+    color: var(--ds-text-secondary);
+    font-size: 15px;
+    line-height: 1.6;
+}
+
+html[data-theme="paper"] .item-detail .meta-row {
+    color: var(--ds-text-muted);
+    font-size: 12.5px;
+}
+
+html[data-theme="paper"] .item-detail .meta-row strong { color: var(--ds-text-secondary); }
+html[data-theme="paper"] .item-detail .meta-row a { color: var(--ds-text-link); }
+html[data-theme="paper"] .item-detail .meta-row .dot { color: var(--ds-text-disabled); }
+
+/* Pills — neutral chips, matching `.detail-tag` on the macro-driven
+   pages, so a skill's metadata row reads the same as a data package's. */
+html[data-theme="paper"] .item-detail .pill,
+html[data-theme="paper"] .plugin-detail .pill {
+    background: var(--ds-surface-dim);
+    border: 1px solid var(--ds-border-light);
+    color: var(--ds-text-secondary);
+}
+
+html[data-theme="paper"] .item-detail .pill.cat,
+html[data-theme="paper"] .plugin-detail .pill.cat {
+    background: var(--ds-surface-dim);
+}
+
+html[data-theme="paper"] .item-detail .pill.muted,
+html[data-theme="paper"] .plugin-detail .pill.muted {
+    background: none;
+    border-color: transparent;
+    color: var(--ds-text-muted);
+}
+
+/* `.pill.type` IS this page's resource-type badge (Skill / Agent), so it
+   gets the `.detail-type` treatment rather than a neutral chip — the one
+   place in the header where the resource colour appears as a fill. */
+html[data-theme="paper"] .item-detail .pill.type {
+    background: var(--kind-soft);
+    border: 1px solid color-mix(in srgb, var(--kind) 20%, transparent);
+    color: var(--kind);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+}
+
+/* Curated / Flea provenance chips carry hardcoded amber and violet pairs.
+   Route them through the theme's own vocabularies — and note the violet
+   `#EDE9FE`/`#6D28D9` pair is now exactly the SKILL resource colour, which
+   would make "Flea" look like a type badge. It becomes neutral. */
+html[data-theme="paper"] .item-detail .pill.curated,
+html[data-theme="paper"] .plugin-detail .pill.curated {
+    background: var(--ds-accent-warn-bg);
+    border-color: var(--ds-accent-warn-line);
+    color: var(--ds-accent-warn-ink);
+}
+
+html[data-theme="paper"] .item-detail .pill.flea,
+html[data-theme="paper"] .plugin-detail .pill.flea {
+    background: var(--ds-surface-dim);
+    border-color: var(--ds-border);
+    color: var(--ds-text-secondary);
+}
+
+html[data-theme="paper"] .item-detail .hero-telemetry,
+html[data-theme="paper"] .plugin-detail .hero-telemetry {
+    color: var(--ds-text-muted);
+}
+
+/* The four telemetry glyphs were picked to read on near-black. On the
+   light header they wash out, so they take the status vocabulary's inks —
+   the segments keep their meaning (live / busy / installed) and gain
+   contrast. */
+html[data-theme="paper"] .item-detail .hero-telemetry .seg-active > svg,
+html[data-theme="paper"] .plugin-detail .hero-telemetry .seg-active > svg {
+    color: var(--ds-accent-success-ink);
+}
+
+html[data-theme="paper"] .item-detail .hero-telemetry .seg-calls > svg,
+html[data-theme="paper"] .plugin-detail .hero-telemetry .seg-calls > svg,
+html[data-theme="paper"] .item-detail .hero-telemetry .seg-installed > svg,
+html[data-theme="paper"] .plugin-detail .hero-telemetry .seg-installed > svg {
+    color: var(--ds-accent-warn-ink);
+}
+
+html[data-theme="paper"] .item-detail .hero-telemetry .trend-up,
+html[data-theme="paper"] .plugin-detail .hero-telemetry .trend-up {
+    color: var(--ds-accent-success-ink);
+}
+
+html[data-theme="paper"] .item-detail .hero-telemetry .trend-down,
+html[data-theme="paper"] .plugin-detail .hero-telemetry .trend-down {
+    color: var(--ds-accent-danger-ink);
+}
+
+/* Header actions — one filled CTA (Add to my stack / Install), everything
+   else a quiet outlined control that only commits to colour on hover. */
+html[data-theme="paper"] .item-detail .detail-hero__actions .btn,
+html[data-theme="paper"] .item-detail .detail-hero__actions .btn-remove,
+html[data-theme="paper"] .plugin-detail .btn-install {
+    border-radius: var(--ds-radius-btn);
+    border: 1px solid var(--ds-border);
+    background: var(--ds-surface);
+    color: var(--ds-text-secondary);
+}
+
+html[data-theme="paper"] .item-detail .detail-hero__actions .btn:hover {
+    background: var(--ds-surface);
+    border-color: var(--ds-text-muted);
+    color: var(--ds-text-primary);
+}
+
+html[data-theme="paper"] .item-detail .detail-hero__actions .btn.primary,
+html[data-theme="paper"] .plugin-detail .btn-install {
+    background: var(--ds-primary);
+    border-color: var(--ds-primary);
+    color: var(--ds-text-inverse);
+}
+
+html[data-theme="paper"] .item-detail .detail-hero__actions .btn.primary:hover,
+html[data-theme="paper"] .plugin-detail .btn-install:hover {
+    background: var(--ds-primary-dark);
+    border-color: var(--ds-primary-dark);
+    color: var(--ds-text-inverse);
+}
+
+/* The plugin page's own two spellings of the same pair — a Cowork export
+   beside Add/Remove, both authored as white glass. */
+html[data-theme="paper"] .plugin-detail .btn-cowork,
+html[data-theme="paper"] .plugin-detail .btn-remove {
+    border-radius: var(--ds-radius-btn);
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    color: var(--ds-text-secondary);
+}
+
+html[data-theme="paper"] .plugin-detail .btn-cowork:hover {
+    background: var(--ds-surface);
+    border-color: var(--ds-text-muted);
+    color: var(--ds-text-primary);
+}
+
+html[data-theme="paper"] .item-detail .detail-hero__actions .btn-remove:hover,
+html[data-theme="paper"] .plugin-detail .btn-remove:hover {
+    background: var(--ds-accent-danger-bg);
+    border-color: var(--ds-accent-danger-line);
+    color: var(--ds-accent-danger-ink);
+}
+
+/* "✓ In stack" — deliberately inline text on both pages, not a control, so
+   it takes muted ink rather than the chip treatment `.detail-status` gets. */
+html[data-theme="paper"] .item-detail .detail-hero__actions .status-pill,
+html[data-theme="paper"] .plugin-detail .status-pill {
+    color: var(--ds-text-muted);
+}
+
+html[data-theme="paper"] .plugin-detail .status-pill.is-system {
+    color: var(--ds-accent-warn-ink);
+}
+
+/* The post-add hint — a white-glass panel that only made sense floating on
+   the gradient. It becomes an ordinary tinted note in the info vocabulary:
+   it appears the moment you install something and tells you the next step,
+   which is exactly what that vocabulary is for. */
+html[data-theme="paper"] .item-detail .stack-hint,
+html[data-theme="paper"] .plugin-detail .stack-hint {
+    background: var(--ds-accent-info-bg);
+    border: 1px solid color-mix(in srgb, var(--ds-accent-info-line) 34%, transparent);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    box-shadow: none;
+    color: var(--ds-accent-info-ink);
+}
+
+html[data-theme="paper"] .item-detail .stack-hint .title,
+html[data-theme="paper"] .plugin-detail .stack-hint .title {
+    color: var(--ds-accent-info-ink);
+}
+
+html[data-theme="paper"] .item-detail .stack-hint .dismiss,
+html[data-theme="paper"] .plugin-detail .stack-hint .dismiss {
+    border-color: color-mix(in srgb, var(--ds-accent-info-line) 40%, transparent);
+    color: var(--ds-accent-info-ink);
+}
+
+html[data-theme="paper"] .item-detail .stack-hint .dismiss:hover,
+html[data-theme="paper"] .plugin-detail .stack-hint .dismiss:hover {
+    background: color-mix(in srgb, var(--ds-accent-info-line) 14%, transparent);
+    color: var(--ds-accent-info-ink);
+}
+
+html[data-theme="paper"] .item-detail .detail-hero__actions .helper {
+    color: var(--ds-text-muted);
+}
+
+html[data-theme="paper"] .item-detail .detail-hero__actions .helper strong {
+    color: var(--ds-text-secondary);
+}
+
+/* The hydrated hero's nested panel holds Description + Details as a
+   two-column split. With the panel now plain flow (see the rule further
+   down), that split becomes the header's own reading layout — content on
+   the left, facts on the right — which is the same main/rail division the
+   macro-driven pages get from `.detail-cols`. It only needs the hairline
+   and the breathing room. */
+html[data-theme="paper"] .item-detail .detail-hero__panel .detail-section__title,
+html[data-theme="paper"] .plugin-detail .detail-hero__panel .detail-section__title {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--ds-text-muted);
+}
+
+html[data-theme="paper"] .item-detail .detail-hero__panel .detail-section__title svg,
+html[data-theme="paper"] .plugin-detail .detail-hero__panel .detail-section__title svg {
+    width: 13px;
+    height: 13px;
+}
+
+html[data-theme="paper"] .item-detail .lead {
+    max-width: var(--rdet-read);
+    font-size: 15px;
+    line-height: 1.7;
+    color: var(--ds-text-secondary);
+}
+
+/* ── Two-column shell ─────────────────────────────────────────────────
+   Main content + a sticky right rail. The rail is `align-self: start` so
+   `position: sticky` has a shorter-than-row box to stick inside — without
+   it a grid item stretches to full row height and never sticks. */
+html[data-theme="paper"] .detail-cols {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--rdet-aside-w);
+    gap: 48px;
+    align-items: start;
+}
+
+html[data-theme="paper"] .detail-main {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--rdet-gap-section);
+}
+
+html[data-theme="paper"] .detail-aside {
+    position: sticky;
+    /* The other half of the header's `z-index: 2` — see the comment there. The
+       rail stays above the page and below the header, so a popover opened in
+       the header is never covered by it. */
+    z-index: 1;
+    top: var(--rdet-aside-top);
+    align-self: start;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
+    /* Never taller than the viewport, or the bottom of the rail becomes
+       unreachable while the main column is still scrolling. */
+    max-height: calc(100vh - (var(--rdet-aside-top) * 2));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    /* The rail's own scrollbar is chrome nobody asked for; it appears
+       only when the rail actually overflows. */
+    scrollbar-width: thin;
+}
+
+/* One column below the breakpoint, rail after content, sticky off — a
+   sidebar that follows you on a phone is just a stuck block. */
+@media (max-width: 1080px) {
+    html[data-theme="paper"] .detail-cols {
+        grid-template-columns: 1fr;
+        gap: var(--rdet-gap-section);
+    }
+    html[data-theme="paper"] .detail-aside {
+        position: static;
+        max-height: none;
+        overflow: visible;
+    }
+}
+
+/* ── Content sections ─────────────────────────────────────────────────
+   The scaffold's `.detail-section` is a `.ds-card`. Here it stops being a
+   container: whitespace above, a hairline, and a heading. That is what
+   removes the card-inside-card nesting — a table, an accordion or a
+   nested panel inside a section now sits on the page rather than in a box
+   inside a box. */
+html[data-theme="paper"] .detail-section {
+    padding: 0;
+    margin: 0;
+    background: none;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    /* A section is not a card and not interactive. `.detail-section` IS a
+       `.ds-card`, and paper's card skin gives every card a hover that lifts it
+       2px and paints `--ds-shadow-md` — so with the fill and border removed,
+       hovering a section lifted an INVISIBLE box and dropped a shadow under
+       nothing. Both the transform and the transition have to go, not just the
+       shadow: the lift alone shifted the heading and its content by 2px on
+       hover, which read as the page flinching under the pointer. */
+    transform: none;
+    transition: none;
+}
+
+html[data-theme="paper"] .detail-section:hover {
+    transform: none;
+    box-shadow: none;
+    border-color: transparent;
+}
+
+/* Sections stack with whitespace when they are direct siblings (a page
+   that has not moved to `.detail-cols` yet), and with the flex gap when
+   they are inside the main column. */
+html[data-theme="paper"] .detail > .detail-section { margin-bottom: var(--rdet-gap-section); }
+html[data-theme="paper"] .detail-main > .detail-section { margin-bottom: 0; }
+
+/* Separator between sections: a hairline above the heading, on every
+   section but the first in its column. `--ds-border`, not the lighter
+   `--ds-border-light` the rest of this sheet uses for hairlines — on the
+   paper canvas the light token measures ~1.02:1 against the page and does
+   no work at all, so the "soft separator" was in practice no separator.
+   This is the one line on the page that has to be seen to group. */
+html[data-theme="paper"] .detail-main > .detail-section + .detail-section,
+html[data-theme="paper"] .detail > .detail-section + .detail-section {
+    padding-top: var(--rdet-gap-section);
+    border-top: 1px solid var(--ds-border);
+}
+
+html[data-theme="paper"] .detail-side + .detail-side {
+    border-top-color: var(--ds-border);
+}
+
+html[data-theme="paper"] .detail-section__title {
+    align-items: center;
+    gap: 8px;
+    margin: 0 0 var(--rdet-gap-block);
+    font-size: 19px;
+    font-weight: 650;
+    line-height: 1.3;
+    letter-spacing: -0.014em;
+    color: var(--ds-text-primary);
+}
+
+/* Section glyph — the resource accent again, at the size of a bullet.
+   It ties a section to its resource without another badge. */
+html[data-theme="paper"] .detail-section__title svg {
+    width: 17px;
+    height: 17px;
+    color: var(--kind);
+}
+
+/* An optional one-line note under a section heading, for the sentence
+   that would otherwise be crammed into the heading itself. */
+html[data-theme="paper"] .detail-section__note {
+    margin: -16px 0 var(--rdet-gap-block);
+    max-width: var(--rdet-read);
+    color: var(--ds-text-muted);
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+html[data-theme="paper"] .detail-prose {
+    max-width: var(--rdet-read);
+    font-size: 15px;
+    line-height: 1.7;
+    color: var(--ds-text-secondary);
+}
+
+html[data-theme="paper"] .detail-divider {
+    margin: var(--rdet-gap-block) 0;
+    border-top-color: var(--ds-border-light);
+}
+
+/* The scaffold's nested hero panel has nothing left to nest inside — the
+   header is no longer a box. It becomes plain content in the flow, which
+   is what the "What it is" copy inside it always was. */
+html[data-theme="paper"] .detail-hero__panel {
+    margin-top: 28px;
+    padding: 0;
+    background: none;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    color: inherit;
+}
+
+html[data-theme="paper"] .detail-hero__panel-split > .side {
+    border-left: 1px solid var(--ds-border-light);
+}
+
+/* ── Best for / Avoid when ────────────────────────────────────────────
+   Two columns of short verdicts. The check side takes the resource
+   accent (it is the affirmative reading of this resource); the skip side
+   stays muted, because "avoid when" is a caveat, not an error. */
+html[data-theme="paper"] .detail-use-skip {
+    gap: 40px;
+}
+
+html[data-theme="paper"] .detail-use-skip h3 {
+    margin-bottom: 12px;
+    font-size: 11px;
+    letter-spacing: 0.07em;
+    color: var(--ds-text-muted);
+}
+
+html[data-theme="paper"] .detail-use-skip li {
+    font-size: 14px;
+    line-height: 1.6;
+    color: var(--ds-text-secondary);
+}
+
+html[data-theme="paper"] .detail-use-skip .use h3 svg,
+html[data-theme="paper"] .detail-use-skip .use li svg { color: var(--kind); }
+
+/* ── Stat blocks ──────────────────────────────────────────────────────
+   Numbers that answer "how big is this?" at a glance. No boxes: the
+   number's own weight is the container, and a hairline separates them. */
+html[data-theme="paper"] .detail-stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+html[data-theme="paper"] .detail-stat {
+    flex: 1 1 128px;
+    min-width: 0;
+    padding: 0 20px;
+    border-left: 1px solid var(--ds-border-light);
+}
+
+html[data-theme="paper"] .detail-stat:first-child {
+    padding-left: 0;
+    border-left: 0;
+}
+
+html[data-theme="paper"] .detail-stat__value {
+    display: block;
+    font-size: 26px;
+    font-weight: 650;
+    line-height: 1.15;
+    letter-spacing: -0.02em;
+    color: var(--ds-text-primary);
+    font-variant-numeric: tabular-nums;
+}
+
+html[data-theme="paper"] .detail-stat__label {
+    display: block;
+    margin-top: 5px;
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--ds-text-muted);
+}
+
+/* ── Sidebar sections ─────────────────────────────────────────────────
+   Same no-box treatment as the content sections, one size down. The
+   heading is an uppercase eyebrow rather than a title, so the rail never
+   competes with the main column for the reader's attention. */
+html[data-theme="paper"] .detail-side { min-width: 0; }
+
+html[data-theme="paper"] .detail-side + .detail-side {
+    padding-top: 24px;
+    border-top: 1px solid var(--ds-border-light);
+}
+
+/* Prose in the rail reads at rail scale and takes the full column — the
+   68ch measure the main column uses is wider than the rail itself. */
+html[data-theme="paper"] .detail-side__prose {
+    max-width: none;
+    font-size: 13px;
+    line-height: 1.65;
+    color: var(--ds-text-secondary);
+}
+
+html[data-theme="paper"] .detail-side__title {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin: 0 0 14px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--ds-text-muted);
+}
+
+html[data-theme="paper"] .detail-side__title svg {
+    width: 13px;
+    height: 13px;
+    color: var(--kind);
+}
+
+/* Key/value rows — the sidebar's workhorse. Label above value on the
+   rail (there is no room for two columns at 296px), and the scaffold's
+   own `.detail-rows` two-column form is kept for main-column use. */
+html[data-theme="paper"] .detail-side__rows {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+html[data-theme="paper"] .detail-side__row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    min-width: 0;
+    font-size: 13px;
+}
+
+html[data-theme="paper"] .detail-side__key {
+    flex: none;
+    /* The scaffold's baseline reserves a 150px label column — a two-column
+       measure meant for the main content. In a 296px rail that left the value
+       under 100px, so "Customer Insights" and "local · materialized" wrapped
+       onto a second line and the rail read as ragged. The label takes the width
+       of its own words; the value gets the rest. */
+    min-width: 0;
+    color: var(--ds-text-muted);
+}
+
+html[data-theme="paper"] .detail-side__val {
+    min-width: 0;
+    text-align: right;
+    color: var(--ds-text-primary);
+    font-weight: 500;
+    overflow-wrap: anywhere;
+}
+
+html[data-theme="paper"] .detail-side__val a { color: var(--ds-text-link); text-decoration: none; }
+html[data-theme="paper"] .detail-side__val a:hover { text-decoration: underline; }
+
+/* A row whose value needs its own line (a long path, a description). */
+html[data-theme="paper"] .detail-side__row--stacked {
+    display: block;
+}
+
+html[data-theme="paper"] .detail-side__row--stacked .detail-side__val {
+    display: block;
+    margin-top: 4px;
+    text-align: left;
+}
+
+/* ── Hydrated facts list ──────────────────────────────────────────────
+   The marketplace pages build their metadata client-side as
+   `<dl><div class="row"><dt>…</dt><dd>…</dd></div></dl>`, because the
+   payload only resolves after an XHR. That is the SAME content as a
+   `side_rows()` block, so it gets the same grid rather than a second look:
+   the markup differs only because of who writes it, and a reader should not
+   be able to tell which facts arrived over the wire.
+
+   Mapped here rather than rewritten in JS — the alternative is editing
+   several hundred lines of template strings across two files to change
+   `<dt>` to `<span class="detail-side__key">`, which buys nothing. */
+html[data-theme="paper"] .detail-side__dl {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    margin: 0;
+}
+
+html[data-theme="paper"] .detail-side__dl .row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    min-width: 0;
+    font-size: 12.75px;
+}
+
+html[data-theme="paper"] .detail-side__dl dt {
+    flex: none;
+    min-width: 0;
+    color: var(--ds-text-muted);
+}
+
+html[data-theme="paper"] .detail-side__dl dd {
+    min-width: 0;
+    margin: 0;
+    text-align: right;
+    color: var(--ds-text-primary);
+    font-weight: 550;
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+}
+
+html[data-theme="paper"] .detail-side__dl dd a { color: var(--ds-text-link); text-decoration: none; }
+html[data-theme="paper"] .detail-side__dl dd a:hover { text-decoration: underline; }
+
+/* Owner — avatar + name, the one place in the rail that gets a face. */
+html[data-theme="paper"] .detail-owner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+
+html[data-theme="paper"] .detail-owner__avatar {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border-radius: var(--ds-radius-pill);
+    background: var(--kind-soft);
+    border: 1px solid color-mix(in srgb, var(--kind) 20%, transparent);
+    color: var(--kind);
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+}
+
+html[data-theme="paper"] .detail-owner__name {
+    min-width: 0;
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--ds-text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+html[data-theme="paper"] .detail-owner__sub {
+    display: block;
+    margin-top: 1px;
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--ds-text-muted);
+}
+
+/* Sidebar actions — full-width, stacked, and quiet. The header owns the
+   one prominent action; these are the follow-ups. */
+html[data-theme="paper"] .detail-side__actions {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+html[data-theme="paper"] .detail-side__actions .btn {
+    width: 100%;
+    justify-content: center;
+    border-radius: 10px;
+}
+
+html[data-theme="paper"] .detail-side__actions--spaced { margin-top: 14px; }
+
+/* The sentence under a rail block's chip — what the status actually means
+   for the reader. Muted, because the chip is the answer and this is the
+   footnote. */
+html[data-theme="paper"] .detail-side__note {
+    margin: 10px 0 0;
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: var(--ds-text-muted);
+}
+
+/* ── Rail callout ─────────────────────────────────────────────────────
+   A status and the sentence that says what it means for the reader are ONE
+   answer, so they get one tinted surface. Loose, the chip read as a label and
+   the sentence as unrelated body copy that happened to follow it. `--panel-ink`
+   carries the tone to the status dot only: the words stay in the page's own ink
+   so they are as readable as anything else, and the colour is confined to the
+   6px mark — decoration on top of a state that is always spelled out. */
+html[data-theme="paper"] .detail-side__panel {
+    --panel-ink: var(--ds-text-muted);
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 7px;
+    padding: 12px 14px;
+    border-radius: 10px;
+    background: var(--ds-surface-dim);
+    border: 1px solid var(--ds-border-light);
+}
+
+html[data-theme="paper"] .detail-side__panel--ok {
+    --panel-ink: var(--ds-accent-success-ink);
+    background: var(--ds-accent-success-bg);
+    border-color: color-mix(in srgb, var(--ds-accent-success-line) 45%, transparent);
+}
+
+html[data-theme="paper"] .detail-side__panel--warn {
+    --panel-ink: var(--ds-accent-warn-ink);
+    background: var(--ds-accent-warn-bg);
+    border-color: color-mix(in srgb, var(--ds-accent-warn-line) 45%, transparent);
+}
+
+html[data-theme="paper"] .detail-side__panel--danger {
+    --panel-ink: var(--ds-accent-danger-ink);
+    background: var(--ds-accent-danger-bg);
+    border-color: color-mix(in srgb, var(--ds-accent-danger-line) 45%, transparent);
+}
+
+html[data-theme="paper"] .detail-side__panel--info {
+    --panel-ink: var(--ds-accent-info-ink);
+    background: var(--ds-accent-info-bg);
+    border-color: color-mix(in srgb, var(--ds-accent-info-line) 40%, transparent);
+}
+
+/* The chip loses its own fill and rim: the panel is already the surface, and a
+   pill inside a tinted box is two nested containers saying one thing. */
+html[data-theme="paper"] .detail-side__panel .detail-status {
+    height: auto;
+    padding: 0;
+    background: none;
+    border: 0;
+    color: var(--ds-text-primary);
+    font-size: 13px;
+    font-weight: 650;
+}
+
+html[data-theme="paper"] .detail-side__panel .detail-status::before {
+    background: var(--panel-ink);
+}
+
+html[data-theme="paper"] .detail-side__panel .detail-side__note {
+    margin: 0;
+    color: var(--ds-text-secondary);
+}
+
+/* Inline code needs to lift off a tinted panel, not off the page. */
+html[data-theme="paper"] .detail-side__panel .detail-side__note code {
+    background: color-mix(in srgb, var(--ds-surface) 72%, transparent);
+    border: 1px solid var(--ds-border-light);
+}
+
+html[data-theme="paper"] .detail-side__note code {
+    padding: 1px 5px;
+    border-radius: 5px;
+    background: var(--ds-surface-dim);
+    font-family: var(--ds-font-mono);
+    font-size: 11.5px;
+    color: var(--ds-text-secondary);
+}
+
+/* ── Status pills ─────────────────────────────────────────────────────
+   One badge vocabulary for every status on every detail page, routed
+   through the design system's status accents. Never colour-only: each
+   state carries its own word. */
+html[data-theme="paper"] .detail-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 22px;
+    padding: 0 9px;
+    border-radius: var(--ds-radius-pill);
+    background: var(--ds-surface-dim);
+    border: 1px solid var(--ds-border);
+    color: var(--ds-text-secondary);
+    font-size: 11.5px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+html[data-theme="paper"] .detail-status::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: var(--ds-radius-pill);
+    background: currentColor;
+}
+
+html[data-theme="paper"] .detail-status--ok {
+    background: var(--ds-accent-success-bg);
+    border-color: var(--ds-accent-success-line);
+    color: var(--ds-accent-success-ink);
+}
+
+html[data-theme="paper"] .detail-status--warn {
+    background: var(--ds-accent-warn-bg);
+    border-color: var(--ds-accent-warn-line);
+    color: var(--ds-accent-warn-ink);
+}
+
+html[data-theme="paper"] .detail-status--danger {
+    background: var(--ds-accent-danger-bg);
+    border-color: var(--ds-accent-danger-line);
+    color: var(--ds-accent-danger-ink);
+}
+
+html[data-theme="paper"] .detail-status--info {
+    background: var(--ds-accent-info-bg);
+    border-color: color-mix(in srgb, var(--ds-accent-info-line) 40%, transparent);
+    color: var(--ds-accent-info-ink);
+}
+
+/* ── Activity timeline ────────────────────────────────────────────────
+   A rail of dots on a hairline. The dot is the resource accent, hollow
+   for past entries and filled for the most recent one, so "where are we
+   now" is answerable without reading a date. */
+html[data-theme="paper"] .detail-timeline {
+    position: relative;
+    margin: 0;
+    padding: 0 0 0 22px;
+    list-style: none;
+}
+
+html[data-theme="paper"] .detail-timeline::before {
+    content: "";
+    position: absolute;
+    top: 6px;
+    bottom: 6px;
+    left: 4px;
+    width: 1px;
+    background: var(--ds-border);
+}
+
+html[data-theme="paper"] .detail-timeline__item {
+    position: relative;
+    padding-bottom: 22px;
+}
+
+html[data-theme="paper"] .detail-timeline__item:last-child { padding-bottom: 0; }
+
+html[data-theme="paper"] .detail-timeline__item::before {
+    content: "";
+    position: absolute;
+    top: 5px;
+    left: -22px;
+    width: 9px;
+    height: 9px;
+    border-radius: var(--ds-radius-pill);
+    background: var(--ds-surface);
+    border: 1.5px solid var(--ds-border);
+}
+
+html[data-theme="paper"] .detail-timeline__item--current::before {
+    background: var(--kind);
+    border-color: var(--kind);
+    box-shadow: 0 0 0 3px var(--kind-soft);
+}
+
+html[data-theme="paper"] .detail-timeline__head {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 4px 8px;
+}
+
+html[data-theme="paper"] .detail-timeline__title {
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--ds-text-primary);
+}
+
+html[data-theme="paper"] .detail-timeline__when {
+    font-size: 12px;
+    color: var(--ds-text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+html[data-theme="paper"] .detail-timeline__body {
+    margin: 3px 0 0;
+    max-width: var(--rdet-read);
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--ds-text-secondary);
+}
+
+/* ── Related resources ────────────────────────────────────────────────
+   Cross-links to other resources, each carrying its OWN resource colour
+   (the macro sets `--kind` per row) — so the list reads as a map of the
+   product rather than a list of links. */
+html[data-theme="paper"] .detail-related {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+html[data-theme="paper"] .detail-related__link {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 10px;
+    margin: 0 -10px;
+    border-radius: 10px;
+    color: inherit;
+    text-decoration: none;
+    transition: background var(--rdet-motion);
+}
+
+html[data-theme="paper"] .detail-related__link:hover { background: var(--ds-surface-dim); }
+
+html[data-theme="paper"] .detail-related__glyph {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    background: var(--kind-soft);
+    color: var(--kind);
+}
+
+html[data-theme="paper"] .detail-related__glyph svg { width: 15px; height: 15px; }
+
+html[data-theme="paper"] .detail-related__text { min-width: 0; flex: 1; }
+
+html[data-theme="paper"] .detail-related__name {
+    display: block;
+    font-size: 13.5px;
+    font-weight: 500;
+    color: var(--ds-text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+html[data-theme="paper"] .detail-related__kind {
+    display: block;
+    margin-top: 1px;
+    font-size: 11.5px;
+    color: var(--kind);
+    font-weight: 600;
+}
+
+html[data-theme="paper"] .detail-related__link:hover .detail-related__name { color: var(--kind); }
+
+/* ── Tables & lists ───────────────────────────────────────────────────
+   The detail pages carry `.ds-table`, page-local tables, and the
+   scaffold's `.detail-rows`. All three land on the same rhythm: roomy
+   rows, hairline separators, no outer frame, a wash on hover, and a
+   whole row that is clickable when it has somewhere to go. */
+html[data-theme="paper"] .detail-cols .ds-table,
+html[data-theme="paper"] .detail-section .ds-table {
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: none;
+}
+
+html[data-theme="paper"] .detail-cols .ds-table th,
+html[data-theme="paper"] .detail-section .ds-table th {
+    padding: 0 12px 10px;
+    background: none;
+    border-bottom: 1px solid var(--ds-border);
+    color: var(--ds-text-muted);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+html[data-theme="paper"] .detail-cols .ds-table td,
+html[data-theme="paper"] .detail-section .ds-table td {
+    padding: 13px 12px;
+    border-bottom: 1px solid var(--ds-border-light);
+    font-size: 13.5px;
+    vertical-align: middle;
+}
+
+html[data-theme="paper"] .detail-cols .ds-table th:first-child,
+html[data-theme="paper"] .detail-cols .ds-table td:first-child,
+html[data-theme="paper"] .detail-section .ds-table th:first-child,
+html[data-theme="paper"] .detail-section .ds-table td:first-child { padding-left: 0; }
+
+html[data-theme="paper"] .detail-cols .ds-table th:last-child,
+html[data-theme="paper"] .detail-cols .ds-table td:last-child,
+html[data-theme="paper"] .detail-section .ds-table th:last-child,
+html[data-theme="paper"] .detail-section .ds-table td:last-child { padding-right: 0; }
+
+html[data-theme="paper"] .detail-cols .ds-table tbody tr,
+html[data-theme="paper"] .detail-section .ds-table tbody tr {
+    transition: background var(--rdet-motion);
+}
+
+html[data-theme="paper"] .detail-cols .ds-table tbody tr:hover,
+html[data-theme="paper"] .detail-section .ds-table tbody tr:hover {
+    background: var(--ds-surface-dim);
+}
+
+html[data-theme="paper"] .detail-cols .ds-table tbody tr:last-child td,
+html[data-theme="paper"] .detail-section .ds-table tbody tr:last-child td {
+    border-bottom: 0;
+}
+
+/* A row that navigates. The whole row takes the click (the macro puts
+   `data-row-href` on the `<tr>`); the first cell still holds a real
+   anchor, so keyboard, middle-click and "open in new tab" keep working. */
+html[data-theme="paper"] .detail-cols tr[data-row-href],
+html[data-theme="paper"] .detail-section tr[data-row-href] { cursor: pointer; }
+
+html[data-theme="paper"] tr[data-row-href]:hover .detail-cell__name { color: var(--kind); }
+
+html[data-theme="paper"] .detail-cell__name {
+    font-weight: 600;
+    color: var(--ds-text-primary);
+    text-decoration: none;
+    transition: color var(--rdet-motion);
+}
+
+html[data-theme="paper"] .detail-cell__sub {
+    display: block;
+    margin-top: 2px;
+    font-size: 12px;
+    color: var(--ds-text-muted);
+}
+
+html[data-theme="paper"] .detail-cell__mono {
+    font-family: var(--ds-font-mono);
+    font-size: 12.5px;
+    color: var(--ds-text-secondary);
+}
+
+/* Definition rows in the main column. */
+html[data-theme="paper"] .detail-row {
+    gap: 20px;
+    padding: 13px 0;
+    border-bottom-color: var(--ds-border-light);
+    font-size: 14px;
+}
+
+html[data-theme="paper"] .detail-row__key {
+    min-width: 168px;
+    color: var(--ds-text-muted);
+}
+
+/* A plain, borderless list of rows — files, endpoints, prompts. Same
+   rhythm as the tables, without the table. */
+html[data-theme="paper"] .detail-list {
+    display: flex;
+    flex-direction: column;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+html[data-theme="paper"] .detail-list__item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 10px;
+    margin: 0 -10px;
+    border-radius: 10px;
+    border-bottom: 1px solid var(--ds-border-light);
+    transition: background var(--rdet-motion);
+}
+
+html[data-theme="paper"] .detail-list__item:last-child { border-bottom: 0; }
+html[data-theme="paper"] .detail-list__item:hover { background: var(--ds-surface-dim); }
+
+html[data-theme="paper"] .detail-list__glyph {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 9px;
+    background: var(--kind-soft);
+    color: var(--kind);
+}
+
+html[data-theme="paper"] .detail-list__glyph svg { width: 16px; height: 16px; }
+html[data-theme="paper"] .detail-list__body { flex: 1; min-width: 0; }
+
+/* ══════════════════════════════════════════════════════════════════════
+   Data-package page — the tables accordion
+   ══════════════════════════════════════════════════════════════════════
+   Each table is an EXPANDABLE CARD: the row is a control that opens to reveal
+   documentation, so unlike the read-only lists elsewhere on a detail page it
+   has to look pressable and it has to show where its disclosed body ends. A
+   hairline-only rhythm gave it neither — an opened row bled into the next
+   row's rule, and on a page with no other borders the whole list read as flat
+   text. So: a quiet card per row, one radius, a real chevron instead of the
+   `▸` text glyph, and the accent arriving on hover and while open. */
+
+html[data-theme="paper"] .detail .pkg-table-row {
+    margin: 0;
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: 12px;
+    transition: border-color var(--rdet-motion), box-shadow var(--rdet-motion);
+}
+
+html[data-theme="paper"] .detail .pkg-table-row + .pkg-table-row { margin-top: 10px; }
+
+/* Hover is the product's ONE card hover: the border holds and a soft shadow
+   lifts the card (the Agents page's `.ag-card` does exactly this). An accent
+   rim on hover would make a table row look like it had changed state, and the
+   accent is reserved for things that carry meaning — glyphs, badges, status. */
+html[data-theme="paper"] .detail .pkg-table-row:hover,
+html[data-theme="paper"] .detail .pkg-table-row[open] {
+    border-color: var(--ds-border);
+    box-shadow: var(--ds-shadow-md);
+}
+
+/* No fill on hover. The CARD responds (see the shadow above) — filling the
+   summary as well greyed the row's own surface, which on a page whose every
+   other card stays white read as "this row is disabled" rather than "this row
+   is under the pointer". One card, one hover signal. */
+html[data-theme="paper"] .detail .pkg-table-row > summary {
+    align-items: flex-start;
+    gap: 11px;
+    padding: 13px 14px;
+    margin: 0;
+    border-radius: 12px;
+    background: none;
+}
+
+html[data-theme="paper"] .detail .pkg-table-row > summary:focus-visible {
+    outline: 2px solid var(--kind);
+    outline-offset: -2px;
+}
+
+/* A real chevron: a rotating box drawn from two borders, so it inherits ink
+   and needs no extra markup or SVG in the row. Aligned to the middle of the
+   glyph tile beside it rather than to the text, so the row's three leading
+   marks (chevron, tile, name) sit on one line however many lines of
+   description follow. */
+html[data-theme="paper"] .detail .pkg-table-row > summary::before {
+    content: "";
+    flex: none;
+    width: 6px;
+    height: 6px;
+    margin: 11px 1px 0 0;
+    border-right: 1.6px solid var(--ds-text-muted);
+    border-bottom: 1.6px solid var(--ds-text-muted);
+    transform: rotate(-45deg);
+    transition: transform var(--rdet-motion);
+}
+
+html[data-theme="paper"] .detail .pkg-table-row[open] > summary::before {
+    transform: rotate(45deg);
+}
+
+/* Table tile at row scale — a plain tinted square, no rim. At 30px a border
+   drawn in the accent doubles the glyph's own outline and reads as a second,
+   heavier icon; the tint alone is enough to hold the shape. */
+html[data-theme="paper"] .detail .pkg-table-row__glyph {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    border-radius: 9px;
+    background: var(--kind-soft);
+    border: 0;
+    color: var(--kind);
+}
+
+html[data-theme="paper"] .detail .pkg-table-row__glyph svg {
+    width: 16px;
+    height: 16px;
+}
+
+html[data-theme="paper"] .detail .pkg-table-row__text {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    /* Matches the 30px glyph tile, so the name's cap-height lands on the
+       tile's centre line and the meta column can align to the same line. */
+    padding-top: 5px;
+}
+
+html[data-theme="paper"] .detail .pkg-table-row__head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+html[data-theme="paper"] .detail .pkg-table-row__name {
+    font-family: var(--ds-font-mono);
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--ds-text-primary);
+    text-decoration: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    transition: color var(--rdet-motion);
+}
+
+/* The name is a link to the table's own page, and it tints when the pointer is
+   on THE LINK — not when it is anywhere in the row. Row-wide, the tint made a
+   link look armed while the click would actually have opened the accordion. */
+html[data-theme="paper"] .detail .pkg-table-row__name:hover {
+    color: var(--kind);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+
+/* The description gets the full row width on its own line, and two lines of
+   it — it is the only part of a row that says what the table is FOR. */
+html[data-theme="paper"] .detail .pkg-table-row__desc {
+    display: block;
+    flex: none;
+    max-width: 76ch;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--ds-text-muted);
+    white-space: normal;
+    overflow: visible;
+}
+
+html[data-theme="paper"] .detail .pkg-table-row__meta {
+    flex: none;
+    display: flex;
+    align-items: baseline;
+    gap: 18px;
+    /* On the name's line, not the row's middle: a two-line row would otherwise
+       float its numbers between the name and the description. */
+    padding-top: 7px;
+    font-size: 12px;
+    color: var(--ds-text-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+/* Size right-aligns in its own fixed column so the numbers stack into a
+   readable column down the list instead of floating after each date. */
+html[data-theme="paper"] .detail .pkg-table-row__size {
+    display: inline-block;
+    min-width: 56px;
+    text-align: right;
+}
+
+/* Query-mode badge — `local` / `remote` / `materialized`. The page hardcodes
+   a green / blue / violet trio; under the resource palette that violet IS
+   the Skill colour and the blue is a step from the brand, so a storage
+   detail was wearing two meanings it does not have. All three go neutral:
+   the WORD is the information, and a mode is not a category. */
+html[data-theme="paper"] .detail .qm-badge {
+    padding: 2px 7px;
+    border-radius: var(--ds-radius-pill);
+    background: var(--ds-surface-dim);
+    border: 1px solid var(--ds-border);
+    color: var(--ds-text-secondary);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+}
+
+/* `remote` is the one mode with a cost consequence — the data is not on the
+   laptop — so it alone carries a tint, in the info vocabulary rather than a
+   resource hue. */
+html[data-theme="paper"] .detail .qm-badge.qm-remote {
+    background: var(--ds-accent-info-bg);
+    border-color: color-mix(in srgb, var(--ds-accent-info-line) 34%, transparent);
+    color: var(--ds-accent-info-ink);
+}
+
+/* The expanded body sits inside the card, as its own inset surface. It is a
+   different KIND of content from the row above it — reference documentation,
+   not a summary — and giving it a visible edge answers the two questions a
+   bare run of blocks left open: which row does this belong to, and where does
+   it stop. The dashed rule the scaffold drew is gone; the panel's own top edge
+   is the separator. */
+html[data-theme="paper"] .detail .pkg-table-detail {
+    padding: 0 14px 14px;
+    border-top: 0;
+}
+
+html[data-theme="paper"] .detail .pkg-table-panel {
+    padding: 15px 18px;
+    background: var(--ds-surface-dim);
+    border: 1px solid var(--ds-border-light);
+    border-radius: 10px;
+}
+
+/* Two readings side by side: what this table IS on the left, what you can ASK
+   it on the right, divided by one rule. They are independent — neither is a
+   continuation of the other — so stacking them made the questions look like a
+   fifth definition-list entry. */
+html[data-theme="paper"] .detail .pkg-table-panel--split {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 0;
+}
+
+html[data-theme="paper"] .detail .pkg-table-panel--split > .pkg-table-panel__ask {
+    margin-left: 22px;
+    padding-left: 22px;
+    border-left: 1px solid var(--ds-border);
+}
+
+/* A caveat qualifies both columns, so it spans them. */
+html[data-theme="paper"] .detail .pkg-table-panel__notes,
+html[data-theme="paper"] .detail .pkg-table-panel__empty {
+    grid-column: 1 / -1;
+}
+
+html[data-theme="paper"] .detail .pkg-table-panel__empty {
+    padding: 0;
+    font-size: 13px;
+    font-style: normal;
+    color: var(--ds-text-muted);
+}
+
+html[data-theme="paper"] .detail .pkg-table-detail dl {
+    /* Narrower than the full-width version: the labels are short and the
+       column now lives in half a panel. */
+    grid-template-columns: 104px minmax(0, 1fr);
+    gap: 9px 14px;
+    margin: 0;
+}
+
+/* One column below the split's comfortable width — at half of a 640px panel
+   the questions wrap to three lines each and stop being scannable. */
+@media (max-width: 860px) {
+    html[data-theme="paper"] .detail .pkg-table-panel--split {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    html[data-theme="paper"] .detail .pkg-table-panel--split > .pkg-table-panel__ask {
+        margin: 16px 0 0;
+        padding: 16px 0 0;
+        border-left: 0;
+        border-top: 1px solid var(--ds-border);
+    }
+}
+
+/* Narrow: the numbers move under the row's text rather than squeezing the
+   name into an ellipsis. */
+@media (max-width: 620px) {
+    html[data-theme="paper"] .detail .pkg-table-row > summary {
+        flex-wrap: wrap;
+    }
+    html[data-theme="paper"] .detail .pkg-table-row__meta {
+        width: 100%;
+        padding: 2px 0 0 41px;
+        gap: 14px;
+    }
+    html[data-theme="paper"] .detail .pkg-table-row__size {
+        min-width: 0;
+        text-align: left;
+    }
+}
+
+html[data-theme="paper"] .detail .pkg-table-detail dt {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--ds-text-muted);
+}
+
+html[data-theme="paper"] .detail .pkg-table-detail dd {
+    font-size: 13.5px;
+    color: var(--ds-text-secondary);
+}
+
+/* Gotchas — a caveat is a note, not a slab. The generic one loses its fill
+   for a leading rule; the KEY one keeps a tint, because "this will make your
+   number wrong" is the single thing on the page worth an amber signal. */
+/* The notes strip carries its own separation from the columns above it, so the
+   first gotcha inside it does not need to add its own. */
+html[data-theme="paper"] .detail .pkg-table-panel__notes {
+    margin-top: 15px;
+    padding-top: 14px;
+    border-top: 1px solid var(--ds-border);
+}
+
+html[data-theme="paper"] .detail .pkg-table-panel__notes > .pkg-gotcha:first-child { margin-top: 0; }
+
+html[data-theme="paper"] .detail .pkg-gotcha {
+    margin: 10px 0 0;
+    padding: 0 0 0 12px;
+    border-radius: 0;
+    border-left: 2px solid var(--ds-border);
+    background: none;
+    font-size: 13.5px;
+    line-height: 1.6;
+    color: var(--ds-text-secondary);
+}
+
+html[data-theme="paper"] .detail .pkg-gotcha[data-gotcha="key"] {
+    padding: 10px 14px;
+    border-radius: 10px;
+    border-left: 2px solid var(--ds-accent-warn-ink);
+    background: var(--ds-accent-warn-bg);
+    color: var(--ds-accent-warn-ink);
+}
+
+html[data-theme="paper"] .detail .pkg-gotcha__label {
+    display: block;
+    margin: 0 0 3px;
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    color: var(--ds-accent-warn-ink);
+}
+
+/* Inside the panel the questions head their own column, so the eyebrow sits at
+   the top of it — level with GRAIN across the rule. */
+html[data-theme="paper"] .detail .pkg-questions { margin-top: 0; }
+
+html[data-theme="paper"] .detail .pkg-questions__label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--ds-text-muted);
+}
+
+/* Each question becomes its own card on the panel's tint. A question is a
+   thing you might pick up and use, and a bulleted list of them reads as prose
+   about the table; a surface per question makes them individually addressable
+   at a glance. The dot survives as the marker, drawn rather than listed, so no
+   list-style indent fights the card's padding. */
+html[data-theme="paper"] .detail .pkg-questions-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 8px 0 0;
+    padding: 0;
+    list-style: none;
+}
+
+html[data-theme="paper"] .detail .pkg-questions-list li {
+    position: relative;
+    padding: 8px 12px 8px 25px;
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border-light);
+    border-radius: 8px;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--ds-text-secondary);
+}
+
+html[data-theme="paper"] .detail .pkg-questions-list li::before {
+    content: "";
+    position: absolute;
+    top: 15px;
+    left: 12px;
+    width: 4px;
+    height: 4px;
+    border-radius: var(--ds-radius-pill);
+    background: var(--ds-text-disabled);
+}
+
+/* ── Table page — the Columns table ───────────────────────────────────
+   `catalog_table_detail.html` styles this one itself, so it misses the
+   generic `.ds-table` treatment above. Same rhythm applied by hand: no
+   filled header band, a visible rule under the head, roomier rows, and a
+   wash on hover so a long column list stays trackable across three
+   columns. */
+html[data-theme="paper"] .detail .td-columns th {
+    padding: 0 12px 10px;
+    background: none;
+    border-bottom: 1px solid var(--ds-border);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+}
+
+html[data-theme="paper"] .detail .td-columns td {
+    padding: 11px 12px;
+    border-bottom: 1px solid var(--ds-border-light);
+}
+
+html[data-theme="paper"] .detail .td-columns th:first-child,
+html[data-theme="paper"] .detail .td-columns td:first-child { padding-left: 0; }
+
+html[data-theme="paper"] .detail .td-columns th:last-child,
+html[data-theme="paper"] .detail .td-columns td:last-child { padding-right: 0; }
+
+html[data-theme="paper"] .detail .td-columns tbody tr {
+    transition: background var(--rdet-motion);
+}
+
+html[data-theme="paper"] .detail .td-columns tbody tr:hover {
+    background: var(--ds-surface-dim);
+}
+
+/* The column name is the row's subject — mono, primary ink, no chip. The
+   `code` element inherits a filled box from the global stylesheet, which
+   at 10 rows turned the first column into a stack of grey pills. */
+html[data-theme="paper"] .detail .td-columns code {
+    padding: 0;
+    background: none;
+    border: 0;
+    color: var(--ds-text-primary);
+    font-weight: 500;
+}
+
+/* "not null" / "nullable" is a constraint, not a status — it stays the
+   quietest thing in the row. */
+html[data-theme="paper"] .detail .td-columns .td-null {
+    font-size: 11.5px;
+    color: var(--ds-text-muted);
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   Collection page — upload zone + file rows
+   ══════════════════════════════════════════════════════════════════════
+   `library_detail.html` styles these itself, from `--kind`: a drop zone
+   filled and dashed in the resource colour, and every file in its own
+   bordered card. Under the resource palette that made a collection page
+   two large coral containers stacked on a coral-tinted box — exactly the
+   "never a large filled background" rule, broken by the page that has the
+   most of it.
+
+   Here the drop zone is a neutral outline that only takes the accent when
+   you are actually dragging onto it, and the files become the same
+   borderless row rhythm as every other list on a detail page. */
+
+html[data-theme="paper"] .detail .drop {
+    padding: 32px 24px;
+    background: var(--ds-surface);
+    border: 1.5px dashed var(--ds-border);
+    border-radius: var(--rdet-radius);
+    transition: background var(--rdet-motion), border-color var(--rdet-motion);
+}
+
+/* The accent arrives with the intent — hover and the active drag state,
+   not at rest. */
+html[data-theme="paper"] .detail .drop:hover,
+html[data-theme="paper"] .detail .drop.is-drag {
+    background: color-mix(in srgb, var(--kind) 5%, var(--ds-surface));
+    border-color: color-mix(in srgb, var(--kind) 55%, transparent);
+}
+
+html[data-theme="paper"] .detail .drop svg { width: 26px; height: 26px; }
+
+html[data-theme="paper"] .detail .file {
+    padding: 12px 10px;
+    margin: 0 -10px;
+    background: none;
+    border: 0;
+    border-bottom: 1px solid var(--ds-border-light);
+    border-radius: 10px;
+    box-shadow: none;
+    transition: background var(--rdet-motion);
+}
+
+html[data-theme="paper"] .detail .files > .file:last-child { border-bottom: 0; }
+
+html[data-theme="paper"] .detail .file:hover {
+    background: var(--ds-surface-dim);
+    border-color: var(--ds-border-light);
+    box-shadow: none;
+}
+
+html[data-theme="paper"] .detail .file__icon {
+    background: var(--kind-soft);
+    border-radius: 9px;
+}
+
+/* The collection page's processing-status pill joins the one status
+   vocabulary every detail page uses, so "indexed" looks the same on a file
+   row as it does in the rail.
+
+   Scoped through `.file` on purpose: `.status-pill` is ALSO the class the
+   two marketplace pages use for their inline "✓ In stack" text, which is
+   deliberately not a control and must not become a chip. Both live inside
+   `.detail`, so a bare `.detail .status-pill` would have caught both. */
+html[data-theme="paper"] .detail .file .status-pill {
+    height: 22px;
+    padding: 0 9px;
+    border-radius: var(--ds-radius-pill);
+    background: var(--ds-surface-dim);
+    border: 1px solid var(--ds-border);
+    color: var(--ds-text-secondary);
+    font-size: 11.5px;
+    font-weight: 600;
+}
+
+html[data-theme="paper"] .detail .file .status-pill.ok {
+    background: var(--ds-accent-success-bg);
+    border-color: var(--ds-accent-success-line);
+    color: var(--ds-accent-success-ink);
+}
+
+html[data-theme="paper"] .detail .file .status-pill.warn {
+    background: var(--ds-accent-warn-bg);
+    border-color: var(--ds-accent-warn-line);
+    color: var(--ds-accent-warn-ink);
+}
+
+html[data-theme="paper"] .detail .file .status-pill.blocked {
+    background: var(--ds-accent-danger-bg);
+    border-color: var(--ds-accent-danger-line);
+    color: var(--ds-accent-danger-ink);
+}
+
+/* ── Suggested questions ──────────────────────────────────────────────
+   One component, two surfaces. On the chat home these rows are borderless
+   items under the composer; on a detail page they are cards on the paper
+   canvas — but the icon tile, the prompt's weight and ink, and the trailing
+   "Start →" are the chat page's, token for token (css/chat_dashboard.css
+   `.rdb-action*`). That recognition is the point: the reader has already
+   learned on the home screen that a row shaped like this hands its prompt to
+   Agnes, and nothing about arriving on a data package should make them learn
+   it again. Hover is the shared card hover — shadow, no colour shift. */
+html[data-theme="paper"] .detail-questions { gap: 8px; }
+
+html[data-theme="paper"] .detail-question {
+    gap: 11px;
+    padding: 11px 14px;
+    border-radius: 10px;
+    border: 1px solid var(--ds-border);
+    background: var(--ds-surface);
+    transition: box-shadow var(--rdet-motion), border-color var(--rdet-motion);
+}
+
+html[data-theme="paper"] .detail-question:hover {
+    background: var(--ds-surface);
+    border-color: var(--ds-border);
+    box-shadow: var(--ds-shadow-md);
+}
+
+html[data-theme="paper"] .detail-question:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
+}
+
+html[data-theme="paper"] .detail-question__icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
+}
+
+/* A hair larger than the chat page's 15px: `spark` is a filled star that only
+   fills the middle of its viewBox, so at 15px it reads lighter than the outline
+   glyphs the chat rows use. Same optical weight, different path. */
+html[data-theme="paper"] .detail-question__icon svg { width: 16px; height: 16px; }
+
+html[data-theme="paper"] .detail-question__title {
+    font-size: 13.5px;
+    font-weight: 550;
+    line-height: 1.35;
+    letter-spacing: -0.01em;
+    color: var(--ds-text-primary);
+}
+
+html[data-theme="paper"] .detail-question__cta {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ds-primary-dark);
+}
+
+html[data-theme="paper"] .detail-question__cta svg { width: 14px; height: 14px; }
+
+/* Narrow: the CTA label goes, the arrow stays — the row still says "this
+   leads somewhere" without pushing the prompt into a third line. */
+@media (max-width: 560px) {
+    html[data-theme="paper"] .detail-question__cta { font-size: 0; gap: 0; }
+}
+
+/* ── Empty states ─────────────────────────────────────────────────────
+   A section with nothing in it says so in one muted line, with the
+   resource glyph above it. No box — an empty box is worse than none. */
+html[data-theme="paper"] .detail-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 8px 0 4px;
+    color: var(--ds-text-muted);
+    font-size: 14px;
+    line-height: 1.6;
+}
+
+html[data-theme="paper"] .detail-empty__glyph {
+    display: grid;
+    place-items: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    background: var(--kind-soft);
+    color: var(--kind);
+    opacity: 0.75;
+}
+
+html[data-theme="paper"] .detail-empty__glyph svg { width: 18px; height: 18px; }
+
+/* ── Motion ───────────────────────────────────────────────────────────
+   One soft entrance for the page, and hover transitions everywhere else.
+   Both under 200ms, both gone entirely when the reader asks for less. */
+html[data-theme="paper"] .detail-hero,
+html[data-theme="paper"] .detail-main > .detail-section,
+html[data-theme="paper"] .detail-aside {
+    animation: rdet-rise var(--ds-motion-med, .24s) var(--ds-ease-enter, ease) both;
+}
+
+/* Staggered, but only just — the last section starts 90ms after the
+   header, so the page settles rather than performing. */
+html[data-theme="paper"] .detail-main > .detail-section:nth-child(1) { animation-delay: .03s; }
+html[data-theme="paper"] .detail-main > .detail-section:nth-child(2) { animation-delay: .06s; }
+html[data-theme="paper"] .detail-main > .detail-section:nth-child(n+3) { animation-delay: .09s; }
+html[data-theme="paper"] .detail-aside { animation-delay: .06s; }
+
+@keyframes rdet-rise {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: none; }
+}
+
+html[data-theme="paper"] .detail-hero .detail-hero__icon:hover { transform: translateY(-1px); }
+
+@media (prefers-reduced-motion: reduce) {
+    html[data-theme="paper"] .detail-hero,
+    html[data-theme="paper"] .detail-main > .detail-section,
+    html[data-theme="paper"] .detail-aside,
+    html[data-theme="paper"] .detail-menu__panel {
+        animation: none;
+        opacity: 1;
+        transform: none;
+    }
+    html[data-theme="paper"] .detail-back:hover,
+    html[data-theme="paper"] .detail-questions a:hover,
+    html[data-theme="paper"] .detail-hero .detail-hero__icon:hover { transform: none; }
+}
+
+/* ── Print ────────────────────────────────────────────────────────────
+   The rail's stickiness and the texture are screen affordances. */
+@media print {
+    html[data-theme="paper"] .detail-aside { position: static; max-height: none; }
+    html[data-theme="paper"] .detail-hero__deco,
+    html[data-theme="paper"] .detail-menu { display: none; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   `.detail--panels` — ONE container language for a whole detail page
+   ══════════════════════════════════════════════════════════════════════
+   Everything above builds an editorial page: borderless sections separated
+   by whitespace and a hairline. That reads well when a section is prose.
+   It falls apart the moment a section's content is itself a LIST of
+   objects, because the list has to draw its own containers to be legible —
+   so the page ends up with three surface languages at once: unbordered
+   sections, bordered cards inside them, and a bordered rail beside them.
+   Nothing is wrong individually and the whole thing reads as assembled
+   from parts.
+
+   This variant settles it with one rule, applied everywhere: **a section is
+   a panel; everything inside a panel is whitespace.** One surface, one
+   radius, one padding, one border — for the main column's sections and for
+   the rail alike. Inside a panel nothing draws a box: list rows, key/value
+   rows and suggestion rows are separated by space and aligned to a shared
+   grid, which is where the density comes from. Exactly two hairlines
+   survive on the page, both dividing columns rather than decorating: the
+   split inside an expanded table, and nothing else.
+
+   Opt-in per page via `detail.hero(cls='detail--panels')`, so adopting it
+   is a design decision per surface rather than a global reflow of nine
+   pages. Every selector stays paper-scoped, like the rest of this sheet. */
+
+html[data-theme="paper"] .detail--panels {
+    /* The page's whole spacing and shape vocabulary, declared once. */
+    --rdp-radius: 14px;          /* panels */
+    --rdp-radius-inner: 10px;    /* surfaces nested inside a panel */
+    --rdp-radius-tile: 9px;      /* icon tiles */
+    --rdp-pad: 22px 24px;        /* panel padding */
+    --rdp-gap: 16px;             /* between panels */
+    --rdp-block: 18px;           /* between blocks inside a panel */
+    --rdp-rail-w: 320px;
+    --rdp-col-gap: 24px;
+    --rdp-control-h: 34px;       /* every button, every menu trigger */
+}
+
+/* ── Header ───────────────────────────────────────────────────────────
+   Lighter than the shared editorial header: the closing hairline goes
+   (the panels below supply the page's structure, so a rule under the
+   header is one separator doing a job whitespace already does), the glyph
+   tile loses its rim to match the tiles inside the panels, and the title
+   drops three points because at 30px it was the only element on the page
+   at display scale. */
+/* The header is inset by exactly one panel's padding, so its first mark — the
+   back chevron, then the glyph tile — sits on the SAME vertical line as every
+   panel heading below it. Full-bleed, the header's marks aligned with the
+   panels' borders instead of their content, which left nothing on the page
+   sharing a left edge with anything else. */
+html[data-theme="paper"] .detail--panels .detail-back {
+    padding-left: 24px;
+    margin-bottom: 16px;
+}
+
+html[data-theme="paper"] .detail--panels .detail-hero {
+    padding: 0 24px;
+    margin-bottom: 22px;
+    border-bottom: 0;
+}
+
+html[data-theme="paper"] .detail--panels .detail-hero__bar {
+    gap: 14px;
+    align-items: flex-start;
+}
+
+html[data-theme="paper"] .detail--panels .detail-hero .detail-hero__icon {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    border: 0;
+    background: var(--kind-soft);
+    box-shadow: none;
+}
+
+html[data-theme="paper"] .detail--panels .detail-hero .detail-hero__icon svg {
+    width: 22px;
+    height: 22px;
+}
+
+html[data-theme="paper"] .detail--panels .detail-hero .detail-hero__icon:hover {
+    transform: none;
+    box-shadow: none;
+}
+
+/* Title row — badges centred on the title's optical centre, one pill
+   height between all of them so the row has a single baseline. */
+html[data-theme="paper"] .detail--panels .detail-hero__title-row {
+    gap: 8px;
+    margin-top: 0;
+    row-gap: 6px;
+}
+
+html[data-theme="paper"] .detail--panels .detail-hero__title-row h1 {
+    font-size: 27px;
+    font-weight: 650;
+    line-height: 1.2;
+    letter-spacing: -0.024em;
+}
+
+html[data-theme="paper"] .detail--panels .detail-type,
+html[data-theme="paper"] .detail--panels .detail-badge,
+html[data-theme="paper"] .detail--panels .detail-hero__title-row .ds-trust {
+    height: 20px;
+    padding: 0 8px;
+    font-size: 10px;
+    letter-spacing: 0.05em;
+}
+
+html[data-theme="paper"] .detail--panels .detail-type svg,
+html[data-theme="paper"] .detail--panels .detail-hero__title-row .ds-trust svg {
+    width: 11px;
+    height: 11px;
+}
+
+html[data-theme="paper"] .detail--panels .detail-hero__desc {
+    margin-top: 9px;
+    max-width: 62ch;
+    font-size: 14.5px;
+    line-height: 1.55;
+}
+
+/* ── Controls ─────────────────────────────────────────────────────────
+   One button system: a single height, a single radius, one type size, one
+   icon size, one gap. Previously the primary came from the design system
+   (9px radius), Ask Agnes from its own rule, and the overflow trigger was
+   a 34px circle — three radii in a row of three controls. */
+html[data-theme="paper"] .detail--panels .detail-hero__actions {
+    gap: 8px;
+    padding-top: 3px;
+}
+
+html[data-theme="paper"] .detail--panels .detail-hero__actions .btn,
+html[data-theme="paper"] .detail--panels .detail-hero__actions .detail-ask,
+html[data-theme="paper"] .detail--panels .detail-hero__actions .detail-menu > summary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: var(--rdp-control-h);
+    padding: 0 14px;
+    border-radius: var(--ds-radius-btn);
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1;
+    white-space: nowrap;
+}
+
+html[data-theme="paper"] .detail--panels .detail-hero__actions .btn svg,
+html[data-theme="paper"] .detail--panels .detail-hero__actions .detail-ask svg {
+    width: 15px;
+    height: 15px;
+}
+
+/* The overflow trigger is the same control with no label, so it is square
+   at the shared height rather than a circle at its own size. */
+html[data-theme="paper"] .detail--panels .detail-hero__actions .detail-menu > summary {
+    width: var(--rdp-control-h);
+    padding: 0;
+}
+
+html[data-theme="paper"] .detail--panels .detail-hero__actions .detail-menu > summary svg {
+    width: 15px;
+    height: 15px;
+}
+
+/* ── The two columns ──────────────────────────────────────────────────
+   Tighter gutter (24px, not 48px) and a wider rail (320px). At 48px the
+   two columns read as two pages; the rail at 296px minus its padding left
+   values wrapping. Panels supply the separation now, so the gutter only
+   has to be a gutter. */
+html[data-theme="paper"] .detail--panels .detail-cols {
+    grid-template-columns: minmax(0, 1fr) var(--rdp-rail-w);
+    gap: var(--rdp-col-gap);
+}
+
+html[data-theme="paper"] .detail--panels .detail-main {
+    gap: var(--rdp-gap);
+}
+
+/* ── The panel ────────────────────────────────────────────────────────
+   The single container. Main-column sections and the rail get IDENTICAL
+   surface, border, radius and padding — that identity is the whole point,
+   so they are declared together and can never drift apart. No shadow at
+   rest: a page of six shadowed cards reads as a dashboard, and none of
+   these panels is interactive. */
+html[data-theme="paper"] .detail--panels .detail-main > .detail-section,
+html[data-theme="paper"] .detail--panels .detail-aside {
+    padding: var(--rdp-pad);
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--rdp-radius);
+    box-shadow: none;
+}
+
+/* The editorial layout separated sections with a rule above the heading.
+   Panels separate themselves; the rule would be a second separator drawn
+   inside the first. */
+html[data-theme="paper"] .detail--panels .detail-main > .detail-section + .detail-section {
+    padding-top: 22px;
+    border-top: 0;
+}
+
+html[data-theme="paper"] .detail--panels .detail-main > .detail-section:hover {
+    box-shadow: none;
+    border-color: var(--ds-border);
+}
+
+html[data-theme="paper"] .detail--panels .detail-aside {
+    top: 20px;
+    gap: var(--rdp-block);
+    max-height: calc(100vh - 40px);
+}
+
+/* Panel heading — one step down from the old 19px, because a panel's own
+   edge already announces "new section" and the heading no longer has to. */
+html[data-theme="paper"] .detail--panels .detail-section__title {
+    gap: 8px;
+    margin: 0 0 16px;
+    font-size: 16px;
+    font-weight: 650;
+    letter-spacing: -0.012em;
+}
+
+html[data-theme="paper"] .detail--panels .detail-section__title svg {
+    width: 16px;
+    height: 16px;
+}
+
+/* ── Inside the rail ──────────────────────────────────────────────────
+   A compact information panel, not a stack of unrelated blocks: the
+   between-block rules go, the eyebrows shrink so they label without
+   competing, and the facts sit on a tight two-column grid with nothing
+   drawn between them. Whitespace does the grouping. */
+html[data-theme="paper"] .detail--panels .detail-side + .detail-side {
+    padding-top: 0;
+    border-top: 0;
+}
+
+html[data-theme="paper"] .detail--panels .detail-side__title {
+    gap: 6px;
+    margin: 0 0 10px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--ds-text-muted);
+}
+
+html[data-theme="paper"] .detail--panels .detail-side__title svg {
+    width: 12px;
+    height: 12px;
+}
+
+html[data-theme="paper"] .detail--panels .detail-side__rows {
+    gap: 9px;
+}
+
+html[data-theme="paper"] .detail--panels .detail-side__row {
+    font-size: 12.75px;
+    padding: 0;
+    border: 0;
+}
+
+html[data-theme="paper"] .detail--panels .detail-side__key { min-width: 0; }
+
+html[data-theme="paper"] .detail--panels .detail-side__val {
+    font-weight: 550;
+    font-variant-numeric: tabular-nums;
+}
+
+html[data-theme="paper"] .detail--panels .detail-side__prose {
+    font-size: 12.75px;
+    line-height: 1.6;
+}
+
+/* Availability keeps its tinted callout — it is the one state on the page a
+   reader can act on — but slimmer, and on the panel's inner radius. */
+html[data-theme="paper"] .detail--panels .detail-side__panel {
+    gap: 5px;
+    padding: 10px 12px;
+    border-radius: var(--rdp-radius-inner);
+}
+
+html[data-theme="paper"] .detail--panels .detail-side__panel .detail-status {
+    font-size: 12.5px;
+}
+
+html[data-theme="paper"] .detail--panels .detail-side__panel .detail-side__note {
+    font-size: 12px;
+    line-height: 1.55;
+}
+
+html[data-theme="paper"] .detail--panels .detail-owner__avatar {
+    width: 28px;
+    height: 28px;
+    border: 0;
+    font-size: 11px;
+}
+
+html[data-theme="paper"] .detail--panels .detail-owner__name { font-size: 12.75px; }
+html[data-theme="paper"] .detail--panels .detail-owner__sub { font-size: 11.5px; }
+
+/* ── Best for / Avoid when, inside a panel ────────────────────────────
+   The 40px column gap was tuned for a full-bleed section; inside a panel it
+   pushes the two lists to the edges. */
+html[data-theme="paper"] .detail--panels .detail-use-skip { gap: 28px; }
+html[data-theme="paper"] .detail--panels .detail-use-skip li { font-size: 13.5px; }
+
+/* ── Object rows, inside a panel ──────────────────────────────────────
+   `detail.objects()` — the shared "what is inside this" list. Deliberately
+   the SAME rhythm as the data-package table rows below: 28px glyph tile,
+   name and type on the first line, description full-width beneath, numbers
+   right-aligned into their own column, and the row's hit area reaching the
+   panel's padding edge so a borderless list still reads as rows.
+
+   That is the point of the component. Before it, "the tables in a package"
+   was a list and "the skills in a plugin" was a grid of photo cards, so two
+   pages answered the same question in two visual languages. */
+html[data-theme="paper"] .detail--panels .detail-object {
+    gap: 12px;
+    padding: 10px 12px;
+    margin: 0 -12px;
+    border: 0;
+    border-radius: var(--rdp-radius-inner);
+    transition: background var(--rdet-motion);
+}
+
+html[data-theme="paper"] .detail--panels .detail-object:hover {
+    background: color-mix(in srgb, var(--ds-surface-dim) 62%, var(--ds-surface));
+}
+
+html[data-theme="paper"] .detail--panels .detail-object__glyph {
+    width: 28px;
+    height: 28px;
+    border-radius: var(--rdp-radius-tile);
+}
+
+html[data-theme="paper"] .detail--panels .detail-object__glyph svg { width: 15px; height: 15px; }
+html[data-theme="paper"] .detail--panels .detail-object__name { font-size: 13.25px; }
+
+html[data-theme="paper"] .detail--panels .detail-object__desc {
+    font-size: 12.75px;
+    line-height: 1.5;
+    color: var(--ds-text-secondary);
+}
+
+/* On the name's line, not the row's middle — a two-line row would otherwise
+   float its numbers between the name and the description. */
+html[data-theme="paper"] .detail--panels .detail-object__meta {
+    padding-top: 6px;
+    font-size: 12px;
+}
+
+/* The group heading inside the structure panel ("Skills", "Agents"): an
+   eyebrow, not a second card heading, so one panel can hold several groups
+   without reading as several boxes. The group itself gives up its card —
+   a card inside a panel is the nesting this variant removes. */
+html[data-theme="paper"] .detail--panels .substruct {
+    background: none;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    padding: 0;
+    margin: 0;
+}
+
+html[data-theme="paper"] .detail--panels .substruct + .substruct { margin-top: 18px; }
+
+html[data-theme="paper"] .detail--panels .substruct > .head {
+    padding-bottom: 0;
+    border-bottom: 0;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 0 0 6px;
+}
+
+html[data-theme="paper"] .detail--panels .substruct > .head h3 {
+    margin: 0;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ds-text-muted);
+}
+
+html[data-theme="paper"] .detail--panels .substruct > .head .count {
+    font-size: 11.5px;
+    color: var(--ds-text-muted);
+}
+
+/* ── Table rows, inside a panel ───────────────────────────────────────
+   No longer cards. A card inside a panel is the nesting this variant exists
+   to remove — and once the panel holds them, a row needs no border to be a
+   row: the glyph tile anchors the left edge, the name sets the baseline, and
+   the numbers land in a fixed right-hand column. Density comes from losing
+   the borders and the 10px inter-card gaps. */
+html[data-theme="paper"] .detail--panels .pkg-table-row {
+    margin: 0;
+    background: none;
+    border: 0;
+    border-radius: var(--rdp-radius-inner);
+    box-shadow: none;
+}
+
+html[data-theme="paper"] .detail--panels .pkg-table-row + .pkg-table-row { margin-top: 2px; }
+
+html[data-theme="paper"] .detail--panels .pkg-table-row:hover,
+html[data-theme="paper"] .detail--panels .pkg-table-row[open] {
+    border: 0;
+    box-shadow: none;
+}
+
+/* Negative margin so the row's own hit area reaches the panel's padding
+   edge, which is what makes a borderless list feel like rows rather than
+   floating text. */
+html[data-theme="paper"] .detail--panels .pkg-table-row > summary {
+    gap: 12px;
+    padding: 11px 12px;
+    margin: 0 -12px;
+    border-radius: var(--rdp-radius-inner);
+    background: none;
+    transition: background var(--rdet-motion);
+}
+
+/* The whisper — `--ds-surface-dim` at 62%, the SAME wash the suggestion rows
+   in the panel below use, so every hoverable row on the page answers the
+   pointer identically. This is not the flat grey a bordered card used to take:
+   there the fill covered a framed object and read as "disabled", where here it
+   is what tells a borderless row apart from the text around it. */
+html[data-theme="paper"] .detail--panels .pkg-table-row > summary:hover {
+    background: color-mix(in srgb, var(--ds-surface-dim) 62%, var(--ds-surface));
+}
+
+html[data-theme="paper"] .detail--panels .pkg-table-row > summary::before {
+    margin: 10px 0 0 0;
+}
+
+html[data-theme="paper"] .detail--panels .pkg-table-row[open] > summary::before,
+html[data-theme="paper"] .detail--panels .pkg-table-row > summary:hover::before {
+    border-color: var(--ds-text-secondary);
+}
+
+html[data-theme="paper"] .detail--panels .pkg-table-row__glyph {
+    width: 28px;
+    height: 28px;
+    border-radius: var(--rdp-radius-tile);
+}
+
+html[data-theme="paper"] .detail--panels .pkg-table-row__glyph svg {
+    width: 15px;
+    height: 15px;
+}
+
+html[data-theme="paper"] .detail--panels .pkg-table-row__text {
+    gap: 2px;
+    padding-top: 4px;
+}
+
+html[data-theme="paper"] .detail--panels .pkg-table-row__name { font-size: 13px; }
+
+html[data-theme="paper"] .detail--panels .pkg-table-row__desc {
+    max-width: 68ch;
+    font-size: 12.75px;
+    line-height: 1.5;
+}
+
+/* The numbers are a column, not a suffix: one tabular size, fixed widths,
+   right-aligned, so three rows of metadata scan vertically. */
+html[data-theme="paper"] .detail--panels .pkg-table-row__meta {
+    gap: 20px;
+    padding-top: 6px;
+    font-size: 11.75px;
+}
+
+html[data-theme="paper"] .detail--panels .pkg-table-row__size {
+    min-width: 52px;
+}
+
+/* ── Expanded table body ──────────────────────────────────────────────
+   An inset surface on the panel's inner radius, no border — the tint alone
+   separates it, and a border here would be a box inside a box inside a
+   panel. Aligned to the row's TEXT column, so the documentation starts
+   where the name starts. */
+/* 60px is not a round number, it is a measured one: chevron + gap + 28px tile
+   + gap, i.e. exactly where the table's NAME starts. The documentation begins
+   on the same line as the thing it documents. */
+html[data-theme="paper"] .detail--panels .pkg-table-detail {
+    padding: 0 0 6px 60px;
+}
+
+html[data-theme="paper"] .detail--panels .pkg-table-panel {
+    padding: 14px 16px;
+    background: color-mix(in srgb, var(--ds-surface-dim) 62%, var(--ds-surface));
+    border: 0;
+    border-radius: var(--rdp-radius-inner);
+}
+
+html[data-theme="paper"] .detail--panels .pkg-table-panel--split > .pkg-table-panel__ask {
+    margin-left: 20px;
+    padding-left: 20px;
+    border-left: 1px solid var(--ds-border);
+}
+
+html[data-theme="paper"] .detail--panels .pkg-table-detail dl {
+    grid-template-columns: 96px minmax(0, 1fr);
+    gap: 8px 12px;
+}
+
+html[data-theme="paper"] .detail--panels .pkg-table-detail dt { font-size: 10px; }
+html[data-theme="paper"] .detail--panels .pkg-table-detail dd { font-size: 12.75px; }
+
+html[data-theme="paper"] .detail--panels .pkg-questions-list li {
+    padding: 7px 11px;
+    padding-left: 23px;
+    background: var(--ds-surface);
+    border-color: var(--ds-border-light);
+    border-radius: 8px;
+    font-size: 12.5px;
+}
+
+html[data-theme="paper"] .detail--panels .pkg-questions-list li::before { top: 14px; left: 11px; }
+
+html[data-theme="paper"] .detail--panels .pkg-table-panel__notes {
+    margin-top: 13px;
+    padding-top: 12px;
+}
+
+html[data-theme="paper"] .detail--panels .pkg-gotcha { font-size: 12.75px; }
+
+/* ── Suggested questions, inside a panel ──────────────────────────────
+   Borderless rows — which is what they are on the chat home too, so inside
+   a panel the component matches its origin exactly rather than approximating
+   it with a card. */
+html[data-theme="paper"] .detail--panels .detail-questions { gap: 2px; }
+
+html[data-theme="paper"] .detail--panels .detail-question {
+    padding: 9px 12px;
+    margin: 0 -12px;
+    background: none;
+    border: 0;
+    border-radius: var(--rdp-radius-inner);
+    box-shadow: none;
+}
+
+html[data-theme="paper"] .detail--panels .detail-question:hover {
+    background: color-mix(in srgb, var(--ds-surface-dim) 62%, var(--ds-surface));
+    border: 0;
+    box-shadow: none;
+}
+
+html[data-theme="paper"] .detail--panels .detail-question__icon {
+    width: 26px;
+    height: 26px;
+    border-radius: var(--rdp-radius-tile);
+}
+
+html[data-theme="paper"] .detail--panels .detail-question__icon svg { width: 14px; height: 14px; }
+html[data-theme="paper"] .detail--panels .detail-question__title { font-size: 13px; }
+html[data-theme="paper"] .detail--panels .detail-question__cta { font-size: 12.5px; }
+
+/* ── Narrow ───────────────────────────────────────────────────────────
+   The rail becomes the last panel in a single column. Panel padding tightens
+   on a phone, where 24px of it on both sides is a quarter of the screen. */
+@media (max-width: 1080px) {
+    html[data-theme="paper"] .detail--panels .detail-cols {
+        grid-template-columns: 1fr;
+        gap: var(--rdp-gap);
+    }
+}
+
+/* The split's divider has to be re-answered here: the base rule flips it from
+   a left border to a top one at this width, but the panels variant re-declares
+   `border-left` further down the sheet and at higher specificity, so without
+   this the stacked columns would carry both. */
+@media (max-width: 860px) {
+    html[data-theme="paper"] .detail--panels .pkg-table-panel--split > .pkg-table-panel__ask {
+        margin: 14px 0 0;
+        padding: 14px 0 0;
+        border-left: 0;
+    }
+}
+
+@media (max-width: 620px) {
+    /* Same measured indent as the expanded body: the numbers drop below the
+       row and line up under the name, not under the chevron. */
+    html[data-theme="paper"] .detail--panels .pkg-table-row__meta {
+        padding: 3px 0 0 60px;
+        gap: 14px;
+    }
+}
+
+@media (max-width: 560px) {
+    html[data-theme="paper"] .detail--panels {
+        --rdp-pad: 18px 16px;
+    }
+    html[data-theme="paper"] .detail--panels .detail-back,
+    html[data-theme="paper"] .detail--panels .detail-hero { padding-left: 16px; padding-right: 16px; }
+    html[data-theme="paper"] .detail--panels .detail-hero__title-row h1 { font-size: 23px; }
+    html[data-theme="paper"] .detail--panels .pkg-table-detail { padding-left: 0; }
+}

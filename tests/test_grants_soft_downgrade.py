@@ -1,10 +1,16 @@
-"""Soft-downgrade test for ``PUT /api/admin/grants/{id}`` (v49, Task 5.3).
+"""Soft-downgrade test for ``PUT /api/admin/grants/{id}`` (v49, Task 5.3;
+re-scoped for the auto-membership stack model).
 
-When an admin flips a grant from ``required`` → ``available``, the API
-eagerly materializes ``user_stack_subscriptions`` rows for every user in
-the granted group so the resource stays in their stack. Without this,
-users would silently lose access on the next refresh (a UX regression
-the design doc D11 explicitly avoids).
+``data_package``/``memory_domain`` grants no longer need an eager
+``user_stack_subscriptions`` fan-out on a ``required → available``
+downgrade: auto-membership means BOTH tiers are automatically in every
+granted user's stack (``StackResolver.stack``), so the downgrade can never
+drop the resource from anyone's stack — it only lifts the "always
+downloaded locally" guarantee to "downloaded once subscribed".
+
+``marketplace_plugin`` grants are the one remaining exception — plugin
+visibility is resolved off ``user_plugin_optouts`` (an opt-out mechanism
+outside the StackResolver's auto-membership), so that fan-out is unchanged.
 """
 
 import uuid
@@ -33,11 +39,12 @@ def _add_user_to_group(conn, user_id, group_id):
     )
 
 
-class TestRequiredToAvailableMaterializesSubscriptions:
-    """Section 4.5 of the spec — required → available eagerly inserts
-    user_stack_subscriptions for every user in the group."""
+class TestRequiredToAvailableAutoMembership:
+    """Auto-membership model — required → available does NOT need to write
+    any user_stack_subscriptions row: ``available`` is already automatically
+    in every granted user's stack."""
 
-    def test_downgrade_materializes_subscriptions(self, seeded_app):
+    def test_downgrade_does_not_write_subscription_rows(self, seeded_app):
         from src.db import get_system_db
 
         conn = get_system_db()
@@ -71,7 +78,8 @@ class TestRequiredToAvailableMaterializesSubscriptions:
         )
         assert r.status_code == 200, r.text
 
-        # All 3 users now have a subscription row
+        # No subscription rows are written — auto-membership keeps
+        # ``available`` in every granted user's stack without one.
         conn = get_system_db()
         try:
             rows = conn.execute(
@@ -80,7 +88,27 @@ class TestRequiredToAvailableMaterializesSubscriptions:
             ).fetchall()
         finally:
             conn.close()
-        assert {r[0] for r in rows} == {"u1", "u2", "u3"}
+        assert rows == []
+
+        # And each of the 3 users still sees the package in their stack —
+        # now as an available (not required) entry — via /api/stack. This
+        # is the "must NOT drop the resource from anyone's stack" guarantee
+        # the removed fan-out used to provide via eager subscription rows.
+        # Users seeded here have no auth token fixture; assert through the
+        # resolver directly instead of an authenticated request.
+        from app.resource_types import ResourceType
+        from app.services.stack_resolver import StackResolver
+
+        for uid in ("u1", "u2", "u3"):
+            entries = StackResolver().stack(uid, ResourceType.DATA_PACKAGE)
+            match = next((e for e in entries if e.id == "pkg_sales"), None)
+            assert match is not None, f"{uid} lost the package after downgrade"
+            assert match.requirement == "available"
+            assert match.in_stack is True
+            assert match.materialized is False, (
+                "no subscription row was written, so the package should not "
+                "be flagged as materialized (downloaded locally) yet"
+            )
 
     def test_available_to_required_does_not_materialize(self, seeded_app):
         """Going the OTHER direction (available → required) should NOT
@@ -215,13 +243,13 @@ class TestMarketplacePluginSoftDowngrade:
 
 
 class TestSoftDowngradePerf:
-    """Section 4.5 perf gate (Phase 9 / Task 9.5).
+    """Perf regression gate for a large-group ``required → available``
+    downgrade under the auto-membership model.
 
-    1000-user group flipped from ``required`` → ``available`` MUST
-    materialize all 1000 ``user_stack_subscriptions`` rows inside a
-    single DuckDB transaction in under 1 second, and emit **exactly
-    one** audit row (not 1000) — the per-user fan-out is part of the
-    same admin action, not a sequence of separate operations.
+    A 1000-user group flip must stay fast (no eager per-member fan-out to
+    pay for anymore — auto-membership means the downgrade is a single-row
+    UPDATE on ``resource_grants``) and must still emit **exactly one**
+    audit row, not one per member.
     """
 
     SOFT_DOWNGRADE_PERF_BUDGET_S = float(
@@ -298,17 +326,18 @@ class TestSoftDowngradePerf:
         finally:
             conn.close()
 
-        print(f"\nsoft-downgrade fan-out: {elapsed_s * 1000:.1f} ms for 1000 users")
-        assert sub_count == 1000, f"expected 1000 subscription rows materialized, got {sub_count}"
-        # Exactly ONE audit row produced — the per-user fan-out is bundled
-        # into a single admin action audit line.
+        print(f"\nsoft-downgrade (auto-membership, no fan-out): {elapsed_s * 1000:.1f} ms for 1000 users")
+        # Auto-membership means NO subscription rows are written on
+        # downgrade — the 1000 members stay in their stack automatically.
+        assert sub_count == 0, f"expected no subscription rows to be written, got {sub_count}"
+        # Exactly ONE audit row produced for the single grant-update action.
         assert new_audit - baseline_audit == 1, (
             f"expected 1 audit row for the requirement update; got "
             f"{new_audit - baseline_audit} (baseline={baseline_audit}, "
             f"after={new_audit})"
         )
         assert elapsed_s < self.SOFT_DOWNGRADE_PERF_BUDGET_S, (
-            f"soft-downgrade fan-out took {elapsed_s:.3f}s, exceeds "
+            f"downgrade took {elapsed_s:.3f}s, exceeds "
             f"{self.SOFT_DOWNGRADE_PERF_BUDGET_S}s. Threshold is a "
             f"guidance target — document the actual time and tune in a "
             f"follow-up if this is a persistent regression."

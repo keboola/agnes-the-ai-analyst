@@ -131,8 +131,15 @@ class TestBrowseAdminDataPackage:
         e = next(x for x in entries if x.id == "pkg_old")
         assert "new" not in e.badges
 
-    def test_derives_curated_badge_when_creator_is_admin(self, conn):
-        """``curated`` fires iff the creator is in the Admin group."""
+    def test_admin_creator_no_longer_derives_a_trust_badge(self, conn):
+        """v113: the resolver stopped deriving `curated` from Admin membership.
+
+        It read the creator's membership at render time, so an admin leaving
+        the group silently un-curated everything they had created and the card
+        then disagreed with its own detail page. The claim is stored now and
+        passed through as ``publisher_kind``; ``badges`` carries only what is
+        genuinely derived (``new``, from the clock).
+        """
         _seed_pkg(
             conn,
             pkg_id="pkg_curated",
@@ -142,7 +149,10 @@ class TestBrowseAdminDataPackage:
         resolver = StackResolver(conn)
         entries = resolver.browse_admin("u_admin", ResourceType.DATA_PACKAGE)
         e = next(x for x in entries if x.id == "pkg_curated")
-        assert "curated" in e.badges
+        assert "curated" not in e.badges
+        # Seeded without an explicit publisher_kind, so it reads as 'user' —
+        # membership of the Admin group no longer promotes it.
+        assert e.publisher_kind in (None, "user")
 
     def test_marks_in_stack_from_admin_subscriptions(self, conn):
         """``in_stack`` reflects the admin's own subscriptions — the

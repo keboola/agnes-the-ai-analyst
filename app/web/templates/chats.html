@@ -1,0 +1,397 @@
+{% extends "base_index.html" %}
+{# ── Chats — the caller's conversations as a managed inventory ─────────────────
+   The rail holds New chat, the pinned shelf and the last few conversations; that
+   is the right amount for "get back to what I was doing" and the wrong amount
+   for everything else. A 240px column cannot answer "where is the analysis I ran
+   three weeks ago", cannot show WHICH agent ran a conversation, and offers no way
+   to act on twenty chats at once.
+
+   So this page, and deliberately NOT a new pattern for it: it is the Library's
+   structure with conversations in the rows — prominent search in the header, one
+   control row, a sectionless scannable table with sortable column headers, and
+   the same table ⇄ grid switch. Two inventories, one shape; someone who has used
+   /library already knows how to use this.
+
+   What it adds that the Library has no need for:
+     · FOUR segments (All · Pinned · Shared · Archived) instead of an ownership
+       split. They are not mutually exclusive — a chat can be pinned AND shared —
+       so they ride the engine's `segments.multi` mode over a pipe-separated
+       `data-buckets` set rather than a single-value attribute. `all` is a real
+       token there, not a wildcard, which is exactly what keeps ARCHIVED
+       conversations out of the other three views without a special case.
+     · Multi-select + a bulk bar. Tidying up is the job people come here to do
+       and it is inherently plural; doing it one row menu at a time is what makes
+       a chat list feel unmanageable in the first place.
+     · Archive as a named, reversible state. `DELETE /api/chat/sessions/{id}` has
+       always been a soft archive, but nothing listed archived rows, so the state
+       had no name in the UI and no way back. Here Archive means "put away, can
+       be restored" and Delete means the row is gone — see the two endpoints in
+       app/api/chat.py.
+
+   Everything else about chat is untouched: the rows open /chat?session=<id>, and
+   pin/rename ride the same endpoints the rail's row menu has always used.
+
+   Rendering is server-side (app/web/router.py::chats_page); search, segments,
+   facets, sort, view, row actions and the bulk bar are client-side over those
+   rows (static/js/chats_page.js). #}
+{% block title %}Chats — {{ config.INSTANCE_NAME }}{% endblock %}
+{% block container_modifier %}container--wide{% endblock %}
+
+{% block head_extra %}
+{# The same two sheets /library loads, in the same order — `.cc-btn`
+   (catalog_card.css) is where the house button lives, so the header's primary
+   action is literally the Library's "+ Add" button, not a lookalike. #}
+<link rel="stylesheet" href="{{ static_url('css/catalog_card.css') }}">
+<link rel="stylesheet" href="{{ static_url('css/filter_toolbar.css') }}">
+<link rel="stylesheet" href="{{ static_url('css/chats.css') }}">
+{% endblock %}
+
+{% block page_head %}
+{# The header is the page's NAME and nothing else — no controls level with the
+   title. Search and New chat ride the dock instead, which is where /library puts
+   them and for the same reason: the header scrolls away, so the two controls a
+   caller reaches for most would be in the one place that leaves the screen
+   exactly when a long list makes them worth having. `#ch-search` keeps its id
+   wherever it sits — filter_toolbar.js resolves it off `document`. #}
+<div class="ch-head">
+  <div class="ch-head__titles">
+    <h1>Chats</h1>
+    <p class="lede">Every conversation you have had with your agents. Search it, pin what you keep coming back to, archive what you are done with.</p>
+  </div>
+</div>
+{% endblock %}
+
+{% block page_surface %}
+<section class="ch-section">
+  {# ── Toolbar — the Library's FLOATING DOCK, same component, same behaviour
+       (`.fbar-dock`, shared with /library; both wrap the same `.fbar`).
+
+       A dock rather than a strip under the header for the reason /library
+       adopted one: this is a scrolling inventory, so the controls that narrow it
+       have to stay reachable at row 200 as much as at row 1 — parked at the top
+       they scroll away exactly when a long list makes them worth having.
+
+       One card, two rows, in this order:
+         Row 1 (#ch-chips) — removable chips for the applied facets. ABOVE the
+           controls: they are the current STATE, the row below is the machinery
+           that changes it. Hidden until a facet is applied.
+         Row 2 (.fbar) — search · the four views · Filter · sort · list⇄grid ·
+           New chat.
+       Everything the dock opens (the Filter menu and its category popovers)
+       opens UPWARD — see `.fbar-dock` in filter_toolbar.css.
+
+       Search and New chat are the two ENDS of the controls row, exactly as
+       /library places them: search LEFT (the way into a list of any size), the
+       call to action RIGHT, with the controls that narrow the list between them.
+       The bar carries no `--center` because of it — search is a flex control, so
+       there is no free space left for centring to distribute.
+
+       The bulk bar takes this same spot while something is selected (see
+       `.has-selection` in chats.css): "narrow the list" and "act on the
+       selection" are two different jobs and must not stack two floating cards on
+       top of each other. ── #}
+  <div class="fbar-dock" id="ch-dock"><span class="fbar-dock__veil" aria-hidden="true"></span><div class="fbar-dock__card">
+  <div class="fbar-chips fbar-chips--center" id="ch-chips" hidden></div>
+  <div class="fbar ch-fbar" role="group" aria-label="Search, filter and sort chats">
+    {# The bar's own `role="search"` landmark rides this box rather than fronting
+       one: a search field with no landmark of its own is unreachable by landmark
+       navigation. #}
+    <div class="fbar__search" role="search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M21 21l-4.3-4.3"></path></svg>
+      <input type="search" id="ch-search" placeholder="Search chats…" autocomplete="off" aria-label="Search chats">
+    </div>
+
+    {# ── Filter ────────────────────────────────────────────────────────────
+       ONE button for every way of narrowing the list, the Library's pattern
+       exactly: a click opens a grouped popover, and each applied CATEGORY shows
+       as a removable chip on the row above so the resting bar stays one line.
+
+       The four views (All · Pinned · Shared · Archived) live at the TOP of that
+       popover rather than as a segmented control on the bar. As tabs they were a
+       second, louder filter sitting beside the Filter button — two controls
+       doing one job, and the wider one spent its width on three counts a caller
+       reads once. In here they are what they are: the first thing you choose
+       when you narrow the list.
+
+       They stay SINGLE-select (a chat is shown in one view at a time), which is
+       why they remain the engine's `segments` control rather than becoming
+       checkbox facets: `data-own` is the value it reads, the four are mutually
+       exclusive, and "no selection" is not a state they have — unlike a facet,
+       where it means "don't filter" and would let archived conversations back
+       into the default view.
+
+       Counts are the UNFILTERED tally per view — the same convention the
+       categories below use — and chats_page.js recomputes them after any action,
+       so archiving four chats moves four out of All and into Archived without a
+       reload. #}
+    <div class="fbar-filter">
+      <button type="button" class="fbar-filter__btn" id="ch-filter-btn" aria-haspopup="true" aria-expanded="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16M7 12h10M10 19h4"></path></svg>
+        Filter
+        {# The active view, written here by chats_page.js whenever it is not
+           "All". Without it the bar would not say which conversations are on
+           screen — the one thing the tabs did do at rest. Empty (and hidden) on
+           the default view, so the resting button is just "Filter". #}
+        <span class="ch-filter__view" id="ch-filter-view" hidden></span>
+        <span class="fbar-filter__n" hidden>0</span>
+      </button>
+      <div class="fbar-menu fbar-menu--cats" id="ch-filter-menu" role="menu" aria-label="Filter chats" hidden>
+        <p class="fbar-menu__title" id="ch-seg-label">Show</p>
+        {# Still the engine's segmented control — same ids, same `data-own`
+           values, same wiring — restyled as a vertical option list so it reads
+           as part of the menu it now lives in (see `.ch-viewsel` in chats.css).
+           `radiogroup` because that is what it behaves like in here: four
+           options, exactly one chosen. #}
+        <div class="fbar-seg ch-viewsel" id="ch-seg" role="radiogroup" aria-labelledby="ch-seg-label">
+          <button type="button" class="fbar-seg__btn is-active" data-own="all" role="radio" aria-checked="true">
+            <span class="ch-viewsel__txt">All</span>
+            <span class="fbar-seg__n" data-seg-count="all">{{ chat_bucket_counts.all }}</span>
+          </button>
+          <button type="button" class="fbar-seg__btn" data-own="pinned" role="radio" aria-checked="false">
+            <span class="ch-viewsel__txt">Pinned</span>
+            <span class="fbar-seg__n" data-seg-count="pinned">{{ chat_bucket_counts.pinned }}</span>
+          </button>
+          <button type="button" class="fbar-seg__btn" data-own="shared" role="radio" aria-checked="false">
+            <span class="ch-viewsel__txt">Shared</span>
+            <span class="fbar-seg__n" data-seg-count="shared">{{ chat_bucket_counts.shared }}</span>
+          </button>
+          <button type="button" class="fbar-seg__btn" data-own="archived" role="radio" aria-checked="false">
+            <span class="ch-viewsel__txt">Archived</span>
+            <span class="fbar-seg__n" data-seg-count="archived">{{ chat_bucket_counts.archived }}</span>
+          </button>
+        </div>
+
+        {# The optional refinements, each revealing its own options in a secondary
+           popover (see .fbar-cat in filter_toolbar.css). A category renders only
+           when it can change the list: a caller with one agent and only web chats
+           would otherwise get rows whose every option is a no-op. #}
+        {% set _cats = [
+             ('agent', 'Agent', chat_agent_options),
+             ('surface', 'Source', chat_surface_options),
+           ] %}
+        {% for facet_key, cat_label, options in _cats %}
+        {% if options | length > 1 %}
+        <div class="fbar-cat" data-cat="{{ facet_key }}">
+          <button type="button" class="fbar-cat__btn" aria-haspopup="true" aria-expanded="false">
+            <span class="fbar-cat__label">{{ cat_label }}</span>
+            <span class="fbar-cat__end">
+              <span class="fbar-cat__n" data-cat-count="{{ facet_key }}" hidden>0</span>
+              <svg class="fbar-cat__caret" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </span>
+          </button>
+          <div class="fbar-cat__pop" hidden>
+            {% for key, label, n in options %}
+            <label class="fbar-menu__opt"><input type="checkbox" data-facet="{{ facet_key }}" value="{{ key }}"><span class="fbar-menu__opt-text">{{ label }}</span><span class="fbar-menu__opt-n">{{ n }}</span></label>
+            {% endfor %}
+          </div>
+        </div>
+        {% endif %}
+        {% endfor %}
+        <div class="fbar-menu__foot">
+          <button type="button" data-fbar-clear>Clear</button>
+          <button type="button" data-fbar-done>Done</button>
+        </div>
+      </div>
+    </div>
+
+      {# Sort — visible in BOTH views, because neither has column headers to
+         yield to any more (the list is not a table; see the note on it below).
+         Three orders, each of which the list can actually be read in. #}
+      <div class="fbar-select" id="ch-sortwrap">
+        <select id="ch-sort" aria-label="Sort chats">
+          <option value="updated_desc">Recent activity</option>
+          <option value="updated_asc">Oldest activity</option>
+          <option value="name_asc">Name A–Z</option>
+          <option value="name_desc">Name Z–A</option>
+          <option value="agent_asc">Agent A–Z</option>
+          <option value="agent_desc">Agent Z–A</option>
+        </select>
+      </div>
+
+      {# List ⇄ grid toggle — the same shared control as the Library and My
+         Stack. List is the default; the choice persists in localStorage. #}
+      <div class="fbar-view" role="group" aria-label="View">
+        <button type="button" class="fbar-view__btn is-active" data-view="table" aria-label="List view" aria-pressed="true" title="List view">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"></path></svg>
+        </button>
+        <button type="button" class="fbar-view__btn" data-view="grid" aria-label="Grid view" aria-pressed="false" title="Grid view">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1.5"></rect><rect x="13" y="4" width="7" height="7" rx="1.5"></rect><rect x="4" y="13" width="7" height="7" rx="1.5"></rect><rect x="13" y="13" width="7" height="7" rx="1.5"></rect></svg>
+        </button>
+      </div>
+
+    {# The call to action closes the row. A link, not a button: it navigates to
+       /chat, which IS the new-conversation surface. No `id="new-chat"` — that id
+       belongs to the rail's own item, which chat.js keys its in-place reset off. #}
+    <a class="cc-btn cc-btn--primary ch-new" href="/chat">
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      <span>New chat</span>
+    </a>
+  </div>
+  </div></div>
+
+  <div class="ch-listhead">
+    {# Selects every row the current filters leave VISIBLE, not every row on the
+       page — a select-all that quietly includes forty hidden archived chats is
+       how a bulk delete goes wrong. It sits here, beside the count, rather than
+       in a table header row: the list has no header row to put it in. #}
+    {% if chat_rows %}
+    {# No visible label: the box sits in the same leading slot as every row's own
+       checkbox directly beneath it, which is what says what it does — a word here
+       would either reserve space it doesn't use or shift the count on hover.
+       `aria-label` carries the meaning for anyone not seeing the column. #}
+    <span class="ch-selectall">
+      <input type="checkbox" id="ch-select-all" aria-label="Select all shown chats">
+    </span>
+    {% endif %}
+    <span class="ch-count" id="ch-count">{{ chat_rows | length }} chat{{ '' if chat_rows | length == 1 else 's' }}</span>
+  </div>
+
+  {% if chat_rows %}
+  {# ── The list ──────────────────────────────────────────────────────────────
+     Deliberately NOT a table. A conversation has one thing you read (its title)
+     and two you glance at (which agent, how long ago) — a table dressed those
+     three as columns of equal standing, in a bordered card with an uppercase
+     header row and a rule under every row, which is a lot of furniture for a
+     list you scan rather than compare. So: flex rows on hairlines, the title in
+     the reading position, the two facts trailing it in muted type, and the "⋮"
+     on the right edge. No card border, no header row, no zebra.
+
+     What the header row did carry — sorting — moves to the toolbar's own Sort
+     control, which is now visible in BOTH views (there are no column headers to
+     yield to any more, so `sort.headers`/`sort.wrap` are gone from the engine
+     config in chats_page.js).
+
+     Every row keeps its `data-*` exactly as before: the filter engine works over
+     any element set, not over table rows, so search, the four views, sorting
+     and the grid projection are untouched by the change of tag. ── #}
+  <div class="ch-list" id="ch-list" role="list">
+    {% for c in chat_rows %}
+    <div class="ch-row{% if c.pinned %} is-pinned{% endif %}{% if c.archived %} is-archived{% endif %}"
+         role="listitem"
+         data-item-id="{{ c.id }}"
+         data-href="{{ c.href }}"
+         data-title="{{ c.title }}"
+         {# The segment set — see `segments.multi` in filter_toolbar.js. #}
+         data-buckets="{{ c.buckets }}"
+         data-name="{{ c.title | lower }}"
+         data-agent="{{ c.agent_key }}"
+         data-agent-label="{{ c.agent_label }}"
+         data-surface="{{ c.surface }}"
+         data-updated="{{ c.updated_iso }}"
+         data-search="{{ c.search }}"
+         {% if c.pinned %}data-pinned="1"{% endif %}
+         {% if c.archived %}data-archived="1"{% endif %}
+         {% if c.shared %}data-shared="1"{% endif %}
+         {# Ownership decides whether this row has actions at all: pin, rename,
+            archive and delete are owner-only server-side (404 for anyone else),
+            so a co-drive conversation someone else owns offers none of them
+            rather than four controls that would fail. It is also why it carries
+            no checkbox — a bulk action would silently skip it. #}
+         data-owned="{{ '1' if c.owned else '0' }}">
+      {# The checkbox lives in a fixed leading slot that is EMPTY at rest and
+         appears on hover (or once anything is selected — see `.has-selection`),
+         so the resting list is titles rather than a column of boxes. #}
+      <span class="ch-row__sel">
+        {% if c.owned %}
+        <input type="checkbox" class="ch-check" data-select="{{ c.id }}"
+               aria-label="Select {{ c.title }}">
+        {% endif %}
+      </span>
+      {# The pin is an INDICATOR, not the control (that is in the row menu):
+         without it a pinned row would be indistinguishable from any other the
+         moment you sort by something else. Same glyph the rail's rows use. #}
+      <span class="ch-lead" aria-hidden="true">
+        {% if c.pinned %}
+        <span class="ch-pinflag" data-pin-flag>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.8a2 2 0 0 1-1.1 1.8l-1.8.9A2 2 0 0 0 5 15.2V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.8a2 2 0 0 0-1.1-1.7l-1.8-.9A2 2 0 0 1 15 10.8V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg>
+        </span>
+        {% endif %}
+      </span>
+      <a class="ch-name" href="{{ c.href }}">
+        <span class="ch-name-title">{{ c.title }}</span>
+      </a>
+      {# State pills, in the order they matter to someone scanning: what this row
+         IS (archived), then who else can see it. Words, not colour alone. #}
+      {% if c.archived %}<span class="ch-pill ch-pill--archived">Archived</span>{% endif %}
+      {% if not c.owned %}
+      <span class="ch-pill ch-pill--shared" data-tip="A co-drive conversation someone else owns and shared with you — only its owner can pin, rename or delete it."
+            aria-label="Shared with you — only its owner can pin, rename or delete it">Shared with you</span>
+      {% elif c.shared %}
+      <span class="ch-pill ch-pill--shared">Shared</span>
+      {% endif %}
+      {% if c.surface != 'web' %}<span class="ch-pill ch-pill--surface">{{ c.surface_label }}</span>{% endif %}
+
+      {# The two glanceable facts, trailing the title on the right. `margin-left:
+         auto` on the first pushes the whole trailing group over, so a short and
+         a long title line their metadata up at the same x anyway. #}
+      <span class="ch-agent">{{ c.agent_label }}</span>
+      {# `data-hydrated="1"` keeps the GLOBAL <time> hydrator (datetime.js, which
+         would write "2026-08-05 21:58") off this element: chats_page.js owns it
+         and writes the relative label ("2d ago") this list reads better in, with
+         the absolute local time as the tooltip. The server-rendered UTC text is
+         the no-JS fallback, so the slot is never blank. #}
+      {% if c.updated_iso %}
+      <time class="ch-when" datetime="{{ c.updated_iso }}" data-hydrated="1" data-chat-when>{{ c.updated_iso[:16] | replace('T', ' ') }} UTC</time>
+      {% else %}
+      <span class="ch-when ch-when--none">—</span>
+      {% endif %}
+      {# One "⋮" for every row action, from the SAME shared component the chat
+         page and the rail use (js/components/chat_row_menu.js), so the menu a
+         caller learned in the rail is the menu they get here — with
+         Archive/Restore added, which only this page can offer. Filled by
+         chats_page.js; a row whose menu failed to build still opens its
+         conversation, which is its main job. #}
+      {% if c.owned %}<span class="ch-rowmenu" data-rowmenu="{{ c.id }}"></span>{% else %}<span class="ch-rowmenu"></span>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {# Grid view — cards projected client-side from the rows above, so the list
+     stays the single source of truth and the grid inherits filtering, sorting
+     and every in-place update for free. #}
+  <div class="fbar-grid ch-grid" id="ch-grid" hidden></div>
+
+  {# No-results state — shown by the engine when the filters exclude every row. #}
+  <div class="ch-empty" id="ch-noresults" hidden>
+    <h3>Nothing matches these filters</h3>
+    <p>Try a different search term, or another view.</p>
+    <button type="button" class="cc-btn" data-fbar-reset>Clear filters</button>
+  </div>
+  {% else %}
+  <div class="ch-empty">
+    <h3>No conversations yet</h3>
+    <p>Start one and it lands here — with the agent that ran it, when you last touched it, and everything you said in it, searchable.</p>
+    <a class="cc-btn cc-btn--primary" href="/chat">Start a chat</a>
+  </div>
+  {% endif %}
+
+  {# ── Bulk bar ──────────────────────────────────────────────────────────────
+     A fixed bottom bar, hidden until something is selected. It is bottom-anchored
+     for the same reason the Library's dock is: the selection can be made at row
+     two or row two hundred, and a bar that scrolls away with the header would
+     leave the reader holding a selection they cannot act on. Which actions show
+     depends on what is selected — Restore appears only over archived rows,
+     Archive only over live ones — so the bar never offers a no-op. ── #}
+  <div class="ch-bulk" id="ch-bulk" hidden>
+    <div class="ch-bulk__card" role="group" aria-label="Actions for selected chats">
+      <span class="ch-bulk__n" id="ch-bulk-n" aria-live="polite">0 selected</span>
+      <span class="ch-bulk__sep" aria-hidden="true"></span>
+      <button type="button" class="ch-bulk__btn" data-bulk="pin">Pin</button>
+      <button type="button" class="ch-bulk__btn" data-bulk="unpin">Unpin</button>
+      <button type="button" class="ch-bulk__btn" data-bulk="archive">Archive</button>
+      <button type="button" class="ch-bulk__btn" data-bulk="restore">Restore</button>
+      <button type="button" class="ch-bulk__btn is-danger" data-bulk="delete">Delete</button>
+      <button type="button" class="ch-bulk__clear" id="ch-bulk-clear">Clear</button>
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ static_url('js/filter_toolbar.js') }}"></script>
+{# The shared row menu — same component, same three actions, plus this page's
+   Archive/Restore. Loaded here because /chats is not a chat surface, so neither
+   chat.html nor the rail partial has necessarily loaded it (the rail one is
+   can_chat-gated and self-guards against a double load). #}
+<script src="{{ static_url('js/components/chat_row_menu.js') }}" defer></script>
+<script src="{{ static_url('js/chats_page.js') }}" defer></script>
+{% endblock %}

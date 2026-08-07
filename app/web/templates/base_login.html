@@ -13,6 +13,12 @@
     {% for s in custom_scripts | default([]) if s.placement == 'head_start' %}
     {{ s.html | safe }}
     {% endfor %}
+    {# Orb favicon ships only under the opt-in redesign (paper/rail); default keeps the original SVG mark. #}
+    {% if (instance_theme | default('blue')) == 'paper' or (ui_layout | default('topnav')) == 'rail' %}
+    <link rel="icon" type="image/png" href="{{ static_url('img/agnes-orb.png') }}">
+    {% else %}
+    <link rel="icon" type="image/svg+xml" href="{{ static_url('favicon.svg') }}">
+    {% endif %}
     <title>{% block title %}Data Analyst Portal{% endblock %}</title>
     <link rel="stylesheet" href="{{ static_url('style-custom.css') }}">
     {# Design-system tokens (`--ds-*`) — required so `.btn-primary`

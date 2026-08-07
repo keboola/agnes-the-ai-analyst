@@ -2,103 +2,17 @@
 
 {% block title %}{{ pkg.name }} — Data Packages — {{ config.INSTANCE_NAME or 'AI Harness' }}{% endblock %}
 
+{% block body_attrs %}class="detail-page"{% endblock %}
+
 {% block head_extra %}
+{% import "macros/_detail.html" as detail with context %}
+{% import "macros/_trustmark.html" as _pkg_trust %}
+{{ detail.styles() }}
 <style>
-  .back-link {
-    display: inline-flex; align-items: center; gap: 6px;
-    color: var(--text-secondary, #5f6368); text-decoration: none;
-    font-size: 13px; margin-bottom: 12px;
-  }
-  .back-link:hover { color: var(--ds-primary); }
-
-  /* ── Hero ─────────────────────────────────────────────────── */
-  .pkg-hero {
-    display: flex; gap: 16px; align-items: flex-start;
-    background: var(--surface, #fff);
-    border: 1px solid var(--border, #eceff1);
-    border-radius: 12px;
-    padding: 20px 24px; margin-bottom: 16px;
-  }
-  .pkg-hero__icon {
-    width: 64px; height: 64px; border-radius: 12px;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 22px; font-weight: 700; color: #fff;
-    flex-shrink: 0;
-  }
-  .pkg-hero__body { flex: 1; min-width: 0; }
-  .pkg-hero__title-row {
-    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  }
-  .pkg-hero__title-row h1 { margin: 0; font-size: 24px; letter-spacing: -0.3px; }
-
-  .pkg-badge {
-    display: inline-flex; align-items: center;
-    padding: 2px 8px; border-radius: 999px;
-    font-size: 10px; font-weight: 700;
-    text-transform: uppercase; letter-spacing: 0.5px;
-  }
-  .pkg-badge--curated { background: #fef3c7; color: #92400e; }
-  .pkg-badge--new     { background: #dcfce7; color: #166534; }
-
-  .pkg-hero__owner {
-    margin-top: 4px;
-    font-size: 13px; color: var(--text-secondary, #5f6368);
-  }
-  .pkg-hero__desc {
-    margin: 8px 0 0;
-    color: var(--text-primary, #1A253C); font-size: 14px; line-height: 1.5;
-  }
-  .pkg-hero__meta {
-    margin-top: 10px;
-    font-size: 12px; color: var(--text-secondary, #5f6368);
-  }
-  .pkg-hero__tags {
-    display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px;
-  }
-  .pkg-tag {
-    display: inline-block; padding: 2px 8px;
-    background: var(--border-light, #f3f4f6);
-    border-radius: 6px; font-size: 11px; color: var(--text-primary);
-  }
-  .pkg-hero__actions { display: flex; gap: var(--space-2); align-self: flex-start; }
-  /* The Add / Remove / Edit / required-state hero buttons all render through
-     canonical .btn classes from style-custom.css (.btn-primary, .btn-danger,
-     .btn-secondary, .btn-required). No page-local overrides needed here. */
-
-  /* ── Sections ─────────────────────────────────────────────── */
-  /* .pkg-section sits on top of .ds-card (rendered by ds.panel) — base
-     surface/border/shadow comes from .ds-card; this rule overrides only
-     the radius (8 → 12, matches /catalog) and the 18×20 padding. */
-  .pkg-section {
-    border-radius: var(--radius-xl);
-    padding: 18px var(--space-5);
-    margin-bottom: 14px;
-  }
-  .pkg-section__title {
-    margin: 0 0 10px; font-size: 13px; font-weight: 700;
-    text-transform: uppercase; letter-spacing: 0.5px;
-    color: var(--text-secondary, #5f6368);
-  }
-  .pkg-prose {
-    color: var(--text-primary); font-size: 14px; line-height: 1.6;
-    white-space: pre-wrap;
-  }
-  .pkg-use-skip {
-    display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
-  }
-  @media (max-width: 720px) { .pkg-use-skip { grid-template-columns: 1fr; } }
-  .pkg-use-skip h3 {
-    margin: 0 0 6px; font-size: 13px; font-weight: 700;
-    text-transform: uppercase; letter-spacing: 0.4px;
-    color: var(--text-secondary);
-  }
-  .pkg-use-skip ul { margin: 0; padding-left: 18px; }
-  .pkg-use-skip li { margin: 4px 0; line-height: 1.5; font-size: 14px; }
-
-  /* ── Tables collapsible ────────────────────────────────────── */
+  /* ── Tables accordion (page-local — data-package specific) ──────── */
   .pkg-table-row {
-    border: 1px solid var(--border, #eceff1);
-    border-radius: 10px; margin-bottom: 8px; background: var(--surface);
+    border: 1px solid var(--ds-border);
+    border-radius: 10px; margin-bottom: 8px; background: var(--ds-surface);
   }
   .pkg-table-row > summary {
     list-style: none; cursor: pointer; padding: 12px 16px;
@@ -106,20 +20,19 @@
   }
   .pkg-table-row > summary::-webkit-details-marker { display: none; }
   .pkg-table-row > summary::before {
-    content: "▸"; color: var(--text-secondary); font-size: 10px;
+    content: "▸"; color: var(--ds-text-muted); font-size: 10px;
     transition: transform .12s ease;
   }
   .pkg-table-row[open] > summary::before { transform: rotate(90deg); }
-  .pkg-table-row__name { font-family: var(--font-mono); font-weight: 600; }
+  .pkg-table-row__name { font-family: var(--ds-font-mono); font-weight: 600; }
   .pkg-table-row__desc {
     flex: 1; min-width: 0;
-    color: var(--text-secondary); font-size: 12px;
+    color: var(--ds-text-secondary); font-size: 12px;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .qm-badge {
     display: inline-block; padding: 2px 8px; border-radius: 4px;
-    font-size: 10px; font-weight: 600;
-    text-transform: uppercase; letter-spacing: 0.4px;
+    font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px;
   }
   .qm-local         { background: rgba(16, 183, 127, 0.14); color: #0e9b6a; }
   .qm-remote        { background: color-mix(in srgb, var(--ds-primary) 12%, transparent); color: var(--ds-primary-dark); }
@@ -128,206 +41,399 @@
 
   .pkg-table-detail {
     padding: 0 16px 14px 38px;
-    border-top: 1px dashed var(--border-light, #f0f0f0);
+    border-top: 1px dashed var(--ds-border-light);
   }
   .pkg-table-detail dl { margin: 10px 0; display: grid; grid-template-columns: 140px 1fr; gap: 4px 12px; }
-  .pkg-table-detail dt { color: var(--text-secondary); font-size: 12px; }
+  .pkg-table-detail dt { color: var(--ds-text-secondary); font-size: 12px; }
   .pkg-table-detail dd { margin: 0; font-size: 13px; line-height: 1.5; }
   .pkg-gotcha {
     padding: 8px 12px; border-radius: 6px; font-size: 13px; line-height: 1.5;
-    margin: 6px 0;
-    background: var(--border-light, #f3f4f6);
+    margin: 6px 0; background: var(--ds-border-light);
   }
-  .pkg-gotcha[data-gotcha="key"] {
-    background: #fef3c7; border-left: 3px solid #f59e0b;
-  }
+  .pkg-gotcha[data-gotcha="key"] { background: #fef3c7; border-left: 3px solid #f59e0b; }
   .pkg-gotcha__label {
     display: inline-block; font-size: 10px; font-weight: 700;
-    text-transform: uppercase; letter-spacing: 0.5px;
-    color: #92400e; margin-right: 8px;
+    text-transform: uppercase; letter-spacing: 0.5px; color: #92400e; margin-right: 8px;
   }
   .pkg-questions-list { margin: 8px 0 0; padding-left: 20px; }
   .pkg-questions-list li { margin: 4px 0; font-size: 13px; line-height: 1.5; }
-
-  /* ── Package example-questions panel ───────────────────────── */
-  .pkg-questions__panel { padding-left: 0; list-style: none; }
-  .pkg-questions__panel li {
-    padding: 8px 12px; border: 1px solid var(--border-light, #f3f4f6);
-    border-radius: 8px; margin-bottom: 6px;
-    font-size: 14px; line-height: 1.5;
-    background: var(--background, #f9fafb);
+  /* Replaces the inline-styled bold line the block used to open with; the
+     paper sheet turns the label into the same eyebrow the dl above uses. */
+  .pkg-questions { margin-top: 10px; }
+  .pkg-questions__label { font-size: 12px; font-weight: 600; color: var(--ds-text-secondary); }
+  /* The expanded body's wrappers (`.pkg-table-panel*`) are plain blocks on the
+     default theme — they exist so the paper sheet can group the same content
+     into one inner panel with a two-column split. Only the "nothing
+     documented" line needs styling here, and it carries exactly the treatment
+     it had as an inline style attribute before it earned a class name. */
+  .pkg-table-panel__empty {
+    color: var(--ds-text-secondary); font-size: 13px; font-style: italic; padding: 8px 0;
   }
 </style>
 {% endblock %}
 
 {% block content %}
-{# Design-system component macros — 4 `.pkg-section` panels and hero
-   Add/Remove/Edit action buttons render via `ds.panel` and `ds.button`;
-   the mandated state uses canonical `.btn-required` (style-custom.css).
-   Bespoke `.pkg-hero` (gradient + icon-block layout) and `<details
-   class="pkg-table-row">` accordion stay page-local. #}
 {% import "_components.html" as ds %}
-<a class="back-link" href="/catalog">← All data packages</a>
+{% import "macros/_detail.html" as detail with context %}
+{% import "macros/_trustmark.html" as _pkg_trust %}
 
-{# Initials fallback when no icon set, mirrors the card macro. #}
-{% set _name_parts = (pkg.name or '?').split() %}
-{% if _name_parts|length >= 2 %}
-  {% set _initials = (_name_parts[0][0] ~ _name_parts[1][0])|upper %}
-{% else %}
-  {% set _initials = (pkg.name or '?')[:2]|upper %}
-{% endif %}
+{# The distinct query modes across the package's tables. #}
+{% set _modes = tables | map(attribute='query_mode') | reject('none') | unique | sort | list %}
+{# Freshness = the newest sync across the tables. The per-row dates say this
+   table-by-table; this answers it for the package. ISO dates sort lexically,
+   so `max` needs no parsing. #}
+{% set _last_sync = tables | map(attribute='last_sync_display') | reject('none') | map('string') | max %}
 
-<div class="pkg-hero">
-  <div class="pkg-hero__icon" style="background: {{ pkg.color or 'var(--ds-primary)' }};">
-    {# Suppress Heroicons-style names (letter/digit/-/_ start) — show initials instead.
-       Mirrors _stack_card.html glyph guard; emoji/special chars pass through unchanged. #}
-    {% set _icon_str = (pkg.icon or '')|string %}
-    {% set _icon_first = _icon_str[:1] %}
-    {% if _icon_str and _icon_str|length <= 4 and _icon_first not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_' %}{{ _icon_str }}{% else %}{{ _initials }}{% endif %}
-  </div>
-  <div class="pkg-hero__body">
-    <div class="pkg-hero__title-row">
-      <h1>{{ pkg.name }}</h1>
-      {% for b in badges %}
-      <span class="pkg-badge pkg-badge--{{ b }}" data-badge="{{ b }}">{{ b|capitalize }}</span>
-      {% endfor %}
-    </div>
-    {% if pkg.owner_name %}
-    <div class="pkg-hero__owner" data-owner>
-      Owned by <strong>{{ pkg.owner_name }}</strong>{% if pkg.owner_team %} · {{ pkg.owner_team }}{% endif %}
-    </div>
-    {% endif %}
-    {% if pkg.description %}
-    <p class="pkg-hero__desc">{{ pkg.description }}</p>
-    {% endif %}
-    <div class="pkg-hero__meta">
-      {{ tables|length }} table{{ 's' if tables|length != 1 else '' }}
-      {% if total_size_bytes %} · {{ total_size_display }}{% endif %}
-    </div>
-    {% if pkg.tags %}
-    <div class="pkg-hero__tags">
-      {% for t in pkg.tags %}<span class="pkg-tag">{{ t }}</span>{% endfor %}
-    </div>
-    {% endif %}
-  </div>
-  <div class="pkg-hero__actions">
-    {% if effective_requirement == 'required' %}
-      <button class="btn btn-required" disabled
-              title="Required by your organization">In stack (required)</button>
-    {% elif in_stack %}
-      {{ ds.button('Remove from stack', variant='danger',
-                   type='button', id='pkg-remove-btn') }}
-    {% else %}
-      {{ ds.button('+ Add to stack', variant='primary',
-                   type='button', id='pkg-add-btn') }}
-    {% endif %}
-    {% if user.is_admin %}
-      {{ ds.button('Edit', variant='secondary',
-                   href='/admin/tables?edit_package=' ~ pkg.id,
-                   attrs='data-section-edit="package" title="Edit package metadata in admin"') }}
-    {% endif %}
-  </div>
-</div>
+{# Under the editorial layout the header carries NO numbers: they are the rail's
+   subject, and the rail states all of them (table count, local size, freshness,
+   query modes) in one labelled block. A second copy under the description made
+   the header answer a question the reader had not asked yet, and — sharing its
+   row with the action buttons — it wrapped mid-strip at common widths. So the
+   header is title, badges and the one sentence that says what this is.
+   The legacy hero keeps its meta line: that page has no rail to move it to. #}
+{% set _meta = None if detail.redesign else [{'icon': 'table', 'text': (tables|length|string) ~ ' table' ~ ('s' if tables|length != 1 else '')}] %}
+{% if _meta and total_size_bytes %}{% set _ = _meta.append({'icon': 'db', 'text': total_size_display}) %}{% endif %}
 
-{# ── What it is ──────────────────────────────────────────── #}
+{# ── What it is + Best for / Avoid when ────────────────────────────────
+   ONE definition of this copy, rendered in one of two places: on the legacy
+   path inside the hero's nested white panel, which is where the gradient-hero
+   design put it; under the editorial layout the "Best for / Avoid when" pair
+   becomes a real main-column section (and the long description moves into the
+   rail, see "About this package"). Defined as a macro rather than duplicated,
+   so the placements can never drift. #}
+{% macro pkg_overview(headings=True) %}
 {% if pkg.long_description %}
-{% call ds.panel(tag='section', klass='pkg-section',
-                 attrs='data-section="long-description"') %}
-  <h2 class="pkg-section__title">What it is</h2>
-  <div class="pkg-prose">{{ pkg.long_description }}</div>
-{% endcall %}
+  {% if headings %}<h2 class="detail-section__title">{{ detail.ico('info') }}What it is</h2>{% endif %}
+  <div data-section="long-description"><div class="detail-prose">{{ pkg.long_description }}</div></div>
 {% endif %}
+{% endmacro %}
 
-{# ── Use it when / Skip it when ──────────────────────────── #}
+{# The redesign's section vocabulary is "Best for" / "Avoid when" — it says
+   what the reader gets rather than what to do. The legacy path keeps the
+   original wording: default instances are contract, copy included (see
+   tests/test_web_catalog_package_detail_v56.py). #}
+{% macro pkg_use_skip(headings=True) %}
 {% if pkg.when_to_use or pkg.when_not_to_use %}
-{% call ds.panel(tag='section', klass='pkg-section') %}
-  <div class="pkg-use-skip">
+  {% if headings %}<h2 class="detail-section__title">{{ detail.ico('check') }}When to reach for it</h2>{% endif %}
+  <div class="detail-use-skip">
     {% if pkg.when_to_use %}
-    <div data-section="use-it-when">
-      <h3>Use it when</h3>
-      <ul>{% for b in pkg.when_to_use %}<li>{{ b }}</li>{% endfor %}</ul>
+    <div class="use" data-section="use-it-when">
+      <h3>{{ detail.ico('check') }}{{ 'Best for' if detail.redesign else 'Use it when' }}</h3>
+      <ul>{% for b in pkg.when_to_use %}<li>{{ detail.ico('check') }}<span>{{ b }}</span></li>{% endfor %}</ul>
     </div>
     {% endif %}
     {% if pkg.when_not_to_use %}
-    <div data-section="skip-it-when">
-      <h3>Skip it when</h3>
-      <ul>{% for b in pkg.when_not_to_use %}<li>{{ b }}</li>{% endfor %}</ul>
+    <div class="skip" data-section="skip-it-when">
+      <h3>{{ detail.ico('minus') }}{{ 'Avoid when' if detail.redesign else 'Skip it when' }}</h3>
+      <ul>{% for b in pkg.when_not_to_use %}<li>{{ detail.ico('minus') }}<span>{{ b }}</span></li>{% endfor %}</ul>
     </div>
     {% endif %}
   </div>
+{% endif %}
+{% endmacro %}
+
+{# Legacy hero panel — empty under the redesign, where the same copy is
+   rendered as sections below instead. An editorial header is not a box, so
+   there is nothing left for a nested panel to be nested inside. #}
+{% set pkg_panel %}
+{% if not detail.redesign and (pkg.long_description or pkg.when_to_use or pkg.when_not_to_use) %}
+  <h2 class="detail-section__title">{{ detail.ico('info') }}{{ 'What it is' if pkg.long_description else 'When to use it' }}</h2>
+  {{ pkg_overview(headings=False) }}
+  {% if pkg.long_description and (pkg.when_to_use or pkg.when_not_to_use) %}<hr class="detail-divider">{% endif %}
+  {{ pkg_use_skip(headings=False) }}
+{% endif %}
+{% endset %}
+
+{# Rail returns to the Library band this package lives in; topnav keeps the
+   classic Catalog listing it browses from. #}
+{% set _back = detail_back('data_package', '/catalog', 'All data packages') %}
+
+{# The overflow menu holds the actions that are not what the reader came to
+   do: the admin errand, and — because it is destructive and reversible in one
+   click — removing the local copy. #}
+{% set _menu_items = [] %}
+{% if effective_requirement != 'required' and in_stack %}
+  {% set _ = _menu_items.append({'label': 'Remove local copy', 'icon': 'trash',
+                                 'danger': True, 'attrs': 'id="pkg-remove-btn"'}) %}
+{% endif %}
+{% if user.is_admin %}
+  {% if _menu_items %}{% set _ = _menu_items.append({'sep': True}) %}{% endif %}
+  {% set _ = _menu_items.append({'label': 'Edit package metadata', 'icon': 'edit',
+                                 'href': '/admin/tables?edit_package=' ~ pkg.id}) %}
+{% endif %}
+{% set _menu %}{% if _menu_items %}{{ detail.menu(_menu_items) }}{% endif %}{% endset %}
+
+{# v113 trust marker: the stored axis, read off the row like any other column.
+   `show_unverified=False` because a data package has no verification workflow —
+   an admin publishes it or a user does, and there is no reviewer for a Verified
+   to be earned from — so 'Community' would assert a process this entity type
+   does not have. A package therefore shows the Organization marker, or nothing.
+   Computed here rather than inline: Jinja does not allow a comment inside a
+   function-call expression. #}
+{% set _pkg_trust_level = _pkg_trust.level_for(pkg.publisher_kind, 'none', False) | trim %}
+
+{# Ownership is a RAIL fact under the editorial layout: the rail carries an
+   Owner block with the monogram, so an "Owned by X · Team" line in the header
+   too is the same claim twice — and it sat between the title and the
+   description, delaying the one sentence that says what the package is. The
+   legacy hero keeps the line: that header has no rail to defer to. #}
+{% set _hero_owner_name = None if detail.redesign else pkg.owner_name %}
+{% set _hero_owner_team = None if detail.redesign else pkg.owner_team %}
+{# The panels container language is the scaffold's shared default under the
+   redesign (see `panels` in macros/_detail.html), so this page no longer opts
+   into it by hand — every resource detail page now speaks it. #}
+{% call detail.hero(
+     kind='data', name=pkg.name, color=pkg.color,
+     cover_image_url=pkg.cover_image_url, icon=pkg.icon,
+     type_label='Data package', menu=_menu|trim,
+     trust=_pkg_trust_level,
+     badges=badges, owner_name=_hero_owner_name, owner_team=_hero_owner_team,
+     description=pkg.description, tags=pkg.tags, meta=_meta,
+     back_href=_back.href, back_label=_back.label, panel=pkg_panel|trim) %}
+  {# Auto-membership: this package is already in the caller's stack (any
+     grant, required or available); the toggle below only controls whether
+     a local copy is downloaded (`agnes pull`) — ``in_stack`` here carries
+     that local-download state, computed in router.py as
+     ``effective_required or is_subscribed(...)``.
+
+     Under the editorial layout the header carries only the action a reader
+     would TAKE, which is Download when there is no local copy. The other two
+     states are not actions: "required" is a status the rail's Availability
+     block already states in full, and it was riding the header as a 230px
+     disabled button that squeezed the title until the badges wrapped onto
+     their own line; "remove" is destructive and moves into the overflow menu.
+     The legacy path keeps all three as buttons. #}
+  {% if detail.redesign %}
+    {% if not in_stack %}
+      {# "Add to stack" — the Stack is the noun the whole product uses for
+         "the things my agents can reach", and it is what this button changes;
+         "Download locally" described the mechanism (`agnes pull` fetching
+         parquets) rather than the outcome. The rail's Availability block is
+         where the download state itself is spelled out. #}
+      {{ ds.button('Add to stack', variant='primary', type='button', id='pkg-add-btn') }}
+    {% endif %}
+  {% elif effective_requirement == 'required' %}
+    <button class="btn btn-required" disabled title="Required by your organization">Always downloaded (required)</button>
+  {% elif in_stack %}
+    {{ ds.button('Remove local copy', variant='danger', type='button', id='pkg-remove-btn') }}
+  {% else %}
+    {{ ds.button('Download locally', variant='primary', type='button', id='pkg-add-btn') }}
+  {% endif %}
+  {{ detail.ask_agnes('Tell me about the ' ~ pkg.name ~ ' data package — what can I analyze with it?') }}
+  {% if user.is_admin and not detail.redesign %}
+    {{ detail.edit_icon('/admin/tables?edit_package=' ~ pkg.id, 'Edit package metadata (admin)') }}
+  {% endif %}
 {% endcall %}
+
+{{ detail.cols_open() }}
+
+{# No "Overview" section here under the redesign: the long description is a
+   fact ABOUT the package, so it moves into the rail's "About this package"
+   block alongside the other facts, and the main column belongs entirely to
+   the tables — the thing the reader came to browse. The legacy path still
+   renders the same copy in the hero panel. #}
+
+{% if detail.redesign and (pkg.when_to_use or pkg.when_not_to_use) %}
+{{ detail.section_open('When to reach for it', icon='check') }}
+  {{ pkg_use_skip(headings=False) }}
+{{ detail.section_close() }}
 {% endif %}
 
 {# ── Tables in this package ─────────────────────────────── #}
-{% call ds.panel(tag='section', klass='pkg-section') %}
-  <h2 class="pkg-section__title">Tables in this package</h2>
+{{ detail.section_open('Tables in this package', icon='table') }}
   {% if tables %}
   {% for t in tables %}
   <details class="pkg-table-row" data-table-id="{{ t.id }}">
+    {% if detail.redesign %}
+    {# Two lines, not one. The single-line row put the name, the mode badge, the
+       description and the sync meta in one flex row, so the description — the
+       only part that differs meaningfully between tables — was the part that
+       got ellipsed, usually after four words. The name and its badge lead;
+       the description gets the full width beneath them; the numbers right-align
+       into their own column so they read down the list as a column. #}
     <summary>
-      <span class="pkg-table-row__name"
-            role="link"
-            tabindex="0"
+      {# A TABLE glyph, matching the section heading above it — these rows are
+         tables, and the database cylinder the resource palette uses for the
+         PACKAGE says "a data source" instead. It gives every row one fixed
+         anchor on the left, so the names line up as a column even though the
+         chevron ahead of it changes shape when the row opens. #}
+      <span class="pkg-table-row__glyph" aria-hidden="true">{{ detail.ico('table') }}</span>
+      <span class="pkg-table-row__text">
+        <span class="pkg-table-row__head">
+          <a class="pkg-table-row__name" href="/catalog/t/{{ t.id }}"
+             onclick="event.stopPropagation();">{{ t.name }}</a>
+          <span class="qm-badge qm-{{ t.query_mode or 'local' }}">{{ t.query_mode or 'local' }}</span>
+        </span>
+        {% if t.description %}<span class="pkg-table-row__desc">{{ t.description }}</span>{% endif %}
+      </span>
+      <span class="pkg-table-row__meta">
+        {# Date only. The raw value carries seconds, which on a product page is
+           noise — nobody reads a package page to learn a table synced at
+           14:21:49. #}
+        {{ (t.last_sync_display or '—')[:10] }}{% if t.size_display %}<span class="pkg-table-row__size">{{ t.size_display }}</span>{% endif %}
+      </span>
+    </summary>
+    {% else %}
+    <summary>
+      <span class="pkg-table-row__name" role="link" tabindex="0"
             data-href="/catalog/t/{{ t.id }}"
             onclick="event.stopPropagation(); window.location.href=this.dataset.href;"
             onkeydown="if(event.key==='Enter'||event.key===' '){event.stopPropagation();event.preventDefault();window.location.href=this.dataset.href;}"
-            style="color: var(--ds-primary); text-decoration: none; cursor: pointer;">{{ t.name }}</span>
+            style="color: var(--kind); text-decoration: none; cursor: pointer;">{{ t.name }}</span>
       <span class="qm-badge qm-{{ t.query_mode or 'local' }}">{{ t.query_mode or 'local' }}</span>
-      {% if t.description %}
-      <span class="pkg-table-row__desc">{{ t.description }}</span>
-      {% endif %}
-      <span style="margin-left:auto; font-size:12px; color:var(--text-secondary);">
+      {% if t.description %}<span class="pkg-table-row__desc">{{ t.description }}</span>{% endif %}
+      <span style="margin-left:auto; font-size:12px; color:var(--ds-text-muted);">
         {{ t.last_sync_display or '—' }}{% if t.size_display %} · {{ t.size_display }}{% endif %}
       </span>
     </summary>
+    {% endif %}
     <div class="pkg-table-detail">
-      <dl>
-        {% if t.grain %}<dt>Grain</dt><dd>{{ t.grain }}</dd>{% endif %}
-        {% if t.platforms %}<dt>Platforms</dt><dd>{{ t.platforms|join(' · ') }}</dd>{% endif %}
-        {% if t.partition_col %}<dt>Partition</dt><dd><code>{{ t.partition_col }}</code></dd>{% endif %}
-        {% if t.history %}<dt>History</dt><dd>{{ t.history }}</dd>{% endif %}
-      </dl>
-      {% if t.gotchas %}
-      <div data-section="gotchas">
-        {% for g in t.gotchas %}
-        <div class="pkg-gotcha" {% if g.key %}data-gotcha="key"{% endif %}>
-          {% if g.key %}<span class="pkg-gotcha__label">Key gotcha</span>{% endif %}{{ g.body }}
+      {# The expanded body is ONE inner panel, not a loose run of blocks under
+         the row. Opening a row drops a visibly separate surface inside the
+         list, so it is unambiguous which row the documentation belongs to and
+         where it ends — the previous version bled into the next row's
+         hairline. Inside it, the facts and the questions sit side by side:
+         "what is this table" on the left, "what can I ask it" on the right. #}
+      <div class="pkg-table-panel{% if t.sample_questions %} pkg-table-panel--split{% endif %}">
+        <div class="pkg-table-panel__facts">
+          <dl>
+            {% if t.grain %}<dt>Grain</dt><dd>{{ t.grain }}</dd>{% endif %}
+            {% if t.platforms %}<dt>Platforms</dt><dd>{{ t.platforms|join(' · ') }}</dd>{% endif %}
+            {% if t.partition_col %}<dt>Partition</dt><dd><code>{{ t.partition_col }}</code></dd>{% endif %}
+            {% if t.history %}<dt>History</dt><dd>{{ t.history }}</dd>{% endif %}
+          </dl>
         </div>
-        {% endfor %}
+        {% if t.sample_questions %}
+        <div class="pkg-table-panel__ask">
+          {# Same uppercase eyebrow as GRAIN / PLATFORMS / PARTITION beside it,
+             so the two halves of the panel read as one labelled block rather
+             than a definition list followed by a stray bold line. #}
+          <div class="pkg-questions">
+            <div class="pkg-questions__label">Try one of these</div>
+            <ul class="pkg-questions-list">
+              {% for q in t.sample_questions %}<li>{{ q }}</li>{% endfor %}
+            </ul>
+          </div>
+        </div>
+        {% endif %}
+        {% if t.gotchas %}
+        {# Full width under the split: a caveat qualifies everything above it,
+           and an amber note squeezed into half a panel reads as a footnote to
+           the left column only. #}
+        <div class="pkg-table-panel__notes" data-section="gotchas">
+          {% for g in t.gotchas %}
+          <div class="pkg-gotcha" {% if g.key %}data-gotcha="key"{% endif %}>
+            {% if g.key %}<span class="pkg-gotcha__label">Key gotcha</span>{% endif %}{{ g.body }}
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+        {% if not (t.grain or t.platforms or t.partition_col or t.history or t.gotchas or t.sample_questions) %}
+        <div class="pkg-table-panel__empty">No extended documentation yet for this table.</div>
+        {% endif %}
       </div>
-      {% endif %}
-      {% if t.sample_questions %}
-      <div style="margin-top:10px;">
-        <div style="font-size:12px; color:var(--text-secondary); font-weight:600;">Try one of these:</div>
-        <ul class="pkg-questions-list">
-          {% for q in t.sample_questions %}<li>{{ q }}</li>{% endfor %}
-        </ul>
-      </div>
-      {% endif %}
-      {% if not (t.grain or t.platforms or t.partition_col or t.history or t.gotchas or t.sample_questions) %}
-      <div style="color:var(--text-secondary); font-size:13px; font-style:italic; padding:8px 0;">
-        No extended documentation yet for this table.
-      </div>
-      {% endif %}
     </div>
   </details>
   {% endfor %}
   {% else %}
-  <div style="padding: 20px 0; text-align: center; color: var(--text-secondary, #5f6368);">
-    No tables in this package yet.
-  </div>
+  {{ detail.empty('No tables in this package yet.', icon='table') }}
   {% endif %}
-{% endcall %}
+{{ detail.section_close() }}
 
-{# ── Example questions you can ask Claude ────────────────── #}
+{# ── Example questions you can ask Agnes ───────────────────── #}
 {% if pkg.example_questions %}
-{% call ds.panel(tag='section', klass='pkg-section') %}
-  <h2 class="pkg-section__title">Example questions you can ask Claude</h2>
-  <ol class="pkg-questions__panel">
-    {% for q in pkg.example_questions %}<li>{{ q }}</li>{% endfor %}
-  </ol>
-{% endcall %}
+{{ detail.section_open('Example questions you can ask Agnes', icon='spark') }}
+  {{ detail.questions(pkg.example_questions) }}
+{{ detail.section_close() }}
 {% endif %}
+
+{# The rail is a panel like every other section — `detail--panels` gives it the
+   same surface, radius and padding as the main column's sections, so the page
+   reads as one system rather than a bordered sidebar beside unbordered
+   content. It needs no modifier of its own. #}
+{{ detail.aside_open() }}
+{# The rail's content is redesign-only: on the legacy path there is no
+   rail, and appending these as extra sections would change a page default
+   instances are entitled to see unchanged. #}
+{% if detail.redesign %}
+
+{# Rail order: prose, then the numbers it refers to, then who owns it, then
+   state. The description leads because it is the sentence that makes the rest
+   of the rail mean something — a reader who has not yet been told what the
+   package IS has no use for "88 MB".
+
+   The long description is the same copy the legacy hero panel carries; here it
+   is a rail block rather than a main-column section, because the main column's
+   subject is the tables. #}
+{% if pkg.long_description %}
+{{ detail.side_open('About this package', icon='file') }}
+  <div data-section="long-description"><div class="detail-prose detail-side__prose">{{ pkg.long_description }}</div></div>
+{{ detail.side_close() }}
+{% endif %}
+
+{# Deliberately UNLABELLED. Every row here names its own value — "Tables 3",
+   "Local size 88 MB" — so an eyebrow reading "Package information" over the
+   top labelled a block that was already fully labelled, and put a second
+   heading between the description and the facts that follow from it. The rows
+   now read as the description's own read-out. No "Type" row either: the badge
+   beside the title already says Data package, and a rail that repeats the
+   header teaches the reader to skip the rail. #}
+{{ detail.side_open('') }}
+  {% set _rows = [{'key': 'Tables', 'val': tables|length|string}] %}
+  {% if total_size_display %}{% set _ = _rows.append({'key': 'Local size', 'val': total_size_display}) %}{% endif %}
+  {% if _last_sync %}{% set _ = _rows.append({'key': 'Last updated', 'val': _last_sync[:10]}) %}{% endif %}
+  {% if pkg.category %}{% set _ = _rows.append({'key': 'Category', 'val': pkg.category}) %}{% endif %}
+  {% if _modes %}{% set _ = _rows.append({'key': 'Query modes', 'val': _modes | join(' · ')}) %}{% endif %}
+  {{ detail.side_rows(_rows) }}
+{{ detail.side_close() }}
+
+{% if pkg.owner_name %}
+{{ detail.side_open('Owner', icon='user') }}
+  {{ detail.owner(pkg.owner_name, sub=pkg.owner_team) }}
+{{ detail.side_close() }}
+{% endif %}
+
+{# ── Stack availability ────────────────────────────────────────────────
+   Is this on my laptop, and can I change that? An RBAC grant already puts the
+   package in the caller's stack — this is about the local copy `agnes pull`
+   keeps, which is why the wording is "downloaded", never "access". Last in the
+   rail: it is the one block that is about the READER rather than the package,
+   and the header's Add-to-stack button is the answer to it.
+
+   Chip + sentence sit in ONE tinted callout: they are a single answer, and
+   as two loose fragments the sentence read like body copy that happened to
+   follow a badge. The tint tracks the state — settled green when a local
+   copy exists, amber when there is something the reader could do about it —
+   and the word inside always spells the state out, so the colour never
+   carries it alone. #}
+{{ detail.side_open('Availability', icon='stack') }}
+  {% if effective_requirement == 'required' %}
+    {{ detail.side_panel_open('ok') }}
+      {{ detail.status('Always downloaded', 'ok') }}
+      <p class="detail-side__note">
+        Your organization requires this package, so <code>agnes pull</code> always
+        keeps a local copy.
+      </p>
+    {{ detail.side_panel_close() }}
+  {% elif in_stack %}
+    {{ detail.side_panel_open('ok') }}
+      {{ detail.status('Downloaded locally', 'ok') }}
+      <p class="detail-side__note">
+        <code>agnes pull</code> keeps these tables on your laptop.
+      </p>
+    {{ detail.side_panel_close() }}
+  {% else %}
+    {{ detail.side_panel_open('warn') }}
+      {{ detail.status('Not downloaded', 'warn') }}
+      <p class="detail-side__note">
+        You have access to this package. Download it to query the tables locally.
+      </p>
+    {{ detail.side_panel_close() }}
+  {% endif %}
+{{ detail.side_close() }}
+
+{% endif %}
+{{ detail.cols_close() }}
 
 <script>
 'use strict';
@@ -351,7 +457,7 @@
       const r = await call('POST', '/api/stack/subscribe',
         { resource_type: 'data_package', resource_id: pkgId });
       if (r.ok) location.reload();
-      else { await alertModal('Failed to add to stack'); addBtn.disabled = false; }
+      else { await alertModal('Failed to download locally'); addBtn.disabled = false; }
     });
   }
   if (removeBtn) {
@@ -360,9 +466,10 @@
       const r = await call('DELETE',
         '/api/stack/subscription/data_package/' + encodeURIComponent(pkgId));
       if (r.ok || r.status === 204) location.reload();
-      else { await alertModal('Failed to remove from stack'); removeBtn.disabled = false; }
+      else { await alertModal('Failed to remove local copy'); removeBtn.disabled = false; }
     });
   }
 })();
 </script>
+</div>
 {% endblock %}

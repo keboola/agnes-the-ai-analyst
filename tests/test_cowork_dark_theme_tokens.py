@@ -10,7 +10,7 @@ from pathlib import Path
 
 TEMPLATE = (
     Path(__file__).parent.parent
-    / "app" / "web" / "templates" / "me_cowork.html"
+    / "app" / "web" / "templates" / "how_it_works.html"
 )
 
 # Hex literals that appeared in the original broken implementation.

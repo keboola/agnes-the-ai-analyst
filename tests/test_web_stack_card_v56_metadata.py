@@ -84,13 +84,58 @@ class TestCardOwnerAndTags:
 
 
 class TestCardBadges:
-    def test_curated_badge_on_card_for_admin_created(self, seeded_app):
-        _seed_pkg_for_grid(created_by="admin1")
+    def test_no_curated_badge_on_card_and_stored_claim_renders_instead(self, seeded_app):
+        """v113: the amber derived `Curated` chip is gone from the card.
+
+        An admin-created package no longer earns a badge from who its creator
+        currently is; the card renders the SAME shared trust marker as the
+        Library row and the detail hero, off the stored publisher_kind, so the
+        three cannot disagree.
+        """
+        _seed_pkg_for_grid(created_by="admin1", publisher_kind="organization")
         r = seeded_app["client"].get(
             "/catalog",
             headers=_auth(seeded_app["analyst_token"]),
         )
+        # DEFAULT theme: the amber chip stays, so the card is unchanged. What
+        # changed is its source — the stored publisher_kind, not whether the
+        # creator is in the Admin group right now.
         assert 'data-badge="curated"' in r.text
+        assert 'class="ds-trust' not in r.text
+
+    def test_org_and_new_share_one_badge_row_instead_of_overlapping(self, seeded_app, monkeypatch):
+        """A freshly created org package earns BOTH claims; they must not collide.
+
+        Blue draws the trust claim as the amber `Curated` chip. When that lived in
+        its own absolutely-positioned box it used the same top/left as the derived
+        badge row, so `Curated` and `New` printed on top of each other on any
+        org-published package created inside the 30-day window — the one case
+        where both are true at once.
+        """
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        _seed_pkg_for_grid(created_by="admin1", publisher_kind="organization")
+        r = seeded_app["client"].get(
+            "/catalog",
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        body = r.text
+        assert 'data-badge="curated"' in body
+        assert 'data-badge="new"' in body, "a just-seeded package is still 'new'"
+        # Both chips, ONE positioned container — two would stack at the same spot.
+        assert body.count('class="stack-card__badges"') == 1
+
+    def test_paper_renders_the_shared_marker_instead_of_the_amber_chip(
+        self, seeded_app, monkeypatch
+    ):
+        """Same stored claim, paper's spelling."""
+        monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
+        _seed_pkg_for_grid(created_by="admin1", publisher_kind="organization")
+        r = seeded_app["client"].get(
+            "/catalog",
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert "ds-trust--org" in r.text
+        assert 'data-badge="curated"' not in r.text
 
     def test_new_badge_on_card_for_recent(self, seeded_app):
         _seed_pkg_for_grid(created_by="admin1")

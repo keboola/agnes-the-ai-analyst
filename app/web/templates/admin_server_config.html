@@ -32,7 +32,7 @@
   }
   /* Column wrapper — standalone white card, fully rounded */
   .cfg-sidenav-col {
-    background: #fff;
+    background: var(--ds-surface);
     border: 1px solid var(--border, #e5e7eb);
     border-radius: 12px;
     padding: 0 0 16px;
@@ -61,7 +61,7 @@
     line-height: 1;
   }
   .cfg-sidenav-label:first-child { padding-top: 4px; }
-  .cfg-sidenav-label.is-danger { color: #dc2626; }
+  .cfg-sidenav-label.is-danger { color: var(--ds-accent-danger-ink); }
   /* Nav links — clearly clickable */
   .cfg-sidenav a {
     display: block;
@@ -89,9 +89,9 @@
   .cfg-sidenav a.sidenav-danger { color: var(--text-primary, #1a253c); }
   .cfg-sidenav a.sidenav-danger:hover { background: var(--background, #f5f7fa); color: #991b1b; }
   .cfg-sidenav a.sidenav-danger.is-active {
-    border-left-color: #dc2626;
-    background: #fee2e2;
-    color: #dc2626;
+    border-left-color: var(--ds-accent-danger-ink);
+    background: var(--ds-accent-danger-bg);
+    color: var(--ds-accent-danger-ink);
   }
   /* main content column */
   .cfg-main { }
@@ -99,7 +99,7 @@
   .cfg-section { scroll-margin-top: calc(var(--app-header-height) + var(--space-4)); }
   .cfg-banner {
     padding: 12px 16px; border-radius: 8px;
-    background: #fffbeb; border: 1px solid #fcd34d; color: #92400e;
+    background: var(--ds-accent-warn-bg); border: 1px solid var(--ds-accent-warn-line); color: var(--ds-accent-warn-ink);
     font-size: 13px; display: none;
     /* Sticky just below the app header so save confirmations / errors are
        always visible regardless of scroll position. z-index stays below
@@ -108,8 +108,8 @@
     box-shadow: 0 2px 8px rgba(0,0,0,0.08);
   }
   .cfg-banner.is-visible { display: block; }
-  .cfg-banner.success { background: #ecfdf5; border-color: #34d399; color: #065f46; }
-  .cfg-banner.error { background: #fef2f2; border-color: #fca5a5; color: #991b1b; }
+  .cfg-banner.success { background: var(--ds-accent-success-bg); border-color: var(--ds-accent-success-line); color: var(--ds-accent-success-ink); }
+  .cfg-banner.error { background: var(--ds-accent-danger-bg); border-color: var(--ds-accent-danger-line); color: var(--ds-accent-danger-ink); }
 
   .cfg-section {
     background: var(--surface, #fff);
@@ -118,7 +118,7 @@
     margin-bottom: 16px;
     overflow: hidden;
   }
-  .cfg-section.is-danger { border-color: #fca5a5; }
+  .cfg-section.is-danger { border-color: var(--ds-accent-danger-line); }
   .cfg-section header {
     padding: 14px 18px;
     background: var(--border-light, #f9fafb);
@@ -126,7 +126,7 @@
     display: flex; align-items: center; justify-content: space-between;
     gap: 12px;
   }
-  .cfg-section.is-danger header { background: #fef2f2; }
+  .cfg-section.is-danger header { background: var(--ds-accent-danger-bg); }
   .cfg-section h3 {
     margin: 0; font-size: 15px; font-weight: 600;
   }
@@ -208,7 +208,7 @@
   }
   .iw-form-field input:focus {
     outline: none; border-color: var(--ds-primary, #6366f1);
-    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--ds-primary) 15%, transparent);
   }
   .iw-form-field .field-help {
     font-size: 11px; color: var(--text-secondary, #6b7280); margin-top: 4px;
@@ -236,7 +236,7 @@
   }
   .modal-card .diff-row { padding: 4px 0; border-bottom: 1px dashed var(--border, #e5e7eb); }
   .modal-card .diff-row:last-child { border-bottom: none; }
-  .modal-card .diff-row .path { color: #b91c1c; font-weight: 600; }
+  .modal-card .diff-row .path { color: var(--ds-accent-danger-ink); font-weight: 600; }
 
   /* Vault hint in Data source section */
   .ds-vault-hint {
@@ -245,10 +245,10 @@
     text-decoration: none;
   }
   .ds-vault-hint--ready {
-    background: #f0fdf4; border: 1px solid #bbf7d0; color: #15803d;
+    background: var(--ds-accent-success-bg); border: 1px solid var(--ds-accent-success-line); color: var(--ds-accent-success-ink);
   }
-  .ds-vault-hint--ready:hover { background: #dcfce7; }
-  .ds-vault-hint--ready strong { color: #15803d; }
+  .ds-vault-hint--ready:hover { background: color-mix(in srgb, var(--ds-accent-success-bg) 80%, transparent); }
+  .ds-vault-hint--ready strong { color: var(--ds-accent-success-ink); }
   .ds-vault-hint--info {
     background: var(--background, #f9fafb); border: 1px solid var(--border, #e5e7eb);
     color: var(--text-secondary, #6b7280);
@@ -374,9 +374,11 @@
     </div>
   </section>
 
-  <!-- Feature flags — read-only inventory (#1022). Toggling still happens
-       per-section above (or via an env var) — this panel is display-only,
-       fed by the `feature_flags` block in GET /api/admin/server-config. -->
+  <!-- Feature flags — read-only inventory (#1022). A flag is editable in
+       the UI only if its config section is registered as editable (currently
+       guardrails and library); all others must be set via their env var or
+       instance.yaml. This panel is display-only, fed by the `feature_flags`
+       block in GET /api/admin/server-config. -->
   <section class="cfg-section" id="feature-flags-section">
     <header>
       <div>
@@ -384,9 +386,10 @@
         <div class="section-help">
           Every flag registered in <code>app.instance_config.FEATURE_FLAGS</code>,
           resolved <strong>env var &gt; instance.yaml &gt; default</strong>
-          (see <code>docs/feature-flags.md</code>). Read-only — flip a flag
-          via its config section above, the admin overlay, or the listed
-          env var.
+          (see <code>docs/feature-flags.md</code>). Read-only summary — a flag
+          is editable in the UI only if its config section appears above
+          (currently <strong>guardrails</strong> and <strong>library</strong>);
+          others must be set via their env var or instance.yaml directly.
         </div>
       </div>
     </header>
@@ -467,6 +470,10 @@ const SECTION_META = {
   connectors: {
     title: "Connector params",
     help: "Per-tenant connector params served by /api/connectors/params and written into every analyst's .env by `agnes init`. Keys are connector slugs from the seed manifest (plus `globals`). Values pass through verbatim — connector app credentials like the GWS OAuth client secret (an app identifier, not a user credential) belong here as plain values; *_ENV pointer keys are legacy.",
+  },
+  library: {
+    title: "Library",
+    help: "Analyst Library display options. show_unverified_trust surfaces the 'Community' marker beside the name of a user-authored Store item your organization hasn't verified — on by default, so every row states its provenance (Organization / Verified / Community) and none is left unlabelled. Turn it off for the older reading, where an unverified item is marked only by the absence of a marker.",
   },
 };
 const DANGER_SECTIONS = new Set(["auth", "server"]);
@@ -978,7 +985,7 @@ function renderSection(section, payload, knownForSection) {
 
 const SECTION_GROUPS = [
   { label: "General",      sections: ["instance", "data_source", "email", "theme"] },
-  { label: "Integrations", sections: ["telegram", "jira", "ai", "openmetadata", "desktop", "corporate_memory", "materialize", "guardrails", "marketplace", "connectors"] },
+  { label: "Integrations", sections: ["telegram", "jira", "ai", "openmetadata", "desktop", "corporate_memory", "materialize", "guardrails", "marketplace", "connectors", "library"] },
   { label: "Services",     sections: [], bespoke: [
     { id: "chat-section",          title: "Cloud chat" },
     { id: "slack-secrets-section", title: "Slack bot secrets" },
@@ -1667,10 +1674,10 @@ async function chatReadinessLoad() {
         : (d.reason === "auth_invalid" ? "LLM key rejected" : "LLM provider error");
       const when = d.at ? " (last seen " + escHtml(d.at) + ")" : "";
       llmBanner =
-        '<div style="margin: 8px 0; padding: 8px 10px; border-left: 3px solid #c0392b; background: #fdf1f0;">' +
-        '<strong style="color: #c0392b;">⚠ ' + escHtml(label) + '</strong> — ' +
+        '<div style="margin: 8px 0; padding: 8px 10px; border-left: 3px solid var(--ds-accent-danger-ink); background: var(--ds-accent-danger-bg);">' +
+        '<strong style="color: var(--ds-accent-danger-ink);"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:inline;vertical-align:-2px;"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg> ' + escHtml(label) + '</strong> — ' +
         escHtml(d.detail) + when +
-        '<div style="margin-top: 4px; color: #666;">Fix via the Anthropic key field above (persists to the overlay), then re-test. See DEPLOYMENT.md → "Chat LLM credential failures".</div>' +
+        '<div style="margin-top: 4px; color: var(--ds-text-secondary, #666);">Fix via the Anthropic key field above (persists to the overlay), then re-test. See DEPLOYMENT.md → "Chat LLM credential failures".</div>' +
         '</div>';
     }
     el.className = "";

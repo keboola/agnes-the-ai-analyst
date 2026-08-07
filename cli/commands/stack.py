@@ -31,9 +31,7 @@ stack_app = typer.Typer(help="Manage your stack (data packages + memory domains)
 
 
 _SUPPORTED_TYPES = ("data_package", "memory_domain")
-_PLUGIN_HINT = (
-    "Plugins are managed via the marketplace flow — see `agnes marketplace`."
-)
+_PLUGIN_HINT = "Plugins are managed via the marketplace flow — see `agnes marketplace`."
 
 
 def _fail(resp, *, expected: tuple[int, ...] = (200, 201)) -> None:
@@ -68,14 +66,13 @@ def _validate_type(value: str, *, allow_plugin_for_list: bool = False) -> str:
 
 @stack_app.command("list")
 def stack_list(
-    type_filter: Optional[str] = typer.Option(
-        None, "--type", help="data_package | memory_domain (omit for both)"
-    ),
+    type_filter: Optional[str] = typer.Option(None, "--type", help="data_package | memory_domain (omit for both)"),
     as_json: bool = typer.Option(False, "--json"),
 ):
     """List items in your effective stack.
 
-    Effective stack = required ∪ (subscribed ∩ available). Without
+    Auto-membership: effective stack = required ∪ available — every
+    resource granted to one of your groups, no subscription needed. Without
     ``--type`` both data_packages and memory_domains are fetched and
     concatenated (the server has no all-types endpoint by design — keeps
     the API contract narrow).
@@ -105,10 +102,7 @@ def stack_list(
     name_w = max(len("NAME"), max((len(i.get("name", "")) for i in aggregated), default=4))
     type_w = max(len("TYPE"), max((len(i.get("type", "")) for i in aggregated), default=4))
     req_w = max(len("REQUIREMENT"), 11)
-    header = (
-        f"{'NAME':<{name_w}}  {'TYPE':<{type_w}}  "
-        f"{'REQUIREMENT':<{req_w}}  DESCRIPTION"
-    )
+    header = f"{'NAME':<{name_w}}  {'TYPE':<{type_w}}  {'REQUIREMENT':<{req_w}}  DESCRIPTION"
     typer.echo(header)
     typer.echo("-" * len(header))
     for it in aggregated:
@@ -116,26 +110,26 @@ def stack_list(
         if len(desc) > 60:
             desc = desc[:57] + "..."
         typer.echo(
-            f"{it.get('name','')[:name_w]:<{name_w}}  "
-            f"{it.get('type',''):<{type_w}}  "
-            f"{it.get('requirement',''):<{req_w}}  "
+            f"{it.get('name', '')[:name_w]:<{name_w}}  "
+            f"{it.get('type', ''):<{type_w}}  "
+            f"{it.get('requirement', ''):<{req_w}}  "
             f"{desc}"
         )
 
 
 @stack_app.command("browse")
 def stack_browse(
-    type_filter: Optional[str] = typer.Option(
-        None, "--type", help="data_package | memory_domain (omit for both)"
-    ),
+    type_filter: Optional[str] = typer.Option(None, "--type", help="data_package | memory_domain (omit for both)"),
     as_json: bool = typer.Option(False, "--json"),
 ):
-    """Browse every resource you could add to your stack.
+    """Browse every resource granted to your groups (equivalent scope to
+    ``stack list`` under auto-membership — kept as a discovery alias).
 
-    Unlike ``stack list`` (your effective stack only), this shows the full
-    RBAC-granted candidate set with an ``IN STACK`` column (✓ = already
-    subscribed/required, blank = available to add). Subscribe with
-    ``agnes stack add <type> <id>`` then run ``agnes pull`` to download.
+    The ``IN STACK`` column reads ✓ for every row (auto-membership: any
+    grant, required or available, is automatically in your stack). Use
+    ``agnes stack add <type> <id>`` then ``agnes pull`` to additionally
+    download a LOCAL COPY of an ``available`` resource — required
+    resources are always downloaded already.
     Without ``--type`` both data_packages and memory_domains are fetched.
     """
     if type_filter:
@@ -164,10 +158,7 @@ def stack_browse(
     type_w = max(len("TYPE"), max((len(i.get("type", "")) for i in aggregated), default=4))
     req_w = max(len("REQUIREMENT"), 11)
     in_w = len("IN STACK")
-    header = (
-        f"{'NAME':<{name_w}}  {'TYPE':<{type_w}}  "
-        f"{'REQUIREMENT':<{req_w}}  {'IN STACK':<{in_w}}  DESCRIPTION"
-    )
+    header = f"{'NAME':<{name_w}}  {'TYPE':<{type_w}}  {'REQUIREMENT':<{req_w}}  {'IN STACK':<{in_w}}  DESCRIPTION"
     typer.echo(header)
     typer.echo("-" * len(header))
     for it in aggregated:
@@ -176,9 +167,9 @@ def stack_browse(
             desc = desc[:57] + "..."
         mark = "✓" if it.get("in_stack") else ""
         typer.echo(
-            f"{it.get('name','')[:name_w]:<{name_w}}  "
-            f"{it.get('type',''):<{type_w}}  "
-            f"{it.get('requirement',''):<{req_w}}  "
+            f"{it.get('name', '')[:name_w]:<{name_w}}  "
+            f"{it.get('type', ''):<{type_w}}  "
+            f"{it.get('requirement', ''):<{req_w}}  "
             f"{mark:<{in_w}}  "
             f"{desc}"
         )
@@ -189,7 +180,11 @@ def stack_add(
     resource_type: str = typer.Argument(..., help="data_package | memory_domain"),
     resource_id: str = typer.Argument(..., help="Resource id to subscribe to"),
 ):
-    """Subscribe to an available data_package or memory_domain."""
+    """Download a local copy of a granted data_package or memory_domain.
+
+    The resource is already in your stack and server-side queryable the
+    moment it's granted (auto-membership) — this only makes ``agnes pull``
+    ALSO fetch a local copy."""
     rt = _validate_type(resource_type)
     resp = api_post(
         "/api/stack/subscribe",
@@ -205,20 +200,18 @@ def stack_add(
         if isinstance(detail, str):
             if detail.startswith("already_required"):
                 typer.echo(
-                    f"{resource_id} is already required for one of your groups "
-                    f"— no subscription needed.",
+                    f"{resource_id} is already required for one of your groups — already downloaded, no subscription needed.",
                     err=True,
                 )
                 raise typer.Exit(0)
             if detail == "no_grant":
                 typer.echo(
-                    f"Access denied: your groups have no grant on "
-                    f"{rt}/{resource_id}. Ask an admin to grant it.",
+                    f"Access denied: your groups have no grant on {rt}/{resource_id}. Ask an admin to grant it.",
                     err=True,
                 )
                 raise typer.Exit(1)
         _fail(resp)
-    typer.echo(f"Added {rt}/{resource_id} to your stack.")
+    typer.echo(f"Downloading a local copy of {rt}/{resource_id} — run `agnes pull` to fetch it.")
 
 
 @stack_app.command("remove")
@@ -226,11 +219,13 @@ def stack_remove(
     resource_type: str = typer.Argument(..., help="data_package | memory_domain"),
     resource_id: str = typer.Argument(..., help="Resource id to unsubscribe from"),
 ):
-    """Unsubscribe from an available data_package or memory_domain.
+    """Remove the local copy of an available data_package or memory_domain.
 
-    Removing a *required* resource is refused with a hint pointing at the
-    grant — required items can only leave the stack when the admin
-    downgrades the grant (or removes it).
+    The resource STAYS in your stack (still queryable server-side) — only
+    the local download is dropped. Removing a *required* resource's local
+    copy is refused with a hint pointing at the grant — required resources
+    are always downloaded, no opt-out; the admin would need to downgrade
+    the grant to `available` first.
     """
     rt = _validate_type(resource_type)
     resp = api_delete(f"/api/stack/subscription/{rt}/{resource_id}")
@@ -244,10 +239,73 @@ def stack_remove(
         detail = body.get("detail") if isinstance(body, dict) else None
         if isinstance(detail, str) and detail.startswith("cannot_remove_required"):
             typer.echo(
-                f"{rt}/{resource_id} is required by your group's grant — "
+                f"{rt}/{resource_id} is required by your group's grant — always downloaded, "
                 f"ask an admin to downgrade to `available` first.",
                 err=True,
             )
             raise typer.Exit(1)
         _fail(resp)
-    typer.echo(f"Removed {rt}/{resource_id} from your stack.")
+    typer.echo(f"Removed the local copy of {rt}/{resource_id} — it stays in your stack, still queryable server-side.")
+
+
+# ---------------------------------------------------------------------------
+# `agnes stack artefacts …` — add "Artefacts to My Stack" (see the product
+# spec's Architecture decisions: artefacts are NOT routed through the
+# data_package/memory_domain surface above — no admin-RBAC "required" tier,
+# permission is ownership/sharing).
+# ---------------------------------------------------------------------------
+
+artefacts_app = typer.Typer(help="Add/remove artefacts (file collections) in your Stack")
+stack_app.add_typer(artefacts_app, name="artefacts")
+
+
+@artefacts_app.command("list")
+def artefacts_candidates(as_json: bool = typer.Option(False, "--json")):
+    """List artefacts eligible to add to your Stack — accessible to you
+    (owned, shared with you/your team, or workspace-published) and not
+    already in your Stack."""
+    resp = api_get("/api/stack/artefacts/candidates")
+    if resp.status_code != 200:
+        _fail(resp)
+    body = resp.json() or {}
+    items = body.get("items", [])
+    if as_json:
+        typer.echo(json.dumps(body, indent=2))
+        return
+    if not items:
+        total = body.get("total_accessible", 0)
+        if total == 0:
+            typer.echo("No artefacts exist yet — create one first (`agnes` web UI → /artefacts).")
+        else:
+            typer.echo("All artefacts you can access are already in your Stack.")
+        return
+    name_w = max(len("TITLE"), max((len(i.get("title", "")) for i in items), default=5))
+    header = f"{'TITLE':<{name_w}}  {'TYPE':<10}  {'VISIBILITY':<10}  OWNER"
+    typer.echo(header)
+    typer.echo("-" * len(header))
+    for it in items:
+        typer.echo(
+            f"{it.get('title', '')[:name_w]:<{name_w}}  "
+            f"{it.get('type_label', ''):<10}  "
+            f"{it.get('visibility_label', ''):<10}  "
+            f"{it.get('owner_label', '')}"
+        )
+
+
+@artefacts_app.command("add")
+def artefacts_add(corpus_id: str = typer.Argument(..., help="Artefact (collection) id")):
+    """Add an artefact to your Stack so the default agent can use it."""
+    resp = api_post(f"/api/stack/artefacts/{corpus_id}")
+    if resp.status_code != 200:
+        _fail(resp)
+    typer.echo(f"Added {corpus_id} to your Stack.")
+
+
+@artefacts_app.command("remove")
+def artefacts_remove(corpus_id: str = typer.Argument(..., help="Artefact (collection) id")):
+    """Remove an artefact from your Stack — drops agent access only; the
+    artefact itself, its files, ownership and sharing are unaffected."""
+    resp = api_delete(f"/api/stack/artefacts/{corpus_id}")
+    if resp.status_code >= 300:
+        _fail(resp)
+    typer.echo(f"Removed {corpus_id} from your Stack.")

@@ -59,12 +59,12 @@
   /* ── Banner (lifted .cfg-banner, retargeted to #iw-banner) ── */
   .iw-banner {
     padding: 12px 16px; border-radius: 8px;
-    background: #fffbeb; border: 1px solid #fcd34d; color: #92400e;
+    background: var(--ds-accent-warn-bg); border: 1px solid var(--ds-accent-warn-line); color: var(--ds-accent-warn-ink);
     font-size: 13px; display: none; margin-bottom: 16px;
   }
   .iw-banner.is-visible { display: block; }
-  .iw-banner.success { background: #ecfdf5; border-color: #34d399; color: #065f46; }
-  .iw-banner.error { background: #fef2f2; border-color: #fca5a5; color: #991b1b; }
+  .iw-banner.success { background: var(--ds-accent-success-bg); border-color: var(--ds-accent-success-line); color: var(--ds-accent-success-ink); }
+  .iw-banner.error { background: var(--ds-accent-danger-bg); border-color: var(--ds-accent-danger-line); color: var(--ds-accent-danger-ink); }
 
   /* ── Register / edit modal form fields (lifted .iw-form-field) ── */
   .iw-form-field { display: block; margin-bottom: 14px; }
@@ -85,7 +85,7 @@
   }
   .iw-form-field input:focus {
     outline: none; border-color: var(--ds-primary, #6366f1);
-    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--ds-primary) 15%, transparent);
   }
   .iw-form-field .field-help {
     font-size: 11px; color: var(--text-secondary, #6b7280); margin-top: 4px;
@@ -96,15 +96,15 @@
     display: inline-block; padding: 1px 8px; border-radius: 999px;
     font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
   }
-  .iw-prov-mode.editor { background: #eef2ff; color: #3730a3; }
-  .iw-prov-mode.git { background: #ecfdf5; color: #065f46; }
+  .iw-prov-mode.editor { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
+  .iw-prov-mode.git { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
   .iw-prov-path { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; color: var(--text-secondary, #6b7280); }
   .iw-prov-muted { color: var(--text-secondary, #9ca3af); }
   .iw-prov-diverged {
     display: inline-block; padding: 2px 8px; border-radius: 999px;
-    background: #fef3c7; color: #92400e; font-size: 11px; font-weight: 600;
+    background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink); font-size: 11px; font-weight: 600;
   }
-  .iw-prov-ok { color: #047857; font-weight: 600; }
+  .iw-prov-ok { color: var(--ds-accent-success-ink); font-weight: 600; }
   .iw-prov-link { color: var(--ds-primary, #6366f1); text-decoration: none; }
   .iw-prov-link:hover { text-decoration: underline; }
 
@@ -505,7 +505,7 @@ async function iwSync() {
         : (detail.message || detail.kind || "Unknown error");
       const kind = (typeof detail === "object") ? (detail.kind || "") : "";
       document.getElementById("iw-sync-body").innerHTML =
-        `<div class="diff-row" style="color: #b91c1c;"><strong>Sync failed${kind ? " (" + escHtml(kind) + ")" : ""}:</strong><br>${escHtml(msg)}</div>`;
+        `<div class="diff-row" style="color: var(--ds-accent-danger-ink);"><strong>Sync failed${kind ? " (" + escHtml(kind) + ")" : ""}:</strong><br>${escHtml(msg)}</div>`;
       openModal("iw-sync-modal");
       return;
     }
@@ -517,7 +517,7 @@ async function iwSync() {
     openModal("iw-sync-modal");
   } catch (e) {
     document.getElementById("iw-sync-body").innerHTML =
-      `<div class="diff-row" style="color: #b91c1c;"><strong>Sync failed:</strong><br>${escHtml(e.message)}</div>`;
+      `<div class="diff-row" style="color: var(--ds-accent-danger-ink);"><strong>Sync failed:</strong><br>${escHtml(e.message)}</div>`;
     openModal("iw-sync-modal");
   } finally {
     btn.disabled = false;

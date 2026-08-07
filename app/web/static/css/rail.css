@@ -1,0 +1,1696 @@
+/* Left-rail navigation chrome — the `rail` ui_layout.
+ *
+ * Markup in app/web/templates/_app_rail.html; activated by
+ * `html[data-ui-layout="rail"]` (stamped by base_ds.html from
+ * instance.ui_layout / AGNES_UI_LAYOUT). Loaded globally but inert
+ * under the default `topnav` layout — every rule is scoped to the
+ * activation attribute, so topnav instances render byte-identically.
+ *
+ * All colors/typography come from `--ds-*` tokens so the rail works
+ * under any palette theme (paper, blue, navy, dark). Widths and
+ * paddings mirror the issue-#896 prototype (240px rail, 9px item
+ * radius, soft active tint).
+ *
+ * Layout: two fixed zones with one scrolling list between them.
+ *   [top]     New chat
+ *   (scroll)  the conversations — as many as the free space fits,
+ *             scrolling inside it; never truncated, no expand toggle
+ *   [bottom]  Library · Agents ─ Admin, then the Set up Agnes card,
+ *             then the profile in the foot
+ * EVERY row shares one height (`--rail-row-h`) and one treatment, New chat
+ * included — it is an ordinary `.rail-i`, not a control. See the "New chat"
+ * section for the three tinted variants that were tried there and why all of
+ * them are retired.
+ *
+ * COLOUR RULE — the accent marks WHERE YOU ARE, and nothing else:
+ *   `--rail-active-bg`  → every "you are here" fill (accent tint)
+ *   `--rail-hover-bg`   → hover, on every hoverable row (neutral wash)
+ *   nothing standing    → no row carries a resting tint of its own
+ *
+ * The rail has held every version of this rule, so the reasoning matters more
+ * than the values:
+ *
+ *   1. accent on active — broke once New chat took a tint of its own, because
+ *      the accent then carried four meanings at once (the button, the active
+ *      nav row, the active conversation, the active admin link) and the column
+ *      stopped saying which of them you could act on;
+ *   2. accent on New chat, neutral active — cost the accent its use in hover,
+ *      since a hovered row and the resting button were the same pale blue;
+ *   3. accent on hover, neutral active — worked, but spent colour on the one
+ *      state the user needs no help identifying: the pointer is already there;
+ *   4. accent on active (current), now that New chat is an ordinary row and
+ *      nothing competes for it.
+ *
+ * (1) and (4) are the same rule; what makes it viable now is that New chat has
+ * no standing tint. Active is the better owner than hover because it is
+ * PERSISTENT wayfinding — you locate yourself in the column at a glance,
+ * without reading — where hover is transient feedback that only has to be
+ * perceptible. It also lands the accent on New chat for free on /chat, the
+ * landing surface, where New chat IS the active row.
+ *
+ * The invariant to preserve whatever the values: exactly ONE thing in the
+ * column may own the accent. Two owners is what broke every earlier version.
+ */
+
+html[data-ui-layout="rail"] body {
+    padding-left: 240px;
+}
+
+html[data-ui-layout="rail"] .rail {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 240px;
+    background: var(--ds-surface);
+    border-right: 1px solid var(--ds-border);
+    display: flex;
+    flex-direction: column;
+    /* Stretch children to the rail's inner width. The legacy
+     * style-custom.css has a global `nav { align-items: center }` rule
+     * that otherwise cascades onto this <nav>, collapsing every item to
+     * its content width and centering it — which reads as a large,
+     * uneven side padding. Pin stretch here to neutralize it. */
+    align-items: stretch;
+    gap: 2px;
+    padding: 16px 12px;
+    z-index: 40;
+    /* One row height for every rail row — nav items, conversation rows, the
+       and the profile row all opt into it (min-height, so a two-line
+       profile row can still grow). Scoped to the rail rather than
+       :root: it is a chrome metric, not a design token. */
+    --rail-row-h: 34px;
+    /* The "you are here" fill, shared by every active state in the rail — nav
+       destinations (.rail-i.on), the active conversation (li.is-active) and the
+       active Admin flyout link. Defined once so the three cannot drift apart;
+       scoped to the rail rather than :root for the same reason --rail-row-h is
+       (a chrome metric, not a design token).
+
+       ACCENT — this is the one thing in the rail that owns the tint. Being on a
+       page is persistent wayfinding: you should be able to locate yourself in
+       the column at a glance, without reading a single label, and colour is what
+       does that. A neutral wash was tried here (see the COLOUR RULE above) and
+       worked, but only while the accent was busy elsewhere.
+
+       It also gives New chat a tinted look on /chat for free, without a standing
+       tint anywhere: /chat is the landing surface and New chat is the active row
+       there, so the row the accent lands on most often is the one you most
+       wanted coloured. */
+    --rail-active-bg: var(--ds-primary-light);
+    /* The hover fill, shared by every hoverable row in the rail — nav
+       destinations, conversation rows and Admin flyout links. Defined once
+       beside --rail-active-bg for the same reason: three rules, one value, no
+       drift.
+
+       NEUTRAL, because active owns the accent and a rail cannot spend it twice.
+       This carried `--ds-primary-light` for one pass; with active tinted the
+       same value, hovering any row made it read as selected. Hover only has to
+       be PERCEPTIBLE — the pointer is already on the row, so the user knows what
+       they are pointing at and colour tells them nothing new.
+
+       `--ds-surface-dim` rather than a wash mixed from the ink: the ink-mix
+       trick exists to stay monotonic against a NEUTRAL sibling, and hover's
+       sibling is now an accent tint, so there is no ramp-ordering problem to
+       solve. (For the record: the neutral surface ramp is not monotonic across
+       themes — light runs surface → dim → sunken progressively darker, but in
+       dark `sunken` lands darker than `dim` — so if both states ever go neutral
+       again, the stronger one must be an ink-mix, not `--ds-surface-sunken`.) */
+    --rail-hover-bg: var(--ds-surface-dim);
+    /* The Admin flyout's vertical reach, shared by the panel (its `max-height`)
+       and by the hover bridge that has to cover it (.rail-admin-sub::after).
+       Defined once because the bridge is only correct while it spans the panel
+       it leads to: a bridge shorter than the panel leaves the diagonal move
+       toward a tall panel's TOP item falling out of the hover region. */
+    --rail-admin-flyout-max-h: min(70vh, 420px);
+    /* `visible` (not `auto`) so popovers can escape the rail's edges instead
+       of being clipped — the user-menu panel below is absolutely positioned
+       and depends on this. (It also served the Studio flyout, since retired.)
+       The recents region scrolls internally (.rail-history-body), so the rail
+       itself does not need its own scrollbar in normal use. */
+    overflow: visible;
+    font-family: var(--ds-font);
+}
+
+/* 14px below the wordmark — between the 8px this carried while the rail had no
+   section labels and the 18px of its first version. The 8px was tuned for a
+   logo sitting directly above New chat, where a deep trough read as two
+   unrelated zones when they are one surface (the logo's href is `home_route`,
+   which defaults to /dashboard → /chat, exactly where `#new-chat` goes). With
+   Pinned/Chats labels below, the top of the rail carries more structure and the
+   wordmark needs to stop reading as part of the first row. Still asymmetric on
+   purpose: the mark keeps its 6px above.
+   The ≤1024px bar overrides it back to 8px — there the logo shares a row with
+   the collapse toggle, and extra bottom padding sits it visually high. */
+html[data-ui-layout="rail"] .rail-logo {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 6px 8px 14px;
+    color: var(--ds-text-primary);
+    text-decoration: none;
+    flex-shrink: 0;
+}
+
+html[data-ui-layout="rail"] .rail-logo svg {
+    height: 28px;
+    width: auto;
+}
+
+/* Collapse toggle for the ≤1024px row layout (see the media query below) —
+   inert and hidden above it, since the column layout has room for
+   everything and nothing to collapse. */
+html[data-ui-layout="rail"] .rail-collapse-toggle {
+    display: none;
+}
+
+/* Both nav zones + recents + Admin are wrapped in this div so the ≤1024px
+   layout has a single thing to collapse. Above that breakpoint it must be a
+   completely transparent wrapper — matching .rail's own flex/gap exactly — or
+   nesting it introduces new spacing between items that used to be direct flex
+   children of .rail (a change to the byte-identical default column layout,
+   which CLAUDE.md's design-system contract forbids).
+   flex:1 1 auto + min-height:0 carries forward what .rail-history relied on
+   .rail itself for: growing to fill the remaining fixed-height column so
+   its own flex:1/overflow:hidden can turn IT into the scrolling region,
+   instead of the whole rail growing past the viewport. No `overflow`
+   here — the Studio hover flyout (rail-nav, position:absolute) still needs
+   to escape rightward through this wrapper exactly as it did through .rail
+   directly. */
+html[data-ui-layout="rail"] .rail-collapsible {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+/* Agnes brand orb — the raster brand mark sitting before the wordmark. */
+html[data-ui-layout="rail"] .rail-orb {
+    width: 30px;
+    height: 30px;
+    flex-shrink: 0;
+}
+
+/* Agnes wordmark beside the orb. */
+html[data-ui-layout="rail"] .rail-logo-txt {
+    font-size: 19px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1.05;
+    color: var(--ds-text-primary);
+    min-width: 0;
+}
+
+html[data-ui-layout="rail"] .rail-nav {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    flex-shrink: 0;
+}
+
+/* The bottom zone's browse destinations (Library · Agents). `margin-top: auto`
+   pins the whole zone to the foot of the scroll column — load-bearing only when
+   there is no conversation list to grow above it (a caller without a chat
+   grant); with the list present its flex-grow has already eaten the slack. */
+html[data-ui-layout="rail"] .rail-nav-bottom {
+    margin-top: auto;
+    padding-top: 6px;
+}
+
+html[data-ui-layout="rail"] .rail-i {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    /* min-height, not height: the row must still grow for a wrapped label
+       rather than clipping it. Vertical padding stays below the row height so
+       short rows are height-driven and every rail row lines up. */
+    min-height: var(--rail-row-h);
+    padding: 6px 11px;
+    border-radius: 9px;
+    cursor: pointer;
+    color: var(--ds-text-secondary);
+    /* .rail-i is applied to both <a> and <button> (the Admin summary).
+       Buttons don't inherit the page font by default, so pin it here or that
+       row renders in the UA font, out of step with the plain nav links. */
+    font-family: inherit;
+    font-weight: 500;
+    font-size: 14px;
+    /* Explicit line-height so the label's line-box never exceeds the icon and
+       every row resolves to the same height from `--rail-row-h` rather than from
+       whatever its text happens to measure. */
+    line-height: 1.2;
+    text-decoration: none;
+    border: none;
+    background: none;
+    width: 100%;
+    text-align: left;
+}
+
+html[data-ui-layout="rail"] .rail-i svg {
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+}
+
+/* Hover — NEUTRAL, see `--rail-hover-bg`. The accent belongs to the active row;
+   hover only has to be perceptible. */
+html[data-ui-layout="rail"] .rail-i:hover {
+    background: var(--rail-hover-bg);
+    color: var(--ds-text-primary);
+}
+
+/* Active destination — the ACCENT tint, see `--rail-active-bg`. Ink goes with
+   the fill so the row never reads as blue-behind-grey-text. Hovering the active
+   row replaces the tint with the neutral wash, which is a little odd on paper
+   but right in practice: the two states are mutually exclusive, and hover
+   confirms the pointer is over a row you can click even when you are already on
+   it. */
+html[data-ui-layout="rail"] .rail-i.on {
+    background: var(--rail-active-bg);
+    color: var(--ds-primary-dark);
+    font-weight: 600;
+}
+
+html[data-ui-layout="rail"] .rail-i:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
+}
+
+/* The label takes the free space so any trailing element in a nav item hugs
+   the right edge, and truncates rather than wrapping — same treatment the
+   conversation titles get, so a long label can never re-flow the ladder. */
+html[data-ui-layout="rail"] .rail-i-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* ── New chat ──────────────────────────────────────────────────────────
+   NO rules of its own. It is an ordinary `.rail-i` row — the block above styles
+   it exactly like Library / Agents / Admin — and it highlights only via `.on`.
+
+   It spent a while as a `.rail-compose` control: a pale-blue borderless block,
+   38px instead of the 34px ladder, because as a plain row it genuinely is hard
+   to tell from the conversations directly beneath it (same `--rail-row-h`, same
+   `--ds-text-secondary`, 14px/500 against 13.5px/500, 9px radius against 8px).
+   Three variants of that treatment were tried and all are retired: grey fill +
+   `--ds-border` outline + tinted icon chip (three devices for one job, and it
+   read as a disabled control), solid `--ds-primary` (far too loud for a 240px
+   column), and the pale `--ds-primary-light` fill.
+
+   Why none of them came back: a standing tint on ONE row consumed the rail's
+   entire accent budget. Hover could not use the accent, because a hovered
+   Library row became pixel-identical to New chat at rest; and `.on` needed an
+   inset ring purely to tell two pale-blue things apart. Interaction feedback
+   that fires on every row, every time the pointer moves, is worth more than
+   decoration on a single row — so the accent went to hover
+   (`--rail-hover-bg`) and this row went neutral.
+
+   What distinguishes it without colour: the `+` glyph (no conversation row has
+   an icon), its position at the top of the column, and the 8px gap below. If a
+   future pass wants it louder, spend something OTHER than the accent — weight
+   and ink are unused here (every resting row is `--ds-text-secondary`/500, so
+   `--ds-text-primary`/600 is available and costs no colour). */
+
+/* Separates New chat from the conversations below it. The rail's own 2px gap
+   read as "next row in the same list"; 8px is all the separation the two need —
+   and it is now the only thing between the verb and the first section label, so
+   the label needs no top margin of its own (.rail-chatsec:first-child below). */
+html[data-ui-layout="rail"] .rail-nav-top {
+    margin-bottom: 8px;
+}
+
+/* ── Conversations ─────────────────────────────────────────────────────
+   Two collapsible sections — Pinned, then Chats — inside ONE scroll box. The
+   region occupies the slack between the two fixed zones, so the bottom zone
+   stays pinned to the foot however long the lists get. The <ul id="chat-list">
+   reuses the chat page's ids/classes so chat.js renders straight into it on
+   /chat; rail_history.js fills it (and <ul id="pinned-chat-list">) on every
+   other page. Nothing truncates either list — see .rail-history-body. */
+html[data-ui-layout="rail"] .rail-history {
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    /* Take the remaining vertical space so the list — not the whole rail — is
+       what scrolls. min-height:0 lets it shrink below content height, and
+       overflow:hidden forces the flex child (.rail-history-body) to respect
+       that bound and scroll internally instead of spilling into the zone
+       below. */
+    flex: 1 1 auto;
+    overflow: hidden;
+}
+
+/* Scroll region — ALWAYS scrolling, never truncated.
+   `flex: 1 1 0` makes it grow strictly into the space .rail-history leaves (a
+   `flex-basis: auto` would size to content and refuse to shrink, spilling older
+   rows past the clip instead of scrolling them), and `min-height: 0` lets it
+   shrink below content height so a short viewport shrinks the list rather than
+   pushing the bottom zone off screen — the rail itself is `overflow: visible`
+   and cannot scroll, so anything forced past the fold would be unreachable.
+   That is also why there is deliberately no `min-height` floor here.
+
+   This used to have TWO states: `flex: 0 1 auto; overflow: hidden` while
+   truncated to five rows, and these values once expanded. The truncation and
+   its "View all chats" / "Show less" toggle are gone — this region is already
+   exactly the rail's free space, so the cap showed five rows on a screen with
+   room for nine and the toggle existed only to undo a limit we imposed
+   ourselves. See rail_history.js for what went with it. */
+html[data-ui-layout="rail"] .rail-history-body {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    flex: 1 1 0;
+    overflow-y: auto;
+    margin-top: 2px;
+    /* Room for the scrollbar so rows don't sit flush against the rail edge. */
+    padding-right: 2px;
+
+    /* ── Scroll fade ───────────────────────────────────────────────────
+       This region is exactly the rail's free space, so on most viewports there
+       ARE rows past one edge or the other. With a hard clip the first/last
+       visible title is sliced mid-glyph and reads as a rendering fault, not as
+       "keep scrolling" — the one thing the cut needs to say.
+
+       A gradient mask says it instead: rows dissolve into the rail at whichever
+       edge still has content behind it. Masking (not a gradient overlay) is
+       deliberate — the fade has no colour of its own, so it needs no value that
+       has to be kept in sync with `--ds-surface` across four palette themes and
+       light/dark, and it cannot go wrong when a hovered/active row paints its
+       own tint underneath.
+
+       Both edges are off by default and switched on per-edge by
+       rail_history.js (.is-fade-top / .is-fade-bottom) from the scroll
+       position, so a list that fits entirely — the common case early on, with
+       two or three conversations — is not dimmed at either end for no reason.
+       At 0px the two stops collapse onto the same position and the mask is a
+       no-op, so the resting state costs nothing but a stacking context. */
+    --rail-fade: 20px;
+    --rail-fade-top: 0px;
+    --rail-fade-bottom: 0px;
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0, black var(--rail-fade-top), black calc(100% - var(--rail-fade-bottom)), transparent 100%);
+            mask-image: linear-gradient(to bottom, transparent 0, black var(--rail-fade-top), black calc(100% - var(--rail-fade-bottom)), transparent 100%);
+}
+
+html[data-ui-layout="rail"] .rail-history-body.is-fade-top {
+    --rail-fade-top: var(--rail-fade);
+}
+
+html[data-ui-layout="rail"] .rail-history-body.is-fade-bottom {
+    --rail-fade-bottom: var(--rail-fade);
+}
+
+/* Forced-colors users have asked the OS for maximum contrast; a decorative
+   fade to transparent is the opposite of that. Drop it — the scrollbar carries
+   the same "there is more" signal. */
+@media (forced-colors: active) {
+    html[data-ui-layout="rail"] .rail-history-body {
+        -webkit-mask-image: none;
+                mask-image: none;
+    }
+}
+
+/* ── The two sections (Pinned · Chats) ─────────────────────────────────
+   Both live inside the single scroll box above — deliberately NOT one fixed
+   pinned block over a scrolling feed. A second scroll container in a 240px
+   column means two scrollbars, two fade masks and a pinned block whose height
+   has to be capped by guesswork; one scroll box with a collapsible header per
+   section gets the same control into the user's hands and costs no geometry.
+
+   Whitespace does the separating, as everywhere else in the rail: no dividers
+   (see test_admin_is_the_only_divided_group — Admin owns the nav's only rule
+   line) and no fills. 18px between sections — a step up from the 14px the group
+   headers this replaces used, because these are now two independent things
+   rather than two groups of one list, and the gap is the only thing saying so. */
+html[data-ui-layout="rail"] .rail-chatsec {
+    display: block;
+}
+
+html[data-ui-layout="rail"] .rail-chatsec + .rail-chatsec {
+    margin-top: 18px;
+}
+
+/* The 8px under New chat is already the gap above the first label. */
+html[data-ui-layout="rail"] .rail-chatsec:first-child {
+    margin-top: 0;
+}
+
+/* The <h2> exists for document structure only (the button inside it is the
+   control) — strip the heading's own type and spacing entirely. */
+html[data-ui-layout="rail"] .rail-chatsec-hd-wrap {
+    margin: 0;
+    font: inherit;
+}
+
+/* Section label — a LABEL that happens to be operable, not a row. Hence no
+   background in any state, no border, and the same 9px left padding as the
+   conversation rows below it so the label and the titles share one left edge.
+   Hover/focus spend INK (muted → secondary), which is the one channel still
+   free: the accent belongs to the active conversation and the neutral wash to
+   hovering an actual row, so a header that filled on hover would read as a
+   selectable row (see the COLOUR RULE at the top of this file). */
+html[data-ui-layout="rail"] .rail-chatsec-hd {
+    display: flex;
+    align-items: center;
+    /* Caret sits against the label (see below), so this is the only gap. */
+    gap: 3px;
+    width: 100%;
+    padding: 3px 9px 6px;
+    border: none;
+    background: none;
+    border-radius: 6px;
+    color: var(--ds-text-muted);
+    cursor: pointer;
+    text-align: left;
+    font-family: inherit;
+}
+
+html[data-ui-layout="rail"] .rail-chatsec-hd:hover {
+    color: var(--ds-text-secondary);
+}
+
+html[data-ui-layout="rail"] .rail-chatsec-hd:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
+}
+
+/* Same type as the group headers this promotes — the rail already reads this
+   size/weight/tracking as "label for what follows". */
+html[data-ui-layout="rail"] .rail-chatsec-txt {
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+}
+
+/* Disclosure caret — the rail's existing idiom, rotated the same way as
+   Admin's (down = open, right = collapsed), one size quieter than Admin's 15px
+   because this is a label and that is a nav row.
+   Deliberately NOT pushed to the rail's right edge with `margin-left: auto`:
+   out there it read as a second column of controls next to the conversation
+   rows' own "⋮", and what it actually annotates is the word beside it. The
+   button still spans the full width, so the hit area is the whole line. */
+html[data-ui-layout="rail"] .rail-chatsec-caret {
+    width: 12px;
+    height: 12px;
+    flex-shrink: 0;
+    transform: rotate(90deg);
+    transition: transform 0.18s var(--ds-ease-standard, ease);
+}
+
+html[data-ui-layout="rail"] .rail-chatsec.is-collapsed .rail-chatsec-caret {
+    transform: rotate(0deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    html[data-ui-layout="rail"] .rail-chatsec-caret {
+        transition: none;
+    }
+}
+
+/* The list itself doesn't scroll — its parent (.rail-history-body) does — so
+   neutralize the base chat.css `.cloud-chat-list { overflow-y:auto; flex:1 }`
+   that would otherwise create a nested scroll container on /chat. */
+html[data-ui-layout="rail"] .rail-history .cloud-chat-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    overflow: visible;
+    flex: 0 0 auto;
+}
+
+html[data-ui-layout="rail"] .rail-history .cloud-chat-list li[data-id] {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    /* Same ladder as the nav rows above and below — see `--rail-row-h`. */
+    min-height: var(--rail-row-h);
+    padding: 4px 9px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 13.5px;
+    line-height: 1.3;
+    color: var(--ds-text-secondary);
+    border: 1px solid transparent;
+}
+
+html[data-ui-layout="rail"] .rail-history .cloud-chat-list li[data-id] + li[data-id] {
+    margin-top: 2px;
+}
+
+html[data-ui-layout="rail"] .rail-history .cloud-chat-list li[data-id]:hover {
+    background: var(--rail-hover-bg);
+    color: var(--ds-text-primary);
+}
+
+/* The conversation you are reading — the accent `--rail-active-bg`, like every
+   other active state in the rail.
+
+   The `:hover` selectors are load-bearing, not defensive padding. The plain
+   hover rule above is `… .cloud-chat-list li[data-id]:hover` — five
+   specificity units against this rule's four — so WITHOUT them, moving the
+   pointer over the conversation you are currently reading replaces its accent
+   tint with the neutral hover wash, i.e. the open chat visibly loses its
+   highlight exactly when you reach for it. (The nav rows and Admin links have
+   no such problem: their hover and active selectors tie on specificity, so
+   source order already keeps active on top.) Guarded by
+   tests/test_ui_layout_theme.py::test_active_row_keeps_its_tint_on_hover. */
+html[data-ui-layout="rail"] .rail-history .cloud-chat-list li.is-active,
+html[data-ui-layout="rail"] .rail-history .cloud-chat-list li.active,
+html[data-ui-layout="rail"] .rail-history .cloud-chat-list li[data-id].is-active:hover,
+html[data-ui-layout="rail"] .rail-history .cloud-chat-list li[data-id].active:hover {
+    background: var(--rail-active-bg);
+    color: var(--ds-primary-dark);
+    font-weight: 600;
+}
+
+html[data-ui-layout="rail"] .rail-history .cloud-chat-list li[data-id]:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
+}
+
+/* Conversation label — grows to fill, truncates rather than wrapping. */
+html[data-ui-layout="rail"] .rail-history .cloud-chat-list-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Origin pill (Slack) — small, non-interactive. */
+html[data-ui-layout="rail"] .rail-history .cloud-chat-surface-badge {
+    flex-shrink: 0;
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--ds-text-muted);
+    background: var(--ds-surface-dim);
+    border-radius: 5px;
+    padding: 1px 5px;
+}
+
+/* Paused badge reports an infra state the user can't act on — noise in the
+   narrow rail; drop it (matches the retired history column's behavior). */
+html[data-ui-layout="rail"] .rail-history .cloud-chat-paused-badge {
+    display: none;
+}
+
+/* Pinned-state indicator — a static glyph, not a control (the pin ACTION lives
+   in the row menu). Always visible and solid rather than outlined, so a pinned
+   row stays identifiable once the "Pinned" header has scrolled away, by shape
+   and not by color alone. */
+html[data-ui-layout="rail"] .rail-history .cloud-chat-pin-flag {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+    color: var(--ds-primary);
+    pointer-events: none;
+}
+
+html[data-ui-layout="rail"] .rail-history .cloud-chat-pin-flag svg {
+    width: 11px;
+    height: 11px;
+    fill: currentColor;
+}
+
+/* Row overflow trigger ("⋮") — one control for Pin/Rename/Delete, replacing the
+   inline icon buttons that each cost width in a ~250px column. Hidden until the
+   row is hovered or the control focused, and held open while its menu is. */
+html[data-ui-layout="rail"] .rail-history .chat-rowmenu-btn {
+    flex-shrink: 0;
+    opacity: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    background: none;
+    color: var(--ds-text-muted);
+    cursor: pointer;
+    line-height: 1;
+    padding: 2px 2px;
+    border-radius: 5px;
+}
+
+html[data-ui-layout="rail"] .rail-history .chat-rowmenu-btn svg {
+    width: 14px;
+    height: 14px;
+}
+
+html[data-ui-layout="rail"] .rail-history .cloud-chat-list li[data-id]:hover .chat-rowmenu-btn,
+html[data-ui-layout="rail"] .rail-history .chat-rowmenu-btn:focus-visible,
+html[data-ui-layout="rail"] .rail-history .chat-rowmenu-btn[aria-expanded="true"] {
+    opacity: 1;
+}
+
+html[data-ui-layout="rail"] .rail-history .chat-rowmenu-btn:hover,
+html[data-ui-layout="rail"] .rail-history .chat-rowmenu-btn[aria-expanded="true"] {
+    background: var(--ds-surface-dim);
+    color: var(--ds-text-primary);
+}
+
+html[data-ui-layout="rail"] .rail-history .chat-rowmenu-btn:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
+}
+
+/* Coarse pointers get no hover event — pin the reveal-on-hover control on.
+   (The menu PANEL itself is styled once, unscoped, in chat.css: it is
+   body-appended, so it is not a descendant of .rail and cannot be reached by
+   this file's selectors.) */
+@media (hover: none) {
+    html[data-ui-layout="rail"] .rail-history .chat-rowmenu-btn {
+        opacity: 1;
+    }
+}
+
+/* No date-group header rules here any more, and none should come back: neither
+   renderer emits one under rail. The region is now the pinned shelf plus a
+   RAIL_RECENT_LIMIT-row "Recent" feed closing on "View all chats" (see
+   rail_history.js), and at five rows a date boundary labels a boundary the list
+   is too short to have — the last one standing, "Older", sat inside a section
+   already labelled "Recent". The five buckets topnav still uses are styled by
+   its own sheet; `_groupSessionsByDate` in chat.js is topnav-only now. */
+
+/* Two rules used to live here and are deliberately gone with the truncation:
+   an `li[hidden] { display: none }` restatement (the row/header rules above set
+   an explicit `display`, which beat the UA `[hidden]`), and a margin patch for
+   the collapsed case where a `hidden` date header sat between the pinned block
+   and the first recent row. Nothing marks a row `hidden` any more — the only
+   `[hidden]` left in the region is the empty-state <p> below — so both were
+   dead weight describing a state that no longer exists. */
+
+/* Empty state — hidden as soon as the list has any rows. */
+html[data-ui-layout="rail"] .rail-history-empty {
+    margin: 4px 0 0;
+    padding: 6px 9px;
+    font-size: 12.5px;
+    color: var(--ds-text-muted);
+}
+
+html[data-ui-layout="rail"] .rail-history .cloud-chat-list:not(:empty) + .rail-history-empty {
+    display: none;
+}
+
+/* ── "View all chats" → /chats ─────────────────────────────────────────
+   The last thing INSIDE the scroll box, so it sits directly under the last
+   recent row and travels with it. (It was briefly pinned to the foot of the
+   region, which on a tall window left it a hand's width under the list, reading
+   as a nav item stranded above the profile.) `margin-top` is small on purpose:
+   it belongs to the list above it, not to the space below.
+
+   Deliberately quieter than a `.rail-i`: the recents are the thing to read, and
+   a fourth full-weight destination row hanging off them would compete with the
+   conversations. So it takes the section HEADERS' voice — the same muted ink,
+   one size down from a row, nothing in the leading slot — and earns its place
+   with a trailing chevron, the rail's own "this goes somewhere" mark (see
+   .rail-getstarted-chev).
+
+   It obeys the rail's COLOUR RULE by spending nothing: a neutral wash on hover,
+   and NO active state. `.on` means "the thing you are looking at is in this
+   list", and /chats is the whole list — so an accent here would be a second
+   you-are-here marker in a column whose rows already carry one. */
+html[data-ui-layout="rail"] .rail-history-all {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 2px 0 0;
+    padding: 6px 9px;
+    border-radius: 8px;
+    flex-shrink: 0;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--ds-text-muted);
+    text-decoration: none;
+}
+
+html[data-ui-layout="rail"] .rail-history-all[hidden] {
+    display: none;
+}
+
+html[data-ui-layout="rail"] .rail-history-all svg {
+    width: 13px;
+    height: 13px;
+    /* Pinned to the label, not to the rail's right edge: at the edge it would
+       read as a second column of controls beside the conversation rows. */
+    flex-shrink: 0;
+}
+
+html[data-ui-layout="rail"] .rail-history-all:hover {
+    background: var(--rail-hover-bg);
+    color: var(--ds-text-primary);
+}
+
+html[data-ui-layout="rail"] .rail-history-all:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
+}
+
+/* ── Admin ────────────────────────────────────────────────────────────
+   The last section of the bottom zone. The border-top is the one divider
+   inside the nav zones: it marks the shift from using the instance (Library,
+   Agents) to operating it. */
+html[data-ui-layout="rail"] .rail-admin {
+    margin-top: 8px;
+    border-top: 1px solid var(--ds-border);
+    padding-top: 8px;
+    flex-shrink: 0;
+}
+
+html[data-ui-layout="rail"] .rail-admin-summary {
+    list-style: none;
+}
+
+html[data-ui-layout="rail"] .rail-admin-summary::-webkit-details-marker {
+    display: none;
+}
+
+/* Caret on the Admin row — points right when closed, down when open, so the
+   row says whether the subitems below belong to it. Scoped under .rail-admin
+   so it out-specifies the generic `.rail-i svg` 18px sizing. */
+html[data-ui-layout="rail"] .rail-admin .rail-admin-caret {
+    width: 15px;
+    height: 15px;
+    flex-shrink: 0;
+    color: var(--ds-text-muted);
+    transition: transform 0.18s var(--ds-ease-standard, ease);
+}
+
+html[data-ui-layout="rail"] .rail-admin[open] > .rail-admin-summary .rail-admin-caret {
+    transform: rotate(90deg);
+}
+
+/* The seven area rows. Indented and hairline-guided so they read as children
+   of the Admin row rather than as seven more destinations, and fixed in
+   number: nothing here expands in the column (see .rail-admin-flyout), so
+   `Admin` open always costs exactly seven rows. */
+html[data-ui-layout="rail"] .rail-admin-groups {
+    margin: 3px 0 0 15px;
+    padding-left: 8px;
+    border-left: 1px solid var(--ds-border);
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+/* Positioning context for the flyout. */
+html[data-ui-layout="rail"] .rail-admin-sub {
+    position: relative;
+}
+
+/* An area row: quieter and shorter than a `.rail-i` destination row — it is a
+   grouping label you can open, not somewhere you go. */
+html[data-ui-layout="rail"] .rail-admin-sub-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    min-height: 28px;
+    /* ONE TEXT COLUMN — the left pad is what lands this row's label on the same
+       x as every `.rail-i` label above it (Library / Agents / Admin / How Agnes
+       works), so the open Admin tree reads as one column of text rather than two
+       stepped ones. It is the last term in a chain that has to add up to the
+       `.rail-i` label offset: the rail's own 12px padding, `.rail-admin-groups`
+       (15px margin + 1px hairline + 8px pad), then this. Change any earlier term
+       and this one owes the difference. The row's BOX still starts left of its
+       label, as a `.rail-i`'s does — the indent belongs to the text, not to the
+       hover fill. */
+    padding: 4px 8px 4px 16px;
+    /* For the `.has-active` dot, which is positioned in the left pad so it
+       cannot displace the label out of that column. */
+    position: relative;
+    border: none;
+    border-radius: 7px;
+    background: none;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1.2;
+    text-align: left;
+    color: var(--ds-text-secondary);
+    cursor: pointer;
+}
+
+/* Hover, and the whole time the row (or anything in its panel) holds focus —
+   the same condition that reveals the flyout, so the row and its panel light
+   up and go dark together. */
+html[data-ui-layout="rail"] .rail-admin-sub-row:hover,
+html[data-ui-layout="rail"] .rail-admin-sub:focus-within > .rail-admin-sub-row {
+    background: var(--ds-surface-dim);
+    color: var(--ds-text-primary);
+}
+
+html[data-ui-layout="rail"] .rail-admin-sub-row:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
+}
+
+html[data-ui-layout="rail"] .rail-admin-sub-txt {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* "The active page is in here" — deliberately NOT the `.on` tint, which stays
+   reserved for the active destination itself (the link inside the flyout).
+   Weight plus a small primary dot is enough to trace the path down to it. */
+html[data-ui-layout="rail"] .rail-admin-sub-row.has-active {
+    color: var(--ds-text-primary);
+    font-weight: 600;
+}
+
+/* Positioned in the row's left pad rather than sitting in the flex flow: as a
+   flex child it displaced its own label ~10px to the right, so the ONE row in
+   the tree carrying a dot was the one row whose text left the column. Vertically
+   centred so it holds against the row's min-height. */
+html[data-ui-layout="rail"] .rail-admin-sub-row.has-active::before {
+    content: "";
+    position: absolute;
+    left: 6px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 5px;
+    height: 5px;
+    border-radius: var(--ds-radius-pill, 999px);
+    background: var(--ds-primary);
+}
+
+html[data-ui-layout="rail"] .rail-admin-sub-caret {
+    width: 13px;
+    height: 13px;
+    flex-shrink: 0;
+    color: var(--ds-text-muted);
+}
+
+/* The area's links — a flyout BESIDE the rail, in the left band of the page,
+   vertically anchored to the row's bottom edge. Two reasons for the side and
+   the anchor: Admin sits at the foot of the column, so a panel dropped below
+   its rows would open off the bottom of the viewport; and opening in place
+   would put the height back in the column, which is exactly what made the
+   zones drift page to page.
+
+   Revealed on hover and on focus anywhere inside (`:focus-within`) — which
+   covers both clicking the row (the click leaves the button focused, so the
+   panel stays up) and tabbing through the links. It escapes the rail because
+   `.rail` and `.rail-collapsible` are both overflow-visible — do not give
+   either an `overflow` or this clips. */
+html[data-ui-layout="rail"] .rail-admin-flyout {
+    display: none;
+    position: absolute;
+    left: 100%;
+    bottom: -6px;
+    /* Clears the rail's right border rather than landing on it: the row's box
+       ends 12px inside the 240px column (the rail's own padding), so anything
+       under ~13px here would overlap the border line. */
+    margin-left: 14px;
+    min-width: 212px;
+    max-height: var(--rail-admin-flyout-max-h);
+    /* NOTE for anyone touching the hover bridge below: this is why the bridge
+       cannot live on THIS element. `overflow-y: auto` forces the used value of
+       `overflow-x` to `auto` too (per CSS overflow — `visible` is not honored
+       when the other axis is not `visible`), so any pseudo-element placed
+       outside this padding box is clipped and stops hit-testing. */
+    overflow-y: auto;
+    padding: 6px;
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: 12px;
+    box-shadow: 0 12px 34px rgba(0, 0, 0, 0.16);
+    z-index: 70;
+}
+
+html[data-ui-layout="rail"] .rail-admin-sub:hover > .rail-admin-flyout,
+html[data-ui-layout="rail"] .rail-admin-sub:focus-within > .rail-admin-flyout {
+    display: block;
+}
+
+/* Hover bridge across the 14px gap between the rail edge and the panel —
+   without it the pointer leaves .rail-admin-sub mid-journey and the panel it was
+   travelling to disappears, which makes every Admin destination unreachable by
+   mouse.
+
+   It hangs off the ROW's container, not off the panel. A previous
+   `.rail-admin-flyout::before` version read correctly but never worked: the
+   panel's own `overflow-y: auto` also clips overflow-x (see the note there), so
+   a bridge at `left: -16px` was clipped away and the gap stayed dead space —
+   hit-testing the mid-gap pixels landed on `.rail`, outside .rail-admin-sub.
+   `.rail-admin-sub` has no `overflow` of its own, so an `::after` on it escapes.
+
+   Gated on the same hover/focus-within condition that reveals the panel, so the
+   strip exists only while a panel is actually open — at rest it would sit over
+   page content in the gutter and swallow clicks there. */
+html[data-ui-layout="rail"] .rail-admin-sub:hover::after,
+html[data-ui-layout="rail"] .rail-admin-sub:focus-within::after {
+    content: "";
+    position: absolute;
+    left: 100%;
+    /* 16px covers the panel's 14px `margin-left` with 2px to spare, so the
+       pointer is never between the two hover regions. */
+    width: 16px;
+    /* Anchored to the panel's own anchor (`bottom: -6px`) and as tall as the
+       panel can get, so a diagonal move toward a tall panel's top item stays
+       inside the region too — not just a straight horizontal one. */
+    bottom: -6px;
+    height: var(--rail-admin-flyout-max-h);
+    /* Below the panel (z-index 70) — it must never cover the links it leads
+       to — but above page content, which it has to overlay to work. */
+    z-index: 60;
+}
+
+html[data-ui-layout="rail"] .rail-admin-flyout-item {
+    display: block;
+    padding: 6px 10px;
+    border-radius: 7px;
+    font-size: 13px;
+    line-height: 1.3;
+    color: var(--ds-text-secondary);
+    text-decoration: none;
+}
+
+html[data-ui-layout="rail"] .rail-admin-flyout-item:hover {
+    background: var(--rail-hover-bg);
+    color: var(--ds-text-primary);
+}
+
+/* The actual active destination in the Admin tree — same neutral
+   `--rail-active-bg` as every other active state, so the rule holds all the way
+   down into the flyouts rather than stopping at the top-level rows. */
+html[data-ui-layout="rail"] .rail-admin-flyout-item.is-active {
+    background: var(--rail-active-bg);
+    color: var(--ds-primary-dark);
+    font-weight: 600;
+}
+
+html[data-ui-layout="rail"] .rail-admin-flyout-item:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
+}
+
+/* Footer — the profile row alone (onboarding moved up to a card above the
+   bottom nav, "How {brand} works" up to an icon beside the wordmark). Outside
+   .rail-collapsible so the profile stays reachable in the ≤1024px bar with the
+   nav collapsed. margin-top:auto is belt-and-braces: the scroll column above
+   already grows into the slack. */
+html[data-ui-layout="rail"] .rail-foot {
+    margin-top: auto;
+    padding-top: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+/* Divider above the profile row — the last rule line in the column, marking
+   the account off from the navigation. padding-top gives it breathing room
+   from the row below. */
+html[data-ui-layout="rail"] .rail-user-menu {
+    position: relative;
+    border-top: 1px solid var(--ds-border);
+    padding-top: 10px;
+}
+
+html[data-ui-layout="rail"] .rail-user {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    min-height: var(--rail-row-h);
+    padding: 7px 8px;
+    border-radius: 9px;
+    border: none;
+    background: none;
+    cursor: pointer;
+    text-align: left;
+}
+
+html[data-ui-layout="rail"] .rail-user:hover {
+    background: var(--ds-surface-dim);
+}
+
+html[data-ui-layout="rail"] .rail-user-txt {
+    display: flex;
+    flex-direction: column;
+    line-height: 1.25;
+    font-size: 13px;
+    min-width: 0;
+}
+
+html[data-ui-layout="rail"] .rail-user-txt b {
+    font-weight: 600;
+    color: var(--ds-text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+html[data-ui-layout="rail"] .rail-user-role {
+    font-size: 11px;
+    color: var(--ds-text-muted);
+}
+
+/* The one <button> in the profile menu ("Start over onboarding"). The shared
+   `.app-user-menu-item` skin is written for <a>, so restate the bits a button
+   doesn't inherit — otherwise it renders in the UA font, centred, and only as
+   wide as its text, next to links that fill the panel. */
+html[data-ui-layout="rail"] .rail-user-menu .app-user-menu-btn {
+    width: 100%;
+    border: none;
+    background: none;
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+/* User pop-up opens UP from the bottom row instead of down from the
+   header — same panel classes, repositioned. */
+html[data-ui-layout="rail"] .rail-user-menu .app-user-menu-panel {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 0;
+    right: auto;
+    top: auto;
+    width: 224px;
+    box-shadow: 0 12px 34px rgba(0, 0, 0, 0.14);
+}
+
+/* ── Onboarding card + its popover ────────────────────────────────────
+   A compact tinted card closing the bottom zone — under Admin, directly above
+   the profile — replacing the "Finish setup · N/5" text row that was too easy
+   to read past. Title + progress sentence + bar + chevron, three tight lines.
+   .rail-nav-bottom above it keeps the auto margin that pins the zone to the
+   foot of the column, so the card simply rides along at its end. */
+html[data-ui-layout="rail"] .rail-getstarted {
+    position: relative;
+    flex-shrink: 0;
+    margin-top: 10px;
+}
+
+/* Completed → the card leaves the rail for good. Nothing to dismiss, nothing to
+   re-read; chat_onboarding.js sets `.is-complete` on the wrapper as soon as the
+   last step lands. Also drops the popover with it (it's a descendant). The
+   profile menu's "Start over onboarding" is the way back. */
+html[data-ui-layout="rail"] .rail-getstarted.is-complete {
+    display: none;
+}
+
+html[data-ui-layout="rail"] .rail-getstarted-btn {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 9px 11px;
+    border: none;
+    border-radius: 11px;
+    /* The DS's informational blue, not the brand accent: `--ds-primary` stays
+       reserved for the active destination, and a primary-tinted card would read
+       as "you are here". Blue under every palette theme. */
+    background: var(--ds-accent-info-bg);
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: box-shadow var(--ds-motion-fast, 0.12s) var(--ds-ease-standard, ease);
+}
+
+/* Elevation only on hover — no colour change. The tint IS the card's identity;
+   deepening it under the pointer reads as a state change rather than as the
+   card answering. (Same treatment the Library grid cards settled on.) */
+html[data-ui-layout="rail"] .rail-getstarted-btn:hover,
+html[data-ui-layout="rail"] .rail-getstarted.is-open .rail-getstarted-btn {
+    box-shadow: var(--ds-shadow-sm, 0 1px 3px rgba(0, 0, 0, 0.08));
+}
+
+html[data-ui-layout="rail"] .rail-getstarted-btn:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
+}
+
+html[data-ui-layout="rail"] .rail-getstarted-body {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+/* "Set up Agnes" → "Continue setup" after the first step. Carries the weight of
+   a heading against the row labels around it, without their size. */
+html[data-ui-layout="rail"] .rail-getstarted-title {
+    font-size: 13.5px;
+    font-weight: 650;
+    line-height: 1.2;
+    color: var(--ds-text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* "N of 5 steps complete" — written whole by chat_onboarding.js, empty until
+   the journey resolves (so the line simply isn't there rather than lying). */
+html[data-ui-layout="rail"] .rail-getstarted-sub {
+    font-size: 11.5px;
+    line-height: 1.25;
+    color: var(--ds-text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+html[data-ui-layout="rail"] .rail-getstarted-sub:empty {
+    display: none;
+}
+
+/* Progress track — the same blue as the fill at low strength, so the bar reads
+   as one object on the card's tint rather than as a grey slot cut into it. */
+html[data-ui-layout="rail"] .rail-getstarted-bar {
+    display: block;
+    height: 4px;
+    margin-top: 2px;
+    border-radius: var(--ds-radius-pill, 999px);
+    background: color-mix(in srgb, var(--ds-accent-info-line) 22%, transparent);
+    overflow: hidden;
+}
+
+html[data-ui-layout="rail"] .rail-getstarted-bar-fill {
+    display: block;
+    height: 100%;
+    width: 0;
+    border-radius: inherit;
+    background: var(--ds-accent-info-line);
+    transition: width var(--ds-motion-med, 0.24s) var(--ds-ease-standard, ease);
+}
+
+html[data-ui-layout="rail"] .rail-getstarted-chev {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    color: var(--ds-accent-info-ink);
+    transition: transform var(--ds-motion-fast, 0.12s) var(--ds-ease-standard, ease);
+}
+
+html[data-ui-layout="rail"] .rail-getstarted-btn:hover .rail-getstarted-chev {
+    transform: translateX(2px);
+}
+
+/* Dropdown card — opens UP from the launcher on hover / focus, and stays
+   pinned when clicked open (.is-open). */
+html[data-ui-layout="rail"] .rail-getstarted:hover .rail-getstarted-panel,
+html[data-ui-layout="rail"] .rail-getstarted:focus-within .rail-getstarted-panel,
+html[data-ui-layout="rail"] .rail-getstarted.is-open .rail-getstarted-panel {
+    display: block;
+}
+
+/* Explicit-close override. The toggle button lives INSIDE .rail-getstarted,
+   so :focus-within stays true for as long as it (or the "×" the user just
+   clicked) holds focus — and the cursor is, by definition, still over the
+   launcher at the exact moment "×" or an outside-click handler fires. Both
+   reveal rules above would therefore keep the panel visible regardless of
+   what JS does to .is-open. `.is-closed` (added by rail_history.js's close
+   paths and chat_onboarding.js's dismissJourney) forces it shut until the
+   user's cursor actually leaves the launcher or they reopen it explicitly. */
+html[data-ui-layout="rail"] .rail-getstarted.is-closed .rail-getstarted-panel {
+    display: none !important;
+}
+html[data-ui-layout="rail"] .rail-getstarted-panel {
+    /* Hidden by default via CSS (the `hidden` attribute was dropped so the
+       hover / .is-open rules above can reveal it — a `[hidden]` reset was
+       winning otherwise). */
+    display: none;
+    position: absolute;
+    bottom: 100%;
+    left: 0;
+    right: 0;
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: 14px;
+    box-shadow: 0 12px 34px rgba(0, 0, 0, 0.16);
+    padding: 6px;
+    z-index: 60;
+    /* Never taller than the viewport leaves room for — scroll if the steps
+       plus header overflow a short window. */
+    max-height: min(70vh, 460px);
+    overflow-y: auto;
+}
+
+/* The Journey card inside the popover.
+   The .cloud-chat-journey-* styles live in chat.css, which only loads on
+   /chat — so on every OTHER rail page (where the popover is mounted
+   standalone) the card would render as raw UA-styled buttons. rail.css loads
+   everywhere, so the full journey styling is (re)defined here, rail-scoped;
+   on /chat these out-specify the chat.css base and keep the look identical. */
+html[data-ui-layout="rail"] .rail-getstarted-panel .cloud-chat-journey {
+    margin-top: 0;
+    padding: 8px 6px;
+    border-top: none;
+    background: transparent;
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-head {
+    display: flex;
+    align-items: center;
+    /* Was a non-wrapping row: h3 + the "Complete ✓" badge + two icon buttons
+       with no flex-wrap and no min-width:0 on the heading. In the completed
+       state the badge appears and the row exceeds the panel's width (a fixed
+       280px below 1024px, rail.css) — the panel's own `overflow-y: auto`
+       computes overflow-x to auto too, so the icon buttons were clipped past
+       the edge instead of just visible on their own line. */
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 4px 8px;
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-head h3 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 650;
+    color: var(--ds-text-primary);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-badge {
+    font-size: 11px;
+    color: var(--ds-accent-success-ink);
+    background: var(--ds-accent-success-bg);
+    border: 1px solid var(--ds-accent-success-line);
+    border-radius: var(--ds-radius-pill, 999px);
+    padding: 1px 8px;
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-actions {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-iconbtn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1;
+    color: var(--ds-text-muted);
+    background: transparent;
+    border: 1px solid var(--ds-border);
+    border-radius: var(--ds-radius-pill, 999px);
+    cursor: pointer;
+    /* The visual pill stays 20px (a 44px button would dominate this compact
+       header), but the actual hit area is expanded to the 44px touch-target
+       minimum via an invisible ::before, not by growing the element itself. */
+    position: relative;
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-iconbtn::before {
+    content: '';
+    position: absolute;
+    /* Full 44px vertical touch target, but horizontal expansion capped at 2px
+       (half the 4px inter-button gap) so adjacent buttons' hit areas can't
+       overlap. The rail head now renders only ↻ — the "×" is inline-only
+       (chat_onboarding.js) — so nothing is adjacent to steal an edge here
+       today; the cap stays as the rule for whatever lands beside it next. */
+    inset: -12px -2px;
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-iconbtn:hover {
+    color: var(--ds-text-primary);
+    border-color: var(--ds-text-muted);
+}
+
+/* "N of 5 done", in place of the slogan this line used to hold. No bar: the
+   launcher card sits directly below this popover with its own, so a second one
+   would draw the same fraction twice. */
+html[data-ui-layout="rail"] .cloud-chat-journey-sub {
+    margin: 2px 0 8px;
+    font-size: 12px;
+    color: var(--ds-text-muted);
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+/* mark · (label + why). No trailing chevron: one column of glyphs down the left
+   is enough, and a second down the right edge crowded labels that already wrap at
+   this width. Top-aligned, not centered — with the row centered a two-line label
+   floated its ✓/→/• to the middle of the text block, so the marks stopped lining
+   up with each other and the list lost its left spine. */
+html[data-ui-layout="rail"] .cloud-chat-journey-step {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    width: 100%;
+    text-align: left;
+    padding: 7px 8px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--ds-text-secondary);
+    font-size: 13.5px;
+    line-height: 1.35;
+    font-family: inherit;
+    cursor: pointer;
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-step:hover {
+    background: var(--ds-surface-dim);
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-step:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-mark {
+    flex-shrink: 0;
+    width: 16px;
+    text-align: center;
+    font-weight: 600;
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-body {
+    flex: 1;
+    min-width: 0;
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-label {
+    display: block;
+}
+
+/* The step's own explanation, on the suggested step only — it replaced a `title`
+   tooltip that needed a hover nobody tries and opened an OS box across the rows
+   below it. */
+html[data-ui-layout="rail"] .cloud-chat-journey-why {
+    display: block;
+    margin-top: 2px;
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--ds-text-muted);
+}
+
+/* Done: ✓ + muted label, no line-through — struck text on a label that wraps to
+   two lines at this width read as damaged rather than finished, and it repeated
+   what the tick already says. */
+html[data-ui-layout="rail"] .cloud-chat-journey-step.done {
+    color: var(--ds-text-muted);
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-step.done .cloud-chat-journey-mark {
+    color: var(--ds-accent-success-ink);
+}
+
+/* The suggested step, and the card's only focal point: tinted block, primary
+   ink, its own why-line. A suggestion of where to resume — not a gate, since
+   every other row is equally clickable. */
+html[data-ui-layout="rail"] .cloud-chat-journey-step.active {
+    color: var(--ds-text-primary);
+    background: var(--ds-primary-light);
+    font-weight: 600;
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-step.active:hover {
+    background: var(--ds-primary-light);
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-step.active .cloud-chat-journey-mark {
+    color: var(--ds-primary);
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-step.active .cloud-chat-journey-why {
+    font-weight: 400;
+}
+
+/* A step further down the list — still a real control (pointer cursor + hover
+   wash from the base rule above): every step is clickable in any order. Held at
+   the row default so all three ranks stay distinct — `.active` darkest, this one
+   secondary, `.done` muted. */
+html[data-ui-layout="rail"] .cloud-chat-journey-step.todo {
+    color: var(--ds-text-secondary);
+}
+
+/* A step's secondary destination ("Choose where Agnes reaches you" under "Use
+   Agnes outside this tab"). Restated in FULL, not just sized: the base rule lives
+   in chat.css, which does not load on the other rail pages, so on every page but
+   /chat this rendered as a raw browser link — blue, or purple once visited,
+   underlined, in a card built entirely from `--ds-*` ink. Geometry (the indent
+   that hangs it off the label rather than the ✓/→ gutter) matches the base rule;
+   the size is 12px because the rail sets its step rows to 13.5px rather than the
+   token scale, so --text-xs would read as fine print rather than one step down. */
+html[data-ui-layout="rail"] .cloud-chat-journey-sub-action {
+    display: block;
+    margin: -1px 0 2px 32px;
+    padding: 2px 0;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--ds-text-muted);
+    text-decoration: none;
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-sub-action:hover {
+    color: var(--ds-primary);
+    text-decoration: underline;
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-sub-action:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-sub-action.is-linked {
+    color: var(--ds-accent-success-ink);
+}
+
+/* Panel footer: the quiet skip. Restated here for the same reason as everything
+   above — chat.css doesn't load on the other rail pages, and the popover is
+   mounted on all of them. */
+html[data-ui-layout="rail"] .cloud-chat-journey-finish {
+    display: block;
+    width: 100%;
+    margin-top: 10px;
+    padding: 5px 12px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--ds-text-muted);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-finish:hover {
+    color: var(--ds-text-primary);
+    background: var(--rail-hover-bg, var(--ds-surface));
+}
+
+html[data-ui-layout="rail"] .cloud-chat-journey-finish:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
+}
+
+/* Small + tablet screens: the fixed column becomes a normal top block so
+   content isn't squeezed. Raised from the prototype's 760px to 1024px so
+   tablet-landscape widths (the ~760–1024px range, where a fixed 240px rail
+   left the content column as little as ~660px) also get the top-bar layout;
+   above this, laptops/desktops keep the side rail with a comfortable ≥784px
+   content column. */
+@media (max-width: 1024px) {
+    html[data-ui-layout="rail"] body {
+        padding-left: 0;
+    }
+
+    html[data-ui-layout="rail"] .rail {
+        position: static;
+        width: auto;
+        flex-direction: row;
+        flex-wrap: wrap;
+        align-items: center;
+        border-right: none;
+        border-bottom: 1px solid var(--ds-border);
+        /* The base rule sets `overflow: visible` so the Studio hover flyout can
+           escape the fixed column's right edge — harmless there since the rail
+           IS the viewport-height column. In this row layout `.rail` is back in
+           normal document flow, so unconstrained overflow drags the whole page
+           horizontally (most visibly when the tour scrolls a nav item into
+           view). Cap the bar's own width — but keep `.rail` itself
+           `overflow: visible`: making the BAR the scroll box (`overflow-x:
+           auto`) axis-couples `overflow-y` to `auto` per the CSS Overflow
+           spec, clipping the Get-started popover and the account menu that
+           open downward out of the bar (Devin Review on #1092). The scroll
+           containment lives on `.rail-nav` below instead — the popover and
+           user-menu panels are its SIBLINGS, so they escape freely while the
+           nav list (the thing the tour scrolls into view) scrolls
+           internally. */
+        max-width: 100%;
+    }
+
+    html[data-ui-layout="rail"] .rail-nav {
+        flex-direction: row;
+        flex-wrap: wrap;
+        /* See the `.rail` comment above: this is the scroll box that keeps a
+           tour-driven scrollIntoView from dragging the page sideways, scoped
+           to an element that contains no popovers. */
+        max-width: 100%;
+        overflow-x: auto;
+    }
+
+    /* `.rail-i` is `width: 100%` for the column layout, where every item
+       should span the rail's fixed 240px. Left unscoped here, that same
+       100% resolves against the row's own width inside a wrapping flex
+       container — each item claims a full line, which is the other half of
+       why the bar overflowed (independent of the overflow fix above). */
+    html[data-ui-layout="rail"] .rail-i {
+        width: auto;
+    }
+
+    /* New chat needs no override of its own — it is a `.rail-i`, so the rule
+       above already covers it. */
+
+    /* The 8px that separates New chat from the recents is a COLUMN metric.
+       In the bar the two are laid out side by side, where it reads as a stray
+       right-hand gap. */
+    html[data-ui-layout="rail"] .rail-nav-top {
+        margin-bottom: 0;
+    }
+
+    /* The column's 14px under the wordmark is air above the first section
+       label. Here the logo shares a row with the collapse toggle, where the
+       same value reads as the mark sitting high in its own row. */
+    html[data-ui-layout="rail"] .rail-logo {
+        padding-bottom: 8px;
+    }
+
+    /* The conversations region is sized by the COLUMN layout's free space:
+       `.rail-history: flex: 1 1 auto` over a body with `flex-basis: 0`, which
+       resolves to a real height only inside the rail's fixed viewport height.
+       Here `.rail` is an auto-height bar, so there is no free space to grow
+       into and the whole region collapsed to 0 — Pinned and Chats were rendered
+       and then clipped to nothing, i.e. the expanded bar showed every nav row
+       and no conversations at all (which the collapse toggle's own contract
+       says it should).
+
+       Content-driven height instead, capped so a long history can't push the
+       nav rows and the profile off a phone screen: the lists still scroll
+       inside the same box, with the same fade. */
+    html[data-ui-layout="rail"] .rail-history {
+        flex: 0 0 auto;
+    }
+
+    html[data-ui-layout="rail"] .rail-history-body {
+        flex: 0 1 auto;
+        max-height: 45vh;
+    }
+
+    /* The row layout has nothing to collapse to — every nav item, the Chats
+       history, and Admin stayed permanently on screen, eating vertical
+       space, and at narrow widths flex-wrap grew the bar to several rows.
+       The toggle (hidden entirely above this breakpoint) shows/hides this
+       group; the foot below (the profile row) always stays reachable
+       regardless of its state. Collapsed by default. */
+    html[data-ui-layout="rail"] .rail-collapse-toggle {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 40px;
+        height: 40px;
+        margin-left: auto;
+        border: 1px solid var(--ds-border);
+        border-radius: 9px;
+        background: var(--ds-surface);
+        color: var(--ds-text-secondary);
+        cursor: pointer;
+        flex-shrink: 0;
+    }
+
+    html[data-ui-layout="rail"] .rail-collapse-toggle svg {
+        width: 20px;
+        height: 20px;
+    }
+
+    html[data-ui-layout="rail"] .rail-collapsible {
+        display: none;
+        /* Always its own full-width line below the logo+toggle row, rather
+           than squeezing in beside them (.rail is flex-wrap: wrap here). */
+        flex: 1 1 100%;
+        flex-direction: column;
+    }
+
+    html[data-ui-layout="rail"] .rail.is-nav-open .rail-collapsible {
+        display: flex;
+    }
+
+    html[data-ui-layout="rail"] .rail-foot {
+        margin: 0;
+        border: none;
+        padding: 0;
+        flex-direction: row;
+    }
+
+    /* The user-row divider is a bottom-of-column separator; in the row
+       layout it would read as a stray top border, so drop it. */
+    html[data-ui-layout="rail"] .rail-user-menu {
+        border-top: none;
+        padding-top: 0;
+    }
+
+
+    html[data-ui-layout="rail"] .rail-user-menu .app-user-menu-panel {
+        bottom: auto;
+        top: calc(100% + 8px);
+    }
+
+    /* The onboarding card rides inside .rail-collapsible now (it closes the
+       bottom nav rather than sitting in the foot), so it appears with the rest
+       of the nav when the bar is expanded and needs no compact form of its
+       own — the 40×40 icon-with-badge treatment it used to get in the foot row
+       is gone with the row. Only the popover has to move: it opens DOWNWARD
+       here, since the rail is at the top of the page. */
+
+    /* Admin flyouts: in the top-bar layout the rail is at the TOP of the page,
+       so "beside it, growing upward" would open off the top of the viewport.
+       Drop them below their row instead, left-aligned to it. */
+    html[data-ui-layout="rail"] .rail-admin-flyout {
+        left: 0;
+        bottom: auto;
+        top: 100%;
+        margin-left: 0;
+        margin-top: 6px;
+    }
+
+    /* The hover bridge follows the panel — the gap it has to span is now the
+       6px ABOVE the panel, across the row's full width rather than beside it. */
+    html[data-ui-layout="rail"] .rail-admin-sub:hover::after,
+    html[data-ui-layout="rail"] .rail-admin-sub:focus-within::after {
+        left: 0;
+        right: 0;
+        width: auto;
+        top: 100%;
+        bottom: auto;
+        height: 8px;
+    }
+
+    /* Popover opens downward too when the rail is a top bar, and anchors to the
+       launcher's RIGHT edge (opening leftward) since the compact icon button
+       sits at the right end of the bar — a left-anchored 280px panel would run
+       off the viewport. */
+    html[data-ui-layout="rail"] .rail-getstarted-panel {
+        bottom: auto;
+        top: calc(100% + 8px);
+        left: auto;
+        right: 0;
+        width: 280px;
+    }
+}
+

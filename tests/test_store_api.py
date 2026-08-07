@@ -344,6 +344,48 @@ class TestStoreUpload:
         assert "name: code-review-by-alice" in skill_md.read_text()
         assert (plugin_dir / ".claude-plugin" / "plugin.json").is_file()
 
+    def test_upload_defaults_to_everyone(self, web_client):
+        """No `access` field ⇒ the historical publish-to-everyone behaviour.
+
+        Every pre-builder caller (the upload wizard, the CLI, these tests)
+        omits it, so the default is what keeps them working unchanged.
+        """
+        _, cookies = _create_user(web_client, "default-access@x.com")
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("p.zip", _make_plugin_zip("open-plugin"), "application/zip")},
+            data={"type": "plugin", "description": _OK_DESC},
+            cookies=cookies,
+        )
+        assert r.status_code == 201, r.text
+        assert r.json()["visibility_status"] != "hidden"
+
+    def test_upload_plugin_honours_private_access(self, web_client):
+        """A plugin bundle is the one authored type that cannot go through the
+        JSON `from-markdown` path, so without `access` on this endpoint the
+        unified builder could offer Private for skills and agents but silently
+        publish plugins to the whole instance."""
+        _, cookies = _create_user(web_client, "private-plugin@x.com")
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("p.zip", _make_plugin_zip("secret-plugin"), "application/zip")},
+            data={"type": "plugin", "description": _OK_DESC, "access": "private"},
+            cookies=cookies,
+        )
+        assert r.status_code == 201, r.text
+        assert r.json()["visibility_status"] == "hidden"
+
+    def test_upload_rejects_unknown_access(self, web_client):
+        _, cookies = _create_user(web_client, "bad-access@x.com")
+        r = web_client.post(
+            "/api/store/entities",
+            files={"file": ("p.zip", _make_plugin_zip("bad-access"), "application/zip")},
+            data={"type": "plugin", "description": _OK_DESC, "access": "world"},
+            cookies=cookies,
+        )
+        assert r.status_code == 400
+        assert r.json()["detail"] == "invalid_access"
+
     def test_upload_plugin_rewrites_name(self, web_client, tmp_path):
         _, cookies = _create_user(web_client, "bob@x.com")
         zip_bytes = _make_plugin_zip("my-plugin")

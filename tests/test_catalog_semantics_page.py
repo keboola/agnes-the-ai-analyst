@@ -71,8 +71,8 @@ class TestCatalogSemanticsContent:
         assert resp.status_code == 200
         body = resp.text
 
-        # Tab strip — plain text + count, canonical `.tab-strip` component.
-        assert "tab-strip" in body
+        # Tab strip — page-local .sl-tab buttons (redesign replaced .tab-strip).
+        assert 'class="sl-tab' in body
         assert 'data-tab="metrics"' in body
         assert 'data-tab="glossary"' in body
         assert "Metrics" in body
@@ -346,8 +346,8 @@ class TestCatalogSemanticsDetailRendering:
             synonyms=["average order value", "AOV"],
         )
         body = self._page(seeded_app)
-        m = re.search(r'data-filter-text="([^"]*)"', body)
-        assert m, "filter index attribute missing"
+        m = re.search(r'data-ft="([^"]*)"', body)
+        assert m, "filter index attribute (data-ft) missing"
         idx = m.group(1)
         assert "average order value" in idx
         assert "aov" in idx

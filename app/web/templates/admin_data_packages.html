@@ -1,0 +1,64 @@
+{% extends "base_page.html" %}
+{% from "macros/_stack_card.html" import card %}
+{# Admin audit view — every Data Package + Memory Domain regardless of
+   grant. The Catalog reshape (follow-up to auto-membership) removed the
+   ``browse_admin`` god-mode path from the user-facing /catalog and
+   /corporate-memory pages — both now show the same grant-scoped,
+   addable-only view for every visitor, admin included. This page is
+   where the "see everything" audit affordance moved: a read-only
+   inventory grid, not a stack-management surface (no Add/Remove wiring —
+   see admin_hub.html → Data Packages → "All packages"). #}
+{% block title %}All Packages — {{ config.INSTANCE_NAME }}{% endblock %}
+{% block container_modifier %}container--wide{% endblock %}
+
+{% set page_hero_eyebrow = "Admin" %}
+{% set page_hero_title = "All Packages" %}
+{% set page_hero_subtitle = "Every Data Package and Memory Domain on this instance, regardless of who's been granted access — for auditing coverage and spotting empty or ungranted entries." %}
+
+{% block head_extra %}
+<style>
+  .adp-section { margin: 28px 0 8px; }
+  .adp-section h2 { font-size: 18px; margin: 0 0 4px; color: var(--ds-text-primary); }
+  .adp-section .adp-count { font-size: 12px; color: var(--ds-text-secondary); margin: 0 0 14px; }
+  .adp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; margin-bottom: 8px; }
+  /* Read-only audit grid: the shared _stack_card macro renders an
+     interactive Add/Remove footer button meant for /catalog + /stack,
+     where page JS wires POST/DELETE against /api/stack/*. This page ships
+     no such JS (it's an inventory, not a stack-management surface) — hide
+     the button so it doesn't look actionable while doing nothing. The
+     drilldown link and the "0 tables — assign some →" CTA stay untouched. */
+  .adp-grid .stack-card__btn { display: none; }
+</style>
+{% endblock %}
+
+{% block page %}
+<div class="adp-section">
+  <h2>Data Packages</h2>
+  <p class="adp-count">{{ package_cards|length }} package{{ '' if package_cards|length == 1 else 's' }} total</p>
+  {% if package_cards %}
+  <div class="stack-grid adp-grid">
+    {% for entry in package_cards %}{{ card(entry) }}{% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <h3>No Data Packages yet</h3>
+    <p>Create one from <a href="/admin/tables?new_package=1">/admin/tables</a>.</p>
+  </div>
+  {% endif %}
+</div>
+
+<div class="adp-section">
+  <h2>Memory Domains</h2>
+  <p class="adp-count">{{ domain_cards|length }} domain{{ '' if domain_cards|length == 1 else 's' }} total</p>
+  {% if domain_cards %}
+  <div class="stack-grid adp-grid">
+    {% for entry in domain_cards %}{{ card(entry) }}{% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <h3>No Memory Domains yet</h3>
+    <p>Create one from <a href="/admin/corporate-memory">/admin/corporate-memory</a>.</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

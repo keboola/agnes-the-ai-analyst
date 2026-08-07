@@ -16,9 +16,10 @@ wired through every layer" sanity gate:
 5. **Required grant** can't be unsubscribed via ``/api/stack/subscription``
    (400 ``cannot_remove_required``).
 6. **No grant at all** → ``POST /api/stack/subscribe`` returns 403.
-7. **Soft downgrade**: admin flips ``required → available``; previously
-   required users keep the resource in their stack via the eager
-   ``user_stack_subscriptions`` materialization.
+7. **Soft downgrade** (auto-membership model): admin flips
+   ``required → available``; previously required users keep the resource
+   in their stack automatically — no eager ``user_stack_subscriptions``
+   fan-out needed, since ``available`` grants are auto-in-stack too.
 
 Each scenario hits the real FastAPI ``TestClient`` so the full middleware
 stack (auth, audit, telemetry) runs.
@@ -28,7 +29,6 @@ from __future__ import annotations
 
 import uuid
 
-import pytest
 
 from src.db import get_system_db
 
@@ -43,9 +43,7 @@ def _auth(token: str) -> dict:
 
 
 def _everyone_id(conn) -> str:
-    return conn.execute(
-        "SELECT id FROM user_groups WHERE name = 'Everyone'"
-    ).fetchone()[0]
+    return conn.execute("SELECT id FROM user_groups WHERE name = 'Everyone'").fetchone()[0]
 
 
 def _add_everyone_membership(conn, user_id: str) -> None:
@@ -54,14 +52,17 @@ def _add_everyone_membership(conn, user_id: str) -> None:
     sign-up flow that auto-adds new users."""
     gid = _everyone_id(conn)
     conn.execute(
-        "INSERT OR IGNORE INTO user_group_members(user_id, group_id, source) "
-        "VALUES (?, ?, 'system_seed')",
+        "INSERT OR IGNORE INTO user_group_members(user_id, group_id, source) VALUES (?, ?, 'system_seed')",
         [user_id, gid],
     )
 
 
 def _seed_grant(
-    conn, *, group_id: str, resource_type: str, resource_id: str,
+    conn,
+    *,
+    group_id: str,
+    resource_type: str,
+    resource_id: str,
     requirement: str = "available",
 ) -> str:
     grant_id = str(uuid.uuid4())
@@ -78,8 +79,12 @@ def _seed_pkg(conn, slug: str, name: str = "Pkg") -> str:
     from src.repositories.data_packages import DataPackagesRepository
 
     return DataPackagesRepository(conn).create(
-        name=name, slug=slug, description=None,
-        icon=None, color=None, created_by="test",
+        name=name,
+        slug=slug,
+        description=None,
+        icon=None,
+        color=None,
+        created_by="test",
     )
 
 
@@ -125,8 +130,7 @@ class TestEveryoneRequiredAutomembership:
             items = r.json()["items"]
             match = next((it for it in items if it["id"] == pkg_id), None)
             assert match is not None, (
-                f"{token_key} should see the required Everyone package in stack; "
-                f"got items={items}"
+                f"{token_key} should see the required Everyone package in stack; got items={items}"
             )
             assert match["requirement"] == "required"
             assert match["in_stack"] is True
@@ -208,8 +212,11 @@ class TestZombieSubscriptionFiltered:
         gid = _seed_group_with(conn, name="zombie_grp", user_ids=["analyst1"])
         pkg_id = _seed_pkg(conn, "zombie-pkg")
         grant_id = _seed_grant(
-            conn, group_id=gid, resource_type="data_package",
-            resource_id=pkg_id, requirement="available",
+            conn,
+            group_id=gid,
+            resource_type="data_package",
+            resource_id=pkg_id,
+            requirement="available",
         )
         conn.close()
 
@@ -259,8 +266,11 @@ class TestRequiredCannotBeRemoved:
         gid = _seed_group_with(conn, name="must_have_grp", user_ids=["analyst1"])
         pkg_id = _seed_pkg(conn, "must-have-pkg")
         _seed_grant(
-            conn, group_id=gid, resource_type="data_package",
-            resource_id=pkg_id, requirement="required",
+            conn,
+            group_id=gid,
+            resource_type="data_package",
+            resource_id=pkg_id,
+            requirement="required",
         )
         conn.close()
 
@@ -300,13 +310,17 @@ class TestSoftDowngradePreservesUserStack:
     def test_required_to_available_keeps_user_stack(self, seeded_app):
         conn = get_system_db()
         gid = _seed_group_with(
-            conn, name="downgrade_grp",
+            conn,
+            name="downgrade_grp",
             user_ids=["analyst1", "viewer1", "km_admin1"],
         )
         pkg_id = _seed_pkg(conn, "downgrade-pkg")
         grant_id = _seed_grant(
-            conn, group_id=gid, resource_type="data_package",
-            resource_id=pkg_id, requirement="required",
+            conn,
+            group_id=gid,
+            resource_type="data_package",
+            resource_id=pkg_id,
+            requirement="required",
         )
         conn.close()
 
@@ -318,10 +332,7 @@ class TestSoftDowngradePreservesUserStack:
                 "/api/stack?type=data_package",
                 headers=_auth(seeded_app[token_key]),
             )
-            assert any(
-                it["id"] == pkg_id and it["requirement"] == "required"
-                for it in r.json()["items"]
-            )
+            assert any(it["id"] == pkg_id and it["requirement"] == "required" for it in r.json()["items"])
 
         # Admin downgrades.
         r = c.put(
@@ -331,8 +342,9 @@ class TestSoftDowngradePreservesUserStack:
         )
         assert r.status_code == 200
 
-        # The eager materialize wrote a subscription row for each member,
-        # so they still see the package — but now as ``available + in_stack``.
+        # Auto-membership: ``available`` is automatically in every granted
+        # user's stack, no subscription row needed — every member still
+        # sees the package, now as ``available + in_stack``.
         for token_key in ("analyst_token", "viewer_token", "km_admin_token"):
             r = c.get(
                 "/api/stack?type=data_package",
@@ -340,21 +352,20 @@ class TestSoftDowngradePreservesUserStack:
             )
             items = r.json()["items"]
             match = next((it for it in items if it["id"] == pkg_id), None)
-            assert match is not None, (
-                f"{token_key} lost the package after soft downgrade: {items}"
-            )
+            assert match is not None, f"{token_key} lost the package after soft downgrade: {items}"
             assert match["requirement"] == "available"
             assert match["in_stack"] is True
 
-        # And the user_stack_subscriptions table actually has the rows
-        # (direct DB assert keeps the resolver honest).
+        # And NO subscription rows were written — the removed eager
+        # fan-out is no longer needed under auto-membership (direct DB
+        # assert keeps the resolver honest).
         conn = get_system_db()
         sub_users = {
-            r[0] for r in conn.execute(
-                "SELECT user_id FROM user_stack_subscriptions "
-                "WHERE resource_type='data_package' AND resource_id=?",
+            r[0]
+            for r in conn.execute(
+                "SELECT user_id FROM user_stack_subscriptions WHERE resource_type='data_package' AND resource_id=?",
                 [pkg_id],
             ).fetchall()
         }
         conn.close()
-        assert sub_users == {"analyst1", "viewer1", "km_admin1"}
+        assert sub_users == set()

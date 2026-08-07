@@ -1,0 +1,72 @@
+/* =====================================================================
+ * share_dialog.css — chrome for the ONE owner-facing sharing dialog
+ * (js/components/share_dialog.js).
+ *
+ * Lived inside library.html as `.lib-modal` + `.lib-share-*` + `.lib-grp`,
+ * which is why the Library could open a real sharing dialog and a detail
+ * page could not: the dialog was page furniture rather than a component.
+ * Same metrics, same tokens — a caller who knows the Library's dialog
+ * recognises this one, because it IS that dialog.
+ *
+ * Every colour is a `--ds-*` token, so the dialog follows the theme it is
+ * opened on (blue / paper, light / dark) with no per-theme rule here.
+ * ===================================================================== */
+
+.share-dialog {
+  position: fixed; inset: 0; z-index: 200;
+  display: flex; align-items: center; justify-content: center;
+}
+.share-dialog[hidden] { display: none; }
+
+.share-dialog__backdrop { position: absolute; inset: 0; background: rgba(15, 23, 42, .45); }
+
+.share-dialog__card {
+  position: relative; z-index: 1; width: min(460px, calc(100vw - 32px));
+  background: var(--ds-surface); border: 1px solid var(--ds-border);
+  border-radius: 14px; box-shadow: var(--ds-shadow-md); padding: 20px 22px 22px;
+}
+
+.share-dialog__head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin-bottom: 14px;
+}
+.share-dialog__head h2 { margin: 0; font-size: 18px; }
+.share-dialog__x {
+  border: none; background: none; font-family: inherit; font-size: 22px;
+  line-height: 1; padding: 0 4px; cursor: pointer; color: var(--ds-text-muted);
+}
+
+/* Names the subject in the caller's own words ("Choose who can use
+   Marketing assets"), so a dialog opened from a badge still says what it
+   is about. */
+.share-dialog__subject { margin: 0 0 14px; font-size: 13px; color: var(--ds-text-secondary); }
+.share-dialog__subject b { color: var(--ds-text-primary); }
+
+.share-dialog__loading { padding: 8px 0 14px; font-size: 13px; color: var(--ds-text-muted); }
+
+/* The group checklist — the whole control. Scrolls internally so a caller
+   in twenty groups never grows the card past the viewport. */
+.share-dialog__groups {
+  display: flex; flex-direction: column; gap: 2px;
+  max-height: 40vh; overflow-y: auto; margin: 0 0 14px;
+}
+.share-dialog__grp {
+  display: flex; align-items: center; gap: 10px; padding: 9px 10px;
+  border-radius: 9px; font-size: 13.5px; color: var(--ds-text-primary); cursor: pointer;
+}
+.share-dialog__grp:hover { background: color-mix(in srgb, var(--ds-text-primary) 5%, transparent); }
+.share-dialog__grp input { accent-color: var(--ds-primary); width: 15px; height: 15px; flex-shrink: 0; }
+.share-dialog__grp-hint { margin-left: auto; font-size: 11.5px; color: var(--ds-text-muted); }
+
+.share-dialog__note {
+  margin: 0 0 14px; padding: 10px 12px; font-size: 12.5px; line-height: 1.5;
+  color: var(--ds-text-secondary); background: var(--ds-surface-dim);
+  border: 1px solid var(--ds-border); border-radius: 9px;
+}
+.share-dialog__err {
+  margin-bottom: 12px; padding: 8px 12px; font-size: 13px;
+  color: var(--ds-warn-ink); background: var(--ds-warn-bg);
+  border: 1px solid var(--ds-warn-line); border-radius: 9px;
+}
+
+.share-dialog__foot { display: flex; justify-content: flex-end; gap: 10px; }

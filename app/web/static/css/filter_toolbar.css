@@ -1,0 +1,895 @@
+/* =====================================================================
+   .fbar — the shared index-page filter toolbar
+   =====================================================================
+   One bordered bar holding a search input, an optional segmented control,
+   and native <select> filters. Used by /artefacts (search · ownership ·
+   type · sort) and /stack (search · sort) so both index surfaces share one
+   filter-bar component instead of drifting page-local copies.
+
+   Mirrors the canonical .filter-bar / .filter-pill primitive but is
+   re-tokenized on --ds-* so it themes correctly under both the blue default
+   and the paper skin (the legacy .filter-pill active state is hard-wired to
+   the blue --primary family). Behaviour is identical; only the palette is
+   design-system-native.
+
+   Layout: one row on desktop — no wrap; the search is the only
+   flex-grow/shrink element (min-width:0 lets it shrink past its content so
+   the controls never push it to a second line), capped so it doesn't sprawl
+   on ultra-wide. Every other control is flex:0 0 auto. Below a phone
+   breakpoint the bar wraps rather than overflowing — deliberately NOT
+   overflow:auto, which would clip the absolutely-positioned Filter menu to
+   the bar's box (only a sliver would show). No border/background: the toolbar
+   is a bare control row on the page, each control carrying its own chrome. */
+.fbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: nowrap;
+  margin: 0 0 16px;
+}
+@media (max-width: 760px) { .fbar { flex-wrap: wrap; } }
+
+/* `--center` — for a bar whose SEARCH lives somewhere else (the Library keeps it
+   in the page header, level with the title). Search is the only flex-grow child,
+   so without it the remaining pills collapse to their content and pack against
+   the left edge of a full-width band, reading as leftovers in the corner rather
+   than as the page's control row. Centring restores a balanced strip. Opt-in, so
+   every bar that still owns its search is untouched. */
+.fbar--center { justify-content: center; }
+
+/* Search — the dominant control. */
+.fbar__search { position: relative; flex: 1 1 220px; min-width: 0; max-width: 420px; display: flex; align-items: center; }
+.fbar__search svg { position: absolute; left: 11px; width: 16px; height: 16px; color: var(--ds-text-muted); pointer-events: none; }
+.fbar__search input { width: 100%; height: 38px; padding: 0 12px 0 34px; font: inherit; font-size: 14px; color: var(--ds-text-primary); background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 9px; }
+.fbar__search input::placeholder { color: var(--ds-text-muted); }
+.fbar__search input:focus { outline: none; border-color: var(--ds-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ds-primary) 20%, transparent); }
+
+/* Segmented control — fixed width, never shrinks (labels would clip). */
+.fbar-seg { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 2px; padding: 3px; background: color-mix(in srgb, var(--ds-text-primary) 5%, transparent); border: 1px solid var(--ds-border); border-radius: 10px; }
+.fbar-seg__btn { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; font: inherit; font-size: 13px; font-weight: 600; color: var(--ds-text-secondary); background: transparent; border: none; border-radius: 8px; cursor: pointer; white-space: nowrap; }
+.fbar-seg__btn:hover { color: var(--ds-text-primary); }
+.fbar-seg__btn.is-active { background: var(--ds-surface); color: var(--ds-primary); box-shadow: 0 1px 2px color-mix(in srgb, var(--ds-text-primary) 14%, transparent); }
+.fbar-seg__n { font-size: 11px; font-weight: 700; color: var(--ds-text-muted); }
+.fbar-seg__btn.is-active .fbar-seg__n { color: var(--ds-primary); }
+
+/* Native <select> filters — --ds- chrome + a CSS chevron so no data-URI hex
+   sneaks past the design-system contract guard. */
+.fbar-select { flex: 0 0 auto; position: relative; display: inline-flex; align-items: center; }
+.fbar-select::after { content: "▾"; position: absolute; right: 11px; top: 50%; transform: translateY(-50%); font-size: 11px; color: var(--ds-text-muted); pointer-events: none; }
+.fbar-select select { height: 38px; padding: 0 30px 0 12px; font: inherit; font-size: 13px; font-weight: 500; color: var(--ds-text-primary); background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 9px; cursor: pointer; -webkit-appearance: none; appearance: none; }
+.fbar-select select:focus { outline: none; border-color: var(--ds-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ds-primary) 20%, transparent); }
+
+/* =====================================================================
+   Faceted filter menu + applied-filter chips (the hybrid model)
+   =====================================================================
+   For surfaces with several optional facets (Type, Source, …): a single
+   click-driven Filter button opens a grouped popover of checkbox options;
+   each selection renders as a removable chip on a second row that only
+   appears when at least one filter is active — so the resting bar stays one
+   clean line and the pattern scales to many facets. Driven by
+   static/js/filter_toolbar.js. Click (not hover) so it works on touch +
+   keyboard. Ownership segments + Sort stay inline (they're scope + ordering,
+   not filters), so they are NOT folded into this menu. */
+.fbar-filter { flex: 0 0 auto; position: relative; }
+.fbar-filter__btn { display: inline-flex; align-items: center; gap: 7px; height: 38px; padding: 0 12px; font: inherit; font-size: 13px; font-weight: 600; color: var(--ds-text-primary); background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 9px; cursor: pointer; white-space: nowrap; }
+.fbar-filter__btn:hover { border-color: var(--ds-text-muted); }
+.fbar-filter__btn svg { width: 15px; height: 15px; color: var(--ds-text-secondary); }
+.fbar-filter__btn.is-active { border-color: var(--ds-primary); color: var(--ds-primary); }
+.fbar-filter__btn.is-active svg { color: var(--ds-primary); }
+.fbar-filter__n { min-width: 18px; height: 18px; padding: 0 5px; display: inline-grid; place-items: center; font-size: 11px; font-weight: 700; color: var(--ds-text-inverse); background: var(--ds-primary); border-radius: var(--ds-radius-pill); }
+
+.fbar-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 40; width: 264px; max-height: 60vh; overflow-y: auto; background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 12px; box-shadow: var(--ds-shadow-md); padding: 6px; }
+.fbar-menu[hidden] { display: none; }
+.fbar-menu__group + .fbar-menu__group { border-top: 1px solid var(--ds-border); margin-top: 4px; padding-top: 4px; }
+.fbar-menu__title { font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ds-text-muted); padding: 8px 10px 4px; }
+.fbar-menu__opt { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 8px; font-size: 13.5px; color: var(--ds-text-primary); cursor: pointer; }
+.fbar-menu__opt:hover { background: color-mix(in srgb, var(--ds-text-primary) 5%, transparent); }
+.fbar-menu__opt input { accent-color: var(--ds-primary); width: 15px; height: 15px; flex-shrink: 0; }
+.fbar-menu__opt-n { margin-left: auto; font-size: 11.5px; color: var(--ds-text-muted); }
+/* A BINARY refinement worth seeing at rest ("In stack only") is a toolbar
+   BUTTON, not a menu row: its two states are complementary, so a category
+   popover offering both would only ever be a longer way to say the same thing —
+   and the condition is consequential enough that it should not need a click to
+   discover, nor a chip to report. Matches .fbar-filter__btn's metrics exactly
+   (38px, 9px radius, same border and type) so the bar keeps one control height,
+   and lights up in the primary colour when engaged — the same "on" vocabulary
+   .fbar-filter__btn.is-active and .fbar-view__btn.is-active already speak. */
+.fbar-toggle { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 7px; height: 38px; padding: 0 12px; font: inherit; font-size: 13px; font-weight: 600; color: var(--ds-text-primary); background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 9px; cursor: pointer; white-space: nowrap; }
+.fbar-toggle:hover { border-color: var(--ds-text-muted); }
+.fbar-toggle svg { width: 15px; height: 15px; color: var(--ds-text-secondary); }
+.fbar-toggle:focus-visible { outline: var(--ds-focus-outline); outline-offset: var(--ds-focus-outline-offset); }
+/* Engaged. The tinted fill (not just a coloured border) is what separates a
+   latched switch from the momentary Filter button beside it — .fbar-view__btn
+   marks its active state the same way. */
+.fbar-toggle.is-active { color: var(--ds-primary); border-color: var(--ds-primary); background: var(--ds-primary-light); }
+.fbar-toggle.is-active svg { color: var(--ds-primary); }
+/* The tally rides along muted at rest and inherits the primary colour when
+   engaged — it is a detail OF the button, never a second badge competing with
+   .fbar-filter__n (which is a count of hidden state; this one is visible). */
+.fbar-toggle__n { font-size: 11.5px; font-weight: 700; color: var(--ds-text-muted); }
+.fbar-toggle.is-active .fbar-toggle__n { color: var(--ds-primary); }
+
+.fbar-menu__foot { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 6px 2px; margin-top: 4px; border-top: 1px solid var(--ds-border); }
+.fbar-menu__foot button { border: none; background: none; font: inherit; font-size: 12.5px; font-weight: 600; color: var(--ds-text-secondary); cursor: pointer; padding: 4px 8px; border-radius: 7px; }
+.fbar-menu__foot button:hover { color: var(--ds-primary); }
+
+.fbar-chips { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
+.fbar-chips[hidden] { display: none; }
+/* Pairs with `.fbar--center`: the chips are row 2 of the same toolbar, so they
+   follow the bar's alignment — a chip should sit under the control it came from,
+   not across the page from it. */
+.fbar-chips--center { justify-content: center; }
+/* One chip per filter CATEGORY, reading "Source: Generated, Uploaded". The chip
+   is its own edit affordance: the label+values part is a button that reopens
+   that category's options popover, and the × clears the category outright. Long
+   value lists collapse to "+N" and then ellipsis; `title` always carries the
+   complete selection. A toggle facet's chip carries only its condition ("In
+   stack only") — no colon, no values span. */
+.fbar-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 22rem; height: 28px; padding: 0 5px 0 11px; font-size: 12.5px; font-weight: 600; color: var(--ds-primary); background: var(--ds-primary-light); border: 1px solid color-mix(in srgb, var(--ds-primary) 30%, transparent); border-radius: var(--ds-radius-pill); }
+/* Explicit, matching `.fbar-chips[hidden]` above: the `display: inline-flex`
+   on the line before is an author rule and would otherwise be at the mercy of
+   how a given engine weights the UA `[hidden]` rule. A caller that renders a
+   fixed set of chips and toggles `hidden` per filter (the tokens toolbar on
+   /me/profile) needs this; callers that build chips dynamically never hit it. */
+.fbar-chip[hidden] { display: none; }
+.fbar-chip:hover { border-color: var(--ds-primary); }
+.fbar-chip__edit { display: flex; align-items: center; gap: 5px; min-width: 0; padding: 0; border: none; background: none; font: inherit; color: inherit; cursor: pointer; }
+.fbar-chip__label { flex: none; color: var(--ds-text-secondary); font-weight: 500; }
+/* A toggle facet's chip has no values span, so its label IS the chip's content —
+   it takes the chip's own colour and weight rather than the muted "Category:"
+   treatment, which only makes sense in front of values. */
+.fbar-chip__label:only-child { color: inherit; font-weight: 600; }
+.fbar-chip__vals { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fbar-chip__edit:focus-visible { outline: var(--ds-focus-outline); outline-offset: var(--ds-focus-outline-offset); border-radius: 4px; }
+.fbar-chip__x { display: inline-grid; place-items: center; flex: none; width: 17px; height: 17px; border: none; background: color-mix(in srgb, var(--ds-primary) 14%, transparent); color: var(--ds-primary); border-radius: 50%; cursor: pointer; font: inherit; font-size: 13px; line-height: 1; padding: 0; }
+.fbar-chip__x:hover { background: var(--ds-primary); color: var(--ds-text-inverse); }
+.fbar-chip__x:focus-visible { outline: var(--ds-focus-outline); outline-offset: 1px; }
+.fbar-chips__clear { margin-left: 2px; border: none; background: none; color: var(--ds-text-secondary); font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; padding: 4px 6px; }
+.fbar-chips__clear:hover { color: var(--ds-primary); text-decoration: underline; }
+
+/* =====================================================================
+   Table ⇄ grid view toggle (sits last in the bar, right of Sort)
+   =====================================================================
+   Promoted out of /stack's page-local .stk-view into the shared component so
+   /library and /stack render the identical control instead of two drifting
+   copies. Same visual grammar as .stk-view was: a single bordered pair of
+   icon buttons, active state on the --ds-primary tint. The pressed state is
+   carried by aria-pressed (not colour alone) so it survives a
+   high-contrast/forced-colours pass. */
+.fbar-view { flex: 0 0 auto; display: inline-flex; border: 1px solid var(--ds-border); border-radius: 9px; overflow: hidden; }
+.fbar-view__btn { display: inline-grid; place-items: center; width: 38px; height: 38px; border: none; background: var(--ds-surface); color: var(--ds-text-muted); cursor: pointer; }
+.fbar-view__btn + .fbar-view__btn { border-left: 1px solid var(--ds-border); }
+.fbar-view__btn:hover { color: var(--ds-text-primary); }
+.fbar-view__btn.is-active { background: var(--ds-primary-light); color: var(--ds-primary); }
+.fbar-view__btn svg { width: 17px; height: 17px; }
+
+/* =====================================================================
+   .fbar-dock — the floating toolbar dock
+   =====================================================================
+   The toolbar pinned to the bottom of the viewport rather than a strip in the
+   flow. Used by /library and /chats; /stack still renders the plain in-flow
+   bar, which is why everything here is opt-in markup.
+
+   Two reasons a scrolling index wants this. The controls that narrow a list
+   are wanted at row 200 as much as at row 1, and a bar parked under the header
+   scrolls away exactly when the list is long enough to need it. And on a page
+   whose group bands are already sticky, a second sticky layer at the top edge
+   would have to queue behind them — pinning to the bottom sidesteps that.
+
+   Three elements, deliberately:
+     `.fbar-dock`        a full-width fixed FRAME that only centres. It is
+                         `pointer-events: none`, so the empty strip either side
+                         of the card doesn't eat clicks on the rows beneath.
+     `.fbar-dock__veil`  the frosted band behind it, which positions itself
+                         against the VIEWPORT rather than the frame (see below).
+     `.fbar-dock__card`  the visible surface, which turns pointer events back
+                         on for itself.
+
+   Centring is `left/right` + flex, never `translateX`: a transform here would
+   make the frame the containing block for the `position: fixed` category
+   popovers inside it, and filter_toolbar.js places those with plain viewport
+   arithmetic (see `placeSubmenu`). Under the rail layout the frame starts at
+   the rail's edge so the card centres on the CONTENT, not the window; at the
+   rail's own breakpoint the rail unpins and the offset goes with it. */
+.fbar-dock {
+  --fbar-dock-inset: 26px;   /* gap between the card and the viewport floor */
+  --fbar-dock-reach: 48px;   /* how far the veil's fade extends above the card */
+  --fbar-dock-card: 62px;    /* the card's resting height, one control row tall */
+  position: fixed;
+  left: 0; right: 0; bottom: var(--fbar-dock-inset);
+  /* Above the rail (40) and the sticky group bands (3–4), below row-level
+     popovers (60) and modals (100) — a control that is always on screen must
+     never be the thing covering a dialog. */
+  z-index: 55;
+  display: flex; justify-content: center;
+  padding: 0 16px;
+  pointer-events: none;
+}
+html[data-ui-layout="rail"] .fbar-dock { left: 240px; }
+@media (max-width: 760px) { html[data-ui-layout="rail"] .fbar-dock { left: 0; } }
+
+/* ── The frosted veil ──
+   A band of progressive blur across the foot of the viewport, strongest at the
+   very bottom and dissolving to nothing as it rises. The card sits inside it,
+   so content approaching the toolbar softens instead of colliding with its edge.
+
+   ── Where the visible edge came from, twice ──
+   1. The ramp SATURATED ON SCREEN. The band used to end at the card's top edge,
+      which meant full-strength blur below that line and none above it, with
+      live rows either side of the card showing exactly where the boundary was.
+      The band is now anchored to the viewport FLOOR (`position: fixed`, not
+      against the frame) and reaches full strength there — off the bottom of the
+      screen, where there is nothing beside it to compare against. Its only
+      on-screen transition is the long dissolve at the top.
+   2. Fading one masked layer's OPACITY. A single `backdrop-filter` element
+      samples its whole region at ONE radius; masking then fades that
+      uniformly-blurred result's alpha, compositing a fully blurred copy at
+      partial opacity over the sharp page beneath. The eye reads that as
+      ghosting, and the point where it saturates as a line.
+
+   Fading the RADIUS needs more than one radius. Three layers share the band,
+   each a stronger blur admitted over a shorter distance, so they overlap into a
+   true gradient: at the top only the weakest is present and already at zero; at
+   the floor all three compound. Radii add in quadrature, so 1.4 + 2.8 + 3.6
+   lands at ≈4.8px against the floor — properly glassy where the card sits,
+   and still nothing at all by the top of the band.
+
+   Every ramp is a SMOOTHSTEP, shallow at both ends. The ends are the whole
+   point: a ramp arriving steeply at either end has a slope discontinuity, and
+   over a short distance that is precisely what reads as a drawn line. An earlier
+   back-loaded ease put 90% of its alpha into 2.5px and looked like one.
+
+   The stops are PERCENTAGES of the band here, not lengths: the band's height is
+   a formula (fade + gap + card + chips row), so proportional stops keep the
+   dissolve's shape when the chips row makes the card taller.
+
+   `position: fixed` on the veil, never `backdrop-filter` on the frame or the
+   card: the filter, like a transform, makes an element the containing block for
+   `position: fixed` descendants, and the Filter menu's category popovers are
+   fixed. A self-positioned sibling of the card carries it without them noticing.
+   Under the rail layout the band starts at the rail's edge — the dock's stacking
+   context sits above the rail, so a band at `left: 0` would blur the sidebar. */
+.fbar-dock__veil {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  /* Tall enough for the dissolve to have room, and it needs it: the fade is what
+     keeps a band this size imperceptible. Most of the height is behind the card
+     and the gap below it; `--fbar-dock-reach` is the part that shows above. */
+  height: calc(var(--fbar-dock-reach) + var(--fbar-dock-inset)
+             + var(--fbar-dock-card) + var(--fbar-dock-chips, 0px));
+  z-index: 0;
+  pointer-events: none;
+  /* Layer 1 — the whole band at the weakest radius, and the only layer carrying
+     a tint. The wash is what makes the band read as a soft ground for the card
+     rather than only as a loss of focus, and it carries most of the "the page
+     recedes here" impression: blur alone softens without settling anything.
+
+     The wash is `--ds-bg` — the PAGE CANVAS, the same grey the detail pages sit
+     on. That choice is what bounds it: the strongest thing the band can do is
+     resolve a row toward the colour the page already is, so it cannot read as a
+     dark overlay however far the gradient runs. Over the canvas itself it is a
+     no-op, and over a white row it settles the row back toward the page. Ink was
+     tried here and read as a shadow cast up the list; the sunken surface was
+     tried and, being a near-white, only made a light band lighter.
+
+     It also needs no per-theme handling: `--ds-bg` is the dark canvas under the
+     dark theme, so the band recedes in the same direction there. */
+  background: linear-gradient(to bottom,
+    transparent 0,
+    color-mix(in srgb, var(--ds-bg) 12%, transparent) 35%,
+    color-mix(in srgb, var(--ds-bg) 34%, transparent) 68%,
+    color-mix(in srgb, var(--ds-bg) 60%, transparent) 100%);
+  -webkit-backdrop-filter: blur(1.4px);
+          backdrop-filter: blur(1.4px);
+  -webkit-mask-image: linear-gradient(to bottom,
+            transparent 0,
+            color-mix(in srgb, black 8%, transparent) 30%,
+            color-mix(in srgb, black 45%, transparent) 60%,
+            color-mix(in srgb, black 88%, transparent) 85%,
+            black 100%);
+          mask-image: linear-gradient(to bottom,
+            transparent 0,
+            color-mix(in srgb, black 8%, transparent) 30%,
+            color-mix(in srgb, black 45%, transparent) 60%,
+            color-mix(in srgb, black 88%, transparent) 85%,
+            black 100%);
+}
+html[data-ui-layout="rail"] .fbar-dock__veil { left: 240px; }
+@media (max-width: 760px) { html[data-ui-layout="rail"] .fbar-dock__veil { left: 0; } }
+
+.fbar-dock__veil::before,
+.fbar-dock__veil::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* Layer 2 — mid radius, absent from the top third, then its own smoothstep. */
+.fbar-dock__veil::before {
+  -webkit-backdrop-filter: blur(2.8px);
+          backdrop-filter: blur(2.8px);
+  -webkit-mask-image: linear-gradient(to bottom,
+            transparent 0,
+            transparent 35%,
+            color-mix(in srgb, black 25%, transparent) 60%,
+            color-mix(in srgb, black 80%, transparent) 85%,
+            black 100%);
+          mask-image: linear-gradient(to bottom,
+            transparent 0,
+            transparent 35%,
+            color-mix(in srgb, black 25%, transparent) 60%,
+            color-mix(in srgb, black 80%, transparent) 85%,
+            black 100%);
+}
+
+/* Layer 3 — the full radius, only in the bottom half, where the card is. This
+   is what makes the ramp a change in blur STRENGTH rather than in opacity. */
+.fbar-dock__veil::after {
+  -webkit-backdrop-filter: blur(3.6px);
+          backdrop-filter: blur(3.6px);
+  -webkit-mask-image: linear-gradient(to bottom,
+            transparent 0,
+            transparent 55%,
+            color-mix(in srgb, black 30%, transparent) 76%,
+            color-mix(in srgb, black 85%, transparent) 92%,
+            black 100%);
+          mask-image: linear-gradient(to bottom,
+            transparent 0,
+            transparent 55%,
+            color-mix(in srgb, black 30%, transparent) 76%,
+            color-mix(in srgb, black 85%, transparent) 92%,
+            black 100%);
+}
+
+/* Callers who ask for less transparency get the readability without the glass:
+   no blur, and the tint alone on the one layer that has one, lifted enough to
+   carry it. Its gradient still dissolves upward, so it gains no edge. */
+@media (prefers-reduced-transparency: reduce) {
+  .fbar-dock__veil {
+    -webkit-backdrop-filter: none;
+            backdrop-filter: none;
+    background: linear-gradient(to bottom,
+      transparent 0,
+      color-mix(in srgb, var(--ds-bg) 45%, transparent) 55%,
+      color-mix(in srgb, var(--ds-bg) 88%, transparent) 100%);
+  }
+  .fbar-dock__veil::before,
+  .fbar-dock__veil::after { display: none; }
+}
+
+/* ── The card ──
+   Chips row on top (state), controls below (machinery): in a bottom-anchored
+   card the row nearer the list is the one that describes it. The chips row is
+   `hidden` until a facet is applied, so the card is a single row at rest and
+   grows upward, never pushing the controls off the bottom.
+
+   The hairline is the page's own `--ds-border` — the same line every card in the
+   list wears. It briefly ran a notch darker, from when the veil was faint enough
+   that the edge had to carry itself; now that the band is properly glassy behind
+   the card, a heavier line just reads as a drawn outline around a floating
+   object. Elevation does the separating; the hairline only closes the shape.
+
+   It HUGS its contents — no definite width, no auto margins, no padded arms. A
+   definite width was tried, with the page-level controls pushed onto the card's
+   edges to keep the list controls on its centre line; what that produced was a
+   fixed-width card with a hole in it, because the auto margins had ~300px of
+   free space to absorb. A floating card has no column grid to align to and
+   nothing beside it to line up with, so there is no centre line to hold. */
+.fbar-dock__card {
+  pointer-events: auto;
+  position: relative;              /* containing block for the Filter menu */
+  z-index: 1;                      /* above the frosted shelf behind it */
+  display: flex; flex-direction: column; gap: 10px;
+  max-width: 100%;
+  padding: 10px 14px;
+  /* NOT `--ds-surface`. The rows this card floats over are `--ds-surface`
+     themselves, so a card of the same fill is white-on-white with the very
+     content it must read against, and no shadow can fully fix a zero-contrast
+     edge. A ~1.5% pull toward the page canvas gives the card its own, slightly
+     cool surface — the Linear/Arc/Raycast move: the floating layer is a
+     *different* white. It also brings the two inset highlights and the white
+     control fills inside the card to life; over a pure-white fill both were
+     mathematically inert. Derived from tokens, so each theme resolves its own
+     version of "just off the surface". */
+  background: color-mix(in srgb, var(--ds-bg) 30%, var(--ds-surface));
+  /* The hairline: defined, not heavy. Full `--ds-border` read as part of the
+     page's own grid of card outlines; a muted-ink notch over it is enough for
+     the edge to be readable on its own if the shadow were gone, without the
+     drawn-outline weight the earlier 30% mix had. */
+  border: 1px solid color-mix(in srgb, var(--ds-text-muted) 9%, var(--ds-border));
+  border-radius: 18px;
+  /* ── Elevation ──
+     Four layers, each with one job. The previous stack tried to do the whole
+     lift with three increasingly dark blurs, topping out at 30% ink, and that
+     is what made it read as a stock drop shadow: the darkness announced the
+     shadow instead of the height.
+
+     The principle here is the opposite — a LOT of spread at very little
+     opacity. A wide, soft, barely-there penumbra is what the eye reads as
+     distance; a tight dark one reads as a border that bled. So the widest layer
+     carries the height at 7% and the deepest tone in the stack is 9%, less than
+     a third of where it was.
+
+     ASYMMETRY is the other half. A surface lit from above throws its shadow
+     DOWN and casts almost nothing upward, so every layer is offset by roughly
+     half its own blur: the penumbra gathers below the card and the top rim stays
+     clear. A vertically centred shadow — equal above and below — is the Material
+     tell, and it reads as a plate lying on the page rather than an object
+     hovering over it. These offsets put the card at ~14px of height.
+
+     Bottom to top:
+       1. ambient — 40px down, 80px blur, negative spread, 6%. Distance, not
+          darkness: pushing the offset well past what an in-flow card would use
+          is what puts the surface at height, and the blur is wide enough that
+          its own edge is never findable. The spread pulls it in so it never
+          puddles out past the card's silhouette.
+       2. mid — 14px down, 28px, 5%. Bridges the ambient wash and the contact
+          line so the falloff stays continuous rather than reading as two
+          discrete clouds.
+       3. contact — 3px down, 6px, tight spread, 8%. The separation layer: a
+          short, close shadow directly beneath the card is what reads as a GAP
+          between two surfaces, and it is what stops the card's own edge
+          dissolving into a row of the same colour under it.
+       4. top highlight — a 1px inset semi-transparent white along the top edge
+          only (`inset 0 1px 0`). Light comes from above, so the upper rim of a
+          raised surface catches it: the cue that says "raised" without spending
+          any darkness. Note what it can and cannot do — the card's fill is
+          `--ds-surface`, which is pure white in the light themes, so there the
+          line is a deliberate no-op and the three shadow layers carry the lift
+          alone. It earns its keep under the dark theme, where the surface is a
+          navy and the rim is what stops the card melting into the frosted band
+          behind it. Semi-transparent rather than a solid mix, so it can never
+          out-light the surface it sits on whatever that surface becomes.
+       5. inner rim — the same white at a quarter strength, all the way round
+          (`inset 0 0 0 1px`). It sits just inside the hairline and is what lets
+          that hairline step back: inert on a light theme like the top highlight,
+          and on dark it turns the border into a soft bevel rather than a line.
+
+     Ink, not black: `--ds-text-primary` is the navy-tinted near-black the page's
+     own shadow tokens use, so this reads as the same light source as everything
+     else rather than as a grey wash. In dark mode it resolves pale, which is
+     why the ambient layers stay this faint — at these opacities a pale halo is
+     imperceptible rather than wrong. */
+  box-shadow:
+    0 40px 80px -24px color-mix(in srgb, var(--ds-text-primary) 6%, transparent),
+    0 14px 28px -12px color-mix(in srgb, var(--ds-text-primary) 5%, transparent),
+    0 3px 6px -2px color-mix(in srgb, var(--ds-text-primary) 8%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 55%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, white 22%, transparent);
+}
+.fbar-dock__card .fbar,
+.fbar-dock__card .fbar-chips { margin: 0; max-width: 100%; }
+
+/* An input has no useful content width, so in the dock search takes a
+   shrinkable basis rather than the in-flow bar's grow-to-fill; every other
+   control is content-sized and the card ends where they do. Below the bar's
+   wrap breakpoint search takes the first line to itself instead of sharing it
+   at a squeezed basis. */
+.fbar-dock__card .fbar__search { flex: 0 1 240px; min-width: 0; max-width: none; }
+@media (max-width: 760px) {
+  .fbar-dock__card .fbar__search { flex: 1 1 100%; }
+}
+
+/* Everything the dock opens, opens UPWARD. The base `.fbar-menu` hangs below
+   its button (`top: calc(100% + 6px)`), which from a card at the bottom of the
+   viewport renders off-screen.
+
+   It stays anchored to its BUTTON, because the row is centred and the button
+   therefore has no fixed x in the card. So the offset has to clear the chips
+   row on its own: `--fbar-dock-chips` is the chips row's height plus the card's
+   row gap, published by the page's dock script whenever the row appears,
+   disappears or rewraps, and 0 while there are no chips. Without it a menu
+   measured from the button opens straight into the chips and covers the very
+   state it is about to change.
+
+   The category popovers beside it need no rule — they are `position: fixed` and
+   filter_toolbar.js already clamps them into the viewport, which from down here
+   resolves upward on its own. */
+.fbar-dock .fbar-menu {
+  top: auto;
+  bottom: calc(100% + 8px + var(--fbar-dock-chips, 0px));
+}
+
+/* ── Footer clearance ──
+   The dock floats over everything, so the page has to end above it — and "the
+   page" includes the site FOOTER, not just the host page's list. Clearance on
+   the list alone leaves the footer as the one element that still slides under
+   the card and stays there, unreachable, at the bottom of the scroll. The
+   margin lives on the footer (the document's last element), so the whole page
+   scrolls naturally behind the dock's reserved space and the footer settles
+   fully visible above the card. Sized for the card's tallest resting state
+   (controls + chips row) plus the viewport inset, with room to spare.
+
+   `body:has()` so the rule ships with the component: any page that renders a
+   dock gets the clearance, and no page that doesn't is touched. */
+body:has(.fbar-dock) footer { margin-bottom: 140px; }
+
+/* Controls fade in rather than appearing mid-animation, so a card that is
+   growing (grid's sort select arriving, the first chip) isn't also popping new
+   pills into existence at full opacity. `@starting-style` is what makes that
+   possible for something arriving from `display: none`; browsers without it get
+   the instant swap, which is the same thing minus the polish. */
+@media (prefers-reduced-motion: no-preference) {
+  .fbar-dock__card > * > * { transition: opacity 160ms var(--ds-ease-standard, ease); }
+  @starting-style {
+    .fbar-dock__card > * > * { opacity: 0; }
+  }
+}
+
+/* Card grid — the grid-view container a FilterToolbar `view` config projects
+   into. Cards are built from the (filtered, sorted) table rows, so the table
+   stays the single source of truth. */
+/* ── Card grid ──────────────────────────────────────────────────────
+   ONE compact card anatomy in two variants — an individual ITEM and a
+   COLLECTION — so a grid of mixed kinds reads as one system:
+
+     ┌ head ───────────────┐   icon tile + title
+     │ body                │   description (2 lines) · metadata (1) ·
+     │                     │   tags (1, collapses when there are none)
+     ├ foot ───────────────┤   sharing (left) · stack control (right)
+     └─────────────────────┘
+
+   Dense, not cramped: every block is sized to the content it actually holds
+   (one line of metadata is one line tall, not a padded band), and the card's
+   whitespace lives in ONE place — the 13px inline padding every block shares —
+   so the icon, the description, the tags and the footer all sit on the same
+   two vertical rules.
+
+   Every body block is a RESERVED height, so cards line up across the whole grid
+   and not merely within a row: a short description can't raise its footer above
+   its neighbours'. Head and foot are full-bleed (the card itself has no padding;
+   each block carries its own), which is what lets the collection variant tint
+   them edge to edge. */
+.fbar-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  align-items: stretch;
+}
+@media (max-width: 1180px) { .fbar-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 720px)  { .fbar-grid { grid-template-columns: minmax(0, 1fr); } }
+.fbar-grid[hidden] { display: none; }
+
+.fbar-card {
+  position: relative; display: flex; flex-direction: column; min-width: 0;
+  padding: 0; overflow: hidden;
+  background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 14px;
+  transition: border-color var(--ds-motion-fast, .14s) ease, box-shadow var(--ds-motion-fast, .14s) ease;
+}
+/* The card IS the link to its detail page, so it must say so before it is
+   clicked — but with elevation alone, not a warmed border: the card lifts off
+   the page and its frame stays put. Same treatment as `.ag-card` on /agents, so
+   a grid of cards hovers identically on both surfaces. A border that changes
+   colour under the pointer also redraws the grid's own lines, which reads as
+   the layout twitching rather than as one card responding. */
+.fbar-card:hover {
+  box-shadow: var(--ds-shadow-md);
+}
+/* Keyboard focus lands on the title link; the whole card shows it, so tabbing
+   through a grid is as legible as pointing at it. */
+.fbar-card:focus-within { border-color: var(--ds-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ds-primary) 18%, transparent); }
+@media (prefers-reduced-motion: reduce) { .fbar-card { transition: none; } }
+
+/* Head — icon tile + title. min-height keeps a one-line title's card the same
+   height as a two-line one. */
+/* `margin-top` is the strip a collection's folder tab occupies (see
+   library.html, where the collection variant reserves the same 8px as the
+   card's OUTER margin instead, because its tab hangs outside the card box).
+   BOTH variants reserve it, so the two are the same height and a mixed grid
+   lines up — the collection variant only adds a tint and the tab.
+   `min-height` reserves TWO title lines (the clamp's maximum) so a title that
+   wraps at a narrow column can't make its row taller than its neighbours';
+   `align-items: center` then centres a one-line title in the same box.
+   `box-sizing` matters here: the reserve is the WHOLE head, padding included,
+   so shrinking the padding actually shrinks the card instead of being added
+   back on top of the min-height. And like the body's reserve below, 53px is the
+   CEILING of what two title lines actually measure (16 padding + 36.4 for two
+   14px/1.3 lines = 52.4), not a round guess — at 52 a two-line title overflowed
+   by 0.4px and its card stood a hair taller than its one-line neighbours. The
+   30px icon (46px with padding) clears it comfortably either way. */
+.fbar-card__head {
+  display: flex; align-items: center; gap: 10px;
+  box-sizing: border-box; min-height: 53px; min-width: 0;
+  margin-top: 8px; padding: 8px 13px;
+}
+.fbar-card__head .cc-icon { flex: none; }
+.fbar-card__title {
+  margin: 0; font-weight: 650; font-size: 14px; line-height: 1.3; color: var(--ds-text-primary);
+  min-width: 0; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.fbar-card__title a { color: inherit; text-decoration: none; }
+.fbar-card:hover .fbar-card__title { color: var(--ds-primary); }
+.fbar-card__title a:focus-visible { outline: none; text-decoration: underline; text-underline-offset: 2px; }
+
+/* Body — the three reserved blocks. `flex: 1` pins the footer to the bottom. */
+/* The body's height is RESERVED (2-line description + metadata + tags + gaps),
+   which is what keeps every footer on the same line across the grid. The
+   reserve INCLUDES a tag row, so a card with tags is exactly as tall as one
+   without and a grid holding both stays even. That in turn frees the tags row to
+   collapse when an item has none — an always-rendered empty row read as a hole.
+   Sharing is no longer a body block: it moved into the footer beside the stack
+   control (see `.fbar-card__foot`), which is what took ~a third off the card's
+   height. The reserve below is the sum of what remains, not a round number:
+   35 (desc, two clamped lines) + 18 (meta) + 20 (tags) + 12 (two 6px gaps)
+   + 10 (bottom padding) = 95, plus a pixel of slack. It must be the CEILING of
+   that sum, not an estimate of it: undershoot by even a fraction and a card
+   with tags outgrows the reserve while one without stays pinned to it, so the
+   grid ends up a pixel out of true row by row. Measured, not guessed — `meta`
+   is an ~18px line box, not the 1.35em its own min-height floors it at. */
+.fbar-card__body { flex: 1; display: flex; flex-direction: column; gap: 6px; padding: 0 13px 10px; min-width: 0; min-height: 96px; }
+/* Exactly two lines, always — reserved whether or not there is a description,
+   which is what keeps every footer on the same line. */
+.fbar-card__desc {
+  margin: 0; font-size: 12.5px; line-height: 1.4; color: var(--ds-text-secondary);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  min-height: calc(2 * 1.4em);
+}
+/* Exactly one line of metadata (type · details · added), ellipsised. */
+.fbar-card__meta { margin: 0; font-size: 11.5px; color: var(--ds-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 1.35em; }
+
+/* Tags — compact filled chips behind a tag glyph, overflowing to "+N". The row
+   COLLAPSES when an item has none (the reserve lives on the body above, so the
+   grid stays even without rendering an empty band that reads as a hole). */
+.fbar-card__tags { display: flex; align-items: center; gap: 5px; min-height: 20px; min-width: 0; overflow: hidden; }
+.fbar-card__tags:empty { display: none; }
+.fbar-card__tags svg { flex: none; width: 13px; height: 13px; color: var(--ds-text-muted); }
+.fbar-card__tag { flex: none; max-width: 11ch; padding: 1px 7px; font-size: 11px; font-weight: 600; color: var(--ds-text-secondary); background: color-mix(in srgb, var(--ds-text-primary) 7%, transparent); border-radius: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fbar-card__tag--more { color: var(--ds-text-muted); background: none; padding-left: 2px; }
+
+/* Access state — the footer's LEFT half. `flex: 0 1 auto` + the ellipsis on the
+   label let a long state ("Shared with you") give way to the stack control rather
+   than pushing it off the card. */
+.fbar-card__access { flex: 0 1 auto; display: flex; align-items: center; gap: 6px; min-height: 20px; padding: 0; border: 1px solid transparent; background: none; font: inherit; font-size: 12px; color: var(--ds-text-secondary); text-align: left; min-width: 0; }
+.fbar-card__access svg { flex: none; width: 13px; height: 13px; color: var(--ds-text-muted); }
+.fbar-card__access span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+button.fbar-card__access { cursor: pointer; }
+button.fbar-card__access:focus-visible { outline: var(--ds-focus-outline); outline-offset: 2px; }
+
+/* CHANGEABLE vs NOT is carried by the BOX, not by the ink:
+     `--editable` (opens the dialog that changes access) → a bordered chip with a
+       chevron, the same anatomy as the table's `.lib-vis--editable` badge;
+     `--fixed`    (nothing to change — "Shared with you", or a store entity whose
+       access follows from its review state) → bare text, no box, no chevron.
+
+   Ink used to carry it — primary blue at rest, no box, no chevron — and that
+   could not work on this card: `.fbar-card:hover` already turns the title primary
+   and `:focus-within` draws a primary ring, so "this is a control" was competing
+   with the card's own ambient "the pointer is here". Beside a filled, semibold
+   `Add to stack` pill, blue 12px/400 text with no container read as coloured
+   metadata; and the entire hover response was primary → primary-dark, one step of
+   the same hue, invisible at that size and quieter than the card-level hover it was
+   supposed to stand out from.
+
+   OUTLINED rather than filled like the table's badge: there, the chip owns a
+   column and a tint reads as one item's state. Here it shares a 40px bar with the
+   primary action, and two primary-light fills 10px apart is the wall of blue this
+   is fixing. Three levels in one glance: filled = the action, outlined = a state
+   you can change, bare text = a state you cannot.
+
+   26px tall, matching `.lib-stackpill`, so the two controls sit on one box height
+   and the target clears WCAG 2.2 SC 2.5.8 (the old 20px did not, and the 26px
+   pill 10px away denied it the spacing exemption). */
+/* `color` is restated rather than left to the base rule so that both variants name
+   the token explicitly — the read-only one below already did, and having one
+   variant inherit while its sibling declares is the kind of asymmetry that makes a
+   later theme change land on only half the control. Not a fix for a known bug:
+   inheriting resolved correctly under every theme when checked. */
+.fbar-card__access--editable {
+  box-sizing: border-box; min-height: 26px; padding: 0 7px;
+  color: var(--ds-text-secondary);
+  border-color: var(--ds-border); border-radius: var(--ds-radius-btn);
+  transition: background var(--ds-motion-fast, .14s) ease, border-color var(--ds-motion-fast, .14s) ease, color var(--ds-motion-fast, .14s) ease;
+}
+.fbar-card__access--editable .fbar-card__access-caret { width: 12px; height: 12px; margin-left: -1px; opacity: .75; }
+/* Hover/focus answers with a FILL — a different channel from the card's own
+   elevation hover, so a local response can't be mistaken for the ambient one, and
+   it is perceptible peripherally in a way a hue nudge is not. This is also where
+   the blue finally means something: "you are on the control". */
+button.fbar-card__access--editable:hover,
+button.fbar-card__access--editable:focus-visible {
+  color: var(--ds-primary);
+  background: var(--ds-primary-light);
+  border-color: color-mix(in srgb, var(--ds-primary) 35%, transparent);
+}
+button.fbar-card__access--editable:hover svg,
+button.fbar-card__access--editable:focus-visible svg { color: var(--ds-primary); }
+button.fbar-card__access--editable:hover .fbar-card__access-caret { opacity: 1; }
+@media (prefers-reduced-motion: reduce) { .fbar-card__access--editable { transition: none; } }
+
+/* Not changeable: bare text. `help` matches what it offers — a tooltip naming who
+   controls access — and the explains-only store-entity button keeps its pointer
+   through the more specific `button.fbar-card__access` rule above. */
+.fbar-card__access--fixed { cursor: help; color: var(--ds-text-secondary); }
+.fbar-card__access--fixed svg { color: var(--ds-text-muted); }
+/* The explains-only button still answers a hover — just in the neutral family, so
+   it reads as "this tells you something", never as "this changes something". */
+button.fbar-card__access--fixed:hover { color: var(--ds-text-primary); }
+button.fbar-card__access--fixed:hover svg { color: var(--ds-text-secondary); }
+
+/* Foot — a compact two-slot bar above its own rule: who can see the item on the
+   LEFT, the stack control on the RIGHT.
+
+   It replaces a full-width tinted action bar. That bar was the loudest thing on
+   the card and the same colour on every card in the grid, so a wall of them
+   read as the page's primary content rather than as one control per item; it
+   also cost 42px of height on every card to say what a 26px pill says. Pairing
+   it with the sharing state — the other thing a card answers at a glance — puts
+   both on one line and gives the footer a job beyond holding a button.
+
+   The height is reserved so the two states of the right slot (a pill, or the
+   locked "In stack" status) can't change the card's height between them. */
+.fbar-card__foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  box-sizing: border-box; min-height: 40px; padding: 6px 13px;
+  border-top: 1px solid var(--ds-border-light);
+}
+
+/* =====================================================================
+   Filter categories with a secondary popover
+   =====================================================================
+   For surfaces with several facet families (Optional/Required · Tags ·
+   Owner), the Filter menu lists the CATEGORIES; hovering (or focusing) one
+   opens its options beside the menu. Keeps the menu short as facets grow,
+   and keeps every option one hop away. Driven by filter_toolbar.js. */
+/* A menu hosting category popovers must NOT clip them: the base .fbar-menu
+   sets overflow-y:auto for long option lists, which establishes a clipping box
+   that swallows an absolutely-positioned child. A category menu is short by
+   construction (a handful of families), so it doesn't need to scroll — each
+   popover scrolls internally instead. */
+.fbar-menu--cats { overflow: visible; max-height: none; }
+.fbar-cat { position: relative; }
+.fbar-cat__btn { display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px 10px; border: none; background: none; border-radius: 8px; font: inherit; font-size: 13.5px; font-weight: 500; color: var(--ds-text-primary); text-align: left; cursor: pointer; }
+.fbar-cat__btn:hover, .fbar-cat.is-open > .fbar-cat__btn { background: color-mix(in srgb, var(--ds-text-primary) 6%, transparent); color: var(--ds-primary); }
+.fbar-cat__label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The count and the chevron ride one trailing group pinned to the far right, so
+   the chevron sits at the row's edge whether or not the count is showing. (An
+   auto margin on the chevron alone lost to the count's sibling rule — which
+   matches even while the count is `hidden`, since a display:none element still
+   satisfies `~` — and the chevron ended up hugging the label.) */
+.fbar-cat__end { margin-left: auto; flex: none; display: flex; align-items: center; gap: 6px; }
+.fbar-cat__n { min-width: 18px; height: 18px; padding: 0 5px; display: inline-grid; place-items: center; font-size: 11px; font-weight: 700; color: var(--ds-text-inverse); background: var(--ds-primary); border-radius: var(--ds-radius-pill); }
+.fbar-cat__n[hidden] { display: none; }
+/* The chevron points at the side the submenu opens on and NEVER turns — not on
+   hover, not while active, not while open. The explicit `transform: none` is a
+   guard so a future "rotate the caret" rule can't silently apply here (the
+   section headers' caret does rotate, and the two classes read alike). */
+.fbar-cat__caret { width: 14px; height: 14px; flex: none; color: var(--ds-text-muted); }
+.fbar-cat__btn:hover .fbar-cat__caret,
+.fbar-cat.is-open > .fbar-cat__btn .fbar-cat__caret { transform: none; }
+
+/* The submenu is placed by `placeSubmenu()` in filter_toolbar.js — to the RIGHT
+   of the menu by default, flipped left when the viewport has no room there, and
+   nudged vertically to stay whole. Hence `position: fixed` and no side/offset
+   here: `fixed` also takes the popover out of every ancestor's clipping box, so
+   a scrolling menu can't swallow it, and it makes the collision maths plain
+   viewport arithmetic. The coordinates are never hardcoded. */
+.fbar-cat__pop { position: fixed; top: 0; left: 0; z-index: 41; width: 232px; max-height: 54vh; overflow-y: auto; padding: 6px; background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 12px; box-shadow: var(--ds-shadow-md); }
+.fbar-cat__pop[hidden] { display: none; }
+
+/* Search WITHIN a long category. filter_toolbar.js injects this field (and the
+   "No matches" line) into any category popover holding more than CAT_SEARCH_MIN
+   options — a tag vocabulary of forty is a scroll, and the field is the way out
+   of it. Never authored in a template, so the affordance follows the data.
+
+   It STICKS to the top of the popover's own scrollport: the field must stay
+   reachable while its results scroll, and it is what explains a shortened list.
+   The negative margins plus `top: -6px` cancel the popover's 6px padding so the
+   band is full-bleed and nothing shows through above it (sticky offsets are
+   measured from the scrollport's padding edge, which sits 6px in). */
+.fbar-cat__search {
+    position: sticky; top: -6px; z-index: 1;
+    margin: -6px -6px 5px; padding: 6px;
+    background: var(--ds-surface);
+    border-bottom: 1px solid var(--ds-border-light);
+}
+.fbar-cat__searchinput {
+    display: block; width: 100%; box-sizing: border-box;
+    padding: 6px 9px;
+    font: inherit; font-size: 13px; color: var(--ds-text-primary);
+    background: var(--ds-surface-dim);
+    border: 1px solid var(--ds-border); border-radius: 8px;
+}
+.fbar-cat__searchinput::placeholder { color: var(--ds-text-muted); }
+.fbar-cat__searchinput:focus-visible { outline: var(--ds-focus-outline); outline-offset: 1px; }
+/* Same quiet register as the toolbar's own empty state: a query that matches
+   nothing is a fact about the query, not a problem to flag. */
+.fbar-cat__none { padding: 8px 10px; font-size: 12.5px; color: var(--ds-text-muted); }
+.fbar-cat__none[hidden] { display: none; }
+.fbar-menu__opt[hidden] { display: none; }
+
+@media (max-width: 760px) {
+  /* No room beside the menu on a phone — stack the options underneath. The
+     placer detects this (computed position is no longer `fixed`) and leaves the
+     popover alone. */
+  .fbar-cat__pop { position: static; width: auto; max-height: none; box-shadow: none; border: none; border-top: 1px solid var(--ds-border); border-radius: 0; margin: 2px 0 4px; }
+  /* The popover no longer scrolls here, so there is no scrollport to stick to —
+     pinning would latch onto the PAGE's instead and float the field over the
+     options as the page moves. It rides along as an ordinary first row. */
+  .fbar-cat__search { position: static; margin: 0 0 5px; padding: 0; border-bottom: none; }
+}
+
+/* =====================================================================
+   Grouped, collapsible sections — ONE united list
+   =====================================================================
+   The pattern both inventories use (My Stack's Required / Added-by-you split
+   and the Library's type groups): a SINGLE table with a single <thead>, where
+   each group is its own <tbody> that opens with a full-width header row. The
+   groups read as bands inside one continuous list rather than as separate
+   tables stacked on a page — one column grid, one set of headers, one place
+   the eye tracks down.
+
+   Three hosts, one chrome:
+     table row  — `<tbody class="fbar-group">` + a leading `.fbar-grouprow`
+     block      — `.fbar-groupband`, for a group whose rows live in their OWN
+                  table. Needed for a per-group STICKY header: a sticky table
+                  cell is not constrained by its row group (all of them pin at
+                  the same offset and stack up), while a sticky block is
+                  constrained by its own section — see library.html.
+     grid       — `<section class="fbar-cardsec">` + a `.fbar-cardsec__head`
+   All three wrap the same `.fbar-grouptoggle` button, so switching view or
+   host never changes how a group announces itself. Collapsing folds the
+   contents and turns the caret; the header always stays.
+
+   Anything page-specific (a per-type accent, a kind glyph) rides a local
+   class INSIDE the toggle — the component owns layout, not vocabulary. */
+.fbar-group[hidden] { display: none; }
+.fbar-grouprow td,
+.fbar-groupband { padding: 0; background: var(--ds-surface-dim); border-bottom: 1px solid var(--ds-border); }
+.fbar-grouptoggle { display: flex; align-items: center; gap: 10px; width: 100%; padding: 11px 16px; background: none; border: none; cursor: pointer; font: inherit; text-align: left; color: var(--ds-text-primary); }
+.fbar-grouptoggle:hover { background: color-mix(in srgb, var(--ds-text-primary) 4%, transparent); }
+.fbar-grouptoggle:focus-visible { outline: var(--ds-focus-outline); outline-offset: -2px; }
+.fbar-group__caret { flex-shrink: 0; width: 16px; height: 16px; color: var(--ds-text-muted); transition: transform .15s ease; }
+/* Driven off the toggle's OWN `aria-expanded` rather than an `.is-collapsed`
+   class on some ancestor: every host keeps that attribute truthful already, and
+   it makes the caret independent of which host the group uses. */
+.fbar-grouptoggle[aria-expanded="false"] .fbar-group__caret { transform: rotate(-90deg); }
+@media (prefers-reduced-motion: reduce) { .fbar-group__caret { transition: none; } }
+.fbar-group__title { font-weight: 600; font-size: 13.5px; letter-spacing: 0.01em; }
+.fbar-group__n { font-size: 12.5px; color: var(--ds-text-muted); font-variant-numeric: tabular-nums; }
+.fbar-group__hint { margin-left: 6px; font-size: 12px; font-weight: 400; color: var(--ds-text-muted); }
+/* A kind that will land INSIDE this section but does not exist yet — the badge
+   form of what used to be a page-head panel (Library: "Data apps coming soon"
+   on the Files band). Info vocabulary, because a schedule is not a warning:
+   nothing is wrong and there is nothing to act on.
+
+   Deliberately quieter than `.fbar-group__title` and pushed to the end of the
+   header row: it must not compete with the section's own name or with its
+   count, which are what the reader is scanning for. `cursor: help` pairs with
+   the `data-tip` the host template puts on it. */
+.fbar-group__soon {
+    flex: none;
+    margin-left: 8px;
+    padding: 2px 8px;
+    border-radius: var(--ds-radius-pill);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ds-info-ink);
+    background: color-mix(in srgb, var(--ds-info-line) 16%, transparent);
+    cursor: help;
+}
+/* The hint is the first thing to drop when the band runs out of width — the
+   badge is shorter and carries the fact the hint only decorates. */
+@media (max-width: 560px) {
+    .fbar-grouptoggle:has(.fbar-group__soon) .fbar-group__hint { display: none; }
+}
+/* Collapsed → every row of the group folds away except its header. */
+.fbar-group.is-collapsed > tr:not(.fbar-grouprow) { display: none; }
+/* Very subtle "nothing in this group matches" row. */
+.fbar-group__empty td { color: var(--ds-text-muted); font-size: 13px; padding: 14px 16px; }
+.fbar-group__empty[hidden] { display: none; }
+
+/* Grid host — the same groups as cards. */
+.fbar-cardsec { margin: 0 0 24px; }
+.fbar-cardsec:last-child { margin-bottom: 0; }
+.fbar-cardsec[hidden] { display: none; }
+.fbar-cardsec__head { margin: 0 0 12px; }
+/* Free-standing rather than a table band, so it gets a corner radius. */
+.fbar-cardsec .fbar-grouptoggle { border-radius: 9px; }
+.fbar-cardsec.is-collapsed .fbar-grid,
+.fbar-cardsec.is-collapsed .fbar-group__empty { display: none; }
+/* The grid host's "nothing matches" line is a <p>, not a table row. */
+.fbar-cardsec .fbar-group__empty { font-size: 13px; color: var(--ds-text-muted); padding: 8px 4px; }

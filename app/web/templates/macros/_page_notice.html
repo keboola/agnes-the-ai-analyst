@@ -1,0 +1,35 @@
+{# Reusable product-facing notice — the quiet "this part is still being
+   finished" caveat that sits under a page's header, below the description.
+
+   It is deliberately NOT an alert. The copy is advisory (nothing to act on,
+   nothing broken), so the component carries exactly one amber signal: a
+   half-strength wash of --ds-warn-bg over the page surface, a soft hairline,
+   and a single small glyph. The heading stays --ds-text-primary — a
+   warn-coloured heading is what makes a note read as a developer error —
+   and the body sits at --ds-text-secondary, so the eye still lands on the
+   page content below rather than on the caveat.
+
+     page_notice('Library content is still being prepared',
+                 'Some items and information may be incomplete …')
+
+   `badge='WIP'` adds a small uppercase marker after the title, for a notice
+   that stands in for a named thing which does not exist yet (e.g. "Data
+   apps"). It is a flat label, not a filled chip: inside a panel this quiet,
+   a bordered pill would outshout the sentence it qualifies.
+
+   Consecutive notices stack with their own 10px rhythm; the last one in a
+   page head is flushed by the shell's `.idx-head > :last-child` rule.
+
+   Styling lives in style-custom.css under the `.pnote-*` prefix — shared, so
+   no page carries per-page notice CSS. #}
+{% import "macros/_icon.html" as _pn_ico %}
+
+{% macro page_notice(title, copy, badge=None, label=None) %}
+<div class="pnote" role="note"{% if label %} aria-label="{{ label }}"{% endif %}>
+  <span class="pnote-icon" aria-hidden="true">{{ _pn_ico.icon('warning', 15) }}</span>
+  <div class="pnote-body">
+    <p class="pnote-title">{{ title }}{% if badge %} <span class="pnote-badge">{{ badge }}</span>{% endif %}</p>
+    <p class="pnote-text">{{ copy }}</p>
+  </div>
+</div>
+{% endmacro %}

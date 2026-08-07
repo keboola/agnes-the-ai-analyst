@@ -1,0 +1,312 @@
+/* Rail pre-conversation Dashboard (chat.html's rail empty state) — the
+ * greeting, Stack-context line, and Suggested-next-actions list that
+ * surround the REAL chat composer before a conversation starts.
+ * Markup in chat.html's rail blocks; behavior in js/chat_dashboard.js.
+ *
+ * Loaded by chat.html ONLY under html[data-ui-layout="rail"], and the
+ * layout overrides below are rail-scoped anyway, so topnav instances
+ * never see any of this. Everything rides --ds-* tokens so the page
+ * works under any palette theme (paper, blue, navy, dark).
+ * Prefix: .rdb-*.
+ */
+
+/* Slot layout (ordering, scroll, the shared --rdb-col content column) is
+ * owned by chat.css's empty-state rules — this sheet styles the dashboard
+ * widgets. */
+
+/* Suggested-actions column below the hero — the shared --rdb-col definition
+ * (declared on the empty-state .cloud-chat-main in chat.css) keeps it on
+ * the exact same grid as the hero, composer, and context line. */
+html[data-ui-layout="rail"] .rdb {
+    width: var(--rdb-col-narrow, 60%);
+    min-width: 0;
+    /* Clear breathing room under the input (+ its Stack-status caption) before
+       the suggested-action group begins. */
+    margin-top: 18px;
+    font-family: var(--ds-font);
+}
+
+/* ── Stack context line — flat on the surface, under the composer ── */
+
+html[data-ui-layout="rail"] .rdb-context {
+    align-self: center;
+    width: var(--rdb-col-narrow, 60%);
+    max-width: none;
+    min-width: 0;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 2px 0;
+    font-size: 13px;
+    color: var(--ds-text-muted);
+    font-family: var(--ds-font);
+}
+
+.rdb-context-ico {
+    flex-shrink: 0;
+    width: 14px;
+    height: 14px;
+    /* Damped toward the text colour — the glyph marks the line as context, it
+       is not an accent of its own. */
+    color: color-mix(in srgb, var(--ds-assistant) 65%, var(--ds-text-muted));
+}
+
+/* One link in the line ("Stack"), kept in the same muted register as the
+   sentence around it — a bright accent link on a status line reads as a
+   control and pulls attention off the suggested actions below. The dotted
+   underline is what marks it clickable; hover firms it up. */
+.rdb-context a {
+    color: var(--ds-text-secondary);
+    font-weight: 600;
+    text-decoration: underline;
+    text-decoration-style: dotted;
+    text-underline-offset: 3px;
+    text-decoration-color: color-mix(in srgb, var(--ds-text-muted) 55%, transparent);
+}
+
+.rdb-context a:hover {
+    color: var(--ds-assistant-dark);
+    text-decoration-style: solid;
+    text-decoration-color: currentColor;
+}
+
+/* ── Suggested next actions — a vertical list of guided-task items, one under
+ *    each other. Each item is a horizontal row: icon · title + description ·
+ *    "Start →". ──────────────────────────────────────────────────────────── */
+
+.rdb-actions {
+    min-width: 0;
+    text-align: left;
+}
+
+.rdb-panel-title {
+    margin: 0 0 12px;
+    font-size: 15px;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+    color: var(--ds-text-primary);
+}
+
+.rdb-panel-note {
+    margin: 8px 0;
+    font-size: 13px;
+    color: var(--ds-text-muted);
+}
+
+.rdb-panel-note a {
+    color: var(--ds-primary-dark);
+}
+
+/* Vertical stack — minimal, borderless single-line items. */
+.rdb-actions-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 11px;
+}
+
+.rdb-action-card {
+    display: flex;
+    min-width: 0;
+}
+
+/* One real button on a SINGLE line — icon · title · trailing "Start →".
+   Borderless and flat (no vertical padding); a subtle background on hover. */
+.rdb-action {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 11px;
+    padding: 0 8px;
+    border: none;
+    border-radius: 8px;
+    background: none;
+    font: inherit;
+    text-align: left;
+    color: inherit;
+    cursor: pointer;
+    transition: background var(--ds-motion-fast) var(--ds-ease-standard);
+}
+
+.rdb-action:hover:not(:disabled) {
+    background: var(--ds-surface-dim);
+}
+
+.rdb-action:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
+}
+
+.rdb-action:disabled {
+    cursor: not-allowed;
+    color: var(--ds-text-disabled);
+}
+
+.rdb-action-icon {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    background: var(--ds-primary-light);
+    color: var(--ds-primary-dark);
+}
+
+.rdb-action-icon svg {
+    width: 15px;
+    height: 15px;
+}
+
+/* Title + description on ONE line: bold title, then a muted description that
+   truncates with an ellipsis so the item never wraps to a second row. */
+.rdb-action-txt {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: row;
+    align-items: baseline;
+    gap: 8px;
+    overflow: hidden;
+}
+
+.rdb-action-title {
+    flex-shrink: 0;
+    font-size: 13.5px;
+    font-weight: 550;
+    letter-spacing: -0.01em;
+    line-height: 1.3;
+    color: var(--ds-text-primary);
+    white-space: nowrap;
+}
+
+/* Description hidden — the title alone carries the action (kept in the DOM
+   for the button's aria-label). */
+.rdb-action-reason {
+    display: none;
+}
+
+/* "Start →" trailing the row, right-aligned. */
+.rdb-action-cta {
+    flex-shrink: 0;
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ds-primary-dark);
+}
+
+.rdb-action-cta svg {
+    width: 14px;
+    height: 14px;
+    display: block;
+}
+
+.rdb-actions-empty {
+    padding: 6px 0 10px;
+}
+
+.rdb-actions-empty-title {
+    margin: 6px 0 2px;
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--ds-text-primary);
+}
+
+/* ── Task dialog (built by js/chat_dashboard.js on the shared
+ *    .modal-backdrop / .modal-card scaffold from style-custom.css —
+ *    only the form-field layout inside the card is page-specific). ── */
+
+.rdb-dialog-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    margin: 14px 0 4px;
+    text-align: left;
+}
+
+.rdb-field {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.rdb-field[hidden] {
+    display: none;
+}
+
+.rdb-field-label {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--ds-text-secondary);
+}
+
+.rdb-field-hint {
+    font-size: 12px;
+    color: var(--ds-text-muted);
+}
+
+.rdb-field input,
+.rdb-field select,
+.rdb-field textarea {
+    font: inherit;
+    font-size: 14px;
+    color: var(--ds-text-primary);
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: 8px;
+    padding: 8px 10px;
+}
+
+.rdb-field textarea {
+    resize: vertical;
+    min-height: 60px;
+}
+
+.rdb-field input:focus-visible,
+.rdb-field select:focus-visible,
+.rdb-field textarea:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
+}
+
+.rdb-dialog-error {
+    margin: 8px 0 0;
+    font-size: 13px;
+    color: var(--ds-accent-danger-ink);
+}
+
+/* ── Responsive ──────────────────────────────────────────────────── */
+
+@media (max-width: 680px) {
+    /* Rows stack their metadata; the trailing CTA drops under the text. */
+    .rdb-action {
+        flex-wrap: wrap;
+    }
+
+    .rdb-action-txt {
+        flex-basis: calc(100% - 44px);
+    }
+
+    .rdb-action-title,
+    .rdb-action-reason {
+        white-space: normal;
+    }
+
+    .rdb-action-cta {
+        margin-left: 44px;
+    }
+
+    /* Touch devices have no hover — keep the dismiss control visible. */
+    .rdb-action-dismiss {
+        opacity: 1;
+    }
+}

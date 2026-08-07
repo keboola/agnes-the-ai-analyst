@@ -17,6 +17,7 @@ display name don't collide in Claude Code's flat namespace.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import io
 import json
 import logging
@@ -24,12 +25,14 @@ import os
 import re
 import shutil
 import tempfile
+import threading
+import time
 import uuid
 import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Literal, Optional
+from typing import Any, Dict, Iterable, Iterator, List, Literal, Optional
 from urllib.parse import urlparse
 
 import duckdb
@@ -53,12 +56,14 @@ from src.repositories import (
     user_store_installs_repo,
     users_repo,
 )
+from src.repositories.store_submissions import BLOCKING_SUBMISSION_STATUSES
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
-from app.auth.access import is_user_admin, require_admin
+from app.auth.access import is_user_admin, require_admin, required_store_entity_ids
 from app.auth.dependencies import _get_db, get_current_user
+from app.services.journey import mark_journey
 from app.instance_config import (
     get_guardrails_enabled,
     get_guardrails_llm_provider_ready,
@@ -91,6 +96,16 @@ MAX_DOC_SIZE = 10 * 1024 * 1024  # 10 MB per uploaded doc
 ALLOWED_PHOTO_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 _CHUNK_SIZE = 64 * 1024
 _VALID_TYPES = {"skill", "agent", "plugin"}
+
+# v104 facet vocabularies. The Publisher facet's 'me' / 'other_users' are a
+# per-request split of publisher_kind='user' against the caller, so they are
+# facet values rather than stored states.
+_PUBLISHER_FACETS = {"organization", "me", "other_users"}
+# 'unverified' maps to the union of the non-positive verification states. It
+# exists as a FILTER value only — no card ever prints an "Unverified" label,
+# because on an instance with no reviewer that would brand the whole catalogue.
+_VERIFICATION_FACETS = {"verified", "unverified"}
+_UNVERIFIED_STATES = ["none", "requested", "changes_requested"]
 _NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---", re.DOTALL)
 _ALLOWED_VIDEO_SCHEMES = {"http", "https"}
@@ -218,6 +233,19 @@ class StoreEntityResponse(BaseModel):
     # on the single-entity GET; left None in list responses (avoids an
     # N-query aggregate per card).
     rating: Optional[EntityRating] = None
+    # v104 trust line. `publisher_kind` is 'organization' | 'user';
+    # `publisher_name` is the label a card prints after the kind eyebrow — the
+    # instance name for organization-published items, the author's display name
+    # otherwise. `verification_state` is the org's advisory verdict and is
+    # ADVISORY ONLY: it never gates a read, and 'none' deliberately renders no
+    # chip rather than an "Unverified" label.
+    publisher_kind: str = "user"
+    publisher_name: Optional[str] = None
+    verification_state: str = "none"
+    verified_at: Optional[str] = None
+    # Author-visible workflow detail only — populated for the owner and for
+    # admins, None for everyone else, so other users never see internal states.
+    verification_note: Optional[str] = None
 
 
 class StoreEntityListResponse(BaseModel):
@@ -272,10 +300,69 @@ class DryRunResponse(BaseModel):
 
     inline_checks: dict
     llm_findings: Optional[dict] = None
+    llm_safe: Optional[bool] = None  # None when no LLM review was run
+    llm_error: bool = False  # True when the review call itself failed (≠ rejection)
     would_publish: bool
     # v89: skill-linter dry-run block. Only populated for type == "skill"
     # (the linter is skill-specific — agents/plugins never get a lint key).
     lint: Optional[dict] = None
+
+
+# ---------------------------------------------------------------------------
+# Pre-check verdict token store
+# ---------------------------------------------------------------------------
+# Tokens are server-generated UUIDs bound to a content hash so a verdict from
+# skill A cannot be reused for skill B. The client sends the token back in the
+# real submit; the background LLM review then skips the second Anthropic call.
+
+_VERDICT_TOKEN_TTL = 300  # seconds
+
+_verdict_token_store: Dict[str, tuple] = {}
+_verdict_token_lock = threading.Lock()
+
+_precheck_verdict_ctx: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar(
+    "_precheck_verdict_ctx", default=None
+)
+
+
+def _markdown_content_hash(name: str, type_: str, description: Optional[str], skill_md: str) -> str:
+    """Stable hash of the fields sent in CreateFromMarkdownBody.
+
+    Used to bind a verdict token to exactly the content that was reviewed —
+    a token minted for skill A cannot be replayed against different content.
+    """
+    import hashlib
+
+    payload = json.dumps(
+        {"name": name, "type": type_, "description": description or "", "skill_md": skill_md},
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _mint_verdict_token(verdict: dict, content_hash: str) -> str:
+    """Store a pre-check verdict bound to *content_hash* and return a token."""
+    token = uuid.uuid4().hex
+    expires_at = time.time() + _VERDICT_TOKEN_TTL
+    with _verdict_token_lock:
+        now = time.time()
+        expired = [k for k, (_, exp, _ch) in _verdict_token_store.items() if exp < now]
+        for k in expired:
+            del _verdict_token_store[k]
+        _verdict_token_store[token] = (verdict, expires_at, content_hash)
+    return token
+
+
+def _consume_verdict_token(token: str, content_hash: str) -> Optional[dict]:
+    """Pop and return the verdict for *token* iff it matches *content_hash* and is fresh."""
+    with _verdict_token_lock:
+        entry = _verdict_token_store.pop(token, None)
+    if entry is None:
+        return None
+    verdict, expires_at, stored_hash = entry
+    if time.time() > expires_at or stored_hash != content_hash:
+        return None
+    return verdict
 
 
 # ---------------------------------------------------------------------------
@@ -418,6 +505,9 @@ def _schedule_llm_review(
     fires (FastAPI yields cursors from ``_get_db`` and the cleanup runs
     on the response yield).
     """
+    # Capture at schedule time (sync context) — ContextVar doesn't propagate
+    # into background tasks, so we read it here and pass as a kwarg.
+    precheck_verdict = _precheck_verdict_ctx.get()
     background_tasks.add_task(
         run_llm_review,
         submission_id,
@@ -425,6 +515,7 @@ def _schedule_llm_review(
         conn_factory=get_system_db,
         api_key_loader=default_api_key_loader,
         model_loader=default_model_loader,
+        precheck_verdict=precheck_verdict,
     )
 
 
@@ -593,11 +684,82 @@ def _resolve_owner_display(user_id: str) -> Optional[str]:
     return str(email) if email else None
 
 
+def _resolve_owner_displays(user_ids: Iterable[str]) -> Dict[str, Optional[str]]:
+    """Batched :func:`_resolve_owner_display`.
+
+    The byline ("by Anna Nováková") lands on every card, so the per-entity
+    ``get_by_id`` behind the single-value helper would be one query per card. One
+    query for the whole page instead; unresolvable ids map to ``None`` and the
+    caller falls back to ``owner_username``.
+    """
+    from src.repositories import users_repo
+
+    wanted = {uid for uid in user_ids if uid}
+    if not wanted:
+        return {}
+    # get_info_by_ids is the existing dual-backend batch reader (users.py /
+    # users_pg.py) — same name → email/name fallback as the single-value helper.
+    info = users_repo().get_info_by_ids(sorted(wanted))
+    out: Dict[str, Optional[str]] = {}
+    for uid in wanted:
+        row = info.get(uid)
+        if not row:
+            out[uid] = None
+            continue
+        name = row.get("name")
+        if name and str(name).strip():
+            out[uid] = str(name).strip()
+        else:
+            email = row.get("email")
+            out[uid] = str(email) if email else None
+    return out
+
+
+#: Publisher label for organization-published items. A fixed phrase rather than
+#: the instance name: the claim is institutional, and naming the admin who
+#: happened to upload the bundle would imply a person vouched for it. The
+#: instance name is already in the page chrome, so repeating it per card adds
+#: nothing.
+ORGANIZATION_PUBLISHER_LABEL = "Your organization"
+
+
+def _publisher_name(entity: dict, owner_display: Optional[str]) -> str:
+    """The label a card prints on its trust line.
+
+    Falls back ``display name → username → "Someone"`` so the byline never
+    renders empty (the same chain the Library's owner labels use).
+    """
+    if (entity.get("publisher_kind") or "user") == "organization":
+        return ORGANIZATION_PUBLISHER_LABEL
+    return owner_display or entity.get("owner_username") or "Someone"
+
+
 def _entity_to_response(
     conn: duckdb.DuckDBPyConnection,
     entity: dict,
     rating: Optional["EntityRating"] = None,
+    *,
+    owner_display: Optional[str] = None,
+    owner_display_resolved: bool = False,
+    viewer_user_id: Optional[str] = None,
+    viewer_is_admin: bool = False,
 ) -> StoreEntityResponse:
+    """Project a store_entities row onto the API shape.
+
+    ``owner_display`` / ``owner_display_resolved`` let a list handler pass a
+    pre-batched display name (see :func:`_resolve_owner_displays`) instead of
+    paying one users lookup per card. Passing ``owner_display_resolved=True``
+    with ``owner_display=None`` means "the batch genuinely found no name" and
+    suppresses the per-row fallback query.
+
+    ``verification_note`` is author/admin-only: other users see the verdict
+    (``verified``) but never the internal workflow detail.
+    """
+    if owner_display_resolved:
+        display = owner_display
+    else:
+        display = _resolve_owner_display(entity["owner_user_id"])
+    is_author = bool(viewer_user_id) and viewer_user_id == entity.get("owner_user_id")
     photo_url = (
         # ``?v=`` cache-busting fingerprint via ``version_no`` (schema v37
         # monotonic counter, bumps on every re-upload). Pairs with the
@@ -616,7 +778,7 @@ def _entity_to_response(
         version=entity["version"],
         owner_user_id=entity["owner_user_id"],
         owner_username=entity["owner_username"],
-        owner_display_name=_resolve_owner_display(entity["owner_user_id"]),
+        owner_display_name=display,
         install_count=int(entity.get("install_count") or 0),
         file_size=int(entity.get("file_size") or 0),
         photo_url=photo_url,
@@ -634,6 +796,11 @@ def _entity_to_response(
         tagline=entity.get("tagline"),
         synthetic_name=entity.get("synthetic_name"),
         rating=rating,
+        publisher_kind=entity.get("publisher_kind") or "user",
+        publisher_name=_publisher_name(entity, display),
+        verification_state=entity.get("verification_state") or "none",
+        verified_at=_to_iso(entity.get("verified_at")),
+        verification_note=(entity.get("verification_note") if (is_author or viewer_is_admin) else None),
     )
 
 
@@ -1318,11 +1485,31 @@ async def list_entities(
     category: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     owner: Optional[str] = Query(None),
+    publisher: Optional[str] = Query(
+        None,
+        description=(
+            "Publisher facet: 'organization' | 'me' | 'other_users'. "
+            "'me'/'other_users' are a per-request split of user-published items "
+            "against the caller."
+        ),
+    ),
+    verification: Optional[str] = Query(
+        None,
+        description=(
+            "Verification facet: 'verified' | 'unverified'. 'unverified' is the "
+            "union of the non-positive states — a filter value only, never a "
+            "label rendered on a card."
+        ),
+    ),
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     if type and type not in _VALID_TYPES:
         raise HTTPException(status_code=400, detail="invalid_type")
+    if publisher and publisher not in _PUBLISHER_FACETS:
+        raise HTTPException(status_code=400, detail="invalid_publisher")
+    if verification and verification not in _VERIFICATION_FACETS:
+        raise HTTPException(status_code=400, detail="invalid_verification")
     repo = store_entities_repo()
     # Visibility filter: hide pending/blocked from the public flea browse.
     # An owner viewing their own uploads (`owner=<self_id>`) sees their
@@ -1342,18 +1529,53 @@ async def list_entities(
         # those rows; without this an upload silently disappears from
         # the grid the moment it's quarantined.
         include_owner_id = user["id"]
+    # Publisher facet → repo filters. 'me' narrows to the caller's own
+    # user-published rows; 'other_users' excludes them. Both keep
+    # publisher_kind='user' so an organization-published item never lands in
+    # either bucket.
+    publisher_kind: Optional[str] = None
+    facet_owner = owner
+    exclude_owner_user_id: Optional[str] = None
+    if publisher == "organization":
+        publisher_kind = "organization"
+    elif publisher == "me":
+        publisher_kind = "user"
+        facet_owner = user["id"]
+    elif publisher == "other_users":
+        publisher_kind = "user"
+        exclude_owner_user_id = user["id"]
+    verification_states: Optional[List[str]] = None
+    if verification == "verified":
+        verification_states = ["verified"]
+    elif verification == "unverified":
+        verification_states = list(_UNVERIFIED_STATES)
     items, total = repo.list(
         skip=skip,
         limit=limit,
         type=type,
         category=category,
         search=search,
-        owner_user_id=owner,
+        owner_user_id=facet_owner,
         visibility_status=visibility_filter,
         include_owner_id=include_owner_id,
+        publisher_kind=publisher_kind,
+        exclude_owner_user_id=exclude_owner_user_id,
+        verification_state=verification_states,
     )
+    # One users read for the whole page instead of one per card.
+    displays = _resolve_owner_displays(e["owner_user_id"] for e in items)
     return StoreEntityListResponse(
-        items=[_entity_to_response(conn, e) for e in items],
+        items=[
+            _entity_to_response(
+                conn,
+                e,
+                owner_display=displays.get(e["owner_user_id"]),
+                owner_display_resolved=True,
+                viewer_user_id=user["id"],
+                viewer_is_admin=is_admin,
+            )
+            for e in items
+        ],
         total=total,
         skip=skip,
         limit=limit,
@@ -1386,7 +1608,13 @@ async def get_entity(
         raise HTTPException(status_code=404, detail="entity_not_found")
     _enforce_visibility(entity, user, conn)
     agg = store_entity_votes_repo().get_aggregate(entity_id, user_id=user["id"])
-    return _entity_to_response(conn, entity, rating=EntityRating(**agg))
+    return _entity_to_response(
+        conn,
+        entity,
+        rating=EntityRating(**agg),
+        viewer_user_id=user["id"],
+        viewer_is_admin=is_user_admin(user["id"], conn),
+    )
 
 
 @router.get("/entities/{entity_id}/files")
@@ -1801,6 +2029,13 @@ async def dryrun_entity(
         return DryRunResponse(
             inline_checks=inline_checks,
             llm_findings=verdict,
+            # None when no LLM ran (lint_only, guardrails off, or provider not
+            # configured); JS gate reads this with === false so None passes through.
+            llm_safe=safe if verdict is not None else None,
+            # Distinguish a provider/transport error from a genuine rejection so
+            # the JS gate can fall through to the real submit (→ admin queue +
+            # retry path) instead of hard-blocking with a misleading message.
+            llm_error=bool(verdict and verdict.get("error")) if verdict is not None else False,
             would_publish=inline.passed and safe,
             lint=lint_report,
         )
@@ -1823,10 +2058,27 @@ class CreateFromMarkdownBody(BaseModel):
     description: Optional[str] = None
     category: Optional[str] = None
     skill_md: str
+    # Library "Save to Library" access choice. ``everyone`` is the historical
+    # behaviour (submit to the store, review, then visible to the whole
+    # instance). ``private`` keeps it to its owner: the row is set to
+    # ``visibility_status='hidden'`` right after creation, and because
+    # ``set_visibility_if_pending`` only promotes from ``'pending'`` the
+    # in-flight review can no longer publish it. It still appears in the
+    # owner's Library (which lists their own entities regardless of status).
+    access: Literal["private", "everyone"] = "everyone"
     # v89: preview the skill linter's verdict before publishing. When set,
     # short-circuits after name/frontmatter synthesis — no create_entity
     # call, no DB writes of any kind.
     dry_run: bool = False
+    # When dry_run=True and include_llm=True, run the LLM security review
+    # synchronously (same as dryrun_entity) and include the verdict + a
+    # guardrails_active flag in the response so the builder JS can gate the
+    # real save on the LLM result without a separate dryrun_entity round-trip.
+    include_llm: bool = False
+    # Token returned by a successful dry_run+include_llm pre-check. When
+    # present the background LLM review reuses the pre-check verdict instead
+    # of calling Anthropic again, halving the cost per skill publish.
+    precheck_verdict_token: Optional[str] = None
 
 
 @router.post(
@@ -1903,12 +2155,52 @@ async def create_entity_from_markdown(
                     text,
                     plugin_dir=plugin_dir,
                 )
+            # Optional LLM pre-check: runs when the caller sets include_llm=True
+            # (the builder's "Save to Library" gate). Mirrors dryrun_entity's
+            # logic — blocking Anthropic round-trip in a threadpool so it
+            # doesn't stall the event loop. guardrails_active tells the caller
+            # whether an LLM gate exists at all (false → approve on inline alone).
+            llm_verdict: Optional[dict] = None
+            guardrails_active = False
+            llm_safe = True
+            if body.include_llm:
+                guardrails_active = get_guardrails_enabled() and get_guardrails_llm_provider_ready()
+                if guardrails_active:
+                    from src.store_guardrails import llm_review
+
+                    llm_verdict = await run_in_threadpool(
+                        llm_review.review_bundle,
+                        plugin_dir,
+                        type_=body.type,
+                        name=name,
+                        version="",
+                        description=body.description,
+                        api_key=default_api_key_loader(),
+                        model=default_model_loader(),
+                    )
+                    llm_safe = llm_review.is_safe(llm_verdict)
+            # Mint a content-bound token for safe verdicts so the real submit
+            # can skip the second Anthropic call. Binding to the content hash
+            # prevents replaying a verdict from one skill onto different content.
+            verdict_token = (
+                _mint_verdict_token(
+                    llm_verdict,
+                    _markdown_content_hash(name, body.type, body.description, body.skill_md),
+                )
+                if (llm_verdict and not llm_verdict.get("error") and llm_safe)
+                else None
+            )
             return Response(
                 content=json.dumps(
                     {
                         "dry_run": True,
                         "inline": inline.to_response_dict(),
                         "lint": lint_report,
+                        "guardrails_active": guardrails_active,
+                        "llm_safe": llm_safe,
+                        "llm_error": bool(llm_verdict and llm_verdict.get("error")),
+                        "llm_findings": llm_verdict,
+                        "verdict_token": verdict_token,
                     }
                 ),
                 media_type="application/json",
@@ -1926,21 +2218,38 @@ async def create_entity_from_markdown(
             zf.writestr(f"{name}/SKILL.md", text)
     buf.seek(0)
     upload = UploadFile(file=buf, filename=f"{name}.zip")
-    return await create_entity(
-        background_tasks,
-        file=upload,
-        type=body.type,
-        name=name,
-        description=body.description,
-        category=body.category,
-        video_url=None,
-        title=None,
-        tagline=None,
-        photo=None,
-        docs=[],
-        user=user,
-        conn=conn,
+    # Propagate a pre-check verdict via ContextVar so _schedule_llm_review
+    # can pass it to run_llm_review, skipping the second Anthropic call.
+    # The token is bound to a content hash; mismatched content silently drops it.
+    precheck_verdict = (
+        _consume_verdict_token(
+            body.precheck_verdict_token,
+            _markdown_content_hash(name, body.type, body.description, body.skill_md),
+        )
+        if body.precheck_verdict_token
+        else None
     )
+    ctx_tok = _precheck_verdict_ctx.set(precheck_verdict)
+    try:
+        created = await create_entity(
+            background_tasks,
+            file=upload,
+            type=body.type,
+            name=name,
+            description=body.description,
+            category=body.category,
+            video_url=None,
+            title=None,
+            tagline=None,
+            photo=None,
+            docs=[],
+            access=body.access,
+            user=user,
+            conn=conn,
+        )
+    finally:
+        _precheck_verdict_ctx.reset(ctx_tok)
+    return created
 
 
 @router.post("/entities", response_model=StoreEntityResponse, status_code=201)
@@ -1958,11 +2267,21 @@ async def create_entity(
     tagline: Optional[str] = Form(None),
     photo: Optional[UploadFile] = File(None),
     docs: List[UploadFile] = File(default=[]),
+    # Builder "who can use this" choice, identical in meaning to
+    # CreateFromMarkdownBody.access. Plugins are the only type that cannot
+    # reach this endpoint's JSON sibling (they are real ZIP bundles, not a
+    # markdown body), so without it the unified builder could offer Private
+    # for skills and agents but not for plugins. Default keeps every existing
+    # caller — the upload wizard, the CLI, the tests — on the historical
+    # publish-to-everyone behaviour.
+    access: str = Form("everyone"),
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     if type not in _VALID_TYPES:
         raise HTTPException(status_code=400, detail="invalid_type")
+    if access not in ("private", "everyone"):
+        raise HTTPException(status_code=400, detail="invalid_access")
 
     try:
         username = sanitize_username(user["email"])
@@ -2215,6 +2534,16 @@ async def create_entity(
         # resolves flea entities via `store_entities.name` at event time.
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
+
+    # Private = owner-only. Flip straight after creation; the review may still
+    # be in flight, but `set_visibility_if_pending` only promotes from
+    # 'pending', so 'hidden' sticks. This is the single implementation of the
+    # access choice — the JSON sibling routes its `access` through here.
+    if access == "private":
+        try:
+            store_entities_repo().set_visibility(entity_id, "hidden")
+        except Exception:
+            logger.exception("store: could not mark entity %s private", entity_id)
 
     _invalidate_etag()
     entity = store_entities_repo().get(entity_id)
@@ -3033,6 +3362,183 @@ async def _restore_version_locked(
 
 
 # ---------------------------------------------------------------------------
+# Publisher + verification — the card's trust line (v104)
+#
+# Two orthogonal axes, deliberately kept apart from `visibility_status`:
+#   * publisher_kind  — who stands behind the item. Admin-only to change.
+#   * verification    — the org's ADVISORY verdict on a user-published item.
+#
+# Neither one gates a read. `_enforce_visibility` is untouched by design: the
+# moment verification filters reads it becomes the approval queue this model
+# exists to remove.
+# ---------------------------------------------------------------------------
+
+
+class PublisherUpdateRequest(BaseModel):
+    publisher_kind: Literal["organization", "user"]
+
+
+class VerificationUpdateRequest(BaseModel):
+    # 'requested' is the author's own action (handled by the sibling endpoint);
+    # an admin sets one of the three verdicts below.
+    verification_state: Literal["verified", "changes_requested", "none"]
+    note: Optional[str] = None
+
+
+def _require_verification_enabled() -> None:
+    """Verification is opt-in per instance.
+
+    An instance with no reviewer must not show the vocabulary at all — a
+    "request verification" button with nothing behind it is the same rotting
+    promise as the old permanent "In review" badge. On by default (opt-out per instance).
+    """
+    from app.instance_config import get_store_verification_enabled
+
+    if not get_store_verification_enabled():
+        raise HTTPException(status_code=404, detail="verification_disabled")
+
+
+def _notify_author(entity: dict, payload: dict) -> None:
+    """Best-effort author notification. A silent verdict is the disease this
+    design removes, so every state change tells the author — but a dropped
+    notification must never fail the admin's request."""
+    try:
+        from app.notifications import publish_notification
+
+        owner = entity.get("owner_user_id")
+        if owner:
+            publish_notification(owner, payload)
+    except Exception:
+        logger.warning("verification notification dropped for entity %s", entity.get("id"))
+
+
+@router.put("/entities/{entity_id}/publisher", response_model=StoreEntityResponse)
+async def set_entity_publisher(
+    entity_id: str,
+    payload: PublisherUpdateRequest,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Publish an entity as the organization, or hand it back to its author.
+
+    Admin-only, and deliberately an explicit action rather than something
+    derived from the owner's Admin-group membership: membership is mutable and
+    re-synced from the identity provider, so a derived value would silently
+    reclassify already-published skills when an author changes groups.
+    """
+    repo = store_entities_repo()
+    entity = repo.get(entity_id)
+    if not entity:
+        raise HTTPException(status_code=404, detail="entity_not_found")
+    if not repo.set_publisher_kind(entity_id, payload.publisher_kind, by_user_id=user["id"]):
+        raise HTTPException(status_code=404, detail="entity_not_found")
+    _audit(
+        conn,
+        user["id"],
+        "store.entity.publisher",
+        entity_id,
+        {"from": entity.get("publisher_kind"), "to": payload.publisher_kind},
+    )
+    _invalidate_etag()
+    updated = repo.get(entity_id)
+    return _entity_to_response(
+        conn,
+        updated,  # type: ignore[arg-type]
+        viewer_user_id=user["id"],
+        viewer_is_admin=True,
+    )
+
+
+@router.put("/entities/{entity_id}/verification", response_model=StoreEntityResponse)
+async def set_entity_verification(
+    entity_id: str,
+    payload: VerificationUpdateRequest,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Admin verdict: Verify · Request changes · Remove verification.
+
+    Returns 409 on an organization-published entity — it already carries the
+    stronger claim, so a checkmark on top would invent a fourth trust tier.
+    """
+    _require_verification_enabled()
+    repo = store_entities_repo()
+    entity = repo.get(entity_id)
+    if not entity:
+        raise HTTPException(status_code=404, detail="entity_not_found")
+    ok = repo.set_verification(
+        entity_id,
+        payload.verification_state,
+        by_user_id=user["id"],
+        note=payload.note,
+    )
+    if not ok:
+        raise HTTPException(status_code=409, detail="publisher_is_organization")
+    _audit(
+        conn,
+        user["id"],
+        "store.entity.verification",
+        entity_id,
+        {"from": entity.get("verification_state"), "to": payload.verification_state},
+    )
+    _notify_author(
+        entity,
+        {
+            "kind": "store_verification",
+            "entity_id": entity_id,
+            "entity_name": entity.get("title") or entity.get("name"),
+            "verification_state": payload.verification_state,
+            "note": payload.note,
+        },
+    )
+    _invalidate_etag()
+    updated = repo.get(entity_id)
+    return _entity_to_response(
+        conn,
+        updated,  # type: ignore[arg-type]
+        viewer_user_id=user["id"],
+        viewer_is_admin=True,
+    )
+
+
+@router.post("/entities/{entity_id}/verification/request", response_model=StoreEntityResponse)
+async def request_entity_verification(
+    entity_id: str,
+    user: dict = Depends(get_current_user),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Author asks the org to look at their shared item.
+
+    Only the owner may ask, and only for something other people can actually
+    see: a private item needs no verification because nobody else can discover
+    it. Idempotent — asking twice leaves the state at 'requested'.
+    """
+    _require_verification_enabled()
+    repo = store_entities_repo()
+    entity = repo.get(entity_id)
+    if not entity:
+        raise HTTPException(status_code=404, detail="entity_not_found")
+    if entity.get("owner_user_id") != user["id"]:
+        raise HTTPException(status_code=403, detail="not_owner")
+    # Until the audience axis lands (see the skill-sharing audience spec), a
+    # store entity is discoverable exactly when it is approved — that is the
+    # "someone else can see this" test the audience enum will later own.
+    if entity.get("visibility_status") != "approved":
+        raise HTTPException(status_code=409, detail="not_discoverable")
+    if not repo.set_verification(entity_id, "requested", by_user_id=user["id"]):
+        raise HTTPException(status_code=409, detail="publisher_is_organization")
+    _audit(conn, user["id"], "store.entity.verification.request", entity_id, None)
+    _invalidate_etag()
+    updated = repo.get(entity_id)
+    return _entity_to_response(
+        conn,
+        updated,  # type: ignore[arg-type]
+        viewer_user_id=user["id"],
+        viewer_is_admin=is_user_admin(user["id"], conn),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Delete — DELETE /api/store/entities/{id}
 # ---------------------------------------------------------------------------
 
@@ -3180,6 +3686,26 @@ async def delete_entity(
 # ---------------------------------------------------------------------------
 
 
+def _entity_review_blocked(entity_id: str) -> bool:
+    """True when guardrail review REJECTED any submission for ``entity_id``.
+
+    ``store_entities.visibility_status = 'hidden'`` is written by two very
+    different paths — the author choosing Private, and guardrail quarantine —
+    so the submission history is the only thing that tells them apart. Probes
+    every submission rather than just the latest so an ambiguous chain resolves
+    the safe way. Mirrors the ``NOT EXISTS`` clause in
+    ``user_store_installs.list_for_user``; see
+    ``BLOCKING_SUBMISSION_STATUSES`` for why ``review_error`` is not a
+    rejection.
+    """
+    try:
+        subs = store_submissions_repo().list_for_entity(entity_id)
+    except Exception:
+        logger.exception("store: could not read submissions for entity %s", entity_id)
+        return True  # unreadable history → refuse, never fail open
+    return any((s.get("status") or "") in BLOCKING_SUBMISSION_STATUSES for s in subs)
+
+
 @router.post("/entities/{entity_id}/install", response_model=InstallResponse)
 async def install_entity(
     entity_id: str,
@@ -3193,10 +3719,38 @@ async def install_entity(
     # Block installs against entities still in guardrail review or that
     # have been hidden — they are not visible in the public flea browse,
     # but a user with the entity_id in hand could otherwise install
-    # directly. Owner installing their own pending entity gets the same
-    # 409 — they preview before publishing via /api/store/entities/preview
-    # or wait for approval.
-    if entity.get("visibility_status") != "approved" and not is_user_admin(user["id"], conn):
+    # directly.
+    #
+    # One exemption: the entity's own AUTHOR may install their own hidden
+    # entity, i.e. one they deliberately kept Private (`access='private'` on
+    # upload, or the builder's Private choice). Without it, a Private skill
+    # could never reach its author's own Stack — the point of the Private
+    # tier. Scoped tightly:
+    #
+    #   * owner only, and only at `visibility_status='hidden'` — the other
+    #     statuses (`pending`, `blocked`, `archived`) fall through to the 409
+    #     for everyone including the author, and a third party never reaches
+    #     the exemption at all, and
+    #   * refused when guardrail review REJECTED the bundle — `hidden` is the
+    #     status BOTH Private and quarantine write, so the submission history
+    #     is what separates them.
+    #
+    # What this deliberately does NOT wait for: an async guardrail review still
+    # in flight. `_entity_review_blocked` is false while a submission sits at
+    # `pending_llm`, so the author can install their own Private bundle the
+    # moment they upload it rather than being locked out of their own Stack for
+    # the duration of a review that, for a Private entity, gates nobody else's
+    # access. What makes that safe is that install is not a grant: the serve
+    # chokepoint (``user_store_installs.list_for_user``) re-evaluates both
+    # conditions on EVERY read, so a bundle the review goes on to block stops
+    # being served without this row needing to be removed.
+    _status = entity.get("visibility_status")
+    _is_own_private = (
+        _status == "hidden"
+        and (entity.get("owner_user_id") or "") == user["id"]
+        and not _entity_review_blocked(entity_id)
+    )
+    if _status != "approved" and not _is_own_private and not is_user_admin(user["id"], conn):
         raise HTTPException(status_code=409, detail="entity_not_approved")
     installs = user_store_installs_repo()
     inserted = installs.install(user["id"], entity_id)
@@ -3204,6 +3758,10 @@ async def install_entity(
         repo.bump_install_count(entity_id, +1)
         _audit(conn, user["id"], "store.entity.install", entity_id)
         _invalidate_etag()
+    # Installing a skill / plugin / agent IS the Library's "Add to stack" for
+    # that kind of row (its own endpoint, same control) — so it ticks the same
+    # onboarding milestone as /api/stack/subscribe.
+    mark_journey(user.get("id"), stack_setup_done=True)
     return InstallResponse(entity_id=entity_id, installed=True)
 
 
@@ -3213,6 +3771,12 @@ async def uninstall_entity(
     user: dict = Depends(get_current_user),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
+    # Required ("In stack, locked") items cannot be removed by the person they
+    # were required of — that is what the lock on the card means. Admins are NOT
+    # exempt: Required is about what a member must carry, not about what they may
+    # see, so the way out is for an admin to downgrade the grant to 'available'.
+    if entity_id in required_store_entity_ids(user["id"], conn):
+        raise HTTPException(status_code=409, detail="entity_required")
     installs = user_store_installs_repo()
     deleted = installs.uninstall(user["id"], entity_id)
     if deleted:

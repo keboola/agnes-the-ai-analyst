@@ -14,8 +14,6 @@ Covers:
 """
 
 import json
-import uuid
-from pathlib import Path
 
 import pytest
 import yaml
@@ -54,7 +52,7 @@ class TestServerConfigPageAuth:
         assert 'id="danger-modal"' in body
         assert 'id="danger-confirm-btn"' in body
         # Endpoint constant — guards against URL drift between UI and API.
-        assert '/api/admin/server-config' in body
+        assert "/api/admin/server-config" in body
 
     def test_non_admin_cannot_load_page(self, seeded_app):
         c = seeded_app["client"]
@@ -97,10 +95,16 @@ class TestServerConfigPageRendersSections:
         body = resp.text
         # The eight editable sections appear in the JS SECTION_META map.
         for section in (
-            "instance", "data_source", "email", "telegram",
-            "jira", "theme", "server", "auth",
+            "instance",
+            "data_source",
+            "email",
+            "telegram",
+            "jira",
+            "theme",
+            "server",
+            "auth",
         ):
-            assert f'{section}:' in body, f"section meta missing: {section}"
+            assert f"{section}:" in body, f"section meta missing: {section}"
 
     def test_page_marks_danger_sections_in_js(self, seeded_app):
         c = seeded_app["client"]
@@ -151,14 +155,19 @@ class TestGetServerConfigAPI:
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         state = tmp_path / "state"
         state.mkdir(parents=True, exist_ok=True)
-        (state / "instance.yaml").write_text(yaml.dump({
-            "instance": {"name": "Acme Analyst"},
-            "email": {"smtp_host": "smtp.example.com", "smtp_password": "supersecret"},
-            "auth": {"google_client_secret": "oauth-secret-value", "allowed_domain": "example.com"},
-            "telegram": {"bot_token": "telegram-token-value"},
-        }))
+        (state / "instance.yaml").write_text(
+            yaml.dump(
+                {
+                    "instance": {"name": "Acme Analyst"},
+                    "email": {"smtp_host": "smtp.example.com", "smtp_password": "supersecret"},
+                    "auth": {"google_client_secret": "oauth-secret-value", "allowed_domain": "example.com"},
+                    "telegram": {"bot_token": "telegram-token-value"},
+                }
+            )
+        )
         # Bust the in-process cache so the next GET re-reads the file.
         import app.instance_config as ic
+
         ic._instance_config = None
 
         c = seeded_app["client"]
@@ -274,10 +283,14 @@ class TestPostServerConfigAPI:
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         state = tmp_path / "state"
         state.mkdir(parents=True, exist_ok=True)
-        (state / "instance.yaml").write_text(yaml.dump({
-            "instance": {"name": "Original", "subtitle": "Keep me"},
-            "email": {"smtp_host": "smtp.example.com", "smtp_port": 587},
-        }))
+        (state / "instance.yaml").write_text(
+            yaml.dump(
+                {
+                    "instance": {"name": "Original", "subtitle": "Keep me"},
+                    "email": {"smtp_host": "smtp.example.com", "smtp_port": 587},
+                }
+            )
+        )
 
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
@@ -311,9 +324,7 @@ class TestPostServerConfigAPI:
         # Either 422 (Pydantic validation) or 422-equivalent — both valid.
         assert resp.status_code in (400, 422)
 
-    def test_corrupt_overlay_refused_with_500_not_silently_overwritten(
-        self, seeded_app, tmp_path, monkeypatch
-    ):
+    def test_corrupt_overlay_refused_with_500_not_silently_overwritten(self, seeded_app, tmp_path, monkeypatch):
         """A malformed overlay used to be silently replaced — that masked
         disk corruption / partial writes / hand-edits and dropped every
         previously-saved section on the next save. The endpoint must now
@@ -339,9 +350,7 @@ class TestPostServerConfigAPI:
         # to back it up.
         assert overlay_path.read_text().startswith("instance: {name: 'good'")
 
-    def test_round_tripped_redacted_secret_does_not_corrupt_overlay(
-        self, seeded_app, tmp_path, monkeypatch
-    ):
+    def test_round_tripped_redacted_secret_does_not_corrupt_overlay(self, seeded_app, tmp_path, monkeypatch):
         """Regression: GET redacts secret-keyed children in nested objects to
         ``"***"`` so the form never displays cleartext. The data_source
         section renders as a JSON textarea, so a no-op save would otherwise
@@ -351,21 +360,27 @@ class TestPostServerConfigAPI:
         server-side scrub must drop the sentinel so the overlay value
         survives a round-trip."""
         import yaml as _yaml
+
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         state = tmp_path / "state"
         state.mkdir(parents=True, exist_ok=True)
         # Plant a real overlay with the actual env-var name in token_env.
-        (state / "instance.yaml").write_text(_yaml.dump({
-            "data_source": {
-                "type": "keboola",
-                "keboola": {
-                    "stack_url": "https://connection.keboola.com",
-                    "token_env": "KEBOOLA_STORAGE_TOKEN",
-                },
-            },
-        }))
+        (state / "instance.yaml").write_text(
+            _yaml.dump(
+                {
+                    "data_source": {
+                        "type": "keboola",
+                        "keboola": {
+                            "stack_url": "https://connection.keboola.com",
+                            "token_env": "KEBOOLA_STORAGE_TOKEN",
+                        },
+                    },
+                }
+            )
+        )
         # Bust the in-process cache so the next read sees the planted overlay.
         import app.instance_config as ic
+
         ic._instance_config = None
 
         c = seeded_app["client"]
@@ -375,28 +390,36 @@ class TestPostServerConfigAPI:
         # The sentinel matches the string `_mask` produces.
         resp = c.post(
             "/api/admin/server-config",
-            json={"sections": {"data_source": {"keboola": {
-                "stack_url": "https://connection.keboola.com",
-                "token_env": "***",  # redaction sentinel — must not persist
-            }}}},
+            json={
+                "sections": {
+                    "data_source": {
+                        "keboola": {
+                            "stack_url": "https://connection.keboola.com",
+                            "token_env": "***",  # redaction sentinel — must not persist
+                        }
+                    }
+                }
+            },
             headers=_auth(token),
         )
         assert resp.status_code == 200, resp.text
 
         # Real env-var name must survive on disk.
         overlay = _yaml.safe_load((state / "instance.yaml").read_text())
-        assert overlay["data_source"]["keboola"]["token_env"] == "KEBOOLA_STORAGE_TOKEN", \
+        assert overlay["data_source"]["keboola"]["token_env"] == "KEBOOLA_STORAGE_TOKEN", (
             f"overlay corrupted by round-tripped sentinel: {overlay}"
+        )
 
-    @pytest.mark.parametrize("private_url", [
-        "http://169.254.169.254/latest/meta-data/",
-        "http://127.0.0.1:8080/",
-        "http://10.0.0.1/",
-        "http://localhost/",
-    ])
-    def test_post_rejects_private_url_in_keboola_stack_url(
-        self, seeded_app, tmp_path, monkeypatch, private_url
-    ):
+    @pytest.mark.parametrize(
+        "private_url",
+        [
+            "http://169.254.169.254/latest/meta-data/",
+            "http://127.0.0.1:8080/",
+            "http://10.0.0.1/",
+            "http://localhost/",
+        ],
+    )
+    def test_post_rejects_private_url_in_keboola_stack_url(self, seeded_app, tmp_path, monkeypatch, private_url):
         """SSRF gate symmetric with /configure: data_source.keboola.stack_url
         must not point to private/loopback/link-local networks. Without this
         check, the editor would let an admin sneak the GCE/EC2 metadata
@@ -412,8 +435,10 @@ class TestPostServerConfigAPI:
             headers=_auth(token),
         )
         assert resp.status_code == 400, resp.text
-        assert "private or reserved network" in resp.json()["detail"] \
+        assert (
+            "private or reserved network" in resp.json()["detail"]
             or "could not resolve hostname" in resp.json()["detail"]
+        )
         # Overlay must not have been written.
         assert not (tmp_path / "state" / "instance.yaml").exists()
 
@@ -432,10 +457,14 @@ class TestPostServerConfigAuditLog:
         # Apply a patch that changes both a non-secret field and a secret.
         resp = c.post(
             "/api/admin/server-config",
-            json={"sections": {"email": {
-                "smtp_host": "smtp.example.com",
-                "smtp_password": "fresh-secret-value-1234",
-            }}},
+            json={
+                "sections": {
+                    "email": {
+                        "smtp_host": "smtp.example.com",
+                        "smtp_password": "fresh-secret-value-1234",
+                    }
+                }
+            },
             headers=_auth(token),
         )
         assert resp.status_code == 200, resp.text
@@ -443,6 +472,7 @@ class TestPostServerConfigAuditLog:
         # Pull the audit row directly from the DB — bypasses the API
         # surface so we're verifying the actual persisted shape.
         from src.db import get_system_db
+
         conn = get_system_db()
         try:
             rows = conn.execute(
@@ -467,8 +497,7 @@ class TestPostServerConfigAuditLog:
         # Secret diff path is present but value is MASKED — cleartext must
         # never land in audit_log.
         all_text = json.dumps(params)
-        assert "fresh-secret-value-1234" not in all_text, \
-            f"secret leaked into audit log params: {all_text}"
+        assert "fresh-secret-value-1234" not in all_text, f"secret leaked into audit log params: {all_text}"
         pwd_diff = next((d for d in params["diff"] if d["path"] == "email.smtp_password"), None)
         assert pwd_diff is not None
         assert pwd_diff["after"] == "***"
@@ -479,6 +508,7 @@ class TestPostServerConfigAuditLog:
         to {} — losing the scalar entirely. Now the shape change is
         recorded as a single replacement at the parent path."""
         from app.api.admin import _diff_dicts
+
         # dict → scalar
         diff = _diff_dicts(
             {"keboola": {"stack_url": "https://x", "token_env": "Y"}},
@@ -492,6 +522,7 @@ class TestPostServerConfigAuditLog:
 
     def test_diff_records_scalar_to_dict_replacement(self):
         from app.api.admin import _diff_dicts
+
         diff = _diff_dicts(
             {"keboola": "disabled"},
             {"keboola": {"stack_url": "https://x"}},
@@ -512,6 +543,7 @@ class TestPostServerConfigAuditLog:
         runs `_redact` over the dict side so secret-keyed children are
         masked even when the parent isn't."""
         from app.api.admin import _diff_dicts
+
         # dict-with-secret-child → scalar
         diff = _diff_dicts(
             {"keboola": {"stack_url": "https://x", "token_env": "hunter2-cleartext"}},
@@ -519,9 +551,8 @@ class TestPostServerConfigAuditLog:
         )
         row = next(d for d in diff if d["path"] == "keboola")
         assert row["before"]["stack_url"] == "https://x"  # non-secret stays
-        assert row["before"]["token_env"] == "***"        # secret masked
-        assert "hunter2-cleartext" not in str(row), \
-            f"cleartext leaked into audit row: {row}"
+        assert row["before"]["token_env"] == "***"  # secret masked
+        assert "hunter2-cleartext" not in str(row), f"cleartext leaked into audit row: {row}"
 
         # scalar → dict-with-secret-child (symmetric)
         diff = _diff_dicts(
@@ -542,25 +573,32 @@ class TestPostServerConfigAuditLog:
         the overlay; static env-var placeholders never touch the overlay
         unless the admin types a literal value to replace them."""
         import yaml as _yaml
+
         static_dir = tmp_path / "static"
         static_dir.mkdir()
-        (static_dir / "instance.yaml").write_text(_yaml.dump({
-            "instance": {"name": "Old"},
-            "auth": {"allowed_domain": "example.com", "webapp_secret_key": "x"},
-            "server": {"host": "1.2.3.4", "hostname": "example.com"},
-            "email": {
-                "smtp_host": "smtp.example.com",
-                "smtp_password": "${SMTP_PASSWORD}",
-            },
-        }))
+        (static_dir / "instance.yaml").write_text(
+            _yaml.dump(
+                {
+                    "instance": {"name": "Old"},
+                    "auth": {"allowed_domain": "example.com", "webapp_secret_key": "x"},
+                    "server": {"host": "1.2.3.4", "hostname": "example.com"},
+                    "email": {
+                        "smtp_host": "smtp.example.com",
+                        "smtp_password": "${SMTP_PASSWORD}",
+                    },
+                }
+            )
+        )
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         monkeypatch.setenv("CONFIG_DIR", str(static_dir))
         monkeypatch.setenv("SMTP_PASSWORD", "hunter2-cleartext-secret")
         (tmp_path / "state").mkdir(parents=True, exist_ok=True)
         from pathlib import Path as _Path
         import config.loader as _loader_mod
+
         monkeypatch.setattr(_loader_mod, "CONFIG_DIR", _Path(static_dir))
         from app.instance_config import reset_cache
+
         reset_cache()
 
         c = seeded_app["client"]
@@ -576,16 +614,18 @@ class TestPostServerConfigAuditLog:
         overlay_text = (tmp_path / "state" / "instance.yaml").read_text()
         # The cleartext secret value MUST NOT appear in the overlay because
         # the user didn't touch `email`. Only the patched section lands.
-        assert "hunter2-cleartext-secret" not in overlay_text, \
+        assert "hunter2-cleartext-secret" not in overlay_text, (
             f"env-resolved secret leaked into overlay:\n{overlay_text}"
+        )
         # And the email section shouldn't be there at all (user didn't patch it).
         overlay = _yaml.safe_load(overlay_text)
-        assert "email" not in overlay, \
-            f"untouched section persisted to overlay: {overlay}"
+        assert "email" not in overlay, f"untouched section persisted to overlay: {overlay}"
         # And `instance` IS persisted with the user's value.
         assert overlay["instance"]["name"] == "New"
 
-    def test_load_instance_config_still_returns_static_sections_after_editor_save(self, seeded_app, tmp_path, monkeypatch):
+    def test_load_instance_config_still_returns_static_sections_after_editor_save(
+        self, seeded_app, tmp_path, monkeypatch
+    ):
         """End-to-end regression for the load_instance_config × narrow-overlay
         bug: pre-fix, load_instance_config() returned the overlay verbatim
         when it existed (no merge). Combined with the editor's narrow-write
@@ -594,17 +634,22 @@ class TestPostServerConfigAuditLog:
         get_datasets() call. This test exercises the actual call path the
         rest of the app uses, not just the overlay's on-disk shape."""
         import yaml as _yaml
+
         static_dir = tmp_path / "static"
         static_dir.mkdir()
         # Required fields per config.loader's strict validation, plus the
         # static-only sections we want to assert flow through after a save.
-        (static_dir / "instance.yaml").write_text(_yaml.dump({
-            "instance": {"name": "Old"},
-            "auth": {"allowed_domain": "example.com", "webapp_secret_key": "x"},
-            "server": {"host": "1.2.3.4", "hostname": "example.com"},
-            "datasets": {"sales": {"primary_key": ["id"]}},
-            "corporate_memory": {"enabled": True, "retention_days": 90},
-        }))
+        (static_dir / "instance.yaml").write_text(
+            _yaml.dump(
+                {
+                    "instance": {"name": "Old"},
+                    "auth": {"allowed_domain": "example.com", "webapp_secret_key": "x"},
+                    "server": {"host": "1.2.3.4", "hostname": "example.com"},
+                    "datasets": {"sales": {"primary_key": ["id"]}},
+                    "corporate_memory": {"enabled": True, "retention_days": 90},
+                }
+            )
+        )
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         monkeypatch.setenv("CONFIG_DIR", str(static_dir))
         (tmp_path / "state").mkdir(parents=True, exist_ok=True)
@@ -614,9 +659,11 @@ class TestPostServerConfigAuditLog:
         # attribute directly so the static base resolves to our fixture.
         from pathlib import Path as _Path
         import config.loader as _loader_mod
+
         monkeypatch.setattr(_loader_mod, "CONFIG_DIR", _Path(static_dir))
 
         from app.instance_config import reset_cache
+
         reset_cache()
 
         c = seeded_app["client"]
@@ -630,11 +677,11 @@ class TestPostServerConfigAuditLog:
 
         # Now use the SAME function the rest of the app uses.
         from app.instance_config import load_instance_config, get_value
+
         reset_cache()  # make sure we're reading fresh post-save
         cfg = load_instance_config()
         assert cfg.get("instance", {}).get("name") == "New", "edit didn't land"
-        assert "corporate_memory" in cfg, \
-            f"static-only section vanished after save: keys={list(cfg.keys())}"
+        assert "corporate_memory" in cfg, f"static-only section vanished after save: keys={list(cfg.keys())}"
         assert cfg["corporate_memory"]["enabled"] is True
         assert cfg["corporate_memory"]["retention_days"] == 90
         assert "datasets" in cfg
@@ -650,15 +697,20 @@ class TestPostServerConfigAuditLog:
         file. Overlay must persist ONLY the editable sections so the static
         file stays the source of truth for everything else."""
         import yaml as _yaml
+
         # Static config has both editable + non-editable sections.
         static_dir = tmp_path / "static"
         static_dir.mkdir()
         static_path = static_dir / "instance.yaml"
-        static_path.write_text(_yaml.dump({
-            "instance": {"name": "Old"},
-            "datasets": {"sales": {"primary_key": ["id"]}},
-            "corporate_memory": {"enabled": True, "retention_days": 90},
-        }))
+        static_path.write_text(
+            _yaml.dump(
+                {
+                    "instance": {"name": "Old"},
+                    "datasets": {"sales": {"primary_key": ["id"]}},
+                    "corporate_memory": {"enabled": True, "retention_days": 90},
+                }
+            )
+        )
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         monkeypatch.setenv("CONFIG_DIR", str(static_dir))
         (tmp_path / "state").mkdir(parents=True, exist_ok=True)
@@ -678,8 +730,7 @@ class TestPostServerConfigAuditLog:
         overlay = _yaml.safe_load((tmp_path / "state" / "instance.yaml").read_text())
         assert "instance" in overlay
         assert overlay["instance"]["name"] == "New"
-        assert "corporate_memory" not in overlay, \
-            f"non-editable section leaked into overlay: {overlay}"
+        assert "corporate_memory" not in overlay, f"non-editable section leaked into overlay: {overlay}"
         assert "datasets" not in overlay
 
     def test_secret_rotation_is_visible_in_audit_diff(self, seeded_app, tmp_path, monkeypatch):
@@ -710,11 +761,11 @@ class TestPostServerConfigAuditLog:
         assert resp.status_code == 200, resp.text
 
         from src.db import get_system_db
+
         conn = get_system_db()
         try:
             row = conn.execute(
-                "SELECT params FROM audit_log "
-                "WHERE action = 'instance_config.update' ORDER BY timestamp DESC LIMIT 1"
+                "SELECT params FROM audit_log WHERE action = 'instance_config.update' ORDER BY timestamp DESC LIMIT 1"
             ).fetchone()
         finally:
             conn.close()
@@ -748,11 +799,11 @@ class TestPostServerConfigAuditLog:
         assert resp.status_code == 200, resp.text
 
         from src.db import get_system_db
+
         conn = get_system_db()
         try:
             row = conn.execute(
-                "SELECT params FROM audit_log "
-                "WHERE action = 'instance_config.update' ORDER BY timestamp DESC LIMIT 1"
+                "SELECT params FROM audit_log WHERE action = 'instance_config.update' ORDER BY timestamp DESC LIMIT 1"
             ).fetchone()
         finally:
             conn.close()
@@ -767,6 +818,7 @@ class TestRedactionHelpers:
 
     def test_is_secret_key_matches_common_patterns(self):
         from app.api.admin import _is_secret_key
+
         assert _is_secret_key("smtp_password")
         assert _is_secret_key("google_client_secret")
         assert _is_secret_key("api_token")
@@ -778,6 +830,7 @@ class TestRedactionHelpers:
 
     def test_redact_masks_nested_secrets(self):
         from app.api.admin import _redact
+
         before = {
             "email": {"smtp_host": "h", "smtp_password": "leak"},
             "auth": {"google_client_secret": "leak2", "allowed_domain": "example.com"},
@@ -790,6 +843,7 @@ class TestRedactionHelpers:
 
     def test_diff_dicts_flat_paths(self):
         from app.api.admin import _diff_dicts
+
         before = {"email": {"smtp_host": "old", "smtp_port": 587}}
         after = {"email": {"smtp_host": "new", "smtp_port": 587}}
         diff = _diff_dicts(before, after)
@@ -797,6 +851,7 @@ class TestRedactionHelpers:
 
     def test_deep_merge_preserves_other_sections(self):
         from app.api.admin import _deep_merge
+
         base = {"a": {"x": 1, "y": 2}, "b": {"z": 3}}
         patch = {"a": {"y": 99}}
         out = _deep_merge(base, patch)
@@ -824,13 +879,18 @@ class TestServerConfigBigQueryFields:
         state.mkdir(parents=True, exist_ok=True)
         # Plant a minimal instance.yaml that has data_source.bigquery but
         # none of the optional fields set.
-        (state / "instance.yaml").write_text(yaml.dump({
-            "data_source": {
-                "type": "bigquery",
-                "bigquery": {"project": "my-data-prj", "location": "US"},
-            },
-        }))
+        (state / "instance.yaml").write_text(
+            yaml.dump(
+                {
+                    "data_source": {
+                        "type": "bigquery",
+                        "bigquery": {"project": "my-data-prj", "location": "US"},
+                    },
+                }
+            )
+        )
         import app.instance_config as ic
+
         ic._instance_config = None
 
         c = seeded_app["client"]
@@ -843,14 +903,11 @@ class TestServerConfigBigQueryFields:
         # render path. The field still appears in `known_fields` (so the
         # UI knows about it) and renders via the unset path with the
         # `(defaults to <project>)` placeholder. Devin Review iter #3.
-        assert "billing_project" not in bq, \
-            f"billing_project should not be auto-seeded in sections; got: {bq}"
-        assert "max_bytes_per_materialize" in bq, \
-            f"max_bytes_per_materialize missing from GET: {bq}"
+        assert "billing_project" not in bq, f"billing_project should not be auto-seeded in sections; got: {bq}"
+        assert "max_bytes_per_materialize" in bq, f"max_bytes_per_materialize missing from GET: {bq}"
         # legacy_wrap_views was removed in #160; UI must NOT surface it any
         # longer (the wrap behavior is now unconditional).
-        assert "legacy_wrap_views" not in bq, \
-            f"legacy_wrap_views was removed in #160 but still present in GET: {bq}"
+        assert "legacy_wrap_views" not in bq, f"legacy_wrap_views was removed in #160 but still present in GET: {bq}"
 
     def test_get_preserves_existing_bq_field_values(self, seeded_app, tmp_path, monkeypatch):
         """When the operator HAS set the fields, GET must surface their actual
@@ -858,17 +915,22 @@ class TestServerConfigBigQueryFields:
         monkeypatch.setenv("DATA_DIR", str(tmp_path))
         state = tmp_path / "state"
         state.mkdir(parents=True, exist_ok=True)
-        (state / "instance.yaml").write_text(yaml.dump({
-            "data_source": {
-                "type": "bigquery",
-                "bigquery": {
-                    "project": "my-data-prj",
-                    "billing_project": "my-billing-prj",
-                    "max_bytes_per_materialize": 5368709120,  # 5 GiB
-                },
-            },
-        }))
+        (state / "instance.yaml").write_text(
+            yaml.dump(
+                {
+                    "data_source": {
+                        "type": "bigquery",
+                        "bigquery": {
+                            "project": "my-data-prj",
+                            "billing_project": "my-billing-prj",
+                            "max_bytes_per_materialize": 5368709120,  # 5 GiB
+                        },
+                    },
+                }
+            )
+        )
         import app.instance_config as ic
+
         ic._instance_config = None
 
         c = seeded_app["client"]
@@ -887,9 +949,15 @@ class TestServerConfigBigQueryFields:
         token = seeded_app["admin_token"]
         resp = c.post(
             "/api/admin/server-config",
-            json={"sections": {"data_source": {"bigquery": {
-                "billing_project": "my-billing-prj",
-            }}}},
+            json={
+                "sections": {
+                    "data_source": {
+                        "bigquery": {
+                            "billing_project": "my-billing-prj",
+                        }
+                    }
+                }
+            },
             headers=_auth(token),
         )
         assert resp.status_code == 200, resp.text
@@ -905,9 +973,15 @@ class TestServerConfigBigQueryFields:
         token = seeded_app["admin_token"]
         resp = c.post(
             "/api/admin/server-config",
-            json={"sections": {"data_source": {"bigquery": {
-                "max_bytes_per_materialize": 21474836480,  # 20 GiB
-            }}}},
+            json={
+                "sections": {
+                    "data_source": {
+                        "bigquery": {
+                            "max_bytes_per_materialize": 21474836480,  # 20 GiB
+                        }
+                    }
+                }
+            },
             headers=_auth(token),
         )
         assert resp.status_code == 200, resp.text
@@ -929,15 +1003,96 @@ class TestServerConfigBigQueryFields:
         resp = c.get("/api/admin/server-config", headers=_auth(token))
         assert resp.status_code == 200, resp.text
         bq_fields = resp.json()["known_fields"]["data_source"]["bigquery"]["fields"]
-        assert "billing_project" in bq_fields, \
-            "registry must expose billing_project as a known field"
-        assert "max_bytes_per_materialize" in bq_fields, \
+        assert "billing_project" in bq_fields, "registry must expose billing_project as a known field"
+        assert "max_bytes_per_materialize" in bq_fields, (
             "registry must expose max_bytes_per_materialize as a known field"
+        )
         # legacy_wrap_views was removed in #160 (VIEW/MAT_VIEW always wrap).
-        assert "legacy_wrap_views" not in bq_fields, \
+        assert "legacy_wrap_views" not in bq_fields, (
             "legacy_wrap_views was removed in #160 but still present in known_fields"
+        )
         # Each surviving field must carry a hint so the renderer can show
         # operator-facing help text — no anonymous knobs.
         for k in ("billing_project", "max_bytes_per_materialize"):
-            assert "hint" in bq_fields[k] and bq_fields[k]["hint"], \
-                f"{k} must carry a non-empty hint"
+            assert "hint" in bq_fields[k] and bq_fields[k]["hint"], f"{k} must carry a non-empty hint"
+
+
+# --- library.show_unverified_trust toggle ------------------------------------
+
+
+class TestLibraryShowUnverifiedTrustToggle:
+    """library is now a registered editable section so show_unverified_trust
+    can be toggled from /admin/server-config without SSH access or a restart."""
+
+    def test_post_library_section_accepted(self, seeded_app, tmp_path, monkeypatch):
+        """POSTing library.show_unverified_trust must return 200 (section is
+        editable) and persist the value to the overlay instance.yaml."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        (tmp_path / "state").mkdir(parents=True, exist_ok=True)
+        # Clear any stale env-var so the yaml read is the source of truth.
+        monkeypatch.delenv("AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST", raising=False)
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"library": {"show_unverified_trust": True}}},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert "library" in data["sections_updated"]
+
+    def test_post_library_persists_to_overlay(self, seeded_app, tmp_path, monkeypatch):
+        """The value written to the overlay yaml must survive a read-back."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        (tmp_path / "state").mkdir(parents=True, exist_ok=True)
+        monkeypatch.delenv("AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST", raising=False)
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"library": {"show_unverified_trust": True}}},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+
+        written = tmp_path / "state" / "instance.yaml"
+        assert written.exists(), "overlay must be written to DATA_DIR/state/instance.yaml"
+        loaded = yaml.safe_load(written.read_text())
+        assert loaded["library"]["show_unverified_trust"] is True
+
+    def test_post_library_feature_flag_reads_back_true(self, seeded_app, tmp_path, monkeypatch):
+        """After writing the overlay, feature_enabled must return True when
+        read back (and the env var is absent so it cannot mask the yaml)."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        (tmp_path / "state").mkdir(parents=True, exist_ok=True)
+        monkeypatch.delenv("AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST", raising=False)
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"library": {"show_unverified_trust": True}}},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+
+        # Bust the in-process config cache so the next read sees the overlay.
+        import app.instance_config as ic
+
+        ic._instance_config = None
+
+        from app.instance_config import feature_enabled
+
+        assert (
+            feature_enabled(
+                "library",
+                "show_unverified_trust",
+                env_var="AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST",
+                default=False,
+            )
+            is True
+        ), "feature_enabled must return True after POST writes overlay"

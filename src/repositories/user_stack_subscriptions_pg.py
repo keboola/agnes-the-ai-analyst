@@ -12,6 +12,7 @@ Implementation differences vs. DuckDB:
   DO NOTHING`` for subscribe, plain DELETE for unsubscribe.
 - No JSON columns / no soft-delete on this entity — pure association table.
 """
+
 from __future__ import annotations
 
 from typing import List
@@ -26,9 +27,7 @@ class UserStackSubscriptionsPgRepository:
     def __init__(self, engine: Engine):
         self._engine = engine
 
-    def subscribe(
-        self, user_id: str, resource_type: str, resource_id: str
-    ) -> bool:
+    def subscribe(self, user_id: str, resource_type: str, resource_id: str) -> bool:
         """Insert one row. Returns True iff the row is new.
 
         Idempotent — the table's composite PK + ``ON CONFLICT DO NOTHING``
@@ -55,9 +54,7 @@ class UserStackSubscriptionsPgRepository:
             )
             return (result.rowcount or 0) > 0
 
-    def subscribe_group_members(
-        self, group_id: str, resource_type: str, resource_id: str
-    ) -> int:
+    def subscribe_group_members(self, group_id: str, resource_type: str, resource_id: str) -> int:
         """Subscribe every current member of ``group_id`` to (resource_type,
         resource_id). Returns the number of newly-created rows.
 
@@ -69,8 +66,7 @@ class UserStackSubscriptionsPgRepository:
         with self._engine.begin() as conn:
             before = conn.execute(
                 sa.text(
-                    "SELECT COUNT(*) FROM user_stack_subscriptions "
-                    "WHERE resource_type = :rt AND resource_id = :ri"
+                    "SELECT COUNT(*) FROM user_stack_subscriptions WHERE resource_type = :rt AND resource_id = :ri"
                 ),
                 {"rt": resource_type, "ri": resource_id},
             ).scalar_one()
@@ -90,16 +86,13 @@ class UserStackSubscriptionsPgRepository:
             )
             after = conn.execute(
                 sa.text(
-                    "SELECT COUNT(*) FROM user_stack_subscriptions "
-                    "WHERE resource_type = :rt AND resource_id = :ri"
+                    "SELECT COUNT(*) FROM user_stack_subscriptions WHERE resource_type = :rt AND resource_id = :ri"
                 ),
                 {"rt": resource_type, "ri": resource_id},
             ).scalar_one()
         return int(after - before)
 
-    def unsubscribe(
-        self, user_id: str, resource_type: str, resource_id: str
-    ) -> bool:
+    def unsubscribe(self, user_id: str, resource_type: str, resource_id: str) -> bool:
         """Drop one row. Returns True iff a row was deleted."""
         with self._engine.begin() as conn:
             result = conn.execute(
@@ -117,9 +110,7 @@ class UserStackSubscriptionsPgRepository:
             )
             return (result.rowcount or 0) > 0
 
-    def is_subscribed(
-        self, user_id: str, resource_type: str, resource_id: str
-    ) -> bool:
+    def is_subscribed(self, user_id: str, resource_type: str, resource_id: str) -> bool:
         with self._engine.connect() as conn:
             row = conn.execute(
                 sa.text(
@@ -154,9 +145,24 @@ class UserStackSubscriptionsPgRepository:
             ).all()
         return [r[0] for r in rows]
 
-    def list_users_subscribed_to(
-        self, resource_type: str, resource_id: str
-    ) -> List[str]:
+    def list_for_user_with_dates(self, user_id: str) -> List[dict]:
+        """Every subscription of the user, across resource types, with its
+        ``subscribed_at`` timestamp — the "Added" metadata the My Stack
+        inventory table renders. Newest first (matches the DuckDB sibling).
+        """
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                sa.text(
+                    "SELECT resource_type, resource_id, subscribed_at "
+                    "FROM user_stack_subscriptions "
+                    "WHERE user_id = :user_id "
+                    "ORDER BY subscribed_at DESC"
+                ),
+                {"user_id": user_id},
+            ).all()
+        return [{"resource_type": r[0], "resource_id": r[1], "subscribed_at": r[2]} for r in rows]
+
+    def list_users_subscribed_to(self, resource_type: str, resource_id: str) -> List[str]:
         """All users subscribed to a given (type, id).
 
         Distinct user_ids; ordering follows the DuckDB sibling (no

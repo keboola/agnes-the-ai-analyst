@@ -1,0 +1,1911 @@
+{% extends "base_ds.html" %}
+{% block title %}How {{ instance_brand }} works{% endblock %}
+
+{% import "_components.html" as ds %}
+{% import "macros/_icon.html" as ico %}
+{% import "macros/_agnes_orb.html" as orb %}
+
+{% block head_extra %}
+<style>
+/* ═══════════════════════════════════════════════════════════════════
+   AI Connector — an integration guide (.aic-*)
+   Reads like premium developer docs (Stripe / Vercel / Supabase): one
+   calm top-to-bottom flow, no wizard chrome, no progress or completion
+   state (Agnes can't know it). Sections are documentation you can enter
+   anywhere. One green accent, reserved for the primary action + selected
+   tab. All colour from --ds-* tokens; the terminal is the one dark surface.
+   ═══════════════════════════════════════════════════════════════════ */
+
+.aic-flow { display: flex; flex-direction: column; gap: 24px; max-width: 860px; margin: 0 auto; }
+
+/* ── 1. Hero (borderless — whitespace, not chrome) ───────────────── */
+.aic-hero { display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 32px; align-items: center; padding: 8px 0 4px; }
+.aic-eyebrow { font-size: 11px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; color: var(--ds-primary); margin: 0 0 10px; }
+.aic-hero h1 { font-size: 28px; line-height: 1.12; letter-spacing: -0.02em; font-weight: 800; color: var(--ds-text-primary); margin: 0 0 12px; }
+.aic-hero-desc { font-size: 15px; line-height: 1.55; color: var(--ds-text-secondary); margin: 0 0 18px; max-width: 42ch; }
+/* The three reassurances are a single wrapped footnote row rather than the
+   stacked column they started as — three full lines in the most valuable
+   space on the page, answering a question ("is this safe?") the reader has
+   not asked yet. Wrapped, they keep the claims and cost ~70px less hero. */
+.aic-benefits { display: flex; flex-wrap: wrap; gap: 7px 18px; }
+.aic-benefit { display: flex; align-items: center; gap: 7px; }
+.aic-benefit .ui-ico { color: var(--ds-primary); flex-shrink: 0; }
+.aic-benefit span { font-size: 12.5px; line-height: 1.4; color: var(--ds-text-secondary); }
+
+/* Hero illustration — Agnes is the hub; knowledge + tools connect to it */
+.aic-art { display: flex; align-items: center; justify-content: center; min-height: 200px; }
+.aic-art-knowledge { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.aic-art-node { width: 46px; height: 46px; border-radius: 12px; background: var(--ds-surface); border: 1px solid var(--ds-border); display: flex; align-items: center; justify-content: center; color: var(--ds-text-secondary); }
+.aic-art-node-label { font-size: 10.5px; color: var(--ds-text-muted); max-width: 76px; text-align: center; line-height: 1.3; }
+.aic-art-wire { width: 30px; height: 1px; border-top: 1px dashed var(--ds-border); flex-shrink: 0; }
+.aic-hub { position: relative; width: 156px; height: 156px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.aic-hub::before, .aic-hub::after { content: ""; position: absolute; border-radius: 50%; border: 1px solid var(--ds-border); }
+.aic-hub::before { inset: 0; }
+.aic-hub::after { inset: 26px; }
+.aic-hub-core { position: relative; width: 92px; height: 92px; border-radius: 50%; background: var(--ds-surface); border: 1px solid var(--ds-border); display: flex; align-items: center; justify-content: center; }
+.aic-hub-core img { width: 52px; height: 52px; }
+.aic-art-tools { display: flex; flex-direction: column; gap: 10px; }
+.aic-art-tool { width: 40px; height: 40px; border-radius: 11px; background: var(--ds-surface); border: 1px solid var(--ds-border); display: flex; align-items: center; justify-content: center; }
+.aic-art-tool img { width: 21px; height: 21px; }
+.aic-art-tool--more { color: var(--ds-text-muted); font-size: 20px; font-weight: 300; }
+
+/* ── Section head (plain — no state-bearing circle) ──────────────── */
+.aic-sec-head { margin-bottom: 18px; }
+.aic-sec-title { font-size: 17px; font-weight: 700; letter-spacing: -0.01em; color: var(--ds-text-primary); margin: 0; }
+.aic-sec-num { color: var(--ds-text-muted); font-weight: 700; margin-right: 6px; }
+.aic-sec-desc { font-size: 13px; color: var(--ds-text-secondary); margin: 4px 0 0; line-height: 1.5; }
+
+/* Card primitive — hairline border, no shadow, soft radius */
+.aic-card { background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 14px; padding: 24px; }
+/* Stacked cards need a gutter — two adjacent cards (the #reference pair,
+   the CLI-install + tutorial pair) otherwise render border-to-border and
+   read as one mis-drawn box. */
+.aic-card + .aic-card { margin-top: 14px; }
+/* Section divider inside a card (hairline between numbered steps) */
+.aic-card-divider { height: 1px; background: var(--ds-border); margin: 24px 0; }
+
+/* ── Connector URL ───────────────────────────────────────────────── */
+.aic-url-box { display: flex; align-items: center; gap: 16px; background: var(--ds-surface-sunken, var(--ds-surface-dim)); border: 1px solid var(--ds-border); border-radius: 12px; padding: 15px 16px; }
+.aic-url { flex: 1; font-family: var(--ds-font-mono, monospace); font-size: 15px; color: var(--ds-text-primary); word-break: break-all; }
+.aic-url-note { display: flex; align-items: center; gap: 8px; margin-top: 14px; font-size: 12.5px; color: var(--ds-text-muted); }
+.aic-url-note .ui-ico { flex-shrink: 0; }
+
+/* ── Configure — tabs + single vertical flow ─────────────────────── */
+/* Segmented tab control — one container, not separate buttons */
+.aic-tabs { display: flex; gap: 4px; padding: 4px; border: 1px solid var(--ds-border); border-radius: 12px; background: var(--ds-surface-dim); margin-bottom: 24px; overflow-x: auto; }
+.aic-tab { display: flex; align-items: center; gap: 7px; padding: 8px 13px; border: 0; border-radius: 9px; background: transparent; cursor: pointer; font-size: 13.5px; font-weight: 500; color: var(--ds-text-secondary); white-space: nowrap; transition: background var(--ds-motion-fast, .12s) var(--ds-ease-standard, ease), color var(--ds-motion-fast, .12s) var(--ds-ease-standard, ease); }
+.aic-tab:hover { color: var(--ds-text-primary); }
+.aic-tab.is-active { background: var(--ds-surface); color: var(--ds-primary); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.05); }
+.aic-tab:focus-visible { outline: 2px solid var(--ds-primary); outline-offset: 1px; }
+.aic-tab img { width: 17px; height: 17px; }
+.aic-panel { display: none; }
+.aic-panel.is-active { display: block; }
+
+/* ── Mode tabs — "Connect your AI tool" vs "Terminal & data agent" ──
+   The two setup routes are one section (#connect) with two large tabs,
+   not two sibling sections: they are alternatives, not sequential
+   reading, and stacking them made the page look like the CLI install was
+   a second step everyone owed after the connector. The tabs ARE the card
+   header. `#cli` stays a real id (on the CLI panel) so every inbound deep
+   link keeps working — the script opens the matching tab first. */
+.aic-modecard { border: 1px solid var(--ds-border); border-radius: 14px; background: var(--ds-surface); overflow: hidden; }
+.aic-mode-tabs { display: flex; border-bottom: 1px solid var(--ds-border); background: var(--ds-surface-dim); }
+.aic-mode-tab { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 13px 16px; border: 0; background: transparent; cursor: pointer; color: var(--ds-text-secondary); transition: background var(--ds-motion-fast, .12s) var(--ds-ease-standard, ease), color var(--ds-motion-fast, .12s) var(--ds-ease-standard, ease); }
+.aic-mode-tab + .aic-mode-tab { border-left: 1px solid var(--ds-border); }
+.aic-mode-tab-label { font-size: 14.5px; font-weight: 600; }
+.aic-mode-tab-sub { font-size: 12px; font-weight: 500; color: var(--ds-text-muted); }
+.aic-mode-tab:hover { color: var(--ds-text-primary); background: var(--ds-surface); }
+.aic-mode-tab.is-active, .aic-mode-tab.is-active:hover { background: var(--ds-primary); color: #fff; }
+.aic-mode-tab.is-active .aic-mode-tab-label { color: #fff; }
+.aic-mode-tab.is-active .aic-mode-tab-sub { color: rgba(255,255,255,.82); }
+.aic-mode-tab:focus-visible { outline: 2px solid var(--ds-primary); outline-offset: -2px; }
+.aic-mode-panel { display: none; flex-direction: column; gap: 24px; padding: 24px; scroll-margin-top: 24px; }
+.aic-mode-panel.is-active { display: flex; }
+/* Inside the tabbed card the card owns the border, so inner sections sit
+   flat; the beginner tutorial keeps its own frame — it is a collapsed
+   aside, not part of the flow. */
+.aic-mode-panel > .aic-card:not(.aic-tut) { border: 0; border-radius: 0; padding: 0; background: transparent; }
+/* The panel's flex gap owns the vertical rhythm, so the per-mode lede
+   drops the section-level bottom margin it carries elsewhere. */
+.aic-mode-panel > .hiw-lede { margin: 0; }
+
+/* ── Beginner tutorial (collapsed) — install Claude Code first ────── */
+.aic-tut > summary { list-style: none; cursor: pointer; display: grid; grid-template-columns: 34px 1fr 20px; gap: 13px; align-items: center; }
+.aic-tut > summary::-webkit-details-marker { display: none; }
+.aic-tut > summary:focus-visible { outline: 2px solid var(--ds-primary); outline-offset: 3px; border-radius: 8px; }
+.aic-tut-sum-icon { width: 34px; height: 34px; border-radius: 9px; background: var(--ds-surface-dim); border: 1px solid var(--ds-border); display: flex; align-items: center; justify-content: center; color: var(--ds-primary); }
+.aic-tut-body { margin-top: 20px; }
+/* OS toggle — one segmented control; choice applies to every step via [data-os] */
+.aic-tut-os { display: inline-flex; gap: 4px; padding: 4px; border: 1px solid var(--ds-border); border-radius: 10px; background: var(--ds-surface-dim); margin-bottom: 16px; }
+.aic-tut-os-btn { border: 0; border-radius: 7px; background: transparent; cursor: pointer; padding: 6px 12px; font-size: 12.5px; font-weight: 500; color: var(--ds-text-secondary); }
+.aic-tut-os-btn:hover { color: var(--ds-text-primary); }
+.aic-tut-os-btn.is-active { background: var(--ds-surface); color: var(--ds-primary); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.05); }
+.aic-tut-os-btn:focus-visible { outline: 2px solid var(--ds-primary); outline-offset: 1px; }
+/* CSS-driven OS switch: hide the command block that doesn't match the toggle */
+.aic-tut[data-os="unix"] .aic-term[data-os="windows"],
+.aic-tut[data-os="windows"] .aic-term[data-os="unix"] { display: none; }
+/* Step tabs */
+.aic-step-tabs { display: flex; gap: 4px; padding: 4px; border: 1px solid var(--ds-border); border-radius: 11px; background: var(--ds-surface-dim); margin-bottom: 20px; overflow-x: auto; }
+.aic-step-tab { display: flex; align-items: center; gap: 8px; padding: 8px 13px; border: 0; border-radius: 8px; background: transparent; cursor: pointer; font-size: 13px; font-weight: 500; color: var(--ds-text-secondary); white-space: nowrap; }
+.aic-step-tab:hover { color: var(--ds-text-primary); }
+.aic-step-tab-num { display: flex; align-items: center; justify-content: center; width: 19px; height: 19px; border-radius: 50%; background: var(--ds-surface); border: 1px solid var(--ds-border); font-size: 11px; font-weight: 700; color: var(--ds-text-muted); }
+.aic-step-tab.is-active { background: var(--ds-surface); color: var(--ds-primary); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.05); }
+.aic-step-tab.is-active .aic-step-tab-num { background: var(--ds-primary); border-color: var(--ds-primary); color: #fff; }
+.aic-step-tab:focus-visible { outline: 2px solid var(--ds-primary); outline-offset: 1px; }
+.aic-step-panel { display: none; }
+.aic-step-panel.is-active { display: block; }
+
+/* Sub-section — decorative icon gutter + content; tight, grouped rhythm */
+.aic-sub { display: grid; grid-template-columns: 34px 1fr; gap: 14px; }
+.aic-sub > div { min-width: 0; } /* let wide code blocks scroll, not stretch the card */
+.aic-sub + .aic-sub { margin-top: 24px; padding-top: 24px; border-top: 1px solid var(--ds-border); }
+.aic-sub-icon { width: 34px; height: 34px; border-radius: 50%; background: var(--ds-surface-dim); border: 1px solid var(--ds-border); display: flex; align-items: center; justify-content: center; color: var(--ds-text-secondary); }
+.aic-sub-icon .ui-ico { width: 17px; height: 17px; }
+.aic-sub-title { font-size: 15px; font-weight: 700; color: var(--ds-text-primary); margin: 5px 0 0; }
+.aic-sub-req { font-size: 12.5px; color: var(--ds-text-muted); margin: 4px 0 0; }
+.aic-sub-desc { font-size: 13.5px; color: var(--ds-text-secondary); margin: 5px 0 0; line-height: 1.55; }
+.aic-substep { font-size: 13px; font-weight: 700; color: var(--ds-text-primary); margin: 16px 0 6px; }
+
+/* Terminal — the primary action, strongest emphasis (dark surface) */
+.aic-term { border-radius: 12px; overflow: hidden; border: 1px solid var(--ds-hero-line, rgba(0,0,0,.12)); margin: 14px 0 0; }
+.aic-term-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 12px; background: var(--ds-hero-bg, #14181f); border-bottom: 1px solid rgba(255,255,255,.08); }
+.aic-term-file { font-family: var(--ds-font-mono, monospace); font-size: 12px; color: var(--ds-hero-ink, #cfd6df); opacity: .65; }
+.aic-term-copy { appearance: none; cursor: pointer; font-size: 12px; font-weight: 600; color: var(--ds-hero-ink, #e6e9ee); background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.14); border-radius: 7px; padding: 3px 10px; display: inline-flex; align-items: center; gap: 6px; }
+.aic-term-copy:hover { background: rgba(255,255,255,.16); }
+.aic-term-body { margin: 0; padding: 16px; background: var(--ds-hero-bg, #14181f); color: var(--ds-hero-ink, #e6e9ee); font-family: var(--ds-font-mono, monospace); font-size: 14px; line-height: 1.6; white-space: pre; overflow-x: auto; }
+.aic-term-url { color: #7ee787; }
+
+/* Light JSON code block */
+.aic-codeblock { border-radius: 12px; overflow: hidden; border: 1px solid var(--ds-border); margin: 14px 0 0; }
+.aic-codeblock-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; background: var(--ds-surface); border-bottom: 1px solid var(--ds-border); }
+.aic-codeblock-file { font-family: var(--ds-font-mono, monospace); font-size: 12px; color: var(--ds-text-muted); }
+.aic-codeblock pre { margin: 0; padding: 14px 16px; background: var(--ds-surface-dim); color: var(--ds-text-primary); font-family: var(--ds-font-mono, monospace); font-size: 13px; line-height: 1.55; white-space: pre; overflow-x: auto; }
+
+/* Callouts — informational, never success/completion */
+.aic-callout { display: flex; align-items: flex-start; gap: 10px; margin-top: 12px; padding: 10px 12px; border: 1px solid var(--ds-border); border-radius: 10px; background: var(--ds-surface-dim); font-size: 12.5px; color: var(--ds-text-secondary); line-height: 1.5; }
+.aic-callout .ui-ico { color: var(--ds-text-muted); flex-shrink: 0; margin-top: 1px; }
+.aic-callout .aic-admin-row { margin-top: 10px; }
+
+/* Auth as a visual numbered checklist (local order, not page progress) */
+.aic-checklist { list-style: none; margin: 10px 0 0; padding: 0; counter-reset: aic-ck; display: flex; flex-direction: column; gap: 9px; }
+.aic-checklist li { counter-increment: aic-ck; display: flex; align-items: flex-start; gap: 11px; font-size: 13.5px; color: var(--ds-text-primary); line-height: 1.45; }
+.aic-checklist li::before { content: counter(aic-ck); flex-shrink: 0; width: 22px; height: 22px; border-radius: 50%; background: var(--ds-surface); border: 1px solid var(--ds-border); color: var(--ds-text-muted); font-size: 11.5px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+
+.aic-code { font-family: var(--ds-font-mono, monospace); font-size: 12.5px; background: var(--ds-surface-dim); border: 1px solid var(--ds-border); border-radius: 6px; padding: 1px 6px; }
+.aic-prompt { margin-top: 10px; font-family: var(--ds-font-mono, monospace); font-size: 13px; color: var(--ds-text-primary); background: var(--ds-surface-dim); border: 1px solid var(--ds-border); border-radius: 8px; padding: 10px 12px; }
+
+/* ── CLI quick-install — one-click token → clipboard ─────────────── */
+.aic-oneclick { display: inline-flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 14px; font-weight: 600; color: #fff; background: var(--ds-primary); border: 0; border-radius: 9px; padding: 11px 20px; cursor: pointer; transition: background var(--ds-motion-fast, .15s) var(--ds-ease-standard, ease), transform var(--ds-motion-fast, .15s) var(--ds-ease-standard, ease); }
+.aic-oneclick .ui-ico { color: currentColor; }
+.aic-oneclick:hover { background: var(--ds-primary-dark, var(--ds-primary)); transform: translateY(-1px); }
+.aic-oneclick[disabled] { opacity: .7; cursor: wait; transform: none; }
+.aic-oneclick.copied { background: var(--ds-primary-dark, var(--ds-primary)); }
+.aic-oneclick:focus-visible { outline: 2px solid var(--ds-primary); outline-offset: 2px; }
+.aic-oneclick-note { font-size: 12.5px; color: var(--ds-text-muted); margin: 8px 0 0; }
+/* Neutral pointer to the token fallback (/mcp-connect) — deliberately muted,
+   not a callout: warning colours would over-signal an ordinary alternative
+   path. */
+.aic-token-fallback { font-size: 13px; color: var(--ds-text-muted); margin: 14px 0 0; }
+.aic-oneclick-error { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--ds-accent-warn-line, var(--ds-border)); border-left-width: 3px; border-radius: 8px; background: var(--ds-accent-warn-bg, var(--ds-surface-dim)); color: var(--ds-accent-warn-ink, var(--ds-text-primary)); font-size: 13px; }
+
+/* Collapsible preview / manual aside — shared summary affordance */
+.aic-preview { margin-top: 14px; }
+.aic-preview > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--ds-text-secondary); user-select: none; }
+.aic-preview > summary::-webkit-details-marker { display: none; }
+.aic-preview > summary:hover { color: var(--ds-text-primary); }
+.aic-preview > summary:focus-visible { outline: 2px solid var(--ds-primary); outline-offset: 2px; border-radius: 6px; }
+.aic-preview-sub { font-size: 12.5px; color: var(--ds-text-muted); margin: 10px 0; line-height: 1.5; }
+
+/* Read-only setup-script preview — markup emitted by _claude_setup_instructions.jinja */
+.setup-preview-pre { margin: 10px 0 0; padding: 14px 16px; border-radius: 10px; max-height: 360px; overflow: auto; background: var(--ds-hero-bg, #14181f); color: var(--ds-hero-ink, #e6e9ee); font-family: var(--ds-font-mono, monospace); font-size: 12.5px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+.setup-preview-code { font-family: inherit; font-size: inherit; }
+.setup-preview-pre .placeholder-token { background: rgba(249, 226, 175, .14); color: #f9e2af; padding: 0 4px; border-radius: 3px; font-style: italic; }
+
+/* Clipboard-blocked fallback modal — built in JS */
+.setup-fallback-overlay { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.45); }
+.setup-fallback-modal { display: flex; flex-direction: column; gap: 12px; width: calc(100% - 32px); max-width: 720px; max-height: calc(100vh - 64px); padding: 20px; border-radius: 14px; background: var(--ds-surface); box-shadow: 0 20px 48px rgba(0,0,0,.3); }
+.setup-fallback-modal h4 { margin: 0; font-size: 15px; color: var(--ds-text-primary); }
+.setup-fallback-modal p { margin: 0; font-size: 13px; color: var(--ds-text-secondary); }
+.setup-fallback-modal textarea { flex: 1; min-height: 260px; padding: 10px; border: 1px solid var(--ds-border); border-radius: 8px; background: var(--ds-surface-dim); color: var(--ds-text-primary); font-family: var(--ds-font-mono, monospace); font-size: 12px; resize: vertical; }
+.setup-fallback-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.setup-fallback-actions button { padding: 8px 16px; border: 1px solid var(--ds-border); border-radius: 8px; background: var(--ds-surface); color: var(--ds-text-primary); font-size: 13px; font-weight: 500; cursor: pointer; }
+.setup-fallback-actions button.primary { background: var(--ds-primary); border-color: var(--ds-primary); color: #fff; }
+
+/* Shared collapsible chevron (rotates on open) */
+.aic-chev { flex-shrink: 0; color: var(--ds-text-muted); transition: transform var(--ds-motion-fast, .15s) var(--ds-ease-standard, ease), color var(--ds-motion-fast, .15s) var(--ds-ease-standard, ease); }
+details[open] > summary .aic-chev { transform: rotate(180deg); }
+
+/* ── Having trouble — collapsible support card ───────────────────── */
+.aic-help > summary { list-style: none; cursor: pointer; display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.aic-help > summary::-webkit-details-marker { display: none; }
+.aic-help > summary:focus-visible { outline: 2px solid var(--ds-primary); outline-offset: 3px; border-radius: 8px; }
+.aic-help-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 20px; }
+/* Each issue = an independently expandable card */
+.aic-issue { border: 1px solid var(--ds-border); border-radius: 12px; background: var(--ds-surface); }
+.aic-issue > summary { list-style: none; cursor: pointer; display: grid; grid-template-columns: 34px 1fr 18px; gap: 12px; align-items: start; padding: 14px 16px; }
+.aic-issue > summary::-webkit-details-marker { display: none; }
+.aic-issue > summary:focus-visible { outline: 2px solid var(--ds-primary); outline-offset: 2px; border-radius: 12px; }
+.aic-issue:hover { border-color: var(--ds-text-muted); }
+.aic-issue-icon { width: 34px; height: 34px; border-radius: 9px; background: var(--ds-surface-dim); border: 1px solid var(--ds-border); display: flex; align-items: center; justify-content: center; color: var(--ds-text-secondary); }
+.aic-issue-icon .ui-ico { width: 17px; height: 17px; }
+.aic-issue-title { display: block; font-size: 13.5px; font-weight: 700; color: var(--ds-text-primary); line-height: 1.35; }
+.aic-issue-preview { display: block; font-size: 12.5px; color: var(--ds-text-muted); margin-top: 5px; line-height: 1.5; }
+.aic-issue[open] .aic-issue-preview { display: none; }
+.aic-issue .aic-chev { margin-top: 2px; }
+.aic-issue-body { padding: 0 16px 16px 62px; font-size: 12.5px; color: var(--ds-text-secondary); line-height: 1.65; }
+.aic-issue-body p { margin: 0; }
+
+/* ── Advanced & reference — one collapsed card, compact rows ─────── */
+.aic-adv > summary { list-style: none; cursor: pointer; display: grid; grid-template-columns: 36px 1fr 18px; gap: 13px; align-items: center; }
+.aic-adv > summary::-webkit-details-marker { display: none; }
+.aic-adv > summary:focus-visible { outline: 2px solid var(--ds-primary); outline-offset: 3px; border-radius: 8px; }
+.aic-adv-icon { width: 36px; height: 36px; border-radius: 10px; background: var(--ds-surface-dim); border: 1px solid var(--ds-border); display: flex; align-items: center; justify-content: center; color: var(--ds-text-secondary); }
+.aic-adv-body { margin-top: 18px; border-top: 1px solid var(--ds-border); }
+.aic-adv-row { border-bottom: 1px solid var(--ds-border); }
+.aic-adv-row > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 10px; padding: 14px 2px; font-size: 14px; font-weight: 600; color: var(--ds-text-primary); }
+.aic-adv-row > summary::-webkit-details-marker { display: none; }
+.aic-adv-row > summary:focus-visible { outline: 2px solid var(--ds-primary); outline-offset: 2px; border-radius: 6px; }
+.aic-adv-count { font-size: 11px; font-weight: 700; color: var(--ds-text-muted); background: var(--ds-surface-dim); border: 1px solid var(--ds-border); border-radius: 999px; padding: 1px 8px; }
+.aic-adv-row > summary .aic-adv-count { margin-left: auto; }
+.aic-adv-row:last-child { border-bottom: 0; }
+.aic-adv-row-body { padding: 2px 2px 18px; }
+
+/* ── Advanced section internals (tools / skills / packages) ──────── */
+.cowork-skills-note { background: var(--ds-surface-dim); border: 1px solid var(--ds-border); border-radius: var(--radius-lg, 12px); padding: 14px 16px; font-size: var(--text-sm); color: var(--ds-text-secondary); line-height: var(--leading-normal); margin-bottom: 18px; }
+.cowork-skills-note strong { color: var(--ds-text-primary); }
+.cowork-tools-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
+.cowork-tool-card { background: var(--ds-surface-dim); border: 1px solid var(--ds-border); border-radius: var(--radius-lg, 12px); padding: 14px 16px; }
+.cowork-tool-card.is-passthrough { border-color: var(--ds-accent-info-line); background: var(--ds-accent-info-bg); }
+.cowork-tool-card .tool-name { font-family: var(--ds-font-mono, monospace); font-size: var(--text-sm); font-weight: 600; color: var(--ds-primary); margin-bottom: 4px; }
+.cowork-tool-card.is-passthrough .tool-name { color: var(--ds-accent-info-ink); }
+.cowork-tool-card .tool-desc { font-size: var(--text-xs); color: var(--ds-text-secondary); line-height: var(--leading-normal); margin: 0; }
+.cowork-tool-card .tool-source { margin-top: 8px; font-size: 11px; color: var(--ds-text-muted); }
+.cowork-skills-list { display: flex; flex-direction: column; gap: 8px; }
+.cowork-skill-card { background: var(--ds-surface-dim); border: 1px solid var(--ds-border); border-radius: var(--radius-lg, 12px); padding: 14px 16px; display: flex; gap: 16px; align-items: flex-start; }
+.cowork-skill-inv { flex-shrink: 0; font-family: var(--ds-font-mono, monospace); font-size: 11.5px; font-weight: 600; color: var(--ds-accent-success-ink); background: var(--ds-accent-success-bg); border-radius: var(--radius-md, 8px); padding: 2px 7px; white-space: nowrap; margin-top: 2px; }
+.cowork-skill-inv.no-inv { color: var(--ds-accent-warn-ink); background: var(--ds-accent-warn-bg); }
+.cowork-skill-body .skill-name { font-size: var(--text-sm); font-weight: 600; color: var(--ds-text-primary); margin: 0 0 2px; }
+.cowork-skill-body .skill-desc { font-size: var(--text-xs); color: var(--ds-text-secondary); margin: 0; line-height: var(--leading-normal); }
+.cowork-skill-body .skill-plugin { margin-top: 4px; font-size: 11px; color: var(--ds-text-muted); }
+.cowork-empty { text-align: center; padding: 40px 16px; color: var(--ds-text-secondary); font-size: var(--text-sm); border: 1px dashed var(--ds-border); border-radius: var(--radius-lg, 12px); }
+.cowork-empty .big { font-size: var(--text-base); font-weight: 500; color: var(--ds-text-primary); margin-bottom: 4px; }
+.cowork-plugin-list { display: flex; flex-direction: column; gap: 8px; }
+.cowork-plugin-empty { font-size: var(--text-sm); color: var(--ds-text-muted); margin: 4px 0; }
+.cowork-plugin-empty a { color: var(--ds-primary); }
+a.cowork-plugin-row { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border: 1px solid var(--ds-border); border-radius: var(--radius-lg, 12px); background: var(--ds-surface-dim); text-decoration: none; color: var(--ds-text-primary); font-size: var(--text-sm); transition: border-color 0.12s ease, background 0.12s ease; }
+a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--ds-surface); }
+.cowork-plugin-name { font-weight: 600; }
+.cowork-plugin-ver { color: var(--ds-text-muted); font-family: var(--ds-font-mono, monospace); font-size: var(--text-xs); }
+.cowork-plugin-dl { margin-left: auto; color: var(--ds-primary); font-weight: 600; white-space: nowrap; }
+
+/* ═══════════════════════════════════════════════════════════════════
+   Consolidated-page chrome (.hiw-*) — the orientation sections that
+   wrap the connector content, plus the sticky table of contents.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* Shell — content column + TOC. The TOC is on the RIGHT because under
+   `data-ui-layout="rail"` the left 240px is already the nav rail
+   (rail.css); a second left column would read as two rails. The content
+   column keeps the connector's original 860px so every migrated
+   `.aic-*` block renders at exactly the width it was designed for. */
+/* The TOC column reserves only the width of the collapsed tick rail. The
+   expanded panel is absolutely positioned inside it, so opening the labels
+   never reflows the content column — and the vertical rail survives far
+   narrower viewports than a 208px reserved column would (a reserved column
+   forced the horizontal fallback on any window under ~1350px, which is most
+   laptop windows). */
+.hiw-shell { display: grid; grid-template-columns: minmax(0, 860px) 30px; gap: 30px; justify-content: center; align-items: start; }
+/* Placement is EXPLICIT, not DOM order. The `<nav>` is written before the
+   content (a table of contents belongs early in the reading order for
+   assistive tech), so auto-placement would hand it column 1 — which put the
+   TOC on the left, squeezed the content into the 30px column and overflowed
+   the page horizontally. Naming both cells keeps DOM order and visual order
+   independent. */
+.hiw-shell > .aic-flow { grid-column: 1; grid-row: 1; }
+.hiw-shell > .hiw-toc { grid-column: 2; grid-row: 1; }
+
+/* ── Table of contents — a tick rail that opens on hover ──────────────
+   Collapsed it carries POSITION ONLY: one tick per section, the current
+   one longer and accented. That is the job of a reading indicator, and 8
+   labels standing permanently in the margin competed with the page for
+   attention.
+
+   It opens on hover/focus of the RAIL, not per tick: revealing one label
+   at a time would make the reader hover each mark to find out what it is.
+   One intent → the whole list. The tick under the cursor then highlights
+   within it. Each link also carries a `title`, so a single tick can still
+   name itself via the native tooltip without opening anything.
+
+   Labels stay in the DOM at every state (opacity/max-width, never
+   `display:none`), so screen readers and in-page search read the full list
+   regardless of hover, and `:focus-within` opens the panel for keyboard
+   users tabbing through it.
+   ──────────────────────────────────────────────────────────────────── */
+/* `display: block` is asserted rather than assumed — the shell is a grid and
+   the sticky column must stay a plain box for the absolutely-positioned panel
+   inside it to anchor off. `height: 0` keeps the 30px column from claiming
+   vertical space of its own.
+
+   `z-index` is load-bearing, not decoration. The panel opens leftward across
+   the content column by design — but the `<nav>` is written BEFORE the content
+   in the DOM (reading order for assistive tech), and the hero illustration's
+   hub is `position: relative` with an auto z-index. Two positioned elements at
+   the same level paint in DOM order, so the hub and its two rings painted
+   THROUGH the open panel: ring strokes crossing the labels, over an opaque
+   backdrop. The panel is a flyout and must own the top layer. */
+.hiw-toc { display: block; position: sticky; top: 24px; font-size: 13px; height: 0; z-index: 20; }
+.hiw-toc-inner { position: absolute; top: 0; right: 0; display: flex; flex-direction: column; align-items: stretch; padding: 8px 9px; border: 1px solid transparent; border-radius: 10px; transition: background var(--ds-motion-med, .24s) var(--ds-ease-standard, ease), border-color var(--ds-motion-med, .24s) var(--ds-ease-standard, ease), box-shadow var(--ds-motion-med, .24s) var(--ds-ease-standard, ease); }
+/* Open state — a floating layer over the gutter. Backdropped because on a
+   narrow window the labels reach across the content column's right margin,
+   and text over text is never acceptable. */
+.hiw-toc:hover .hiw-toc-inner,
+.hiw-toc:focus-within .hiw-toc-inner { background: var(--ds-surface); border-color: var(--ds-border); box-shadow: 0 8px 24px rgba(15, 23, 42, .10); }
+
+/* Heading + foot links are chrome: they exist only in the open state.
+   `width: 0` matters as much as `max-height: 0` — a hidden-but-full-width
+   heading sets the absolutely-positioned panel's width, which left ~60px of
+   invisible panel lying over the content column's right edge, intercepting
+   clicks on anything beneath it. Collapsed, the panel must measure exactly
+   the tick plus its padding. */
+.hiw-toc-h { margin: 0; width: 0; font-size: 10.5px; font-weight: 800; letter-spacing: .09em; text-transform: uppercase; color: var(--ds-text-muted); white-space: nowrap; overflow: hidden; max-height: 0; opacity: 0; transition: max-height var(--ds-motion-med, .24s) var(--ds-ease-standard, ease), opacity var(--ds-motion-fast, .16s) var(--ds-ease-standard, ease), margin var(--ds-motion-med, .24s) var(--ds-ease-standard, ease); }
+.hiw-toc:hover .hiw-toc-h,
+.hiw-toc:focus-within .hiw-toc-h { max-height: 20px; width: auto; opacity: 1; margin: 0 0 8px; }
+
+/* A hairline guide behind the ticks so the rail reads as ONE control rather
+   than eight stray dashes floating in the margin — at 2px on a near-white
+   canvas the marks alone were nearly invisible and nothing said they were
+   interactive. The line is the object; the ticks are its scale. */
+.hiw-toc ol { list-style: none; margin: 0; padding: 0 0 0 9px; display: flex; flex-direction: column; gap: 4px; border-right: 2px solid var(--ds-border); }
+/* Right-aligned so the tick column stays put and labels grow LEFTWARD into
+   the gutter — the rail itself never moves as the panel opens. */
+.hiw-toc a { display: flex; align-items: center; justify-content: flex-end; gap: 9px; min-height: 20px; color: var(--ds-text-secondary); text-decoration: none; line-height: 1.3; border-radius: 5px; }
+.hiw-toc-label { display: block; max-width: 0; opacity: 0; overflow: hidden; white-space: nowrap; text-align: right; transition: max-width var(--ds-motion-med, .24s) var(--ds-ease-standard, ease), opacity var(--ds-motion-fast, .16s) var(--ds-ease-standard, ease); }
+.hiw-toc:hover .hiw-toc-label,
+.hiw-toc:focus-within .hiw-toc-label { max-width: 190px; opacity: 1; }
+/* The tick. Inactive: short + hairline. Active: longer + accent — so the
+   collapsed rail still says where you are without a single word.
+   `aria-current="location"` rides along with the class: the active entry of a
+   navigation landmark should announce itself, not only look different. */
+/* 3px on --ds-text-disabled, not 2px on --ds-border: the original sat at the
+   same weight and colour as a table hairline, which is exactly what it looked
+   like. This reads as a deliberate control at a glance while still being far
+   quieter than eight labels. */
+.hiw-toc-tick { display: block; flex: none; width: 14px; height: 3px; border-radius: 2px; background: var(--ds-text-disabled, #cbd5e1); transition: width var(--ds-motion-fast, .16s) var(--ds-ease-standard, ease), background var(--ds-motion-fast, .16s) var(--ds-ease-standard, ease); }
+.hiw-toc a:hover { color: var(--ds-text-primary); }
+.hiw-toc a:hover .hiw-toc-tick { background: var(--ds-text-muted); width: 20px; }
+.hiw-toc a.is-active { color: var(--ds-primary); font-weight: 600; }
+/* The active tick carries its OWN class, written by the scroll-spy alongside
+   the link's. A single-class selector at the same level as the base rule
+   above it — the descendant form (`.hiw-toc a.is-active .hiw-toc-tick`)
+   matched the element but did not paint in testing, and the scroll-spy already
+   owns this state, so marking the element it styles is both more robust and
+   more direct than reaching through the link. */
+.hiw-toc-tick.is-on { background: var(--ds-primary); width: 26px; }
+.hiw-toc a:focus-visible { outline: 2px solid var(--ds-primary); outline-offset: 2px; }
+
+.hiw-toc-foot { display: flex; flex-direction: column; gap: 8px; width: 0; max-height: 0; opacity: 0; overflow: hidden; transition: max-height var(--ds-motion-med, .24s) var(--ds-ease-standard, ease), opacity var(--ds-motion-fast, .16s) var(--ds-ease-standard, ease), margin var(--ds-motion-med, .24s) var(--ds-ease-standard, ease), padding var(--ds-motion-med, .24s) var(--ds-ease-standard, ease); }
+.hiw-toc:hover .hiw-toc-foot,
+.hiw-toc:focus-within .hiw-toc-foot { width: auto; max-height: 90px; opacity: 1; margin-top: 12px; padding-top: 11px; border-top: 1px solid var(--ds-border); }
+.hiw-toc-foot a { justify-content: flex-end; font-size: 12.5px; color: var(--ds-text-muted); white-space: nowrap; }
+.hiw-toc-foot a:hover { color: var(--ds-text-primary); }
+
+/* Motion is decoration here — the open/closed states must be instant for
+   anyone who asked for less of it. */
+@media (prefers-reduced-motion: reduce) {
+  .hiw-toc-inner, .hiw-toc-h, .hiw-toc-label, .hiw-toc-tick, .hiw-toc-foot { transition: none; }
+}
+
+/* ── Section furniture ───────────────────────────────────────────── */
+/* scroll-margin so an anchored jump doesn't tuck the heading under the
+   sticky TOC bar in the stacked layout below. */
+.hiw-sec { scroll-margin-top: 24px; }
+.hiw-sec > h2, .hiw-fold > summary h2 { font-size: 23px; line-height: 1.15; letter-spacing: -.021em; font-weight: 800; color: var(--ds-text-primary); margin: 0 0 10px; }
+.hiw-lede { font-size: 14.5px; line-height: 1.6; color: var(--ds-text-secondary); margin: 0 0 18px; max-width: 62ch; }
+
+/* ── Section folds — every section is one collapsed row ───────────────
+   Fully expanded this page is ~4,000px of six sections all shaped alike
+   (eyebrow → heading → lede → grid of bordered cards), so nothing tells a
+   reader which of them they need and the one they came for is off-screen. Each
+   section now keeps its eyebrow, heading and one-line lede permanently in the
+   flow — the page still *says* what it covers, top to bottom — and moves its
+   body behind this disclosure. Nothing is summarised and nothing is deleted:
+   the markup under each summary is what used to be inline.
+
+   The summary is NOT a card. It was one — a bordered, filled row in both
+   states — and that framing is what made an open section read as two stacked
+   boxes: a header card, then a body card under it, with a seam between the
+   heading and the content it introduces. A section heading is not an object of
+   its own; it belongs to the body below it. So the summary is now a plain row
+   (no border, no fill, no radius) separated from the previous section by a
+   single hairline, which is enough to keep the closed headings a scannable
+   stack while an open one flows straight into its body as one section.
+
+   `.hiw-sec` (the `<section>`) still carries the section id, so the eight
+   anchors stay exactly where every inbound link expects them, and the script
+   opens the fold that owns the target on load, on `hashchange` and on
+   same-page clicks. */
+.hiw-fold > summary { list-style: none; cursor: pointer; display: grid; grid-template-columns: minmax(0, 1fr) 20px; gap: 18px; align-items: center; padding: 24px 0 0; border-top: 1px solid var(--ds-border); background: transparent; user-select: none; }
+.hiw-fold > summary::-webkit-details-marker { display: none; }
+.hiw-fold > summary:hover h2, .hiw-fold > summary:hover .aic-chev { color: var(--ds-primary); }
+.hiw-fold > summary:focus-visible { outline: 2px solid var(--ds-primary); outline-offset: 3px; border-radius: 4px; }
+/* Inside a summary the three text lines are one block, so they drop the
+   section-level margins they carry in the open flow. */
+.hiw-fold > summary .aic-eyebrow { margin: 0 0 6px; }
+.hiw-fold > summary h2 { margin: 0; font-size: 20px; transition: color var(--ds-motion-fast, .15s) var(--ds-ease-standard, ease); }
+/* The lede is the closed row's whole answer, so it stays in the summary at
+   every state rather than disappearing into the body on open. */
+.hiw-fold > summary .hiw-lede { margin: 7px 0 0; font-size: 13.5px; }
+.hiw-fold-body { padding-top: 18px; }
+/* The fold rules are the section list's separators, so the closing CTA carries
+   the last one — otherwise the list runs off the bottom of the page unclosed. */
+.hiw-sec#next { border-top: 1px solid var(--ds-border); padding-top: 24px; }
+
+/* ── #knowledge — pillar tiles ───────────────────────────────────── */
+.hiw-pillars { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+/* Descriptive cards, not links — see the section comment. No hover affordance,
+   because there is nothing to click: promising one and doing nothing is worse
+   than a plain card. */
+.hiw-pillar { background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 12px; padding: 15px 16px; }
+.hiw-pillar-t { font-size: 13.5px; font-weight: 700; color: var(--ds-text-primary); margin: 0 0 3px; }
+.hiw-pillar-d { font-size: 12.5px; color: var(--ds-text-muted); line-height: 1.45; margin: 0; }
+
+/* ── #surfaces — the rewritten "Four places" ─────────────────────── */
+.hiw-surfaces { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+.hiw-surface { background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 12px; padding: 16px; }
+.hiw-surface-ey { font-size: 10px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; color: var(--ds-text-muted); margin: 0 0 7px; }
+.hiw-surface h3 { font-size: 14.5px; font-weight: 700; color: var(--ds-text-primary); margin: 0 0 5px; }
+.hiw-surface p { font-size: 12.5px; line-height: 1.5; color: var(--ds-text-secondary); margin: 0 0 11px; }
+.hiw-surface a { font-size: 12.5px; font-weight: 600; color: var(--ds-primary); text-decoration: none; }
+.hiw-surface a:hover { text-decoration: underline; }
+/* "You are here" — the surface the reader is already using. Tinted with
+   --ds-agnes (the platform green) rather than --ds-primary, which the
+   active nav destination keeps sole use of. */
+.hiw-surface.is-here { border-color: var(--ds-agnes-line); background: var(--ds-agnes-soft); }
+.hiw-surface.is-here .hiw-surface-ey { color: var(--ds-agnes); }
+
+/* ── #first-run — three beats ────────────────────────────────────── */
+.hiw-beats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 14px; }
+.hiw-beat { background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: 12px; padding: 15px; }
+.hiw-beat-n { width: 22px; height: 22px; border-radius: 50%; background: var(--ds-primary); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 11.5px; font-weight: 800; margin-bottom: 9px; }
+.hiw-beat h3 { font-size: 13.5px; font-weight: 700; color: var(--ds-text-primary); margin: 0 0 4px; }
+.hiw-beat p { font-size: 12.5px; line-height: 1.5; color: var(--ds-text-secondary); margin: 0; }
+
+/* ── #privacy ────────────────────────────────────────────────────── */
+.hiw-priv-row { display: grid; grid-template-columns: 20px 1fr; gap: 12px; font-size: 13.5px; line-height: 1.55; color: var(--ds-text-secondary); }
+.hiw-priv-row + .hiw-priv-row { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--ds-border-light); }
+.hiw-priv-row strong { color: var(--ds-text-primary); }
+.hiw-priv-mark { font-weight: 800; color: var(--ds-agnes); }
+.hiw-priv-mark.is-flow { color: var(--ds-accent-warn-ink, var(--ds-text-secondary)); }
+
+/* ── Keep going ──────────────────────────────────────────────────── */
+.hiw-next { display: flex; flex-wrap: wrap; gap: 10px; }
+.hiw-next a { background: var(--ds-surface); border: 1px solid var(--ds-border); border-radius: var(--ds-radius-pill); padding: 8px 15px; font-size: 13px; font-weight: 600; color: var(--ds-text-primary); text-decoration: none; }
+.hiw-next a:hover { border-color: var(--ds-primary); color: var(--ds-primary); }
+/* The same pills used as a section's own hand-off row rather than the page
+   foot, so they sit closer to the cards they follow. */
+.hiw-next--tight { margin-top: 14px; }
+
+/* ── Responsive ──────────────────────────────────────────────────── */
+/* The vertical rail needs rail (240) + content (860) + gap (30) + rail (30)
+   = 1160px. Only below THAT does the TOC reflow to a sticky horizontal pill
+   bar above the content — the tick-rail design is what buys the ~240px of
+   headroom that keeps the vertical form on ordinary laptop windows, where a
+   208px reserved label column had been collapsing it.
+   The content column keeps its 860px in both forms, so every migrated
+   `.aic-*` block renders at its designed width at every viewport and only
+   the TOC changes shape. */
+@media (max-width: 1160px) {
+  .hiw-shell { grid-template-columns: minmax(0, 1fr); max-width: 860px; margin: 0 auto; gap: 0; }
+  /* One column: the bar takes row 1, the content row 2 — the same explicit
+     placement, re-pointed, so the stacked order is stated rather than left to
+     auto-placement. */
+  .hiw-shell > .hiw-toc { grid-column: 1; grid-row: 1; }
+  .hiw-shell > .aic-flow { grid-column: 1; grid-row: 2; }
+  /* Labels are the whole point once it is a horizontal bar: unwind every
+     collapsed-state rule rather than depending on hover to make the bar
+     legible (there is no hover on touch). */
+  .hiw-toc { position: sticky; top: 0; z-index: 20; height: auto; margin-bottom: 26px; }
+  .hiw-toc-inner { position: static; background: var(--ds-surface); border-color: var(--ds-border); border-radius: 10px; padding: 10px 13px; box-shadow: none; }
+  .hiw-toc-h, .hiw-toc-foot { display: none; }
+  .hiw-toc ol { flex-direction: row; flex-wrap: wrap; gap: 4px; }
+  .hiw-toc a { justify-content: center; gap: 0; padding: 4px 9px; border-radius: var(--ds-radius-pill); background: var(--ds-surface-dim); font-size: 12px; }
+  .hiw-toc a.is-active { background: var(--ds-primary-light); }
+  .hiw-toc-tick { display: none; }
+  .hiw-toc-label, .hiw-toc:hover .hiw-toc-label { max-width: none; opacity: 1; }
+  .hiw-sec { scroll-margin-top: 62px; }
+}
+@media (max-width: 900px) {
+  .aic-hero, .aic-help-grid { grid-template-columns: 1fr; }
+  .aic-hero { gap: 24px; }
+  .aic-art { order: 2; }           /* illustration sits below the copy */
+  .hiw-pillars, .hiw-surfaces, .hiw-beats { grid-template-columns: 1fr; }
+}
+@media (max-width: 640px) {
+  .aic-card { padding: 18px; }
+  .aic-mode-panel { padding: 18px; }
+  /* Two full-width tabs stack rather than squeeze their sub-labels to
+     one word per line. */
+  .aic-mode-tabs { flex-direction: column; }
+  .aic-mode-tab + .aic-mode-tab { border-left: 0; border-top: 1px solid var(--ds-border); }
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="profile-page">
+<div class="hiw-shell">
+
+  {# ── Table of contents ─────────────────────────────────────────────
+     Eight entries, one per top-level section. The anchors are a PUBLIC
+     CONTRACT once you count what links into them: the Knowledge Layer
+     banner CTA (#connect), the onboarding checklist's "Use Agnes from
+     other AI tools" step (#connect), and every redirected
+     /me/ai-connector bookmark. Renaming one silently breaks an inbound
+     link — tests/test_web_how_it_works.py asserts all eight.
+
+     Right-hand column by necessity, not taste: under
+     `data-ui-layout="rail"` the left 240px is the nav rail, so a
+     left-hand TOC would read as a second rail. #}
+  <nav class="hiw-toc" id="hiw-toc" aria-label="On this page">
+    <div class="hiw-toc-inner">
+      <h2 class="hiw-toc-h">On this page</h2>
+      <ol>
+        {# `title` names a single tick via the native tooltip, so one section
+           can be identified without opening the whole panel. The label span
+           is what animates; the tick is the always-visible mark. #}
+        <li><a href="#overview" title="What {{ instance_brand_short }} is"><span class="hiw-toc-label">What {{ instance_brand_short }} is</span><span class="hiw-toc-tick" aria-hidden="true"></span></a></li>
+        <li><a href="#knowledge" title="What it knows"><span class="hiw-toc-label">What it knows</span><span class="hiw-toc-tick" aria-hidden="true"></span></a></li>
+        <li><a href="#surfaces" title="Where you can use it"><span class="hiw-toc-label">Where you can use it</span><span class="hiw-toc-tick" aria-hidden="true"></span></a></li>
+        {# Two entries, one section: #connect is the section, #cli its second
+           tab. Kept as separate ticks because both anchors are inbound-link
+           contracts and because a tab nobody can see from the TOC is a tab
+           half the readers never find. #}
+        <li><a href="#connect" title="Set up your tools"><span class="hiw-toc-label">Set up your tools</span><span class="hiw-toc-tick" aria-hidden="true"></span></a></li>
+        <li><a href="#cli" title="Terminal &amp; data"><span class="hiw-toc-label">Terminal &amp; data</span><span class="hiw-toc-tick" aria-hidden="true"></span></a></li>
+        <li><a href="#first-run" title="Your first session"><span class="hiw-toc-label">Your first session</span><span class="hiw-toc-tick" aria-hidden="true"></span></a></li>
+        <li><a href="#privacy" title="Where your data goes"><span class="hiw-toc-label">Where your data goes</span><span class="hiw-toc-tick" aria-hidden="true"></span></a></li>
+        <li><a href="#reference" title="Reference &amp; help"><span class="hiw-toc-label">Reference &amp; help</span><span class="hiw-toc-tick" aria-hidden="true"></span></a></li>
+      </ol>
+      {# Only destinations the new UI actually carries. "Advanced guide"
+         (/setup-advanced) and "What's new" (/news) were here and are gone:
+         neither has a nav entry under the rail chrome, and this page was the
+         only thing in the product still linking them. #}
+      <div class="hiw-toc-foot">
+        <a href="/chat"><span class="hiw-toc-label">Start a chat &rarr;</span></a>
+        <a href="/library"><span class="hiw-toc-label">Your Library &rarr;</span></a>
+        <a href="/agents"><span class="hiw-toc-label">Your agents &rarr;</span></a>
+      </div>
+    </div>
+  </nav>
+
+  <div class="aic-flow">
+
+    {# ── #overview — the product model ────────────────────────────────
+       The `.aic-art` illustration (knowledge &rarr; hub &rarr; tools) IS
+       the model diagram, so it carries this section rather than a second
+       drawing being added beside it. Only the copy changed: this page is
+       no longer "My account &rsaquo; connect a tool", it's the answer to
+       "what is this and how does it work", with connecting as one
+       section of several. #}
+    <section class="aic-hero hiw-sec" id="overview" aria-label="How {{ instance_brand }} works">
+      <div class="aic-hero-lead">
+        <p class="aic-eyebrow">How it works</p>
+        <h1>One knowledge layer. Everywhere you work.</h1>
+        <p class="aic-hero-desc">{{ instance_brand }} sits between your company's systems and the AI tools your team already uses. It curates what the AI is allowed to see &mdash; data, skills, plugins, shared memory &mdash; so answers are grounded in your business instead of guessed.</p>
+        {# No action buttons in the hero. This page is the *read* half of
+           onboarding — the rail's "Continue setup" card is the *do* half, and
+           the page's own "Keep going" row (#next) plus the TOC foot both carry
+           "Ask your first question" and "Set up your tools" for a reader who
+           has finished reading. A CTA pair here duplicated those and made the
+           orientation page look like a landing page. #}
+        <div class="aic-benefits">
+          <div class="aic-benefit">{{ ico.icon('lock', 16) }}<span>Your data stays private and secure</span></div>
+          <div class="aic-benefit">{{ ico.icon('shield-check', 16) }}<span>You're in control of access</span></div>
+          <div class="aic-benefit">{{ ico.icon('sparkle', 16) }}<span>Works with your favorite AI tools</span></div>
+        </div>
+      </div>
+      <div class="aic-art" aria-hidden="true">
+        <div class="aic-art-knowledge">
+          <span class="aic-art-node">{{ ico.icon('database', 22) }}</span>
+          <span class="aic-art-node-label">Company knowledge</span>
+        </div>
+        <span class="aic-art-wire"></span>
+        <div class="aic-hub">
+          <span class="aic-hub-core">{{ orb.orb(css_class='aic-hub-orb', size=52) }}</span>
+        </div>
+        <span class="aic-art-wire"></span>
+        <div class="aic-art-tools">
+          <span class="aic-art-tool"><img src="{{ static_url('img/tools/claude-code.ico') }}" alt="" width="21" height="21"></span>
+          <span class="aic-art-tool"><img src="{{ static_url('img/tools/cursor.ico') }}" alt="" width="21" height="21"></span>
+          <span class="aic-art-tool"><img src="{{ static_url('img/tools/vscode.ico') }}" alt="" width="21" height="21"></span>
+          <span class="aic-art-tool aic-art-tool--more">+</span>
+        </div>
+      </div>
+    </section>
+
+    {# ── #knowledge — what the caller's workspace actually contains ───
+       The four tiles are DESCRIPTIVE, not links. They originally deep-linked
+       to /catalog, /marketplace and /corporate-memory — but the redesign
+       folded all of those into /library as its `data_package`, `skill`,
+       `plugin` and `memory_domain` sections, and none of them has a nav entry
+       under the rail chrome. Linking them from here would resurrect three
+       surfaces the new UI has deliberately retired, so the section explains
+       the four kinds and hands off to the one page that actually holds them.
+       (Library has no per-section deep link — only `?new=<id>` — so there is
+       no honest fragment to point at either.)
+
+       Per-caller counts land in the follow-up that wires StackResolver in
+       (the same data the chat dashboard's "N knowledge sources and M
+       capabilities" line reads) — deliberately not here, so this change stays
+       a consolidation rather than a new read path. #}
+    <section class="hiw-sec" id="knowledge">
+      {# Collapsed by default — see `.hiw-fold`. The lede in the summary already
+         tells a scanning reader what this section covers; the four definitions
+         are for the reader who wants them. #}
+      <details class="hiw-fold">
+        <summary>
+          <div>
+            <p class="aic-eyebrow">Your workspace</p>
+            <h2>What {{ instance_brand_short }} knows</h2>
+            <p class="hiw-lede">Four kinds of company knowledge, curated by your team. Everything you are granted is reachable in chat here <em>and</em> by any tool you connect below &mdash; and nothing you aren't.</p>
+          </div>
+          <span class="aic-chev">{{ ico.icon('chevron', 20) }}</span>
+        </summary>
+        <div class="hiw-fold-body">
+      <div class="hiw-pillars">
+        <div class="hiw-pillar">
+          <p class="hiw-pillar-t">Data packages</p>
+          <p class="hiw-pillar-d">Tables, schemas and metric definitions your team registered, with the business rules documented alongside them.</p>
+        </div>
+        <div class="hiw-pillar">
+          <p class="hiw-pillar-t">Skills &amp; plugins</p>
+          <p class="hiw-pillar-d">Reusable workflows and tool integrations &mdash; curated company-wide, plus what colleagues share on the Flea Market.</p>
+        </div>
+        <div class="hiw-pillar">
+          <p class="hiw-pillar-t">Memory</p>
+          <p class="hiw-pillar-d">Shared analyst knowledge and prior solutions, searchable and versioned, fed back into context on demand.</p>
+        </div>
+        <div class="hiw-pillar">
+          <p class="hiw-pillar-t">Agents</p>
+          <p class="hiw-pillar-d">Named, scoped agents you build on top of all of the above &mdash; each with its own authority and its own notebook.</p>
+        </div>
+      </div>
+      <div class="hiw-next hiw-next--tight">
+        <a href="/library">Browse your Library &rarr;</a>
+        <a href="/agents">Your agents &rarr;</a>
+      </div>
+        </div>
+      </details>
+    </section>
+
+    {# ── #surfaces — the rewritten "Four places, one workspace" ───────
+       Grouped by CONNECTION MECHANISM, not by app name: that axis is
+       durable, whereas the old /home section listed four flavours of
+       Claude Code (VS Code / Terminal / Desktop / Cowork) as if they were
+       four products, omitted the surface the reader is actually looking
+       at, and contradicted this page's own six tool tabs. Each card is
+       one line plus one link — the procedures live in the two #connect
+       tabs below, so there is nothing here to drift. #}
+    <section class="hiw-sec" id="surfaces">
+      <details class="hiw-fold">
+        <summary>
+          <div>
+            <p class="aic-eyebrow">Where you can use it</p>
+            <h2>Four ways in, one knowledge layer</h2>
+            <p class="hiw-lede">Same data access, same skills, same permissions &mdash; whichever you pick. Nothing to keep in sync by hand.</p>
+          </div>
+          <span class="aic-chev">{{ ico.icon('chevron', 20) }}</span>
+        </summary>
+        <div class="hiw-fold-body">
+      <div class="hiw-surfaces">
+        <div class="hiw-surface is-here">
+          <p class="hiw-surface-ey">No setup &middot; you're here</p>
+          <h3>Here, in {{ instance_brand_short }}</h3>
+          <p>Ask in chat, browse your Library, build agents. Everything below this card is optional.</p>
+          <a href="/chat">Start a chat &rarr;</a>
+        </div>
+        <div class="hiw-surface">
+          <p class="hiw-surface-ey">A couple of minutes</p>
+          <h3>Your own AI tool</h3>
+          <p>Claude, Cursor, VS Code, ChatGPT. One connector URL brings the same knowledge into the assistant you already use.</p>
+          <a href="#connect">Connect your tool &darr;</a>
+        </div>
+        <div class="hiw-surface">
+          <p class="hiw-surface-ey">For data work</p>
+          <h3>Your terminal</h3>
+          <p>The CLI syncs the data packages you're granted to your machine, so analysis runs locally on real rows.</p>
+          <a href="#cli">Set up the CLI &darr;</a>
+        </div>
+        <div class="hiw-surface">
+          <p class="hiw-surface-ey">Team surfaces</p>
+          <h3>Slack &amp; Telegram</h3>
+          <p>Ask {{ instance_brand_short }} where your team already talks &mdash; on instances where your admin has enabled it. Nothing for you to set up.</p>
+          {# No CTA on purpose: whether these surfaces exist is an operator
+             decision, so there is no page for the reader to go to. A link to
+             their profile (which was here) answered a question nobody asked. #}
+        </div>
+      </div>
+        </div>
+      </details>
+    </section>
+
+    {# ── #connect — the one setup section, two large tabs ─────────────
+       Both routes into {{ instance_brand_short }} live here: the MCP
+       connector (the assistant you already use) and the CLI (terminal +
+       local data agent). They are ALTERNATIVES — you pick one, you don't
+       read both — so they are two tabs of one section rather than two
+       stacked sections, which read as "connector, then the CLI you also
+       owe us". `#cli` remains a real anchor on the CLI panel and the
+       script opens that tab for any deep link into it. #}
+    <section class="hiw-sec" id="connect">
+      {# The one fold every inbound CTA points at (#connect / #cli), so the
+         script opens it on arrival — see `syncFoldToHash`. #}
+      <details class="hiw-fold">
+        <summary>
+          <div>
+            <p class="aic-eyebrow">Set up</p>
+            <h2>Set up your tools</h2>
+      {# The lede here USED to be "Two ways in, one knowledge layer behind
+         both. Point the AI assistant you already use at Agnes, or install the
+         CLI…" — which is the third time the page made the same offer: once in
+         the hero, once as the #surfaces cards (whose two CTAs link straight
+         down here), and again in prose right above the tabs that repeat it a
+         fourth time as their own labels. A reader has to spend attention
+         working out whether a re-statement is a new choice or the same one, and
+         that tax is most of why this page felt heavy. The choice is made
+         above; this line now carries only what is new — that it is optional,
+         and that each route ends in a check. #}
+            <p class="hiw-lede">Optional &mdash; chat above already works. Pick your route below and follow it end to end; each one finishes with a check you can run to confirm the connection.</p>
+          </div>
+          <span class="aic-chev">{{ ico.icon('chevron', 20) }}</span>
+        </summary>
+        <div class="hiw-fold-body">
+
+    <div class="aic-modecard">
+    <div class="aic-mode-tabs" role="tablist" aria-label="Choose how to set up">
+      <button type="button" class="aic-mode-tab is-active" id="aic-mode-mcp" role="tab" aria-selected="true" aria-controls="aic-mode-panel-mcp" data-mode="mcp">
+        <span class="aic-mode-tab-label">Connect your AI tool</span>
+        <span class="aic-mode-tab-sub">Claude, Cursor, VS Code, ChatGPT&hellip;</span>
+      </button>
+      <button type="button" class="aic-mode-tab" id="aic-mode-cli" role="tab" aria-selected="false" aria-controls="cli" data-mode="cli">
+        <span class="aic-mode-tab-label">Terminal &amp; data agent</span>
+        <span class="aic-mode-tab-sub">The agnes CLI on your machine</span>
+      </button>
+    </div>
+
+    {# ── MCP mode — connector URL + per-tool configuration ────────── #}
+    <div class="aic-mode-panel is-active" id="aic-mode-panel-mcp" role="tabpanel" aria-labelledby="aic-mode-mcp" data-mode-panel="mcp">
+      {# Procedure only. "Bring your company knowledge into the assistant you
+         already use" led this line and was the same sentence as the tab the
+         reader just clicked. #}
+      <p class="hiw-lede">Two steps: copy your connector URL, then follow the instructions for your tool.</p>
+
+    {# ── Connector URL ───────────────────────────────────────────── #}
+    <div class="aic-card" aria-label="Connector URL">
+      <div class="aic-sec-head">
+        <h2 class="aic-sec-title"><span class="aic-sec-num">1.</span>Copy your connector URL</h2>
+        <p class="aic-sec-desc">Use the URL below to connect your AI tool to {{ instance_brand }}.</p>
+      </div>
+      <div class="aic-url-box">
+        <span class="aic-url" id="aic-connector-url">{{ server_url }}/api/mcp/http</span>
+        <button type="button" class="btn btn-secondary btn-sm" id="aic-connector-copy">{{ ico.icon('doc', 14) }} Copy</button>
+      </div>
+      <p class="aic-url-note">{{ ico.icon('lock', 15) }} Keep this URL private. Anyone with it can connect to your {{ instance_brand }} workspace.</p>
+
+      {# ── Configure — one vertical flow per tool (same card) ──────── #}
+      <div class="aic-card-divider"></div>
+      <div class="aic-sec-head">
+        <h2 class="aic-sec-title"><span class="aic-sec-num">2.</span>Configure your AI tool</h2>
+        <p class="aic-sec-desc">Choose your tool to see setup instructions. Paste the connector URL above when prompted.</p>
+      </div>
+
+      <div class="aic-tabs" role="tablist" aria-label="Choose your AI tool">
+        <button type="button" class="aic-tab is-active" role="tab" aria-selected="true" data-tab="claude-code"><img src="{{ static_url('img/tools/claude-code.ico') }}" alt="" width="18" height="18"> Claude Code</button>
+        <button type="button" class="aic-tab" role="tab" aria-selected="false" data-tab="claude-desktop">Claude Desktop</button>
+        <button type="button" class="aic-tab" role="tab" aria-selected="false" data-tab="claude-web">Claude.ai</button>
+        <button type="button" class="aic-tab" role="tab" aria-selected="false" data-tab="cursor"><img src="{{ static_url('img/tools/cursor.ico') }}" alt="" width="18" height="18"> Cursor</button>
+        <button type="button" class="aic-tab" role="tab" aria-selected="false" data-tab="vscode"><img src="{{ static_url('img/tools/vscode.ico') }}" alt="" width="18" height="18"> VS Code</button>
+        <button type="button" class="aic-tab" role="tab" aria-selected="false" data-tab="chatgpt">ChatGPT</button>
+      </div>
+
+      {# ---------- Claude Code ---------- #}
+      <div class="aic-panel is-active" data-panel="claude-code" role="tabpanel">
+        <div class="aic-sub">
+          <span class="aic-sub-icon">{{ ico.icon('link', 20) }}</span>
+          <div>
+            <h3 class="aic-sub-title">Add the server</h3>
+            <p class="aic-sub-desc">Run this once in a terminal. The <span class="aic-code">--scope user</span> flag makes it available in every folder.</p>
+            <div class="aic-term">
+              <div class="aic-term-head"><span class="aic-term-file">terminal</span><button type="button" class="aic-term-copy" data-copy="#cc-cmd">{{ ico.icon('doc', 13) }} Copy</button></div>
+              <pre class="aic-term-body" id="cc-cmd">claude mcp add --scope user --transport http agnes <span class="aic-term-url">{{ server_url }}/api/mcp/http</span></pre>
+            </div>
+            <div class="aic-callout">{{ ico.icon('bulb', 16) }}<span>The server only appears after restarting Claude Code — not in the session you run the command in.</span></div>
+          </div>
+        </div>
+        <div class="aic-sub">
+          <span class="aic-sub-icon">{{ ico.icon('user', 20) }}</span>
+          <div>
+            <h3 class="aic-sub-title">Authenticate</h3>
+            <p class="aic-sub-desc">After adding the server, restart Claude Code and complete sign-in.</p>
+            <ol class="aic-checklist">
+              <li>Fully quit and relaunch Claude Code.</li>
+              <li>Run <span class="aic-code">/mcp</span> in Claude Code.</li>
+              <li>Choose <strong>agnes</strong> and select <strong>Authenticate</strong>.</li>
+              <li>Approve access in your browser after signing in to {{ instance_brand }}.</li>
+            </ol>
+            <div class="aic-callout">{{ ico.icon('link', 16) }}<span>One setup covers both your terminal and the Claude Code app — they share config.</span></div>
+          </div>
+        </div>
+        <div class="aic-sub">
+          <span class="aic-sub-icon">{{ ico.icon('sparkle', 20) }}</span>
+          <div>
+            <h3 class="aic-sub-title">Verify connection</h3>
+            <p class="aic-sub-desc">Once you've authenticated, try asking your assistant:</p>
+            <div class="aic-prompt">"What tables are available in {{ instance_brand }}?"</div>
+            <div class="aic-callout">{{ ico.icon('check-circle', 16) }}<span>If you receive data back from {{ instance_brand }}, your connection is working correctly.</span></div>
+          </div>
+        </div>
+      </div>
+
+      {# ---------- Claude Desktop ---------- #}
+      <div class="aic-panel" data-panel="claude-desktop" role="tabpanel">
+        <div class="aic-sub">
+          <span class="aic-sub-icon">{{ ico.icon('link', 20) }}</span>
+          <div>
+            <h3 class="aic-sub-title">Add the connector</h3>
+            <p class="aic-sub-desc">Requires the Claude Desktop app (macOS or Windows), signed in.</p>
+            <ol class="aic-checklist">
+              <li>Open <strong>Settings → Connectors</strong> and click <strong>Add custom connector</strong>.</li>
+              <li>Paste the connector URL above and click <strong>Add</strong>.</li>
+            </ol>
+            <div class="aic-callout">{{ ico.icon('bulb', 16) }}<span>Don't search the directory — {{ instance_brand }} isn't a listed app. Use <strong>Add custom connector</strong>.</span></div>
+          </div>
+        </div>
+        <div class="aic-sub">
+          <span class="aic-sub-icon">{{ ico.icon('user', 20) }}</span>
+          <div>
+            <h3 class="aic-sub-title">Authenticate</h3>
+            <ol class="aic-checklist">
+              <li>Claude opens a browser window automatically.</li>
+              <li>Sign in to {{ instance_brand }} with your usual identity provider.</li>
+              <li>Click <strong>Allow</strong> on the consent screen.</li>
+            </ol>
+          </div>
+        </div>
+        <div class="aic-sub">
+          <span class="aic-sub-icon">{{ ico.icon('sparkle', 20) }}</span>
+          <div>
+            <h3 class="aic-sub-title">Verify connection</h3>
+            <p class="aic-sub-desc">In a new conversation, try asking:</p>
+            <div class="aic-prompt">"What tables are available in {{ instance_brand }}?"</div>
+            <div class="aic-callout">{{ ico.icon('check-circle', 16) }}<span>If you receive data back from {{ instance_brand }}, your connection is working correctly.</span></div>
+          </div>
+        </div>
+      </div>
+
+      {# ---------- Claude.ai ---------- #}
+      <div class="aic-panel" data-panel="claude-web" role="tabpanel">
+        <div class="aic-sub">
+          <span class="aic-sub-icon">{{ ico.icon('link', 20) }}</span>
+          <div>
+            <h3 class="aic-sub-title">Add the connector</h3>
+            <p class="aic-sub-desc">Requires a Claude.ai plan that supports custom connectors.</p>
+            <ol class="aic-checklist">
+              <li>Go to <strong>Settings → Connectors</strong> and choose <strong>Add custom connector</strong>.</li>
+              <li>Paste the connector URL above and confirm.</li>
+            </ol>
+            <div class="aic-callout">{{ ico.icon('warning', 16) }}<span>On <strong>Team or Enterprise</strong> plans, only a workspace admin can add a custom connector. If you don't see the option, ask your admin to add it once for the whole workspace.<span class="aic-admin-row"><button type="button" class="btn btn-secondary btn-sm" data-copy="#aic-admin-msg">Copy request for your admin</button></span></span></div>
+          </div>
+        </div>
+        <div class="aic-sub">
+          <span class="aic-sub-icon">{{ ico.icon('user', 20) }}</span>
+          <div>
+            <h3 class="aic-sub-title">Authenticate</h3>
+            <ol class="aic-checklist">
+              <li>Complete the browser sign-in and approve the consent screen.</li>
+              <li>Enable the connector in a chat to expose the tools to Claude.</li>
+            </ol>
+          </div>
+        </div>
+        <div class="aic-sub">
+          <span class="aic-sub-icon">{{ ico.icon('sparkle', 20) }}</span>
+          <div>
+            <h3 class="aic-sub-title">Verify connection</h3>
+            <p class="aic-sub-desc">In a chat with the connector enabled, try asking:</p>
+            <div class="aic-prompt">"What tables are available in {{ instance_brand }}?"</div>
+            <div class="aic-callout">{{ ico.icon('check-circle', 16) }}<span>If you receive data back from {{ instance_brand }}, your connection is working correctly.</span></div>
+          </div>
+        </div>
+      </div>
+
+      {# ---------- Cursor ---------- #}
+      <div class="aic-panel" data-panel="cursor" role="tabpanel">
+        <div class="aic-sub">
+          <span class="aic-sub-icon">{{ ico.icon('link', 20) }}</span>
+          <div>
+            <h3 class="aic-sub-title">Add the server</h3>
+            <p class="aic-sub-desc">Requires a recent Cursor build with MCP support. Create or edit <span class="aic-code">.cursor/mcp.json</span> (per-project) or <span class="aic-code">~/.cursor/mcp.json</span> (global):</p>
+            <div class="aic-codeblock">
+              <div class="aic-codeblock-head"><span class="aic-codeblock-file">.cursor/mcp.json</span><button type="button" class="btn btn-secondary btn-sm" data-copy="#cu-json">Copy</button></div>
+              <pre id="cu-json">{
+  "mcpServers": {
+    "agnes": {
+      "url": "{{ server_url }}/api/mcp/http"
+    }
+  }
+}</pre>
+            </div>
+          </div>
+        </div>
+        <div class="aic-sub">
+          <span class="aic-sub-icon">{{ ico.icon('user', 20) }}</span>
+          <div>
+            <h3 class="aic-sub-title">Authenticate</h3>
+            <ol class="aic-checklist">
+              <li>Open <strong>Settings → MCP</strong>; the <strong>agnes</strong> server appears in the list.</li>
+              <li>Click the sign-in / refresh action next to it — a browser opens for the {{ instance_brand }} login.</li>
+              <li>Approve access; the tools become available in Agent and Composer.</li>
+            </ol>
+          </div>
+        </div>
+        <div class="aic-sub">
+          <span class="aic-sub-icon">{{ ico.icon('sparkle', 20) }}</span>
+          <div>
+            <h3 class="aic-sub-title">Verify connection</h3>
+            <p class="aic-sub-desc">In Agent or Composer, try asking:</p>
+            <div class="aic-prompt">"What tables are available in {{ instance_brand }}?"</div>
+            <div class="aic-callout">{{ ico.icon('check-circle', 16) }}<span>If you receive data back from {{ instance_brand }}, your connection is working correctly.</span></div>
+          </div>
+        </div>
+      </div>
+
+      {# ---------- VS Code ---------- #}
+      <div class="aic-panel" data-panel="vscode" role="tabpanel">
+        <div class="aic-sub">
+          <span class="aic-sub-icon">{{ ico.icon('link', 20) }}</span>
+          <div>
+            <h3 class="aic-sub-title">Add the server</h3>
+            <p class="aic-sub-desc">Requires VS Code 1.101+ with the GitHub Copilot Chat extension (native MCP with OAuth).</p>
+            <p class="aic-substep">Option A — Command Palette (recommended)</p>
+            <ol class="aic-checklist">
+              <li>Run <strong>MCP: Add Server</strong> from the Command Palette (<span class="aic-code">⇧⌘P</span> / <span class="aic-code">Ctrl+Shift+P</span>).</li>
+              <li>Choose <strong>HTTP</strong>, paste the connector URL, and name it <strong>agnes</strong>.</li>
+              <li>Sign in to {{ instance_brand }} in the browser and click <strong>Allow</strong>.</li>
+            </ol>
+            <p class="aic-substep">Option B — commit to the workspace</p>
+            <div class="aic-codeblock">
+              <div class="aic-codeblock-head"><span class="aic-codeblock-file">.vscode/mcp.json</span><button type="button" class="btn btn-secondary btn-sm" data-copy="#vs-json">Copy</button></div>
+              <pre id="vs-json">{
+  "servers": {
+    "agnes": {
+      "type": "http",
+      "url": "{{ server_url }}/api/mcp/http"
+    }
+  }
+}</pre>
+            </div>
+          </div>
+        </div>
+        <div class="aic-sub">
+          <span class="aic-sub-icon">{{ ico.icon('user', 20) }}</span>
+          <div>
+            <h3 class="aic-sub-title">Use it in Copilot</h3>
+            <ol class="aic-checklist">
+              <li>Open <strong>Copilot Chat</strong> and switch the mode selector to <strong>Agent</strong>.</li>
+              <li>Click the tools icon and enable <strong>agnes</strong>.</li>
+            </ol>
+          </div>
+        </div>
+        <div class="aic-sub">
+          <span class="aic-sub-icon">{{ ico.icon('sparkle', 20) }}</span>
+          <div>
+            <h3 class="aic-sub-title">Verify connection</h3>
+            <p class="aic-sub-desc">With the agent in Agent mode, try asking:</p>
+            <div class="aic-prompt">"What tables are available in {{ instance_brand }}?"</div>
+            <div class="aic-callout">{{ ico.icon('check-circle', 16) }}<span>If you receive data back from {{ instance_brand }}, your connection is working correctly.</span></div>
+          </div>
+        </div>
+      </div>
+
+      {# ---------- ChatGPT ---------- #}
+      <div class="aic-panel" data-panel="chatgpt" role="tabpanel">
+        <div class="aic-sub">
+          <span class="aic-sub-icon">{{ ico.icon('link', 20) }}</span>
+          <div>
+            <h3 class="aic-sub-title">Add the connector</h3>
+            <p class="aic-sub-desc">Requires a ChatGPT plan that supports custom / remote MCP connectors.</p>
+            <ol class="aic-checklist">
+              <li>Open the connector settings and choose to add a <strong>remote MCP server</strong>.</li>
+              <li>Paste the connector URL above.</li>
+            </ol>
+          </div>
+        </div>
+        <div class="aic-sub">
+          <span class="aic-sub-icon">{{ ico.icon('user', 20) }}</span>
+          <div>
+            <h3 class="aic-sub-title">Authenticate</h3>
+            <ol class="aic-checklist">
+              <li>ChatGPT opens the browser for sign-in.</li>
+              <li>Approve the consent screen to finish.</li>
+            </ol>
+          </div>
+        </div>
+        <div class="aic-sub">
+          <span class="aic-sub-icon">{{ ico.icon('sparkle', 20) }}</span>
+          <div>
+            <h3 class="aic-sub-title">Verify connection</h3>
+            <p class="aic-sub-desc">Try asking the assistant:</p>
+            <div class="aic-prompt">"What tables are available in {{ instance_brand }}?"</div>
+            <div class="aic-callout">{{ ico.icon('check-circle', 16) }}<span>If you receive data back from {{ instance_brand }}, your connection is working correctly.</span></div>
+          </div>
+        </div>
+      </div>
+
+    {# Token fallback — OAuth above is the happy path; clients that can't do
+       the browser sign-in (or locked-down setups) need a static PAT instead,
+       which is what /mcp-connect issues. This is that page's ONLY inbound
+       link — it lives here, next to the job it belongs to. Guarded by
+       tests/test_web_nav_agents.py. #}
+    <p class="aic-token-fallback">
+      Client can't complete the browser sign-in?
+      <a href="/mcp-connect">Connect it with a token instead &rarr;</a>
+    </p>
+    </div>{# /.aic-card — connector URL + tool tabs #}
+    </div>{# /.aic-mode-panel[mcp] #}
+
+    {# ── CLI mode — install + the collapsed beginner tutorial ───────
+       `id="cli"` lives on the panel, not on a section: the anchor is the
+       public contract (the #surfaces card, the first-session hand-off,
+       the TOC and outside bookmarks all point at it), the section
+       wrapper is not. The one-click 90-day-token button stays HERE
+       rather than moving to an explainer block — it mints a real
+       credential. #}
+    <div class="aic-mode-panel" id="cli" role="tabpanel" aria-labelledby="aic-mode-cli" data-mode-panel="cli">
+      {# Was a near-verbatim repeat of the #surfaces "Your terminal" card. This
+         line now carries the PREREQUISITE instead, which is the thing a reader
+         who lands on this tab most often does not know and which used to be
+         buried in a collapsed card below the button that needs it. #}
+      <p class="hiw-lede">Needs Claude Code on your machine. Don't have it yet? Start with the walkthrough at the bottom of this tab, then come back to the button below.</p>
+      <div class="aic-card" aria-label="Set up the {{ instance_brand }} CLI">
+        <div class="aic-sec-head">
+          <h2 class="aic-sec-title"><span class="aic-sec-num">1.</span>Install the {{ instance_brand }} CLI on this machine</h2>
+          <p class="aic-sec-desc">Connect your terminal and Claude Code to {{ instance_brand }}. One click mints a 90-day token and copies a complete setup script to your clipboard — paste it into Claude Code to finish.</p>
+        </div>
+        <div class="aic-sub">
+          <span class="aic-sub-icon">{{ ico.icon('link', 20) }}</span>
+          <div>
+            <h3 class="aic-sub-title">Quick install</h3>
+            <p class="aic-sub-desc">The <span class="aic-code">agnes</span> CLI runs {{ instance_brand }} from your terminal — query data with <span class="aic-code">agnes query</span>, sync parquets with <span class="aic-code">agnes pull</span>, and drive the local Claude Code data agent.</p>
+            <button type="button" id="setupClaudeBtn" class="aic-oneclick" onclick="setupNewClaude(this)">{{ ico.icon('doc', 16) }} Set up a new Claude Code</button>
+            <p class="aic-oneclick-note">Valid 90 days · token stays in your clipboard only.</p>
+            <div id="setupClaudeError" class="aic-oneclick-error" role="alert" style="display:none;"></div>
+
+            <details class="aic-preview" aria-label="Preview of the clipboard payload">
+              <summary><span class="aic-chev">{{ ico.icon('chevron', 16) }}</span> What Claude Code will receive</summary>
+              <p class="aic-preview-sub">Read-only preview. The real token is generated when you click the button above and placed directly in your clipboard — it is never rendered on this page.</p>
+              {% with preview_mode=True %}{% include "_claude_setup_instructions.jinja" %}{% endwith %}
+            </details>
+
+            <details class="aic-preview" aria-label="Manual install for restricted environments">
+              <summary><span class="aic-chev">{{ ico.icon('chevron', 16) }}</span> Or run manually on a restricted environment</summary>
+              <div class="aic-term">
+                <div class="aic-term-head"><span class="aic-term-file">terminal</span><button type="button" class="aic-term-copy" data-copy="#cli-manual">{{ ico.icon('doc', 13) }} Copy</button></div>
+                <pre class="aic-term-body" id="cli-manual">curl -fsSL {{ server_url }}/cli/install.sh | bash</pre>
+              </div>
+              <div class="aic-callout">{{ ico.icon('bulb', 16) }}<span>If <span class="aic-code">agnes</span> isn't found in a new shell, add <span class="aic-code">~/.local/bin</span> to your <span class="aic-code">PATH</span>.</span></div>
+            </details>
+          </div>
+        </div>
+        <div class="aic-sub">
+          <span class="aic-sub-icon">{{ ico.icon('sparkle', 20) }}</span>
+          <div>
+            <h3 class="aic-sub-title">Verify connection</h3>
+            <p class="aic-sub-desc">Once it's installed, run:</p>
+            <div class="aic-term">
+              <div class="aic-term-head"><span class="aic-term-file">terminal</span><button type="button" class="aic-term-copy" data-copy="#cli-verify">{{ ico.icon('doc', 13) }} Copy</button></div>
+              <pre class="aic-term-body" id="cli-verify">agnes catalog</pre>
+            </div>
+            <div class="aic-callout">{{ ico.icon('check-circle', 16) }}<span>If your tables list, the CLI is connected to {{ instance_brand }}. One setup also covers the Claude Code app — they share config.</span></div>
+          </div>
+        </div>
+      </div>{# /.aic-card — CLI install #}
+
+      {# ── Beginner tutorial — install Claude Code first (collapsed) ── #}
+      <details class="aic-card aic-tut" data-os="unix" aria-label="New to Claude Code? Set it up first">
+        <summary>
+          <span class="aic-tut-sum-icon">{{ ico.icon('sparkle', 18) }}</span>
+          <div>
+            <h2 class="aic-sec-title">Don't have Claude Code yet? Set it up first</h2>
+            <p class="aic-sec-desc" style="margin-top:6px;">A 3-step walkthrough for total beginners — install Claude Code, make a folder, open a terminal. Then use the button above.</p>
+          </div>
+          <span class="aic-chev">{{ ico.icon('chevron', 20) }}</span>
+        </summary>
+
+        <div class="aic-tut-body">
+          {# OS toggle — one choice applies across every step (CSS-driven) #}
+          <div class="aic-tut-os" role="tablist" aria-label="Operating system">
+            <button type="button" class="aic-tut-os-btn is-active" data-os="unix" aria-selected="true">macOS / Linux</button>
+            <button type="button" class="aic-tut-os-btn" data-os="windows" aria-selected="false">Windows (PowerShell)</button>
+          </div>
+
+          {# Step tabs #}
+          <div class="aic-step-tabs" role="tablist" aria-label="Setup steps">
+            <button type="button" class="aic-step-tab is-active" role="tab" aria-selected="true" data-step="1"><span class="aic-step-tab-num">1</span> Install Claude Code</button>
+            <button type="button" class="aic-step-tab" role="tab" aria-selected="false" data-step="2"><span class="aic-step-tab-num">2</span> Pick a folder</button>
+            <button type="button" class="aic-step-tab" role="tab" aria-selected="false" data-step="3"><span class="aic-step-tab-num">3</span> Open a terminal</button>
+          </div>
+
+          {# Step 1 — install Claude Code #}
+          <div class="aic-step-panel is-active" role="tabpanel" data-step="1">
+            <p class="aic-sub-desc">Claude Code is the CLI tool that runs Claude on your machine. {{ instance_brand_short }} plugs into it. <strong>~3&nbsp;min.</strong></p>
+            <div class="aic-term" data-os="unix">
+              <div class="aic-term-head"><span class="aic-term-file">terminal</span><button type="button" class="aic-term-copy" data-copy="#tut-claude-unix">{{ ico.icon('doc', 13) }} Copy</button></div>
+              <pre class="aic-term-body" id="tut-claude-unix">curl -fsSL https://claude.ai/install.sh | bash</pre>
+            </div>
+            <div class="aic-term" data-os="windows">
+              <div class="aic-term-head"><span class="aic-term-file">PowerShell</span><button type="button" class="aic-term-copy" data-copy="#tut-claude-win">{{ ico.icon('doc', 13) }} Copy</button></div>
+              <pre class="aic-term-body" id="tut-claude-win">irm https://claude.ai/install.ps1 | iex</pre>
+            </div>
+            <div class="aic-callout">{{ ico.icon('bulb', 16) }}<span><strong>No terminal open yet?</strong> On macOS press <span class="aic-code">⌘ Space</span>, type <em>Terminal</em>, hit Enter. On Windows press <span class="aic-code">⊞</span>, type <em>PowerShell</em>, hit Enter.</span></div>
+            <p class="aic-sub-desc" style="margin-top:12px;">Once it finishes, verify with <span class="aic-code">claude --version</span>, then sign in with <span class="aic-code">claude</span> (one-time OAuth in your browser). No Claude license yet? Ask your admin which plan your organization uses — Pro, Max 5×, Max 20× or Enterprise.</p>
+          </div>
+
+          {# Step 2 — pick a folder #}
+          <div class="aic-step-panel" role="tabpanel" data-step="2">
+            <p class="aic-sub-desc">This is where {{ instance_brand_short }} — and all your AI projects — will live. <strong>~1&nbsp;min.</strong></p>
+            <div class="aic-callout">{{ ico.icon('bulb', 16) }}<span><strong>Tip: put it on your Desktop.</strong> Easy to find in Finder/Explorer (<span class="aic-code">~/Desktop/{{ workspace_dir }}</span> on macOS, <span class="aic-code">%USERPROFILE%\Desktop\{{ workspace_dir }}</span> on Windows). Your home folder works too — the install runs anywhere.</span></div>
+            <div class="aic-term" data-os="unix">
+              <div class="aic-term-head"><span class="aic-term-file">terminal</span><button type="button" class="aic-term-copy" data-copy="#tut-mkdir-unix">{{ ico.icon('doc', 13) }} Copy</button></div>
+              <pre class="aic-term-body" id="tut-mkdir-unix">mkdir -p ~/Desktop/{{ workspace_dir }} &amp;&amp; cd ~/Desktop/{{ workspace_dir }}</pre>
+            </div>
+            <div class="aic-term" data-os="windows">
+              <div class="aic-term-head"><span class="aic-term-file">PowerShell</span><button type="button" class="aic-term-copy" data-copy="#tut-mkdir-win">{{ ico.icon('doc', 13) }} Copy</button></div>
+              <pre class="aic-term-body" id="tut-mkdir-win">New-Item -ItemType Directory -Force -Path "$HOME\Desktop\{{ workspace_dir }}" | Out-Null; Set-Location "$HOME\Desktop\{{ workspace_dir }}"</pre>
+            </div>
+            <div class="aic-callout">{{ ico.icon('bulb', 16) }}<span><strong>What does <span class="aic-code">mkdir -p</span> do?</strong> It creates a folder (the <span class="aic-code">-p</span> means "don't complain if it already exists"). You'll now have an empty <span class="aic-code">{{ workspace_dir }}</span> folder on your Desktop.</span></div>
+          </div>
+
+          {# Step 3 — open a terminal in the folder #}
+          <div class="aic-step-panel" role="tabpanel" data-step="3">
+            <p class="aic-sub-desc">You need to "be in" the <span class="aic-code">{{ workspace_dir }}</span> folder before you launch Claude. The <span class="aic-code">cd</span> in step 2 already put you there — this is how to get back if you closed the terminal. <strong>~1&nbsp;min.</strong></p>
+            <div class="aic-term" data-os="unix">
+              <div class="aic-term-head"><span class="aic-term-file">terminal</span><button type="button" class="aic-term-copy" data-copy="#tut-cd-unix">{{ ico.icon('doc', 13) }} Copy</button></div>
+              <pre class="aic-term-body" id="tut-cd-unix">cd ~/Desktop/{{ workspace_dir }}</pre>
+            </div>
+            <div class="aic-term" data-os="windows">
+              <div class="aic-term-head"><span class="aic-term-file">PowerShell</span><button type="button" class="aic-term-copy" data-copy="#tut-cd-win">{{ ico.icon('doc', 13) }} Copy</button></div>
+              <pre class="aic-term-body" id="tut-cd-win">Set-Location "$HOME\Desktop\{{ workspace_dir }}"</pre>
+            </div>
+            <div class="aic-callout">{{ ico.icon('bulb', 16) }}<span><strong>Prefer drag-and-drop?</strong> Type <span class="aic-code">cd</span> and a space, then drag the <span class="aic-code">{{ workspace_dir }}</span> folder onto the terminal window — it pastes the path. Hit Enter.</span></div>
+            <div class="aic-callout">{{ ico.icon('check-circle', 16) }}<span>You're set up. Now use <strong>Set up a new Claude Code</strong> at the top of this tab — paste the copied script into Claude and hit Enter.</span></div>
+          </div>
+        </div>
+      </details>
+    </div>{# /.aic-mode-panel[cli] #}
+    </div>{# /.aic-modecard #}
+        </div>{# /.hiw-fold-body #}
+      </details>
+    </section>{# /#connect #}
+
+    {# ── #first-run — what actually happens the first time ────────────
+       The web answer, in three beats. /home's five-beat TERMINAL
+       narrative (launch → pick a project → load memory → ask → close)
+       is accurate for CLI users and actively misleading for everyone
+       else, which is why it is one collapsed row here and no longer the
+       biggest block on the page a web user is sent to. #}
+    <section class="hiw-sec" id="first-run">
+      {# Collapsed by default — see `.hiw-fold`. #}
+      <details class="hiw-fold">
+        <summary>
+          <div>
+            <p class="aic-eyebrow">First session</p>
+            <h2>What your first session looks like</h2>
+            <p class="hiw-lede">Nothing to configure. Ask in your own words &mdash; {{ instance_brand_short }} reaches into the workspace above and cites what it used.</p>
+          </div>
+          <span class="aic-chev">{{ ico.icon('chevron', 20) }}</span>
+        </summary>
+        <div class="hiw-fold-body">
+      <div class="hiw-beats">
+        <div class="hiw-beat">
+          <div class="hiw-beat-n" aria-hidden="true">1</div>
+          <h3>Ask in plain English</h3>
+          <p>"What's driving churn this quarter?" No SQL, no table names to remember.</p>
+        </div>
+        <div class="hiw-beat">
+          <div class="hiw-beat-n" aria-hidden="true">2</div>
+          <h3>It uses your workspace</h3>
+          <p>The canonical metric definition first, then the tables you're granted &mdash; never an invented calculation.</p>
+        </div>
+        <div class="hiw-beat">
+          <div class="hiw-beat-n" aria-hidden="true">3</div>
+          <h3>You get cited answers</h3>
+          <p>Every number carries its source, so you can check it or hand it straight on.</p>
+        </div>
+      </div>
+      <details class="aic-card">
+        <summary style="cursor:pointer;font-size:14px;font-weight:600;">Working in the terminal instead? See the five-beat CLI session</summary>
+        <p class="aic-sub-desc" style="margin-top:12px;">Launch your workspace &rarr; pick a project &rarr; Claude loads that project's memory &rarr; ask anything &rarr; close when done. Everything you need to get there is in <a href="#cli">Terminal &amp; data</a> above.</p>
+      </details>
+        </div>
+      </details>
+    </section>
+
+    {# ── #privacy — promoted out of a footnote ────────────────────────
+       This was a `<p class="annotation">` buried in beat 5 of /home's
+       terminal story — the highest-anxiety question on the page, placed
+       where almost nobody scrolled. It gets its own section and its own
+       TOC entry. #}
+    <section class="hiw-sec" id="privacy">
+      {# Collapsed by default — see `.hiw-fold`. The lede IS the answer for most
+         readers; the four rows are for the one who needs to be precise about
+         what does and doesn't travel. #}
+      <details class="hiw-fold">
+        <summary>
+          <div>
+            <p class="aic-eyebrow">Trust</p>
+            <h2>Where your data goes</h2>
+            <p class="hiw-lede">The short version: {{ instance_brand }} is self-hosted by your own company. Your rows do not leave your infrastructure to reach a vendor. Open for the four guarantees in full.</p>
+          </div>
+          <span class="aic-chev">{{ ico.icon('chevron', 20) }}</span>
+        </summary>
+        <div class="hiw-fold-body">
+      <div class="aic-card">
+        <div class="hiw-priv-row">
+          <span class="hiw-priv-mark" aria-hidden="true">&check;</span>
+          <div><strong>You only ever see what you're granted.</strong> Every request is checked against your groups &mdash; and an agent you build can never exceed your own access.</div>
+        </div>
+        <div class="hiw-priv-row">
+          <span class="hiw-priv-mark" aria-hidden="true">&check;</span>
+          <div><strong>Query results stay local.</strong> With the CLI, data packages sync to your machine and analysis runs there.</div>
+        </div>
+        <div class="hiw-priv-row">
+          <span class="hiw-priv-mark is-flow" aria-hidden="true">&rarr;</span>
+          <div><strong>Session transcripts are collected.</strong> Prompts, tool calls and tool responses flow back to the catalog so your team can spot failure patterns and close knowledge gaps. Raw data rows you query locally do not travel.</div>
+        </div>
+        <div class="hiw-priv-row">
+          <span class="hiw-priv-mark" aria-hidden="true">&check;</span>
+          <div><strong>You can go off the record.</strong> Run <span class="aic-code">/agnes-private</span> in Claude Code to disable telemetry for that session &mdash; nothing from it reaches the catalog.</div>
+        </div>
+      </div>
+        </div>
+      </details>
+    </section>
+
+    {# ── #reference — troubleshooting + the personalized inventories ───
+       Both blocks are the connector page's, unchanged; they just sit
+       under one heading with one TOC entry now instead of floating as
+       two peer cards. #}
+    <section class="hiw-sec" id="reference">
+      <details class="hiw-fold">
+        <summary>
+          <div>
+            <p class="aic-eyebrow">Reference</p>
+            <h2>Reference &amp; help</h2>
+            <p class="hiw-lede">Here when something doesn't work, or when you want to know exactly which tools and skills your account can reach.</p>
+          </div>
+          <span class="aic-chev">{{ ico.icon('chevron', 20) }}</span>
+        </summary>
+        <div class="hiw-fold-body">
+
+    {# ── Having trouble — collapsible support card, per-issue cards ─ #}
+    {# Not `open`. Troubleshooting expanded-by-default put eight failure modes
+       in front of a reader who has not yet tried anything — and it was the one
+       block on the page whose default state disagreed with its neighbour, so
+       "Advanced & reference" below read as the less important of the two. #}
+    <details class="aic-card aic-help" aria-label="Troubleshooting">
+      <summary>
+        <div>
+          <h2 class="aic-sec-title">Having trouble?</h2>
+          <p class="aic-sec-desc" style="margin-top:6px;">Common issues and quick fixes.</p>
+        </div>
+        <span class="aic-chev">{{ ico.icon('chevron', 20) }}</span>
+      </summary>
+      <div class="aic-help-grid">
+        <details class="aic-issue">
+          <summary>
+            <span class="aic-issue-icon">{{ ico.icon('refresh', 17) }}</span>
+            <span>
+              <span class="aic-issue-title">First question errors right after sign-in?</span>
+              <span class="aic-issue-preview">Wait a few seconds and ask again.</span>
+            </span>
+            <span class="aic-chev">{{ ico.icon('chevron', 16) }}</span>
+          </summary>
+          <div class="aic-issue-body"><p>The connection needs a moment to settle after sign-in. Wait a few seconds, then re-send your question.</p></div>
+        </details>
+        <details class="aic-issue">
+          <summary>
+            <span class="aic-issue-icon">{{ ico.icon('tools', 17) }}</span>
+            <span>
+              <span class="aic-issue-title">"MCP endpoint not found"?</span>
+              <span class="aic-issue-preview">Re-add the connector over SSE.</span>
+            </span>
+            <span class="aic-chev">{{ ico.icon('chevron', 16) }}</span>
+          </summary>
+          <div class="aic-issue-body"><p>An older {{ instance_brand }} release doesn't serve this connector. Remove it (<span class="aic-code">claude mcp remove agnes</span>) and re-add over SSE: <span class="aic-code">claude mcp add --transport sse agnes {{ server_url }}/api/mcp/sse</span>, then restart and authenticate the same way.</p></div>
+        </details>
+        <details class="aic-issue">
+          <summary>
+            <span class="aic-issue-icon">{{ ico.icon('warning', 17) }}</span>
+            <span>
+              <span class="aic-issue-title">Can't add a custom connector on Claude.ai?</span>
+              <span class="aic-issue-preview">Ask a workspace admin to add it.</span>
+            </span>
+            <span class="aic-chev">{{ ico.icon('chevron', 16) }}</span>
+          </summary>
+          <div class="aic-issue-body"><p>Team and Enterprise plans gate custom connectors to workspace admins. Ask an admin to add it once for everyone — use the "Copy request for your admin" button on the Claude.ai tab.</p></div>
+        </details>
+        <details class="aic-issue">
+          <summary>
+            <span class="aic-issue-icon">{{ ico.icon('link', 17) }}</span>
+            <span>
+              <span class="aic-issue-title">VS Code sign-in stuck?</span>
+              <span class="aic-issue-preview">Clear saved authorizations, then retry.</span>
+            </span>
+            <span class="aic-chev">{{ ico.icon('chevron', 16) }}</span>
+          </summary>
+          <div class="aic-issue-body"><p>Run <strong>MCP: Clear Saved Authorizations</strong> from the Command Palette, remove and re-add the server, then restart VS Code. A stale cached registration is the usual cause.</p></div>
+        </details>
+      </div>
+    </details>
+
+    {# ── Advanced & reference — one collapsed card, compact rows ──── #}
+    <details class="aic-card aic-adv" aria-label="Advanced and reference">
+      <summary>
+        <span class="aic-adv-icon">{{ ico.icon('package', 18) }}</span>
+        <div>
+          <h2 class="aic-sec-title">Advanced &amp; reference</h2>
+          <p class="aic-sec-desc" style="margin-top:6px;">Optional tools, packages, and technical details.</p>
+        </div>
+        <span class="aic-chev">{{ ico.icon('chevron', 20) }}</span>
+      </summary>
+      <div class="aic-adv-body">
+
+        <details class="aic-adv-row" aria-label="Plugin packages">
+          <summary>Plugin packages <span class="aic-adv-count" id="cowork-pkg-badge">0</span><span class="aic-chev">{{ ico.icon('chevron', 16) }}</span></summary>
+          <div class="aic-adv-row-body">
+            <div class="cowork-skills-note">
+              <strong>What this is:</strong> each package bundles one marketplace plugin's skills, agents and commands into a single Cowork-uploadable <code>.zip</code>, available across <strong>all</strong> your Cowork projects once added.
+              <br><br>
+              <strong>How to add one:</strong> download a package below, then in Claude Desktop → Cowork open <strong>Customize → Personal plugins → + → Create plugin → Upload plugin</strong> and pick the <code>.zip</code> (one package per zip). For live data access, use the connector above instead.
+            </div>
+            <div class="cowork-plugin-list" id="cowork-plugin-list" aria-live="polite">
+              <p class="cowork-plugin-empty">Loading your packages&hellip;</p>
+            </div>
+          </div>
+        </details>
+
+        <details class="aic-adv-row" aria-label="Agnes tools">
+          <summary>{{ instance_brand }} tools <span class="aic-adv-count">{{ static_tools | length }}</span><span class="aic-chev">{{ ico.icon('chevron', 16) }}</span></summary>
+          <div class="aic-adv-row-body">
+            <div class="cowork-tools-grid">
+              {% for t in static_tools %}
+              <div class="cowork-tool-card">
+                <div class="tool-name">{{ t.name }}</div>
+                <p class="tool-desc">{{ t.description }}</p>
+              </div>
+              {% endfor %}
+            </div>
+          </div>
+        </details>
+
+        <details class="aic-adv-row" aria-label="Passthrough tools">
+          <summary>Passthrough tools <span class="aic-adv-count">{{ passthrough_tools | length }}</span><span class="aic-chev">{{ ico.icon('chevron', 16) }}</span></summary>
+          <div class="aic-adv-row-body">
+            {% if passthrough_tools %}
+            <div class="cowork-tools-grid">
+              {% for t in passthrough_tools %}
+              <div class="cowork-tool-card is-passthrough">
+                <div class="tool-name">{{ t.exposed_name }}</div>
+                <p class="tool-desc">{{ t.description or '—' }}</p>
+                <div class="tool-source">via {{ t.source_name }}</div>
+              </div>
+              {% endfor %}
+            </div>
+            {% else %}
+            <div class="cowork-empty">
+              <div class="big">No passthrough tools</div>
+              No external MCP sources have been connected and granted to your account.
+              {% if is_admin %}<br><a href="/admin/mcp-sources">Configure MCP sources</a>{% endif %}
+            </div>
+            {% endif %}
+          </div>
+        </details>
+
+        <details class="aic-adv-row" aria-label="Marketplace skills">
+          <summary>Marketplace skills <span class="aic-adv-count">{{ skills | length }}</span><span class="aic-chev">{{ ico.icon('chevron', 16) }}</span></summary>
+          <div class="aic-adv-row-body">
+            {% if skills %}
+            <div class="cowork-skills-list">
+              {% for s in skills %}
+              <div class="cowork-skill-card">
+                <div class="cowork-skill-inv {% if not s.invocation %}no-inv{% endif %}">{{ s.invocation or 'no invocation' }}</div>
+                <div class="cowork-skill-body">
+                  <div class="skill-name">{{ s.name }}</div>
+                  {% if s.description %}<p class="skill-desc">{{ s.description }}</p>{% endif %}
+                  <div class="skill-plugin">{{ s.marketplace_id }} / {{ s.plugin_name }}</div>
+                </div>
+              </div>
+              {% endfor %}
+            </div>
+            {% else %}
+            <div class="cowork-empty">
+              <div class="big">No skills assigned</div>
+              Ask your admin to grant your group access to a marketplace plugin that contains skills.
+            </div>
+            {% endif %}
+          </div>
+        </details>
+
+      </div>
+    </details>
+        </div>{# /.hiw-fold-body #}
+      </details>
+    </section>{# /#reference #}
+
+    {# ── Keep going — the page foot, deliberately NOT a TOC entry ──────
+       Names the relationship between the three onboarding mechanisms
+       that previously had none: Finish setup (do) · the tour (show) ·
+       this page (read). #}
+    <section class="hiw-sec" id="next">
+      <p class="aic-eyebrow">Keep going</p>
+      <div class="hiw-next">
+        <a href="/chat">Ask your first question</a>
+        <a href="/library">Browse your Library</a>
+        <a href="/agents">Build an agent</a>
+        <a href="#connect">Set up your tools</a>
+      </div>
+    </section>
+
+  </div>{# /.aic-flow #}
+</div>{# /.hiw-shell #}
+</div>{# /.profile-page #}
+
+{# Hidden payload for the "copy request for your admin" button. #}
+<pre id="aic-admin-msg" hidden>Hi — could you add our internal data tool {{ instance_brand }} as a custom connector in our Claude workspace? On Team/Enterprise plans only an admin can do this.
+
+Steps (admin console → Connectors → Add custom connector):
+  Name: {{ instance_brand }}
+  URL:  {{ server_url }}/api/mcp/http
+
+It's per-user authenticated — each person signs in with their own account, and {{ instance_brand }}'s permissions limit them to only the data they're already allowed to see. It's a network connection to our {{ instance_brand }} server only; it gives Claude no access to anyone's files or computer.
+
+Thanks!</pre>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  // ── Copy helpers ─────────────────────────────────────────────────
+  function wireCopy(btn, getText) {
+    btn.addEventListener('click', function () {
+      var original = btn.innerHTML;
+      navigator.clipboard.writeText(getText().trim()).then(function () {
+        btn.textContent = 'Copied!';
+        setTimeout(function () { btn.innerHTML = original; }, 1600);
+      });
+    });
+  }
+  var urlBtn = document.getElementById('aic-connector-copy');
+  var urlEl = document.getElementById('aic-connector-url');
+  if (urlBtn && urlEl) wireCopy(urlBtn, function () { return urlEl.textContent; });
+  document.querySelectorAll('[data-copy]').forEach(function (btn) {
+    var target = document.querySelector(btn.getAttribute('data-copy'));
+    if (target) wireCopy(btn, function () { return target.textContent; });
+  });
+
+  // ── Table of contents — scroll-spy ───────────────────────────────
+  // Marks the section you're currently reading. Progressive enhancement:
+  // the anchors work without any of this, so a JS failure costs the
+  // highlight and nothing else.
+  // Set by the scroll-spy below so the mode tabs can ask for a recompute:
+  // switching tabs changes the page height without emitting a scroll event,
+  // which would otherwise leave the highlight on the wrong entry.
+  var refreshSpy = null;
+  var tocLinks = [].slice.call(document.querySelectorAll('.hiw-toc ol a'));
+  var tocSections = tocLinks.map(function (a) {
+    try { return document.querySelector(a.getAttribute('href')); } catch (e) { return null; }
+  });
+  if (tocLinks.length) {
+    function spy() {
+      // Last section whose top has passed the reading line wins. Scanning
+      // top-down (rather than picking the first still-below) keeps the
+      // final section highlighted at the bottom of the page, where no
+      // section top is above the line any more.
+      // `offsetParent === null` skips the closed mode tab: a `display:none`
+      // panel measures 0×0 at the document origin, so its top is always above
+      // the reading line and it would win every comparison.
+      var active = 0;
+      tocSections.forEach(function (sec, i) {
+        if (sec && sec.offsetParent !== null && sec.getBoundingClientRect().top < 140) active = i;
+      });
+      tocLinks.forEach(function (a, i) {
+        var on = i === active;
+        a.classList.toggle('is-active', on);
+        // The current entry of a nav landmark should announce itself, not just
+        // look different. `location` (not `page`) — these are sections of the
+        // page the reader is already on.
+        if (on) { a.setAttribute('aria-current', 'location'); }
+        else { a.removeAttribute('aria-current'); }
+        // Mark the tick itself — see `.hiw-toc-tick.is-on`.
+        var tick = a.querySelector('.hiw-toc-tick');
+        if (tick) tick.classList.toggle('is-on', on);
+      });
+    }
+    // Driven by an IntersectionObserver on the sections themselves rather than
+    // a scroll listener: a `scroll` handler on `document` did not fire on this
+    // page (scroll events do not bubble from an element, and the chrome may
+    // scroll a container), so the highlight silently froze on the first entry
+    // for the whole page. The observer fires on the boundary crossings that
+    // can actually change the answer, which is also strictly less work than a
+    // per-frame recompute.
+    // Throttled on a timestamp rather than `requestAnimationFrame`: rAF does
+    // not run in a tab that isn't painting, so an rAF-gated spy silently stops
+    // updating there — which is harmless for a hidden tab but also made the
+    // behaviour impossible to exercise in a headless preview, and would freeze
+    // the highlight in any browser that throttles rAF while still delivering
+    // scroll events. spy() is 8 getBoundingClientRect reads on a static page,
+    // so calling it inline at most every 100ms costs nothing measurable.
+    var lastRun = 0, trailing = null;
+    function queueSpy() {
+      var now = (window.performance && performance.now) ? performance.now() : +new Date();
+      if (now - lastRun >= 100) { lastRun = now; spy(); return; }
+      // Always settle on the final position — a throttle that drops the last
+      // event leaves the highlight one section behind where you stopped.
+      if (trailing) clearTimeout(trailing);
+      trailing = setTimeout(function () { trailing = null; lastRun = 0; queueSpy(); }, 120);
+    }
+    if (window.IntersectionObserver) {
+      var io = new IntersectionObserver(queueSpy, {
+        // A band across the top of the viewport, matching spy()'s reading line.
+        rootMargin: '0px 0px -75% 0px',
+        threshold: [0, 1],
+      });
+      tocSections.forEach(function (sec) { if (sec) io.observe(sec); });
+    }
+    // Belt and braces — harmless if the observer is doing the work, and the
+    // only path left on a browser without IntersectionObserver.
+    document.addEventListener('scroll', queueSpy, { passive: true });
+    window.addEventListener('scroll', queueSpy, { passive: true });
+    window.addEventListener('resize', queueSpy, { passive: true });
+    refreshSpy = queueSpy;
+    spy();
+  }
+
+  // ── Section folds — collapsed sections, opened by the hash ───────
+  // Every section body lives in a `<details class="hiw-fold">` (see the CSS
+  // block of the same name), so the page opens as six readable rows instead of
+  // ~4,000px of uniform density. The `id` stays on the `<section>`, which keeps
+  // the eight anchors exactly where every inbound link expects them — but a
+  // closed `<details>` means the browser cannot scroll to a target inside it,
+  // so the fold that OWNS the target has to be opened first, on load, on
+  // `hashchange` and on same-page clicks.
+  var folds = [].slice.call(document.querySelectorAll('.hiw-fold'));
+  // A changed fold changes the page height without emitting a scroll event, so
+  // the reading indicator has to be recomputed by hand.
+  folds.forEach(function (f) {
+    f.addEventListener('toggle', function () { if (refreshSpy) refreshSpy(); });
+  });
+  // Which fold owns a given `#hash` target, if any. Resolved through the
+  // element rather than the id string, so both directions work from one rule:
+  // a SECTION id (`#connect`, `#privacy`) sits ABOVE its fold and finds it as a
+  // descendant, while a target INSIDE a fold (`#cli`, the CLI tab panel deep
+  // in #connect) finds it as an ancestor. Ancestor first — a match there is
+  // the more specific answer.
+  function foldForHash(hash) {
+    if (!hash || hash.charAt(0) !== '#' || hash.length < 2) return null;
+    var el;
+    try { el = document.querySelector(hash); } catch (e) { return null; }
+    if (!el || !el.closest) return null;
+    return el.closest('.hiw-fold') || el.querySelector('.hiw-fold');
+  }
+  function revealFold(fold) {
+    if (!fold) return false;
+    fold.open = true;
+    if (refreshSpy) refreshSpy();
+    // Scroll to the SECTION rather than the fold: the heading the reader just
+    // asked for is the summary, and landing below it hides the control that
+    // opened it. `open = true` above has already forced layout, so the
+    // measurement here is of the expanded page.
+    var sec = fold.closest('.hiw-sec') || fold;
+    sec.scrollIntoView({ block: 'start' });
+    return true;
+  }
+  function syncFoldToHash() { revealFold(foldForHash(location.hash)); }
+  // On arrival: /how-it-works#connect (the Knowledge Layer banner, the
+  // onboarding checklist, the tour, every redirected /me/ai-connector
+  // bookmark) must land on an OPEN section, not a closed row.
+  syncFoldToHash();
+  window.addEventListener('hashchange', syncFoldToHash);
+  // Same-page clicks — the TOC, the hero's "connect your own AI tool", the
+  // #surfaces cards, the "Keep going" pills. Handled rather than left to the
+  // native jump because `hashchange` does not fire when the hash is already
+  // set, which is exactly the case when you click the same TOC entry twice.
+  document.addEventListener('click', function (e) {
+    var a = e.target && e.target.closest ? e.target.closest('a[href^="#"]') : null;
+    if (!a) return;
+    var href = a.getAttribute('href');
+    var fold = foldForHash(href);
+    if (!fold) return;
+    e.preventDefault();
+    if (location.hash !== href) history.replaceState(null, '', href);
+    revealFold(fold);
+  });
+
+  // ── Mode tabs — the two setup routes inside #connect ─────────────
+  // Alternatives, not progress: switching swaps content and nothing else.
+  // The CLI panel carries the `#cli` anchor, so every deep link into it
+  // (the #surfaces card, the first-session hand-off, the TOC, outside
+  // bookmarks) has to open its tab before anything can scroll to it.
+  var modeTabs = [].slice.call(document.querySelectorAll('.aic-mode-tab'));
+  var modePanels = [].slice.call(document.querySelectorAll('.aic-mode-panel'));
+  function showMode(key) {
+    if (!key) return false;
+    var known = modePanels.some(function (p) { return p.getAttribute('data-mode-panel') === key; });
+    if (!known) return false;
+    modeTabs.forEach(function (t) {
+      var on = t.getAttribute('data-mode') === key;
+      t.classList.toggle('is-active', on);
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    modePanels.forEach(function (p) {
+      p.classList.toggle('is-active', p.getAttribute('data-mode-panel') === key);
+    });
+    if (refreshSpy) refreshSpy();
+    return true;
+  }
+  modeTabs.forEach(function (tab) {
+    tab.addEventListener('click', function () { showMode(tab.getAttribute('data-mode')); });
+  });
+  // Which mode owns a given `#hash`, if any.
+  function modeForHash(hash) {
+    if (!hash || hash.charAt(0) !== '#' || hash.length < 2) return null;
+    var el;
+    try { el = document.querySelector(hash); } catch (e) { return null; }
+    if (!el || !el.closest) return null;
+    var panel = el.closest('.aic-mode-panel');
+    return panel ? panel.getAttribute('data-mode-panel') : null;
+  }
+  var connectSection = document.getElementById('connect');
+  function revealMode(key) {
+    showMode(key);
+    // Scroll to the SECTION, not the panel: landing on the panel would put
+    // the tab strip just above the viewport, hiding the control that got
+    // you there.
+    if (connectSection) connectSection.scrollIntoView({ block: 'start' });
+  }
+  function syncModeToHash() {
+    var key = modeForHash(location.hash);
+    if (key) revealMode(key);
+  }
+  // On load the browser could not scroll to a hidden `#cli`, so this both
+  // opens the tab and performs the jump it skipped.
+  syncModeToHash();
+  window.addEventListener('hashchange', syncModeToHash);
+  // Same-page clicks: `hashchange` does not fire when the hash is already
+  // set, and the default jump would land on the panel rather than the tabs.
+  document.addEventListener('click', function (e) {
+    var a = e.target && e.target.closest ? e.target.closest('a[href^="#"]') : null;
+    if (!a) return;
+    var href = a.getAttribute('href');
+    var key = modeForHash(href);
+    if (!key) return;
+    e.preventDefault();
+    if (location.hash !== href) history.replaceState(null, '', href);
+    revealMode(key);
+  });
+
+  // ── Remembering a reader's answers ────────────────────────────────
+  // Setup asks up to three questions before showing one instruction (mode →
+  // tool → OS). None of them has a right answer the page can't guess, and a
+  // guess the reader only has to correct is far cheaper than a choice they
+  // have to make — especially on the second visit, where re-picking the same
+  // tool every time is pure friction. Both helpers below fail soft: private
+  // mode and disabled storage throw on access, and the page must still work.
+  function remember(key, value) {
+    try { window.localStorage.setItem('agnes.hiw.' + key, value); } catch (e) { /* storage unavailable */ }
+  }
+  function recall(key) {
+    try { return window.localStorage.getItem('agnes.hiw.' + key); } catch (e) { return null; }
+  }
+
+  // ── Beginner tutorial — step tabs + a shared OS toggle ───────────
+  // `unix` is the markup default; Windows readers had to notice the toggle and
+  // flip it, and the failure is silent — you copy a `curl … | bash` line into
+  // PowerShell and it just doesn't work.
+  function detectOs() {
+    var remembered = recall('os');
+    if (remembered === 'unix' || remembered === 'windows') return remembered;
+    var uaData = navigator.userAgentData;
+    var platform = (uaData && uaData.platform) || navigator.platform || navigator.userAgent || '';
+    return /win/i.test(platform) ? 'windows' : 'unix';
+  }
+  document.querySelectorAll('.aic-tut').forEach(function (tut) {
+    var stepTabs = tut.querySelectorAll('.aic-step-tab');
+    var stepPanels = tut.querySelectorAll('.aic-step-panel');
+    stepTabs.forEach(function (tab) {
+      tab.addEventListener('click', function () {
+        var step = tab.getAttribute('data-step');
+        stepTabs.forEach(function (t) {
+          var on = t === tab;
+          t.classList.toggle('is-active', on);
+          t.setAttribute('aria-selected', on ? 'true' : 'false');
+        });
+        stepPanels.forEach(function (p) { p.classList.toggle('is-active', p.getAttribute('data-step') === step); });
+      });
+    });
+    var osBtns = [].slice.call(tut.querySelectorAll('.aic-tut-os-btn'));
+    function showOs(os) {
+      tut.setAttribute('data-os', os);   // CSS shows the matching command blocks
+      osBtns.forEach(function (b) {
+        var on = b.getAttribute('data-os') === os;
+        b.classList.toggle('is-active', on);
+        b.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
+    }
+    osBtns.forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var os = btn.getAttribute('data-os');
+        showOs(os);
+        remember('os', os);   // an explicit choice outranks detection next time
+      });
+    });
+    showOs(detectOs());
+  });
+
+  // ── Tool tabs — swap content only; not a progress state ──────────
+  var tabs = [].slice.call(document.querySelectorAll('.aic-tab'));
+  var panels = [].slice.call(document.querySelectorAll('.aic-panel'));
+  function showTool(key) {
+    if (!key) return false;
+    if (!tabs.some(function (t) { return t.getAttribute('data-tab') === key; })) return false;
+    tabs.forEach(function (t) {
+      var on = t.getAttribute('data-tab') === key;
+      t.classList.toggle('is-active', on);
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    panels.forEach(function (p) { p.classList.toggle('is-active', p.getAttribute('data-panel') === key); });
+    return true;
+  }
+  tabs.forEach(function (tab) {
+    tab.addEventListener('click', function () {
+      var key = tab.getAttribute('data-tab');
+      if (showTool(key)) remember('tool', key);
+    });
+  });
+  // Restore last visit's tool. Falls through to the markup default
+  // (Claude Code) when there is nothing stored or the stored tool no longer
+  // exists — a removed tab must not leave every panel hidden.
+  showTool(recall('tool'));
+
+  // ── Plugin packages download list ────────────────────────────────
+  var coworkList = document.getElementById('cowork-plugin-list');
+  var pkgBadge = document.getElementById('cowork-pkg-badge');
+  if (coworkList) {
+    fetch('/marketplace/info', { credentials: 'same-origin' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (info) {
+        var plugins = (info && [].concat(info.plugins || [], info.store_plugins || [])) || [];
+        if (pkgBadge) {
+          pkgBadge.textContent = plugins.length;
+          if (plugins.length) pkgBadge.classList.add('badge--info');
+        }
+        if (!plugins.length) {
+          coworkList.innerHTML = '<p class="cowork-plugin-empty">No packages available for your account yet. Add some from your <a href="/library">Library</a>.</p>';
+          return;
+        }
+        var rows = plugins.map(function (p) {
+          var name = p.name || p.prefixed_name || 'plugin';
+          var ver = p.version ? (' v' + p.version) : '';
+          var href = '/marketplace/cowork/' + encodeURIComponent(p.prefixed_name) + '.zip';
+          var a = document.createElement('a');
+          a.className = 'cowork-plugin-row';
+          a.href = href;
+          a.setAttribute('download', p.prefixed_name + '.zip');
+          a.innerHTML = '<span class="cowork-plugin-name"></span><span class="cowork-plugin-ver"></span><span class="cowork-plugin-dl">Download .zip &darr;</span>';
+          a.querySelector('.cowork-plugin-name').textContent = name;
+          a.querySelector('.cowork-plugin-ver').textContent = ver;
+          return a;
+        });
+        coworkList.innerHTML = '';
+        rows.forEach(function (a) { coworkList.appendChild(a); });
+      })
+      .catch(function () {
+        coworkList.innerHTML = '<p class="cowork-plugin-empty">Couldn\'t load your packages. Try your <a href="/library">Library</a>.</p>';
+      });
+  }
+
+  // ── CLI quick-install: one-click "Set up a new Claude Code" ──────
+  // Mints a 90-day PAT via /auth/tokens, renders the shared setup script
+  // (same template as /setup and /dashboard), and copies it to the
+  // clipboard. The token is never written into the DOM.
+  function copyBig(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(text);
+    }
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.focus(); ta.select();
+    return new Promise(function (resolve, reject) {
+      try { document.execCommand('copy') ? resolve() : reject(); }
+      finally { document.body.removeChild(ta); }
+    });
+  }
+
+  // Template + renderer shared with /setup and /dashboard so the clipboard
+  // payload stays identical across surfaces.
+  {% include "_claude_setup_instructions.jinja" %}
+
+  function defaultTokenName() {
+    var stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
+    return 'Claude Code — ' + stamp;
+  }
+
+  function showSetupFallback(instructions) {
+    var overlay = document.createElement('div');
+    overlay.className = 'setup-fallback-overlay';
+    overlay.innerHTML =
+      '<div class="setup-fallback-modal" role="dialog" aria-modal="true" aria-labelledby="setupFallbackTitle">' +
+        '<h4 id="setupFallbackTitle">Copy these setup instructions</h4>' +
+        '<p>Your browser blocked automatic clipboard access. Select all, copy, then paste into Claude Code.</p>' +
+        '<textarea readonly></textarea>' +
+        '<div class="setup-fallback-actions">' +
+          '<button type="button" data-action="close">Close</button>' +
+          '<button type="button" class="primary" data-action="select">Select all</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(overlay);
+    var ta = overlay.querySelector('textarea');
+    ta.value = instructions; ta.focus(); ta.select();
+    overlay.addEventListener('click', function (ev) { if (ev.target === overlay) document.body.removeChild(overlay); });
+    overlay.querySelector('[data-action="close"]').addEventListener('click', function () { document.body.removeChild(overlay); });
+    overlay.querySelector('[data-action="select"]').addEventListener('click', function () { ta.focus(); ta.select(); });
+  }
+
+  window.setupNewClaude = async function setupNewClaude(btn) {
+    var errEl = document.getElementById('setupClaudeError');
+    if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
+    var origHTML = btn.innerHTML;
+    btn.disabled = true;
+    btn.textContent = 'Generating token…';
+    try {
+      var resp = await fetch('/auth/tokens', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: defaultTokenName(), expires_in_days: 90 }),
+      });
+      if (resp.status === 401) {
+        window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname);
+        return;
+      }
+      if (!resp.ok) {
+        var detail = 'HTTP ' + resp.status;
+        try { var body = await resp.json(); if (body && body.detail) detail = body.detail; } catch (_) {}
+        throw new Error(detail);
+      }
+      var data = await resp.json();
+      if (!data || !data.token) throw new Error('Server did not return a token.');
+      var instructions = renderSetupInstructions(window.location.origin, data.token);
+      try {
+        await copyBig(instructions);
+        btn.textContent = 'Copied! Paste into Claude Code';
+        btn.classList.add('copied');
+        setTimeout(function () { btn.innerHTML = origHTML; btn.classList.remove('copied'); btn.disabled = false; }, 3000);
+      } catch (clipErr) {
+        btn.innerHTML = origHTML; btn.disabled = false;
+        showSetupFallback(instructions);
+      }
+    } catch (err) {
+      btn.innerHTML = origHTML; btn.disabled = false;
+      if (errEl) {
+        errEl.textContent = 'Setup failed: ' + (err && err.message ? err.message : err);
+        errEl.style.display = 'block';
+      }
+    }
+  };
+})();
+</script>
+{% endblock %}

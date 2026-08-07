@@ -305,6 +305,7 @@ _EDITABLE_SECTIONS: tuple[str, ...] = (
     "corporate_memory",
     "materialize",
     "guardrails",
+    "library",
     "marketplace",
     "connectors",
     # The token-in-URL fallback switch is an operator decision, and
@@ -1004,6 +1005,20 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                 "before the reaper flips it to `review_error`. Default "
                 "1800 (30 min) comfortably exceeds Sonnet / Opus p99 "
                 "wall time. 0 disables the reaper."
+            ),
+        },
+    },
+    "library": {
+        "show_unverified_trust": {
+            "kind": "bool",
+            "default": True,
+            "hint": (
+                "Show the 'Community' trust marker beside the name of a "
+                "user-authored Store item your organization has not verified. "
+                "On by default, so every Library row states its provenance — "
+                "Organization, Verified, or Community. Turn it off to restore "
+                "the older look, where an unverified item is marked only by the "
+                "absence of a marker. Organization and Verified are unaffected."
             ),
         },
     },

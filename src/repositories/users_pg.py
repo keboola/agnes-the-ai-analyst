@@ -28,9 +28,7 @@ class UsersPgRepository:
         ids = list(user_ids)
         if not ids:
             return {}
-        stmt = sa.text("SELECT id, email FROM users WHERE id IN :ids").bindparams(
-            sa.bindparam("ids", expanding=True)
-        )
+        stmt = sa.text("SELECT id, email FROM users WHERE id IN :ids").bindparams(sa.bindparam("ids", expanding=True))
         with self._engine.connect() as conn:
             rows = conn.execute(stmt, {"ids": ids}).all()
         return {r[0]: r[1] for r in rows}
@@ -232,6 +230,21 @@ class UsersPgRepository:
             sql += " AND COALESCE(u.active, TRUE) = TRUE"
         with self._engine.connect() as conn:
             return conn.execute(sa.text(sql)).scalar() or 0
+
+    def update_display_name(self, user_id: str, name: str) -> None:
+        """Persist a user-supplied display name for *user_id* (PG sibling of the
+        DuckDB method). Only ``users.name`` and ``updated_at`` are touched.
+
+        Google OAuth only sets ``name`` at account creation, not on subsequent
+        logins, so calling this method does not risk being overwritten by a
+        future sign-in or group-sync run.
+        """
+        now = datetime.now(timezone.utc)
+        with self._engine.begin() as conn:
+            conn.execute(
+                sa.text("UPDATE users SET name = :name, updated_at = :now WHERE id = :user_id"),
+                {"name": name, "now": now, "user_id": user_id},
+            )
 
     def delete(self, user_id: str) -> None:
         with self._engine.begin() as conn:

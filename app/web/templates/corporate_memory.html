@@ -1,4 +1,5 @@
 {% extends "base_ds.html" %}
+{% import "macros/_icon.html" as ico %}
 {% from "macros/_stack_card.html" import card %}
 
 {% block title %}Memory — {{ config.INSTANCE_NAME or 'AI Harness' }}{% endblock %}
@@ -14,7 +15,7 @@
 <div class="stack-hero">
   <div class="eyebrow">Knowledge</div>
   <h1>What does your team already know?</h1>
-  <p class="sub">Browse curated knowledge domains your admin has approved. Add the ones your team relies on to your stack — required domains are added automatically.</p>
+  <p class="sub">Everything you've been granted is already in your My Stack tab. Browse here for anything new your admin publishes.</p>
 
   <div class="stack-hero__search-row">
     <div class="stack-hero__search-wrap">
@@ -127,11 +128,18 @@
       {% endfor %}
     </div>
     {% else %}
-    {# Empty state — friendly + actionable, same shape as /catalog. #}
+    {# Empty state — friendly + actionable, same shape as /catalog.
+       Auto-membership means every granted domain is already in My Stack,
+       so Browse is empty for the common case of "you have access to
+       everything that exists" — that gets its own copy, distinct from
+       "nothing exists/is granted yet". #}
     <div class="stack-empty">
-      <span class="icon">🧠</span>
+      <span class="icon">{{ ico.icon('brain', 40) }}</span>
+      {% if stack_entries %}
+      <h3>You already have everything available</h3>
+      <p>Every Memory Domain you've been granted is already in your <strong>My Stack</strong> tab above — Browse only lists ones you don't have yet. Check back once your admin publishes something new.</p>
+      {% elif user.is_admin %}
       <h3>No Memory Domains yet</h3>
-      {% if user.is_admin %}
       <p>Memory Domains bundle related knowledge items (playbooks, runbooks,
          shared context) so analysts can opt-in to a coherent body of
          knowledge — instead of cherry-picking individual notes.</p>
@@ -140,6 +148,7 @@
         <a href="/admin/corporate-memory">Open /admin/corporate-memory →</a>
       </div>
       {% else %}
+      <h3>No Memory Domains yet</h3>
       <p>Your domains will appear here once your admin adds memory items
          and grants your group access. Refresh when you've been told a
          new domain is ready — or suggest one yourself if there's a body
@@ -164,7 +173,7 @@
       {% endfor %}
     </div>
     <div class="stack-empty"{% if stack_entries %} hidden{% endif %}>
-      <span class="icon">🗂️</span>
+      <span class="icon">{{ ico.icon('folder', 40) }}</span>
       <h3>Your stack is empty</h3>
       {% if entries %}
       <p>Browse the {{ entries|length }} available domain{{ '' if entries|length == 1 else 's' }}
