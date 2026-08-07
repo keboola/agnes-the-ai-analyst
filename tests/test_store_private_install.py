@@ -221,6 +221,93 @@ def test_detail_marks_own_quarantined_entity_not_installable(web_client: TestCli
     assert r.json()["installable"] is False
 
 
+def test_detail_page_offers_archive_on_an_own_private_entity(web_client: TestClient):
+    """The rendered page, not just the API.
+
+    The API half of #1177 is worth nothing if the owner-actions strip still
+    renders "Delete (locked — quarantined)" — a disabled button never fires a
+    click handler, so the endpoint it would have called is unreachable.
+
+    This is the skill/agent template (`marketplace_item_detail.html`); the
+    plugin one carried its own copy of the same gate and is covered by
+    ``test_plugin_detail_page_offers_archive_on_an_own_private_entity``.
+    """
+    owner_id, owner_cookies = _create_user(web_client, "owner@x.com")
+    entity_id, _sub_id = _seed_quarantined_entity(
+        owner_id,
+        "owner@x.com",
+        "page1",
+        status="approved",
+    )
+
+    r = web_client.get(f"/marketplace/flea/{entity_id}", cookies=owner_cookies)
+    assert r.status_code == 200, r.text
+    assert 'id="owner-archive-btn"' in r.text, "the owner has no Archive control on their own Private entity"
+    assert "Delete (locked — quarantined)" not in r.text
+    # The button the id sits on must not also be inert.
+    strip = r.text[r.text.index('id="owner-archive-btn"') - 400 : r.text.index('id="owner-archive-btn"') + 200]
+    assert "disabled" not in strip, f"Archive rendered disabled:\n{strip}"
+
+
+def test_plugin_detail_page_offers_archive_on_an_own_private_entity(web_client: TestClient):
+    """The plugin template, reached through the real Private upload path.
+
+    `marketplace_plugin_detail.html` is a different file with its own copy of
+    the owner-actions gate, and the seed helper only makes skills — so without
+    this the plugin half of #1177 would be asserted nowhere. Uploading with
+    `access=private` also exercises the actual route into `hidden` (the
+    builder's Private choice) rather than a hand-seeded row.
+    """
+    import io
+    import json
+    import zipfile
+
+    _, cookies = _create_user(web_client, "owner@x.com")
+    desc = "Description long enough to clear the content checks comfortably."
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr(
+            ".claude-plugin/plugin.json",
+            json.dumps({"name": "priv-plugin", "description": desc, "version": "0.1"}),
+        )
+        zf.writestr("skills/dummy/SKILL.md", f"---\nname: dummy\ndescription: {desc}\n---\n\n" + "Body text. " * 40)
+
+    created = web_client.post(
+        "/api/store/entities",
+        files={"file": ("p.zip", buf.getvalue(), "application/zip")},
+        data={"type": "plugin", "name": "priv-plugin", "description": desc, "access": "private"},
+        cookies=cookies,
+    )
+    assert created.status_code == 201, created.text
+    entity_id = created.json()["id"]
+
+    from src.repositories import store_entities_repo
+
+    assert store_entities_repo().get(entity_id)["visibility_status"] == "hidden", (
+        "the Private choice no longer writes `hidden` — this test's premise is gone"
+    )
+
+    r = web_client.get(f"/marketplace/flea/{entity_id}", cookies=cookies)
+    assert r.status_code == 200, r.text
+    assert 'id="owner-archive-btn"' in r.text, "the owner has no Archive control on their own Private plugin"
+    assert "Delete (locked — quarantined)" not in r.text
+
+    # …and the API the button calls actually accepts it.
+    assert web_client.delete(f"/api/store/entities/{entity_id}", cookies=cookies).status_code == 204
+
+
+def test_detail_page_still_locks_a_genuinely_quarantined_entity(web_client: TestClient):
+    """The other half of the same gate — the page must keep refusing where the
+    API refuses, or the owner gets a live button that 403s."""
+    owner_id, owner_cookies = _create_user(web_client, "owner@x.com")
+    entity_id, _sub_id = _seed_quarantined_entity(owner_id, "owner@x.com", "page2")
+
+    r = web_client.get(f"/marketplace/flea/{entity_id}", cookies=owner_cookies)
+    assert r.status_code == 200, r.text
+    assert 'id="owner-archive-btn"' not in r.text
+    assert "Delete (locked — quarantined)" in r.text
+
+
 def test_detail_installable_agrees_with_the_install_endpoint(web_client: TestClient):
     """The whole point of resolving it server-side: button and endpoint cannot
     disagree. Asserted as a pair so a future edit to either one has to move
