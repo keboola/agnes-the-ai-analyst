@@ -204,12 +204,14 @@
 
         {# Re-open the legacy guided tour from anywhere (spec 2026-08-07
            wave 2 — the pre-redesign help icon, byte-for-byte). tour_legacy.js
-           binds [data-tour-start]; the same hook is on the /me/profile
-           button. Default chrome only: the rail chrome has its own nav (this
-           header never renders there) and keeps the coach-mark engine, and
-           the paper-on-topnav opt-in keeps the redesign reading (no legacy
-           launcher), so the button keys on is_paper() like the AI Connector
-           row above. #}
+           binds [data-tour-start]; this button is the only launcher in the
+           DOM (the pre-redesign profile page never carried one — its tour
+           copy saying otherwise was stale in 0.79.0 already, and the frozen
+           copies preserve it as shipped). Default chrome only: the rail
+           chrome has its own nav (this header never renders there) and
+           keeps the coach-mark engine, and the paper-on-topnav opt-in keeps
+           the redesign reading (no legacy launcher), so the button keys on
+           is_paper() like the AI Connector row above. #}
         {% if not is_paper() %}
         <button type="button" class="app-onboarding-launch" data-tour-start
                 title="Take a tour" aria-label="Take a tour">
