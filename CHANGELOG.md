@@ -42,6 +42,24 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   (`catalog_legacy.html`, `corporate_memory_legacy.html`; rail keeps the
   unified/redesigned pages).
 
+- **Default-chrome instances get their remaining pre-redesign surfaces back**
+  (spec `docs/superpowers/specs/2026-08-07-default-chrome-ux-parity.md`,
+  wave 2). On the default topnav chrome: `/me/profile`, `/me/activity` and
+  `/agents` render frozen pre-redesign copies (`*_legacy.html`;
+  `/agents` restores the pre-redesign "My agents" management page with its
+  original handler logic); `/me/ai-connector` is a real page again (the
+  frozen standalone connector page with the `/mcp-connect` token fallback,
+  with `/me/mcp` + `/me/cowork` aliases redirecting to it) instead of a
+  redirect; the user menu's "AI Connector" row returns; the pre-redesign
+  guided tour ships again (frozen `_tour_legacy.html` + `js/tour_legacy.js`
+  + `css/tour_legacy.css`, restored `app/web/onboarding.py` steps, and the
+  header "?" launcher); and the chat welcome cards keep their pre-redesign
+  copy and icons byte-for-byte (`_chat_welcome_cards_legacy.html`). Under
+  the redesign opt-in every one of these keeps the redesigned behavior
+  unchanged. The admin menu's "Moderation & Trust" entry is now gated on
+  `store.verification_enabled` (a semantic gate — with verification off,
+  the default, the hub has nothing to moderate).
+
 ### Fixed
 
 - **`chat.*` and `studio.enabled` can now actually be set from
