@@ -812,7 +812,10 @@
                         attrs='title="Hard delete: drops the bundle + removes existing installs. Use only for legal / privacy removals. Visible only to admins — analysts won\'t see this button."') %}
         Hard delete <span class="admin-only-hint">admin-only</span>
       {% endcall %}
-    {% elif entity.visibility_status == 'approved' %}
+    {% elif entity.visibility_status == 'approved' or own_private %}
+      {# own_private — see the plugin detail template; a Private row sits at
+         'hidden' forever, so gating on 'approved' alone locked the author
+         out of deleting their own skill/agent (#1177). #}
       {{ ds.button('Archive', variant='danger', size='sm', type='button',
                    id='owner-archive-btn',
                    attrs='title="Soft delete: hides from browse + blocks new installs. Existing user_store_installs continue serving the bundle."') }}
@@ -1524,7 +1527,13 @@
     // The API also refuses POST /install with 409 entity_not_approved
     // so a clever user toggling `disabled` in devtools still hits the
     // gate. Skip listener wiring below for inert buttons.
-    const isQuarantined = d.visibility_status && d.visibility_status !== 'approved';
+    //
+    // `installable` is the gate rather than the status alone: `hidden` is
+    // written both by quarantine and by the author choosing Private, and the
+    // author can always install their own Private row (#1178). The server
+    // resolves it beside the endpoint's gate. Absent field → historical
+    // behaviour.
+    const isQuarantined = d.visibility_status && d.visibility_status !== 'approved' && d.installable !== true;
     if (isQuarantined) {
       const stateLabel = d.visibility_status === 'archived' ? 'archived' : 'under review';
       actions.innerHTML = `<button class="btn primary" type="button" disabled

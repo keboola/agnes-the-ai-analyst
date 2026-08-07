@@ -1051,10 +1051,43 @@
       },
       "Body_preview_entity_api_store_entities_preview_post": {
         "properties": {
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
           "file": {
             "contentMediaType": "application/octet-stream",
             "title": "File",
             "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
           },
           "type": {
             "title": "Type",
@@ -6086,6 +6119,11 @@
             "title": "Install Count",
             "type": "integer"
           },
+          "installable": {
+            "default": true,
+            "title": "Installable",
+            "type": "boolean"
+          },
           "installed": {
             "default": false,
             "title": "Installed",
@@ -6446,6 +6484,30 @@
         "title": "PreviewComponent",
         "type": "object"
       },
+      "PreviewFieldIssue": {
+        "description": "One reason the accompanying form fields would be refused on save.\n\nPreview validates the ZIP; the metadata the author typed alongside it\n(name, description, category) went unchecked until Save, so a \"Check\nbundle\" could come back clean and the very next click still 409 on a\nname the author already owns. Same codes the create endpoint raises, so\nthe two verdicts read as one system.",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "field": {
+            "title": "Field",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "field",
+          "code",
+          "message"
+        ],
+        "title": "PreviewFieldIssue",
+        "type": "object"
+      },
       "PreviewRequest": {
         "properties": {
           "content": {
@@ -6481,6 +6543,14 @@
               }
             ],
             "title": "Description"
+          },
+          "field_issues": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/PreviewFieldIssue"
+            },
+            "title": "Field Issues",
+            "type": "array"
           },
           "name": {
             "anyOf": [
@@ -40989,7 +41059,7 @@
     },
     "/api/store/entities/preview": {
       "post": {
-        "description": "Wizard step 1 \u2014 validate the uploaded ZIP and parse frontmatter for\npre-fill on step 2. Does **not** persist anything: tmp dir is wiped before\nthe response returns. The browser must hold the same File and re-submit\nit on step 2 (POST /entities) for the actual create.",
+        "description": "Wizard step 1 \u2014 validate the uploaded ZIP and parse frontmatter for\npre-fill on step 2. Does **not** persist anything: tmp dir is wiped before\nthe response returns. The browser must hold the same File and re-submit\nit on step 2 (POST /entities) for the actual create.\n\nWhen the caller sends the metadata fields too, ``field_issues`` reports\nwhat ``POST /entities`` would refuse them for \u2014 a pre-flight that only\nchecked the ZIP let a clean check be followed straight by a 409.",
         "operationId": "preview_entity_api_store_entities_preview_post",
         "parameters": [
           {
@@ -41055,7 +41125,7 @@
     },
     "/api/store/entities/{entity_id}": {
       "delete": {
-        "description": "Soft-archive (default) or hard-delete (admin-only).\n\n* **Soft (default)** \u2014 flips `visibility_status='archived'`. Bundle\n  stays on disk; existing user_store_installs continue serving the\n  bundle through marketplace.zip / .git so already-installed users\n  don't lose the plugin. Browse listings hide it; install endpoint\n  refuses new installs. Owner + admin can soft-archive an\n  approved entity.\n* **Hard (`?hard=true`)** \u2014 admin-only. Drops the row, removes the\n  bundle from disk, deletes user_store_installs (existing users\n  lose the plugin). Use for legal / privacy removals where the\n  bytes have to go.\n\nQuarantined (pending / blocked / hidden) entities: only admins can\narchive or hard-delete; owner is refused so they can't erase the\nevidence of a flagged upload before triage.",
+        "description": "Soft-archive (default) or hard-delete (admin-only).\n\n* **Soft (default)** \u2014 flips `visibility_status='archived'`. Bundle\n  stays on disk; existing user_store_installs continue serving the\n  bundle through marketplace.zip / .git so already-installed users\n  don't lose the plugin. Browse listings hide it; install endpoint\n  refuses new installs. Owner + admin can soft-archive an\n  approved entity.\n* **Hard (`?hard=true`)** \u2014 admin-only. Drops the row, removes the\n  bundle from disk, deletes user_store_installs (existing users\n  lose the plugin). Use for legal / privacy removals where the\n  bytes have to go.\n\nQuarantined (pending / blocked / hidden) entities: only admins can\narchive or hard-delete; owner is refused so they can't erase the\nevidence of a flagged upload before triage. The author's own\ndeliberately-Private row is not that \u2014 see\n``is_own_unflagged_private``.",
         "operationId": "delete_entity_api_store_entities__entity_id__delete",
         "parameters": [
           {

@@ -158,6 +158,27 @@
   .sk-field input[type=text], .sk-field textarea, .sk-field select { width: 100%; padding: 9px 12px; border: 1px solid var(--ds-border); border-radius: 9px; font: inherit; font-size: 14px; background: var(--ds-surface); color: var(--ds-text-primary); resize: vertical; }
   .sk-field textarea.mono { font-family: var(--ds-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 13px; line-height: 1.55; }
   .sk-field input:focus, .sk-field textarea:focus, .sk-field select:focus { outline: 2px solid var(--ds-primary); outline-offset: -1px; }
+  /* Category dropdown. The border/background above already applied, but the
+     control kept the platform's own appearance — OS chevron, OS metrics, OS
+     colours in dark theme — so it read as a foreign widget next to the app's
+     own menus. Same treatment as `.fbar-select` (filter_toolbar.css): strip
+     the native appearance and draw the chevron on the wrapper, which is why
+     the select needs a positioned parent and right padding to clear it. */
+  .sk-field.sk-field--select { position: relative; }
+  .sk-field.sk-field--select::after {
+    content: "▾";
+    position: absolute;
+    right: 12px;
+    /* Anchored to the bottom, not the middle: the select is the field's last
+       child and has a fixed height, whereas the label above it wraps on
+       narrow columns — a centred chevron would drift off the control there. */
+    bottom: 19px;
+    transform: translateY(50%);
+    font-size: 11px;
+    color: var(--ds-text-muted);
+    pointer-events: none;
+  }
+  .sk-field.sk-field--select select { padding-right: 32px; cursor: pointer; -webkit-appearance: none; appearance: none; }
   .sk-hint { font-size: 12px; color: var(--ds-text-muted); margin: 6px 0 0; }
   .sk-hint.err { color: var(--ds-accent-danger-ink); }
   /* Guidance attached to a field. On the sunken surface these read as
@@ -321,7 +342,7 @@
   /* The same problem, restated where it can be fixed. Hidden (not
      zero-height) when clean, so nothing reserves space for a good day. */
   .sk-fielderr { margin: 6px 0 0; font-size: 12px; font-weight: 550; line-height: 1.45; color: var(--ds-accent-danger-ink); }
-  .sk-field input.is-err, .sk-field textarea.is-err { border-color: var(--ds-accent-danger-line); }
+  .sk-field input.is-err, .sk-field textarea.is-err, .sk-field select.is-err { border-color: var(--ds-accent-danger-line); }
 </style>
 {% endblock %}
 
@@ -830,6 +851,11 @@
     var res = src || check;
     if (!res) return null;
     var rows = [];
+    // Metadata refusals lead: they are the ones that will stop the save, and
+    // a bundle can be structurally perfect while the name is already taken.
+    (res.fields || []).forEach(function (f) {
+      rows.push({ sev: 'fail', msg: fieldLabel(f.field) + ' — ' + f.message });
+    });
     (res.lint && res.lint.findings || []).forEach(function (f) {
       rows.push({ sev: f.severity || 'note', msg: f.message || '', doc: f.doc });
     });
@@ -930,8 +956,9 @@
               '<label class="sk-field"><span>' + esc(c.descLabel) + ' <em>' + esc(c.descNote) + '</em></span>' +
                 '<textarea rows="2" data-sk-field="description" placeholder="' + esc(c.descPlaceholder) + '">' + esc(draft.description) + '</textarea></label>' +
               fieldErrHtml('description') +
-              '<label class="sk-field"><span>Category</span>' +
+              '<label class="sk-field sk-field--select"><span>Category</span>' +
                 '<select data-sk-field="category">' + catOptions() + '</select></label>' +
+              fieldErrHtml('category') +
             '</div>' +
           '</div>' +
           // Section 3 — the type's content: markdown body, or a .zip bundle.
@@ -1138,10 +1165,11 @@
      A refused save is a list of specific defects, so it is presented as one:
      grouped by the field that owns it, deduped, and restated on the field
      itself. `field` is null for anything we cannot attribute. */
-  var PROBLEM_FIELDS = ['name', 'description', 'body', 'bundle'];
+  var PROBLEM_FIELDS = ['name', 'description', 'category', 'body', 'bundle'];
   function fieldLabel(f) {
     if (f === 'body') return cfg().source === 'bundle' ? 'Bundle' : cfg().bodyLabel;
     if (f === 'bundle') return 'Bundle';
+    if (f === 'category') return 'Category';
     return f === 'name' ? 'Name' : 'Description';
   }
 
@@ -1344,19 +1372,46 @@
     var done = busy('sk-check', 'Checking…');
     var call = cfg().source === 'bundle'
       ? postForm('/api/store/entities/preview', bundleForm())
-          .then(function (res) { return { components: (res && res.components) || [] }; })
+          .then(function (res) {
+            // The preview response carries more than component rows, and
+            // dropping the rest is what made this a half-check: `name` /
+            // `description` are the manifest pre-fill (#1175) and
+            // `field_issues` are the metadata refusals Save would raise
+            // (#1176). Pre-fill first, so a name the bundle supplies is the
+            // one the field issues are read against.
+            var filled = applyPreviewMeta(res);
+            if (filled.length) persist();
+            return {
+              components: (res && res.components) || [],
+              fields: (res && res.field_issues) || [],
+              filled: filled
+            };
+          })
       : postJson('/api/store/entities/from-markdown', markdownPayload({ dry_run: true }))
           .then(function (res) { return { lint: (res && res.lint) || null, inline: (res && res.inline) || null }; });
 
     call
       .then(function (result) {
         check = result;
+        // Field-level refusals are not advisory notes — they are the same
+        // verdict Save would return, so they go to the problems channel that
+        // marks the field, not only into the Check panel's list.
+        clearProblems();
+        if ((result.fields || []).length) {
+          setProblems('Won’t save yet', result.fields.map(function (f) {
+            return { field: PROBLEM_FIELDS.indexOf(f.field) === -1 ? null : f.field,
+                     text: headline(f.message), detail: f.message };
+          }));
+        }
         // A check that ran is a receipt; its FINDINGS are the Check panel's
         // job, and the panel is on screen — so the toast counts them and
         // points, it does not restate them.
         var n = (checkRows(result) || []).filter(function (r) { return r.sev !== 'ok'; }).length;
         render();
-        toast(n ? 'Checked — ' + n + ' note' + (n === 1 ? '' : 's') + ' in the panel.' : 'Checked — no findings.',
+        var pre = (result.filled || []).length
+          ? 'Filled in ' + listWords(result.filled) + ' from the bundle. '
+          : '';
+        toast(pre + (n ? 'Checked — ' + n + ' note' + (n === 1 ? '' : 's') + ' in the panel.' : 'Checked — no findings.'),
               n ? 'info' : 'success');
       })
       .catch(function (e) {
@@ -1665,6 +1720,26 @@
     return filled;
   }
 
+  /* The bundle path's applyFrontmatter(). A .zip's manifest is not readable in
+     the browser, so the server parses it and returns `name` / `description` on
+     the preview response FOR THIS — but only `.components` used to survive the
+     `.then()`, which is why an author had to retype a description the server
+     already had in hand. Same only-fill-blanks contract as its markdown
+     sibling: an attached bundle never overwrites what the author typed. */
+  function applyPreviewMeta(res) {
+    var filled = [];
+    if (!res) return filled;
+    if (!(draft.name || '').trim() && res.name && NAME_RE.test(res.name)) {
+      draft.name = res.name;
+      filled.push('name');
+    }
+    if (!(draft.description || '').trim() && res.description) {
+      draft.description = String(res.description).slice(0, 500);
+      filled.push('description');
+    }
+    return filled;
+  }
+
   function takeFile(file) {
     if (!file || !draft) return;
     if (cfg().source === 'bundle') {
@@ -1792,7 +1867,13 @@
     var f = e.target.getAttribute && e.target.getAttribute('data-sk-field');
     if (!f || !draft) return;
     draft[f] = e.target.value;
-    if (f === 'category') { persist(); var el = document.getElementById('sk-pv-cat'); if (el) el.textContent = draft.category || cfg().label; return; }
+    if (f === 'category') {
+      dropProblem('category');   // answered — stop faulting it, same as any field
+      persist();
+      var el = document.getElementById('sk-pv-cat');
+      if (el) el.textContent = draft.category || cfg().label;
+      return;
+    }
     if (f === 'body') {
       check = null;   // editing the body invalidates a prior check result
       // The card no longer shows verbatim what the file contained, and saying
