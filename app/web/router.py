@@ -1636,20 +1636,25 @@ def _data_package_entry_dict(
 # its JS twin. One shape → one component → identical cards everywhere.
 
 
-def _catalog_card_data(e: dict) -> dict:
-    """Data package → catalog_card `c`. Every package reaching this
-    normalizer is already in the caller's stack (auto-membership) —
-    required packages render a locked 'Required' pill (always downloaded);
-    everything else gets the Download-locally/Remove-local-copy toggle
-    (``mode: 'download'``) wired to the generic /api/stack endpoints. The
-    dict's ``in_stack`` key (set by ``_data_package_entry_dict``) actually
-    carries the local-download state, not raw stack membership."""
+def _catalog_card_data(e: dict, *, auto_membership: bool = True) -> dict:
+    """Data package → catalog_card `c`, action semantics per membership mode.
+
+    Auto-membership: every package reaching this normalizer is already in
+    the caller's stack — required packages render a locked 'Required' pill
+    (always downloaded); everything else gets the Download-locally/
+    Remove-local-copy toggle (``mode: 'download'``), and the dict's
+    ``in_stack`` key carries the LOCAL-DOWNLOAD state. Classic (the
+    default membership mode): the same generic /api/stack endpoints JOIN
+    and LEAVE the stack, so the card emits ``mode: 'stack'`` — the macro's
+    Add-to-stack/Remove wording — and ``in_stack`` is real membership
+    (Devin Review on #1199, round 5: download wording on a
+    membership-changing control loses users their query access)."""
     if e.get("requirement") == "required":
         action = {"mode": "required"}
     else:
         rid = e["id"]
         action = {
-            "mode": "download",
+            "mode": "download" if auto_membership else "stack",
             "state": "in" if e.get("in_stack") else "add",
             "add_url": "/api/stack/subscribe",
             "remove_url": f"/api/stack/subscription/data_package/{rid}",
@@ -1672,7 +1677,7 @@ def _catalog_card_data(e: dict) -> dict:
     }
 
 
-def _catalog_card_memory(d: dict) -> dict:
+def _catalog_card_memory(d: dict, *, auto_membership: bool = True) -> dict:
     """Memory domain → catalog_card `c`. Every domain reaching this
     normalizer is already in the caller's stack (auto-membership) —
     download-locally toggle (``mode: 'download'``) wired to the generic
@@ -1684,7 +1689,7 @@ def _catalog_card_memory(d: dict) -> dict:
         action = {"mode": "required"}
     else:
         action = {
-            "mode": "download",
+            "mode": "download" if auto_membership else "stack",
             "state": "in" if d.get("in_stack") else "add",
             "add_url": "/api/stack/subscribe",
             "remove_url": f"/api/stack/subscription/memory_domain/{rid}",
@@ -1970,8 +1975,8 @@ async def catalog(
         memory_cards = _unified_memory_cards(addable_mem_entries)
         # Normalize both server-rendered kinds into the single catalog_card
         # `c` contract (Plugins + Recipes normalize client-side in the JS twin).
-        data_cards = [_catalog_card_data(e) for e in entries]
-        memory_card_models = [_catalog_card_memory(d) for d in memory_cards]
+        data_cards = [_catalog_card_data(e, auto_membership=auto_membership) for e in entries]
+        memory_card_models = [_catalog_card_memory(d, auto_membership=auto_membership) for d in memory_cards]
         # ── "Recommended for you" — intentionally empty for granted data /
         #    memory. The Catalog only surfaces resources the caller does NOT
         #    already have; under auto-membership every granted package is
@@ -2166,6 +2171,12 @@ async def my_stack_page(
     # connection that didn't observe just-written subscription rows, so the
     # stack rendered empty even when /api/stack returned entries.
     resolver = StackResolver()
+    from app.instance_config import get_stack_auto_membership
+
+    # My Stack rows carry the same mode-aware action wording as the
+    # Catalog cards: auto → Download-locally toggle, classic → the
+    # remove-from-stack control (leaving is a membership change there).
+    auto_membership = get_stack_auto_membership()
     pkg_repo = data_packages_repo()
 
     def _pkg_table_count(pkg_id: str) -> int:
@@ -2242,13 +2253,13 @@ async def my_stack_page(
     # the inventory-table columns (added_iso · shared_by).
     data_cards = []
     for entry in data_entries:
-        c = _catalog_card_data(entry)
+        c = _catalog_card_data(entry, auto_membership=auto_membership)
         c["added_iso"] = _added_iso("data_package", entry["id"])
         c["shared_by"] = entry.get("owner_name")
         data_cards.append(c)
     memory_card_models = []
     for d in memory_entries:
-        c = _catalog_card_memory(d)
+        c = _catalog_card_memory(d, auto_membership=auto_membership)
         c["added_iso"] = _added_iso("memory_domain", d["id"])
         c["shared_by"] = None
         memory_card_models.append(c)

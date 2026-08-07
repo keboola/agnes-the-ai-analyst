@@ -266,3 +266,16 @@ class TestRailClassicCatalogContracts:
         body = seeded_app["client"].get("/catalog", headers=_auth(seeded_app["admin_token"])).text
         assert "Ungranted Package" in body, "classic admin god-mode must cover the Data grid"
         assert "Ungranted Domain" in body, "classic admin god-mode must cover the Memory kind-tab too"
+
+    def test_classic_card_actions_speak_membership_not_download(self, seeded_app):
+        """Classic: the generic /api/stack endpoints JOIN/LEAVE the stack, so
+        the unified cards must say Add-to-stack/Remove — download wording on
+        a membership-changing control would cost a user their query access
+        (Devin Review on #1199, round 5). Auto keeps the download toggle
+        (pinned by the auto suites)."""
+        pkg_id = _make_pkg("classic-wording", "Classic Wording Pkg")
+        _grant("Everyone", "data_package", pkg_id, requirement="available", users=["analyst1"])
+        body = seeded_app["client"].get("/catalog", headers=_auth(seeded_app["analyst_token"])).text
+        assert "Add to stack" in body
+        assert "Download locally" not in body
+        assert "Remove local copy" not in body

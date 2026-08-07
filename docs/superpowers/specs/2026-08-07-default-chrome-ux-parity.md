@@ -33,11 +33,19 @@ redesign experience for opted-in instances**.
 
 ## Principles (established, reused)
 
-- **Two worlds, one switch.** The redesign opt-in condition is
-  `ui_layout == "rail" OR theme == "paper"` — the same condition the base
-  templates key their chrome on and `_detail_template()` keys the detail
-  pages on. Default-chrome surfaces render **frozen pre-redesign copies**;
-  opted-in surfaces render the redesign, unchanged.
+- **Two worlds, one switch — with a two-tier condition.** The full redesign
+  opt-in expression is `ui_layout == "rail" OR theme == "paper"`; it keys
+  the base templates' chrome, `_detail_template()`'s detail pages, and the
+  surfaces whose NAV affordance is paper-dependent (the legacy tour and the
+  standalone connector page — shipping either without its affordance would
+  strand it). **LIST/page swaps key on the layout alone** — the pattern
+  `/library` and `/marketplace` shipped with the redesign itself: their
+  redesigned variants are rail-specific IA (the unified pages assume the
+  rail nav model), so a paper-on-topnav instance (a per-knob combination,
+  not the preset) renders the classic pages in paper colors, consistently
+  across every list surface. Default-chrome
+  surfaces render **frozen pre-redesign copies**; opted-in surfaces render
+  the redesign, unchanged.
 - **Frozen copies, closed sets.** A legacy surface is a byte-for-byte copy of
   the pre-redesign template (source: the last pre-redesign mainline commit,
   `e01073be2^`), named `*_legacy.html`, exempt from cosmetic sweeps (emoji
