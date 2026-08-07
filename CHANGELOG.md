@@ -218,23 +218,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
-- **BREAKING-revert: stack auto-membership is now opt-in**
-  (`features.stack_auto_membership`, env `AGNES_STACK_AUTO_MEMBERSHIP`,
-  default **off**). The auto-membership stack model the redesign shipped as a
-  breaking change reverts to the classic pre-redesign subscribe model on
-  default instances: membership = required ∪ subscribed grants (all
-  downloaded by `agnes pull`), Catalog Browse lists every granted resource
-  with its add-to-stack state, admin god-mode Browse returns to the
-  user-facing catalog, and a `required → available` grant downgrade again
-  eagerly fans out subscriptions so group members keep the resource. Turning
-  the flag on restores the redesign semantics exactly (auto-membership,
-  addable-only Browse reshape, `server_only` manifest overlay, no downgrade
-  fan-out). The flag flips behavior instantly — `user_stack_subscriptions`
-  rows are interpreted, never rewritten. Topnav instances also render the
-  frozen pre-redesign `/catalog` and `/corporate-memory` pages
-  (`catalog_legacy.html`, `corporate_memory_legacy.html`; rail keeps the
-  unified/redesigned pages).
-
 ### Fixed
 
 - Previewing a partition-synced table no longer claims its first sync is
