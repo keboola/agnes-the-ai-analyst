@@ -153,6 +153,23 @@ def resolve_local_parquet_glob(table_id: str, source_type: str | None = None) ->
     if single is not None:
         return str(single)
     for d in _partition_dir_candidates(table_id, source_type):
+        # Flat first, recursive only as a fallback — NOT interchangeable with an
+        # unconditional `**`. A directory holding both layouts at once (a
+        # `connectors.jira.transform.migrate_flat_to_hive` run interrupted
+        # partway) makes `**` + `hive_partitioning` raise outright:
+        #   BinderException: Hive partition mismatch between file "…"
+        # because the top-level part carries no `month=` segment while the
+        # nested one does. Measured on DuckDB 1.5.2.
+        #
+        # TODO(#1198 review): in that mixed state this reads the flat parts only,
+        # while `local_parquet_size_bytes` sums both — the same
+        # catalog/read-surface divergence this change set exists to close, just
+        # narrowed to a window that should not persist (the migration MOVES flat
+        # parts into `month=` dirs, so mixed is transient by construction).
+        # Reading it whole needs `**` with `hive_partitioning=false`, which
+        # returns every row but drops the `month` column pure-hive tables expose
+        # — i.e. the fix is per-layout read options, not one shared expression,
+        # and that is a contract change rather than a one-line swap.
         if any(d.glob("*.parquet")):
             return str(d / "*.parquet")
         if any(d.rglob("*.parquet")):
