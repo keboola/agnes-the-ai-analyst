@@ -2,7 +2,6 @@
 
 import logging
 import os
-from dataclasses import dataclass
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -216,82 +215,13 @@ def feature_enabled(*keys: str, env_var: Optional[str] = None, default: bool = F
     return coerce_flag_value(get_value(*keys, default=default), default)
 
 
-@dataclass(frozen=True)
-class FeatureFlag:
-    """One entry in the :data:`FEATURE_FLAGS` registry — everything the
-    `/admin/server-config` inventory panel needs to display a flag without
-    hardcoding its resolution elsewhere."""
-
-    name: str
-    config_keys: tuple[str, ...]
-    env_var: str
-    default: bool
-    description: str
-
-
-# Registry of every flag resolved via :func:`feature_enabled`. Adding a new
-# flag: call `feature_enabled` at the read site, append an entry here, and
-# add a row to `docs/feature-flags.md` (see that doc's "How to add a flag"
-# section, and CONTRIBUTING.md's sync-map).
-FEATURE_FLAGS: tuple[FeatureFlag, ...] = (
-    FeatureFlag(
-        name="studio",
-        config_keys=("studio", "enabled"),
-        env_var="AGNES_STUDIO_ENABLED",
-        default=True,
-        description="Authoring Studio surface (/admin/studio*). Grandfathered on by default.",
-    ),
-    FeatureFlag(
-        name="guardrails",
-        config_keys=("guardrails", "enabled"),
-        env_var="AGNES_GUARDRAILS_ENABLED",
-        default=True,
-        description="Flea-market upload LLM security-review pipeline. Grandfathered on by default.",
-    ),
-    FeatureFlag(
-        name="chat_approvals",
-        config_keys=("chat", "approvals_enabled"),
-        env_var="AGNES_CHAT_APPROVALS_ENABLED",
-        default=True,
-        description=(
-            "Interactive approval prompts for ask-flagged chat tool calls. Off makes the "
-            "sandbox gate deny instantly instead of waiting for a human."
-        ),
-    ),
-    FeatureFlag(
-        name="chat",
-        config_keys=("chat", "enabled"),
-        env_var="AGNES_CHAT_ENABLED",
-        default=False,
-        description="Cloud-hosted chat (E2B sandbox agent sessions). New feature — off by default.",
-    ),
-    FeatureFlag(
-        name="data_apps",
-        config_keys=("data_apps", "enabled"),
-        env_var="AGNES_DATA_APPS_ENABLED",
-        default=False,
-        description="Hosted user web apps (data apps). New feature — off by default.",
-    ),
-    FeatureFlag(
-        name="library_show_unverified_trust",
-        config_keys=("library", "show_unverified_trust"),
-        env_var="AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST",
-        default=True,
-        description="Show the 'Community' trust marker for unverified Store items in the Library, so all three provenance levels (Organization / Verified / Community) are stated positively and no row is left silently unlabelled. On by default: the whole trust vocabulary is already gated to the paper theme (every `mark()` callsite passes `paper=is_paper()`), so upgrade parity for a default blue instance comes from that gate, not from this flag — leaving it off only suppressed the third level on the opt-in look that exists to state all three. Set false for the older silent reading, where an unverified item is marked by the ABSENCE of a marker.",
-    ),
-    FeatureFlag(
-        name="mcp_query_param_token",
-        config_keys=("mcp", "allow_query_param_token"),
-        env_var="AGNES_MCP_ALLOW_QUERY_PARAM_TOKEN",
-        default=True,
-        description=(
-            "Accept the MCP bearer token as a ?token= query param on SSE GET, for clients "
-            "that cannot set headers. On by default (grandfathered). The token lands in every "
-            "request log when used (CWE-598) — turn this off if all your MCP clients send the "
-            "Authorization header."
-        ),
-    ),
-)
+# The switch registry moved to `app/switches.py` so that a switch's type,
+# effect class, editability and the reason for it live in one declaration.
+# Re-exported under the old name because `app/web/router.py` and
+# `app/api/admin.py` import it from here. `Switch` is a superset of the old
+# `FeatureFlag`, so every attribute those callers read still resolves.
+from app.switches import SWITCHES as FEATURE_FLAGS  # noqa: E402,F401
+from app.switches import Switch as FeatureFlag  # noqa: E402,F401
 
 
 def get_data_source_type() -> str:
