@@ -112,17 +112,24 @@ def refresh_profile(
     # Check table-level access
     if not can_access_table(user, table_name, conn):
         raise HTTPException(status_code=403, detail=f"Access denied to table '{table_name}'")
+    from app.utils import resolve_local_partition_dir
     from src.profiler import profile_table, TableInfo
 
     data_dir = _get_data_dir()
     extracts_dir = data_dir / "extracts"
     candidates = list(extracts_dir.rglob(f"data/{table_name}.parquet"))
-    if not candidates:
+    # A partitioned table is a DIRECTORY of per-period parquets, so the
+    # single-file lookup above finds nothing for one that is perfectly synced.
+    # `profile_table` takes the directory as-is (it builds a recursive `**`
+    # read expression from it), which is exactly what the scheduled profiling
+    # run already passes — only this manual refresh could not reach it.
+    target = candidates[0] if candidates else resolve_local_partition_dir(table_name)
+    if target is None:
         raise HTTPException(status_code=404, detail=f"No parquet for '{table_name}'")
 
     try:
         table_info = TableInfo(name=table_name, table_id=table_name)
-        profile = profile_table(table_info, candidates[0], [], {}, {})
+        profile = profile_table(table_info, target, [], {}, {})
         profile_repo().save(table_name, profile)
         return {"status": "ok", "table": table_name, "columns": len(profile.get("columns", {}))}
     except Exception as e:

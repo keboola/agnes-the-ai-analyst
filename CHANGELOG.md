@@ -16,6 +16,30 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- The remaining read surfaces now see a partition-synced table's data, the way
+  the preview already did in 0.83.0. That sync stores a table as a DIRECTORY of
+  per-period parquets, so the single-file lookup found nothing and a healthy,
+  fully-synced table looked empty everywhere else too: `GET /api/v2/schema/<id>`
+  404-ed, `POST /api/v2/scan` 404-ed, and the catalog's `rough_size_hint` came
+  back `null`. Schema and scan now resolve either layout and read every
+  partition; the catalog reports the SUM of the partition sizes — the same
+  rollup the extractor writes to `_meta.size_bytes` and the sync state to
+  `file_size_bytes`, so the three agree. `POST /api/catalog/profile/<table>
+  /refresh` reaches such a table too — the profiler always understood a
+  directory of parts and the nightly run passes it one; only this manual
+  refresh could not find it. An empty partition directory still counts as "no
+  data yet" on every one of these surfaces, because that genuinely is the
+  pending-first-sync case.
+
+- The distribution mirror no longer warns that a healthy partitioned table has
+  "no on-disk parquet" — the same message a genuinely broken sync produces. Such
+  a table is now skipped deliberately: the object-store mirror addresses one
+  `<table_id>.parquet` object per table, and a partitioned table has none.
+  Analysts are unaffected — `agnes pull` already syncs it part-by-part over the
+  app-served `/api/data/<id>/download?part=` route, which never consults the
+  mirror. Mirroring per-part objects (and presigning them) would have to change
+  the manifest and the CLI together, so it stays out of this change.
+
 ### Removed
 
 ### Internal

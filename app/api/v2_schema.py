@@ -190,15 +190,20 @@ def build_schema_uncached(
         # parquet by source-name-agnostic lookup: the extract directory is not
         # necessarily the source_type (e.g. the bundled `demo` extract registers
         # tables as source_type='local' but lives under extracts/demo/).
-        from app.utils import resolve_local_parquet
-        parquet = resolve_local_parquet(table_id, source_type)
+        # `_glob` so a PARTITIONED table resolves too: that sync writes
+        # `data/<table_id>/<partition>.parquet`, a directory, so the single-file
+        # lookup returned None and a healthy fully-synced table 404-ed here —
+        # the same layout gap the preview surface fixed (Devin Review on #1189).
+        # DuckDB expands the returned `<dir>/*.parquet` glob, exactly as the
+        # extractor's own master view over the partition dir does.
+        from app.utils import resolve_local_parquet_glob
+
+        parquet = resolve_local_parquet_glob(table_id, source_type)
         if parquet is None:
             raise NotFound(table_id)
         local_conn = _open_duckdb(":memory:")
         try:
-            cols = local_conn.execute(
-                "DESCRIBE SELECT * FROM read_parquet(?)", [str(parquet)]
-            ).fetchall()
+            cols = local_conn.execute("DESCRIBE SELECT * FROM read_parquet(?)", [parquet]).fetchall()
         finally:
             local_conn.close()
         payload = {
