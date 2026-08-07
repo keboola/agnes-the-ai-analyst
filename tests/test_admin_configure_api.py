@@ -631,16 +631,19 @@ class TestDocumentedServerConfigKeysAreWritable:
     }
 
     def _locked_sections(self):
-        """Sections whose only switches are locked, with a stated reason.
+        """Sections whose only switches are locked, each WITH a stated reason.
 
         Replaces the old `_NOT_LIVE_WRITABLE` dict: the reason now lives on
         the entry, where the product can show it, instead of in this file
-        where only a test reader ever saw it.
+        where only a test reader ever saw it. A locked switch with an empty
+        `lock_reason` does NOT count as accounted for here — that is what
+        makes `test_every_registry_section_is_editable_or_locked_with_a_reason`
+        below a real check on the reason rather than just on `editable`.
         """
         from app.switches import SWITCHES
 
         editable = {s.config_keys[0] for s in SWITCHES if s.editable and s.config_keys}
-        locked = {s.config_keys[0] for s in SWITCHES if not s.editable and s.config_keys}
+        locked = {s.config_keys[0] for s in SWITCHES if not s.editable and s.config_keys and s.lock_reason.strip()}
         return locked - editable
 
     def test_the_documented_key_scrape_finds_something(self):
@@ -668,10 +671,18 @@ class TestDocumentedServerConfigKeysAreWritable:
         stale = self._locked_sections() & set(_EDITABLE_SECTIONS)
         assert not stale, f"now editable — clear lock_reason on: {sorted(stale)}"
 
-    def test_every_editable_switch_section_is_writable(self):
-        """The derivation guard. Adding an editable switch whose section is
-        not writable is the bug shape that shipped `mcp.allow_query_param_token`
-        env-var-only, then `agent_profiles.enabled` after it."""
+    def test_editable_switch_section_derivation_is_pinned(self):
+        """NOT a regression guard: `_EDITABLE_SECTIONS` is defined as
+        `_STATIC_EDITABLE_SECTIONS | {section of every editable switch}`, so
+        this predicate holds by construction for any registry content — it
+        cannot fail no matter what `SWITCHES` contains. It exists to pin the
+        derivation in prose next to the definition it restates, and to make a
+        future rewrite of `_EDITABLE_SECTIONS` that breaks the union show up
+        here. The bug shape this derivation actually prevents (an editable
+        switch shipping section-less, as `mcp.allow_query_param_token` did) is
+        guarded by `test_every_registry_section_is_editable_or_locked_with_a_reason`
+        above, which checks the *registry* against `_EDITABLE_SECTIONS` rather
+        than checking `_EDITABLE_SECTIONS` against itself."""
         from app.api.admin import _EDITABLE_SECTIONS
         from app.switches import SWITCHES
 
