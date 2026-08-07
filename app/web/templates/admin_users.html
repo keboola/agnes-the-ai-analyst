@@ -586,11 +586,28 @@ document.getElementById("group-filter").addEventListener("change", e => {
   loadUsers();
 });
 
+/* The one place that turns a failed response into a sentence.
+   FastAPI carries the message in `detail`; five call sites on this page used
+   to interpolate the raw body instead, so a duplicate email surfaced as
+   `Failed: {"detail":"User with this email already exists"}` (#1172).
+   `detail` is a plain string on this router but a `{code, hint}` object
+   elsewhere in the app, so read the human half of either shape — and fall
+   back to the status code when the body is not JSON at all (a proxy's HTML
+   502 page, say), which is what the raw-body version got so badly wrong. */
+async function errorText(r) {
+  const detail = (await r.json().catch(() => null) || {}).detail;
+  if (typeof detail === "string" && detail.trim()) return detail;
+  if (detail && typeof detail === "object") {
+    return detail.hint || detail.message || detail.code || r.status;
+  }
+  return r.status;
+}
+
 async function toggleActive(id, active) {
   const path = active ? "activate" : "deactivate";
   const r = await fetch(`${API}/${id}/${path}`, { method: "POST", credentials: "include" });
   if (!r.ok) {
-    toast("Failed: " + (await r.text()), "error");
+    toast("Failed: " + (await errorText(r)), "error");
     loadUsers();
     return;
   }
@@ -604,7 +621,7 @@ async function patch(id, body, successMsg) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!r.ok) { toast("Failed: " + (await r.text()), "error"); return; }
+  if (!r.ok) { toast("Failed: " + (await errorText(r)), "error"); return; }
   toast(successMsg, "success");
   loadUsers();
 }
@@ -672,7 +689,7 @@ function openSetPassword(id, email) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ password: pwd }),
     });
-    if (!r.ok) { toast("Failed: " + (await r.text()), "error"); return; }
+    if (!r.ok) { toast("Failed: " + (await errorText(r)), "error"); return; }
     closeModal("setpwd-modal");
     toast("Password updated", "success");
   };
@@ -682,7 +699,7 @@ function openSetPassword(id, email) {
 async function delUser(id, email) {
   if (!await confirmModal(`Delete ${email}? This cannot be undone.`)) return;
   const r = await fetch(`${API}/${id}`, { method: "DELETE", credentials: "include" });
-  if (!r.ok) { toast("Failed: " + (await r.text()), "error"); return; }
+  if (!r.ok) { toast("Failed: " + (await errorText(r)), "error"); return; }
   toast("User deleted", "success");
   loadUsers();
 }
@@ -704,7 +721,7 @@ document.getElementById("confirm-create-btn").addEventListener("click", async ()
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, name: name || email.split("@")[0], send_invite: sendInvite }),
   });
-  if (!r.ok) { toast("Failed: " + (await r.text()), "error"); return; }
+  if (!r.ok) { toast("Failed: " + (await errorText(r)), "error"); return; }
   const data = await r.json().catch(() => ({}));
   closeModal("create-modal");
   toast("User created", "success");

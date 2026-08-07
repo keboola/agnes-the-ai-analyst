@@ -52,7 +52,15 @@
  * column may own the accent. Two owners is what broke every earlier version.
  */
 
-html[data-ui-layout="rail"] body {
+/* Clearance for the fixed rail — conditional on the rail actually being there.
+ * `data-ui-layout="rail"` is stamped on <html> by base_ds.html from instance
+ * config, but _app_rail.html renders <nav class="rail"> only `{% if
+ * session.user %}`. Applied unconditionally, the padding survived on pre-auth
+ * pages that have no rail, so /login/password centred its card inside a box
+ * phantom-shifted 240px right of the viewport (#1170). `:has()` ties the
+ * reservation to the element it is reserving for; it is already the house
+ * mechanism for rail-conditional layout (see chat.css / chats.css). */
+html[data-ui-layout="rail"] body:has(.rail) {
     padding-left: 240px;
 }
 
@@ -1507,7 +1515,11 @@ html[data-ui-layout="rail"] .cloud-chat-journey-finish:focus-visible {
    above this, laptops/desktops keep the side rail with a comfortable ≥784px
    content column. */
 @media (max-width: 1024px) {
-    html[data-ui-layout="rail"] body {
+    /* Selector kept in lockstep with the desktop rule above: `:has()` takes the
+       specificity of its argument, so a plain `body` here would now LOSE to
+       `body:has(.rail)` and the 240px reservation would survive into the
+       top-bar layout. Same specificity, later in the file → this wins. */
+    html[data-ui-layout="rail"] body:has(.rail) {
         padding-left: 0;
     }
 
