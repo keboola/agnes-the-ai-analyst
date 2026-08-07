@@ -840,7 +840,14 @@
                         attrs='title="Hard delete: drops the bundle from disk + removes existing user_store_installs. Use only for legal / privacy removals — existing users lose the plugin. Visible only to admins — analysts won\'t see this button."') %}
         Hard delete <span class="admin-only-hint">admin-only</span>
       {% endcall %}
-    {% elif entity.visibility_status == 'approved' %}
+    {# own_private: the author's own Private row sits at 'hidden' — the same
+       status quarantine writes — and never promotes off it, so gating on
+       'approved' alone locks the author out of deleting a plugin nobody else
+       can see (#1177). Carried over from the live template this file freezes:
+       the freeze was taken before that fix landed, and a default instance
+       renders THIS file, so without it the fix would reach only redesigned
+       instances. The API gate uses the same predicate. #}
+    {% elif entity.visibility_status == 'approved' or own_private %}
       {{ ds.button('Archive', variant='danger', size='sm', type='button',
                    id='owner-archive-btn',
                    attrs='title="Soft delete: hides from browse + blocks new installs. Existing user_store_installs continue serving the bundle."') }}
@@ -1240,7 +1247,11 @@
   // install button with a gray inert style + tooltip. The API also
   // refuses POST /install with `entity_not_approved` so a clever user
   // who toggles the disabled attribute in devtools still hits a 409.
-  if (d.visibility_status && d.visibility_status !== 'approved') {
+  // `installable` — not `visibility_status !== 'approved'` — is the gate:
+  // `hidden` is written by BOTH quarantine and the author's own Private row,
+  // and the latter is installable by its author forever (#1178). Carried over
+  // from the live template this file freezes (snapshotted before that fix).
+  if (d.visibility_status && d.visibility_status !== 'approved' && d.installable !== true) {
     installBtn.hidden = false;
     statusPill.hidden = true;
     removeBtn.hidden = true;

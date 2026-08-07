@@ -2100,6 +2100,46 @@ class TestDetailPageParity:
         monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
         assert _detail_template("catalog_table_detail") == "catalog_table_detail.html"
 
+    #: Behaviours that must hold on BOTH halves of a frozen pair, as the token
+    #: that implements them. Freezing a copy forks the page permanently, so a
+    #: fix that lands on the redesigned template alone silently reverts itself
+    #: for every default instance — which is what happened when this branch met
+    #: #1177/#1178 in main: the copies were snapshotted before those fixes, so
+    #: the author of a Private entity lost Archive AND install on the default
+    #: look while the redesign kept both (Devin Review on #1195).
+    #:
+    #: A token list rather than a diff: the two halves are SUPPOSED to differ
+    #: (that is the whole point of the freeze), so only the load-bearing
+    #: predicates can be asserted equal. Add a row whenever a fix has to reach
+    #: both.
+    FORKED_PAIR_INVARIANTS = (
+        (
+            "marketplace_plugin_detail",
+            "own_private",
+            "#1177 — the author's own Private row sits at 'hidden' and must stay deletable",
+        ),
+        ("marketplace_item_detail", "own_private", "#1177 — same gate on the skill/agent page"),
+        (
+            "marketplace_plugin_detail",
+            "d.installable !== true",
+            "#1178 — install is gated on the server-resolved flag, not on the status alone",
+        ),
+        ("marketplace_item_detail", "d.installable !== true", "#1178 — same gate on the skill/agent page"),
+    )
+
+    @pytest.mark.parametrize("base,token,why", FORKED_PAIR_INVARIANTS)
+    def test_frozen_copy_carries_the_same_invariant(self, base, token, why):
+        from pathlib import Path
+
+        live = Path(f"app/web/templates/{base}.html").read_text()
+        legacy = Path(f"app/web/templates/{base}_legacy.html").read_text()
+
+        assert token in live, f"premise moved — {token!r} is no longer in {base}.html ({why})"
+        assert token in legacy, (
+            f"{base}_legacy.html is missing {token!r} — {why}. A default instance renders the "
+            "frozen copy, so a fix applied only to the redesigned template reverts itself there."
+        )
+
     def test_every_detail_render_site_is_switched(self):
         """No render site may keep the bare redesigned template literal — a
         new call site that bypasses the switch reintroduces the redesign on

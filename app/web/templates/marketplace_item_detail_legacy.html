@@ -763,7 +763,11 @@
                         attrs='title="Hard delete: drops the bundle + removes existing installs. Use only for legal / privacy removals. Visible only to admins — analysts won\'t see this button."') %}
         Hard delete <span class="admin-only-hint">admin-only</span>
       {% endcall %}
-    {% elif entity.visibility_status == 'approved' %}
+    {# own_private — see the plugin legacy template; a Private row sits at
+       'hidden' forever, so gating on 'approved' alone locked the author out of
+       deleting their own skill/agent (#1177). Carried over from the live
+       template this file freezes, which a default instance no longer renders. #}
+    {% elif entity.visibility_status == 'approved' or own_private %}
       {{ ds.button('Archive', variant='danger', size='sm', type='button',
                    id='owner-archive-btn',
                    attrs='title="Soft delete: hides from browse + blocks new installs. Existing user_store_installs continue serving the bundle."') }}
@@ -1304,7 +1308,13 @@
     // The API also refuses POST /install with 409 entity_not_approved
     // so a clever user toggling `disabled` in devtools still hits the
     // gate. Skip listener wiring below for inert buttons.
-    const isQuarantined = d.visibility_status && d.visibility_status !== 'approved';
+    // `installable` — not the status alone — is the gate: `hidden` is written
+    // by BOTH quarantine and the author's own Private row, and the latter is
+    // installable by its author forever (#1178). Carried over from the live
+    // template this file freezes, which was snapshotted before that fix; a
+    // default instance renders THIS file, so without it the author of a Private
+    // entity gets a permanently disabled "unavailable while under review".
+    const isQuarantined = d.visibility_status && d.visibility_status !== 'approved' && d.installable !== true;
     if (isQuarantined) {
       const stateLabel = d.visibility_status === 'archived' ? 'archived' : 'under review';
       actions.innerHTML = `<button class="btn primary" type="button" disabled
