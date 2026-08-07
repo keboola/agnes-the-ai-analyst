@@ -203,9 +203,24 @@ import os, sys, yaml
 path, backend, url = sys.argv[1], sys.argv[2], sys.argv[3]
 existing = {}
 if os.path.exists(path):
+    # A read that fails must NOT fall through to `existing = {}`: the whole
+    # point of this branch is to carry the operator's non-database sections
+    # (logging, auth providers, feature flags) across a backend switch, and
+    # an empty `existing` rewrites the file with only `database:` — the exact
+    # destruction the heredoc approach was replaced for. A malformed file is
+    # still recoverable that way, so YAMLError keeps the old behaviour; a
+    # file we are not allowed to READ is not, and became possible only once
+    # instance.yaml went 0600, so it aborts and leaves the file alone.
     try:
         existing = yaml.safe_load(open(path).read()) or {}
-    except Exception:
+    except OSError as exc:
+        sys.exit(
+            f"refusing to rewrite {path}: cannot read it ({exc}). "
+            "The file is 0600; check that this process runs as its owner. "
+            "Rewriting from an empty base would drop every operator-set "
+            "section."
+        )
+    except yaml.YAMLError:
         existing = {}
 db = dict(existing.get("database") or {})
 db["backend"] = backend
@@ -220,8 +235,18 @@ with open(tmp, "w") as f:
 os.replace(tmp, path)
 os.chmod(path, 0o600)
 PY
+        # Propagate the writer's exit status instead of `return` (which would
+        # discard it). The abort above only protects the file if the caller
+        # can tell the write did not happen — otherwise the state machine logs
+        # a backend flip that never reached disk. Callers that already tolerate
+        # a failed write keep their `|| true`.
+        local rc=$?
+        if [ "$rc" -ne 0 ]; then
+            logger -t agnes-state-applier "write_instance_yaml: refused to rewrite $path (rc=$rc) — see stderr"
+            return "$rc"
+        fi
         chown agnes-applier:agnes-applier "$path" 2>/dev/null || true
-        return
+        return 0
     fi
     # Pure-bash fallback. H4-NEW — preserves the database section only;
     # any non-database top-level keys are LOST. Provisioning should
@@ -541,8 +566,16 @@ if [ "$FINAL_STATUS" = "pending" ] || [ -z "$FINAL_STATUS" ]; then
 fi
 
 if [ "$FINAL_STATUS" = "success" ]; then
-    write_instance_yaml "$TARGET_BACKEND" "$TARGET_URL"
-    logger -t agnes-state-applier "Migration job $JOB_ID succeeded — flipped instance.yaml backend to $TARGET_BACKEND"
+    # Only claim the flip if it reached disk. write_instance_yaml now refuses
+    # to rewrite a file it cannot read rather than rebuilding it from an empty
+    # base, so a failure here means the backend on disk is still the source —
+    # logging "flipped" would send an operator looking in the wrong place.
+    if write_instance_yaml "$TARGET_BACKEND" "$TARGET_URL"; then
+        logger -t agnes-state-applier "Migration job $JOB_ID succeeded — flipped instance.yaml backend to $TARGET_BACKEND"
+    else
+        update_job "$PENDING_JOB" "failed" "migration completed but instance.yaml could not be rewritten — backend left on $SOURCE_BACKEND"
+        logger -t agnes-state-applier "Migration job $JOB_ID succeeded but instance.yaml rewrite FAILED — backend still $SOURCE_BACKEND, manual intervention needed"
+    fi
 else
     logger -t agnes-state-applier "Migration job $JOB_ID failed — leaving backend on $SOURCE_BACKEND"
     # Roll the state machine back so the next /api/admin/db/state read

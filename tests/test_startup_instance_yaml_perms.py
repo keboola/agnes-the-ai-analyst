@@ -41,12 +41,83 @@ def test_chmod_is_outside_the_create_branch():
     )
 
 
-def test_chown_still_targets_the_app_uid():
-    """0600 is only safe because the owner is the uid both the app container
-    and the state applier run as. A chown change would silently lock them
-    out."""
+def test_create_branch_chowns_to_the_app_uid():
+    """The create path hands a fresh instance.yaml to the app's uid.
+
+    This is not on its own what decides the final owner — see
+    ``test_recursive_state_chown_is_the_line_that_decides_the_owner`` — but a
+    freshly created file must not be left owned by root, or the app cannot
+    read it at 0600 even on the first boot.
+    """
     body = TPL.read_text()
     assert 'chown 999:999 "$INSTANCE_YAML"' in body, (
-        "instance.yaml must stay owned by uid 999 — 0600 plus a different "
-        "owner would take the file away from the app and the state applier"
+        "the instance.yaml create branch must chown the file to uid 999 — "
+        "root-owned at 0600 is unreadable by the app container"
+    )
+
+
+def test_recursive_state_chown_is_the_line_that_decides_the_owner():
+    """0600 makes ownership load-bearing, and this is the line that sets it.
+
+    ``chown -R agnes-applier:agnes-applier /data/state`` runs *after* the
+    create branch's ``chown 999:999``, so it — not that line — determines who
+    owns instance.yaml, and the applier re-creates the file under its own uid
+    on every rewrite anyway. At 0600 the app container (uid 999) can therefore
+    read the file only while ``agnes-applier`` resolves to uid 999, which
+    ``useradd --system`` produces by allocation rather than by pin.
+
+    The guard exists so a provisioning change to this line has to confront
+    that dependency instead of silently locking the app out of its own
+    config. Pinning the applier's uid is tracked separately; it is a fleet
+    provisioning change, not a test fixture.
+    """
+    body = TPL.read_text()
+    assert "chown -R agnes-applier:agnes-applier /data/state" in body, (
+        "the recursive /data/state chown is what finally owns instance.yaml; "
+        "if it moved or changed target, the uid-999 read assumption that 0600 "
+        "depends on has to be re-established explicitly"
+    )
+    create_at = body.index('chown 999:999 "$INSTANCE_YAML"')
+    recursive_at = body.index("chown -R agnes-applier:agnes-applier /data/state")
+    assert recursive_at > create_at, (
+        "the recursive chown is expected to run after the create branch — if "
+        "that order flipped, the create branch would be the deciding line and "
+        "this guard is pointed at the wrong one"
+    )
+
+
+APPLIER = Path("scripts/ops/agnes-state-applier.sh")
+
+
+def test_applier_does_not_swallow_an_unreadable_instance_yaml():
+    """A read failure must abort, not rebuild the file from an empty base.
+
+    ``write_instance_yaml`` merges the new ``database:`` block into whatever
+    the file already holds precisely so a backend switch keeps the operator's
+    other sections. At 0644 the read always succeeded. At 0600 it can fail on
+    a uid mismatch, and a blanket ``except Exception: existing = {}`` would
+    turn that into a rewrite containing only ``database:`` — silently
+    destroying every operator-set section, which is the failure the merge was
+    introduced to prevent.
+    """
+    body = APPLIER.read_text()
+    assert "except OSError" in body, (
+        "write_instance_yaml must catch OSError separately and abort — a file "
+        "it cannot read must not be rewritten from an empty base"
+    )
+    assert "except Exception:\n        existing = {}" not in body, (
+        "the bare except around the instance.yaml read is what turns a PermissionError into a silent config wipe"
+    )
+
+
+def test_applier_propagates_a_refused_rewrite_to_its_caller():
+    """Aborting only helps if the caller can tell the write did not happen."""
+    body = APPLIER.read_text()
+    assert 'return "$rc"' in body, (
+        "write_instance_yaml must return the writer's exit status; a bare "
+        "`return` discards it and the state machine logs a backend flip that "
+        "never reached disk"
+    )
+    assert "if write_instance_yaml " in body, (
+        "the post-migration success path must branch on the rewrite actually succeeding before it logs the flip"
     )
