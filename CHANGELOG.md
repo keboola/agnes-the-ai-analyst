@@ -16,15 +16,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Changed
 
+- **Newline preservation in modal copy is opt-in.** `white-space: pre-wrap` on `.modal-card` headings and sub-lines exists so a message handed to `alertModal` / `confirmModal` / `promptModal` keeps its `\n` line breaks, the way the native dialogs they replace did. Applied to every `.modal-card` on the instance, it also reformatted **static** copy in templates, where newlines and indentation are source formatting — the Add-user helper paragraph, written across three template lines for readability, rendered as three jaggedly-indented lines instead of one wrapped paragraph. `modal.js` now stamps `data-preserve-newlines` on the cards it builds and the rule is scoped to that attribute, so the dialogs that need the behaviour keep it and authored markup is free to wrap however it reads best. Closes #1171.
+
 ### Fixed
 
 - **An agent persona no longer silently strips the platform's data-access rails.** A non-empty `agents.system_prompt` makes `ChatManager._spawn_live` materialize a persona `CLAUDE.md` that *replaces* the workspace one (`WorkdirManager._materialize_profile`) — by design, but it also took the analyst data rails with it. The sandbox still had the `agnes` CLI, the Agnes MCP server, and every granted passthrough tool, yet nothing left told the agent that the organization's data lives behind `agnes catalog`; the observed behavior was an agent hunting through whatever other MCP servers its scope exposed until a human said "use Agnes". `agent_profile.build_profile` now appends a compact `DATA_ACCESS_RAILS` section (discovery chain, "never enumerate from memory", canonical metric lookup, and a pointer to `agnes skills show agnes-data-querying`) to every persona, so a persona overrides the rails' tone and task but never their existence. Affects all four sandbox-spawning surfaces — web chat, Slack DM/thread, `agnes chat <slug>`, and the one-shot agent API (`POST /api/v1/agents/{slug}/responses`), where no human is in the loop to correct it. Agents with no persona are untouched (the workspace `CLAUDE.md` stays symlinked in), as are the built-in authoring profiles in `app/chat/profiles.py`, which are Agnes-authored and already scoped to their own non-analyst task. The `/agents` builder's Identity section now says so, so persona authors know not to restate data instructions in Instructions.
+- **A failed action on `/admin/users` says what went wrong, instead of showing the envelope it arrived in.** Five handlers interpolated the raw response body into the toast, so creating a user with an address that already exists read `Failed: {"detail":"User with this email already exists"}` — the sentence was right there and nothing unwrapped it. All five now share one `errorText(r)` helper that reads FastAPI's `detail`, prefers the human half of the `{code, hint}` shape other routers answer with, and falls back to the status code when the body is not JSON at all (a proxy's HTML error page, which the raw-body version would have pasted into the toast wholesale). Closes #1172.
+- **The login card is centred on rail-layout instances.** `rail.css` reserved 240px of body padding whenever `data-ui-layout="rail"` was stamped on `<html>` — but the rail nav itself renders only for a signed-in user, so on pre-auth pages the reservation survived with nothing to reserve for, and `/login/password` centred its card inside a box shifted a rail's width to the right. The clearance is now tied to the rail actually being present (`body:has(.rail)`), with the ≤1024px override kept at matching specificity so the top-bar layout still drops the padding. Closes #1170.
 
 ### Removed
 
 ### Internal
 
 ### Security
+
 
 ## [0.83.0] - 2026-08-07
 
