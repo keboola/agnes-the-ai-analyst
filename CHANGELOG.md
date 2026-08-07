@@ -18,6 +18,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- The admin table browser no longer re-lists every bucket after a transient
+  Keboola failure. Any exception from the project-wide listing triggered the
+  per-bucket fallback, which makes two upstream calls per bucket the token can
+  see — so a brief network blip on a full-access token could stall "Browse &
+  register tables" for minutes on a large project and then label the token as
+  bucket-scoped. The fallback is now entered only for a refusal (401/403), which
+  is the case it exists for; a 5xx or a connection error surfaces as itself.
+
 - Keboola's semantic layer now attaches to tables registered by the pre-fix
   wizard. `table_lookup_from_registry` keyed its lookup on the raw
   `source_table`, while `resolve_table_name` builds its key by splitting a

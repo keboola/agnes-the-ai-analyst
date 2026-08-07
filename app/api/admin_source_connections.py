@@ -568,10 +568,21 @@ async def list_connection_tables(
     try:
         buckets, tables = await run_in_threadpool(_project_listing)
     except (StorageApiError, requests.RequestException) as exc:
+        # Only a PERMISSION failure justifies the per-bucket fallback. That loop
+        # makes two upstream calls per bucket the token can see, so on a large
+        # project a transient blip would otherwise stall the admin's "Browse &
+        # register tables" for minutes and then mislabel a full-access token as
+        # `token_buckets`. A 5xx or a connection error is not a scope problem, so
+        # it surfaces as itself (Devin Review on #1189).
+        status = getattr(exc, "status", None)
+        if status is not None and status not in (401, 403):
+            raise HTTPException(status_code=502, detail=f"keboola_storage_api_error: {exc}") from exc
+        if isinstance(exc, requests.RequestException):
+            raise HTTPException(status_code=502, detail=f"keboola_storage_api_error: {exc}") from exc
         # The client's messages already redact response bodies; the token
         # itself travels in a header and never appears in the exception.
         logger.warning(
-            "connection %s: project-wide bucket/table listing failed (%s); "
+            "connection %s: project-wide bucket/table listing was refused (%s); "
             "retrying per-bucket via the token's bucketPermissions",
             connection_id,
             exc,

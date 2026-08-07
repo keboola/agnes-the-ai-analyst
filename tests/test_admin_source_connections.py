@@ -545,6 +545,45 @@ class TestSourceConnectionsTables:
 
         assert resp.status_code == 502
 
+    def test_a_transient_failure_does_not_trigger_the_per_bucket_loop(self, seeded_app):
+        """Only a refusal justifies the fallback, not any failure.
+
+        `_scoped_listing` makes two upstream calls per bucket the token can see,
+        so a brief blip on a full-access token would otherwise stall "Browse &
+        register tables" for minutes on a large project and then label the token
+        as bucket-scoped. A 5xx and a connection error must surface as themselves
+        (Devin Review on #1189).
+        """
+        import requests as _requests
+
+        from connectors.keboola.storage_api import StorageApiError
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create(c, token, name="test-kbc-transient")
+
+        for boom in (
+            StorageApiError("upstream exploded", status=500),
+            _requests.ConnectionError("connection reset"),
+        ):
+            called = []
+            with (
+                patch(
+                    "app.api.admin_source_connections.KeboolaStorageClient.list_buckets",
+                    side_effect=boom,
+                ),
+                patch(
+                    "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                    side_effect=lambda: called.append("verify") or {"bucketPermissions": {"in.c-main": "read"}},
+                ),
+                patch("app.api.admin._validate_url_not_private", return_value=None),
+                patch.dict("os.environ", {"KEBOOLA_STORAGE_TOKEN": "fake-token"}),
+            ):
+                resp = c.get(f"{BASE}/{conn_id}/tables", headers=_auth(token))
+
+            assert resp.status_code == 502, (boom, resp.text)
+            assert called == [], f"per-bucket fallback was entered for {boom!r}"
+
     def test_tables_endpoint_scoped_token_falls_back_to_bucket_permissions(self, seeded_app):
         """Bucket-scoped (custom access) token: the project-wide listing is
         refused, but /tokens/verify names the permitted buckets — the
