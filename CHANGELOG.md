@@ -12,7 +12,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
-- Per-instance feature flag for Agent profiles (`agent_profiles.enabled` / `AGNES_AGENT_PROFILES_ENABLED`), same mechanism as the Studio flag. Grandfathered on by default; disabling closes the `/agents` builder page, the `/api/v1/agents*` management + runtime API (and its `agnes agent`/`agnes chat` CLI clients) with a 403 `agent_profiles_disabled`, and hides the "My agents" nav entry. Default-agent seeding, chat attribution, and the broker's agent policy are internal mechanisms and keep working regardless.
+- Per-instance feature flag for Agent profiles (`agent_profiles.enabled` / `AGNES_AGENT_PROFILES_ENABLED`), same mechanism as the Studio flag. Grandfathered on by default; disabling closes the `/agents` builder page, the `/api/v1/agents*` management + runtime API (and its `agnes agent`/`agnes chat` CLI clients) with a 403 `agent_profiles_disabled`, and hides every inbound link to it — the "My agents" nav entry in both chromes, the command-palette row, and the three `/agents` links on `/how-it-works` (which would otherwise be dead ends that bounce the user home). Default-agent seeding, chat attribution, and the broker's agent policy are internal mechanisms and keep working regardless.
 
 ### Changed
 
