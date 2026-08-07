@@ -14,6 +14,7 @@ Covers:
 """
 
 import json
+import os
 
 import pytest
 import yaml
@@ -1096,3 +1097,63 @@ class TestLibraryShowUnverifiedTrustToggle:
             )
             is True
         ), "feature_enabled must return True after POST writes overlay"
+
+
+class TestInstanceYamlPermissions:
+    """instance.yaml carries the Postgres URL (password inline) and any
+    operator-set connector credentials, and lives on the data volume that
+    several non-root containers mount. It was landing at the umask default
+    (0644) while the equivalent /opt/agnes/.env is 0600 — observed live on a
+    deployment whose file the server-config editor had last written."""
+
+    def test_save_leaves_instance_yaml_owner_only(self, seeded_app, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        (tmp_path / "state").mkdir(parents=True, exist_ok=True)
+
+        c = seeded_app["client"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"library": {"show_unverified_trust": True}}},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert resp.status_code == 200, resp.text
+
+        written = tmp_path / "state" / "instance.yaml"
+        assert written.exists(), "instance.yaml should be written to DATA_DIR/state/"
+        mode = written.stat().st_mode & 0o777
+        assert mode == 0o600, (
+            f"instance.yaml must be owner-only (0600), got {mode:04o} — it holds "
+            "the DB password and is readable by every non-root container that "
+            "mounts the data volume"
+        )
+
+    def test_no_world_readable_window_during_save(self, seeded_app, tmp_path, monkeypatch):
+        """The chmod must happen on the tmp file, BEFORE os.replace.
+
+        Doing it after leaves a window in which the final path is readable at
+        the umask default — short, but on a shared data volume that is exactly
+        the window a co-tenant process needs.
+        """
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        (tmp_path / "state").mkdir(parents=True, exist_ok=True)
+
+        seen_modes = []
+        real_replace = os.replace
+
+        def spy(src, dst, *a, **kw):
+            seen_modes.append(os.stat(src).st_mode & 0o777)
+            return real_replace(src, dst, *a, **kw)
+
+        monkeypatch.setattr(os, "replace", spy)
+
+        c = seeded_app["client"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"library": {"show_unverified_trust": True}}},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert resp.status_code == 200, resp.text
+        assert seen_modes, "expected the overlay write to go through os.replace"
+        assert all(m == 0o600 for m in seen_modes), (
+            f"tmp file must already be 0600 at rename time, saw {[f'{m:04o}' for m in seen_modes]}"
+        )
