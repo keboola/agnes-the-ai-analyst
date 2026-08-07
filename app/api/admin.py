@@ -1414,8 +1414,14 @@ def _feature_flags_inventory() -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = [
         {
             "name": "instance.experience",
+            # String-valued row: value_label carries the resolved preset for
+            # display; effective mirrors it as "is the redesign preset on"
+            # so the row satisfies the same schema every switch row carries
+            # (tests/test_feature_flags.py::TestInventoryExposesSwitchMetadata).
             "value_label": get_experience(),
+            "effective": get_experience() == "redesign",
             "source": exp_source,
+            "default": "classic",
             "env_var": "AGNES_INSTANCE_EXPERIENCE",
             "description": (
                 "Experience preset (classic|redesign). Changes only the DEFAULTS "
@@ -1423,6 +1429,9 @@ def _feature_flags_inventory() -> List[Dict[str, Any]]:
                 "features.stack_auto_membership — any per-knob env/yaml setting "
                 "still wins."
             ),
+            "effect": "live",
+            "editable": True,
+            "lock_reason": "",
         }
     ]
     for flag in FEATURE_FLAGS:
