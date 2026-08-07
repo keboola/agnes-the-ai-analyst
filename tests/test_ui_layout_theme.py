@@ -2162,6 +2162,12 @@ class TestDetailPageParity:
             "#1178 — install is gated on the server-resolved flag, not on the status alone",
         ),
         ("marketplace_item_detail", "d.installable !== true", "#1178 — same gate on the skill/agent page"),
+        (
+            "library_detail",
+            "/f/",
+            "the per-file page's only entry point on a default instance — without it, "
+            "`/library/<slug>/f/<id>` is reachable only by typing the URL",
+        ),
     )
 
     @pytest.mark.parametrize("base,token,why", FORKED_PAIR_INVARIANTS)
