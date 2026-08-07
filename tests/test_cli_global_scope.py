@@ -3,6 +3,7 @@
 
 import json
 import subprocess
+import time
 
 import pytest
 import yaml
@@ -131,7 +132,7 @@ def test_disable_reverts_exactly(env):
         (
             ("claude", "mcp", "get"),
             subprocess.CompletedProcess(
-                args=[], returncode=0, stdout=f"agnes:\n  Command: {env['agnes_bin']}\n  Args: mcp\n", stderr=""
+                args=[], returncode=0, stdout=f"agnes:\n  Scope: User config (available in all your projects)\n  Command: {env['agnes_bin']}\n  Args: mcp\n", stderr=""
             ),
         ),
     )
@@ -167,7 +168,7 @@ def test_disable_leaves_foreign_mcp_entry(env):
         (
             ("claude", "mcp", "get"),
             subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="agnes:\n  Command: /usr/bin/somethingelse\n  Args: serve\n", stderr=""
+                args=[], returncode=0, stdout="agnes:\n  Scope: User config (available in all your projects)\n  Command: /usr/bin/somethingelse\n  Args: serve\n", stderr=""
             ),
         ),
     )
@@ -183,7 +184,7 @@ def test_status_reports_each_artifact(env):
         (
             ("claude", "mcp", "get"),
             subprocess.CompletedProcess(
-                args=[], returncode=0, stdout=f"agnes:\n  Command: {env['agnes_bin']}\n  Args: mcp\n", stderr=""
+                args=[], returncode=0, stdout=f"agnes:\n  Scope: User config (available in all your projects)\n  Command: {env['agnes_bin']}\n  Args: mcp\n", stderr=""
             ),
         ),
     )
@@ -206,7 +207,7 @@ def test_same_name_foreign_mcp_with_mcp_args_is_not_ours(env):
         (
             ("claude", "mcp", "get"),
             subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="agnes:\n  Command: /usr/bin/other-tool\n  Args: mcp\n", stderr=""
+                args=[], returncode=0, stdout="agnes:\n  Scope: User config (available in all your projects)\n  Command: /usr/bin/other-tool\n  Args: mcp\n", stderr=""
             ),
         ),
     )
@@ -224,7 +225,7 @@ def test_status_drifted_when_registered_binary_missing(env):
         (
             ("claude", "mcp", "get"),
             subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="agnes:\n  Command: /gone/away/agnes\n  Args: mcp\n", stderr=""
+                args=[], returncode=0, stdout="agnes:\n  Scope: User config (available in all your projects)\n  Command: /gone/away/agnes\n  Args: mcp\n", stderr=""
             ),
         ),
     )
@@ -241,7 +242,7 @@ def test_convergence_repairs_dead_binary_path(env):
         (
             ("claude", "mcp", "get"),
             subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="agnes:\n  Command: /gone/away/agnes\n  Args: mcp\n", stderr=""
+                args=[], returncode=0, stdout="agnes:\n  Scope: User config (available in all your projects)\n  Command: /gone/away/agnes\n  Args: mcp\n", stderr=""
             ),
         ),
     )
@@ -263,3 +264,155 @@ def test_enable_json_stays_pure_on_bootstrap_path(env, tmp_path):
     assert result.exit_code == 0, result.output
     doc = json.loads(result.stdout)  # raises if any stray echo corrupted stdout
     assert "report" in doc
+
+
+# ---------------------------------------------------------------------------
+# `mcp get` resolves across scopes — only a USER-scope hit is ours
+# ---------------------------------------------------------------------------
+
+
+def _mcp_get_stdout(scope: str, command: str = "/usr/local/bin/agnes", args: str = "mcp") -> str:
+    """A faithful `claude mcp get agnes` transcript.
+
+    Field order and wording taken from `claude` 2.1.220:
+
+        agnes:
+          Scope: User config (available in all your projects)
+          Status: ✔ Connected
+          Type: stdio
+          Command: /usr/local/bin/agnes
+          Args: mcp
+    """
+    return f"agnes:\n  Scope: {scope}\n  Status: ✔ Connected\n  Type: stdio\n  Command: {command}\n  Args: {args}\n"
+
+
+def test_project_scoped_entry_is_not_mistaken_for_the_global_one(monkeypatch, env):
+    """`claude mcp get` takes no scope flag and answers from ANY scope.
+
+    An engineer with a per-project `agnes` entry in some repo's `.mcp.json`
+    would otherwise make `enable` believe the all-repositories entry was
+    already registered and skip creating it — the global layer would end up
+    with no MCP server at all, silently (Devin on #1184). Scopes coexist, so
+    a project hit reads as absent for the user-scope layer.
+    """
+    monkeypatch.setattr(
+        gs_module.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=_mcp_get_stdout("Project config (shared via .mcp.json)"), stderr=""
+        ),
+    )
+    assert gs_module._mcp_entry_info() == ("absent", None)
+
+
+def test_local_scoped_entry_is_also_absent(monkeypatch, env):
+    monkeypatch.setattr(
+        gs_module.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=_mcp_get_stdout("Local config (private to you in this project)"), stderr=""
+        ),
+    )
+    assert gs_module._mcp_entry_info() == ("absent", None)
+
+
+def test_missing_scope_line_reads_as_absent_not_as_ours(monkeypatch, env):
+    """A `claude` too old to print `Scope:` must not be assumed to mean user
+    scope — assuming would resurrect the skip-the-registration bug. Absent is
+    the safe reading: the layer re-registers, which is idempotent."""
+    monkeypatch.setattr(
+        gs_module.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="agnes:\n  Command: /usr/local/bin/agnes\n  Args: mcp\n", stderr=""
+        ),
+    )
+    assert gs_module._mcp_entry_info() == ("absent", None)
+
+
+def test_user_scoped_agnes_entry_is_still_ours(monkeypatch, env):
+    """The other half — the scope gate must not reject the real thing."""
+    monkeypatch.setattr(
+        gs_module.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=_mcp_get_stdout("User config (available in all your projects)", command=env["agnes_bin"]),
+            stderr="",
+        ),
+    )
+    state, cmd = gs_module._mcp_entry_info()
+    assert state == "ours"
+    assert cmd == str(env["agnes_bin"])
+
+
+def test_user_scoped_foreign_entry_is_foreign(monkeypatch, env):
+    monkeypatch.setattr(
+        gs_module.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=_mcp_get_stdout("User config (available in all your projects)", command="/usr/bin/other-tool"),
+            stderr="",
+        ),
+    )
+    assert gs_module._mcp_entry_info()[0] == "foreign"
+
+
+# ---------------------------------------------------------------------------
+# Clone freshness gates the drift-check — not "does the user have a workspace"
+# ---------------------------------------------------------------------------
+
+
+def _clone_with(tmp_path, *, fetch_head_age=None, head_age=None, name="mkt-freshness"):
+    import os
+
+    clone = tmp_path / name
+    (clone / ".git").mkdir(parents=True)
+    now = time.time()
+    for name, age in (("FETCH_HEAD", fetch_head_age), ("HEAD", head_age)):
+        if age is None:
+            continue
+        f = clone / ".git" / name
+        f.write_text("x", encoding="utf-8")
+        os.utime(f, (now - age, now - age))
+    return clone
+
+
+def test_recently_fetched_clone_is_fresh(tmp_path):
+    assert gs_module._clone_is_stale(_clone_with(tmp_path, fetch_head_age=60)) is False
+
+
+def test_long_unfetched_clone_is_stale(tmp_path):
+    assert gs_module._clone_is_stale(_clone_with(tmp_path, fetch_head_age=48 * 3600)) is True
+
+
+def test_never_fetched_clone_falls_back_to_head_mtime(tmp_path):
+    """A clone that was cloned but never fetched has no FETCH_HEAD."""
+    assert gs_module._clone_is_stale(_clone_with(tmp_path, head_age=60, name="fresh")) is False
+    assert gs_module._clone_is_stale(_clone_with(tmp_path, head_age=48 * 3600, name="old")) is True
+
+
+def test_unreadable_clone_reads_as_stale(tmp_path):
+    """Neither marker present — refresh and let it decide, rather than
+    assuming fresh and freezing the stack."""
+    assert gs_module._clone_is_stale(_clone_with(tmp_path)) is True
+
+
+def test_an_anchored_workspace_no_longer_suppresses_the_refresh(tmp_path):
+    """The persona the old gate stranded.
+
+    The previous condition ran the drift-check only when `workspace_root` was
+    unset, on the assumption that anyone with a workspace gets their clone
+    refreshed by the workspace marketplace step. An engineer who anchored a
+    workspace once and then works all day in other repositories never runs
+    that step, so their user-scope stack froze (Devin on #1184). The gate is
+    now freshness, which does not care whether a workspace is anchored.
+    """
+    stale = _clone_with(tmp_path, fetch_head_age=48 * 3600)
+    fresh = _clone_with(tmp_path, fetch_head_age=60, name="mkt-fresh")
+    # Both cases here have an anchored workspace; only staleness decides.
+    assert gs_module._clone_is_stale(stale) is True
+    assert gs_module._clone_is_stale(fresh) is False
