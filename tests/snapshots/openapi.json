@@ -49839,8 +49839,26 @@
     },
     "/me/ai-connector": {
       "get": {
-        "description": "Legacy redirects \u2014 the standalone AI Connector page and its two older\naliases now land on the consolidated page's connect section.\n\n302, not 301: a permanent redirect is cached by the browser forever, so\nit would be very hard to walk back if the consolidation is revisited.\nPromote to 301 after a release of confidence (the same ladder /me/mcp\nand /me/cowork went through before absorbing into this handler).",
-        "operationId": "me_mcp_redirect_me_ai_connector_get",
+        "description": "AI Connector \u2014 chrome-dependent (spec 2026-08-07 wave 2).\n\nDefault chrome keeps the pre-redesign standalone page (frozen\n``me_cowork_legacy.html``: OAuth connector URL, plugin packages,\navailable tools \u2014 including the /mcp-connect token fallback link).\nUnder the redesign opt-in the page stays consolidated into\n/how-it-works#connect via the 302 the redesign shipped (302, not 301: a\npermanent redirect is cached by the browser forever, so it would be\nvery hard to walk back if the consolidation is revisited).",
+        "operationId": "me_ai_connector_page_me_ai_connector_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -49851,9 +49869,19 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
-        "summary": "Me Mcp Redirect",
+        "summary": "Me Ai Connector Page",
         "tags": [
           "web"
         ]
@@ -49911,7 +49939,7 @@
     },
     "/me/cowork": {
       "get": {
-        "description": "Legacy redirects \u2014 the standalone AI Connector page and its two older\naliases now land on the consolidated page's connect section.\n\n302, not 301: a permanent redirect is cached by the browser forever, so\nit would be very hard to walk back if the consolidation is revisited.\nPromote to 301 after a release of confidence (the same ladder /me/mcp\nand /me/cowork went through before absorbing into this handler).",
+        "description": "Legacy aliases \u2192 /me/ai-connector (which renders the page on default\nchrome and forwards to /how-it-works#connect under the redesign opt-in).\n\n302, not 301: a permanent redirect is cached by the browser forever, so\nit would be very hard to walk back if the routing is revisited.",
         "operationId": "me_mcp_redirect_me_cowork_get",
         "responses": {
           "200": {
@@ -49933,7 +49961,7 @@
     },
     "/me/mcp": {
       "get": {
-        "description": "Legacy redirects \u2014 the standalone AI Connector page and its two older\naliases now land on the consolidated page's connect section.\n\n302, not 301: a permanent redirect is cached by the browser forever, so\nit would be very hard to walk back if the consolidation is revisited.\nPromote to 301 after a release of confidence (the same ladder /me/mcp\nand /me/cowork went through before absorbing into this handler).",
+        "description": "Legacy aliases \u2192 /me/ai-connector (which renders the page on default\nchrome and forwards to /how-it-works#connect under the redesign opt-in).\n\n302, not 301: a permanent redirect is cached by the browser forever, so\nit would be very hard to walk back if the routing is revisited.",
         "operationId": "me_mcp_redirect_me_mcp_get",
         "responses": {
           "200": {
