@@ -38,6 +38,32 @@ def local_md_filename(user_email: str) -> str:
     return hashlib.sha256(user_email.encode()).hexdigest()[:24] + ".md"
 
 
+def _is_safe_table_segment(name: str) -> bool:
+    """True when *name* is usable as ONE path segment under the extracts tree.
+
+    Table ids reach the resolvers below straight off a request path
+    (``/api/v2/schema/{table_id}``, ``/api/catalog/profile/{table_name}/…``),
+    so they are untrusted input building a filesystem path. Rejects the
+    separators, the empty string and the ``.``/``..`` navigators: ``..`` alone
+    resolves ``extracts/<source>/data/..`` to the extract source root, which
+    the directory resolvers would then recursively glob for every parquet
+    under it. Today the routing layer happens to refuse a `%2F`-encoded
+    separator before the handler runs, so a multi-segment escape is not
+    reachable over HTTP — but that is a property of the transport, not a
+    containment guarantee these helpers may lean on.
+    """
+    return bool(name) and name not in (".", "..") and not set(name) & {"/", "\\", "\x00"}
+
+
+def _contained(path: Path, root: Path) -> bool:
+    """True when *path* really lives under *root* — resolved, so neither a
+    ``..`` component nor a symlink planted inside the tree escapes it."""
+    try:
+        return path.resolve().is_relative_to(root.resolve())
+    except OSError:
+        return False
+
+
 def resolve_local_parquet(table_id: str, source_type: str | None = None) -> Path | None:
     """Resolve the on-disk parquet for a local/materialized table.
 
@@ -60,13 +86,13 @@ def resolve_local_parquet(table_id: str, source_type: str | None = None) -> Path
     appearing under two sources). Returns ``None`` when no parquet exists.
     """
     extracts = get_data_dir() / "extracts"
-    if not extracts.exists():
+    if not extracts.exists() or not _is_safe_table_segment(table_id):
         return None
-    if source_type:
+    if source_type and _is_safe_table_segment(source_type):
         direct = extracts / source_type / "data" / f"{table_id}.parquet"
         if direct.exists():
             return direct
-    matches = list(extracts.rglob(f"data/{table_id}.parquet"))
+    matches = [p for p in extracts.rglob(f"data/{table_id}.parquet") if _contained(p, extracts)]
     return matches[0] if matches else None
 
 
@@ -75,18 +101,20 @@ def _partition_dir_candidates(table_id: str, source_type: str | None) -> list[Pa
 
     Mirrors :func:`resolve_local_parquet`'s source-name-agnostic lookup for the
     DIRECTORY layout: `source_type` (when supplied) is the fast path, then any
-    `extracts/*/data/<table_id>` directory. Returns existing directories only.
+    `extracts/*/data/<table_id>` directory. Returns existing directories only,
+    each validated as a single safe segment AND realpath-contained under
+    `extracts/` — see :func:`_is_safe_table_segment`.
     """
     extracts = get_data_dir() / "extracts"
-    if not extracts.exists():
+    if not extracts.exists() or not _is_safe_table_segment(table_id):
         return []
     out: list[Path] = []
-    if source_type:
+    if source_type and _is_safe_table_segment(source_type):
         fast = extracts / source_type / "data" / table_id
         if fast.is_dir():
             out.append(fast)
     out.extend(p for p in extracts.glob(f"*/data/{table_id}") if p.is_dir() and p not in out)
-    return out
+    return [p for p in out if _contained(p, extracts)]
 
 
 def resolve_local_partition_dir(table_id: str, source_type: str | None = None) -> Path | None:

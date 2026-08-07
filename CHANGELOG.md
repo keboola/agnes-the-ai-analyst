@@ -61,6 +61,17 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
+- The local-parquet resolvers now validate the table id as a single path
+  segment and realpath-contain the result under `${DATA_DIR}/extracts`. They
+  build a filesystem path out of a name that arrives on a request path, and
+  resolving a DIRECTORY (the partitioned layout) made that a wider read than
+  the single-file lookup ever was: `..` reached the extract source root, which
+  the resolvers would then recursively glob for every parquet beneath it. A
+  multi-segment escape was not reachable over HTTP — routing rejects an encoded
+  separator before the handler runs — but that is a property of the transport,
+  not something these helpers should lean on. A symlink planted inside the
+  extracts tree no longer resolves out of it either.
+
 ## [0.83.0] - 2026-08-07
 
 ### Added
