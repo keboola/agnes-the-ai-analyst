@@ -1934,10 +1934,14 @@ async def catalog(
         # tab enumerated every memory domain with no RBAC check at all);
         # under auto-membership filtered to entries NOT already in the
         # caller's stack, under classic the full granted set with its
-        # add-to-stack state (same ``auto_membership`` fork as
-        # ``addable_entries`` above — a rail instance on the classic default
-        # must not mix the two contracts on one page; Devin Review on #1199).
-        all_mem_entries = resolver.browse(user["id"], ResourceType.MEMORY_DOMAIN)
+        # add-to-stack state — INCLUDING the admin god-mode fork, so the one
+        # page an admin sees applies one scope to both server-rendered kinds
+        # (same ``is_admin_view and not auto_membership`` condition as the
+        # Data grid above; Devin Review on #1199, both rounds).
+        if is_admin_view and not auto_membership:
+            all_mem_entries = resolver.browse_admin(user["id"], ResourceType.MEMORY_DOMAIN)
+        else:
+            all_mem_entries = resolver.browse(user["id"], ResourceType.MEMORY_DOMAIN)
         addable_mem_entries = [e for e in all_mem_entries if not e.in_stack] if auto_membership else all_mem_entries
         memory_cards = _unified_memory_cards(addable_mem_entries)
         # Normalize both server-rendered kinds into the single catalog_card

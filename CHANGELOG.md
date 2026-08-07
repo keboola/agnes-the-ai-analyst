@@ -14,7 +14,36 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - Per-instance feature flag for Agent profiles (`agent_profiles.enabled` / `AGNES_AGENT_PROFILES_ENABLED`), same mechanism as the Studio flag. Grandfathered on by default; disabling closes the `/agents` builder page, the `/api/v1/agents*` management + runtime API (and its `agnes agent`/`agnes chat` CLI clients) with a 403 `agent_profiles_disabled`, and hides every inbound link to it — the "My agents" nav entry in both chromes, the command-palette row, and the three `/agents` links on `/how-it-works` (which would otherwise be dead ends that bounce the user home). Default-agent seeding, chat attribution, and the broker's agent policy are internal mechanisms and keep working regardless.
 
+- **`instance.experience` preset** (`classic` | `redesign`, env
+  `AGNES_INSTANCE_EXPERIENCE`) — the one-line adoption switch for the
+  redesign: `redesign` flips the DEFAULTS of the coupled knobs
+  (`instance.ui_layout` → `rail`, `instance.theme` → `paper`,
+  `features.stack_auto_membership` → `true`); any per-knob env/yaml setting
+  still wins, and `classic` (or an absent key) is byte-for-byte the
+  pre-redesign experience. The `/admin/server-config` flag inventory leads
+  with the preset's resolved value and labels preset-sourced flag defaults
+  with a `preset` badge. (`docs/feature-flags.md`, spec
+  `docs/superpowers/specs/2026-08-07-default-chrome-ux-parity.md`)
+
 ### Changed
+
+- **BREAKING-revert: stack auto-membership is now opt-in**
+  (`features.stack_auto_membership`, env `AGNES_STACK_AUTO_MEMBERSHIP`,
+  default **off**). The auto-membership stack model the redesign shipped as a
+  breaking change reverts to the classic pre-redesign subscribe model on
+  default instances: membership = required ∪ subscribed grants (all
+  downloaded by `agnes pull`), Catalog Browse lists every granted resource
+  with its add-to-stack state, admin god-mode Browse returns to the
+  user-facing catalog, and a `required → available` grant downgrade again
+  eagerly fans out subscriptions so group members keep the resource. Turning
+  the flag on restores the redesign semantics exactly (auto-membership,
+  addable-only Browse reshape, `server_only` manifest overlay, no downgrade
+  fan-out). The flag flips behavior instantly — `user_stack_subscriptions`
+  rows are interpreted, never rewritten. Topnav instances also render the
+  frozen pre-redesign `/catalog` and `/corporate-memory` pages
+  (`catalog_legacy.html`, `corporate_memory_legacy.html`; rail keeps the
+  unified/redesigned pages).
+
 - **The Skill Builder's Category dropdown looks like the rest of the app.** It carried the field border and background but kept the platform's own `<select>` rendering — OS chevron, OS metrics, OS colours in dark theme — so it read as a foreign widget beside Agnes's own menus. Same treatment as the filter toolbar's selects (`appearance: none` plus a drawn chevron), anchored to the bottom of the field rather than its middle so a label that wraps on a narrow column can't push the chevron off the control. Closes #1174.
 - **Softened the "check `PLATFORM_SETUP.md` first" banner** on QUICKSTART / DEPLOYMENT / ONBOARDING / HEADLESS_USAGE. `PLATFORM_SETUP.md` is a ~170-line day-2 playbook (marketplaces, scheduler cadence, telemetry, privacy posture, daily routine), not a superset of the docs pointing at it — sending a first-time reader there ahead of the quick start pointed them away from what they needed. Part of #1192.
 
@@ -132,35 +161,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 
 - Admin "Browse & register tables" now works with bucket-scoped (custom access) Keboola tokens: when the project-wide `/buckets` + `/tables` listings are refused, the endpoint falls back to enumerating the token's own `bucketPermissions` per bucket, so the picker shows exactly the buckets the token can read. The response carries a `scope` field (`"project"` or `"token_buckets"`) and the picker renders a note when the listing is token-limited. Upstream listing failures are logged with the connection id, and network-level errors (DNS, refused connection, TLS) surface as a clean 502 `keboola_storage_api_error` detail instead of a generic 500.
-- **`instance.experience` preset** (`classic` | `redesign`, env
-  `AGNES_INSTANCE_EXPERIENCE`) — the one-line adoption switch for the
-  redesign: `redesign` flips the DEFAULTS of the coupled knobs
-  (`instance.ui_layout` → `rail`, `instance.theme` → `paper`,
-  `features.stack_auto_membership` → `true`); any per-knob env/yaml setting
-  still wins, and `classic` (or an absent key) is byte-for-byte the
-  pre-redesign experience. The `/admin/server-config` flag inventory leads
-  with the preset's resolved value and labels preset-sourced flag defaults
-  with a `preset` badge. (`docs/feature-flags.md`, spec
-  `docs/superpowers/specs/2026-08-07-default-chrome-ux-parity.md`)
 
 ### Changed
-
-- **BREAKING-revert: stack auto-membership is now opt-in**
-  (`features.stack_auto_membership`, env `AGNES_STACK_AUTO_MEMBERSHIP`,
-  default **off**). The auto-membership stack model the redesign shipped as a
-  breaking change reverts to the classic pre-redesign subscribe model on
-  default instances: membership = required ∪ subscribed grants (all
-  downloaded by `agnes pull`), Catalog Browse lists every granted resource
-  with its add-to-stack state, admin god-mode Browse returns to the
-  user-facing catalog, and a `required → available` grant downgrade again
-  eagerly fans out subscriptions so group members keep the resource. Turning
-  the flag on restores the redesign semantics exactly (auto-membership,
-  addable-only Browse reshape, `server_only` manifest overlay, no downgrade
-  fan-out). The flag flips behavior instantly — `user_stack_subscriptions`
-  rows are interpreted, never rewritten. Topnav instances also render the
-  frozen pre-redesign `/catalog` and `/corporate-memory` pages
-  (`catalog_legacy.html`, `corporate_memory_legacy.html`; rail keeps the
-  unified/redesigned pages).
 
 ### Fixed
 
