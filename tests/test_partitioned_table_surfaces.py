@@ -155,6 +155,50 @@ class TestPathContainment:
         assert resolve_local_partition_dir("linked") is None
         assert local_parquet_size_bytes("linked") is None
 
+    def test_the_source_type_fast_path_is_contained_too(self, data_dir):
+        """The FILE half of the symlink case, on the one branch that skipped it.
+
+        `resolve_local_parquet` returns its `source_type` fast path directly,
+        while the `rglob` fallback beside it and every
+        `_partition_dir_candidates` result are filtered — so a link planted at
+        `extracts/<source_type>/data/<id>.parquet` was the remaining way out of
+        the tree, and it feeds `resolve_local_parquet_glob` and the read
+        surfaces (Devin Review on #1198).
+        """
+        link = data_dir / "extracts" / "keboola" / "data" / "leaky.parquet"
+        link.symlink_to(data_dir / "outside" / "leak.parquet")
+
+        from app.utils import resolve_local_parquet, resolve_local_parquet_glob
+
+        # `source_type` supplied is precisely what takes the fast path.
+        assert resolve_local_parquet("leaky", "keboola") is None
+        assert resolve_local_parquet_glob("leaky", "keboola") is None
+        # …and the source-agnostic fallback must not readmit it either.
+        assert resolve_local_parquet("leaky") is None
+
+    @pytest.mark.parametrize("pattern", ["*", "?k", "[o]k", "*.parquet", "o*"])
+    def test_glob_metacharacter_ids_match_nothing(self, data_dir, pattern):
+        """The id is interpolated into a GLOB, not only joined into a path.
+
+        `extracts.rglob(f"data/{table_id}.parquet")` and
+        `extracts.glob(f"*/data/{table_id}")` mean a `*` or `[...]` stops naming
+        one table and starts matching an arbitrary one — `ok.parquet` here — so
+        the resolvers would hand back someone else's data under the requested
+        name (Devin Review on #1198).
+        """
+        from app.utils import (
+            local_parquet_size_bytes,
+            resolve_local_parquet,
+            resolve_local_parquet_glob,
+            resolve_local_partition_dir,
+        )
+
+        assert resolve_local_parquet(pattern) is None
+        assert resolve_local_parquet(pattern, "keboola") is None
+        assert resolve_local_parquet_glob(pattern) is None
+        assert resolve_local_partition_dir(pattern) is None
+        assert local_parquet_size_bytes(pattern) is None
+
     def test_an_evil_id_does_not_profile_anything(self, data_dir, monkeypatch):
         """End to end on the one surface that resolves a directory without a
         registry-existence check first."""
