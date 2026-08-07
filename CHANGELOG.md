@@ -144,8 +144,35 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 
 - Admin "Browse & register tables" now works with bucket-scoped (custom access) Keboola tokens: when the project-wide `/buckets` + `/tables` listings are refused, the endpoint falls back to enumerating the token's own `bucketPermissions` per bucket, so the picker shows exactly the buckets the token can read. The response carries a `scope` field (`"project"` or `"token_buckets"`) and the picker renders a note when the listing is token-limited. Upstream listing failures are logged with the connection id, and network-level errors (DNS, refused connection, TLS) surface as a clean 502 `keboola_storage_api_error` detail instead of a generic 500.
+- **`instance.experience` preset** (`classic` | `redesign`, env
+  `AGNES_INSTANCE_EXPERIENCE`) — the one-line adoption switch for the
+  redesign: `redesign` flips the DEFAULTS of the coupled knobs
+  (`instance.ui_layout` → `rail`, `instance.theme` → `paper`,
+  `features.stack_auto_membership` → `true`); any per-knob env/yaml setting
+  still wins, and `classic` (or an absent key) is byte-for-byte the
+  pre-redesign experience. The `/admin/server-config` flag inventory leads
+  with the preset's resolved value and labels preset-sourced flag defaults
+  with a `preset` badge. (`docs/feature-flags.md`, spec
+  `docs/superpowers/specs/2026-08-07-default-chrome-ux-parity.md`)
 
 ### Changed
+
+- **BREAKING-revert: stack auto-membership is now opt-in**
+  (`features.stack_auto_membership`, env `AGNES_STACK_AUTO_MEMBERSHIP`,
+  default **off**). The auto-membership stack model the redesign shipped as a
+  breaking change reverts to the classic pre-redesign subscribe model on
+  default instances: membership = required ∪ subscribed grants (all
+  downloaded by `agnes pull`), Catalog Browse lists every granted resource
+  with its add-to-stack state, admin god-mode Browse returns to the
+  user-facing catalog, and a `required → available` grant downgrade again
+  eagerly fans out subscriptions so group members keep the resource. Turning
+  the flag on restores the redesign semantics exactly (auto-membership,
+  addable-only Browse reshape, `server_only` manifest overlay, no downgrade
+  fan-out). The flag flips behavior instantly — `user_stack_subscriptions`
+  rows are interpreted, never rewritten. Topnav instances also render the
+  frozen pre-redesign `/catalog` and `/corporate-memory` pages
+  (`catalog_legacy.html`, `corporate_memory_legacy.html`; rail keeps the
+  unified/redesigned pages).
 
 ### Fixed
 

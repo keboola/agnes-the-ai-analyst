@@ -1358,19 +1358,58 @@ def _feature_flags_inventory() -> List[Dict[str, Any]]:
     "on" here while the running app has chat off), the chat row resolves
     from the same overlay-only source the runtime uses.
     """
-    from app.instance_config import FEATURE_FLAGS, feature_enabled, get_value
+    from app.instance_config import (
+        FEATURE_FLAGS,
+        PRESET_COUPLED_FLAGS,
+        feature_enabled,
+        get_experience,
+        get_value,
+        preset_flag_default,
+    )
 
-    out = []
+    # The experience preset leads the inventory as its own (string-valued)
+    # row — it is the one-line adoption switch whose value explains why the
+    # preset-coupled rows below may resolve away from their static defaults
+    # (spec 2026-08-07-default-chrome-ux-parity).
+    if os.environ.get("AGNES_INSTANCE_EXPERIENCE") is not None:
+        exp_source = "env"
+    else:
+        exp_probe = get_value("instance", "experience", default=_UNSET)
+        exp_source = "default" if exp_probe is _UNSET else "config"
+    out: List[Dict[str, Any]] = [
+        {
+            "name": "instance.experience",
+            "value_label": get_experience(),
+            "source": exp_source,
+            "env_var": "AGNES_INSTANCE_EXPERIENCE",
+            "description": (
+                "Experience preset (classic|redesign). Changes only the DEFAULTS "
+                "of the coupled knobs — instance.ui_layout, instance.theme, "
+                "features.stack_auto_membership — any per-knob env/yaml setting "
+                "still wins."
+            ),
+        }
+    ]
     for flag in FEATURE_FLAGS:
         if flag.name in _CHAT_RUNTIME_FLAGS:
             effective, source = _chat_flag_runtime_view(flag)
         else:
-            effective = feature_enabled(*flag.config_keys, env_var=flag.env_var, default=flag.default)
+            # Preset-coupled flags resolve against the preset-implied default
+            # (what the runtime getters actually use), so this panel never
+            # reports "off/default" while the running instance has the flag
+            # on via ``experience: redesign``.
+            default_val = preset_flag_default(flag.name) if flag.name in PRESET_COUPLED_FLAGS else flag.default
+            effective = feature_enabled(*flag.config_keys, env_var=flag.env_var, default=default_val)
             if os.environ.get(flag.env_var) is not None:
                 source = "env"
             else:
                 probe = get_value(*flag.config_keys, default=_UNSET)
-                source = "default" if probe is _UNSET else "config"
+                if probe is not _UNSET:
+                    source = "config"
+                elif flag.name in PRESET_COUPLED_FLAGS and default_val != flag.default:
+                    source = "preset"
+                else:
+                    source = "default"
         out.append(
             {
                 "name": flag.name,

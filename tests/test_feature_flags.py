@@ -91,6 +91,7 @@ class TestFeatureFlagsRegistry:
             "chat_approvals",
             "data_apps",
             "library_show_unverified_trust",
+            "stack_auto_membership",
             "mcp_query_param_token",
             "mcp_source_url_strict",
             "agent_profiles",
@@ -216,20 +217,51 @@ class TestServerConfigFeatureFlagsInventory:
         assert isinstance(flags, list)
         names = {f["name"] for f in flags}
         assert names == {
+            "instance.experience",
             "studio",
             "guardrails",
             "chat",
             "chat_approvals",
             "data_apps",
             "library_show_unverified_trust",
+            "stack_auto_membership",
             "mcp_query_param_token",
             "mcp_source_url_strict",
             "agent_profiles",
         }
+        # The experience preset leads as a string-valued informational row.
+        assert flags[0]["name"] == "instance.experience"
+        assert flags[0]["value_label"] in ("classic", "redesign")
         for f in flags:
+            if f["name"] == "instance.experience":
+                assert set(f.keys()) >= {"name", "value_label", "source", "env_var", "description"}
+                assert f["source"] in ("env", "config", "default")
+                continue
             assert set(f.keys()) >= {"name", "effective", "source", "default", "env_var", "description"}
-            assert f["source"] in ("env", "config", "default")
+            assert f["source"] in ("env", "config", "default", "preset")
             assert isinstance(f["effective"], bool)
+
+    def test_preset_coupled_flag_resolves_and_labels_preset_source(self, seeded_app, monkeypatch):
+        """Under ``experience: redesign`` with no per-knob setting, the
+        coupled flags must report their RUNTIME value (on) with source
+        ``preset`` — never "off/default" while the running instance has them
+        on (spec 2026-08-07-default-chrome-ux-parity)."""
+        monkeypatch.setenv("AGNES_INSTANCE_EXPERIENCE", "redesign")
+        monkeypatch.delenv("AGNES_STACK_AUTO_MEMBERSHIP", raising=False)
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/api/admin/server-config", headers=_auth(token))
+        assert resp.status_code == 200, resp.text
+        flags = {f["name"]: f for f in resp.json()["feature_flags"]}
+        assert flags["instance.experience"]["value_label"] == "redesign"
+        assert flags["instance.experience"]["source"] == "env"
+        assert flags["stack_auto_membership"]["effective"] is True
+        assert flags["stack_auto_membership"]["source"] == "preset"
+        # Per-knob env still wins over the preset — and labels as env.
+        monkeypatch.setenv("AGNES_STACK_AUTO_MEMBERSHIP", "0")
+        flags = {f["name"]: f for f in c.get("/api/admin/server-config", headers=_auth(token)).json()["feature_flags"]}
+        assert flags["stack_auto_membership"]["effective"] is False
+        assert flags["stack_auto_membership"]["source"] == "env"
 
     def test_env_source_reflected(self, seeded_app, monkeypatch):
         monkeypatch.setenv("AGNES_STUDIO_ENABLED", "0")

@@ -47,6 +47,8 @@ LEGACY_FROZEN: set[str] = {
     "marketplace_item_detail_legacy.html",
     "library_detail_legacy.html",
     "memory_domain_detail_legacy.html",
+    "catalog_legacy.html",
+    "corporate_memory_legacy.html",
 }
 
 
