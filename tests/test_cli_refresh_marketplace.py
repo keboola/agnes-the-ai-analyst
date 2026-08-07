@@ -2023,3 +2023,45 @@ def test_project_target_unchanged_default(recorder, claude_in_path, with_clone, 
     rm_module._reconcile_with_manifest(events={"installed": [], "updated": [], "enabled": [], "removed": []})
     install_calls = [c.cmd for c in recorder.calls if c.cmd[1:3] == ["plugin", "install"]]
     assert install_calls == [["claude", "plugin", "install", "alpha@agnes", "--scope", "project"]]
+
+
+@pytest.mark.parametrize("target,expected_scope", [("project", "project"), ("user", "user")])
+def test_update_argv_carries_the_scope_for_both_targets(
+    recorder, claude_in_path, with_clone, with_token, tmp_path, monkeypatch, target, expected_scope
+):
+    """`plugin update` must be scoped, and scoped to the SAME place as install.
+
+    The update verb used to run bare. That was not a neutral default: `claude
+    plugin update` defaults to **user** scope (verified against `claude`
+    2.1.220, which documents `-s, --scope <scope>  … (default: user)`), while
+    install and uninstall have always passed `--scope project`. So in a
+    workspace the installs landed at project scope and the version bumps were
+    aimed at user scope — updating something else, or nothing.
+
+    Devin read the added flag on #1184 as a risk that the external CLI might
+    reject it; the flag is supported, and the real story is the other way
+    round. This pins the argv for both targets, since nothing did: a silent
+    regression here surfaces only as a `warn:` line on stderr, which the
+    `--quiet` SessionStart hook sends to /dev/null.
+    """
+    (with_clone / ".claude-plugin" / "marketplace.json").write_text(
+        json.dumps({"name": "agnes", "plugins": [{"name": "alpha", "source": "./plugins/alpha", "version": "2.0.0"}]}),
+        encoding="utf-8",
+    )
+    installed = [{"id": "alpha@agnes", "version": "1.0.0", "scope": target, "enabled": True, "projectPath": None}]
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    monkeypatch.chdir(ws)
+    if target == "project":
+        installed[0]["projectPath"] = str(ws.resolve())
+    recorder.scripts.append(
+        (
+            ("claude", "plugin", "list", "--json"),
+            subprocess.CompletedProcess(args=[], returncode=0, stdout=json.dumps(installed), stderr=""),
+        )
+    )
+    rm_module._reconcile_with_manifest(
+        events={"installed": [], "updated": [], "enabled": [], "removed": []}, target=target
+    )
+    update_calls = [c.cmd for c in recorder.calls if c.cmd[1:3] == ["plugin", "update"]]
+    assert update_calls == [["claude", "plugin", "update", "alpha@agnes", "--scope", expected_scope]]
