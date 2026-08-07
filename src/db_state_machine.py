@@ -29,6 +29,7 @@ on startup. Cancel-mid-migration reverts to the source backend (B1 fix).
 
 Spec: docs/superpowers/specs/2026-05-27-db-backend-state-machine-design.md
 """
+
 from __future__ import annotations
 import fcntl
 import logging
@@ -49,6 +50,7 @@ class BackendState(StrEnum):
     in audit-log rows — do not rename without a migration that rewrites
     persisted state.
     """
+
     DUCKDB = "duckdb"
     SIDE_CAR = "side_car"
     CLOUD = "cloud"
@@ -118,10 +120,12 @@ _ALLOWED_TRANSITIONS: dict[BackendState, list[BackendState]] = {
 # Targets not yet runtime-implemented. Validated separately from the
 # transition graph so operators see a clear "not yet supported" error
 # instead of "invalid transition" when they hit a placeholder state.
-_NOT_YET_SUPPORTED_TARGETS: frozenset[BackendState] = frozenset({
-    BackendState.DUCKDB_QUACK,
-    BackendState.DUCKDB_QUACK_IN_PROGRESS,
-})
+_NOT_YET_SUPPORTED_TARGETS: frozenset[BackendState] = frozenset(
+    {
+        BackendState.DUCKDB_QUACK,
+        BackendState.DUCKDB_QUACK_IN_PROGRESS,
+    }
+)
 
 
 def allowed_transitions(current: BackendState) -> list[BackendState]:
@@ -287,8 +291,15 @@ def write_backend_state(target: BackendState, *, url: "str | None" = ...) -> Non
 
     tmp = _OVERLAY_PATH.with_suffix(".yaml.tmp")
     tmp.write_text(yaml.safe_dump(data, default_flow_style=False, sort_keys=True))
+    # 0600 on the TEMP file, before the rename. This used to chmod the
+    # destination afterwards, which leaves the real path observable at the
+    # umask default for the window between the two calls — and the file holds
+    # the database url with its password inline. `os.replace` is atomic and
+    # carries the temp file's mode, so doing it here closes the window
+    # entirely. The overlay's other writers (app/api/admin.py,
+    # app/api/initial_workspace.py) follow the same order.
+    os.chmod(tmp, 0o600)
     os.replace(tmp, _OVERLAY_PATH)
-    os.chmod(_OVERLAY_PATH, 0o600)
 
     # Invalidate the parse-once cache so an in-process write is
     # observed by the next read — most write_backend_state callers are the
