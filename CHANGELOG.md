@@ -14,9 +14,38 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - Per-instance feature flag for Agent profiles (`agent_profiles.enabled` / `AGNES_AGENT_PROFILES_ENABLED`), same mechanism as the Studio flag. Grandfathered on by default; disabling closes the `/agents` builder page, the `/api/v1/agents*` management + runtime API (and its `agnes agent`/`agnes chat` CLI clients) with a 403 `agent_profiles_disabled`, and hides every inbound link to it — the "My agents" nav entry in both chromes, the command-palette row, and the three `/agents` links on `/how-it-works` (which would otherwise be dead ends that bounce the user home). Default-agent seeding, chat attribution, and the broker's agent policy are internal mechanisms and keep working regardless.
 
+- **`instance.experience` preset** (`classic` | `redesign`, env
+  `AGNES_INSTANCE_EXPERIENCE`) — the one-line adoption switch for the
+  redesign: `redesign` flips the DEFAULTS of the coupled knobs
+  (`instance.ui_layout` → `rail`, `instance.theme` → `paper`,
+  `features.stack_auto_membership` → `true`); any per-knob env/yaml setting
+  still wins, and `classic` (or an absent key) is byte-for-byte the
+  pre-redesign experience. The `/admin/server-config` flag inventory leads
+  with the preset's resolved value and labels preset-sourced flag defaults
+  with a `preset` badge. (`docs/feature-flags.md`, spec
+  `docs/superpowers/specs/2026-08-07-default-chrome-ux-parity.md`)
+
 ### Changed
 - **Topnav content parity extended to the detail pages**: the seven detail templates the redesign restructured in place (`catalog_table_detail`, `catalog_package_detail`, `catalog_recipe_detail`, `marketplace_plugin_detail`, `marketplace_item_detail`, `library_detail`, `memory_domain_detail`) now follow the `/catalog` pattern — rail renders the redesigned kind-coloured detail anatomy, a default topnav instance keeps the pre-redesign page byte-for-byte as a frozen `*_legacy.html` copy. All twelve render sites resolve through a single `_detail_template()` switch (handlers are shared — they pass a superset of the legacy context), and a closed-set guard fails on any bare detail-template literal that would bypass it. Guarded by `tests/test_ui_layout_theme.py::TestDetailPageParity`.
 - **Every operator switch is declared in one registry, and says why it is or is not editable.** Gating was spread across the `FEATURE_FLAGS` registry, the `_EDITABLE_SECTIONS` write allowlist in `app/api/admin.py`, the `_KNOWN_FIELDS` form metadata beside it, and — for the reason a registered flag was *not* writable — a dict inside `tests/test_admin_configure_api.py`. Four homes for one switch's metadata, and the one an operator most needed (why can I see this and not change it?) was in a test file they will never read. `app/switches.py` now holds a `Switch` per toggle: its config key, env var, type, default, effect class (`live` / `restart` / `deploy`), whether it is editable, and `lock_reason` when it is not. `_EDITABLE_SECTIONS` is derived from it, so adding an editable switch can no longer leave its section rejecting saves — the omission that shipped `mcp.allow_query_param_token` env-var-only. `data_apps` keeps its existing, deliberate restriction (the flag is read per request, but the apps_runner sidecar sits behind the `apps` Compose profile, so a live flip would surface a backend-less feature) — now stated on the switch and returned by `GET /api/admin/server-config`, which gains `effect`, `editable` and `lock_reason` per row. `FEATURE_FLAGS` remains importable from `app.instance_config` and resolves to the same registry; `feature_enabled` is unchanged, and the editable section set is identical (same 20 sections, just derived instead of hand-listed). Two operator-visible cosmetics did change: `_EDITABLE_SECTIONS` is now alphabetical, which reorders the section list in the settings sidenav and in the `POST /api/admin/server-config` 400 error text, and the `library_show_unverified_trust` description shown in the Feature flags panel is shorter than before (deliberate trim, not a regression). `agent_profiles`, registered on `main` while this branch was open, is carried across as a locked switch: its lock_reason states the owner's decision from #1186 verbatim — a deliberately env-var-only kill switch with no runtime-toggle use case — so the reason now travels with the flag instead of living in the test dict this PR removes. `tests/test_feature_flags.py` passes with only the new inventory-metadata test class appended; no existing test was altered.
+
+- **BREAKING-revert: stack auto-membership is now opt-in**
+  (`features.stack_auto_membership`, env `AGNES_STACK_AUTO_MEMBERSHIP`,
+  default **off**). The auto-membership stack model the redesign shipped as a
+  breaking change reverts to the classic pre-redesign subscribe model on
+  default instances: membership = required ∪ subscribed grants (all
+  downloaded by `agnes pull`), Catalog Browse lists every granted resource
+  with its add-to-stack state, admin god-mode Browse returns to the
+  user-facing catalog, and a `required → available` grant downgrade again
+  eagerly fans out subscriptions so group members keep the resource. Turning
+  the flag on restores the redesign semantics exactly (auto-membership,
+  addable-only Browse reshape, `server_only` manifest overlay, no downgrade
+  fan-out). The flag flips behavior instantly — `user_stack_subscriptions`
+  rows are interpreted, never rewritten. Topnav instances also render the
+  frozen pre-redesign `/catalog` and `/corporate-memory` pages
+  (`catalog_legacy.html`, `corporate_memory_legacy.html`; rail keeps the
+  unified/redesigned pages).
+
 - **The Skill Builder's Category dropdown looks like the rest of the app.** It carried the field border and background but kept the platform's own `<select>` rendering — OS chevron, OS metrics, OS colours in dark theme — so it read as a foreign widget beside Agnes's own menus. Same treatment as the filter toolbar's selects (`appearance: none` plus a drawn chevron), anchored to the bottom of the field rather than its middle so a label that wraps on a narrow column can't push the chevron off the control. Closes #1174.
 - **Softened the "check `PLATFORM_SETUP.md` first" banner** on QUICKSTART / DEPLOYMENT / ONBOARDING / HEADLESS_USAGE. `PLATFORM_SETUP.md` is a ~170-line day-2 playbook (marketplaces, scheduler cadence, telemetry, privacy posture, daily routine), not a superset of the docs pointing at it — sending a first-time reader there ahead of the quick start pointed them away from what they needed. Part of #1192.
 
@@ -154,35 +183,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Added
 
 - Admin "Browse & register tables" now works with bucket-scoped (custom access) Keboola tokens: when the project-wide `/buckets` + `/tables` listings are refused, the endpoint falls back to enumerating the token's own `bucketPermissions` per bucket, so the picker shows exactly the buckets the token can read. The response carries a `scope` field (`"project"` or `"token_buckets"`) and the picker renders a note when the listing is token-limited. Upstream listing failures are logged with the connection id, and network-level errors (DNS, refused connection, TLS) surface as a clean 502 `keboola_storage_api_error` detail instead of a generic 500.
-- **`instance.experience` preset** (`classic` | `redesign`, env
-  `AGNES_INSTANCE_EXPERIENCE`) — the one-line adoption switch for the
-  redesign: `redesign` flips the DEFAULTS of the coupled knobs
-  (`instance.ui_layout` → `rail`, `instance.theme` → `paper`,
-  `features.stack_auto_membership` → `true`); any per-knob env/yaml setting
-  still wins, and `classic` (or an absent key) is byte-for-byte the
-  pre-redesign experience. The `/admin/server-config` flag inventory leads
-  with the preset's resolved value and labels preset-sourced flag defaults
-  with a `preset` badge. (`docs/feature-flags.md`, spec
-  `docs/superpowers/specs/2026-08-07-default-chrome-ux-parity.md`)
 
 ### Changed
-
-- **BREAKING-revert: stack auto-membership is now opt-in**
-  (`features.stack_auto_membership`, env `AGNES_STACK_AUTO_MEMBERSHIP`,
-  default **off**). The auto-membership stack model the redesign shipped as a
-  breaking change reverts to the classic pre-redesign subscribe model on
-  default instances: membership = required ∪ subscribed grants (all
-  downloaded by `agnes pull`), Catalog Browse lists every granted resource
-  with its add-to-stack state, admin god-mode Browse returns to the
-  user-facing catalog, and a `required → available` grant downgrade again
-  eagerly fans out subscriptions so group members keep the resource. Turning
-  the flag on restores the redesign semantics exactly (auto-membership,
-  addable-only Browse reshape, `server_only` manifest overlay, no downgrade
-  fan-out). The flag flips behavior instantly — `user_stack_subscriptions`
-  rows are interpreted, never rewritten. Topnav instances also render the
-  frozen pre-redesign `/catalog` and `/corporate-memory` pages
-  (`catalog_legacy.html`, `corporate_memory_legacy.html`; rail keeps the
-  unified/redesigned pages).
 
 ### Fixed
 
