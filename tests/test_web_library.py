@@ -413,10 +413,11 @@ def test_library_required_grant_is_locked_in_stack(seeded_app):
     assert 'data-stack="in_stack"' in row
 
 
-def test_library_available_grant_reads_in_stack_and_offers_no_toggle(seeded_app):
-    """An available grant is already in the stack by auto-membership, so the
-    row reports that plainly — no "Add to Stack" for something already in it,
-    and no remove (the grant is an admin's to change).
+def test_library_available_grant_reads_in_stack_and_offers_no_toggle(seeded_app, monkeypatch):
+    """AUTO-membership (opt-in): an available grant is already in the stack,
+    so the row reports that plainly — no "Add to Stack" for something already
+    in it, and no remove (the grant is an admin's to change). The classic
+    default renders the honest not-a-member state (sibling below).
 
     It is LOCKED too, for the same reason the required one is: the grant IS the
     membership, so there is nothing on the row to drop. The lock is keyed on
@@ -426,6 +427,7 @@ def test_library_available_grant_reads_in_stack_and_offers_no_toggle(seeded_app)
     The tier lives in the tooltip and in the Optional/Required facet."""
     from src.db import get_system_db
 
+    monkeypatch.setenv("AGNES_STACK_AUTO_MEMBERSHIP", "1")
     conn = get_system_db()
     _grant_package(conn, slug="avail-pkg", name="Offered Package", user_id="analyst1", requirement="available")
     conn.close()
@@ -441,6 +443,42 @@ def test_library_available_grant_reads_in_stack_and_offers_no_toggle(seeded_app)
     assert GRANTED_TOOLTIP in row
     # The tier is still distinguishable — just not by the affordance.
     assert LOCKED_TOOLTIP not in row
+
+
+def test_library_available_grant_classic_is_not_claimed_in_stack(seeded_app, monkeypatch):
+    """CLASSIC (the default): a granted-but-unsubscribed ``available``
+    package is NOT a stack member — membership is required ∪ subscribed, and
+    it also drives query authorization — so the row must not claim
+    "In Stack", must not land in the "In stack only" filter bucket, and
+    points the caller at the Catalog to add it (Devin Review on #1199).
+    A subscribed one renders as a member again."""
+    from src.db import get_system_db
+
+    monkeypatch.delenv("AGNES_STACK_AUTO_MEMBERSHIP", raising=False)
+    conn = get_system_db()
+    pkg_id = _grant_package(
+        conn, slug="classic-avail-pkg", name="Classic Offered Package", user_id="analyst1", requirement="available"
+    )
+    conn.close()
+
+    body = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
+    row = _row_for(body, "Classic Offered Package")
+    assert 'data-stack="available"' in row, "unsubscribed available must filter as addable, not in-stack"
+    assert "In Stack" not in row
+    assert "add it from the Catalog" in row
+
+    # Subscribing joins the stack — the row becomes a member.
+    conn = get_system_db()
+    conn.execute(
+        "INSERT INTO user_stack_subscriptions(user_id, resource_type, resource_id, subscribed_at) "
+        "VALUES ('analyst1', 'data_package', ?, CURRENT_TIMESTAMP)",
+        [pkg_id],
+    )
+    conn.close()
+    body = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
+    row = _row_for(body, "Classic Offered Package")
+    assert 'data-stack="in_stack"' in row
+    assert "In Stack" in row
 
 
 def test_library_lists_granted_curated_plugins(seeded_app):
