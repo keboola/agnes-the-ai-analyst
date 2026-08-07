@@ -359,6 +359,73 @@ def get_gws_oauth_credentials() -> dict:
     }
 
 
+def get_experience() -> str:
+    """One-line adoption preset (spec 2026-08-07-default-chrome-ux-parity):
+    ``classic`` | ``redesign``.
+
+    Changes only the DEFAULTS the experience-coupled knobs fall back to
+    (chrome layout, theme, stack membership mode, trust markers); any
+    per-knob env/yaml setting still wins, and each knob's own resolution
+    order is unchanged. ``classic`` — or an absent/unrecognised value — is
+    byte-for-byte the pre-redesign experience, so a routine upgrade changes
+    nothing an operator did not opt into.
+
+    Resolution: ``AGNES_INSTANCE_EXPERIENCE`` env > ``instance.experience``
+    in instance.yaml > ``"classic"``.
+    """
+    raw = os.environ.get("AGNES_INSTANCE_EXPERIENCE")
+    if raw is None:
+        raw = get_value("instance", "experience", default="classic")
+    if not isinstance(raw, str):
+        return "classic"
+    value = raw.strip().lower()
+    return value if value in ("classic", "redesign") else "classic"
+
+
+#: Feature flags whose DEFAULT follows the ``instance.experience`` preset.
+#: The admin flag inventory uses this to resolve honestly (and label the
+#: source ``preset``); keep in step with ``preset_flag_default`` below.
+PRESET_COUPLED_FLAGS: frozenset[str] = frozenset({"stack_auto_membership"})
+
+
+def preset_flag_default(name: str) -> bool:
+    """Preset-implied default for the experience-coupled feature flags.
+
+    Callsites pass this as ``feature_enabled``'s ``default`` so the knob's
+    own env/yaml still wins; the ``FEATURE_FLAGS`` registry keeps a static
+    ``default`` for display, with the description naming the preset.
+
+    Deliberately NOT preset-coupled: ``store.verification_enabled`` (needs a
+    reviewer, not a theme) and ``library_show_unverified_trust`` (the whole
+    trust vocabulary is already gated to the paper theme at every ``mark()``
+    callsite, so default-chrome parity comes from the theme gate itself —
+    coupling the flag would only make the inventory disagree with the
+    runtime's registry-sourced default).
+    """
+    redesign = get_experience() == "redesign"
+    return {
+        "stack_auto_membership": redesign,
+    }.get(name, False)
+
+
+def get_stack_auto_membership() -> bool:
+    """Stack membership mode (spec 2026-08-07-default-chrome-ux-parity).
+
+    ``False`` (the classic default): membership is the subscribe model —
+    ``required ∪ (subscribed ∩ available)`` — exactly the pre-redesign
+    behavior, including the grant-downgrade subscription fan-out.
+    ``True``: auto-membership — every granted resource is in the stack the
+    moment it's granted; subscribe/unsubscribe only control the local copy.
+    The ``redesign`` experience preset flips the default to ``True``.
+    """
+    return feature_enabled(
+        "features",
+        "stack_auto_membership",
+        env_var="AGNES_STACK_AUTO_MEMBERSHIP",
+        default=preset_flag_default("stack_auto_membership"),
+    )
+
+
 def get_instance_theme() -> str:
     """Active UI theme for this instance — drives the `data-theme`
     attribute on `<html>` so the design-system token set
@@ -388,14 +455,17 @@ def get_instance_theme() -> str:
     default ``"blue"``. Unrecognised values fall back to ``"blue"``
     so a typo doesn't silently break every page.
     """
+    # Preset-implied default (spec 2026-08-07): the `redesign` experience
+    # defaults to paper; explicit env/yaml always wins.
+    preset_default = "paper" if get_experience() == "redesign" else "blue"
     raw = os.environ.get("AGNES_INSTANCE_THEME")
     if raw is None:
-        raw = get_value("instance", "theme", default="blue")
+        raw = get_value("instance", "theme", default=preset_default)
     if not isinstance(raw, str):
-        return "blue"
+        return preset_default
     value = raw.strip().lower()
     if value not in ("navy", "blue", "dark", "auto", "paper"):
-        return "blue"
+        return preset_default
     return value
 
 
@@ -417,14 +487,17 @@ def get_ui_layout() -> str:
     in instance.yaml > default ``"topnav"``. Unrecognised values fall
     back to ``"topnav"`` so a typo doesn't strip the navigation.
     """
+    # Preset-implied default (spec 2026-08-07): the `redesign` experience
+    # defaults to rail; explicit env/yaml always wins.
+    preset_default = "rail" if get_experience() == "redesign" else "topnav"
     raw = os.environ.get("AGNES_UI_LAYOUT")
     if raw is None:
-        raw = get_value("instance", "ui_layout", default="topnav")
+        raw = get_value("instance", "ui_layout", default=preset_default)
     if not isinstance(raw, str):
-        return "topnav"
+        return preset_default
     value = raw.strip().lower()
     if value not in ("topnav", "rail"):
-        return "topnav"
+        return preset_default
     return value
 
 

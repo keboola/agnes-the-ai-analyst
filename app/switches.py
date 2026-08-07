@@ -184,6 +184,24 @@ SWITCHES: tuple[Switch, ...] = (
         ),
     ),
     Switch(
+        name="stack_auto_membership",
+        config_keys=("features", "stack_auto_membership"),
+        env_var="AGNES_STACK_AUTO_MEMBERSHIP",
+        kind="bool",
+        default=False,
+        effect="live",
+        category="product",
+        editable=True,
+        description=(
+            "Stack membership mode. Off (classic, the default): membership is the subscribe "
+            "model — required plus subscribed grants — with the grant-downgrade subscription "
+            "fan-out, exactly the pre-redesign behavior. On: auto-membership — every granted "
+            "resource is in the stack immediately; subscribe/unsubscribe only control the "
+            "local copy. Read per request; flips instantly, subscriptions are interpreted, "
+            "never rewritten. The `instance.experience: redesign` preset defaults this to on."
+        ),
+    ),
+    Switch(
         name="mcp_query_param_token",
         config_keys=("mcp", "allow_query_param_token"),
         env_var="AGNES_MCP_ALLOW_QUERY_PARAM_TOKEN",

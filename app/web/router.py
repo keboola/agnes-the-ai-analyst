@@ -1865,34 +1865,42 @@ async def catalog(
         logger.warning("could not enumerate data_packages: %s", e)
 
     is_admin_view = is_user_admin(user["id"], conn)
-    # Admin god-mode removed from the user-facing Catalog (follow-up to the
-    # auto-membership reshape): every visitor — admin included — browses through
-    # the same grant-scoped ``browse()``. Auditing every package regardless
-    # of grant now lives at /admin/data-packages (``browse_admin`` still
-    # backs that route).
-    all_granted_entries = resolver.browse(user["id"], ResourceType.DATA_PACKAGE)
+    # Stack-membership mode (spec 2026-08-07-default-chrome-ux-parity):
+    # classic (default) keeps the pre-redesign catalog behavior verbatim —
+    # admin god-mode Browse via ``browse_admin`` and a Browse grid listing
+    # EVERY granted package with its add-to-stack state. Auto-membership
+    # (the redesign semantics) drops god-mode from the user-facing Catalog
+    # (auditing lives at /admin/data-packages) and reshapes Browse into
+    # "things you can ADD" — in that mode ``browse()`` marks everything
+    # granted in_stack, so the grid only shows the rest.
+    from app.instance_config import get_stack_auto_membership
+
+    auto_membership = get_stack_auto_membership()
+    if is_admin_view and not auto_membership:
+        all_granted_entries = resolver.browse_admin(user["id"], ResourceType.DATA_PACKAGE)
+    else:
+        all_granted_entries = resolver.browse(user["id"], ResourceType.DATA_PACKAGE)
     stack_entries = resolver.stack(user["id"], ResourceType.DATA_PACKAGE)
 
     # Group ``required`` packages first so they cluster together at the
     # top of the grid instead of being scattered by creation order —
     # first-demo feedback (2026-05-19): "bylo by dobre ty required mit
     # vzdy nekde seskupene spolu na jedne strane". Secondary order falls
-    # back to the resolver's name-ordered output. Applied to BOTH the
-    # (now addable-only) Browse grid and the My Stack grid — since
-    # auto-membership means most packages a caller sees now render on My
-    # Stack rather than Browse, the required-first grouping needs to
-    # follow them there to keep the feature meaningful.
+    # back to the resolver's name-ordered output. Under auto-membership it
+    # is applied to BOTH grids — most packages a caller sees then render
+    # on My Stack rather than Browse, so the grouping must follow them
+    # there; classic keeps the pre-redesign contract (Browse only).
     _req_first_key = lambda e: (0 if e.requirement == "required" else 1, e.name or "")  # noqa: E731
     all_granted_entries = sorted(all_granted_entries, key=_req_first_key)
-    stack_entries = sorted(stack_entries, key=_req_first_key)
+    if auto_membership:
+        stack_entries = sorted(stack_entries, key=_req_first_key)
 
-    # Catalog reshape: every granted package is already auto-membership
-    # in_stack=True (``browse()`` sets this unconditionally), so the
-    # Catalog's Data grid — whose whole purpose is now "things you can
-    # ADD" — only ever shows entries that are NOT already in the caller's
-    # stack. For governed data this is normally empty; what the caller
-    # already has lives on My Stack (/stack) or the My Stack tab here.
-    addable_entries = [e for e in all_granted_entries if not e.in_stack]
+    # Catalog reshape (auto-membership only): every granted package is
+    # already in_stack=True there, so the Data grid — whose whole purpose
+    # becomes "things you can ADD" — only shows entries NOT already in the
+    # caller's stack. Classic renders the full granted set, pre-redesign
+    # style.
+    addable_entries = [e for e in all_granted_entries if not e.in_stack] if auto_membership else all_granted_entries
 
     def _adapt(e):
         slug = None
@@ -1915,7 +1923,7 @@ async def catalog(
     stack_entries_adapted = [_adapt(e) for e in stack_entries]
 
     # Aggregate distinct source types across the user's visible packages —
-    # drives the per-source chip row in catalog.html.
+    # drives the per-source chip row in the catalog page.
     source_type_chips = sorted({st for e in entries for st in (e.get("tags") or [])})
 
     # Empty-state hint: when no packages exist, the page tells admins how
@@ -1942,8 +1950,8 @@ async def catalog(
     # curated resources. Data/Memory render server-side here; Plugins +
     # Recipes hydrate client-side from their existing APIs. Uploads
     # (file collections) are private user resources and live on My Stack
-    # (see /stack), not in the shared Catalog. Topnav instances keep the
-    # classic catalog.html unchanged.
+    # (see /stack), not in the shared Catalog. Topnav instances render the
+    # frozen pre-redesign catalog_legacy.html.
     if get_ui_layout() == "rail":
         # Memory kind-tab: mirrors the Data grid's addable-only contract —
         # grant-scoped via ``browse()`` (fixes a pre-existing gap where this
@@ -2001,7 +2009,10 @@ async def catalog(
         source_type_chips=source_type_chips,
         total_registered_tables=total_registered_tables,
     )
-    return templates.TemplateResponse(request, "catalog.html", ctx)
+    # Topnav renders the frozen pre-redesign catalog page byte-for-byte
+    # (catalog_legacy.html; the /library pattern — LEGACY_FROZEN closed set,
+    # guarded by tests/test_ui_layout_theme.py::TestDefaultContentParity).
+    return templates.TemplateResponse(request, "catalog_legacy.html", ctx)
 
 
 def _unified_memory_cards(entries: list) -> list:
@@ -4284,30 +4295,37 @@ async def corporate_memory(
 
     is_admin_view = is_user_admin(user["id"], conn)
 
-    # Admin god-mode removed from the user-facing Catalog (follow-up to
-    # auto-membership): every visitor — admin included — browses through
-    # the same grant-scoped ``browse()``. Auditing every domain regardless
-    # of grant now lives at /admin/data-packages (``browse_admin`` still
-    # backs that route). For MY STACK we still call the resolver — admins
-    # who POST /api/stack/subscribe expect to see those subscriptions in
-    # their stack tab.
-    browse_entries = resolver.browse(user["id"], ResourceType.MEMORY_DOMAIN)
+    # Stack-membership mode — same fork as /catalog (spec
+    # 2026-08-07-default-chrome-ux-parity): classic (default) restores the
+    # pre-redesign behavior verbatim (admin god-mode Browse, full granted
+    # list); auto-membership browses grant-scoped for everyone (auditing
+    # lives at /admin/data-packages) and reshapes Browse to addable-only.
+    # For MY STACK we always call the resolver — admins who POST
+    # /api/stack/subscribe expect to see those subscriptions in their
+    # stack tab.
+    from app.instance_config import get_stack_auto_membership
+
+    auto_membership = get_stack_auto_membership()
+    if is_admin_view and not auto_membership:
+        browse_entries = resolver.browse_admin(user["id"], ResourceType.MEMORY_DOMAIN)
+    else:
+        browse_entries = resolver.browse(user["id"], ResourceType.MEMORY_DOMAIN)
     stack_entries = resolver.stack(user["id"], ResourceType.MEMORY_DOMAIN)
 
-    # Required-first grouping mirrors /catalog (first-demo feedback),
-    # applied to BOTH grids — see /catalog's ``_req_first_key`` comment for
-    # why My Stack needs it too post auto-membership.
+    # Required-first grouping mirrors /catalog (first-demo feedback);
+    # under auto-membership it applies to BOTH grids — see /catalog's
+    # ``_req_first_key`` comment — while classic keeps the pre-redesign
+    # contract (Browse only).
     _req_first_key = lambda e: (0 if e.requirement == "required" else 1, e.name or "")  # noqa: E731
     browse_entries = sorted(browse_entries, key=_req_first_key)
-    stack_entries = sorted(stack_entries, key=_req_first_key)
+    if auto_membership:
+        stack_entries = sorted(stack_entries, key=_req_first_key)
 
-    # Catalog reshape: every granted domain is already auto-membership
-    # in_stack=True (``browse()`` sets this unconditionally), so the
-    # Browse grid — whose purpose is now "things you can ADD" — only
-    # shows entries NOT already in the caller's stack. For governed memory
-    # this is normally empty; what the caller already has lives in the My
-    # Stack tab here (or on /stack).
-    addable_entries = [e for e in browse_entries if not e.in_stack]
+    # Catalog reshape (auto-membership only): every granted domain is
+    # already in_stack=True there, so the Browse grid — "things you can
+    # ADD" — only shows entries NOT already in the caller's stack. Classic
+    # renders the full granted set, pre-redesign style.
+    addable_entries = [e for e in browse_entries if not e.in_stack] if auto_membership else browse_entries
 
     def _adapt(e):
         meta = dom_meta.get(e.id, {})
@@ -4349,7 +4367,11 @@ async def corporate_memory(
         pending_review_count=pending_count,
         is_km_admin=is_admin_view,
     )
-    return templates.TemplateResponse(request, "corporate_memory.html", ctx)
+    # Rail keeps the redesigned page; topnav renders the frozen
+    # pre-redesign copy byte-for-byte (the /library pattern —
+    # LEGACY_FROZEN closed set, TestDefaultContentParity guard).
+    tmpl = "corporate_memory.html" if get_ui_layout() == "rail" else "corporate_memory_legacy.html"
+    return templates.TemplateResponse(request, tmpl, ctx)
 
 
 @router.get("/memory/d/{slug}", response_class=HTMLResponse)
