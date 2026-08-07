@@ -462,6 +462,19 @@
                       </span>
                     </span>
                     {% endif %}
+                    {% elif c.stack_state == 'available' and c.stack_locked %}
+                    {# Granted but not a member (classic membership mode) and
+                       not addable HERE — the add surface for governed
+                       data/memory is the Catalog. An informational pill, not
+                       a button: claiming "In Stack" for a non-member would
+                       mislabel rows the agent cannot query (Devin Review on
+                       #1199), and a dead button would be worse. #}
+                    <span class="lib-stackpill lib-instack lib-instack--fixed"
+                          data-tip="{{ c.stack_title }}"
+                          title="{{ c.stack_title }}"
+                          aria-label="Not in your Stack. {{ c.stack_title }}">
+                      <span class="lib-stackpill__rest">Not in Stack</span>
+                    </span>
                     {% elif c.stack_addable %}
                     {# Available but not added — the default action, for anything
                        whose membership is the caller's to create: an artefact, a
