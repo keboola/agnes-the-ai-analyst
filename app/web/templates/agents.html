@@ -49,6 +49,11 @@
   }
   .ag-create-field textarea { flex-basis: 100%; min-height: 64px; resize: vertical; }
   .ag-create-field--prompt { flex: 1 1 100%; }
+  .ag-create-hint {
+    font-size: var(--text-13);
+    color: var(--ds-text-secondary);
+    margin: var(--space-1) 0 0;
+  }
   .ag-create-error {
     display: none;
     color: var(--ds-accent-danger-ink);
@@ -148,6 +153,7 @@
       <div class="ag-create-field ag-create-field--prompt">
         <label for="ag-prompt">System prompt (optional)</label>
         <textarea id="ag-prompt" name="system_prompt" placeholder="What should this agent do?"></textarea>
+        <p class="ag-create-hint">Replaces the default analyst prompt. Agnes still appends its data-access rails (<code>agnes catalog</code> &rarr; <code>schema</code> &rarr; <code>query</code>), so you don't need to restate them here &mdash; write the persona and its task.</p>
       </div>
     </div>
     <div class="page-header__actions" style="justify-content: flex-end;">
