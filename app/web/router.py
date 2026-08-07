@@ -1961,12 +1961,16 @@ async def catalog(
     # (see /stack), not in the shared Catalog. Topnav instances render the
     # frozen pre-redesign catalog_legacy.html.
     if get_ui_layout() == "rail":
-        # Memory kind-tab: mirrors the Data grid's addable-only contract —
+        # Memory kind-tab: mirrors the Data grid's contract in BOTH modes —
         # grant-scoped via ``browse()`` (fixes a pre-existing gap where this
-        # tab enumerated every memory domain with no RBAC check at all),
-        # filtered to entries NOT already in the caller's stack.
+        # tab enumerated every memory domain with no RBAC check at all);
+        # under auto-membership filtered to entries NOT already in the
+        # caller's stack, under classic the full granted set with its
+        # add-to-stack state (same ``auto_membership`` fork as
+        # ``addable_entries`` above — a rail instance on the classic default
+        # must not mix the two contracts on one page; Devin Review on #1199).
         all_mem_entries = resolver.browse(user["id"], ResourceType.MEMORY_DOMAIN)
-        addable_mem_entries = [e for e in all_mem_entries if not e.in_stack]
+        addable_mem_entries = [e for e in all_mem_entries if not e.in_stack] if auto_membership else all_mem_entries
         memory_cards = _unified_memory_cards(addable_mem_entries)
         # Normalize both server-rendered kinds into the single catalog_card
         # `c` contract (Plugins + Recipes normalize client-side in the JS twin).
@@ -3023,6 +3027,7 @@ async def library_page(
         requirement="optional",
         tags=None,
         owner_key=None,
+        in_stack=True,
     ) -> None:
         """Append one access-granted row (never owner-shareable)."""
         items.append(
@@ -3049,27 +3054,36 @@ async def library_page(
                 owner_key=owner_key or "workspace",
             )
         )
-        # Auto-membership: a grant on one of the caller's groups puts the
-        # resource in their Stack with no action needed (see StackResolver's
-        # `browse`), so these rows are always "In Stack" — never addable.
-        items[-1]["stack_state"] = "in_stack"
-        # Every granted row says the same thing about membership — "In Stack",
-        # because it is — and every one of them is LOCKED, because the grant IS
-        # the membership: there is no per-user membership to drop, only a grant
-        # an admin can revoke. So the lock is driven by *droppability*, not by
-        # the grant tier. Keying it on ``requirement == 'required'`` (as this
-        # did) left an optional grant rendering the success-tinted check that a
-        # REMOVABLE row wears at rest — pixel-identical to a control that turns
-        # into "Remove from Stack" on hover, so the only way to learn it wasn't
-        # one was to hover it and watch nothing happen. The tier still differs,
-        # but in the two places where it's legible: the tooltip below, and the
-        # Optional/Required facet where it is actually filterable.
-        items[-1]["stack_pill"] = "In Stack"
-        items[-1]["stack_locked"] = True
-        if requirement == "required":
-            items[-1]["stack_title"] = _LOCKED_STACK_TOOLTIP
+        # Membership is the caller's mode-resolved reality, not the grant
+        # (Devin Review on #1199): under auto-membership every granted row IS
+        # in the Stack (``in_stack`` arrives True, rendering exactly as
+        # before); under the classic default a granted-but-unsubscribed
+        # ``available`` resource is NOT a member — claiming "In Stack" there
+        # would label rows the agent cannot actually query (membership also
+        # drives ``get_accessible_tables``). Callers whose membership
+        # genuinely is the grant (recipes, plugins) omit the argument.
+        if in_stack:
+            items[-1]["stack_state"] = "in_stack"
+            # Every member row says the same thing about membership — "In
+            # Stack" — and is LOCKED, because for a granted member there is
+            # no per-user membership to drop here, only a grant an admin can
+            # revoke (classic members ARE per-user, but their drop surface
+            # is the Catalog/Stack pages, not this listing). The lock is
+            # driven by *droppability*, not by the grant tier: keying it on
+            # ``requirement == 'required'`` (as this once did) left an
+            # optional grant rendering the success-tinted check that a
+            # REMOVABLE row wears at rest. The tier stays legible in the
+            # tooltip and the Optional/Required facet.
+            items[-1]["stack_pill"] = "In Stack"
+            items[-1]["stack_locked"] = True
+            if requirement == "required":
+                items[-1]["stack_title"] = _LOCKED_STACK_TOOLTIP
+            else:
+                items[-1]["stack_title"] = _GRANTED_STACK_TOOLTIP
         else:
-            items[-1]["stack_title"] = _GRANTED_STACK_TOOLTIP
+            items[-1]["stack_state"] = "available"
+            items[-1]["stack_locked"] = True
+            items[-1]["stack_title"] = "Granted to you, but not in your Stack — add it from the Catalog"
 
     # Governed data packages + memory domains — StackResolver.browse() is
     # exactly "required ∪ available for my groups" for these two types.
@@ -3117,6 +3131,9 @@ async def library_page(
                     # values rather than a duplicate pair.
                     requirement=("required" if e.requirement == "required" else "optional"),
                     tags=list(e.tags or []),
+                    # Mode-resolved membership: auto → always True (rendering
+                    # unchanged); classic → required ∪ subscribed only.
+                    in_stack=e.in_stack,
                 )
         except Exception as e:
             logger.warning("/library: could not resolve %s: %s", rt.value, e)
