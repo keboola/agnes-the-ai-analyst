@@ -585,24 +585,47 @@ class TestDocumentedServerConfigKeysAreWritable:
     (Devin Review on #1183).
     """
 
-    # Sections the deployment guide documents as `instance.yaml` / env-var edits
-    # rather than `/admin/server-config` edits, with the reason each one is not
-    # expected to be live-writable. A NEW documented section that is neither
-    # editable nor listed here fails the test below — that is the ratchet.
+    # Sections that are operator-facing config but deliberately NOT live-writable,
+    # each with the reason. A documented section that is neither editable nor
+    # listed here fails the test below — that is the ratchet.
     #
-    # The first version of this test filtered `documented` down to `{"mcp"}`
-    # before diffing, which meant it could only ever fail for the one flag it was
-    # written for while its docstring claimed a general rule. An exemption list
-    # with reasons is the honest form of the same intent (Devin Review on #1183).
+    # Two earlier versions of this list were wrong in instructive ways:
+    #   * the first filtered `documented` down to `{"mcp"}` before diffing, so it
+    #     could only ever fail for the one flag it was written for while its
+    #     docstring claimed a general rule (Devin Review on #1183);
+    #   * the second exempted `chat` on the reasoning that "a live flip would not
+    #     take effect" — the opposite of what `docs/feature-flags.md` says. That
+    #     doc tells operators to "enable chat via the `/admin/server-config`
+    #     editor (which writes the overlay) or the `AGNES_CHAT_ENABLED` env var",
+    #     and explains that `app/main.py` boots chat from the OVERLAY FILE ALONE,
+    #     so the editor is the primary documented mechanism, not an ineffective
+    #     one. Both `chat` and `studio` are now editable; the exemption was
+    #     covering a real bug rather than describing a design.
     _NOT_LIVE_WRITABLE = {
         "analytics": "backend choice is governed by the state machine + a data migration, not a live patch",
         "coordination": "process topology; takes effect on restart, and the guide pairs it with a compose change",
-        "chat": "needs the sandbox sidecar / compose profile to match, so a live flip would not take effect",
-        "data_apps": "gated on the `apps` compose profile, same reason",
+        # Precise version of what used to say "same reason" as chat: the flag
+        # itself IS read per request (app/web/router.py:315, :2261,
+        # app/api/data_apps_git.py:105), so flipping it live does un-hide the
+        # surface — but the apps_runner sidecar sits behind compose
+        # `profiles: ["apps"]`, so enabling it live can surface a feature whose
+        # backend is absent. Left exempt deliberately, and this reason now says
+        # which half is true.
+        "data_apps": "flag is read per request, but the apps_runner sidecar needs the `apps` compose profile — enabling it live can surface a backend-less feature",
         "distribution": "documented as an `instance.yaml` + `AGNES_DISTRIBUTION_*` pair, object-store credentials included",
     }
 
     def _documented_keys(self):
+        """`section.key:` pairs the deployment guide writes in backticks.
+
+        Deliberately NARROW, and deliberately one file. Widening this to
+        `CONFIGURATION.md` + `feature-flags.md` and to the bare `` `a.b` `` form
+        was tried and reverted: it matched ordinary prose (`architecture.md`,
+        `redis.…`, `uvicorn.…`) and turned a precise ratchet into a list of
+        twelve false positives. Prose is the wrong source of truth for a
+        machine-checkable rule — `_registry_sections` is the right one, and it is
+        what actually caught the case this scrape missed.
+        """
         import re
         from pathlib import Path
 
@@ -613,11 +636,45 @@ class TestDocumentedServerConfigKeysAreWritable:
         # `section.key: value` inside backticks, as the guide writes them.
         return set(re.findall(r"`([a-z_]+)\.([a-z_]+):", doc))
 
+    def _registry_sections(self):
+        """Sections owned by the `FEATURE_FLAGS` registry.
+
+        The structured source of truth, and the one that should have been used
+        from the start: every entry is by construction an operator-facing knob,
+        and `FeatureFlag`'s own docstring calls the registry "everything the
+        `/admin/server-config` inventory panel needs to display a flag" — so the
+        panel shows each of these while the write allowlist may still reject it.
+        Prose can be rewritten or live in a file this test does not read; the
+        registry cannot drift silently.
+        """
+        from app.instance_config import FEATURE_FLAGS
+
+        return {flag.config_keys[0] for flag in FEATURE_FLAGS if flag.config_keys}
+
     def test_the_documented_key_scrape_finds_something(self):
         """Guards the guard: a doc rewrite that changes the backtick convention
         would silently empty `documented` and make the ratchet below pass on an
         empty set."""
         assert len(self._documented_keys()) >= 5
+        assert len(self._registry_sections()) >= 4
+
+    def test_every_feature_flag_section_is_editable_or_explicitly_exempt(self):
+        """The registry-derived half of the ratchet.
+
+        Adding a `FeatureFlag` without touching `_EDITABLE_SECTIONS` is the exact
+        shape that shipped `mcp.allow_query_param_token` env-var-only and then
+        `agent_profiles.enabled` after it. Deriving from the registry means a new
+        flag cannot be added without either making its section writable or saying
+        here why it must not be.
+        """
+        from app.api.admin import _EDITABLE_SECTIONS
+
+        unaccounted = self._registry_sections() - set(_EDITABLE_SECTIONS) - set(self._NOT_LIVE_WRITABLE)
+        assert not unaccounted, (
+            "FEATURE_FLAGS section neither writable via /admin/server-config nor listed "
+            f"in _NOT_LIVE_WRITABLE with a reason: {sorted(unaccounted)}. The flag panel "
+            "displays it, so a save that 400s is the operator's only signal."
+        )
 
     def test_every_documented_section_is_editable_or_explicitly_exempt(self):
         from app.api.admin import _EDITABLE_SECTIONS
@@ -635,6 +692,128 @@ class TestDocumentedServerConfigKeysAreWritable:
 
         stale = set(self._NOT_LIVE_WRITABLE) & set(_EDITABLE_SECTIONS)
         assert not stale, f"now editable — drop from _NOT_LIVE_WRITABLE: {sorted(stale)}"
+
+    def test_every_editable_section_declares_its_fields(self):
+        """Editable ⇒ declared. True for all 19 sections today, so it is a real
+        invariant rather than an aspiration.
+
+        Adding a section to `_EDITABLE_SECTIONS` without a `_KNOWN_FIELDS` entry
+        is a quiet half-job: the API accepts the patch, but the panel has no
+        `kind` to render from, and an undeclared boolean is not covered by
+        `_declared_boolean_fields()` — which is what makes `_mask(False)` turn an
+        OFF switch into an ON one. Both halves of that bug were live at once for
+        `mcp` (#1183); this pins the coupling so the next section cannot repeat
+        it.
+        """
+        from app.api.admin import _EDITABLE_SECTIONS, _KNOWN_FIELDS
+
+        undeclared = [s for s in _EDITABLE_SECTIONS if s not in _KNOWN_FIELDS]
+        assert not undeclared, (
+            "editable via /admin/server-config but no _KNOWN_FIELDS entry, so the panel "
+            f"cannot render it and its booleans escape the mask carve-out: {undeclared}"
+        )
+
+    def test_the_chat_and_studio_flags_render_as_booleans(self):
+        """The two sections this change made writable, pinned the same way the
+        `mcp` switch is below — a regression to free-text or to a masked boolean
+        is the failure mode, not a missing section."""
+        from app.api.admin import _EDITABLE_SECTIONS, _KNOWN_FIELDS, _is_secret_key
+
+        # Defaults come from FEATURE_FLAGS, so they are asserted against the
+        # registry rather than re-typed here — an earlier version of this test
+        # hard-coded approvals_enabled=False and thereby pinned the very drift
+        # the registry-derived declaration removed (Devin Review on #1190).
+        for section, field in (
+            ("chat", "enabled"),
+            ("chat", "approvals_enabled"),
+            ("studio", "enabled"),
+        ):
+            default = next(
+                f.default
+                for f in __import__("app.instance_config", fromlist=["x"]).FEATURE_FLAGS
+                if f.config_keys and f.config_keys[0] == section and f.config_keys[-1] == field
+            )
+            assert section in _EDITABLE_SECTIONS, section
+            spec = _KNOWN_FIELDS[section][field]
+            assert spec["kind"] == "bool", (section, field)
+            assert spec["default"] is default, (section, field)
+            assert _is_secret_key(field) is False, f"{field} must not be masked"
+
+    def test_declared_defaults_match_the_registry(self):
+        """No second copy of a flag's default.
+
+        `chat.approvals_enabled` was hand-declared as off while `FEATURE_FLAGS`
+        (and the runtime) had it on, so the panel described the opposite of what
+        the system does — and the unset-boolean renderer then wrote that wrong
+        default back on the next save. The declarations derive from the registry
+        now; this fails if anyone re-introduces a literal (Devin Review on #1190).
+        """
+        from app.api.admin import _KNOWN_FIELDS
+        from app.instance_config import FEATURE_FLAGS
+
+        mismatched = []
+        for flag in FEATURE_FLAGS:
+            if not flag.config_keys:
+                continue
+            section, key = flag.config_keys[0], flag.config_keys[-1]
+            spec = _KNOWN_FIELDS.get(section, {}).get(key)
+            if spec is not None and spec.get("default") != flag.default:
+                mismatched.append(f"{section}.{key}: registry={flag.default} declared={spec.get('default')}")
+        assert not mismatched, "declared default contradicts FEATURE_FLAGS:\n" + "\n".join(mismatched)
+
+    def test_the_bool_renderer_falls_back_to_the_declared_default(self):
+        """An unset boolean must render from its default, not from `!!undefined`.
+
+        The admin panel coerces with `!!value`, so a never-configured switch whose
+        real default is ON rendered as OFF and "Save section" wrote that false
+        back — enabling chat silently disabled tool-call approvals, and saving the
+        Studio section disabled Studio. The text branch already used the registry
+        default when unset; the bool branch now does too. Asserted against the
+        template source because that is where the coercion lives
+        (Devin Review on #1190).
+        """
+        from pathlib import Path
+
+        tpl = (
+            Path(__file__).resolve().parent.parent
+            / "app" / "web" / "templates" / "admin_server_config.html"
+        ).read_text(encoding="utf-8")
+        assert "const v = isUnset ? dflt : !!value;" in tpl, (
+            "the bool branch must fall back to the declared default when unset"
+        )
+        assert "const v = !!value;" not in tpl, (
+            "the bare `!!value` coercion is the bug: `!!undefined` is false, so an "
+            "on-by-default switch renders OFF and the next save persists it"
+        )
+
+    def test_a_nested_secret_under_chat_is_masked_and_not_written_back(self):
+        """Making `chat` editable exposes the whole block, nested keys included.
+
+        A real deployment can carry `chat.slack.*`, so the question is whether the
+        existing redaction reaches a nested level or only the top one. It reaches:
+        `_redact` recurses into dicts and masks any leaf whose key looks like a
+        credential, and the write path drops a value that is still the redaction
+        sentinel so a save cannot persist `"***"` over a live secret. Asserted
+        rather than manually spot-checked (Devin Review on #1190).
+        """
+        from app.api.admin import _REDACTED_SENTINELS, _is_secret_key, _redact
+
+        block = {
+            "enabled": True,
+            "slack": {"transport": "http", "bot_token": "xoxb-REAL", "signing_secret": "sig-REAL"},
+        }
+        shown = _redact(block, "chat")
+
+        assert shown["slack"]["bot_token"] not in ("xoxb-REAL",)
+        assert shown["slack"]["signing_secret"] not in ("sig-REAL",)
+        assert shown["slack"]["transport"] == "http", "a non-secret leaf must stay readable"
+        assert shown["enabled"] is True
+
+        # ...and what the panel shows back is a sentinel the write path refuses,
+        # which is what stops a save from overwriting the real value with stars.
+        assert shown["slack"]["bot_token"] in _REDACTED_SENTINELS
+        assert _is_secret_key("bot_token") and _is_secret_key("signing_secret")
+        assert not _is_secret_key("transport")
 
     def test_the_mcp_token_flag_renders_as_a_boolean(self):
         from app.api.admin import _EDITABLE_SECTIONS, _KNOWN_FIELDS
