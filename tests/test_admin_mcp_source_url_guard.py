@@ -117,6 +117,42 @@ def test_update_judges_the_merged_row_not_just_the_patch(seeded_app):
     assert "blocked_range" in r.json()["detail"]
 
 
+def test_a_source_with_a_refused_url_can_still_be_turned_off(seeded_app):
+    """The guard must not trap what it is guarding against.
+
+    A source registered before this check (or before `mcp.source_url_strict`
+    was turned on) carries a url the check now refuses. Validating on every
+    update made the source unmodifiable — including the update that DISABLES
+    it, i.e. the one action that removes the risk (Devin Review on #1204).
+    A disabled source is never dialed, so there is nothing to protect there.
+    """
+    _seed("src_off1", url="http://169.254.169.254/mcp", transport="stdio", command="/bin/thing")
+    r = seeded_app["client"].put(
+        "/api/admin/mcp-sources/src_off1",
+        headers=_auth(seeded_app),
+        json={"transport": "http", "enabled": False},
+    )
+    assert r.status_code == 200, r.text
+
+
+def test_re_enabling_still_validates(seeded_app):
+    """The other half: disabling is a way out, not a way around. Turning the
+    source back on puts the url in front of the check again."""
+    _seed("src_off2", url="http://169.254.169.254/mcp", transport="stdio", command="/bin/thing")
+    seeded_app["client"].put(
+        "/api/admin/mcp-sources/src_off2",
+        headers=_auth(seeded_app),
+        json={"transport": "http", "enabled": False},
+    )
+    r = seeded_app["client"].put(
+        "/api/admin/mcp-sources/src_off2",
+        headers=_auth(seeded_app),
+        json={"enabled": True},
+    )
+    assert r.status_code == 400, r.text
+    assert "blocked_range" in r.json()["detail"]
+
+
 def test_a_refused_url_does_not_purge_credentials(seeded_app, monkeypatch):
     """Repointing a url purges every stored credential for the source. That
     purge must not fire for a request that then 400s — the admin would lose

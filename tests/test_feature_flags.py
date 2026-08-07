@@ -92,6 +92,7 @@ class TestFeatureFlagsRegistry:
             "data_apps",
             "library_show_unverified_trust",
             "mcp_query_param_token",
+            "mcp_source_url_strict",
             "agent_profiles",
         }
 
@@ -222,6 +223,7 @@ class TestServerConfigFeatureFlagsInventory:
             "data_apps",
             "library_show_unverified_trust",
             "mcp_query_param_token",
+            "mcp_source_url_strict",
             "agent_profiles",
         }
         for f in flags:

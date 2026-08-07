@@ -200,6 +200,25 @@ SWITCHES: tuple[Switch, ...] = (
         ),
     ),
     Switch(
+        name="mcp_source_url_strict",
+        config_keys=("mcp", "source_url_strict"),
+        env_var="AGNES_MCP_SOURCE_URL_STRICT",
+        kind="bool",
+        default=False,
+        effect="live",
+        category="operations",
+        editable=True,
+        description=(
+            "Hold a registered MCP source's own url to the same bar as its OAuth endpoints: "
+            "https to a public address. Off by default, which is not unguarded — the baseline "
+            "always refuses link-local / metadata / multicast / reserved addresses and cleartext "
+            "http to a public one. What the default permits is a source on an INTERNAL address "
+            "(an organization's own tool server, a developer's localhost), because those are "
+            "ordinary deployments. Turn on for instances that only ever talk to third-party MCP "
+            "services; it makes an intranet source unconfigurable, which is why it is opt-in."
+        ),
+    ),
+    Switch(
         name="agent_profiles",
         config_keys=("agent_profiles", "enabled"),
         env_var="AGNES_AGENT_PROFILES_ENABLED",

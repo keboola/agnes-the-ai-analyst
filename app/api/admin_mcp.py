@@ -787,7 +787,19 @@ async def update_mcp_source(
     # AFTER the merge (a patch that only flips transport can make a stored url
     # live for the first time) and BEFORE the purge, so a request that is about
     # to 400 cannot destroy credentials on its way out.
-    url_warning = await _check_source_url_or_400(merged)
+    #
+    # Skipped when the result is DISABLED. The check exists to stop a rejected
+    # address becoming reachable; a disabled source is not dialed at all, so
+    # enforcing it there protects nothing and instead traps the operator: a
+    # source registered before this guard (or before `mcp.source_url_strict`
+    # was turned on) would 400 on every update, including the update that turns
+    # it OFF — the one action that actually removes the risk (Devin Review on
+    # #1204). Remediation is now coherent: disable, fix the url, re-enable —
+    # and re-enabling validates, so nothing reaches a live state unchecked.
+    if merged.get("enabled"):
+        url_warning = await _check_source_url_or_400(merged)
+    else:
+        url_warning = ""
 
     was_oauth = (existing.get("auth_method") or "").strip().lower() == "oauth"
     still_oauth = (merged.get("auth_method") or "").strip().lower() == "oauth"
