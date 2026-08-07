@@ -143,3 +143,83 @@ class TestGetSwitch:
     def test_unknown_name_raises(self):
         with pytest.raises(KeyError):
             get_switch("no_such_switch")
+
+
+class TestSwitchValueResolution:
+    """The single resolution order: env > overlay/yaml > default."""
+
+    def test_default_when_nothing_set(self, monkeypatch):
+        import app.switches as sw
+
+        monkeypatch.delenv("AGNES_CHAT_ENABLED", raising=False)
+        monkeypatch.setattr("app.instance_config.get_value", lambda *k, default=None: default)
+        assert sw.switch_value("chat") is False
+
+    def test_yaml_wins_over_default(self, monkeypatch):
+        import app.switches as sw
+
+        monkeypatch.delenv("AGNES_CHAT_ENABLED", raising=False)
+        monkeypatch.setattr("app.instance_config.get_value", lambda *k, default=None: True)
+        assert sw.switch_value("chat") is True
+
+    def test_env_wins_over_yaml(self, monkeypatch):
+        import app.switches as sw
+
+        monkeypatch.setenv("AGNES_CHAT_ENABLED", "0")
+        monkeypatch.setattr("app.instance_config.get_value", lambda *k, default=None: True)
+        assert sw.switch_value("chat") is False
+
+    @pytest.mark.parametrize("raw", ["0", "false", "FALSE", "no", "off", ""])
+    def test_falsy_env_spellings(self, monkeypatch, raw):
+        import app.switches as sw
+
+        monkeypatch.setenv("AGNES_STUDIO_ENABLED", raw)
+        assert sw.switch_value("studio") is False
+
+    @pytest.mark.parametrize("raw", ["1", "true", "YES", "on", "enabled", "banana"])
+    def test_permissive_truthy_env_spellings(self, monkeypatch, raw):
+        """Unrecognized values are TRUE — the documented convention. An
+        operator's intent to enable must not degrade to disabled over a
+        casing mismatch."""
+        import app.switches as sw
+
+        monkeypatch.setenv("AGNES_CHAT_ENABLED", raw)
+        assert sw.switch_value("chat") is True
+
+    def test_unknown_switch_raises(self):
+        import app.switches as sw
+
+        with pytest.raises(KeyError):
+            sw.switch_value("no_such_switch")
+
+
+class TestBackwardCompatibility:
+    def test_feature_flags_still_importable_from_instance_config(self):
+        from app.instance_config import FEATURE_FLAGS
+        from app.switches import SWITCHES
+
+        assert FEATURE_FLAGS is SWITCHES
+
+    def test_feature_enabled_signature_is_unchanged(self, monkeypatch):
+        import app.instance_config as ic
+
+        monkeypatch.delenv("AGNES_TEST_FLAG", raising=False)
+        monkeypatch.setattr(ic, "get_value", lambda *k, default=None: default)
+        assert ic.feature_enabled("a", "b", env_var="AGNES_TEST_FLAG", default=True) is True
+        assert ic.feature_enabled("a", "b", env_var="AGNES_TEST_FLAG", default=False) is False
+
+    def test_registry_entries_still_expose_the_old_attribute_names(self):
+        """`app/api/admin.py` and `app/web/router.py` read `.name`,
+        `.config_keys`, `.env_var`, `.default` and `.description` off registry
+        entries. `Switch` is a superset of `FeatureFlag`, so they keep working."""
+        from app.instance_config import FEATURE_FLAGS
+
+        for flag in FEATURE_FLAGS:
+            assert isinstance(flag.name, str)
+            assert isinstance(flag.config_keys, tuple)
+            assert isinstance(flag.env_var, str)
+            assert isinstance(flag.description, str)
+            assert isinstance(flag.default, bool), (
+                f"{flag.name}: PR1 ports only boolean flags; a non-bool default here means "
+                "a PR2 switch landed without the panel being taught its type"
+            )
