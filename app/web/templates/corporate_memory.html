@@ -317,7 +317,18 @@
   // In-place stack state update — mirrors catalog.html. See that file
   // for the full rationale (avoid full-page reload + scroll loss).
   function _applyStackChange(card, becameInStack) {
+    // Does `in_stack` on these cards mean "a local copy exists" or "member of
+    // the stack"? The macro stamps the answer on every card (#1206), and it
+    // decides what a REMOVAL means here. Under local-copy semantics the
+    // resource stays in the caller's stack after the local copy goes — the
+    // server's My Stack grid is built from `resolver.stack()`, whose
+    // effective set is `required ∪ available ∪ materialized`, so it renders
+    // the item again on the next load. Deleting the card and decrementing the
+    // tab would make it vanish and the count drop, then both come back on
+    // refresh: the same contradictory-count confusion this change set out to
+    // remove, just moved into the optimistic path.
     if (!card) return;
+    const inStackIsLocal = card.dataset.inStackIsLocal === '1';
     card.dataset.inStack = becameInStack ? '1' : '0';
     const id = card.dataset.id;
     if (!id) return;
@@ -389,21 +400,30 @@
         const emptyEl = document.querySelector('[data-view="my"] .stack-empty');
         if (emptyEl) emptyEl.hidden = true;
       } else if (!becameInStack && existingInMy) {
-        existingInMy.remove();
-        if (!myGrid.children.length) {
-          // Both grid + empty-state are server-rendered (one hidden);
-          // swap visibility instead of injecting DOM. Removing the
-          // last card without this left the My Stack tab blank — users
-          // read that as "Remove didn't work, let me refresh".
-          myGrid.hidden = true;
-          const emptyEl = document.querySelector('[data-view="my"] .stack-empty');
-          if (emptyEl) emptyEl.hidden = false;
+        if (inStackIsLocal) {
+          // Local copy dropped, membership untouched: keep the card
+          // where it is. The re-label loop above already switched it
+          // to 'Download locally', which is exactly what a reload
+          // would render.
+        } else {
+          existingInMy.remove();
+          if (!myGrid.children.length) {
+            // Both grid + empty-state are server-rendered (one hidden);
+            // swap visibility instead of injecting DOM. Removing the
+            // last card without this left the My Stack tab blank — users
+            // read that as "Remove didn't work, let me refresh".
+            myGrid.hidden = true;
+            const emptyEl = document.querySelector('[data-view="my"] .stack-empty');
+            if (emptyEl) emptyEl.hidden = false;
+          }
         }
       }
     }
 
     const myEl = document.querySelector('.stack-tabs .count[data-count="my"]');
-    if (myEl) {
+    // Membership is what this badge counts. Under local-copy semantics
+    // neither add nor remove changes it, so the number must not move.
+    if (myEl && !inStackIsLocal) {
       const cur = parseInt(myEl.textContent, 10) || 0;
       myEl.textContent = String(cur + (becameInStack ? 1 : -1));
     }

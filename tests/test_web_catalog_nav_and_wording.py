@@ -95,3 +95,49 @@ def test_the_js_twin_matches_the_macro():
     assert "'Downloaded'" in text
     assert "'Remove local copy' : 'Download locally'" in text
     assert 'data-filter="in_stack">Downloaded<' in text, "the filter chip still reads 'In stack'"
+
+
+# ---------------------------------------------------------------------------
+# What a REMOVAL means also follows the flag, not just what the button says
+# ---------------------------------------------------------------------------
+
+_STACK_PAGES = ("catalog.html", "corporate_memory.html")
+
+
+def test_the_macro_hands_the_flag_to_the_js():
+    """The template alone cannot carry this — the click handler needs it too.
+
+    `_applyStackChange` has to know whether removing means "drop the local
+    copy" (stays in the stack) or "leave the stack". Without the flag in the
+    DOM it can only implement one of the two.
+    """
+    macro = (TEMPLATES / "macros" / "_stack_card.html").read_text(encoding="utf-8")
+    assert "data-in-stack-is-local=" in macro, (
+        "the card must expose `in_stack_is_local` as a data attribute — the JS "
+        "decides what a removal means from it"
+    )
+
+
+def test_removal_keeps_the_card_when_in_stack_means_local_copy():
+    """Removing a local copy must not delete the My Stack card or move the tab.
+
+    Under the local-copy meaning the server's My Stack grid comes from
+    `resolver.stack()`, whose effective set is `required ∪ available ∪
+    materialized` — so the item is still in the stack after its download goes
+    and renders again on the next load. Deleting the card and decrementing the
+    badge makes it vanish and the count drop, then both come back on refresh:
+    the same contradictory-count confusion this change set out to remove,
+    relocated into the optimistic path.
+    """
+    for page in _STACK_PAGES:
+        text = (TEMPLATES / page).read_text(encoding="utf-8")
+        assert "card.dataset.inStackIsLocal === '1'" in text, (
+            f"{page}: `_applyStackChange` must read the flag before deciding what a removal does"
+        )
+        assert "if (inStackIsLocal) {" in text, (
+            f"{page}: the My Stack removal branch must be gated on the flag"
+        )
+        assert "if (myEl && !inStackIsLocal) {" in text, (
+            f"{page}: the My Stack tab count must not move under local-copy semantics — "
+            "membership is what it counts"
+        )

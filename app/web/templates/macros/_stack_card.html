@@ -69,7 +69,14 @@
      data-id="{{ entry.id }}"
      data-requirement="{{ entry.requirement|default('available') }}"
      data-status="{{ _status }}"
-     data-in-stack="{{ '1' if entry.in_stack else '0' }}">
+     data-in-stack="{{ '1' if entry.in_stack else '0' }}"
+     {# Exposed to JS, not only to this template: the flag decides what a
+        REMOVAL means. Where `in_stack` is the local-copy state, removing
+        drops the download and the resource stays in the stack — so the
+        card must stay in the My Stack grid and be re-labelled, not
+        deleted. Where the key still means membership, removing takes it
+        out of the stack and deleting the card is right. #}
+     data-in-stack-is-local="{{ '1' if entry.in_stack_is_local else '0' }}">
   {% if entry.requirement == 'required' %}
     <div class="stack-card__req-badge" title="Required by your organization">Required</div>
   {% elif entry.in_stack %}
