@@ -26,6 +26,43 @@ Otherwise:
 | Scan limits | None (laptop disk) | None (server disk) | `bq_max_scan_bytes` cost gate (default 5 GiB) |
 | Best for | Stable reference data, daily-updated facts | Aggregates, daily snapshots | Big tables, live data, residency-restricted |
 
+## The second axis: `server_only` — queryable, never distributed
+
+`query_mode` decides **where the query runs**. `server_only` decides **whether the parquet leaves the server**. They are independent: a `local` or `materialized` table with `server_only=true` is synced and kept fresh on the server, stays listed in the catalog, stays subject to the same RBAC — but `agnes pull` never downloads it, so it never lands on an analyst laptop.
+
+Use it when the data may be *queried* by a group of people but must not be *copied* onto their machines: HR tables, salary data, anything under a residency or retention rule, or simply a table too large to be worth distributing.
+
+| | Analyst runs `agnes query` | Analyst runs `agnes query --local` | Analyst runs `agnes query --remote` | Parquet on laptop | Listed in catalog |
+|---|---|---|---|---|---|
+| `local` | ✅ local view | ✅ local view | ✅ | ✅ | ✅ |
+| `local` + `server_only` | ✅ falls back server-side | ❌ "table does not exist" | ✅ | ❌ | ✅ |
+| `remote` | ✅ falls back server-side | ❌ "table does not exist" | ✅ | ❌ | ✅ |
+
+The first column is the DEFAULT, `--scope auto`: `agnes query` runs locally
+first and transparently re-runs server-side when the table has no local view,
+printing a `[scope]` note to stderr saying where it ran. The hard failure is
+the `--local` column — `--scope local` is the explicit "do not leave this
+machine" mode, and it is the only one that refuses.
+
+**Register via CLI:**
+
+```bash
+agnes admin register-table salaries \
+    --source-type keboola \
+    --bucket in.c-hr \
+    --source-table salaries \
+    --query-mode local \
+    --server-only
+```
+
+**Register via API:** set `"server_only": true` on `POST /api/admin/register-table`.
+
+`server_only=true` is rejected with `query_mode: remote` — a remote row has no server-stored parquet to suppress, so the pairing is incoherent. Both the CLI and the API validator refuse it.
+
+An analyst querying a `server_only` table with plain `agnes query` gets their answer: the default `--scope auto` finds no local view and re-runs the query server-side, noting `[scope] '<table>' not found locally — running server-side`. Only `--local` / `--scope local` refuses, with a "table does not exist" error and a hint pointing at `--remote`. `agnes catalog` surfaces the flag as the `server_only` field and in `fetch_via`.
+
+`server_only` is therefore a *distribution* control, not an access control: it stops the parquet reaching the laptop, and RBAC alone decides who may read the data. Do not reach for it to hide a table from someone who has been granted it.
+
 ## Per-source-type reference
 
 ### BigQuery — `query_mode: remote`
