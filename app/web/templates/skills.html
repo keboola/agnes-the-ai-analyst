@@ -162,23 +162,24 @@
      control kept the platform's own appearance — OS chevron, OS metrics, OS
      colours in dark theme — so it read as a foreign widget next to the app's
      own menus. Same treatment as `.fbar-select` (filter_toolbar.css): strip
-     the native appearance and draw the chevron on the wrapper, which is why
-     the select needs a positioned parent and right padding to clear it. */
-  .sk-field.sk-field--select { position: relative; }
-  .sk-field.sk-field--select::after {
+     the native appearance and draw the chevron ourselves.
+     The wrapper is what makes the chevron's position exact rather than
+     guessed: it hugs the select, so `top: 50%` is half the CONTROL's height.
+     Positioning against `.sk-field` instead would mean measuring around the
+     label above it — which lands ~1.5px low and drifts further the moment the
+     label wraps onto a second line in a narrow column. */
+  .sk-selectwrap { position: relative; display: block; }
+  .sk-selectwrap::after {
     content: "▾";
     position: absolute;
     right: 12px;
-    /* Anchored to the bottom, not the middle: the select is the field's last
-       child and has a fixed height, whereas the label above it wraps on
-       narrow columns — a centred chevron would drift off the control there. */
-    bottom: 19px;
-    transform: translateY(50%);
+    top: 50%;
+    transform: translateY(-50%);
     font-size: 11px;
     color: var(--ds-text-muted);
     pointer-events: none;
   }
-  .sk-field.sk-field--select select { padding-right: 32px; cursor: pointer; -webkit-appearance: none; appearance: none; }
+  .sk-selectwrap select { padding-right: 32px; cursor: pointer; -webkit-appearance: none; appearance: none; }
   .sk-hint { font-size: 12px; color: var(--ds-text-muted); margin: 6px 0 0; }
   .sk-hint.err { color: var(--ds-accent-danger-ink); }
   /* Guidance attached to a field. On the sunken surface these read as
@@ -956,8 +957,8 @@
               '<label class="sk-field"><span>' + esc(c.descLabel) + ' <em>' + esc(c.descNote) + '</em></span>' +
                 '<textarea rows="2" data-sk-field="description" placeholder="' + esc(c.descPlaceholder) + '">' + esc(draft.description) + '</textarea></label>' +
               fieldErrHtml('description') +
-              '<label class="sk-field sk-field--select"><span>Category</span>' +
-                '<select data-sk-field="category">' + catOptions() + '</select></label>' +
+              '<label class="sk-field"><span>Category</span>' +
+                '<div class="sk-selectwrap"><select data-sk-field="category">' + catOptions() + '</select></div></label>' +
               fieldErrHtml('category') +
             '</div>' +
           '</div>' +

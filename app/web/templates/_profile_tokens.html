@@ -229,14 +229,21 @@
     width: 7px; height: 7px; border-radius: 50%;
     flex-shrink: 0;
   }
-  .status-pill.status-active     { background: rgba(22, 163, 74, 0.12);  color: #15803d; }
-  .status-pill.status-active     .pill-dot { background: #16a34a; }
-  .status-pill.status-expiring   { background: rgba(234, 88, 12, 0.12);  color: #c2410c; }
-  .status-pill.status-expiring   .pill-dot { background: #ea580c; }
-  .status-pill.status-expired    { background: rgba(220, 38, 38, 0.12);  color: #b91c1c; }
-  .status-pill.status-expired    .pill-dot { background: #dc2626; }
-  .status-pill.status-revoked    { background: rgba(107, 114, 128, 0.12); color: #4b5563; }
-  .status-pill.status-revoked    .pill-dot { background: #6b7280; }
+  /* Each pill is a tint + an ink, and the pair has to hold in every theme.
+     The literals these replace were a light-theme pair only: measured against
+     the dark card they ran 1.87–2.97:1, i.e. the pill naming a token's state
+     was the least readable thing on the row. The `--ds-accent-*` pairs are
+     theme-resolved (see design-tokens.css) and clear 6.4–8.5:1 in dark.
+     `revoked` has no accent — it is the absence of a state — so it takes the
+     neutral surface/secondary pair, same as the Everyone group chip. */
+  .status-pill.status-active     { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
+  .status-pill.status-active     .pill-dot { background: var(--ds-accent-success-line); }
+  .status-pill.status-expiring   { background: var(--ds-accent-warn-bg);    color: var(--ds-accent-warn-ink); }
+  .status-pill.status-expiring   .pill-dot { background: var(--ds-accent-warn-line); }
+  .status-pill.status-expired    { background: var(--ds-accent-danger-bg);  color: var(--ds-accent-danger-ink); }
+  .status-pill.status-expired    .pill-dot { background: var(--ds-accent-danger-line); }
+  .status-pill.status-revoked    { background: var(--ds-surface-dim);       color: var(--ds-text-secondary); }
+  .status-pill.status-revoked    .pill-dot { background: var(--ds-text-muted); }
 
   /* ── Revoke button ─────────────────────────────────────────────────────── */
   .revoke-btn {
