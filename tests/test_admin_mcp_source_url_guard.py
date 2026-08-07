@@ -225,3 +225,24 @@ def test_the_admin_probe_will_not_dial_a_refused_url(seeded_app):
     )
     assert r.status_code == 400, r.text
     assert "blocked_range" in r.json()["detail"]
+
+
+def test_the_connectivity_probe_reports_a_refused_url_instead_of_400ing(seeded_app):
+    """`/test` answers 200 with a diagnostic by contract — that is what the
+    button is for. A refused url must therefore be REPORTED, not turned into a
+    400 that withholds the one answer the admin pressed it for; nothing is
+    dialed either way (Devin Review on #1204)."""
+    _seed("src_diag1", url="http://169.254.169.254/mcp", transport="stdio", command="/bin/thing")
+    seeded_app["client"].put(
+        "/api/admin/mcp-sources/src_diag1",
+        headers=_auth(seeded_app),
+        json={"transport": "http", "enabled": False},
+    )
+    r = seeded_app["client"].post(
+        "/api/admin/mcp-sources/src_diag1/test",
+        headers=_auth(seeded_app),
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is False
+    assert "blocked_range" in (body["error"] or "")

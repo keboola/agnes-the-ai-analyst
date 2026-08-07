@@ -580,6 +580,43 @@ def _require_safe_source_name(name: str) -> None:
         )
 
 
+async def _source_url_verdict(row: dict):
+    """The source-url verdict for a row, or ``None`` when the url is not live.
+
+    Split out of :func:`_check_source_url_or_400` so a caller can *report* the
+    verdict instead of refusing on it. The connectivity-test probe needs that:
+    its contract is HTTP 200 with a diagnostic, so answering a refused url with
+    a 400 would withhold the one answer the admin pressed the button for.
+
+    ``None`` for ``stdio``: there the secret goes into the subprocess
+    environment and ``url`` is never dialed — it is inert documentation, and
+    refusing a note nobody connects to would be theatre. Mirrors the same
+    transport test the credential purge uses, so the two agree about when a url
+    is live.
+
+    ``check_source_url`` does a BLOCKING ``getaddrinfo``; callers are ``async
+    def`` handlers, so it goes through ``asyncio.to_thread`` rather than
+    stalling the event loop for the resolver timeout — same hazard, and same
+    remedy, as ``set_oauth_client_config``.
+    """
+    if (row.get("transport") or "") not in ("http", "sse"):
+        return None
+    from app.instance_config import get_mcp_source_url_strict, get_ssrf_allowed_hosts
+    from src.net.mcp_source_url import check_source_url
+
+    strict = get_mcp_source_url_strict()
+    # The SAME allowlist every other admin-configured URL consults
+    # (`_validate_url_not_private` in app/api/admin.py). A host an operator has
+    # already declared trusted must not have to be declared twice.
+    return await asyncio.to_thread(
+        lambda: check_source_url(
+            row.get("url") or "",
+            strict=strict,
+            allowed_hosts=get_ssrf_allowed_hosts(),
+        )
+    )
+
+
 async def _check_source_url_or_400(row: dict) -> str:
     """Gate a source row's ``url`` (#1154). Returns the warning to audit, if any.
 
@@ -593,22 +630,12 @@ async def _check_source_url_or_400(row: dict) -> str:
     stalling the event loop for the resolver timeout — same hazard, and same
     remedy, as ``set_oauth_client_config``.
     """
-    if (row.get("transport") or "") not in ("http", "sse"):
+    verdict = await _source_url_verdict(row)
+    if verdict is None:
         return ""
-    from app.instance_config import get_mcp_source_url_strict, get_ssrf_allowed_hosts
-    from src.net.mcp_source_url import check_source_url
+    from app.instance_config import get_mcp_source_url_strict
 
     strict = get_mcp_source_url_strict()
-    # The SAME allowlist every other admin-configured URL consults
-    # (`_validate_url_not_private` in app/api/admin.py). A host an operator has
-    # already declared trusted must not have to be declared twice.
-    verdict = await asyncio.to_thread(
-        lambda: check_source_url(
-            row.get("url") or "",
-            strict=strict,
-            allowed_hosts=get_ssrf_allowed_hosts(),
-        )
-    )
     if not verdict.ok:
         raise HTTPException(
             status_code=400,
@@ -1537,20 +1564,25 @@ async def test_mcp_source(
     src = src_repo.get(source_id)
     if not src:
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
-    # A probe DIALS the source, with a credential attached, exactly as a
-    # forward does — so it takes the same configuration-time check. Without
-    # this the admin probes were the one path that could reach a url the
-    # guard refuses: the two runtime forwards re-fetch the row and stop on
-    # `enabled`, but these do not, so "a disabled source is never dialed"
-    # held for the forwards and not for here (Devin Review on #1204).
-    await _check_source_url_or_400(src)
-    try:
-        tools = await mcp_extractor.introspect_source_async(src, caller_user_id=_probe_caller_user_id(src, user))
-        result = {"ok": True, "tool_count": len(tools), "error": None}
-    except Exception as exc:
-        summary = _exc_summary(exc)
-        logger.warning("test connection failed for source %s: %s", source_id, summary)
-        result = {"ok": False, "tool_count": 0, "error": summary}
+    # This probe dials like the others, so it must not reach a refused url —
+    # but it REPORTS rather than refuses. The contract above ("HTTP 200 even on
+    # connect failure so the UI can render the diagnostic") is the whole point
+    # of the button: an admin presses it to find out what is wrong. Answering a
+    # refused url with a 400 would withhold the one answer they came for, which
+    # is worse than either the unguarded version or a plain refusal. So the
+    # verdict becomes the diagnostic, and nothing is dialed
+    # (Devin Review on #1204).
+    verdict = await _source_url_verdict(src)
+    if verdict is not None and not verdict.ok:
+        result = {"ok": False, "tool_count": 0, "error": f"url failed validation: {verdict.reason}"}
+    else:
+        try:
+            tools = await mcp_extractor.introspect_source_async(src, caller_user_id=_probe_caller_user_id(src, user))
+            result = {"ok": True, "tool_count": len(tools), "error": None}
+        except Exception as exc:
+            summary = _exc_summary(exc)
+            logger.warning("test connection failed for source %s: %s", source_id, summary)
+            result = {"ok": False, "tool_count": 0, "error": summary}
     _audit(
         conn,
         user["id"],
