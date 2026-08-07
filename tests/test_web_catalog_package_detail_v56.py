@@ -119,7 +119,7 @@ class TestBadges:
             headers=_auth(seeded_app["analyst_token"]),
         )
         body = r.text
-        assert 'class="ds-trust ds-trust--org ds-trust--label"' in body   # icon + word
+        assert 'class="ds-trust ds-trust--org ds-trust--label"' in body  # icon + word
         assert 'data-tip="Published by your organization."' in body
         assert 'aria-label="Published by your organization."' in body
         # The retired derived badge must not come back. Matched as the rendered
@@ -129,19 +129,29 @@ class TestBadges:
         assert ">Curated<" not in body
 
     def test_default_theme_hero_keeps_its_amber_curated_badge(self, seeded_app, monkeypatch):
-        """The DEFAULT hero is unchanged. `.ds-trust` is paper-only, so blue keeps
-        the amber badge it has always shown — now driven by the stored
-        publisher_kind rather than the creator's live Admin-group membership, so
-        it no longer disappears when an admin leaves the group."""
+        """The DEFAULT hero is unchanged — literally: a default instance renders
+        the frozen pre-redesign page (catalog_package_detail_legacy.html via
+        `_detail_template`, see TestDetailPageParity), whose amber
+        `pkg-badge--curated` is the badge it has always shown — now driven by
+        the stored publisher_kind (the shared handler computes `badges`) rather
+        than the creator's live Admin-group membership, so it no longer
+        disappears when an admin leaves the group."""
         monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
         pid, slug = _seed_pkg(created_by="admin1", publisher_kind="organization")
         _grant_everyone(pid)
-        body = seeded_app["client"].get(
-            f"/catalog/p/{slug}",
-            headers=_auth(seeded_app["analyst_token"]),
-        ).text
-        assert 'class="detail-badge detail-badge--curated"' in body
+        body = (
+            seeded_app["client"]
+            .get(
+                f"/catalog/p/{slug}",
+                headers=_auth(seeded_app["analyst_token"]),
+            )
+            .text
+        )
+        assert 'class="pkg-badge pkg-badge--curated"' in body
+        assert ">Curated<" in body
         assert 'class="ds-trust' not in body
+        assert "detail-badge" not in body, "redesigned badge markup must not reach default instances"
 
     def test_user_published_package_shows_no_trust_marker(self, seeded_app):
         """A package has no verification workflow — there is no reviewer for one to

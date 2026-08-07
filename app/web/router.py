@@ -3856,6 +3856,19 @@ async def catalog_package_detail(
         if (datetime.now(_tz.utc) - ts) < timedelta(days=30):
             badges.append("new")
 
+    # The frozen pre-redesign page states the trust claim through this list
+    # (its amber `pkg-badge--curated` chip); the redesigned page states it
+    # through its own publisher marker instead. Scope the append to the
+    # legacy path so the retired chip cannot resurface on the redesign — and
+    # drive it off the STORED publisher_kind, not the retired live
+    # Admin-membership derivation, so the legacy page keeps the exact visible
+    # state the v114 backfill froze.
+    if (
+        _detail_template("catalog_package_detail").endswith("_legacy.html")
+        and pkg.get("publisher_kind") == "organization"
+    ):
+        badges.append("curated")
+
     total_size = sum(t["size_bytes"] for t in tables)
     ctx = _build_context(
         request,
