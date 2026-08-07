@@ -273,7 +273,11 @@
               'box-shadow:0 4px 12px rgba(0,0,0,.2); z-index:3000;';
             document.body.appendChild(hintEl);
           }
-          hintEl.textContent = 'g … (t a m u g s l c k r v)';
+          {# The advertised keys mirror MAP exactly — the `v` entry is gated
+             on store_verification_on() above, so its hint letter carries the
+             same gate or admins are taught a dead shortcut (Devin Review on
+             #1200). #}
+          hintEl.textContent = 'g … (t a m u g s l c k r{% if store_verification_on() %} v{% endif %})';
           hintEl.style.display = 'block';
         }
         function _hideHint() {
