@@ -666,7 +666,7 @@ class TestRailChatHistory:
         assert "(done / total) * 100" in body
         assert 'classList.toggle("is-complete"' in body
 
-    def test_new_token_button_cancels_the_summary_toggle(self, web_client, admin_cookie):
+    def test_new_token_button_cancels_the_summary_toggle(self, web_client, admin_cookie, monkeypatch):
         """`+ New token` lives inside a <summary>, so it must cancel the disclosure.
 
         stopPropagation() alone is NOT enough and was the original bug: it keeps
@@ -674,7 +674,12 @@ class TestRailChatHistory:
         default ACTIVATION BEHAVIOUR, which only preventDefault() cancels. With
         just the former, minting a token also collapsed the section it was
         launched from.
+
+        Rail-pinned: the <summary>-hosted token panel is the REDESIGNED
+        profile's; the default chrome serves the frozen pre-redesign page
+        (spec 2026-08-07 wave 2), whose classic panel has no disclosure.
         """
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/me/profile", cookies=admin_cookie)
         assert resp.status_code == 200
         marker = 'id="new-token-btn"'
