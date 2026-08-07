@@ -279,3 +279,33 @@ class TestRailClassicCatalogContracts:
         assert "Add to stack" in body
         assert "Download locally" not in body
         assert "Remove local copy" not in body
+
+
+class TestRailClassicLedeMatchesTheGrid:
+    """The lede must describe what the tabs actually hold.
+
+    Rail + classic is reachable per-knob (`ui_layout: rail` without the
+    redesign preset) and has no prior art. Its Data/Memory tabs list the FULL
+    granted set — the one-contract-across-kinds decision pinned by
+    `TestRailClassicCatalogContracts` — so the auto-membership copy "data and
+    memory you've already been granted live in My Stack, not here" would have
+    contradicted the grid directly below it (Devin on #1199).
+    """
+
+    def _lede(self, seeded_app):
+        body = seeded_app["client"].get("/catalog", headers=_auth(seeded_app["analyst_token"])).text
+        start = body.index('<p class="lede">')
+        return body[start : body.index("</p>", start)]
+
+    def test_classic_lede_does_not_claim_granted_data_is_elsewhere(self, seeded_app, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        monkeypatch.delenv("AGNES_STACK_AUTO_MEMBERSHIP", raising=False)
+        lede = self._lede(seeded_app)
+        assert "not here" not in lede, "classic lists granted data on this page — the lede must not deny it"
+        assert "not yet added" in lede
+
+    def test_auto_membership_keeps_the_original_copy(self, seeded_app, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        monkeypatch.setenv("AGNES_STACK_AUTO_MEMBERSHIP", "1")
+        lede = self._lede(seeded_app)
+        assert "not here" in lede, "auto-membership copy changed — that surface is not what this PR touches"

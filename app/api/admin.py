@@ -1393,11 +1393,19 @@ def _known_fields_resolved() -> dict:
     """
     import copy
 
-    from app.instance_config import preset_flag_default, preset_knob_default
+    from app.instance_config import get_experience, preset_flag_default, preset_knob_default
 
     fields = copy.deepcopy(_KNOWN_FIELDS)
     fields["features"]["stack_auto_membership"]["default"] = preset_flag_default("stack_auto_membership")
     fields["instance"]["theme"]["default"] = preset_knob_default("theme")
+    # The preset ITSELF, not just the leaves it couples. On an instance that
+    # sets it by env (`AGNES_INSTANCE_EXPERIENCE=redesign`) the panel rendered
+    # the static `classic` for the unset key, so a routine section save wrote
+    # `instance.experience: classic` into the overlay — invisible while the
+    # env var is present, and a silent revert of the whole preset the day the
+    # operator drops it. Same failure mode as the coupled leaves above, one
+    # tier up (Devin on #1199).
+    fields["instance"]["experience"]["default"] = get_experience()
     return fields
 
 

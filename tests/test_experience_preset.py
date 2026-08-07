@@ -114,3 +114,63 @@ class TestStackAutoMembershipFlag:
             lambda *keys, default=None: True if keys == ("features", "stack_auto_membership") else default,
         )
         assert ic.get_stack_auto_membership() is True
+
+
+# ---------------------------------------------------------------------------
+# The editable-field registry must never render a default the runtime ignores
+# ---------------------------------------------------------------------------
+
+
+def test_the_preset_itself_resolves_its_panel_default(monkeypatch):
+    """An env-set preset must not be reported as `classic` by the panel.
+
+    `collectSection` posts every rendered leaf, so whatever the panel shows
+    for an UNSET key is what a routine "Save section" persists. Rendering the
+    static `classic` on an `AGNES_INSTANCE_EXPERIENCE=redesign` instance wrote
+    `instance.experience: classic` into the overlay — harmless while the env
+    var is present (env wins) and a silent revert of the entire preset the day
+    it is dropped (Devin on #1199).
+    """
+    import app.instance_config as ic
+    from app.api.admin import _known_fields_resolved
+
+    monkeypatch.setenv("AGNES_INSTANCE_EXPERIENCE", "redesign")
+    ic.reset_cache()
+    assert _known_fields_resolved()["instance"]["experience"]["default"] == "redesign"
+
+    monkeypatch.delenv("AGNES_INSTANCE_EXPERIENCE", raising=False)
+    ic.reset_cache()
+    assert _known_fields_resolved()["instance"]["experience"]["default"] == "classic"
+
+
+def test_every_preset_coupled_knob_in_the_registry_is_resolved(monkeypatch):
+    """The durable half: assert the COUPLING TABLE, not three literals.
+
+    The resolver has now been extended three times, each time because one
+    coupled knob had been missed. Rather than trusting the next enumeration,
+    walk `preset_knob_default` / `preset_flag_default` — the single source of
+    the mapping — and require that any coupled key which the panel actually
+    renders differs between the two presets.
+    """
+    import app.instance_config as ic
+    from app.api.admin import _KNOWN_FIELDS, _known_fields_resolved
+
+    coupled = [("instance", "theme"), ("instance", "ui_layout"), ("features", "stack_auto_membership")]
+    coupled = [(s, k) for s, k in coupled if "default" in _KNOWN_FIELDS.get(s, {}).get(k, {})]
+    assert coupled, "the coupling table drifted — no coupled knob is rendered at all"
+
+    seen = {}
+    for preset in ("classic", "redesign"):
+        monkeypatch.setenv("AGNES_INSTANCE_EXPERIENCE", preset)
+        ic.reset_cache()
+        fields = _known_fields_resolved()
+        seen[preset] = {(s, k): fields[s][k]["default"] for s, k in coupled}
+        seen[preset][("instance", "experience")] = fields["instance"]["experience"]["default"]
+    monkeypatch.delenv("AGNES_INSTANCE_EXPERIENCE", raising=False)
+    ic.reset_cache()
+
+    for key in seen["classic"]:
+        assert seen["classic"][key] != seen["redesign"][key], (
+            f"{key[0]}.{key[1]} renders the same panel default under both presets — "
+            "it is preset-coupled at runtime but static in the registry"
+        )
