@@ -45,6 +45,14 @@
     overflow-y: auto;
     display: flex;
     flex-direction: column;
+    /* `align-items` and `gap` were inherited from the bare `nav {}` rule in
+       style-custom.css until #1207 removed it. This element overrode only
+       `display`, so it was a silent dependent of the other two: without them
+       the links lose their 15px separation and stretch to full width instead
+       of centring. Declared here so the removal changes nothing that renders
+       (Devin Review on #1211). */
+    align-items: center;
+    gap: 15px;
     padding: 12px 0 8px;
   }
   /* Group label — visually non-clickable: all-caps, muted, no cursor affordance */

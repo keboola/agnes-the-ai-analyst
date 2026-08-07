@@ -74,11 +74,13 @@ html[data-ui-layout="rail"] .rail {
     border-right: 1px solid var(--ds-border);
     display: flex;
     flex-direction: column;
-    /* Stretch children to the rail's inner width. The legacy
-     * style-custom.css has a global `nav { align-items: center }` rule
-     * that otherwise cascades onto this <nav>, collapsing every item to
-     * its content width and centering it — which reads as a large,
-     * uneven side padding. Pin stretch here to neutralize it. */
+    /* Stretch children to the rail's inner width. This was originally
+     * pinned to neutralize a global `nav { align-items: center }` rule in
+     * style-custom.css, which cascaded onto this <nav> and collapsed every
+     * item to its content width. That rule is gone (#1207 — it was also
+     * silently breaking the semantic layer's category sidebar), but stretch
+     * stays declared explicitly rather than relying on the flex default,
+     * so the rail's layout never depends on the absence of a global rule. */
     align-items: stretch;
     gap: 2px;
     padding: 16px 12px;
