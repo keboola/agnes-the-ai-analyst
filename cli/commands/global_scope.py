@@ -113,9 +113,37 @@ def _mcp_entry_info() -> tuple[str, Optional[str]]:
     if scope is None or not scope.lower().startswith("user config"):
         return "absent", None
     is_ours = (
-        command is not None and Path(command).name.lower() in ("agnes", "agnes.exe", "agnes.cmd") and args == "mcp"
+        command is not None
+        and Path(command).name.lower() in ("agnes", "agnes.exe", "agnes.cmd")
+        and _args_are_mcp(args)
     )
     return ("ours" if is_ours else "foreign"), command
+
+
+def _args_are_mcp(args: Optional[str]) -> bool:
+    """Whether the rendered args are the `mcp` subcommand and nothing else.
+
+    Tolerant of how they are printed, because the alternative fails in the
+    worst direction. `mcp get` has no `--json`, so this is screen-scraping: if
+    a future `claude` renders args as `["mcp"]`, quotes them, or folds them
+    into `Command:` and drops the line, an exact `== "mcp"` test flips EVERY
+    enrolled machine to `foreign` at once — convergence starts reporting
+    `skipped … re-run with --force`, `status` reports `drifted`, and `disable`
+    declines to remove the entry it created itself (Devin on #1184).
+
+    Strictness lives in the binary check above, which is the real
+    discriminator: an entry named `agnes` whose command IS the agnes launcher
+    is ours whatever the args rendering. Absent args count — that is the
+    fold-into-Command shape — but a second argument does not, so a genuinely
+    different invocation still reads as foreign.
+    """
+    if args is None:
+        return True
+    tokens = [t.strip().strip("\"'") for t in args.strip().strip("[]").split(",")]
+    tokens = [t for t in (tok for tok in tokens) if t]
+    if len(tokens) == 1 and " " in tokens[0]:
+        tokens = tokens[0].split()
+    return tokens in ([], ["mcp"])
 
 
 def _mcp_entry_state() -> str:
@@ -392,10 +420,17 @@ def disable(
 
     from cli.commands.refresh_marketplace import _list_installed_agnes_plugins
 
+    # Every artifact this layer installed keeps loading in EVERY repository
+    # until it is actually removed, so the off flag may only be written once
+    # the removals really happened. Anything left behind is recorded here and
+    # keeps the layer marked enabled — see the flag decision at the end.
+    left_behind: list[str] = []
+
     base = _claude_cmd()
     installed = _list_installed_agnes_plugins("user") if base else None
     if installed:
         removed: list[str] = []
+        failed: list[str] = []
         for name in sorted(installed):
             result = subprocess.run(
                 [*base, "plugin", "uninstall", f"{name}@agnes", "--scope", "user"],
@@ -405,34 +440,84 @@ def disable(
                 errors="replace",
                 check=False,
             )
-            if result.returncode == 0:
-                removed.append(name)
-        report.append({"stage": "plugins", "status": "removed", "detail": ", ".join(removed) or "none"})
+            (removed if result.returncode == 0 else failed).append(name)
+        if failed:
+            left_behind.append(f"plugins: {', '.join(failed)}")
+        report.append(
+            {
+                "stage": "plugins",
+                "status": "error" if failed else "removed",
+                "detail": (f"removed {', '.join(removed) or 'none'}; FAILED {', '.join(failed)}")
+                if failed
+                else (", ".join(removed) or "none"),
+            }
+        )
     elif installed is None:
+        left_behind.append("plugins: could not be listed")
         report.append({"stage": "plugins", "status": "unknown", "detail": "`claude` CLI unavailable — nothing changed"})
     else:
         report.append({"stage": "plugins", "status": "ok", "detail": "no user-scope stack plugins installed"})
 
     state = _mcp_entry_state()
     if state == "ours" and base:
-        subprocess.run(
+        rm = subprocess.run(
             [*base, "mcp", "remove", MCP_SERVER_NAME, "-s", "user"],
             capture_output=True,
             text=True,
             check=False,
         )
-        report.append({"stage": "mcp", "status": "removed", "detail": "user-scope entry removed"})
+        if rm.returncode != 0:
+            left_behind.append("mcp: entry could not be removed")
+        report.append(
+            {
+                "stage": "mcp",
+                "status": "removed" if rm.returncode == 0 else "error",
+                "detail": "user-scope entry removed" if rm.returncode == 0 else f"remove exited {rm.returncode}",
+            }
+        )
+    elif state == "ours" and not base:
+        # `_mcp_entry_state` needs `claude` too, so this is unreachable today;
+        # keep the arm so a future probe change cannot make it fall through to
+        # the "no entry" branch and silently under-report.
+        left_behind.append("mcp: `claude` CLI unavailable")
+        report.append({"stage": "mcp", "status": "unknown", "detail": "`claude` CLI unavailable"})
     elif state == "foreign":
+        # Not ours to remove, so not something disable owes the user — the
+        # layer we installed is gone either way.
         report.append(
             {"stage": "mcp", "status": "skipped", "detail": "entry named 'agnes' is not ours — left in place"}
         )
     else:
         report.append({"stage": "mcp", "status": "ok", "detail": "no entry"})
 
-    report.append(
-        {"stage": "rails", "status": remove_rails_block(user_claude_md_path()), "detail": str(user_claude_md_path())}
-    )
-    report.append({"stage": "hook", "status": remove_user_session_hook(), "detail": "user-level SessionStart"})
+    rails = remove_rails_block(user_claude_md_path())
+    if rails == "skipped_malformed":
+        left_behind.append("rails: block left in ~/.claude/CLAUDE.md")
+    report.append({"stage": "rails", "status": rails, "detail": str(user_claude_md_path())})
+
+    hook = remove_user_session_hook()
+    if hook == "skipped_malformed":
+        left_behind.append("hook: user-level SessionStart left in settings.json")
+    report.append({"stage": "hook", "status": hook, "detail": "user-level SessionStart"})
+
+    # The flag is the LAST thing written, and only when nothing was left
+    # behind. Flipping it regardless was the real hazard: the skills and the
+    # tool entry keep loading in every repository the user opens, while the
+    # config says the layer is off — so `agnes update` stops converging it and
+    # nothing is left that would ever clean them up. A partial disable is
+    # therefore still "enabled": the layer stays managed, and re-running
+    # `agnes global disable` finishes the job (Devin on #1184).
+    if left_behind:
+        report.append(
+            {
+                "stage": "flag",
+                "status": "skipped",
+                "detail": ("left enabled — still installed: " + "; ".join(left_behind) + ". Fix, then re-run."),
+            }
+        )
+        _print_report(report, as_json=as_json)
+        raise typer.Exit(1)
+
     save_config({"global_scope": False, "global_hook": False})
     report.append({"stage": "flag", "status": "ok", "detail": "global_scope=false"})
     _print_report(report, as_json=as_json)
