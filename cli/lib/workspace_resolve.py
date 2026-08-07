@@ -37,6 +37,15 @@ def is_workspace_shaped(p: Path) -> bool:
 
 
 def resolve_data_workspace() -> Optional[Path]:
+    # `if env_dir:` — an EMPTY `AGNES_LOCAL_DIR` falls through to the chain
+    # below rather than meaning cwd, which the old inline
+    # `Path(os.environ.get("AGNES_LOCAL_DIR", ".")).resolve()` did via
+    # `Path("")`. Deliberate: an exported-but-empty override is a caller bug,
+    # and silently reading it as "this directory" is how a data command ends
+    # up pointed at a random repository. Audited against every producer in the
+    # tree — nothing sets this variable outside tests, and every test sets a
+    # non-empty value — so no runner reaches the changed branch
+    # (Devin on #1184).
     env_dir = os.environ.get("AGNES_LOCAL_DIR")
     if env_dir:
         return Path(env_dir).resolve()
