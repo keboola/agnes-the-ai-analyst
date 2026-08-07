@@ -50,7 +50,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   concluded it was queryable. Hive parts are read through
   `union_by_name` + `hive_partitioning` — the same expression the Jira extract's
   own view uses — so part schemas that drift month to month still union, and the
-  `month=` directory key comes back as a column rather than being dropped.
+  `month=` directory key comes back as a column rather than being dropped. That
+  expression is one shared constant (`app.utils.LOCAL_PARQUET_READ_EXPR`) rather
+  than three hand-written copies, because the resolver's return value is only
+  safe to read one way and a docstring saying so did not hold: preview, schema
+  and scan all resolve through it, and the preview one would otherwise have kept
+  a bare `read_parquet(?)` and silently served a Jira table missing whichever
+  columns first appeared in a later month — no error, just absent data.
 
 - The distribution mirror no longer warns that a healthy partitioned table has
   "no on-disk parquet" — the same message a genuinely broken sync produces. Such
