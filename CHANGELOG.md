@@ -28,6 +28,29 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **`docs/QUICKSTART.md`'s `agnes admin register-table` example could not be copy-pasted**: it omitted the required positional table name and passed `--table`, which is not a flag (the option is `--source-table`). **`docs/PLATFORM_SETUP.md` named `instance.yaml` fields that do not exist** — `instance.url` and `auth.google.domain` / `auth.email.allowed_domains`; the real keys are `server.hostname` / `server.public_url` and the flat `auth.allowed_domain`. Closes #1192.
 
 - **An agent persona no longer silently strips the platform's data-access rails.** A non-empty `agents.system_prompt` makes `ChatManager._spawn_live` materialize a persona `CLAUDE.md` that *replaces* the workspace one (`WorkdirManager._materialize_profile`) — by design, but it also took the analyst data rails with it. The sandbox still had the `agnes` CLI, the Agnes MCP server, and every granted passthrough tool, yet nothing left told the agent that the organization's data lives behind `agnes catalog`; the observed behavior was an agent hunting through whatever other MCP servers its scope exposed until a human said "use Agnes". `agent_profile.build_profile` now appends a compact `DATA_ACCESS_RAILS` section (discovery chain, "never enumerate from memory", canonical metric lookup, and a pointer to `agnes skills show agnes-data-querying`) to every persona, so a persona overrides the rails' tone and task but never their existence. Affects all four sandbox-spawning surfaces — web chat, Slack DM/thread, `agnes chat <slug>`, and the one-shot agent API (`POST /api/v1/agents/{slug}/responses`), where no human is in the loop to correct it. Agents with no persona are untouched (the workspace `CLAUDE.md` stays symlinked in), as are the built-in authoring profiles in `app/chat/profiles.py`, which are Agnes-authored and already scoped to their own non-analyst task. The `/agents` builder's Identity section now says so, so persona authors know not to restate data instructions in Instructions.
+- The remaining read surfaces now see a partition-synced table's data, the way
+  the preview already did in 0.83.0. That sync stores a table as a DIRECTORY of
+  per-period parquets, so the single-file lookup found nothing and a healthy,
+  fully-synced table looked empty everywhere else too: `GET /api/v2/schema/<id>`
+  404-ed, `POST /api/v2/scan` 404-ed, and the catalog's `rough_size_hint` came
+  back `null`. Schema and scan now resolve either layout and read every
+  partition; the catalog reports the SUM of the partition sizes — the same
+  rollup the extractor writes to `_meta.size_bytes` and the sync state to
+  `file_size_bytes`, so the three agree. `POST /api/catalog/profile/<table>
+  /refresh` reaches such a table too — the profiler always understood a
+  directory of parts and the nightly run passes it one; only this manual
+  refresh could not find it. An empty partition directory still counts as "no
+  data yet" on every one of these surfaces, because that genuinely is the
+  pending-first-sync case.
+
+- The distribution mirror no longer warns that a healthy partitioned table has
+  "no on-disk parquet" — the same message a genuinely broken sync produces. Such
+  a table is now skipped deliberately: the object-store mirror addresses one
+  `<table_id>.parquet` object per table, and a partitioned table has none.
+  Analysts are unaffected — `agnes pull` already syncs it part-by-part over the
+  app-served `/api/data/<id>/download?part=` route, which never consults the
+  mirror. Mirroring per-part objects (and presigning them) would have to change
+  the manifest and the CLI together, so it stays out of this change.
 
 ### Removed
 
