@@ -545,6 +545,77 @@ class TestSourceConnectionsTables:
 
         assert resp.status_code == 502
 
+    def test_an_empty_200_listing_also_falls_back_to_bucket_permissions(self, seeded_app):
+        """Some token shapes get a 200 with an empty array, not a 403.
+
+        That was indistinguishable from an empty project, so the picker reported
+        "no buckets visible to this token" and the fallback never ran — the exact
+        scenario the fallback exists for (Devin Review on #1189).
+        """
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create(c, token, name="test-kbc-empty200")
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.list_buckets",
+                return_value=[],
+            ),
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                return_value={"bucketPermissions": {"in.c-main": "read"}},
+            ),
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.list_tables",
+                return_value=[
+                    {"id": "in.c-main.orders", "name": "orders", "rowsCount": 7, "dataSizeBytes": 64},
+                ],
+            ),
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.get_bucket",
+                return_value={"id": "in.c-main", "name": "main", "stage": "in", "description": ""},
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+            patch.dict("os.environ", {"KEBOOLA_STORAGE_TOKEN": "fake-token"}),
+        ):
+            resp = c.get(f"{BASE}/{conn_id}/tables", headers=_auth(token))
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["scope"] == "token_buckets"
+        assert [b["id"] for b in data["buckets"]] == ["in.c-main"]
+
+    def test_a_genuinely_empty_project_stays_empty_and_does_not_error(self, seeded_app):
+        """The same empty-listing retry must not turn a real empty project into a
+        502: with no bucketPermissions there is nothing to enumerate, so the
+        empty project-wide answer stands."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create(c, token, name="test-kbc-trulyempty")
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.list_buckets",
+                return_value=[],
+            ),
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.list_tables",
+                return_value=[],
+            ),
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                return_value={"bucketPermissions": {}},
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+            patch.dict("os.environ", {"KEBOOLA_STORAGE_TOKEN": "fake-token"}),
+        ):
+            resp = c.get(f"{BASE}/{conn_id}/tables", headers=_auth(token))
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["buckets"] == []
+        assert data["scope"] == "project"
+
     def test_a_transient_failure_does_not_trigger_the_per_bucket_loop(self, seeded_app):
         """Only a refusal justifies the fallback, not any failure.
 

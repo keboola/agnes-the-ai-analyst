@@ -24,7 +24,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   see — so a brief network blip on a full-access token could stall "Browse &
   register tables" for minutes on a large project and then label the token as
   bucket-scoped. The fallback is now entered only for a refusal (401/403), which
-  is the case it exists for; a 5xx or a connection error surfaces as itself.
+  is the case it exists for; a 5xx or a connection error surfaces as itself. A
+  refusal is also not the only way a scoped token hides the project — some token
+  shapes answer `/v2/storage/buckets` with a 200 and an EMPTY array instead of a
+  403, which was indistinguishable from an empty project, so the picker said "no
+  buckets visible to this token" and the per-bucket path never ran. An empty
+  listing now retries the same way; a genuinely empty project keeps its empty
+  answer, because a token with no `bucketPermissions` has nothing to enumerate.
 
 - Keboola's semantic layer now attaches to tables registered by the pre-fix
   wizard. `table_lookup_from_registry` keyed its lookup on the raw

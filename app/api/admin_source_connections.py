@@ -596,6 +596,33 @@ async def list_connection_tables(
             # project-wide failure is the real story.
             raise HTTPException(status_code=502, detail=f"keboola_storage_api_error: {exc}") from exc
         scope = "token_buckets"
+    else:
+        # A refusal is not the only way a scoped token hides the project: some
+        # token shapes get a 200 with an EMPTY array from /v2/storage/buckets
+        # instead of a 403. That looked identical to an empty project, so the
+        # picker said "no buckets visible to this token" and the fallback never
+        # ran — the exact case this endpoint's fallback exists for
+        # (Devin Review on #1189).
+        #
+        # Safe for a genuinely empty project: `_scoped_listing` returns
+        # (None, None) when the token carries no bucketPermissions, and we keep
+        # the empty project-wide answer. Cost there is one extra verify_token.
+        if not buckets:
+            try:
+                scoped_buckets, scoped_tables = await run_in_threadpool(_scoped_listing, client, connection_id)
+            except (StorageApiError, requests.RequestException) as scoped_exc:
+                # The project-wide call succeeded, so an empty answer is still a
+                # valid one — don't turn a working (if empty) picker into a 502.
+                logger.warning(
+                    "connection %s: empty project-wide listing, and the per-bucket "
+                    "retry failed too (%s); reporting the empty project view",
+                    connection_id,
+                    scoped_exc,
+                )
+                scoped_buckets = scoped_tables = None
+            if scoped_buckets:
+                buckets, tables = scoped_buckets, scoped_tables or []
+                scope = "token_buckets"
 
     tables_by_bucket: Dict[str, List[Dict[str, Any]]] = {}
     for t in tables:
