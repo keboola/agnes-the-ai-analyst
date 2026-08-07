@@ -12,6 +12,20 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+### Internal
+
+### Security
+
+## [0.83.0] - 2026-08-07
+
+### Added
+
 - Admin "Browse & register tables" now works with bucket-scoped (custom access) Keboola tokens: when the project-wide `/buckets` + `/tables` listings are refused, the endpoint falls back to enumerating the token's own `bucketPermissions` per bucket, so the picker shows exactly the buckets the token can read. The response carries a `scope` field (`"project"` or `"token_buckets"`) and the picker renders a note when the listing is token-limited. Upstream listing failures are logged with the connection id, and network-level errors (DNS, refused connection, TLS) surface as a clean 502 `keboola_storage_api_error` detail instead of a generic 500.
 
 ### Changed
