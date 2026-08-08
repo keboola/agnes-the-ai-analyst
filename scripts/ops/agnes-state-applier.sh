@@ -239,7 +239,15 @@ if os.path.exists(path):
             "Rewriting from an empty base would drop every operator-set "
             "section."
         )
-    except yaml.YAMLError:
+    except (yaml.YAMLError, UnicodeDecodeError):
+        # UnicodeDecodeError is a ValueError, so it reaches neither the OSError
+        # arm above nor this one unless it is named — and it is the shape a
+        # partial write actually produces. Left to propagate it exits non-zero,
+        # which the caller now reads as a refused rollback and answers by
+        # leaving app+scheduler down with nothing to bring them back. Garbled
+        # bytes are a malformed file, same as unparseable YAML: recoverable by
+        # rewriting, so they take the lenient path. Mirrors the split in
+        # app/instance_config.py.
         existing = {}
 db = dict(existing.get("database") or {})
 db["backend"] = backend
