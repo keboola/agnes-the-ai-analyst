@@ -30,7 +30,9 @@ def _create_branch(body: str) -> str:
 
 def test_tpl_chmods_instance_yaml():
     body = TPL.read_text()
-    assert re.search(r'^chmod 600 "\$INSTANCE_YAML"', body, re.MULTILINE), (
+    # Indented now — it sits inside the uid gate, see
+    # `test_the_chmod_is_conditional_on_the_pin_having_taken`.
+    assert re.search(r'^\s*chmod 600 "\$INSTANCE_YAML"', body, re.MULTILINE), (
         "startup-script.sh.tpl must chmod 600 $INSTANCE_YAML — root's umask "
         "otherwise leaves the DB password world-readable on the data volume"
     )
@@ -439,3 +441,44 @@ def test_neither_restart_path_starts_the_app_on_an_in_progress_backend():
         "the stuck-job recovery's own restart must honour the gate — it is a separate "
         "`dc up` from step 4's and does not inherit anything"
     )
+
+
+def test_the_applier_uid_is_pinned_not_allocated():
+    """0600 only works while the applier and the app are the same uid.
+
+    `chown -R agnes-applier /data/state` decides who owns instance.yaml, and
+    the applier re-creates the file under its own uid on every rewrite — so at
+    0600 the app container (uid 999) can read its own config only while those
+    two numbers match. `useradd --system` without `--uid` produces that match
+    by allocating the top free id in the system range, which is not the same
+    thing as intending it.
+    """
+    body = TPL.read_text()
+    assert "--uid 999" in body, (
+        "the state-applier user must pin uid 999 — allocation happens to land there on "
+        "today's image, and 0600 turns that coincidence load-bearing"
+    )
+
+
+def test_the_chmod_is_conditional_on_the_pin_having_taken():
+    """The mode must not outrun its own precondition.
+
+    If uid 999 was already taken at provisioning time the pin falls through to
+    an allocated id, and a 0600 file the app does not own is one it cannot
+    read — which, with the fail-closed read this change also introduces, is a
+    refusal to start. A full outage in place of the silent degradation 0644
+    gave. Where the pin did not take, the mode stays as it was and the reason
+    goes to the console.
+    """
+    body = TPL.read_text()
+    assert 'APPLIER_UID=$(id -u agnes-applier' in body, "provisioning must read back the uid it pinned"
+    gate = body.index('if [ "$APPLIER_UID" = "999" ]')
+    chmod_at = body.index('chmod 600 "$INSTANCE_YAML"')
+    assert gate < chmod_at, "the chmod must sit inside the uid gate, not before it"
+
+
+def test_the_chmod_still_runs_outside_the_create_branch():
+    """Moving it below the applier user must not move it INTO the create branch —
+    an already-existing 0644 file is the case that needs repairing."""
+    body = TPL.read_text()
+    assert 'chmod 600 "$INSTANCE_YAML"' not in _create_branch(body)

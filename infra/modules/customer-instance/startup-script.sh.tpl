@@ -104,15 +104,9 @@ database:
 YAML
     chown 999:999 "$INSTANCE_YAML"
 fi
-# 0600 unconditionally, not just on the create branch above: the file holds the
-# Postgres URL with its password inline (and whatever credentials an operator
-# put in a connector overlay), lives on the data volume that several non-root
-# containers mount, and root's umask would otherwise leave a freshly created
-# one world-readable. Outside the `if` so a boot also repairs a file created
-# before this line existed, or by an app writer that predates its own chmod.
-# Owner stays uid 999 — the app container and the state applier both run as
-# that uid, so neither loses access.
-chmod 600 "$INSTANCE_YAML" 2>/dev/null || true
+# The 0600 tightening lives further down, right after the state-applier user
+# exists — the mode is only safe once the ownership it depends on is
+# established, and that user is what finally owns this file.
 
 # --- 3. App directory + extract host artifacts from the pinned image ---
 APP_DIR="/opt/agnes"
@@ -148,13 +142,47 @@ chmod +x /usr/local/bin/agnes-auto-upgrade.sh
 # blast radius from full root to "docker group" (still effectively
 # root via /var/run/docker.sock, but no other system surface).
 # Idempotent on re-runs.
+#
+# The uid is PINNED to 999, not allocated. `chown -R agnes-applier /data/state`
+# below is what finally owns instance.yaml, and the applier re-creates that
+# file under its own uid on every rewrite — so at 0600 the app container
+# (Dockerfile `USER agnes`, uid 999) can read its own config only while these
+# two uids are the same number. `useradd --system` picks the top free id in
+# the system range, which lands on 999 on today's image by allocation rather
+# than by intent.
 if ! id -u agnes-applier >/dev/null 2>&1; then
     useradd --system --no-create-home --shell /usr/sbin/nologin \
+            --uid 999 --gid 999 --user-group agnes-applier 2>/dev/null \
+    || useradd --system --no-create-home --shell /usr/sbin/nologin \
+            --uid 999 --user-group agnes-applier 2>/dev/null \
+    || useradd --system --no-create-home --shell /usr/sbin/nologin \
             --user-group agnes-applier
 fi
 usermod -aG docker agnes-applier
 mkdir -p /data/state /data/postgres
 chown -R agnes-applier:agnes-applier /data/state
+
+# Tighten instance.yaml to 0600 — but ONLY when the invariant that makes 0600
+# safe actually holds. The file carries the Postgres URL with its password
+# inline plus any operator-set connector credentials, and root's umask would
+# otherwise leave a freshly created one world-readable on a data volume
+# several non-root containers mount. Outside the create branch above so a boot
+# also repairs a file written before this existed.
+#
+# Conditional because the failure it would otherwise cause is worse than the
+# leak it closes: if uid 999 was already taken at provisioning time, the pin
+# above fell through to an allocated id, the app cannot read a 0600 file it
+# does not own, and — with the fail-closed read this change also introduces —
+# the instance refuses to start. A full outage in place of a silent
+# degradation. Where the pin did not take, the mode stays as it was and the
+# reason is on the console; the hardening applies exactly where its
+# precondition is met.
+APPLIER_UID=$(id -u agnes-applier 2>/dev/null || echo "")
+if [ "$APPLIER_UID" = "999" ]; then
+    chmod 600 "$INSTANCE_YAML" 2>/dev/null || true
+else
+    echo "WARN: agnes-applier is uid $APPLIER_UID, not 999 — leaving $INSTANCE_YAML at its current mode. 0600 would make it unreadable by the app container (uid 999), which owns neither the file nor this user. Free uid 999 or align the app uid, then re-run." >&2
+fi
 # /data/postgres must stay 70:70 (postgres image uid) — applier just
 # runs docker exec against the container, doesn't touch the volume.
 # Recursive: also repairs a data dir damaged by the pre-2026-07-21 blanket
