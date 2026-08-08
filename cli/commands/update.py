@@ -58,7 +58,7 @@ from typing import Callable, Optional
 
 import typer
 
-from cli.config import _config_dir, get_server_url, get_token, get_workspace_root
+from cli.config import _config_dir, get_server_url, get_token, get_workspace_root, load_config
 
 update_app = typer.Typer(
     name="update",
@@ -86,11 +86,23 @@ def _utc_stamp() -> str:
 def _resolve_workspace() -> Optional[Path]:
     """Locate the analyst workspace, so `agnes update` works from any cwd.
 
-    Order: ``AGNES_LOCAL_DIR`` (set by Claude Code's hook subprocess) →
-    ``get_workspace_root()`` (the config anchor written by ``agnes init``) →
-    the current dir IF it looks initialised. Returns ``None`` when no
-    initialised workspace can be found — the CLI step still runs (it is
+    Order: ``AGNES_LOCAL_DIR`` (an explicit operator/CI override — nothing in
+    this tree sets it, see the audit in ``cli/lib/workspace_resolve.py``; an
+    earlier version of this docstring claimed Claude Code's hook did, which was
+    never true) → ``get_workspace_root()`` (the config anchor written by
+    ``agnes init``) → the current dir IF it looks initialised. Returns ``None``
+    when no initialised workspace can be found — the CLI step still runs (it is
     workspace-independent); the workspace steps are skipped with a note.
+
+    Consequence worth stating, because the user-level SessionStart hook makes
+    it reachable from anywhere: with the global layer enabled, opening an
+    unrelated repository resolves the ANCHOR and runs the workspace chain
+    against it, ``_step_pull`` included. That is the documented "keeps data
+    fresh from any repo" behaviour rather than an accident, and its cost is
+    bounded — ``agnes pull`` downloads only parquets whose MD5 changed, and
+    the single-instance lock means a burst of session starts does not multiply
+    it — but the FIRST run after enabling can be a large download triggered
+    from a repository that has nothing to do with the data.
     """
     env_dir = os.environ.get("AGNES_LOCAL_DIR")
     if env_dir:
@@ -514,6 +526,37 @@ def _step_marketplace(*, report: list[dict], quiet: bool = False) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Step 4a½ — user-scope (all-repositories) layer convergence
+# --------------------------------------------------------------------------- #
+def _step_global(*, report: list[dict], quiet: bool = False) -> None:
+    """Converge the user-scope layer (spec §7.2). Workspace-independent —
+    runs OUTSIDE the workspace chdir block and also when no workspace
+    exists. Gated on the `global_scope` config flag; `global_hook: false`
+    (set by `agnes global enable --no-hook`) keeps the hook un-asserted."""
+    import contextlib
+    import io
+
+    cfg = load_config()
+    if not cfg.get("global_scope"):
+        report.append({"stage": "global", "status": "skipped", "detail": "global_scope not enabled"})
+        return
+    from cli.commands.global_scope import run_convergence
+
+    sub_report: list[dict] = []
+    sink = contextlib.redirect_stdout(io.StringIO()) if quiet else contextlib.nullcontext()
+    with sink:
+        run_convergence(want_hook=bool(cfg.get("global_hook", False)), force=False, report=sub_report)
+    bad = [r for r in sub_report if r.get("status") == "error"]
+    report.append(
+        {
+            "stage": "global",
+            "status": "error" if bad else "ok",
+            "detail": "; ".join(f"{r['stage']}={r['status']}" for r in sub_report),
+        }
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Step 4b — session catch-up push
 # --------------------------------------------------------------------------- #
 def _step_push(*, report: list[dict]) -> None:
@@ -797,6 +840,11 @@ def update(
                         os.chdir(prev_cwd)
                     except OSError:
                         pass
+
+        # User-scope layer (spec §7.2) — workspace-independent by design:
+        # runs from the LAUNCHING cwd (safe: the user target performs no
+        # cwd writes) and also when workspace is None.
+        _run_step("global", lambda: _step_global(report=report, quiet=step_quiet), report)
 
         entry = {
             "ts": _utc_stamp(),

@@ -1936,3 +1936,132 @@ def test_git_cred_args_reset_chain_before_inline_helper():
         assert args[1] == "credential.helper=", "chain reset must come first"
         assert args[2] == "-c"
         assert args[3].endswith(rm_module._CREDENTIAL_HELPER)
+
+
+# ---------------------------------------------------------------------------
+# --target user|project (spec §7.1) — user target = no cwd writes, --scope user
+# ---------------------------------------------------------------------------
+
+
+def _user_scope_list_payload() -> str:
+    return json.dumps(
+        [
+            {"id": "alpha@agnes", "version": "1.0.0", "projectPath": None, "scope": "user"},
+            {"id": "beta@agnes", "version": "0.9.0", "projectPath": "/some/workspace", "scope": "project"},
+            {"id": "other@elsewhere", "version": "2.0.0", "projectPath": None, "scope": "user"},
+        ]
+    )
+
+
+def test_list_installed_user_target_filters_scope(recorder, claude_in_path):
+    recorder.scripts.append(
+        (
+            ("claude", "plugin", "list", "--json"),
+            subprocess.CompletedProcess(args=[], returncode=0, stdout=_user_scope_list_payload(), stderr=""),
+        )
+    )
+    versions = rm_module._list_installed_agnes_plugins("user")
+    assert versions == {"alpha": "1.0.0"}
+
+
+def test_list_installed_user_target_tolerates_missing_scope_field(recorder, claude_in_path):
+    # Older `claude` CLIs emit no `scope` key — user-scope rows are the ones
+    # with projectPath null/absent (spec §7.1 defensive filter).
+    payload = json.dumps([{"id": "alpha@agnes", "version": "1.0.0", "projectPath": None}])
+    recorder.scripts.append(
+        (
+            ("claude", "plugin", "list", "--json"),
+            subprocess.CompletedProcess(args=[], returncode=0, stdout=payload, stderr=""),
+        )
+    )
+    assert rm_module._list_installed_agnes_plugins("user") == {"alpha": "1.0.0"}
+
+
+def test_user_target_reconcile_uses_scope_user_and_skips_settings_writer(
+    tmp_path, monkeypatch, recorder, claude_in_path, with_clone, with_token
+):
+    """THE §8 foreign-repo guard: user-target reconcile from a foreign cwd
+    passes --scope user to every claude verb and never touches cwd/.claude."""
+    (with_clone / ".claude-plugin" / "marketplace.json").write_text(
+        json.dumps({"name": "agnes", "plugins": [{"name": "alpha", "source": "./plugins/alpha", "version": "1.1.0"}]}),
+        encoding="utf-8",
+    )
+    recorder.scripts.append(
+        (
+            ("claude", "plugin", "list", "--json"),
+            subprocess.CompletedProcess(args=[], returncode=0, stdout="[]", stderr=""),
+        )
+    )
+    foreign = tmp_path / "foreign-repo"
+    foreign.mkdir()
+    monkeypatch.chdir(foreign)
+
+    events = rm_module.run_user_scope_reconcile(quiet=True)
+
+    install_calls = [c.cmd for c in recorder.calls if c.cmd[1:3] == ["plugin", "install"]]
+    assert install_calls == [["claude", "plugin", "install", "alpha@agnes", "--scope", "user"]]
+    assert all("project" not in c.cmd for c in recorder.calls)
+    assert not (foreign / ".claude").exists()
+    assert events["installed"] == ["alpha"]
+
+
+def test_project_target_unchanged_default(recorder, claude_in_path, with_clone, with_token, tmp_path, monkeypatch):
+    # Regression pin: default target still passes --scope project (workspace flow byte-for-byte).
+    (with_clone / ".claude-plugin" / "marketplace.json").write_text(
+        json.dumps({"name": "agnes", "plugins": [{"name": "alpha", "source": "./plugins/alpha", "version": "1.1.0"}]}),
+        encoding="utf-8",
+    )
+    recorder.scripts.append(
+        (
+            ("claude", "plugin", "list", "--json"),
+            subprocess.CompletedProcess(args=[], returncode=0, stdout="[]", stderr=""),
+        )
+    )
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    monkeypatch.chdir(ws)
+    rm_module._reconcile_with_manifest(events={"installed": [], "updated": [], "enabled": [], "removed": []})
+    install_calls = [c.cmd for c in recorder.calls if c.cmd[1:3] == ["plugin", "install"]]
+    assert install_calls == [["claude", "plugin", "install", "alpha@agnes", "--scope", "project"]]
+
+
+@pytest.mark.parametrize("target,expected_scope", [("project", "project"), ("user", "user")])
+def test_update_argv_carries_the_scope_for_both_targets(
+    recorder, claude_in_path, with_clone, with_token, tmp_path, monkeypatch, target, expected_scope
+):
+    """`plugin update` must be scoped, and scoped to the SAME place as install.
+
+    The update verb used to run bare. That was not a neutral default: `claude
+    plugin update` defaults to **user** scope (verified against `claude`
+    2.1.220, which documents `-s, --scope <scope>  … (default: user)`), while
+    install and uninstall have always passed `--scope project`. So in a
+    workspace the installs landed at project scope and the version bumps were
+    aimed at user scope — updating something else, or nothing.
+
+    Devin read the added flag on #1184 as a risk that the external CLI might
+    reject it; the flag is supported, and the real story is the other way
+    round. This pins the argv for both targets, since nothing did: a silent
+    regression here surfaces only as a `warn:` line on stderr, which the
+    `--quiet` SessionStart hook sends to /dev/null.
+    """
+    (with_clone / ".claude-plugin" / "marketplace.json").write_text(
+        json.dumps({"name": "agnes", "plugins": [{"name": "alpha", "source": "./plugins/alpha", "version": "2.0.0"}]}),
+        encoding="utf-8",
+    )
+    installed = [{"id": "alpha@agnes", "version": "1.0.0", "scope": target, "enabled": True, "projectPath": None}]
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    monkeypatch.chdir(ws)
+    if target == "project":
+        installed[0]["projectPath"] = str(ws.resolve())
+    recorder.scripts.append(
+        (
+            ("claude", "plugin", "list", "--json"),
+            subprocess.CompletedProcess(args=[], returncode=0, stdout=json.dumps(installed), stderr=""),
+        )
+    )
+    rm_module._reconcile_with_manifest(
+        events={"installed": [], "updated": [], "enabled": [], "removed": []}, target=target
+    )
+    update_calls = [c.cmd for c in recorder.calls if c.cmd[1:3] == ["plugin", "update"]]
+    assert update_calls == [["claude", "plugin", "update", "alpha@agnes", "--scope", expected_scope]]

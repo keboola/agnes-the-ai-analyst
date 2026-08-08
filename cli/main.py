@@ -45,6 +45,7 @@ from cli.commands.setup import setup_app
 from cli.commands.server import server_app
 from cli.commands.explore import explore_app
 from cli.commands.catalog import catalog_app
+from cli.commands.global_scope import global_app
 from cli.commands.glossary import glossary_app
 from cli.commands.schema import schema_app
 from cli.commands.describe import describe
@@ -122,6 +123,13 @@ _MAINTENANCE_COMMANDS = frozenset(
         "push",
         "refresh-marketplace",
         "init",
+        # `agnes global` converges the same artifacts `agnes update` does and
+        # now holds the same `update.lock`. Left off this list, an out-of-date
+        # CLI would spawn the detached updater from `_root` first, that child
+        # would take the lock, and the command the user actually typed would
+        # abort with "retry in a moment" — on the first run after a release,
+        # every time (Devin on #1184).
+        "global",
     }
 )
 
@@ -328,6 +336,7 @@ app.add_typer(data_apps_app, name="app")
 app.add_typer(search_app, name="search")
 app.add_typer(config_app, name="config")
 app.add_typer(agent_app, name="agent")
+app.add_typer(global_app, name="global")
 
 
 def _capture_cli_exception(exc: BaseException, kind: str) -> None:
