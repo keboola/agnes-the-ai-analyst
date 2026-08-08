@@ -424,7 +424,7 @@ def run_convergence(*, want_hook: bool, force: bool, report: list[dict]) -> None
                 ),
             }
         )
-    elif state == "unknown":
+    elif state == "unknown" and not force:
         # The probe did not answer. Replacing an entry we cannot see is how
         # someone else's `agnes` server disappears without the `--force` that
         # is supposed to gate exactly that — and because `mcp get` connects to
@@ -432,6 +432,12 @@ def run_convergence(*, want_hook: bool, force: bool, report: list[dict]) -> None
         # unstartable entry produces this reliably, on every session start in
         # every repository. Report and move on; convergence is idempotent, so
         # the next run with a working probe does the right thing.
+        #
+        # `and not force` matters: an unstartable entry produces `unknown`
+        # DETERMINISTICALLY, since `mcp get` connects to the server. Without
+        # it, `--force` — the one documented escape hatch — could not repair
+        # the single case an operator most needs it for, leaving `claude mcp
+        # remove` by hand as the only route out.
         report.append(
             {
                 "stage": "mcp",

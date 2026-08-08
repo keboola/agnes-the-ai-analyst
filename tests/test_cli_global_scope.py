@@ -842,3 +842,20 @@ def test_disable_keeps_the_flag_on_for_every_indeterminate_state(env, monkeypatc
     assert result.exit_code == 1, result.output
     conf = yaml.safe_load((env["cfg_dir"] / "config.yaml").read_text(encoding="utf-8"))
     assert conf.get("global_scope") is not False, f"state {state!r} let the off-flag through"
+
+
+def test_force_repairs_an_entry_whose_probe_never_answered(monkeypatch, env):
+    """`--force` has to reach the case it exists for.
+
+    `mcp get` connects to the server, so a registered-but-unstartable `agnes`
+    entry yields `unknown` deterministically — the exact state an operator
+    would reach for `--force` to fix. An `unknown` arm evaluated ahead of the
+    replace arm and not gated on `force` leaves `claude mcp remove` by hand as
+    the only repair.
+    """
+    monkeypatch.setattr(gs_module, "_mcp_entry_info", lambda: ("unknown", None))
+    rec = env["rec"]
+    before = len(rec.calls)
+    CliRunner().invoke(gs_module.global_app, ["enable", "--force"])
+    adds = [c for c in rec.calls[before:] if c[1:3] == ["mcp", "add"]]
+    assert adds, "--force must be able to repair an entry the probe could not read"
