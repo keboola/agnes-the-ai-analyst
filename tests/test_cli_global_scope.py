@@ -820,3 +820,25 @@ def test_a_drift_check_marks_the_clone_fresh(env):
         "a clone checked seconds ago must not read as stale — otherwise every "
         "convergence re-probes the remote"
     )
+
+
+@pytest.mark.parametrize("state", ["unknown", "unclassified"])
+def test_disable_keeps_the_flag_on_for_every_indeterminate_state(env, monkeypatch, state):
+    """Both "we could not tell" states, not just the one that prompted the fix.
+
+    `disable` writes the off-flag only when nothing was left behind. A state
+    meaning "ownership could not be established" that falls through to the
+    "no entry" branch adds nothing to `left_behind`, so the flag is written
+    while a registered user-scope entry keeps loading in every repository —
+    and with the layer marked off, `agnes update` never converges or removes
+    it. Parametrized because the first fix added the arm for one state and
+    left the other to find it.
+    """
+    CliRunner().invoke(gs_module.global_app, ["enable"])
+    monkeypatch.setattr(gs_module, "_mcp_entry_state", lambda: state)
+
+    result = CliRunner().invoke(gs_module.global_app, ["disable"])
+
+    assert result.exit_code == 1, result.output
+    conf = yaml.safe_load((env["cfg_dir"] / "config.yaml").read_text(encoding="utf-8"))
+    assert conf.get("global_scope") is not False, f"state {state!r} let the off-flag through"

@@ -86,11 +86,23 @@ def _utc_stamp() -> str:
 def _resolve_workspace() -> Optional[Path]:
     """Locate the analyst workspace, so `agnes update` works from any cwd.
 
-    Order: ``AGNES_LOCAL_DIR`` (set by Claude Code's hook subprocess) →
-    ``get_workspace_root()`` (the config anchor written by ``agnes init``) →
-    the current dir IF it looks initialised. Returns ``None`` when no
-    initialised workspace can be found — the CLI step still runs (it is
+    Order: ``AGNES_LOCAL_DIR`` (an explicit operator/CI override — nothing in
+    this tree sets it, see the audit in ``cli/lib/workspace_resolve.py``; an
+    earlier version of this docstring claimed Claude Code's hook did, which was
+    never true) → ``get_workspace_root()`` (the config anchor written by
+    ``agnes init``) → the current dir IF it looks initialised. Returns ``None``
+    when no initialised workspace can be found — the CLI step still runs (it is
     workspace-independent); the workspace steps are skipped with a note.
+
+    Consequence worth stating, because the user-level SessionStart hook makes
+    it reachable from anywhere: with the global layer enabled, opening an
+    unrelated repository resolves the ANCHOR and runs the workspace chain
+    against it, ``_step_pull`` included. That is the documented "keeps data
+    fresh from any repo" behaviour rather than an accident, and its cost is
+    bounded — ``agnes pull`` downloads only parquets whose MD5 changed, and
+    the single-instance lock means a burst of session starts does not multiply
+    it — but the FIRST run after enabling can be a large download triggered
+    from a repository that has nothing to do with the data.
     """
     env_dir = os.environ.get("AGNES_LOCAL_DIR")
     if env_dir:

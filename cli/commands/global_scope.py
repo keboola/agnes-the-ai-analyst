@@ -699,6 +699,22 @@ def disable(
             report.append(
                 {"stage": "mcp", "status": "unknown", "detail": "`claude mcp get` did not answer — nothing removed"}
             )
+        elif state == "unclassified":
+            # Something IS registered under this name — the probe exited 0 —
+            # but this `claude` prints no `Scope:` line, so we can say neither
+            # that it is ours to remove nor that there is nothing to remove.
+            # Reporting "no entry" here writes the off-flag and leaves the
+            # entry loading in every repository the user opens, with the layer
+            # marked off so `agnes update` never converges it again. Same
+            # distinction the `unknown` arm draws, and the same reason.
+            left_behind.append("mcp: entry ownership could not be established")
+            report.append(
+                {
+                    "stage": "mcp",
+                    "status": "unknown",
+                    "detail": "`claude mcp get` did not report a scope — nothing removed",
+                }
+            )
         else:
             report.append({"stage": "mcp", "status": "ok", "detail": "no entry"})
 
