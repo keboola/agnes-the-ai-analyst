@@ -168,16 +168,27 @@ fi
 update_job() {
     # Set status + optional error.message on a job file. Atomic via
     # tmp+rename so the API endpoint never reads half-written JSON.
-    local file=$1 status=$2 error=${3:-}
-    python3 - <<PY "$file" "$status" "$error"
+    #
+    # A 4th argument of "append" keeps whatever message is already on the
+    # job and adds this one after it. The default REPLACES, which is right
+    # for the first terminal write but destroys evidence on a second: a
+    # migration that failed and whose rollback then also failed would end up
+    # recording only the rollback, and the operator would have to go to
+    # journalctl to find out why the migration failed at all.
+    local file=$1 status=$2 error=${3:-} mode=${4:-replace}
+    python3 - <<PY "$file" "$status" "$error" "$mode"
 import json, os, sys
-p, status, err = sys.argv[1], sys.argv[2], sys.argv[3]
+p, status, err, mode = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 with open(p) as fh:
     data = json.load(fh)
 data["status"] = status
 if err:
     data.setdefault("error", {})
-    data["error"]["message"] = err
+    prev = data["error"].get("message") or ""
+    if mode == "append" and prev and err not in prev:
+        data["error"]["message"] = f"{prev} | {err}"
+    else:
+        data["error"]["message"] = err
     data["error"].setdefault("step", data.get("current_step", "unknown"))
 tmp = p + ".tmp"
 with open(tmp, "w") as fh:
@@ -644,7 +655,7 @@ else
         # pair being consistent is what the next tick reads. Step 4 still
         # runs, so the instance comes back up on the backend it was already
         # using — degraded and loud beats offline and silent.
-        update_job "$PENDING_JOB" "failed" "migration failed AND the instance.yaml rollback was refused — backend left at the in-progress value"
+        update_job "$PENDING_JOB" "failed" "instance.yaml rollback was ALSO refused — backend left at the in-progress value" append
         logger -t agnes-state-applier "Migration job $JOB_ID failed and the instance.yaml rollback FAILED — backend still reads *_in_progress and the lifecycle flag was left as-is; manual intervention needed"
     fi
 fi
