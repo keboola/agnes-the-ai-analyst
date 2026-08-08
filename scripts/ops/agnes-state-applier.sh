@@ -663,7 +663,18 @@ else
     # `running`, and this one is already `failed`. That is the exact
     # outage class the comment above names, so the rollback path must be
     # able to fail without stopping the recovery it exists to perform.
-    if write_instance_yaml "$SOURCE_BACKEND" "${SOURCE_URL:-}"; then
+    # One failure class must NOT be rolled back: the migrator raises
+    # BackendFlipNotVerified only AFTER the rows are on the target, and it
+    # deliberately leaves instance.yaml alone for exactly that reason. Writing
+    # the source back here would undo that decision one layer up and point the
+    # app at the old store while every row lives in the new one — recent data
+    # appearing to vanish, new writes landing in the stale database. Read the
+    # class the migrator recorded and honour it.
+    FAIL_CLASS=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print((d.get('error') or {}).get('class','') or '')" "$PENDING_JOB" 2>/dev/null || echo "")
+    if [ "$FAIL_CLASS" = "BackendFlipNotVerified" ]; then
+        SKIP_APP_RESTART=1
+        logger -t agnes-state-applier "Migration job $JOB_ID failed as BackendFlipNotVerified — the data IS on $TARGET_BACKEND and the migrator deliberately did not revert instance.yaml. Not reverting it here either, and not restarting app+scheduler: repair the overlay by hand, then start them."
+    elif write_instance_yaml "$SOURCE_BACKEND" "${SOURCE_URL:-}"; then
         # Clear the lifecycle flag if the rollback lands on a non-PG state —
         # otherwise the next applier tick would re-trigger the postgres
         # lifecycle ("side-car-enabled" / "cloud-only") and leave an orphan

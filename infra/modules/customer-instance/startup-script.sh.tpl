@@ -149,11 +149,13 @@ chmod +x /usr/local/bin/agnes-auto-upgrade.sh
 # (Dockerfile `USER agnes`, uid 999) can read its own config only while these
 # two uids are the same number. `useradd --system` picks the top free id in
 # the system range, which lands on 999 on today's image by allocation rather
-# than by intent.
+# than by intent — so pin it, and let the chmod below check the pin took.
 if ! id -u agnes-applier >/dev/null 2>&1; then
+    # Only the UID is pinned. `--gid` and `--user-group` are mutually
+    # exclusive, so a form passing both always fails — and the gid does not
+    # matter here anyway: instance.yaml is 0600, so the group bits grant
+    # nothing and only the owner's uid decides who can read it.
     useradd --system --no-create-home --shell /usr/sbin/nologin \
-            --uid 999 --gid 999 --user-group agnes-applier 2>/dev/null \
-    || useradd --system --no-create-home --shell /usr/sbin/nologin \
             --uid 999 --user-group agnes-applier 2>/dev/null \
     || useradd --system --no-create-home --shell /usr/sbin/nologin \
             --user-group agnes-applier

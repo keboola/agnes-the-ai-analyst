@@ -154,6 +154,7 @@ def test_every_write_instance_yaml_call_site_is_guarded():
         and "logger" not in line
         and "echo" not in line
         and not line.strip().startswith("if ")
+        and not line.strip().startswith("elif ")
         and "|| true" not in line
     ]
     assert not bare, (
@@ -619,3 +620,42 @@ def test_every_logging_call_resolves_to_a_real_module_logger():
             f"{rel}: logging call(s) on a name never bound at module level {offenders} — "
             "this raises NameError inside whatever branch reaches it"
         )
+
+
+def test_useradd_does_not_combine_mutually_exclusive_options():
+    """`--gid` and `--user-group` cannot be used together.
+
+    A form passing both always fails, so it is dead code that also makes the
+    comment beside it claim a gid pin that never happens. Only the uid needs
+    pinning here: instance.yaml is 0600, so the group bits grant nothing and
+    the owner's uid alone decides who can read it.
+    """
+    body = TPL.read_text()
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue  # the fix's own comment names both flags
+        assert not ("--gid" in stripped and "--user-group" in stripped), (
+            f"mutually exclusive useradd options on one line: {stripped}"
+        )
+
+
+def test_the_applier_honours_the_migrator_no_revert_decision():
+    """The rollback must not undo a decision made one layer down.
+
+    `BackendFlipNotVerified` is raised only after the rows are on the target,
+    and the migrator deliberately leaves instance.yaml alone for that reason.
+    The applier's failure branch fires for every non-success status, so without
+    reading the recorded class it would write the source backend back and point
+    the app at the old store while every row lives in the new one.
+    """
+    body = APPLIER.read_text()
+    assert 'FAIL_CLASS' in body and 'BackendFlipNotVerified' in body, (
+        "the applier must read the failure class the migrator recorded"
+    )
+    guard = body.index('[ "$FAIL_CLASS" = "BackendFlipNotVerified" ]')
+    rollback = body.index('write_instance_yaml "$SOURCE_BACKEND"', guard - 2000)
+    assert guard < body.index('elif write_instance_yaml "$SOURCE_BACKEND"'), (
+        "the class check must precede the rollback write, not follow it"
+    )
+    assert rollback is not None
