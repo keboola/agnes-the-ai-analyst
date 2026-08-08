@@ -357,7 +357,16 @@ _recover_stuck_jobs() {
             if write_instance_yaml "$source_backend" "$source_url"; then
                 :
             else
-                SKIP_APP_RESTART=1
+                # Its OWN flag, not the one step 4 reads. Shell variables have
+                # no function scope here, so setting the shared one leaked this
+                # decision into the rest of the tick: a pending job could then
+                # migrate successfully — the migrator writes the target backend
+                # itself, from its own container, before `mark_success` — and
+                # step 4 would still refuse to restart on a stale marker,
+                # leaving a perfectly completed migration with the app down.
+                # The two gates answer different questions about different
+                # writes and must not share state.
+                RECOVERY_SKIP_RESTART=1
                 update_job "$job_path" "failed" "instance.yaml rollback was ALSO refused — backend left at the in-progress value; app+scheduler deliberately NOT restarted" append
                 logger -t agnes-state-applier "Stuck-job recovery for $job_path could not rewrite instance.yaml — backend still reads *_in_progress; app+scheduler left DOWN rather than started against a database the migration never filled. Repair instance.yaml (set database.backend to $source_backend) and start them by hand."
             fi
@@ -366,7 +375,7 @@ _recover_stuck_jobs() {
         recovered_any=1
     done
 
-    if [ "$recovered_any" -eq 1 ] && [ "${SKIP_APP_RESTART:-0}" != "1" ]; then
+    if [ "$recovered_any" -eq 1 ] && [ "${RECOVERY_SKIP_RESTART:-0}" != "1" ]; then
         # B3-NEW: After reverting instance.yaml to source state, restart
         # app + scheduler. The applier had stopped them before running
         # the migrator (line ~413 of this script). A SIGKILL/OOM/host-
