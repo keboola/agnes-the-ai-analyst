@@ -25,6 +25,12 @@ _instance_config: Optional[dict] = None
 # True once this process has successfully built a config. Gates the
 # unreadable-overlay refusal to startup — see `load_instance_config`.
 _loaded_once: bool = False
+# The last config this process built successfully. Survives `reset_cache()`
+# on purpose: it is what a live instance falls back to when the overlay
+# stops being readable, and it is the only thing that HAS the operator's
+# sections at that point — `_instance_config` is None by then, since
+# `load_instance_config` returns early whenever it is not.
+_last_good_config: Optional[dict] = None
 
 
 def reset_cache() -> None:
@@ -122,7 +128,7 @@ def load_instance_config() -> dict:
     consumer of static-only sections (corporate memory page, dataset
     list, OpenMetadata client) saw empty defaults. See PR #107.
     """
-    global _instance_config, _loaded_once
+    global _instance_config, _loaded_once, _last_good_config
     if _instance_config is not None:
         return _instance_config
 
@@ -188,15 +194,29 @@ def load_instance_config() -> dict:
             # that already loaded a good config is not about to do that. So it
             # refuses only when nothing good has ever been loaded, and
             # otherwise keeps serving on the config it has, loudly.
-            if _loaded_once:
+            if _loaded_once and _last_good_config is not None:
+                # `_last_good_config`, NOT `_instance_config` — the latter is
+                # guaranteed None here, because the function returns early
+                # whenever it is set, so `reset_cache()` (which every admin
+                # save calls) is exactly the path that reaches this branch.
+                # Returning the static base instead would drop every
+                # operator-set section while the log claimed they were kept:
+                # the silent-wrong-config outcome the boot refusal exists to
+                # prevent, just after boot instead of at it.
+                #
+                # Cached into `_instance_config` so the next request short-
+                # circuits. Without that, every `get_value()` re-reads and
+                # re-parses the static YAML and emits another ERROR line — a
+                # log storm on top of a config problem.
                 logger.error(
                     "instance.yaml overlay at %s became unreadable after startup (%s) — "
-                    "keeping the config already loaded; saves through the editor will "
-                    "refuse until the file is readable again",
+                    "serving the last good config; saves through the editor will refuse "
+                    "until the file is readable again",
                     overlay_path,
                     exc,
                 )
-                return _instance_config if _instance_config is not None else base
+                _instance_config = _last_good_config
+                return _instance_config
             raise InstanceConfigUnreadable(
                 f"cannot read the instance.yaml overlay at {overlay_path}: {exc}. "
                 "The file exists but is not readable by this process — it is mode 0600, "
@@ -238,6 +258,7 @@ def load_instance_config() -> dict:
             )
 
     _instance_config = base
+    _last_good_config = base
     _loaded_once = True
     return _instance_config
 
