@@ -168,6 +168,12 @@
                        items. #}
                     <section class="app-admin-menu-col">
                         <div class="app-admin-menu-section">Moderation queues</div>
+                        {# Ungated on purpose (spec 2026-08-07, accepted
+                           deviations): the hub hosts the submission-review
+                           count and curation jump-offs even with Store
+                           verification disabled, so hiding the row would
+                           unlink live content; the page itself hides its
+                           verification section when the switch is off. #}
                         <a class="app-nav-menu-item {% if _path == '/admin/store' %}is-active{% endif %}" role="menuitem" href="/admin/store">Moderation &amp; Trust</a>
                         <a class="app-nav-menu-item {% if _path.startswith('/admin/corporate-memory') %}is-active{% endif %}" role="menuitem" href="/admin/corporate-memory">Curated memory reviews</a>
                         <a class="app-nav-menu-item {% if _path.startswith('/admin/store/submissions') %}is-active{% endif %}" role="menuitem" href="/admin/store/submissions">Flea Submissions</a>
@@ -192,6 +198,27 @@
                 </div>
             </div>
         </div>
+        {% endif %}
+
+        {# Re-open the legacy guided tour from anywhere (spec 2026-08-07
+           wave 2 — the pre-redesign help icon, byte-for-byte). tour_legacy.js
+           binds [data-tour-start]; this button is the only launcher in the
+           DOM (the pre-redesign profile page never carried one — its tour
+           copy saying otherwise was stale in 0.79.0 already, and the frozen
+           copies preserve it as shipped). Default chrome only: the rail
+           chrome has its own nav (this header never renders there) and
+           keeps the coach-mark engine, and the paper-on-topnav opt-in keeps
+           the redesign reading (no legacy launcher), so the button keys on
+           is_paper() like the AI Connector row above. #}
+        {% if not is_paper() %}
+        <button type="button" class="app-onboarding-launch" data-tour-start
+                title="Take a tour" aria-label="Take a tour">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.7"/>
+                <path d="M9.5 9.2a2.6 2.6 0 1 1 3.4 2.5c-.6.2-.9.6-.9 1.2v.6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+                <circle cx="12" cy="16.4" r="1" fill="currentColor"/>
+            </svg>
+        </button>
         {% endif %}
 
         <div class="app-user-menu" id="userMenu">
@@ -229,21 +256,22 @@
                 {% if can_agent_profiles %}
                 <a class="app-user-menu-item {% if _path == '/agents' %}is-active{% endif %}" role="menuitem" href="/agents">My agents</a>
                 {% endif %}
-                {# The redesign dropped the "AI Connector" link (the connector
-                   content now lives in /how-it-works#connect) and added
-                   "Learn how it works" (tests/test_web_nav_cowork.py). "My
+                {# Chrome-dependent row (spec 2026-08-07 wave 2): the default
+                   chrome keeps the pre-redesign "AI Connector" entry (the
+                   /me/ai-connector page renders there — see the router's
+                   me_ai_connector_page). The redesign consolidated that
+                   content into /how-it-works#connect and relabeled the row
+                   "Learn how it works"; within this topnav header the only
+                   reachable opt-in look is paper-on-topnav, so the row keys
+                   on is_paper() (rail has its own nav with a "How {brand}
+                   works" row). Guarded by tests/test_web_nav_cowork.py. "My
                    connections" (#1086) stays — tests/test_web_nav_me_connections
-                   requires it here.
-
-                   Repointed from /home to /how-it-works: /home is a CLI install
-                   wizard titled "Setup", which is not what this label promises.
-                   The LABEL is deliberately unchanged here — topnav is the
-                   default chrome, and changing its visible text would change
-                   the look of every existing instance (guarded by
-                   tests/test_ui_layout_theme.py). The rail chrome, which is
-                   opt-in, gets the clearer "How {brand} works" wording as a
-                   nav row of its own. #}
+                   requires it here. #}
+                {% if is_paper() %}
                 <a class="app-user-menu-item {% if _path == '/how-it-works' %}is-active{% endif %}" role="menuitem" href="/how-it-works">Learn how it works</a>
+                {% else %}
+                <a class="app-user-menu-item {% if _path.startswith('/me/ai-connector') or _path.startswith('/me/cowork') or _path.startswith('/me/mcp') %}is-active{% endif %}" role="menuitem" href="/me/ai-connector">AI Connector</a>
+                {% endif %}
                 <a class="app-user-menu-item {% if _path.startswith('/me/connections') %}is-active{% endif %}" role="menuitem" href="/me/connections">My connections</a>
                 <a class="app-user-menu-item {% if _path.startswith('/me/activity') %}is-active{% endif %}" role="menuitem" href="/me/activity">My activity</a>
                 {# /news needs a NON-admin entry point. Its other two are

@@ -206,6 +206,18 @@
       })();
     </script>
     {% block scripts %}{% endblock %}
+    {# Legacy guided-tour overlay (spec 2026-08-07 wave 2) — the pre-redesign
+       walking guide, frozen (_tour_legacy.html + js/tour_legacy.js +
+       css/tour_legacy.css), served on the DEFAULT chrome only. Any redesign
+       opt-in keeps the redesign reading: rail has the coach-mark engine
+       booted above, and paper-on-topnav ships neither tour — the overlay
+       must key on the same condition as its header launcher
+       (`not is_paper()`), or the intro modal auto-pops with no way to
+       reopen it (Devin Review on #1200). Self-guarded to authed sessions
+       inside the partial. #}
+    {% if (ui_layout | default('topnav')) != 'rail' and not is_paper() %}
+    {% include "_tour_legacy.html" %}
+    {% endif %}
     {# Operator-injected scripts (placement=body_end) — for vendors that
        explicitly want bottom placement. Admin-only, see
        instance.custom_scripts. #}

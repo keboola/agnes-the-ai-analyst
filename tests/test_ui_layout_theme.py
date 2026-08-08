@@ -703,7 +703,7 @@ class TestRailChatHistory:
         assert "(done / total) * 100" in body
         assert 'classList.toggle("is-complete"' in body
 
-    def test_new_token_button_cancels_the_summary_toggle(self, web_client, admin_cookie):
+    def test_new_token_button_cancels_the_summary_toggle(self, web_client, admin_cookie, monkeypatch):
         """`+ New token` lives inside a <summary>, so it must cancel the disclosure.
 
         stopPropagation() alone is NOT enough and was the original bug: it keeps
@@ -711,7 +711,12 @@ class TestRailChatHistory:
         default ACTIVATION BEHAVIOUR, which only preventDefault() cancels. With
         just the former, minting a token also collapsed the section it was
         launched from.
+
+        Rail-pinned: the <summary>-hosted token panel is the REDESIGNED
+        profile's; the default chrome serves the frozen pre-redesign page
+        (spec 2026-08-07 wave 2), whose classic panel has no disclosure.
         """
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/me/profile", cookies=admin_cookie)
         assert resp.status_code == 200
         marker = 'id="new-token-btn"'
@@ -2104,6 +2109,120 @@ class TestDefaultContentParity:
         assert len(re.findall(r"if \(!IS_RAIL\) return", src)) >= 2, (
             "both chat_onboarding.js boot paths must early-return when the chrome is not rail"
         )
+
+    # ── Wave 2 (spec 2026-08-07-default-chrome-ux-parity): the page rewrites
+    # that were never layout-gated, both directions pinned per surface. ──
+
+    def test_topnav_profile_is_the_legacy_page(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        resp = web_client.get("/me/profile", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert 'id="pf-name-edit"' not in resp.text, "redesigned profile leaked into topnav"
+
+    def test_rail_profile_is_the_redesigned_page(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/me/profile", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert 'id="pf-name-edit"' in resp.text
+
+    def test_topnav_activity_is_the_legacy_page(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        resp = web_client.get("/me/activity", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert "Sessions, token usage, data access, and sync activity" in resp.text, (
+            "topnav /me/activity must keep the legacy hero subtitle"
+        )
+
+    def test_rail_activity_is_the_redesigned_page(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/me/activity", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert "Sessions, token usage, data access, and sync activity" not in resp.text
+
+    def test_topnav_agents_is_the_legacy_management_page(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        resp = web_client.get("/agents", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert 'id="ag-builder-view"' not in resp.text, "rail agents builder leaked into topnav"
+
+    def test_rail_agents_is_the_builder(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/agents", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert 'id="ag-builder-view"' in resp.text
+
+    def test_topnav_ai_connector_renders_the_legacy_page(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        resp = web_client.get("/me/ai-connector", cookies=admin_cookie, follow_redirects=False)
+        assert resp.status_code == 200, "topnav /me/ai-connector must render, not redirect"
+        assert "/mcp-connect" in resp.text, "legacy page must keep the token-fallback link"
+
+    def test_rail_ai_connector_stays_consolidated(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/me/ai-connector", cookies=admin_cookie, follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/how-it-works#connect"
+
+    def test_topnav_user_menu_has_ai_connector_row(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        resp = web_client.get("/me/profile", cookies=admin_cookie)
+        assert ">AI Connector<" in resp.text, "default chrome must keep the AI Connector menu row"
+        assert "Learn how it works" not in resp.text
+
+    def test_paper_user_menu_keeps_the_redesign_wording(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
+        resp = web_client.get("/me/profile", cookies=admin_cookie)
+        assert "Learn how it works" in resp.text
+        assert ">AI Connector<" not in resp.text
+
+    def test_topnav_ships_the_legacy_tour(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        resp = web_client.get("/me/profile", cookies=admin_cookie)
+        assert 'id="agnesTour"' in resp.text, "default chrome must ship the legacy tour overlay"
+        assert "tour_legacy.js" in resp.text
+        assert "data-tour-start" in resp.text, "header must keep the (?) tour launcher"
+
+    def test_rail_does_not_ship_the_legacy_tour(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/me/profile", cookies=admin_cookie)
+        assert 'id="agnesTour"' not in resp.text
+        assert "tour_legacy.js" not in resp.text
+
+    def test_paper_topnav_does_not_ship_the_legacy_tour(self, web_client, admin_cookie, monkeypatch):
+        """The overlay must key on the same condition as its header launcher
+        (`not is_paper()`) — shipped without the launcher, the intro modal
+        auto-pops once with no way to ever reopen it (Devin Review on #1200)."""
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
+        resp = web_client.get("/me/profile", cookies=admin_cookie)
+        assert 'id="agnesTour"' not in resp.text
+        assert "tour_legacy.js" not in resp.text
+        assert "data-tour-start" not in resp.text
+
+    def test_paper_topnav_ai_connector_stays_consolidated(self, web_client, admin_cookie, monkeypatch):
+        """The route keys on the same opt-in expression as the user-menu row:
+        under paper-on-topnav the menu says "Learn how it works", so a
+        bookmark or /me/mcp alias hop must not resurrect the standalone
+        page (Devin Review on #1200)."""
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
+        resp = web_client.get("/me/ai-connector", cookies=admin_cookie, follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/how-it-works#connect"
+
+    def test_topnav_chat_welcome_cards_are_the_frozen_copy(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        resp = self._chat(web_client, admin_cookie)
+        assert "I'm the Agnes data agent." in resp.text, "topnav chat must keep the pre-redesign welcome-card copy"
+        assert "📊 Your data" in resp.text, "pre-redesign card icons (emoji) must survive on topnav"
 
 
 class TestDetailPageParity:

@@ -186,7 +186,7 @@ Each item follows the frozen-copy pattern unless noted. Legacy source is
 | 5 | Topnav user menu | "AI Connector" label restored on default chrome; "Learn how it works" remains the opt-in wording | `_app_header.html` conditional on the same opt-in expression; "My agents" and "News" rows predate the redesign and stay in both worlds. |
 | 6 | Guided tour | `_tour_legacy.html` + `js/tour_legacy.js` (frozen) + the header "?" launcher, default chrome only | The redesign rewrote `tour.js` into the coach-mark engine, so the legacy tour ships its own frozen script. Rail keeps the new tour. Frozen JS joins a guarded closed set analogous to `LEGACY_FROZEN`. |
 | 7 | Chat welcome cards | `_chat_welcome_cards_legacy.html` frozen partial included on default chrome; the rail hero untouched | Restores pre-redesign copy and icons byte-for-byte; being a frozen copy, it is exempt from the emoji ban without weakening it for living templates. |
-| 8 | Admin "Moderation & Trust" menu entry | Gate on `store_verification_enabled()` | Semantic gate, not a chrome check: with verification disabled (the default) the hub has nothing to moderate. |
+| 8 | Admin "Moderation & Trust" menu entry | **Accepted deviation — ungated** (settled in review) | Originally planned as a semantic gate on `store_verification_enabled()`, but the hub hosts the flea submission-review count and curation jump-offs even with verification off, so hiding its entry points would unlink live content. The page itself hides only its verification section when the switch is off; the menu row joins the accepted additive admin-hub links below. |
 
 ### Explicitly accepted deviations (documented, not gated)
 

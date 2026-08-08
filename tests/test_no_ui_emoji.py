@@ -49,6 +49,14 @@ LEGACY_FROZEN: set[str] = {
     "memory_domain_detail_legacy.html",
     "catalog_legacy.html",
     "corporate_memory_legacy.html",
+    "profile_legacy.html",
+    "me_activity_legacy.html",
+    "agents_legacy.html",
+    "me_cowork_legacy.html",
+    "_tour_legacy.html",
+    "_chat_welcome_cards_legacy.html",
+    "_profile_tokens_legacy.html",
+    "_profile_troubleshooting_legacy.html",
 }
 
 
