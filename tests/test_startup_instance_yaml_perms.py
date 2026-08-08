@@ -264,13 +264,10 @@ def test_an_unreadable_overlay_raises_rather_than_falling_back(tmp_path, monkeyp
 
     monkeypatch.setattr("app.secrets._state_dir", lambda: state)
     ic.reset_cache()
-    # Simulate boot: the refusal is gated on nothing good having been loaded
-    # yet, and the module global survives across tests in one process.
-    monkeypatch.setattr(ic, "_loaded_once", False)
     try:
         raised = None
         try:
-            cfg = ic.load_instance_config()
+            cfg = ic.load_instance_config(strict=True)
         except Exception as exc:  # noqa: BLE001 — the type is asserted below
             raised = exc
         assert raised is not None, (
@@ -392,9 +389,8 @@ def test_an_unreadable_overlay_after_boot_degrades_instead_of_500ing(tmp_path, m
 
     monkeypatch.setattr("app.secrets._state_dir", lambda: state)
     ic.reset_cache()
-    monkeypatch.setattr(ic, "_loaded_once", False)
     try:
-        first = ic.load_instance_config()
+        first = ic.load_instance_config(strict=True)
         assert (first.get("database") or {}).get("backend") == "postgres"
 
         # Now it goes unreadable and an admin save drops the cache. This is
@@ -482,3 +478,52 @@ def test_the_chmod_still_runs_outside_the_create_branch():
     an already-existing 0644 file is the case that needs repairing."""
     body = TPL.read_text()
     assert 'chmod 600 "$INSTANCE_YAML"' not in _create_branch(body)
+
+
+def test_the_boot_refusal_is_not_defused_by_an_earlier_import(monkeypatch, tmp_path):
+    """The guard must not depend on being the first read in the process.
+
+    It was gated on `_loaded_once`, a module flag meant to mean "we are past
+    startup". Importing `app.main` loads the config, so that flag was already
+    True by the time the startup block ran and the refusal was permanently
+    defused — a guard armed only when nothing else imported first is not a
+    guard. Strictness is the caller's declaration now, so a prior successful
+    load cannot disarm it.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("running as root — mode bits do not deny reads")
+
+    import app.instance_config as ic
+
+    state = tmp_path / "state"
+    state.mkdir()
+    overlay = state / "instance.yaml"
+    overlay.write_text("database:\n  backend: postgres\n", encoding="utf-8")
+    monkeypatch.setattr("app.secrets._state_dir", lambda: state)
+
+    ic.reset_cache()
+    try:
+        ic.load_instance_config()  # a prior successful load, as any import does
+        overlay.chmod(0o000)
+        ic.reset_cache()
+        with pytest.raises(ic.InstanceConfigUnreadable):
+            ic.load_instance_config(strict=True)
+    finally:
+        overlay.chmod(0o600)
+        ic.reset_cache()
+
+
+def test_the_boot_path_drops_the_cache_before_its_strict_read():
+    """A strict read that returns the cache inspects nothing.
+
+    Importing `app.main` populates the parse-once cache, so the startup call
+    would short-circuit on it and never touch the file — the check would pass
+    on an instance whose overlay is unreadable.
+    """
+    body = Path("app/main.py").read_text()
+    i = body.index("load_instance_config(strict=True)")
+    window = body[max(0, i - 600):i]
+    assert "reset_cache()" in window, (
+        "the boot check must drop the cache first; otherwise it validates a config that "
+        "was loaded at import time and reads nothing"
+    )

@@ -107,7 +107,7 @@ def _deep_merge(base: dict, patch: dict) -> dict:
     return out
 
 
-def load_instance_config() -> dict:
+def load_instance_config(*, strict: bool = False) -> dict:
     """Load instance.yaml as a deep-merge of the static file and the
     writable overlay.
 
@@ -194,15 +194,22 @@ def load_instance_config() -> dict:
             # that already loaded a good config is not about to do that. So it
             # refuses only when nothing good has ever been loaded, and
             # otherwise keeps serving on the config it has, loudly.
-            if _loaded_once and _last_good_config is not None:
+            if not strict and _last_good_config is not None:
                 # `_last_good_config`, NOT `_instance_config` — the latter is
                 # guaranteed None here, because the function returns early
                 # whenever it is set, so `reset_cache()` (which every admin
                 # save calls) is exactly the path that reaches this branch.
                 # Returning the static base instead would drop every
                 # operator-set section while the log claimed they were kept:
-                # the silent-wrong-config outcome the boot refusal exists to
+                # the silent-wrong-config outcome the refusal exists to
                 # prevent, just after boot instead of at it.
+                #
+                # `strict` is the CALLER's declaration, not a guess from
+                # process history. It used to be `_loaded_once`, a module flag
+                # meant to mean "we are past startup" — and importing
+                # `app.main` sets it, so by the time the startup block ran the
+                # refusal was already permanently defused. A guard whose arming
+                # depends on nothing else having imported first is not a guard.
                 #
                 # Cached into `_instance_config` so the next request short-
                 # circuits. Without that, every `get_value()` re-reads and
