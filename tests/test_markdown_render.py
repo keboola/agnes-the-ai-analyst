@@ -338,3 +338,23 @@ def test_html_source_eats_angle_bracketed_words_and_the_default_does_not():
     prose = "Counts orders <shipped> per day; column type List<int>."
     assert render_plain(prose) == prose
     assert render_plain(prose, html_source=True) == "Counts orders per day; column type List"
+
+
+def test_html_source_keeps_a_boundary_where_a_stripped_block_tag_was():
+    """`<div>` is not on the render allowlist, so it is removed — but it was
+    separating two lines, and a removal that leaves no boundary fuses them
+    into "First line.Second line.". Boundaries are therefore inserted into the
+    RENDERED html, before sanitization, not into `render_safe`'s output."""
+    from app.markdown_render import render_plain
+
+    out = render_plain("<div>First line.</div><div>Second line.</div>", html_source=True)
+    assert out == "First line. Second line."
+
+
+def test_plain_projection_still_drops_script_content_entirely():
+    """Inserting boundaries pre-sanitization must not turn script bodies into
+    visible text: the empty-allowlist clean removes those tags WITH their
+    contents, which is stricter than the render allowlist, not weaker."""
+    from app.markdown_render import render_plain
+
+    assert render_plain("<script>alert(1)</script>visible", html_source=True) == "visible"

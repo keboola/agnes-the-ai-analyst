@@ -110,9 +110,12 @@ def render_safe(markdown: Optional[str], *, html_source: bool = False) -> str:
 
 # Closing tags of block-level elements (plus <br>) mark word boundaries when
 # flattening rendered HTML to plain text; without this, "<p>a</p><p>b</p>"
-# collapses to "ab".
+# collapses to "ab". The list deliberately includes block elements the render
+# allowlist does NOT keep (div, section, …): an imported description is free to
+# separate its lines with <div>, and those tags must still leave a boundary
+# behind when they are stripped — see the ordering note in render_plain.
 _BLOCK_BOUNDARY_RE = re.compile(
-    r"</(?:p|li|h[1-6]|tr|t[dh]|blockquote|pre)>|<br ?/?>"
+    r"</(?:p|li|h[1-6]|tr|t[dh]|blockquote|pre|div|section|article|figure|figcaption|dd|dt|dl)>|<br ?/?>"
 )
 
 
@@ -135,8 +138,14 @@ def render_plain(markdown: Optional[str], *, html_source: bool = False) -> str:
     """
     if not markdown:
         return ""
-    html = _BLOCK_BOUNDARY_RE.sub(" ", render_safe(markdown, html_source=html_source))
-    text = html_lib.unescape(nh3.clean(html, tags=set()))
+    # Boundaries are inserted into the RENDERED html, before any sanitization —
+    # not into `render_safe`'s output. A <div> is not on the render allowlist,
+    # so by then it is already gone and the two lines it separated have fused
+    # ("First line.Second line."). Stripping every tag afterwards with an empty
+    # allowlist is stricter than the render allowlist, so nothing survives here
+    # that would survive there.
+    rendered = (_md_html_source if html_source else _md).render(markdown)
+    text = html_lib.unescape(nh3.clean(_BLOCK_BOUNDARY_RE.sub(" ", rendered), tags=set()))
     return " ".join(text.split())
 
 
