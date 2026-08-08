@@ -5,10 +5,11 @@ Markdown for metrics hand-authored in `docs/metrics/*.yaml`; whatever the
 upstream catalog stored for metrics written by an import that passes the value
 through verbatim (`connectors/keboola/semantic_layer.py`), which is routinely
 rich HTML. The web page's own coverage lives in
-`tests/test_catalog_semantics_page.py`; this file pins the other two surfaces —
+`tests/test_catalog_semantics_page.py`; this file pins the other surfaces —
 the metrics API (which is what `agnes catalog --metrics --show` renders, the
-command CLAUDE.md's agent rails point agents at) and the unified search hit
-(which an agent reads through the MCP `search` tool).
+command CLAUDE.md's agent rails point agents at), the unified search hit (which
+an agent reads through the MCP `search` tool), and the glossary API, whose
+`definition` column is the same importer's sibling write in the same pass.
 """
 
 from __future__ import annotations
@@ -97,3 +98,52 @@ class TestUnifiedSearchProjection:
         hit = hits[0]
         assert hit["description"] == FLAT
         assert "<strong>" not in hit["description"]
+
+
+def _make_term(**overrides) -> dict:
+    from src.repositories import glossary_repo
+
+    defaults = {
+        "id": "keboola/live_deal",
+        "term": "Live Deal",
+        "definition": "<p><strong>Live Deal</strong> - a deal currently on sale.</p>",
+        "source": "keboola_semantic_layer",
+    }
+    defaults.update(overrides)
+    return glossary_repo().create(**defaults)
+
+
+class TestGlossaryApiProjection:
+    """`glossary_terms.definition` is written by the same importer in the same
+    pass as the metric description (connectors/keboola/semantic_layer.py builds
+    both rows and stamps both `keboola_semantic_layer`), and the Glossary tab
+    renders it through `esc()` — so an HTML definition showed its tags as
+    visible text exactly like a metric description did."""
+
+    def test_detail_carries_a_plain_text_projection(self, seeded_app):
+        _make_term()
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        body = c.get("/api/glossary/keboola/live_deal", headers=_auth(token)).json()
+        assert body["definition_text"] == "Live Deal - a deal currently on sale."
+        assert body["definition"] == "<p><strong>Live Deal</strong> - a deal currently on sale.</p>"
+
+    def test_list_carries_it_too(self, seeded_app):
+        _make_term()
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        body = c.get("/api/glossary", headers=_auth(token)).json()
+        row = next(t for t in body["terms"] if t["id"] == "keboola/live_deal")
+        assert row["definition_text"] == "Live Deal - a deal currently on sale."
+
+    def test_search_carries_it_too(self, seeded_app):
+        _make_term()
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        body = c.get("/api/glossary/search", params={"q": "live deal"}, headers=_auth(token)).json()
+        assert body["terms"], "expected the seeded term to match"
+        assert all("definition_text" in t for t in body["terms"])
+
+    def test_a_manual_term_keeps_its_angle_bracketed_text(self, seeded_app):
+        prose = "Threshold expressed as List<int> of tier bounds."
+        _make_term(id="kb/tiers", term="Tiers", definition=prose, source="manual")
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        body = c.get("/api/glossary/kb/tiers", headers=_auth(token)).json()
+        assert body["definition_text"] == prose

@@ -140,4 +140,35 @@ def render_plain(markdown: Optional[str], *, html_source: bool = False) -> str:
     return " ".join(text.split())
 
 
-__all__ = ["render_plain", "render_safe"]
+# ---------------------------------------------------------------------------
+# Which stored rows are HTML rather than markdown
+# ---------------------------------------------------------------------------
+
+# `source` values (on `metric_definitions` / `glossary_terms`) whose text is the
+# upstream catalog's, stored with no normalization — routinely rich HTML. Every
+# other writer produces markdown: `manual` (the admin UI / POST endpoints) and
+# `yaml_import` (docs/metrics/*.yaml, and the OpenMetadata export, which strips
+# HTML before writing the YAML).
+HTML_DIALECT_SOURCES = frozenset({"keboola_semantic_layer"})
+
+
+def stores_html(row: dict) -> bool:
+    """Whether ``row``'s authored text should be read as HTML, not markdown.
+
+    Keyed on the WRITER (the ``source`` column), not on what the text looks
+    like. Sniffing the content is tempting and wrong: a markdown description is
+    free to contain `List<int>` or `orders <shipped>`, and handing that to
+    ``html_source=True`` deletes the fragment — markdown-it emits it as an
+    unknown tag, the nh3 allowlist rejects it, and since a pseudo-tag carries no
+    child text the characters vanish rather than being escaped and shown (an
+    unclosed one takes the rest of the line with it). The dialect is a property
+    of who wrote the row, and the row records that.
+
+    The trade-off does not disappear, it just lands where it belongs: an
+    HTML-dialect row whose text happens to contain `<int>` still loses it. That
+    is the row class where HTML is the documented dialect.
+    """
+    return (row.get("source") or "") in HTML_DIALECT_SOURCES
+
+
+__all__ = ["HTML_DIALECT_SOURCES", "render_plain", "render_safe", "stores_html"]
