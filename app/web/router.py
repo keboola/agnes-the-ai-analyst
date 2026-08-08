@@ -1600,6 +1600,14 @@ def _data_package_entry_dict(
         "category": getattr(entry, "category", None),
         "requirement": entry.requirement,
         "in_stack": getattr(entry, "materialized", False),
+        # #1206: says OUT LOUD what the line above did quietly. Under
+        # auto-membership `in_stack` no longer means "in the caller's
+        # stack" — every granted resource already is — it means "a local
+        # copy exists". The card macro cannot infer that from the key
+        # name, so it read the old meaning and invited you to "Add to
+        # stack" a package listed under My Stack. Consumers that do NOT
+        # re-point the key simply omit this flag and keep the old wording.
+        "in_stack_is_local": True,
         "meta": f"{table_count} table{'s' if table_count != 1 else ''}",
         # v56: source-type pills (auto-derived) come first per the spec
         # convention; admin-authored category tags follow. Concatenated
@@ -1993,6 +2001,14 @@ async def catalog(
         )
         return templates.TemplateResponse(request, "catalog_unified.html", ctx)
 
+    # #1206: this page keeps the legacy `_stack_card` macro — its own JS keys on
+    # the `.stack-card__*` class names, so swapping in the unified `catalog_card`
+    # projection here would break add/remove. The macro has no notion on its own
+    # that `in_stack` was re-pointed at the local-download state by the
+    # auto-membership reshape — so a package sat under "My Stack" while its own
+    # button read "Add to stack". The projections that re-point the key now say
+    # so with `in_stack_is_local`, and the macro switches its wording on that
+    # flag rather than on the key name.
     ctx = _build_context(
         request,
         user=user,
@@ -4233,6 +4249,14 @@ def _memory_domain_entry_dict(entry, drilldown_url: str, items_count: int = 0, r
         "category": None,
         "requirement": entry.requirement,
         "in_stack": getattr(entry, "materialized", False),
+        # #1206: says OUT LOUD what the line above did quietly. Under
+        # auto-membership `in_stack` no longer means "in the caller's
+        # stack" — every granted resource already is — it means "a local
+        # copy exists". The card macro cannot infer that from the key
+        # name, so it read the old meaning and invited you to "Add to
+        # stack" a package listed under My Stack. Consumers that do NOT
+        # re-point the key simply omit this flag and keep the old wording.
+        "in_stack_is_local": True,
         "meta": meta,
         "tags": [],
         "drilldown_url": drilldown_url,
