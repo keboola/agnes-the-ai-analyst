@@ -652,11 +652,23 @@ else
         # The rollback did not reach disk, so instance.yaml still names the
         # transient `*_in_progress` backend. Leave the flag alone: clearing
         # it would assert a lifecycle the file does not agree with, and the
-        # pair being consistent is what the next tick reads. Step 4 still
-        # runs, so the instance comes back up on the backend it was already
-        # using — degraded and loud beats offline and silent.
-        update_job "$PENDING_JOB" "failed" "instance.yaml rollback was ALSO refused — backend left at the in-progress value" append
-        logger -t agnes-state-applier "Migration job $JOB_ID failed and the instance.yaml rollback FAILED — backend still reads *_in_progress and the lifecycle flag was left as-is; manual intervention needed"
+        # pair being consistent is what the next tick reads.
+        #
+        # And step 4 is SKIPPED here, which corrects an earlier reading of
+        # this branch. `use_pg()` counts SIDE_CAR_IN_PROGRESS and
+        # CLOUD_IN_PROGRESS as Postgres (src/repositories/__init__.py), so an
+        # overlay still naming the transient does not mean "the backend it
+        # was already using" — with a duckdb source it points the app at a
+        # Postgres that the failed migration never filled. Restarting into
+        # that is worse than staying down: an empty database that accepts
+        # writes is not a state anyone can tell apart from a healthy one.
+        # Everything the earlier fix was actually for still happens — the
+        # script does not abort mid-run, the flag handling ran, the job
+        # records both failures and the log says what to do. Only the restart
+        # is withheld, deliberately and out loud.
+        SKIP_APP_RESTART=1
+        update_job "$PENDING_JOB" "failed" "instance.yaml rollback was ALSO refused — backend left at the in-progress value; app+scheduler deliberately NOT restarted" append
+        logger -t agnes-state-applier "Migration job $JOB_ID failed and the instance.yaml rollback FAILED — backend still reads *_in_progress, which resolves to Postgres; app+scheduler left DOWN rather than started against the wrong store. Repair instance.yaml (set database.backend to $SOURCE_BACKEND) and start them by hand."
     fi
 fi
 
@@ -672,6 +684,10 @@ fi
 # machine already ran the migration on the HOST via `docker run` —
 # the in-compose migrate/data-migrate services are vestigial here and
 # must not be touched on each cycle.
+if [ "${SKIP_APP_RESTART:-0}" = "1" ]; then
+    logger -t agnes-state-applier "Skipping the app+scheduler restart — see the failure logged above; instance.yaml must be repaired first"
+    exit 1
+fi
 set +e
 RESTART_LOG=$(dc up -d --no-deps --force-recreate app scheduler 2>&1)
 RESTART_RC=$?
