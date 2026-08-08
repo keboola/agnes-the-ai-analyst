@@ -1260,38 +1260,51 @@ def main(
         # cancel_job is currently holding the lock for its revert; by
         # the time we re-acquire, the cancel sentinel is on disk and
         # the re-check will raise JobCancelled.
-        from src.db_state_machine import MigrationInProgressError, MigrationLock
+        from src.db_state_machine import MigrationInProgressError, MigrationLock, read_backend_state
+
+        def _flip_and_verify() -> None:
+            """Flip the backend and confirm it landed — both under the lock.
+
+            The applier treats `status=success` as proof that instance.yaml
+            already names the target; it downgrades its own write to a url
+            normalization it can afford to lose on that basis. Nothing but
+            call order was enforcing that, so a future path returning 0
+            without writing would have the applier assert a move the config
+            does not reflect. One read of a file we just wrote makes it
+            explicit.
+
+            Inside the lock, not after it: a cancel landing in the gap
+            reverts instance.yaml to the source, the read-back sees a
+            mismatch, and a bare RuntimeError routes to `except Exception`
+            -> `mark_failed`, losing the cancelled/failed distinction that
+            `_check_cancel_before_flip`'s own docstring calls out as
+            load-bearing for the host applier. Holding the lock across both
+            means a mismatch here really is the write not having landed.
+            """
+            _check_cancel_before_flip(job_path=writer._path, target_state=target_state)
+            write_backend_state(target_state, url=target_url)
+            landed, _ = read_backend_state()
+            if landed != target_state:
+                raise RuntimeError(
+                    f"refusing to report success: instance.yaml names {landed!r} after the flip "
+                    f"to {target_state!r}. The data migration completed, but the backend was not "
+                    "switched, so reporting success would leave the applier and the admin UI "
+                    "asserting a move that the config does not reflect."
+                )
 
         try:
             with MigrationLock():
-                _check_cancel_before_flip(job_path=writer._path, target_state=target_state)
-                write_backend_state(target_state, url=target_url)
+                _flip_and_verify()
         except MigrationInProgressError:
             time.sleep(0.5)
             with MigrationLock():
-                _check_cancel_before_flip(job_path=writer._path, target_state=target_state)
-                write_backend_state(target_state, url=target_url)
+                _flip_and_verify()
 
-        # Read back before claiming success. The applier leans on this
-        # ordering: when it sees status=success it treats instance.yaml as
-        # already naming the target and its own write as a url normalization
-        # it can afford to lose. That inference is only sound while a success
-        # cannot be reached without the flip having landed, and nothing but
-        # call order was enforcing it — a future path that returns 0 without
-        # writing would leave the applier reporting a successful migration on
-        # an instance still pointed at the source. Cheap to make explicit:
-        # one read of a file we just wrote.
-        from src.db_state_machine import read_backend_state
-
-        landed, _ = read_backend_state()
-        if landed != target_state:
-            raise RuntimeError(
-                f"refusing to report success: instance.yaml names {landed!r} after the flip to "
-                f"{target_state!r}. The data migration completed, but the backend was not "
-                "switched, so reporting success would leave the applier and the admin UI "
-                "asserting a move that the config does not reflect."
-            )
-
+        # The read-back that guards this lives in `_flip_and_verify` above,
+        # inside the migration lock. The applier leans on the ordering: when
+        # it sees status=success it treats instance.yaml as already naming
+        # the target and its own write as a url normalization it can afford
+        # to lose — so a success must not be reachable without the flip.
         writer.mark_success(summary=copy_summary)
         return 0
 

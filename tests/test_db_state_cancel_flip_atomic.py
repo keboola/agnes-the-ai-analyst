@@ -8,34 +8,53 @@ import re
 
 
 def test_migrator_flip_wraps_check_and_write_in_migration_lock() -> None:
-    """Static-text check: the migrator's call site for
-    _check_cancel_before_flip + write_backend_state(target_state, ...)
-    must be inside a `with MigrationLock()` block."""
+    """The cancel re-check, the flip and its read-back all run under one lock.
+
+    Follows the indirection rather than a text window: the three steps live in
+    a `_flip_and_verify` helper, so a purely lexical "is there a `with
+    MigrationLock` above this line" check reports a false failure the moment
+    the body moves into a function. What the invariant actually requires is
+    that the helper hold all three AND that no call site invoke it outside the
+    lock — the read-back especially, since a cancel landing after the write
+    would otherwise be reported as a failure instead of a cancellation.
+    """
     script = Path("scripts/db_state_migrator.py").read_text()
-    # Find the call site (the bare two-line sequence is the pre-fix
-    # shape; post-fix it must be wrapped). Look for the function body
-    # that contains both `_check_cancel_before_flip(` and
-    # `write_backend_state(target_state`.
     lines = script.splitlines()
-    # The first occurrence of "write_backend_state(target_state" appears
-    # inside the _check_cancel_before_flip docstring (a backtick-quoted
-    # narrative reference). The real call site uses `url=` kwarg —
-    # filter for that to skip the docstring mention.
-    flip_idx = next(
-        (i for i, l in enumerate(lines)
-         if "write_backend_state(target_state" in l and "url=" in l),
+
+    fn_start = next(
+        (i for i, ln in enumerate(lines) if ln.strip().startswith("def _flip_and_verify(")),
         None,
     )
-    assert flip_idx is not None, "flip site not found"
-    # Walk backwards up to 20 lines looking for `with MigrationLock`.
-    window = "\n".join(lines[max(0, flip_idx - 20):flip_idx + 1])
-    assert "with MigrationLock" in window, (
-        "H1-PARTIAL: write_backend_state(target_state, ...) is not "
-        "wrapped in `with MigrationLock()`. The atomic check-and-flip "
-        "guarantee requires the lock to be held across "
-        "_check_cancel_before_flip + write_backend_state.\n\n"
-        f"Window:\n{window}"
+    assert fn_start is not None, (
+        "H1-PARTIAL: expected the check + flip + read-back to live in a "
+        "`_flip_and_verify` helper; if it was inlined again, re-point this guard"
     )
+    # Body ends at the next line indented no deeper than the `def`.
+    indent = len(lines[fn_start]) - len(lines[fn_start].lstrip())
+    fn_end = fn_start + 1
+    while fn_end < len(lines) and (not lines[fn_end].strip() or (len(lines[fn_end]) - len(lines[fn_end].lstrip())) > indent):
+        fn_end += 1
+    body = "\n".join(lines[fn_start:fn_end])
+
+    for needed in ("_check_cancel_before_flip(", "write_backend_state(target_state", "read_backend_state()"):
+        assert needed in body, (
+            f"H1-PARTIAL: `{needed}` is not inside `_flip_and_verify`. All three must share "
+            "the lock — splitting them is how a raced cancel becomes a reported failure."
+        )
+
+    call_sites = [
+        i
+        for i, ln in enumerate(lines)
+        if "_flip_and_verify()" in ln and not ln.strip().startswith("def ")
+    ]
+    assert call_sites, "no call site for _flip_and_verify"
+    for i in call_sites:
+        window = "\n".join(lines[max(0, i - 3):i + 1])
+        assert "with MigrationLock" in window, (
+            "H1-PARTIAL: `_flip_and_verify()` is invoked outside `with MigrationLock()` "
+            f"at line {i + 1}. The atomic check-and-flip guarantee requires the lock.\n\n"
+            f"Window:\n{window}"
+        )
 
 
 def test_cancel_job_revert_wraps_sentinel_and_write_in_migration_lock() -> None:
