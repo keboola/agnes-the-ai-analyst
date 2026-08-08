@@ -318,3 +318,47 @@ def test_the_boot_path_reraises_it_instead_of_logging_it():
     specific = body.index("except InstanceConfigUnreadable:")
     broad = body.index("logger.warning(f\"Could not load instance config")
     assert specific < broad, "the specific arm must come before the broad one to be reachable"
+
+
+def test_undecodable_overlay_bytes_fall_back_rather_than_propagating(tmp_path, monkeypatch):
+    """The read split must not leak a THIRD failure mode.
+
+    ``Path.read_text()`` raises ``UnicodeDecodeError`` — a ``ValueError``, not
+    an ``OSError`` — for bytes that are not valid UTF-8, which is exactly the
+    partial-write shape the lenient path was written for. Caught by neither
+    arm it propagates, ``_instance_config`` is never assigned, the boot path's
+    broad ``except`` logs it, and every later ``get_value()`` re-raises: an
+    instance that looks healthy and 500s on everything, which is the failure
+    the split exists to prevent.
+    """
+    import app.instance_config as ic
+
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "instance.yaml").write_bytes(b"database:\n  backend: \xff\xfe not utf-8\n")
+
+    monkeypatch.setattr("app.secrets._state_dir", lambda: state)
+    ic.reset_cache()
+    try:
+        cfg = ic.load_instance_config()
+        assert isinstance(cfg, dict), "undecodable bytes must degrade to the base config"
+    finally:
+        ic.reset_cache()
+
+
+def test_a_refused_rollback_does_not_restart_into_the_transient_backend():
+    """`use_pg()` treats `*_in_progress` as Postgres.
+
+    So an overlay left naming the transient does not mean "the backend it was
+    already using" — with a duckdb source it points the app at a Postgres the
+    failed migration never filled. The restart is withheld on that branch;
+    everything else the guard-the-bare-call fix was for still runs.
+    """
+    body = APPLIER.read_text()
+    assert "SKIP_APP_RESTART=1" in body, (
+        "the rollback-refused branch must withhold the app+scheduler restart — the "
+        "overlay still names a transient that resolves to a different engine than the data"
+    )
+    gate = body.index('if [ "${SKIP_APP_RESTART:-0}" = "1" ]')
+    restart = body.index("RESTART_LOG=$(dc up -d --no-deps --force-recreate app scheduler")
+    assert gate < restart, "the gate must precede the restart to have any effect"

@@ -175,8 +175,26 @@ def load_instance_config() -> dict:
                 "base config, which would silently use a different `database.backend` than "
                 "the one this instance's data is on."
             ) from exc
+        except Exception:
+            # NOT unreadable — undecodable. `Path.read_text()` raises
+            # UnicodeDecodeError (a ValueError) for bytes that are not valid
+            # UTF-8, which is the partial-write / disk-corruption shape the
+            # lenient path was written for in the first place. Leaving it to
+            # propagate would recreate the very failure this split exists to
+            # prevent, one exception type over: the process starts, the boot
+            # path's broad `except` logs it, `_instance_config` is never
+            # assigned, and every later `get_value()` re-raises — an instance
+            # that looks healthy and 500s on everything. So it degrades to the
+            # base config like any other malformed file.
+            logger.exception(
+                "instance.yaml overlay at %s could not be decoded — falling back to "
+                "static base config; saves through the editor will refuse until the "
+                "file is repaired",
+                overlay_path,
+            )
+            raw = None
         try:
-            overlay = yaml.safe_load(raw) or {}
+            overlay = yaml.safe_load(raw or "") or {}
             from config.loader import _resolve_env_refs
 
             overlay = _resolve_env_refs(overlay)
