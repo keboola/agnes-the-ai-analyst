@@ -63,6 +63,22 @@ class JobStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class BackendFlipNotVerified(RuntimeError):
+    """The data moved, but the overlay does not name the target afterwards.
+
+    Its own type because the generic ``except Exception`` handler reverts the
+    backend to the source before marking the job failed — which is right when
+    the failure happened BEFORE the rows moved, and exactly wrong here. At this
+    point the data is already on the target, so reverting writes a config that
+    disagrees with where the rows are: the source-vs-target split the H1
+    machinery exists to prevent, arriving through the guard meant to catch it.
+
+    So this is handled without the revert. The overlay is left as-is (whatever
+    it names, an operator has to look), the job records the mismatch, and
+    nothing writes over the one clue about what actually happened.
+    """
+
+
 class JobCancelled(RuntimeError):
     """Raised when the cancel sentinel is observed at a step boundary."""
 
@@ -1285,7 +1301,7 @@ def main(
             write_backend_state(target_state, url=target_url)
             landed, _ = read_backend_state()
             if landed != target_state:
-                raise RuntimeError(
+                raise BackendFlipNotVerified(
                     f"refusing to report success: instance.yaml names {landed!r} after the flip "
                     f"to {target_state!r}. The data migration completed, but the backend was not "
                     "switched, so reporting success would leave the applier and the admin UI "
@@ -1329,6 +1345,23 @@ def main(
         # Cancellation is a normal end — return 0. The applier looks at
         # status: cancelled in the job JSON, not the exit code.
         return 0
+
+    except BackendFlipNotVerified as e:
+        # NO revert. The rows are on the target by the time this can fire, so
+        # writing the source back would create precisely the config/data split
+        # the check exists to detect. Record it and leave the overlay alone.
+        logger.error(
+            "backend flip could not be verified after a completed migration: %s. "
+            "instance.yaml is NOT being reverted — the data is on the target. "
+            "Inspect the overlay by hand.",
+            e,
+        )
+        writer.mark_failed(
+            step=writer._read().get("current_step", "unknown"),
+            error_class=type(e).__name__,
+            error_message=str(e),
+        )
+        return 1
 
     except Exception as e:
         # Revert state to the source backend (best-effort). The source

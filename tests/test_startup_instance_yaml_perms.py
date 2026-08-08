@@ -545,3 +545,27 @@ def test_the_boot_path_drops_the_cache_before_its_strict_read():
         "the boot check must drop the cache first; otherwise it validates a config that "
         "was loaded at import time and reads nothing"
     )
+
+
+def test_a_failed_flip_verification_does_not_revert_the_backend():
+    """The revert is right for a failure BEFORE the rows move, wrong after.
+
+    `_flip_and_verify` can only fail once the data is already on the target, so
+    routing it through the generic handler — which writes the source backend
+    back before marking the job failed — would produce a config that disagrees
+    with where the rows are. That is the source-vs-target split the whole H1
+    machinery exists to prevent, arriving through the guard meant to catch it.
+    """
+    body = Path("scripts/db_state_migrator.py").read_text()
+    assert "class BackendFlipNotVerified(" in body, (
+        "the verification failure needs its own type — a bare RuntimeError falls to the "
+        "generic handler, which reverts"
+    )
+    specific = body.index("except BackendFlipNotVerified as e:")
+    generic = body.index("except Exception as e:\n        # Revert state to the source backend")
+    assert specific < generic, "the specific handler must precede the reverting one to be reachable"
+    arm = body[specific:generic]
+    assert "write_backend_state(" not in arm, (
+        "the BackendFlipNotVerified arm must not write the backend — the data is on the target"
+    )
+    assert "mark_failed(" in arm, "it must still mark the job failed"

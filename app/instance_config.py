@@ -172,14 +172,27 @@ def load_instance_config(*, strict: bool = False) -> dict:
         try:
             raw = overlay_path.read_text()
         except OSError as exc:
-            # The file is THERE and we cannot read it. Falling back to the
-            # static base would be the dangerous reading of that: the overlay
-            # is where `database.backend` lives, so an instance whose data is
-            # on Postgres would come up on the DuckDB default and start
-            # writing to the wrong store — silently, with only a log line
-            # calling the file "corrupt". Since instance.yaml went 0600 this
-            # is reachable via a plain uid mismatch rather than only via disk
-            # failure, so it refuses to boot instead, naming the actual cause.
+            # The file is THERE and we cannot read it, which since 0600 is
+            # reachable through a plain uid mismatch rather than only through
+            # disk failure.
+            #
+            # What this refusal is FOR, stated precisely — an earlier version
+            # of this comment claimed it stops an instance whose data is on
+            # Postgres from coming up on the DuckDB default, and that is not
+            # the mechanism. The backend is not resolved through here: it
+            # comes from `src.db_state_machine.read_backend_state`, which
+            # reads the overlay directly and catches only `yaml.YAMLError`, so
+            # a PermissionError propagates out of `use_pg()` rather than
+            # quietly answering DuckDB. Do not relax that handler on the
+            # belief that this function guards it.
+            #
+            # The value here is narrower and still worth having: everything
+            # ELSE the overlay carries (auth providers, feature flags, theme,
+            # `initial_workspace`) would silently revert to its static value,
+            # and the failure would otherwise surface as a raw OSError from
+            # deep inside a repository factory on some unrelated request. This
+            # names the cause at the one moment an operator is watching.
+            #
             # A malformed file keeps the lenient path below: that one is
             # visible to the operator and repairable through the editor.
             #
