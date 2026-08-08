@@ -2256,9 +2256,15 @@ def create_app() -> FastAPI:
 
     # Load instance config on startup
     try:
-        from app.instance_config import InstanceConfigUnreadable, load_instance_config
+        from app.instance_config import InstanceConfigUnreadable, load_instance_config, reset_cache
 
-        load_instance_config()
+        # `strict=True` + a cache drop: this is THE boot check, and it has to
+        # actually read the file. Importing this module already loads the
+        # config once, so without the reset the startup call returns the cache
+        # and inspects nothing — which is how the refusal quietly stopped
+        # existing when it was gated on a "have we booted yet" flag instead.
+        reset_cache()
+        load_instance_config(strict=True)
         logger.info("Instance config loaded")
     except InstanceConfigUnreadable:
         # Re-raised, unlike everything else here. The broad `except` below is
