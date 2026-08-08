@@ -1558,8 +1558,32 @@ async def setup_advanced_page(
     return templates.TemplateResponse(request, "setup_advanced.html", ctx)
 
 
+def _resolve_in_stack_is_local(explicit: Optional[bool]) -> bool:
+    """Whether `in_stack` on these cards means "a local copy exists".
+
+    True only under auto-membership, where membership follows from the grant
+    and the subscribe control is left governing the download alone. Under the
+    classic subscribe model the key means membership again, so the wording and
+    the removal semantics keyed off this flag (#1206) must stay off: "Remove
+    local copy" on a control that unsubscribes tells the user they are freeing
+    disk while they are giving up access.
+
+    Callers may pass an explicit value; ``None`` asks the instance.
+    """
+    if explicit is not None:
+        return explicit
+    from app.instance_config import get_stack_auto_membership
+
+    return get_stack_auto_membership()
+
+
 def _data_package_entry_dict(
-    entry, drilldown_url: str, table_count: int = 0, source_types: Optional[list] = None, is_admin_view: bool = False
+    entry,
+    drilldown_url: str,
+    table_count: int = 0,
+    source_types: Optional[list] = None,
+    is_admin_view: bool = False,
+    in_stack_is_local: Optional[bool] = None,
 ) -> dict:
     """Adapt a ResourceEntry → template entry dict for the _stack_card macro.
 
@@ -1605,9 +1629,15 @@ def _data_package_entry_dict(
         # stack" — every granted resource already is — it means "a local
         # copy exists". The card macro cannot infer that from the key
         # name, so it read the old meaning and invited you to "Add to
-        # stack" a package listed under My Stack. Consumers that do NOT
-        # re-point the key simply omit this flag and keep the old wording.
-        "in_stack_is_local": True,
+        # stack" a package listed under My Stack.
+        #
+        # Gated on the membership mode rather than hardcoded True. Under the
+        # classic subscribe model `in_stack` means membership again, and the
+        # flag would have the card offer "Remove local copy" for a control
+        # that actually unsubscribes — the user loses ACCESS believing they
+        # are freeing disk. Consumers that do not re-point the key omit the
+        # flag and keep the old wording; classic is one of them.
+        "in_stack_is_local": _resolve_in_stack_is_local(in_stack_is_local),
         "meta": f"{table_count} table{'s' if table_count != 1 else ''}",
         # v56: source-type pills (auto-derived) come first per the spec
         # convention; admin-authored category tags follow. Concatenated
@@ -4284,7 +4314,13 @@ def _human_size(n: int) -> str:
     return f"{n:.1f} PB"
 
 
-def _memory_domain_entry_dict(entry, drilldown_url: str, items_count: int = 0, required_count: int = 0) -> dict:
+def _memory_domain_entry_dict(
+    entry,
+    drilldown_url: str,
+    items_count: int = 0,
+    required_count: int = 0,
+    in_stack_is_local: Optional[bool] = None,
+) -> dict:
     """Adapt a ResourceEntry (memory_domain) → template entry dict.
 
     Always renders a meta line (`N items · K required` — even `0 items`)
@@ -4318,9 +4354,15 @@ def _memory_domain_entry_dict(entry, drilldown_url: str, items_count: int = 0, r
         # stack" — every granted resource already is — it means "a local
         # copy exists". The card macro cannot infer that from the key
         # name, so it read the old meaning and invited you to "Add to
-        # stack" a package listed under My Stack. Consumers that do NOT
-        # re-point the key simply omit this flag and keep the old wording.
-        "in_stack_is_local": True,
+        # stack" a package listed under My Stack.
+        #
+        # Gated on the membership mode rather than hardcoded True. Under the
+        # classic subscribe model `in_stack` means membership again, and the
+        # flag would have the card offer "Remove local copy" for a control
+        # that actually unsubscribes — the user loses ACCESS believing they
+        # are freeing disk. Consumers that do not re-point the key omit the
+        # flag and keep the old wording; classic is one of them.
+        "in_stack_is_local": _resolve_in_stack_is_local(in_stack_is_local),
         "meta": meta,
         "tags": [],
         "drilldown_url": drilldown_url,

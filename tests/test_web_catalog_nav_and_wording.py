@@ -77,21 +77,55 @@ def test_projections_without_the_flag_keep_the_old_wording():
 def test_both_projections_declare_the_local_semantics():
     """`_data_package_entry_dict` and `_memory_domain_entry_dict` both re-point
     `in_stack` at `entry.materialized`; each must therefore ship the flag, or
-    its cards read the old meaning."""
+    its cards read the old meaning.
+
+    The flag is resolved, not hardcoded: `in_stack` only means "a local copy
+    exists" under auto-membership. Under the classic subscribe model it means
+    membership again, and a card offering "Remove local copy" for a control
+    that unsubscribes tells the user they are freeing disk while they are
+    giving up access. So the guard requires the resolver, and a literal `True`
+    fails it.
+    """
     router = (ROOT / "app" / "web" / "router.py").read_text(encoding="utf-8")
     repoints = router.count('"in_stack": getattr(entry, "materialized", False),')
-    flags = router.count('"in_stack_is_local": True,')
+    flags = router.count('"in_stack_is_local": _resolve_in_stack_is_local(in_stack_is_local),')
     assert repoints, "the re-point disappeared — revisit this guard"
     assert flags == repoints, (
         f"{repoints} projections re-point `in_stack` at the local-copy state but only "
-        f"{flags} say so — the cards on the unflagged one read the old meaning (#1206)"
+        f"{flags} resolve the flag — the cards on the unresolved one read the old meaning (#1206)"
     )
+    assert '"in_stack_is_local": True,' not in router, (
+        "hardcoded True — under the classic subscribe model that turns an unsubscribe "
+        "control into a 'Remove local copy' button and the user loses access"
+    )
+
+
+def test_classic_mode_does_not_get_the_local_copy_wording():
+    """The mode fork the flag exists to respect, exercised rather than read."""
+    import app.web.router as router_mod
+
+    assert router_mod._resolve_in_stack_is_local(True) is True
+    assert router_mod._resolve_in_stack_is_local(False) is False
+
+
+def test_the_frozen_memory_twin_carries_the_wording_fix_too():
+    """Freezing forks a page permanently.
+
+    `corporate_memory_legacy.html` was snapshotted from the pre-#1206 page, so
+    without this it would render the old wording on an instance running classic
+    chrome WITH auto-membership — a supported combination — while its live twin
+    renders the new one. The fix is flag-driven, so carrying it costs nothing
+    in classic: the projection omits the flag there and the old wording stands.
+    """
+    legacy = (TEMPLATES / "corporate_memory_legacy.html").read_text(encoding="utf-8")
+    assert "card.dataset.inStackIsLocal === '1'" in legacy
+    assert "'Local copy queued' : 'Local copy removed'" in legacy
 
 
 def test_the_js_twin_matches_the_macro():
     """`catalog.html` re-labels cards client-side after an add/remove. Left on
     the old strings it would undo the fix on the first click."""
-    text = (TEMPLATES / "catalog.html").read_text(encoding="utf-8")
+    text = (TEMPLATES / "catalog_legacy.html").read_text(encoding="utf-8")
     assert "'Downloaded'" in text
     assert "'Remove local copy' : 'Download locally'" in text
     assert 'data-filter="in_stack">Downloaded<' in text, "the filter chip still reads 'In stack'"
@@ -101,7 +135,16 @@ def test_the_js_twin_matches_the_macro():
 # What a REMOVAL means also follows the flag, not just what the button says
 # ---------------------------------------------------------------------------
 
-_STACK_PAGES = ("catalog.html", "corporate_memory.html")
+# Every page that renders the `_stack_card` macro over a projection which can
+# set `in_stack_is_local`. `catalog.html` became `catalog_legacy.html` when the
+# classic page was frozen, and the classic memory page gained a frozen twin —
+# freezing forks a page permanently, so a fix that reaches only one half of a
+# pair silently reverts itself on whichever chrome renders the other.
+_STACK_PAGES = (
+    "catalog_legacy.html",
+    "corporate_memory.html",
+    "corporate_memory_legacy.html",
+)
 
 
 def test_the_macro_hands_the_flag_to_the_js():

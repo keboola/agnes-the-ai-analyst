@@ -116,7 +116,10 @@
     <button class="pill is-active" data-filter="all">All</button>
     <button class="pill" data-filter="required">Required</button>
     <button class="pill" data-filter="available">Available</button>
-    <button class="pill" data-filter="in_stack">In stack</button>
+    {# Label matches the cards: the filter keys off local-copy state, which is
+       what `in_stack` means after the auto-membership reshape (#1206). The
+       data-filter VALUE stays `in_stack` — JS and card markup key on it. #}
+    <button class="pill" data-filter="in_stack">Downloaded</button>
   </div>
 
   <div data-view="browse">
@@ -168,7 +171,7 @@
       <h3>Your stack is empty</h3>
       {% if entries %}
       <p>Browse the {{ entries|length }} available domain{{ '' if entries|length == 1 else 's' }}
-         and click <strong>+ Add to stack</strong>. Required domains will
+         and click <strong>Download locally</strong>. Required domains will
          appear here automatically.</p>
       {% else %}
       <p>You don't have access to any domains yet. They'll show up here
@@ -305,7 +308,18 @@
   // In-place stack state update — mirrors catalog.html. See that file
   // for the full rationale (avoid full-page reload + scroll loss).
   function _applyStackChange(card, becameInStack) {
+    // Does `in_stack` on these cards mean "a local copy exists" or "member of
+    // the stack"? The macro stamps the answer on every card (#1206), and it
+    // decides what a REMOVAL means here. Under local-copy semantics the
+    // resource stays in the caller's stack after the local copy goes — the
+    // server's My Stack grid is built from `resolver.stack()`, whose
+    // effective set is `required ∪ available ∪ materialized`, so it renders
+    // the item again on the next load. Deleting the card and decrementing the
+    // tab would make it vanish and the count drop, then both come back on
+    // refresh: the same contradictory-count confusion this change set out to
+    // remove, just moved into the optimistic path.
     if (!card) return;
+    const inStackIsLocal = card.dataset.inStackIsLocal === '1';
     card.dataset.inStack = becameInStack ? '1' : '0';
     const id = card.dataset.id;
     if (!id) return;
@@ -322,8 +336,11 @@
           if (!inStackBadge) {
             inStackBadge = document.createElement('div');
             inStackBadge.className = 'stack-card__req-badge stack-card__req-badge--instack';
-            inStackBadge.title = 'In your stack';
-            inStackBadge.textContent = 'In stack';
+            // Wording tracks the macro's `in_stack_is_local` switch (#1206);
+            // this page's projection sets the flag, so every card here
+            // carries the local-download semantics.
+            inStackBadge.title = 'A local copy is downloaded';
+            inStackBadge.textContent = 'Downloaded';
             c.insertBefore(inStackBadge, c.firstChild);
           }
         } else if (inStackBadge && !isRequired) {
@@ -332,7 +349,8 @@
         const actionBtn = c.querySelector('[data-action]');
         if (actionBtn) {
           actionBtn.dataset.action = becameInStack ? 'remove' : 'add';
-          actionBtn.textContent = becameInStack ? 'Remove' : '+ Add to stack';
+          // Mirror the macro's footer text under `in_stack_is_local` (#1206).
+          actionBtn.textContent = becameInStack ? 'Remove local copy' : 'Download locally';
           actionBtn.classList.toggle('stack-card__btn--add', !becameInStack);
           actionBtn.classList.toggle('stack-card__btn--remove', becameInStack);
           actionBtn.disabled = false;
@@ -359,7 +377,10 @@
           const cloneBtn = clone.querySelector('[data-action]');
           if (cloneBtn) {
             cloneBtn.dataset.action = 'remove';
-            cloneBtn.textContent = 'Remove';
+            // Same string the re-label loop above writes, and the same one the
+            // macro renders under `in_stack_is_local` (#1206) — the clone sits
+            // beside its Browse twin, so a divergent label contradicts it.
+            cloneBtn.textContent = 'Remove local copy';
             cloneBtn.classList.remove('stack-card__btn--add');
             cloneBtn.classList.add('stack-card__btn--remove');
             cloneBtn.disabled = false;
@@ -370,24 +391,36 @@
         const emptyEl = document.querySelector('[data-view="my"] .stack-empty');
         if (emptyEl) emptyEl.hidden = true;
       } else if (!becameInStack && existingInMy) {
-        existingInMy.remove();
-        if (!myGrid.children.length) {
-          // Both grid + empty-state are server-rendered (one hidden);
-          // swap visibility instead of injecting DOM. Removing the
-          // last card without this left the My Stack tab blank — users
-          // read that as "Remove didn't work, let me refresh".
-          myGrid.hidden = true;
-          const emptyEl = document.querySelector('[data-view="my"] .stack-empty');
-          if (emptyEl) emptyEl.hidden = false;
+        if (inStackIsLocal) {
+          // Local copy dropped, membership untouched: keep the card
+          // where it is. The re-label loop above already switched it
+          // to 'Download locally', which is exactly what a reload
+          // would render.
+        } else {
+          existingInMy.remove();
+          if (!myGrid.children.length) {
+            // Both grid + empty-state are server-rendered (one hidden);
+            // swap visibility instead of injecting DOM. Removing the
+            // last card without this left the My Stack tab blank — users
+            // read that as "Remove didn't work, let me refresh".
+            myGrid.hidden = true;
+            const emptyEl = document.querySelector('[data-view="my"] .stack-empty');
+            if (emptyEl) emptyEl.hidden = false;
+          }
         }
       }
     }
 
     const myEl = document.querySelector('.stack-tabs .count[data-count="my"]');
-    if (myEl) {
+    // Membership is what this badge counts. Under local-copy semantics
+    // neither add nor remove changes it, so the number must not move.
+    if (myEl && !inStackIsLocal) {
       const cur = parseInt(myEl.textContent, 10) || 0;
       myEl.textContent = String(cur + (becameInStack ? 1 : -1));
     }
+
+    // Re-apply the active filter — see catalog_legacy.html for the rationale.
+    applyFilters();
   }
 
   document.addEventListener('click', async (e) => {
@@ -407,7 +440,20 @@
         btn.disabled = false;
         return;
       }
-      showToast(action === 'add' ? 'Added to stack' : 'Removed from stack');
+      // Follows the same flag as everything else on the card. Under the
+      // local-copy meaning the resource does NOT leave the stack — it stays
+      // listed under My Stack with the count unchanged — so "Removed from
+      // stack" would contradict what the user sees the moment the toast
+      // fades. "queued" rather than "downloaded" because the request that
+      // just succeeded is a subscribe; the bytes arrive with the next
+      // `agnes pull`. Where the key still means membership, added/removed
+      // from the stack is exactly what happened.
+      const _local = card && card.dataset.inStackIsLocal === '1';
+      showToast(
+        _local
+          ? (action === 'add' ? 'Local copy queued' : 'Local copy removed')
+          : (action === 'add' ? 'Added to stack' : 'Removed from stack')
+      );
       _applyStackChange(card, action === 'add');
     } catch (err) {
       showToast('Network error: ' + err.message, true);
