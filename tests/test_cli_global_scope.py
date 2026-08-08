@@ -2,6 +2,7 @@
 + patched user paths + recorded subprocess.run — no real `claude`, no network."""
 
 import json
+import os
 import subprocess
 import time
 
@@ -71,7 +72,18 @@ def env(tmp_path, monkeypatch):
     rec.scripts.append(
         (
             ("claude", "mcp", "get"),
-            subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="not found"),
+            # The real not-found response, not just "rc=1". `claude mcp get`
+            # exits non-zero both when the name is unknown and when the entry
+            # exists but its server will not start, and `_mcp_entry_info` tells
+            # those apart by this message — so a bare rc=1 with empty output
+            # means "the probe did not answer", and every convergence test
+            # using it was silently exercising the ambiguous branch.
+            subprocess.CompletedProcess(
+                args=[],
+                returncode=1,
+                stdout='No MCP server named "agnes". Configured servers: other\n',
+                stderr="",
+            ),
         )
     )
     monkeypatch.setattr(gs_module, "_verify_credentials", lambda: True)
@@ -316,10 +328,15 @@ def test_local_scoped_entry_is_also_absent(monkeypatch, env):
     assert gs_module._mcp_entry_info() == ("absent", None)
 
 
-def test_missing_scope_line_reads_as_absent_not_as_ours(monkeypatch, env):
+def test_missing_scope_line_reads_as_unclassified_not_as_ours(monkeypatch, env):
     """A `claude` too old to print `Scope:` must not be assumed to mean user
-    scope — assuming would resurrect the skip-the-registration bug. Absent is
-    the safe reading: the layer re-registers, which is idempotent."""
+    scope — assuming would resurrect the skip-the-registration bug.
+
+    It must not read as *absent* either, which is what it used to do: the probe
+    exited 0, so something IS registered under this name, and treating it as
+    absent sent the caller into the remove-and-replace arm — destroying a
+    user's own `agnes` entry without the `--force` that gates exactly that.
+    `unclassified` is handled like `foreign`: left alone unless forced."""
     monkeypatch.setattr(
         gs_module.subprocess,
         "run",
@@ -327,7 +344,7 @@ def test_missing_scope_line_reads_as_absent_not_as_ours(monkeypatch, env):
             args=[], returncode=0, stdout="agnes:\n  Command: /usr/local/bin/agnes\n  Args: mcp\n", stderr=""
         ),
     )
-    assert gs_module._mcp_entry_info() == ("absent", None)
+    assert gs_module._mcp_entry_info()[0] == "unclassified"
 
 
 def test_user_scoped_agnes_entry_is_still_ours(monkeypatch, env):
@@ -743,3 +760,63 @@ def test_status_does_not_traceback_on_an_unknown_probe(env, monkeypatch):
     doc = json.loads(result.stdout)
     mcp = next(a for a in doc["artifacts"] if a["artifact"] == "mcp")
     assert mcp["state"] == "unknown"
+
+
+def test_an_unclassifiable_entry_is_not_replaced_without_force(monkeypatch, env):
+    """The `--force` guard must hold wherever ownership is in doubt.
+
+    `run_convergence` dispatches `ours` → ok, `foreign` without force →
+    skipped, everything else → remove + add against user scope. So any state
+    meaning "we could not establish ownership" that is not routed away from
+    that arm destroys a user's own `agnes` entry — precisely what `--force`
+    exists to gate. Both such states are checked here.
+    """
+    for state in ("unknown", "unclassified"):
+        rec = env["rec"]
+        before = len(rec.calls)
+        monkeypatch.setattr(gs_module, "_mcp_entry_info", lambda s=state: (s, None))
+        CliRunner().invoke(gs_module.global_app, ["enable"])
+        touched = [c for c in rec.calls[before:] if c[1:3] in (["mcp", "remove"], ["mcp", "add"])]
+        assert not touched, f"state {state!r} reached the replace arm: {touched}"
+
+
+def test_force_still_replaces_an_unclassifiable_entry(monkeypatch, env):
+    """The other half — `--force` is how an operator says "do it anyway"."""
+    monkeypatch.setattr(gs_module, "_mcp_entry_info", lambda: ("unclassified", "/usr/bin/other"))
+    rec = env["rec"]
+    before = len(rec.calls)
+    CliRunner().invoke(gs_module.global_app, ["enable", "--force"])
+    adds = [c for c in rec.calls[before:] if c[1:3] == ["mcp", "add"]]
+    assert adds, "--force must still replace an entry whose ownership could not be established"
+
+
+def test_a_drift_check_marks_the_clone_fresh(env):
+    """Without this the six-hour interval is not an interval at all.
+
+    `FETCH_HEAD` only moves on a real `git fetch`, and the drift-check path
+    uses `git ls-remote`, which writes nothing. So on a clone that is simply
+    up to date the mtime never advances, `_clone_is_stale` stays True forever,
+    and the remote gets probed on every convergence — every session start in
+    every repository, on top of the probe `_step_marketplace` already does in
+    the same `agnes update` run.
+    """
+    import cli.commands.refresh_marketplace as rm_module
+
+    clone = rm_module.CLONE_DIR
+    marker = clone / ".git" / gs_module._FRESHNESS_MARKER
+    # Age the clone past the interval so the check is reached.
+    old = time.time() - (gs_module._CLONE_FRESH_SECONDS + 60)
+    for name in ("FETCH_HEAD", "HEAD"):
+        p = clone / ".git" / name
+        p.write_text("x", encoding="utf-8")
+        os.utime(p, (old, old))
+
+    assert gs_module._clone_is_stale(clone) is True, "precondition: the clone reads as stale"
+
+    CliRunner().invoke(gs_module.global_app, ["enable"])
+
+    assert marker.exists(), "the drift check must stamp a freshness marker"
+    assert gs_module._clone_is_stale(clone) is False, (
+        "a clone checked seconds ago must not read as stale — otherwise every "
+        "convergence re-probes the remote"
+    )

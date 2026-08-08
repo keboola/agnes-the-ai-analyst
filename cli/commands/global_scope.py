@@ -84,7 +84,7 @@ def _agnes_binary() -> str:
 
 
 def _mcp_entry_info() -> tuple[str, Optional[str]]:
-    """(`'ours' | 'foreign' | 'absent' | 'unknown'`, command path or None).
+    """(`'ours' | 'foreign' | 'unclassified' | 'absent' | 'unknown'`, path).
 
     `claude mcp get agnes` prints "Scope: <scope>", "Command: <path>" and
     "Args: <args>".
@@ -156,11 +156,19 @@ def _mcp_entry_info() -> tuple[str, Optional[str]]:
         elif stripped.startswith("Scope:"):
             scope = stripped[len("Scope:") :].strip()
     # `Scope: User config (available in all your projects)` — matched on the
-    # leading words so the parenthetical gloss is free to change. A `claude`
-    # too old to print the line at all leaves `scope` None; treat that as
-    # absent rather than assuming user scope, since assuming would resurrect
-    # exactly the skip-the-registration bug.
-    if scope is None or not scope.lower().startswith("user config"):
+    # leading words so the parenthetical gloss is free to change.
+    #
+    # A `claude` too old to print the line at all leaves `scope` None, and the
+    # probe exited 0, so SOMETHING is registered under this name — we just
+    # cannot say whose or at which scope. That is not `absent`: calling it
+    # absent once made the caller remove and replace it, which is how a user's
+    # own `agnes` entry could be destroyed without the `--force` that exists to
+    # protect it. `unclassified` is handled like `foreign` — left alone unless
+    # forced. A non-user scope IS classified (scopes coexist, so a project-level
+    # entry is simply not the all-repositories one) and stays `absent`.
+    if scope is None:
+        return "unclassified", command
+    if not scope.lower().startswith("user config"):
         return "absent", None
     is_ours = (
         command is not None
@@ -242,6 +250,10 @@ def _convergence_lock_or_exit(*, as_json: bool):
 #: change an admin made this morning reaches the user today.
 _CLONE_FRESH_SECONDS = 6 * 3600
 
+#: Marker file whose mtime records the last remote drift-check. Lives inside
+#: `.git/` so it travels with the clone and is removed with it.
+_FRESHNESS_MARKER = "agnes-last-check"
+
 
 def _clone_is_stale(clone_dir: Path) -> bool:
     """True when nothing has fetched this clone recently.
@@ -259,17 +271,39 @@ def _clone_is_stale(clone_dir: Path) -> bool:
     and skips, while a global-only user reaches here with a stale one and
     refreshes. Neither fetches twice.
 
-    `FETCH_HEAD` is written by every `git fetch`; a clone that has only ever
-    been cloned has none, so `HEAD` stands in. Neither readable — treat as
-    stale and let the refresh decide.
+    Freshness is tracked with a marker this function owns, NOT with
+    `FETCH_HEAD`. Git writes `FETCH_HEAD` only on an actual `git fetch`, and
+    the drift-check path uses `git ls-remote`, which writes nothing — so on a
+    clone that is simply up to date the mtime never moves, the clone counts as
+    stale forever, and the "at most once every six hours" contract degrades
+    into a remote probe on every single convergence, i.e. on every session
+    start in every repository (Devin on #1184). The marker records that the
+    remote was *checked*, which is the question being asked; whether the check
+    found anything is beside the point.
+
+    A clone with no marker yet — including every clone that predates this —
+    falls back to `FETCH_HEAD`/`HEAD` so an existing install does not take one
+    extra probe on upgrade. Nothing readable at all means stale, and the
+    refresh decides.
     """
-    for name in ("FETCH_HEAD", "HEAD"):
+    marker = clone_dir / ".git" / _FRESHNESS_MARKER
+    for path in (marker, clone_dir / ".git" / "FETCH_HEAD", clone_dir / ".git" / "HEAD"):
         try:
-            age = time.time() - (clone_dir / ".git" / name).stat().st_mtime
+            age = time.time() - path.stat().st_mtime
         except OSError:
             continue
         return age > _CLONE_FRESH_SECONDS
     return True
+
+
+def _mark_clone_checked(clone_dir: Path) -> None:
+    """Record that the remote was just checked. Best-effort by design — a
+    clone we cannot write to is not a reason to fail convergence, it just
+    means the next run checks again."""
+    try:
+        (clone_dir / ".git" / _FRESHNESS_MARKER).touch()
+    except OSError:
+        pass
 
 
 def run_convergence(*, want_hook: bool, force: bool, report: list[dict]) -> None:
@@ -317,6 +351,12 @@ def run_convergence(*, want_hook: bool, force: bool, report: list[dict]) -> None
                     refresh_marketplace(check=False, bootstrap=False, target="user")
                 except typer.Exit:
                     pass
+        # Stamped whether or not the check found drift — "checked recently" is
+        # the thing the interval is about. Stamped even when the follow-up
+        # refresh failed, deliberately: the remote probe happened, and
+        # retrying it every 30 seconds would not make the failure any less
+        # permanent.
+        _mark_clone_checked(CLONE_DIR)
 
     if not (CLONE_DIR / ".git").is_dir():
         report.append({"stage": "plugins", "status": "skipped", "detail": f"no marketplace clone at {CLONE_DIR}"})
@@ -369,14 +409,34 @@ def run_convergence(*, want_hook: bool, force: bool, report: list[dict]) -> None
             )
     elif state == "ours":
         report.append({"stage": "mcp", "status": "ok", "detail": "user-scope stdio entry present"})
-    elif state == "foreign" and not force:
+    elif state in ("foreign", "unclassified") and not force:
         report.append(
             {
                 "stage": "mcp",
                 "status": "skipped",
                 "detail": (
                     f"an MCP server named '{MCP_SERVER_NAME}' exists and is not ours; re-run with --force to replace"
+                    if state == "foreign"
+                    else (
+                        f"an MCP server named '{MCP_SERVER_NAME}' is registered but this `claude` does not "
+                        "report its scope, so ownership cannot be established; re-run with --force to replace"
+                    )
                 ),
+            }
+        )
+    elif state == "unknown":
+        # The probe did not answer. Replacing an entry we cannot see is how
+        # someone else's `agnes` server disappears without the `--force` that
+        # is supposed to gate exactly that — and because `mcp get` connects to
+        # the server rather than only reading config, a registered-but-
+        # unstartable entry produces this reliably, on every session start in
+        # every repository. Report and move on; convergence is idempotent, so
+        # the next run with a working probe does the right thing.
+        report.append(
+            {
+                "stage": "mcp",
+                "status": "unknown",
+                "detail": "`claude mcp get` did not answer — entry left untouched",
             }
         )
     else:
@@ -392,10 +452,11 @@ def run_convergence(*, want_hook: bool, force: bool, report: list[dict]) -> None
             # global step logging `status=error` on every single session
             # start (Devin on #1184). The two arms that get here without a
             # known entry are precisely the ones that cannot rule one out —
-            # `absent` from a `claude` too old to print the `Scope:` line,
-            # and `unknown` from a probe that did not answer. A remove that
-            # finds nothing is a cheap no-op; the add that follows is then
-            # unconditionally safe.
+            # This arm is now only reached for a verified-absent entry or a
+            # forced replacement, so the remove is either a no-op or something
+            # the operator asked for. It stays unconditional because a
+            # `claude` that refuses to add an existing name would otherwise
+            # turn a stale entry into an error on every convergence.
             subprocess.run(
                 [*base, "mcp", "remove", MCP_SERVER_NAME, "-s", "user"],
                 capture_output=True,
@@ -724,7 +785,9 @@ def status(
                 # entry is not there". A `.get` rather than a subscript so a
                 # future state cannot turn `agnes global status` into a
                 # KeyError traceback.
-                "state": {"ours": "ok", "foreign": "drifted", "absent": "missing"}.get(mcp_state, "unknown"),
+                "state": {"ours": "ok", "foreign": "drifted", "unclassified": "drifted", "absent": "missing"}.get(
+                    mcp_state, "unknown"
+                ),
                 "detail": f"`claude mcp get {MCP_SERVER_NAME}` -> {mcp_state}",
             }
         )
