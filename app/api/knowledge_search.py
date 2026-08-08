@@ -110,9 +110,11 @@ async def knowledge_search(
     # Flatten the description before it reaches the searcher. A metric hit's
     # `description` is projected straight into the result (src/search/unified.py)
     # and read by an agent through the MCP `search` tool, and the same column
-    # can hold HTML imported verbatim from an external catalog. Doing it here
-    # rather than inside unified_search keeps src/ free of an app/ import — and
-    # it also improves the ranking, since tag names stop being scored as terms.
+    # can hold HTML imported verbatim from an external catalog. Done here rather
+    # than at the projection site because these rows are caller-supplied anyway,
+    # and flattening before scoring stops tag names being tokenized as search
+    # terms. Glossary rows are fetched inside unified_search, so they are
+    # flattened there instead.
     metrics = [{**m, "description": plain_description(m)} for m in metrics]
 
     results = unified_search(
