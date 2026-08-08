@@ -19,6 +19,32 @@ from src.repositories import (
 router = APIRouter(tags=["metrics"])
 
 
+def plain_description(metric: dict) -> str:
+    """``metric``'s description flattened to plain text.
+
+    ``metric_definitions.description`` holds two dialects: markdown for
+    metrics hand-authored in ``docs/metrics/*.yaml``, and whatever an
+    external catalog stored for metrics written by an import that passes the
+    upstream value through verbatim (``connectors/keboola/semantic_layer.py``)
+    — routinely rich HTML. Every surface that RENDERS the description needs it
+    flattened first, and doing that server-side keeps the markdown/sanitizer
+    dependencies out of the CLI wheel, which has its own clean-install CI job
+    to stay thin.
+    """
+    from app.markdown_render import render_plain
+
+    return render_plain(metric.get("description"), html_source=True)
+
+
+def with_description_text(metric: dict) -> dict:
+    """``metric`` plus a ``description_text`` projection of its description.
+
+    The raw column travels unchanged alongside it, so a JSON consumer that
+    wants the stored source keeps getting it.
+    """
+    return {**metric, "description_text": plain_description(metric)}
+
+
 def _metric_table_names(metric: dict) -> List[str]:
     """Table_registry view NAMEs this metric depends on — the single-table
     ``table_name`` or the relationship-JOIN ``tables`` list."""
@@ -93,7 +119,7 @@ async def list_metrics(
     metrics = repo.list(category=category)
     accessible_ids = get_accessible_tables(user, conn)
     allowed = None if accessible_ids is None else set(accessible_ids)
-    metrics = [m for m in metrics if _first_inaccessible_table(m, allowed) is None]
+    metrics = [with_description_text(m) for m in metrics if _first_inaccessible_table(m, allowed) is None]
     return {"metrics": metrics, "count": len(metrics)}
 
 
@@ -119,7 +145,7 @@ async def get_metric(
     denial_id = _first_inaccessible_table(metric, allowed)
     if denial_id is not None:
         raise HTTPException(status_code=403, detail=table_not_in_stack_message(denial_id))
-    return metric
+    return with_description_text(metric)
 
 
 @router.post("/api/admin/metrics", status_code=201)
