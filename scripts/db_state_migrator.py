@@ -1350,7 +1350,7 @@ def main(
         # NO revert. The rows are on the target by the time this can fire, so
         # writing the source back would create precisely the config/data split
         # the check exists to detect. Record it and leave the overlay alone.
-        logger.error(
+        log.error(
             "backend flip could not be verified after a completed migration: %s. "
             "instance.yaml is NOT being reverted — the data is on the target. "
             "Inspect the overlay by hand.",

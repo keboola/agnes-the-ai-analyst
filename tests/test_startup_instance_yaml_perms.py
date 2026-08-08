@@ -569,3 +569,53 @@ def test_a_failed_flip_verification_does_not_revert_the_backend():
         "the BackendFlipNotVerified arm must not write the backend — the data is on the target"
     )
     assert "mark_failed(" in arm, "it must still mark the job failed"
+
+
+def test_every_logging_call_resolves_to_a_real_module_logger():
+    """A logger name that does not exist turns an error path into a NameError.
+
+    `scripts/db_state_migrator.py` binds its logger as `log`. A handler written
+    against `logger` raises inside its own `except` clause, so everything after
+    the log line — `mark_failed`, the return code — never runs, and the caller
+    sees a traceback plus a job stuck in `running`. For the
+    `BackendFlipNotVerified` arm specifically that inverted the whole point:
+    the applier then reads a non-terminal status, takes its failure branch and
+    performs exactly the revert the exception exists to prevent.
+
+    Ruff reports this as F821, but the repo's lint gate does not surface F821
+    on this file — a pre-existing `F821 Undefined name 'BackendState'` sits
+    there with CI green — so nothing catches it before runtime. Hence a check
+    that costs nothing: every `X.info/debug/warning/error/exception(...)` must
+    resolve to a name bound at module level.
+    """
+    import ast
+
+    for rel in ("scripts/db_state_migrator.py", "scripts/ops/agnes-state-applier.sh"):
+        if not rel.endswith(".py"):
+            continue
+        tree = ast.parse(Path(rel).read_text())
+        bound = {
+            t.id
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            for t in node.targets
+            if isinstance(t, ast.Name)
+        }
+        for node in tree.body:
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                bound.update(a.asname or a.name.split(".")[0] for a in node.names)
+
+        methods = {"info", "debug", "warning", "error", "exception", "critical"}
+        offenders = [
+            (n.lineno, f"{n.func.value.id}.{n.func.attr}")
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr in methods
+            and isinstance(n.func.value, ast.Name)
+            and n.func.value.id not in bound
+        ]
+        assert not offenders, (
+            f"{rel}: logging call(s) on a name never bound at module level {offenders} — "
+            "this raises NameError inside whatever branch reaches it"
+        )
