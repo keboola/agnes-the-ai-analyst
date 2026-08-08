@@ -346,13 +346,27 @@ _recover_stuck_jobs() {
         # Empty source_url is correct for duckdb sources — write_instance_yaml
         # handles that by dropping the url key.
         if [ -n "$source_backend" ]; then
-            write_instance_yaml "$source_backend" "$source_url" || true
+            # The `|| true` is kept so one unrecoverable job cannot abort the
+            # sweep over the others — but the failure is no longer discarded.
+            # instance.yaml still names the transient `*_in_progress` here, and
+            # `use_pg()` counts both transients as Postgres, so restarting a
+            # duckdb-source instance on it points the app at the database the
+            # crashed migration never finished filling. An empty database that
+            # accepts writes is indistinguishable from a healthy one, so the
+            # restart below is withheld instead.
+            if write_instance_yaml "$source_backend" "$source_url"; then
+                :
+            else
+                SKIP_APP_RESTART=1
+                update_job "$job_path" "failed" "instance.yaml rollback was ALSO refused — backend left at the in-progress value; app+scheduler deliberately NOT restarted" append
+                logger -t agnes-state-applier "Stuck-job recovery for $job_path could not rewrite instance.yaml — backend still reads *_in_progress; app+scheduler left DOWN rather than started against a database the migration never filled. Repair instance.yaml (set database.backend to $source_backend) and start them by hand."
+            fi
         fi
         rm -f "$alive_path"
         recovered_any=1
     done
 
-    if [ "$recovered_any" -eq 1 ]; then
+    if [ "$recovered_any" -eq 1 ] && [ "${SKIP_APP_RESTART:-0}" != "1" ]; then
         # B3-NEW: After reverting instance.yaml to source state, restart
         # app + scheduler. The applier had stopped them before running
         # the migrator (line ~413 of this script). A SIGKILL/OOM/host-
@@ -366,6 +380,8 @@ _recover_stuck_jobs() {
         dc up -d --no-deps --force-recreate app scheduler 2>&1 \
             | logger -t agnes-state-applier || true
         set -e
+    elif [ "$recovered_any" -eq 1 ]; then
+        logger -t agnes-state-applier "Recovery restart WITHHELD — instance.yaml still names an in-progress backend; see the failure logged above"
     fi
 }
 
