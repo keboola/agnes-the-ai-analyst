@@ -2256,10 +2256,21 @@ def create_app() -> FastAPI:
 
     # Load instance config on startup
     try:
-        from app.instance_config import load_instance_config
+        from app.instance_config import InstanceConfigUnreadable, load_instance_config
 
         load_instance_config()
         logger.info("Instance config loaded")
+    except InstanceConfigUnreadable:
+        # Re-raised, unlike everything else here. The broad `except` below is
+        # deliberate — a soft config problem should not stop an instance from
+        # serving — but an overlay that exists and cannot be READ is not soft:
+        # `database.backend` lives in it, so continuing means either running
+        # against the wrong store or 500ing every `get_value()` consumer while
+        # looking healthy from the outside. Refusing at boot is the whole point
+        # of raising it, and swallowing it here would have made that a comment
+        # rather than a behaviour.
+        logger.critical("instance config overlay is unreadable — refusing to start")
+        raise
     except Exception as e:
         logger.warning(f"Could not load instance config: {e}")
 

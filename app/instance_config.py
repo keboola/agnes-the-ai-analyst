@@ -6,6 +6,21 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
+
+class InstanceConfigUnreadable(RuntimeError):
+    """The overlay exists but cannot be read.
+
+    A distinct type rather than a bare ``RuntimeError`` because the boot path
+    has to be able to tell it apart. ``app/main.py`` deliberately wraps its
+    startup config load in ``except Exception`` so that a *soft* config
+    problem does not stop an instance from serving — which would have
+    swallowed this one too, leaving the process up and 500ing every
+    ``get_value()`` consumer instead of refusing to start. That is the worse
+    of the two failure modes: it looks healthy from the outside. So the boot
+    path re-raises this type specifically and keeps logging everything else.
+    """
+
+
 _instance_config: Optional[dict] = None
 
 
@@ -153,7 +168,7 @@ def load_instance_config() -> dict:
             # failure, so it refuses to boot instead, naming the actual cause.
             # A malformed file keeps the lenient path below: that one is
             # visible to the operator and repairable through the editor.
-            raise RuntimeError(
+            raise InstanceConfigUnreadable(
                 f"cannot read the instance.yaml overlay at {overlay_path}: {exc}. "
                 "The file exists but is not readable by this process — it is mode 0600, "
                 "so check that the app runs as its owner. Refusing to start on the static "
