@@ -55,6 +55,13 @@ def _glossary_search(query: str, limit: int = 10) -> List[Dict[str, Any]]:
     return glossary_repo().search(query, limit=limit)
 
 
+def _plain(row: Dict[str, Any], field: str) -> str:
+    """``row[field]`` as plain text, honoring the row's stored dialect."""
+    from app.markdown_render import render_plain, stores_html
+
+    return render_plain(row.get(field), html_source=stores_html(row)) or ""
+
+
 def _minmax(scores: List[float]) -> List[float]:
     if not scores:
         return []
@@ -202,7 +209,14 @@ def unified_search(
                 "type": "glossary",
                 "id": g.get("id"),
                 "term": g.get("term"),
-                "definition": (g.get("definition") or "")[:280],
+                # Flattened here, unlike metric descriptions (which arrive
+                # already projected from the caller): glossary rows are fetched
+                # inside this function, so there is no caller to do it. The
+                # column holds definitions imported verbatim from an external
+                # catalog, often rich HTML, and this hit is read by agents
+                # through the MCP `search` tool. Flatten before truncating, or
+                # the cut lands mid-tag.
+                "definition": _plain(g, "definition")[:280],
                 "score": 1.0 / (1 + rank),
             }
         )

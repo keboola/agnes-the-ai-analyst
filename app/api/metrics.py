@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from app.auth.access import require_admin
+from app.markdown_render import render_plain, stores_html
 from app.auth.dependencies import get_current_user, _get_db
 
 from src.rbac import get_accessible_tables, table_not_in_stack_message
@@ -17,6 +18,27 @@ from src.repositories import (
 )
 
 router = APIRouter(tags=["metrics"])
+
+
+def plain_description(metric: dict) -> str:
+    """``metric``'s description flattened to plain text.
+
+    ``metric_definitions.description`` holds two dialects — see
+    :func:`app.markdown_render.stores_html`. Every surface that RENDERS it needs it
+    flattened first, and doing that server-side keeps the markdown/sanitizer
+    dependencies out of the CLI wheel, which has its own clean-install CI job
+    to stay thin.
+    """
+    return render_plain(metric.get("description"), html_source=stores_html(metric))
+
+
+def with_description_text(metric: dict) -> dict:
+    """``metric`` plus a ``description_text`` projection of its description.
+
+    The raw column travels unchanged alongside it, so a JSON consumer that
+    wants the stored source keeps getting it.
+    """
+    return {**metric, "description_text": plain_description(metric)}
 
 
 def _metric_table_names(metric: dict) -> List[str]:
@@ -93,7 +115,7 @@ async def list_metrics(
     metrics = repo.list(category=category)
     accessible_ids = get_accessible_tables(user, conn)
     allowed = None if accessible_ids is None else set(accessible_ids)
-    metrics = [m for m in metrics if _first_inaccessible_table(m, allowed) is None]
+    metrics = [with_description_text(m) for m in metrics if _first_inaccessible_table(m, allowed) is None]
     return {"metrics": metrics, "count": len(metrics)}
 
 
@@ -119,7 +141,7 @@ async def get_metric(
     denial_id = _first_inaccessible_table(metric, allowed)
     if denial_id is not None:
         raise HTTPException(status_code=403, detail=table_not_in_stack_message(denial_id))
-    return metric
+    return with_description_text(metric)
 
 
 @router.post("/api/admin/metrics", status_code=201)

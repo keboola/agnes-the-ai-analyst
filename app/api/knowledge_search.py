@@ -98,7 +98,7 @@ async def knowledge_search(
     # per-metric check is an O(1) dict lookup instead of one get_by_name DB
     # call per referenced table name (avoids N×M DB hits on every keystroke for
     # non-admin callers). Admins short-circuit via allowed=None as before.
-    from app.api.metrics import _metric_table_names
+    from app.api.metrics import _metric_table_names, plain_description
     from src.repositories import metric_repo
 
     if allowed is None:
@@ -106,6 +106,16 @@ async def knowledge_search(
     else:
         _accessible_names: set[str] = {t["name"] for t in tables}
         metrics = [m for m in metric_repo().list() if all(n in _accessible_names for n in _metric_table_names(m))]
+
+    # Flatten the description before it reaches the searcher. A metric hit's
+    # `description` is projected straight into the result (src/search/unified.py)
+    # and read by an agent through the MCP `search` tool, and the same column
+    # can hold HTML imported verbatim from an external catalog. Done here rather
+    # than at the projection site because these rows are caller-supplied anyway,
+    # and flattening before scoring stops tag names being tokenized as search
+    # terms. Glossary rows are fetched inside unified_search, so they are
+    # flattened there instead.
+    metrics = [{**m, "description": plain_description(m)} for m in metrics]
 
     results = unified_search(
         q,

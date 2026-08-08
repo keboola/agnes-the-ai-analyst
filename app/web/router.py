@@ -3952,22 +3952,28 @@ async def catalog_semantics(
     search endpoint. Glossary starts empty and is populated client-side via
     the existing ``GET /api/glossary`` / ``GET /api/glossary/search``.
     """
-    from app.api.metrics import _first_inaccessible_table
+    from app.api.metrics import _first_inaccessible_table, stores_html
     from app.markdown_render import render_plain, render_safe
     from src.rbac import get_accessible_tables
 
     accessible_ids = get_accessible_tables(user, conn)
     allowed = None if accessible_ids is None else set(accessible_ids)
     metrics = [m for m in metric_repo().list() if _first_inaccessible_table(m, allowed) is None]
-    # Two projections of the (markdown-authored) description: sanitized HTML
-    # for the expanded detail, plain text for the one-line row preview and
-    # the client-side filter index. Metric descriptions carry the business
-    # definition; the detail must show it, not just the SQL.
+    # Two projections of the description: sanitized HTML for the expanded
+    # detail, plain text for the one-line row preview and the client-side
+    # filter index. Metric descriptions carry the business definition; the
+    # detail must show it, not just the SQL.
+    #
+    # This column holds two dialects, and ``stores_html`` decides per row which
+    # renderer applies (keyed on the writer recorded in ``source``, never on
+    # what the text looks like — see its docstring). Rendered as pure markdown,
+    # an HTML-dialect description escaped into entities and then unescaped back
+    # into visible `<p><strong>` characters in both projections.
     metrics = [
         {
             **m,
-            "description_html": render_safe(m.get("description")),
-            "description_text": render_plain(m.get("description")),
+            "description_html": render_safe(m.get("description"), html_source=stores_html(m)),
+            "description_text": render_plain(m.get("description"), html_source=stores_html(m)),
         }
         for m in metrics
     ]

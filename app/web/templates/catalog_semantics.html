@@ -633,14 +633,19 @@
 
     function renderTerm(t) {
         const letter = (t.term || '?')[0];
+        // `definition_text` is the server's plain-text projection: this column
+        // also holds definitions imported verbatim from an external catalog,
+        // which are often rich HTML, and esc() would render those tags as
+        // visible text. Falls back to the stored column.
+        const definition = t.definition_text || t.definition;
         return '<button type="button" class="sl-term">' +
             '<div class="sl-term__head">' +
             '<div class="sl-term__letter">' + esc(letter) + '</div>' +
             '<div class="sl-term__name">' + esc(t.term) + '</div>' +
-            '<div class="sl-term__preview">' + esc(trunc(t.definition, 100)) + '</div>' +
+            '<div class="sl-term__preview">' + esc(trunc(definition, 100)) + '</div>' +
             '</div>' +
             '<div class="sl-term__foot">' + sourceBadge(t.source) + '</div>' +
-            '<div class="sl-term__body"><p>' + esc(t.definition) + '</p>' +
+            '<div class="sl-term__body"><p>' + esc(definition) + '</p>' +
             (t.see_also && t.see_also.length ? '<p><strong>See also:</strong> ' + t.see_also.map(esc).join(', ') + '</p>' : '') +
             '</div>' +
             '</button>';

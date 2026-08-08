@@ -38,7 +38,10 @@ def search_glossary(
         return
 
     for t in terms:
-        typer.echo(f"{t['term']:30s} {t.get('definition', '')}")
+        # Prefer the server's plain-text projection — the column also holds
+        # definitions imported verbatim from an external catalog, often rich
+        # HTML. Falls back to the stored value against an older server.
+        typer.echo(f"{t['term']:30s} {t.get('definition_text') or t.get('definition', '')}")
 
 
 @glossary_app.command("show")
@@ -67,6 +70,6 @@ def show_glossary_term(
 
     typer.echo(f"ID:         {t.get('id', glossary_id)}")
     typer.echo(f"Term:       {t.get('term', '')}")
-    typer.echo(f"Definition: {t.get('definition', '')}")
+    typer.echo(f"Definition: {t.get('definition_text') or t.get('definition', '')}")
     if t.get("see_also"):
         typer.echo(f"See also:   {', '.join(t['see_also'])}")
