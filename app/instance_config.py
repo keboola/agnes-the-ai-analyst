@@ -6,7 +6,31 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
+
+class InstanceConfigUnreadable(RuntimeError):
+    """The overlay exists but cannot be read.
+
+    A distinct type rather than a bare ``RuntimeError`` because the boot path
+    has to be able to tell it apart. ``app/main.py`` deliberately wraps its
+    startup config load in ``except Exception`` so that a *soft* config
+    problem does not stop an instance from serving — which would have
+    swallowed this one too, leaving the process up and 500ing every
+    ``get_value()`` consumer instead of refusing to start. That is the worse
+    of the two failure modes: it looks healthy from the outside. So the boot
+    path re-raises this type specifically and keeps logging everything else.
+    """
+
+
 _instance_config: Optional[dict] = None
+# True once this process has successfully built a config. Gates the
+# unreadable-overlay refusal to startup — see `load_instance_config`.
+_loaded_once: bool = False
+# The last config this process built successfully. Survives `reset_cache()`
+# on purpose: it is what a live instance falls back to when the overlay
+# stops being readable, and it is the only thing that HAS the operator's
+# sections at that point — `_instance_config` is None by then, since
+# `load_instance_config` returns early whenever it is not.
+_last_good_config: Optional[dict] = None
 
 
 def reset_cache() -> None:
@@ -23,6 +47,11 @@ def reset_cache() -> None:
     tests of instance_config in isolation)."""
     global _instance_config
     _instance_config = None
+    # `_loaded_once` is deliberately NOT reset: it records that this process
+    # got a good config at least once, which is what separates "refuse to
+    # start" from "do not 500 every live request". This function runs on a
+    # live instance after an admin save, and that must not re-arm a
+    # boot-time guard.
     try:
         from connectors.bigquery.access import get_bq_access
 
@@ -78,7 +107,7 @@ def _deep_merge(base: dict, patch: dict) -> dict:
     return out
 
 
-def load_instance_config() -> dict:
+def load_instance_config(*, strict: bool = False) -> dict:
     """Load instance.yaml as a deep-merge of the static file and the
     writable overlay.
 
@@ -99,7 +128,7 @@ def load_instance_config() -> dict:
     consumer of static-only sections (corporate memory page, dataset
     list, OpenMetadata client) saw empty defaults. See PR #107.
     """
-    global _instance_config
+    global _instance_config, _loaded_once, _last_good_config
     if _instance_config is not None:
         return _instance_config
 
@@ -141,7 +170,100 @@ def load_instance_config() -> dict:
     overlay_path = _state_dir() / "instance.yaml"
     if overlay_path.exists():
         try:
-            overlay = yaml.safe_load(overlay_path.read_text()) or {}
+            raw = overlay_path.read_text()
+        except OSError as exc:
+            # The file is THERE and we cannot read it, which since 0600 is
+            # reachable through a plain uid mismatch rather than only through
+            # disk failure.
+            #
+            # What this refusal is FOR, stated precisely — an earlier version
+            # of this comment claimed it stops an instance whose data is on
+            # Postgres from coming up on the DuckDB default, and that is not
+            # the mechanism. The backend is not resolved through here: it
+            # comes from `src.db_state_machine.read_backend_state`, which
+            # reads the overlay directly and catches only `yaml.YAMLError`, so
+            # a PermissionError propagates out of `use_pg()` rather than
+            # quietly answering DuckDB. Do not relax that handler on the
+            # belief that this function guards it.
+            #
+            # The value here is narrower and still worth having: everything
+            # ELSE the overlay carries (auth providers, feature flags, theme,
+            # `initial_workspace`) would silently revert to its static value,
+            # and the failure would otherwise surface as a raw OSError from
+            # deep inside a repository factory on some unrelated request. This
+            # names the cause at the one moment an operator is watching.
+            #
+            # A malformed file keeps the lenient path below: that one is
+            # visible to the operator and repairable through the editor.
+            #
+            # Boot only. `load_instance_config` is reached from `get_value()`,
+            # i.e. from essentially every request path, and `reset_cache()`
+            # re-runs it on a live instance after an admin save. If the file
+            # became unreadable AFTER a good boot — an operator chown, a
+            # half-finished manual repair — raising here would turn every
+            # subsequent request into a 500 where it used to degrade. That is
+            # not the trade being made: the danger this guards against is
+            # *starting* against the wrong `database.backend`, and a process
+            # that already loaded a good config is not about to do that. So it
+            # refuses only when nothing good has ever been loaded, and
+            # otherwise keeps serving on the config it has, loudly.
+            if not strict and _last_good_config is not None:
+                # `_last_good_config`, NOT `_instance_config` — the latter is
+                # guaranteed None here, because the function returns early
+                # whenever it is set, so `reset_cache()` (which every admin
+                # save calls) is exactly the path that reaches this branch.
+                # Returning the static base instead would drop every
+                # operator-set section while the log claimed they were kept:
+                # the silent-wrong-config outcome the refusal exists to
+                # prevent, just after boot instead of at it.
+                #
+                # `strict` is the CALLER's declaration, not a guess from
+                # process history. It used to be `_loaded_once`, a module flag
+                # meant to mean "we are past startup" — and importing
+                # `app.main` sets it, so by the time the startup block ran the
+                # refusal was already permanently defused. A guard whose arming
+                # depends on nothing else having imported first is not a guard.
+                #
+                # Cached into `_instance_config` so the next request short-
+                # circuits. Without that, every `get_value()` re-reads and
+                # re-parses the static YAML and emits another ERROR line — a
+                # log storm on top of a config problem.
+                logger.error(
+                    "instance.yaml overlay at %s became unreadable after startup (%s) — "
+                    "serving the last good config; saves through the editor will refuse "
+                    "until the file is readable again",
+                    overlay_path,
+                    exc,
+                )
+                _instance_config = _last_good_config
+                return _instance_config
+            raise InstanceConfigUnreadable(
+                f"cannot read the instance.yaml overlay at {overlay_path}: {exc}. "
+                "The file exists but is not readable by this process — it is mode 0600, "
+                "so check that the app runs as its owner. Refusing to start on the static "
+                "base config, which would silently use a different `database.backend` than "
+                "the one this instance's data is on."
+            ) from exc
+        except Exception:
+            # NOT unreadable — undecodable. `Path.read_text()` raises
+            # UnicodeDecodeError (a ValueError) for bytes that are not valid
+            # UTF-8, which is the partial-write / disk-corruption shape the
+            # lenient path was written for in the first place. Leaving it to
+            # propagate would recreate the very failure this split exists to
+            # prevent, one exception type over: the process starts, the boot
+            # path's broad `except` logs it, `_instance_config` is never
+            # assigned, and every later `get_value()` re-raises — an instance
+            # that looks healthy and 500s on everything. So it degrades to the
+            # base config like any other malformed file.
+            logger.exception(
+                "instance.yaml overlay at %s could not be decoded — falling back to "
+                "static base config; saves through the editor will refuse until the "
+                "file is repaired",
+                overlay_path,
+            )
+            raw = None
+        try:
+            overlay = yaml.safe_load(raw or "") or {}
             from config.loader import _resolve_env_refs
 
             overlay = _resolve_env_refs(overlay)
@@ -156,6 +278,8 @@ def load_instance_config() -> dict:
             )
 
     _instance_config = base
+    _last_good_config = base
+    _loaded_once = True
     return _instance_config
 
 
