@@ -262,6 +262,9 @@ def test_an_unreadable_overlay_raises_rather_than_falling_back(tmp_path, monkeyp
 
     monkeypatch.setattr("app.secrets._state_dir", lambda: state)
     ic.reset_cache()
+    # Simulate boot: the refusal is gated on nothing good having been loaded
+    # yet, and the module global survives across tests in one process.
+    monkeypatch.setattr(ic, "_loaded_once", False)
     try:
         raised = None
         try:
@@ -362,3 +365,41 @@ def test_a_refused_rollback_does_not_restart_into_the_transient_backend():
     gate = body.index('if [ "${SKIP_APP_RESTART:-0}" = "1" ]')
     restart = body.index("RESTART_LOG=$(dc up -d --no-deps --force-recreate app scheduler")
     assert gate < restart, "the gate must precede the restart to have any effect"
+
+
+def test_an_unreadable_overlay_after_boot_degrades_instead_of_500ing(tmp_path, monkeypatch):
+    """The other half of the new contract, and the reason it is gated.
+
+    ``load_instance_config`` is reached from ``get_value()``, i.e. from
+    essentially every request path, and ``reset_cache()`` re-runs it on a live
+    instance after an admin save. A file that becomes unreadable AFTER a good
+    boot — an operator chown, a half-finished manual repair — must not turn
+    every request into a 500 where it used to degrade. The danger being
+    guarded against is *starting* on the wrong ``database.backend``, and a
+    process that already holds a good config is not about to do that.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("running as root — mode bits do not deny reads")
+
+    import app.instance_config as ic
+
+    state = tmp_path / "state"
+    state.mkdir()
+    overlay = state / "instance.yaml"
+    overlay.write_text("database:\n  backend: postgres\n", encoding="utf-8")
+
+    monkeypatch.setattr("app.secrets._state_dir", lambda: state)
+    ic.reset_cache()
+    monkeypatch.setattr(ic, "_loaded_once", False)
+    try:
+        first = ic.load_instance_config()
+        assert (first.get("database") or {}).get("backend") == "postgres"
+
+        # Now it goes unreadable and an admin save drops the cache.
+        overlay.chmod(0o000)
+        ic.reset_cache()
+        again = ic.load_instance_config()
+        assert isinstance(again, dict), "a live instance must keep serving, not raise per request"
+    finally:
+        overlay.chmod(0o600)
+        ic.reset_cache()
