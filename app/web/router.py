@@ -3952,7 +3952,7 @@ async def catalog_semantics(
     search endpoint. Glossary starts empty and is populated client-side via
     the existing ``GET /api/glossary`` / ``GET /api/glossary/search``.
     """
-    from app.api.metrics import _first_inaccessible_table
+    from app.api.metrics import _first_inaccessible_table, stores_html
     from app.markdown_render import render_plain, render_safe
     from src.rbac import get_accessible_tables
 
@@ -3964,20 +3964,16 @@ async def catalog_semantics(
     # filter index. Metric descriptions carry the business definition; the
     # detail must show it, not just the SQL.
     #
-    # ``html_source=True`` because this column holds two dialects. Metrics
-    # hand-authored in docs/metrics/*.yaml are markdown; metrics written by
-    # the Keboola semantic-layer import are whatever the upstream catalog
-    # stored, passed through verbatim (connectors/keboola/semantic_layer.py
-    # — no strip, no dialect check), and such catalogs routinely store rich
-    # HTML. Rendered as pure markdown, those escaped into entities and then
-    # unescaped back into visible `<p><strong>` characters in both
-    # projections. (The OpenMetadata connector is NOT a writer of blobs: it
-    # calls strip_html on every description it emits.)
+    # This column holds two dialects, and ``stores_html`` decides per row which
+    # renderer applies (keyed on the writer recorded in ``source``, never on
+    # what the text looks like — see its docstring). Rendered as pure markdown,
+    # an HTML-dialect description escaped into entities and then unescaped back
+    # into visible `<p><strong>` characters in both projections.
     metrics = [
         {
             **m,
-            "description_html": render_safe(m.get("description"), html_source=True),
-            "description_text": render_plain(m.get("description"), html_source=True),
+            "description_html": render_safe(m.get("description"), html_source=stores_html(m)),
+            "description_text": render_plain(m.get("description"), html_source=stores_html(m)),
         }
         for m in metrics
     ]

@@ -31,6 +31,7 @@ def _make_metric(**overrides) -> dict:
         "category": "keboola",
         "sql": "SELECT COUNT(*) AS live_deals FROM deals WHERE is_live",
         "description": HTML_BLOB,
+        "source": "keboola_semantic_layer",
     }
     defaults.update(overrides)
     return metric_repo().create(**defaults)
@@ -61,10 +62,27 @@ class TestMetricsApiProjection:
     def test_markdown_descriptions_flatten_as_well(self, seeded_app):
         """The same column's other dialect — no HTML involved, but `**` is
         markup too and has no place in a plain-text projection."""
-        _make_metric(id="revenue/mrr", name="mrr", category="revenue", description="**Total** MRR.")
+        _make_metric(
+            id="revenue/mrr", name="mrr", category="revenue", description="**Total** MRR.", source="manual"
+        )
         c, token = seeded_app["client"], seeded_app["admin_token"]
         body = c.get("/api/metrics/revenue/mrr", headers=_auth(token)).json()
         assert body["description_text"] == "Total MRR."
+
+    def test_angle_bracketed_text_survives_in_a_markdown_description(self, seeded_app):
+        """A markdown description may legitimately contain `List<int>` or
+        `orders <shipped>`. Routing every row through the permissive renderer
+        would DELETE those — markdown-it reads them as unknown tags, nh3's
+        allowlist rejects them, and a pseudo-tag carries no child text, so the
+        characters vanish rather than being escaped and shown (the `<int>.`
+        case eats the rest of the line with it). Which renderer applies is
+        therefore keyed on the writer, and this row was not written by the
+        HTML-dialect one."""
+        prose = "Counts orders <shipped> per day; column type List<int>."
+        _make_metric(id="ops/shipped", name="shipped", category="ops", description=prose, source="manual")
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        body = c.get("/api/metrics/ops/shipped", headers=_auth(token)).json()
+        assert body["description_text"] == prose
 
 
 class TestUnifiedSearchProjection:
