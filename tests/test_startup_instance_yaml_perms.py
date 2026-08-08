@@ -12,8 +12,11 @@ provisioned before this line — or written by an app-side surface that predates
 its own chmod — already carry the loose mode.
 """
 
+import os
 import re
 from pathlib import Path
+
+import pytest
 
 TPL = Path("infra/modules/customer-instance/startup-script.sh.tpl")
 
@@ -231,23 +234,87 @@ def test_success_path_does_not_overwrite_the_migrator_terminal_status():
     )
 
 
-def test_the_app_refuses_to_boot_on_an_unreadable_overlay():
-    """Same bug class as the applier's, on the read the app itself does.
+def test_an_unreadable_overlay_raises_rather_than_falling_back(tmp_path, monkeypatch):
+    """Behavioural, and it fails on the old code for the RIGHT reason.
 
     ``app/instance_config.py`` wrapped the overlay read in a bare
-    ``except Exception`` that logs "corrupt — falling back to static base
-    config". ``database.backend`` lives in that overlay, so a PermissionError
-    landing there boots an instance whose data is on Postgres onto the DuckDB
-    default and starts writing to the wrong store. At 0644 the read could not
-    fail this way; at 0600 a uid mismatch is enough.
+    ``except Exception`` that logs the file as "corrupt" and falls back to the
+    static base config. ``database.backend`` lives in that overlay, so a
+    PermissionError there boots an instance whose data is on Postgres onto the
+    DuckDB default and starts writing to the wrong store. At 0644 the read
+    could not fail this way; at 0600 a uid mismatch is enough.
+
+    The primary assertion is "it did not return", not "it raised type X" — an
+    assertion keyed only on the new exception type would fail on the old code
+    because the name does not exist yet, which proves nothing about behaviour.
+    The type is checked second, on the exception actually caught.
     """
-    body = Path("app/instance_config.py").read_text()
-    assert "except OSError as exc:" in body, (
-        "the overlay read must separate an unreadable file from a malformed one"
+    if os.geteuid() == 0:
+        pytest.skip("running as root — mode bits do not deny reads")
+
+    import app.instance_config as ic
+
+    state = tmp_path / "state"
+    state.mkdir()
+    overlay = state / "instance.yaml"
+    overlay.write_text("database:\n  backend: postgres\n", encoding="utf-8")
+    overlay.chmod(0o000)
+
+    monkeypatch.setattr("app.secrets._state_dir", lambda: state)
+    ic.reset_cache()
+    try:
+        raised = None
+        try:
+            cfg = ic.load_instance_config()
+        except Exception as exc:  # noqa: BLE001 — the type is asserted below
+            raised = exc
+        assert raised is not None, (
+            "load_instance_config() returned instead of refusing: an unreadable overlay "
+            f"silently fell back to the base config, whose database.backend is "
+            f"{(cfg.get('database') or {}).get('backend')!r} rather than the overlay's"
+        )
+        assert type(raised).__name__ == "InstanceConfigUnreadable", (
+            "the refusal must carry a distinct type so the boot path can tell it apart "
+            f"from a soft config problem; got {type(raised).__name__}"
+        )
+    finally:
+        overlay.chmod(0o600)
+        ic.reset_cache()
+
+
+def test_a_malformed_overlay_still_falls_back(tmp_path, monkeypatch):
+    """The other half of the split — this one must NOT refuse to start.
+
+    A malformed file is visible to the operator and repairable through the
+    editor; refusing to boot on it is a worse trade than continuing on the
+    base config. Only an unreadable one is fail-closed.
+    """
+    import app.instance_config as ic
+
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "instance.yaml").write_text("database: [unclosed\n", encoding="utf-8")
+
+    monkeypatch.setattr("app.secrets._state_dir", lambda: state)
+    ic.reset_cache()
+    try:
+        cfg = ic.load_instance_config()
+        assert isinstance(cfg, dict)
+    finally:
+        ic.reset_cache()
+
+
+def test_the_boot_path_reraises_it_instead_of_logging_it():
+    """`app/main.py` wraps the startup load in `except Exception` on purpose —
+    a soft config problem must not stop an instance serving. That arm would
+    also have swallowed this one, leaving the process up and 500ing every
+    `get_value()` consumer while looking healthy. The refusal only exists if
+    the boot path lets it through."""
+    body = Path("app/main.py").read_text()
+    assert "except InstanceConfigUnreadable:" in body, (
+        "app/main.py must re-raise InstanceConfigUnreadable — otherwise the refusal "
+        "to start is a comment, not a behaviour"
     )
-    read_at = body.index("overlay_path.read_text()")
-    window = body[read_at : read_at + 1500]
-    assert "raise RuntimeError(" in window, (
-        "an unreadable overlay must refuse to start rather than silently fall back to "
-        "a base config that can name a different database.backend"
-    )
+    specific = body.index("except InstanceConfigUnreadable:")
+    broad = body.index("logger.warning(f\"Could not load instance config")
+    assert specific < broad, "the specific arm must come before the broad one to be reachable"
