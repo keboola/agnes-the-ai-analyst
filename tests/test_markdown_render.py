@@ -322,3 +322,19 @@ def test_default_mode_is_unchanged_by_the_new_parameter():
     out = render_safe(HTML_BLOB)
     assert "<strong>" not in out
     assert "&lt;strong&gt;" in out
+
+
+def test_html_source_eats_angle_bracketed_words_and_the_default_does_not():
+    """The cost of the permissive renderer, pinned so it stays a decision.
+
+    markdown-it reads `<shipped>` as an unknown tag, nh3's allowlist rejects
+    it, and a pseudo-tag carries no child text — so the characters vanish
+    rather than being escaped and shown. `<int>.` takes the rest of the line
+    with it (unclosed tag). This is exactly why callers must not route every
+    row through `html_source=True` on a hunch about the content: the flag is
+    keyed on the writer (see `app.api.metrics.stores_html`)."""
+    from app.markdown_render import render_plain
+
+    prose = "Counts orders <shipped> per day; column type List<int>."
+    assert render_plain(prose) == prose
+    assert render_plain(prose, html_source=True) == "Counts orders per day; column type List"

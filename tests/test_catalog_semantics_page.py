@@ -334,7 +334,10 @@ class TestCatalogSemanticsDetailRendering:
         characters `<p><strong>` in the preview."""
         import re
 
-        _make_metric(description="<p><strong>Live Deals</strong> - deals currently live.</p>")
+        _make_metric(
+            description="<p><strong>Live Deals</strong> - deals currently live.</p>",
+            source="keboola_semantic_layer",
+        )
         body = self._page(seeded_app)
         m = re.search(r'<div class="sl-row__desc">([^<]*)</div>', body)
         assert m, "plain-text preview div missing"
@@ -345,7 +348,10 @@ class TestCatalogSemanticsDetailRendering:
     def test_html_blob_description_renders_as_markup_in_the_detail(self, seeded_app):
         """Same input, other projection: the detail shows bold text rather
         than the literal characters of the tag."""
-        _make_metric(description="<p><strong>Live Deals</strong> - deals currently live.</p>")
+        _make_metric(
+            description="<p><strong>Live Deals</strong> - deals currently live.</p>",
+            source="keboola_semantic_layer",
+        )
         body = self._page(seeded_app)
         assert "<strong>Live Deals</strong>" in body
         assert "&lt;strong&gt;" not in body
@@ -353,7 +359,10 @@ class TestCatalogSemanticsDetailRendering:
     def test_html_blob_description_is_still_sanitized(self, seeded_app):
         """Accepting HTML from the source widens what is displayed, never
         what is allowed — the nh3 allowlist is the same one."""
-        _make_metric(description='<p onclick="steal()">hi</p><script>alert(3)</script>')
+        _make_metric(
+            description='<p onclick="steal()">hi</p><script>alert(3)</script>',
+            source="keboola_semantic_layer",
+        )
         body = self._page(seeded_app)
         assert "onclick" not in body
         assert "alert(3)" not in body
