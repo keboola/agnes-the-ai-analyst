@@ -427,6 +427,14 @@
       const cur = parseInt(myEl.textContent, 10) || 0;
       myEl.textContent = String(cur + (becameInStack ? 1 : -1));
     }
+
+    // Re-apply the active filter. `applyFilters` hides a card when the
+    // Downloaded chip is on and `data-in-stack` is '0', and it otherwise only
+    // runs from the chip / status / search handlers. That was enough while a
+    // removal deleted the card outright; now that the card stays and only
+    // flips the attribute, an item that is no longer downloaded would sit
+    // there in plain sight under a filter that claims to exclude it.
+    applyFilters();
   }
 
   document.addEventListener('click', async (e) => {
@@ -446,16 +454,20 @@
         btn.disabled = false;
         return;
       }
-      // Deliberately NOT switched to the card vocabulary (#1206). The card
-      // labels describe the purpose — a local copy — while the request that
-      // just succeeded was a subscribe/unsubscribe against /api/stack; the
-      // bytes arrive on the next `agnes pull`. A toast claiming the download
-      // happened would be the one string here that is not true yet. It is
-      // also the only string on the page that has to survive a mode fork:
-      // where membership and local-copy state are separated, "added to your
-      // stack" is what happened either way, and download wording would be
-      // wrong on the side where adding does not download.
-      showToast(action === 'add' ? 'Added to stack' : 'Removed from stack');
+      // Follows the same flag as everything else on the card. Under the
+      // local-copy meaning the resource does NOT leave the stack — it stays
+      // listed under My Stack with the count unchanged — so "Removed from
+      // stack" would contradict what the user sees the moment the toast
+      // fades. "queued" rather than "downloaded" because the request that
+      // just succeeded is a subscribe; the bytes arrive with the next
+      // `agnes pull`. Where the key still means membership, added/removed
+      // from the stack is exactly what happened.
+      const _local = card && card.dataset.inStackIsLocal === '1';
+      showToast(
+        _local
+          ? (action === 'add' ? 'Local copy queued' : 'Local copy removed')
+          : (action === 'add' ? 'Added to stack' : 'Removed from stack')
+      );
       _applyStackChange(card, action === 'add');
     } catch (err) {
       showToast('Network error: ' + err.message, true);

@@ -141,3 +141,40 @@ def test_removal_keeps_the_card_when_in_stack_means_local_copy():
             f"{page}: the My Stack tab count must not move under local-copy semantics — "
             "membership is what it counts"
         )
+
+
+def test_the_toast_follows_the_flag_too():
+    """The last string that still spoke membership.
+
+    Keeping the card in My Stack (see above) is what made the old toast
+    actively wrong rather than merely off-vocabulary: "Removed from stack"
+    fires, then the user watches the item sit in My Stack with the count
+    unchanged. "queued" rather than "downloaded" because the request that
+    succeeded is a subscribe — the bytes arrive with the next `agnes pull`.
+    """
+    for page in _STACK_PAGES:
+        text = (TEMPLATES / page).read_text(encoding="utf-8")
+        assert "'Local copy queued' : 'Local copy removed'" in text, (
+            f"{page}: the toast must use local-copy wording under the local-copy meaning"
+        )
+        assert "'Added to stack' : 'Removed from stack'" in text, (
+            f"{page}: and must keep membership wording where the key still means membership"
+        )
+
+
+def test_a_stack_change_reapplies_the_active_filter():
+    """A card that stays put must still be re-filtered.
+
+    `applyFilters` hides a card when the Downloaded chip is on and
+    `data-in-stack` is '0', and otherwise runs only from the chip / status /
+    search handlers. That sufficed while a removal deleted the card; now that
+    the card survives and only flips the attribute, an item that is no longer
+    downloaded would remain visible under a filter that claims to exclude it.
+    """
+    for page in _STACK_PAGES:
+        text = (TEMPLATES / page).read_text(encoding="utf-8")
+        fn_start = text.index("function _applyStackChange(")
+        fn_end = text.index("document.addEventListener('click'", fn_start)
+        assert "applyFilters();" in text[fn_start:fn_end], (
+            f"{page}: `_applyStackChange` must re-apply the active filter before it returns"
+        )
