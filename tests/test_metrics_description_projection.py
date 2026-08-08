@@ -147,3 +147,17 @@ class TestGlossaryApiProjection:
         c, token = seeded_app["client"], seeded_app["admin_token"]
         body = c.get("/api/glossary/kb/tiers", headers=_auth(token)).json()
         assert body["definition_text"] == prose
+
+
+class TestUnifiedSearchGlossaryProjection:
+    def test_glossary_hit_definition_is_flattened(self, seeded_app):
+        """Glossary rows are fetched INSIDE `unified_search`, so the
+        caller-side flattening that covers metric hits cannot reach them —
+        they are projected at the hit-building site instead."""
+        _make_term()
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        body = c.get("/api/knowledge/search", params={"q": "live deal", "k": 20}, headers=_auth(token)).json()
+        hits = [h for h in body["results"] if h["type"] == "glossary"]
+        assert hits, "expected the seeded term to match 'live deal'"
+        assert hits[0]["definition"] == "Live Deal - a deal currently on sale."
+        assert "<strong>" not in hits[0]["definition"]
