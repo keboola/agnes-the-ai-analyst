@@ -22,6 +22,9 @@ class InstanceConfigUnreadable(RuntimeError):
 
 
 _instance_config: Optional[dict] = None
+# True once this process has successfully built a config. Gates the
+# unreadable-overlay refusal to startup — see `load_instance_config`.
+_loaded_once: bool = False
 
 
 def reset_cache() -> None:
@@ -38,6 +41,11 @@ def reset_cache() -> None:
     tests of instance_config in isolation)."""
     global _instance_config
     _instance_config = None
+    # `_loaded_once` is deliberately NOT reset: it records that this process
+    # got a good config at least once, which is what separates "refuse to
+    # start" from "do not 500 every live request". This function runs on a
+    # live instance after an admin save, and that must not re-arm a
+    # boot-time guard.
     try:
         from connectors.bigquery.access import get_bq_access
 
@@ -114,7 +122,7 @@ def load_instance_config() -> dict:
     consumer of static-only sections (corporate memory page, dataset
     list, OpenMetadata client) saw empty defaults. See PR #107.
     """
-    global _instance_config
+    global _instance_config, _loaded_once
     if _instance_config is not None:
         return _instance_config
 
@@ -168,6 +176,27 @@ def load_instance_config() -> dict:
             # failure, so it refuses to boot instead, naming the actual cause.
             # A malformed file keeps the lenient path below: that one is
             # visible to the operator and repairable through the editor.
+            #
+            # Boot only. `load_instance_config` is reached from `get_value()`,
+            # i.e. from essentially every request path, and `reset_cache()`
+            # re-runs it on a live instance after an admin save. If the file
+            # became unreadable AFTER a good boot — an operator chown, a
+            # half-finished manual repair — raising here would turn every
+            # subsequent request into a 500 where it used to degrade. That is
+            # not the trade being made: the danger this guards against is
+            # *starting* against the wrong `database.backend`, and a process
+            # that already loaded a good config is not about to do that. So it
+            # refuses only when nothing good has ever been loaded, and
+            # otherwise keeps serving on the config it has, loudly.
+            if _loaded_once:
+                logger.error(
+                    "instance.yaml overlay at %s became unreadable after startup (%s) — "
+                    "keeping the config already loaded; saves through the editor will "
+                    "refuse until the file is readable again",
+                    overlay_path,
+                    exc,
+                )
+                return _instance_config if _instance_config is not None else base
             raise InstanceConfigUnreadable(
                 f"cannot read the instance.yaml overlay at {overlay_path}: {exc}. "
                 "The file exists but is not readable by this process — it is mode 0600, "
@@ -209,6 +238,7 @@ def load_instance_config() -> dict:
             )
 
     _instance_config = base
+    _loaded_once = True
     return _instance_config
 
 
