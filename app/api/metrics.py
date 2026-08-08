@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from app.auth.access import require_admin
+from app.markdown_render import render_plain, stores_html
 from app.auth.dependencies import get_current_user, _get_db
 
 from src.rbac import get_accessible_tables, table_not_in_stack_message
@@ -19,44 +20,15 @@ from src.repositories import (
 router = APIRouter(tags=["metrics"])
 
 
-# `metric_definitions.source` values whose descriptions are the upstream
-# catalog's text, stored with no normalization — routinely rich HTML. Every
-# other writer produces markdown: `manual` (POST /api/admin/metrics, the admin
-# UI) and `yaml_import` (docs/metrics/*.yaml, and the OpenMetadata export,
-# which strips HTML before writing the YAML).
-HTML_DIALECT_SOURCES = frozenset({"keboola_semantic_layer"})
-
-
-def stores_html(metric: dict) -> bool:
-    """Whether ``metric``'s description should be read as HTML, not markdown.
-
-    Keyed on the WRITER (the ``source`` column), not on what the text looks
-    like. Sniffing the content is tempting and wrong: a markdown description
-    is free to contain `List<int>` or `orders <shipped>`, and handing that to
-    a renderer with raw-HTML pass-through deletes the fragment — markdown-it
-    emits it as an unknown tag, nh3's allowlist rejects it, and since a
-    pseudo-tag carries no child text the characters vanish rather than being
-    escaped and shown. The dialect is a property of who wrote the row, and the
-    row records that.
-
-    The trade-off does not disappear, it just lands where it belongs: an
-    HTML-dialect row whose description happens to contain `<int>` still loses
-    it. That is the row class where HTML is the documented dialect.
-    """
-    return (metric.get("source") or "") in HTML_DIALECT_SOURCES
-
-
 def plain_description(metric: dict) -> str:
     """``metric``'s description flattened to plain text.
 
     ``metric_definitions.description`` holds two dialects — see
-    :func:`stores_html`. Every surface that RENDERS the description needs it
+    :func:`app.markdown_render.stores_html`. Every surface that RENDERS it needs it
     flattened first, and doing that server-side keeps the markdown/sanitizer
     dependencies out of the CLI wheel, which has its own clean-install CI job
     to stay thin.
     """
-    from app.markdown_render import render_plain
-
     return render_plain(metric.get("description"), html_source=stores_html(metric))
 
 
