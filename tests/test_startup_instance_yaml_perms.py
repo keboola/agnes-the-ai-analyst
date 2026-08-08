@@ -395,11 +395,47 @@ def test_an_unreadable_overlay_after_boot_degrades_instead_of_500ing(tmp_path, m
         first = ic.load_instance_config()
         assert (first.get("database") or {}).get("backend") == "postgres"
 
-        # Now it goes unreadable and an admin save drops the cache.
+        # Now it goes unreadable and an admin save drops the cache. This is
+        # the real sequence: `reset_cache()` sets `_instance_config = None`,
+        # so the fallback branch cannot lean on it — it has to hold the last
+        # good config separately or it hands back the static base with every
+        # operator-set section gone, while logging that it kept them.
         overlay.chmod(0o000)
         ic.reset_cache()
         again = ic.load_instance_config()
         assert isinstance(again, dict), "a live instance must keep serving, not raise per request"
+        assert (again.get("database") or {}).get("backend") == "postgres", (
+            "the overlay's settings must survive — returning the static base here is the "
+            "silent-wrong-config outcome the boot refusal exists to prevent, just after boot"
+        )
+
+        # And it must be cached, or every request re-reads and re-parses the
+        # static YAML and emits another ERROR line.
+        assert ic._instance_config is not None, (
+            "the fallback must populate the parse-once cache; without it `get_value()` "
+            "redoes the whole load per request and floods the log"
+        )
     finally:
         overlay.chmod(0o600)
         ic.reset_cache()
+
+
+def test_neither_restart_path_starts_the_app_on_an_in_progress_backend():
+    """Two restart sites, one invariant.
+
+    `use_pg()` counts SIDE_CAR_IN_PROGRESS and CLOUD_IN_PROGRESS as Postgres,
+    so an overlay left naming a transient points a duckdb-source instance at a
+    database the failed or crashed migration never finished filling. Both the
+    post-migration path and the stuck-job recovery bring app+scheduler back up,
+    and both had to learn to withhold that when the rollback write was refused
+    — fixing one and leaving the other is the shape this review keeps finding.
+    """
+    body = APPLIER.read_text()
+    gates = body.count('SKIP_APP_RESTART=1')
+    assert gates >= 2, (
+        f"expected both the post-migration and stuck-job-recovery paths to set the gate; found {gates}"
+    )
+    assert '[ "$recovered_any" -eq 1 ] && [ "${SKIP_APP_RESTART:-0}" != "1" ]' in body, (
+        "the stuck-job recovery's own restart must honour the gate — it is a separate "
+        "`dc up` from step 4's and does not inherit anything"
+    )
