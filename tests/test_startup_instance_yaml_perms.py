@@ -429,13 +429,31 @@ def test_neither_restart_path_starts_the_app_on_an_in_progress_backend():
     — fixing one and leaving the other is the shape this review keeps finding.
     """
     body = APPLIER.read_text()
-    gates = body.count('SKIP_APP_RESTART=1')
-    assert gates >= 2, (
-        f"expected both the post-migration and stuck-job-recovery paths to set the gate; found {gates}"
+    assert "RECOVERY_SKIP_RESTART=1" in body and "SKIP_APP_RESTART=1" in body, (
+        "both the stuck-job recovery and the post-migration path must be able to withhold "
+        "their restart"
     )
-    assert '[ "$recovered_any" -eq 1 ] && [ "${SKIP_APP_RESTART:-0}" != "1" ]' in body, (
-        "the stuck-job recovery's own restart must honour the gate — it is a separate "
-        "`dc up` from step 4's and does not inherit anything"
+    assert '[ "$recovered_any" -eq 1 ] && [ "${RECOVERY_SKIP_RESTART:-0}" != "1" ]' in body, (
+        "the stuck-job recovery's own restart must honour its own flag — it is a separate "
+        "`dc up` from step 4's and inherits nothing"
+    )
+
+
+def test_the_two_restart_gates_do_not_share_a_flag():
+    """Shell variables have no function scope, so one flag is one decision.
+
+    The recovery's refusal is about ITS rollback write. A pending job later in
+    the same tick can still migrate successfully — the migrator writes the
+    target backend from its own container before `mark_success` — and step 4
+    must be free to restart. Sharing the flag turned a completed migration
+    into an instance left offline on a stale marker.
+    """
+    body = APPLIER.read_text()
+    recovery_at = body.index("RECOVERY_SKIP_RESTART=1")
+    recovery_fn_end = body.index("_recover_stuck_jobs\n", recovery_at)
+    assert "SKIP_APP_RESTART=1" not in body[recovery_at:recovery_fn_end], (
+        "the recovery path must not set step 4's flag — it leaks into the rest of the "
+        "tick and blocks the restart after a migration that succeeded"
     )
 
 
