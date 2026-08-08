@@ -3732,11 +3732,15 @@ async def catalog_semantics(
     # detail must show it, not just the SQL.
     #
     # ``html_source=True`` because this column holds two dialects. Metrics
-    # hand-authored in docs/metrics/*.yaml are markdown; metrics imported
-    # from OpenMetadata are rich HTML (connectors/openmetadata/transformer.py
-    # says so, and strips it for its own plain-text field). Rendered as pure
-    # markdown, the HTML ones escaped into entities and then unescaped back
-    # into visible `<p><strong>` characters in both projections.
+    # hand-authored in docs/metrics/*.yaml are markdown; metrics imported from
+    # a catalog that stores rich HTML arrive as an HTML blob. The importer that
+    # can produce one is `connectors/keboola/semantic_layer.py`, which passes
+    # the upstream `description` through verbatim with no strip and no dialect
+    # check — NOT the OpenMetadata transformer, which calls `strip_html` on
+    # every description it emits and keeps the raw blob in a separate field.
+    # Rendered as pure markdown, an HTML-dialect description escaped into
+    # entities and then unescaped back into visible `<p><strong>` characters
+    # in both projections.
     metrics = [
         {
             **m,

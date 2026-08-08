@@ -19,6 +19,26 @@ from src.repositories import (
 router = APIRouter(tags=["metrics"])
 
 
+def _with_description_text(metric: dict) -> dict:
+    """Add a rendered plain-text projection of ``description``.
+
+    The column holds two dialects: metrics authored in ``docs/metrics/*.yaml``
+    are markdown, while metrics imported from a catalog that stores rich HTML
+    arrive as an HTML blob (``connectors/keboola/semantic_layer.py`` passes the
+    upstream value through verbatim). Consumers that render for a human — the
+    web page, the CLI — must not print either dialect's markup as text.
+
+    The raw column stays in the payload untouched: this endpoint is also the
+    source for callers that do their own rendering, and dropping the original
+    would take that away. ``description_text`` is the projection to print.
+    """
+    from app.markdown_render import render_plain
+
+    if not metric.get("description"):
+        return metric
+    return {**metric, "description_text": render_plain(metric["description"], html_source=True)}
+
+
 def _metric_table_names(metric: dict) -> List[str]:
     """Table_registry view NAMEs this metric depends on — the single-table
     ``table_name`` or the relationship-JOIN ``tables`` list."""
@@ -94,7 +114,7 @@ async def list_metrics(
     accessible_ids = get_accessible_tables(user, conn)
     allowed = None if accessible_ids is None else set(accessible_ids)
     metrics = [m for m in metrics if _first_inaccessible_table(m, allowed) is None]
-    return {"metrics": metrics, "count": len(metrics)}
+    return {"metrics": [_with_description_text(m) for m in metrics], "count": len(metrics)}
 
 
 @router.get("/api/metrics/{metric_id:path}")
@@ -119,7 +139,7 @@ async def get_metric(
     denial_id = _first_inaccessible_table(metric, allowed)
     if denial_id is not None:
         raise HTTPException(status_code=403, detail=table_not_in_stack_message(denial_id))
-    return metric
+    return _with_description_text(metric)
 
 
 @router.post("/api/admin/metrics", status_code=201)

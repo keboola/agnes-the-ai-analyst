@@ -132,8 +132,17 @@ def _show_one_metric(metric_id: str, as_json: bool) -> None:
         typer.echo(f"Grain:        {m['grain']}")
     if m.get("table_name"):
         typer.echo(f"Table:        {m['table_name']}")
-    if m.get("description"):
-        typer.echo(f"Description:  {m['description']}")
+    # `description_text` is the server's plain-text projection of a column that
+    # holds two dialects — markdown for hand-authored metrics, an HTML blob for
+    # ones imported from a catalog that stores rich HTML. Printing the raw
+    # column put `<p><strong>…` on the terminal, and CLAUDE.md sends agents to
+    # this exact command for the canonical definition of a metric, so the tags
+    # were landing in their reasoning rather than merely in someone's eyes.
+    # Rendering is server-side on purpose: pulling nh3 and markdown-it into the
+    # CLI wheel to strip tags would cost more than the bug. Falls back to the
+    # raw column so an older server still prints something.
+    if m.get("description_text") or m.get("description"):
+        typer.echo(f"Description:  {m.get('description_text') or m['description']}")
     if m.get("sql"):
         typer.echo(f"SQL:\n  {m['sql']}")
     if m.get("synonyms"):
