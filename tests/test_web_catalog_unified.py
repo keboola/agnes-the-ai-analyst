@@ -12,6 +12,17 @@ on legacy markup.
 
 from __future__ import annotations
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _auto_membership_mode(monkeypatch):
+    """This suite pins the AUTO-membership semantics, which are opt-in since
+    the classic subscribe model became the default again (spec
+    2026-08-07-default-chrome-ux-parity). Classic-mode contracts live in
+    tests/test_stack_membership_modes.py."""
+    monkeypatch.setenv("AGNES_STACK_AUTO_MEMBERSHIP", "1")
+
 
 def _auth(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
@@ -177,3 +188,124 @@ class TestCatalogUnifiedPage:
         assert i_req != -1 and i_a1 != -1 and i_a2 != -1
         assert i_req < i_a1, f"Required card must render before available card 'AAA' (req@{i_req}, avail@{i_a1})"
         assert i_req < i_a2, f"Required card must render before available card 'MMM' (req@{i_req}, avail@{i_a2})"
+
+
+class TestRailClassicCatalogContracts:
+    """Rail chrome + CLASSIC membership (the combination every redesign
+    adopter lands in until they enable the stack flag): the unified page must
+    apply ONE contract to both server-rendered kinds — the full granted set
+    with add-to-stack state — not full-set Data next to addable-only Memory
+    (Devin Review on #1199)."""
+
+    @pytest.fixture(autouse=True)
+    def _rail_classic(self, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        monkeypatch.delenv("AGNES_STACK_AUTO_MEMBERSHIP", raising=False)
+
+    def test_granted_memory_domain_renders_on_the_memory_tab(self, seeded_app):
+        import uuid
+
+        from src.db import get_system_db
+        from src.repositories.memory_domains import MemoryDomainsRepository
+
+        conn = get_system_db()
+        try:
+            dom_id = MemoryDomainsRepository(conn).create(
+                name="Classic Rail Domain",
+                slug="classic-rail-dom",
+                description="d",
+                icon=None,
+                color=None,
+                created_by="test",
+            )
+            item_id = str(uuid.uuid4())
+            conn.execute(
+                "INSERT INTO knowledge_items(id, title, content, status) VALUES (?, 'ki', 'body', 'approved')",
+                [item_id],
+            )
+            MemoryDomainsRepository(conn).add_item(dom_id, item_id, added_by="test")
+        finally:
+            conn.close()
+        _grant("Everyone", "memory_domain", dom_id, requirement="required", users=["analyst1"])
+
+        body = seeded_app["client"].get("/catalog", headers=_auth(seeded_app["analyst_token"])).text
+        assert "Classic Rail Domain" in body, (
+            "classic rail catalog must list granted memory domains (full granted set, same contract as the Data grid)"
+        )
+
+    def test_admin_sees_god_mode_on_both_kinds(self, seeded_app):
+        """Classic restores admin god-mode Browse — and it must apply to BOTH
+        server-rendered kinds on the unified page, or an admin sees god-mode
+        Data next to grant-scoped Memory (Devin Review on #1199, round 2).
+        Seed an UNGRANTED package and domain; the admin still sees both."""
+        import uuid
+
+        from src.db import get_system_db
+        from src.repositories.memory_domains import MemoryDomainsRepository
+
+        _make_pkg("ungranted-pkg", "Ungranted Package")
+        conn = get_system_db()
+        try:
+            dom_id = MemoryDomainsRepository(conn).create(
+                name="Ungranted Domain",
+                slug="ungranted-dom",
+                description="d",
+                icon=None,
+                color=None,
+                created_by="test",
+            )
+            item_id = str(uuid.uuid4())
+            conn.execute(
+                "INSERT INTO knowledge_items(id, title, content, status) VALUES (?, 'ki', 'body', 'approved')",
+                [item_id],
+            )
+            MemoryDomainsRepository(conn).add_item(dom_id, item_id, added_by="test")
+        finally:
+            conn.close()
+
+        body = seeded_app["client"].get("/catalog", headers=_auth(seeded_app["admin_token"])).text
+        assert "Ungranted Package" in body, "classic admin god-mode must cover the Data grid"
+        assert "Ungranted Domain" in body, "classic admin god-mode must cover the Memory kind-tab too"
+
+    def test_classic_card_actions_speak_membership_not_download(self, seeded_app):
+        """Classic: the generic /api/stack endpoints JOIN/LEAVE the stack, so
+        the unified cards must say Add-to-stack/Remove — download wording on
+        a membership-changing control would cost a user their query access
+        (Devin Review on #1199, round 5). Auto keeps the download toggle
+        (pinned by the auto suites)."""
+        pkg_id = _make_pkg("classic-wording", "Classic Wording Pkg")
+        _grant("Everyone", "data_package", pkg_id, requirement="available", users=["analyst1"])
+        body = seeded_app["client"].get("/catalog", headers=_auth(seeded_app["analyst_token"])).text
+        assert "Add to stack" in body
+        assert "Download locally" not in body
+        assert "Remove local copy" not in body
+
+
+class TestRailClassicLedeMatchesTheGrid:
+    """The lede must describe what the tabs actually hold.
+
+    Rail + classic is reachable per-knob (`ui_layout: rail` without the
+    redesign preset) and has no prior art. Its Data/Memory tabs list the FULL
+    granted set — the one-contract-across-kinds decision pinned by
+    `TestRailClassicCatalogContracts` — so the auto-membership copy "data and
+    memory you've already been granted live in My Stack, not here" would have
+    contradicted the grid directly below it (Devin on #1199).
+    """
+
+    def _lede(self, seeded_app):
+        body = seeded_app["client"].get("/catalog", headers=_auth(seeded_app["analyst_token"])).text
+        start = body.index('<p class="lede">')
+        return body[start : body.index("</p>", start)]
+
+    def test_classic_lede_does_not_claim_granted_data_is_elsewhere(self, seeded_app, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        monkeypatch.delenv("AGNES_STACK_AUTO_MEMBERSHIP", raising=False)
+        lede = self._lede(seeded_app)
+        assert "not here" not in lede, "classic lists granted data on this page — the lede must not deny it"
+        assert "not yet added" in lede
+
+    def test_auto_membership_keeps_the_original_copy(self, seeded_app, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        monkeypatch.setenv("AGNES_STACK_AUTO_MEMBERSHIP", "1")
+        lede = self._lede(seeded_app)
+        assert "not here" in lede, "auto-membership copy changed — that surface is not what this PR touches"

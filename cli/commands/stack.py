@@ -71,11 +71,15 @@ def stack_list(
 ):
     """List items in your effective stack.
 
-    Auto-membership: effective stack = required ∪ available — every
-    resource granted to one of your groups, no subscription needed. Without
-    ``--type`` both data_packages and memory_domains are fetched and
-    concatenated (the server has no all-types endpoint by design — keeps
-    the API contract narrow).
+    By default (classic membership) the effective stack is the subscribe
+    model — required grants plus the ``available`` ones you added via
+    ``agnes stack add`` — and every member is downloaded by ``agnes pull``.
+    When the instance runs auto-membership (``features.stack_auto_
+    membership``), every grant is a member (required ∪ available, no
+    subscription needed) and ``materialized`` marks the local copies.
+    Without ``--type`` both data_packages and memory_domains are fetched
+    and concatenated (the server has no all-types endpoint by design —
+    keeps the API contract narrow).
     """
     if type_filter:
         types = [_validate_type(type_filter)]
@@ -122,14 +126,15 @@ def stack_browse(
     type_filter: Optional[str] = typer.Option(None, "--type", help="data_package | memory_domain (omit for both)"),
     as_json: bool = typer.Option(False, "--json"),
 ):
-    """Browse every resource granted to your groups (equivalent scope to
-    ``stack list`` under auto-membership — kept as a discovery alias).
+    """Browse every resource granted to your groups — the full candidate
+    set, whether or not it is in your stack yet.
 
-    The ``IN STACK`` column reads ✓ for every row (auto-membership: any
-    grant, required or available, is automatically in your stack). Use
-    ``agnes stack add <type> <id>`` then ``agnes pull`` to additionally
-    download a LOCAL COPY of an ``available`` resource — required
-    resources are always downloaded already.
+    By default (classic membership) the ``IN STACK`` column marks the
+    members — required grants plus the ones you added — and the rest are
+    addable: ``agnes stack add <type> <id>`` joins your stack, then
+    ``agnes pull`` downloads it. Under auto-membership
+    (``features.stack_auto_membership``) every granted row reads ✓ and
+    ``add`` only requests the local copy.
     Without ``--type`` both data_packages and memory_domains are fetched.
     """
     if type_filter:
@@ -180,11 +185,13 @@ def stack_add(
     resource_type: str = typer.Argument(..., help="data_package | memory_domain"),
     resource_id: str = typer.Argument(..., help="Resource id to subscribe to"),
 ):
-    """Download a local copy of a granted data_package or memory_domain.
+    """Add a granted data_package or memory_domain to your stack.
 
-    The resource is already in your stack and server-side queryable the
-    moment it's granted (auto-membership) — this only makes ``agnes pull``
-    ALSO fetch a local copy."""
+    By default (classic membership) this JOINS your stack — the resource
+    becomes queryable and ``agnes pull`` starts downloading it. Under
+    auto-membership (``features.stack_auto_membership``) every grant is
+    already in your stack, so this only makes ``agnes pull`` ALSO fetch a
+    local copy."""
     rt = _validate_type(resource_type)
     resp = api_post(
         "/api/stack/subscribe",
@@ -211,7 +218,7 @@ def stack_add(
                 )
                 raise typer.Exit(1)
         _fail(resp)
-    typer.echo(f"Downloading a local copy of {rt}/{resource_id} — run `agnes pull` to fetch it.")
+    typer.echo(f"Added {rt}/{resource_id} to your stack — run `agnes pull` to fetch it.")
 
 
 @stack_app.command("remove")
@@ -219,13 +226,17 @@ def stack_remove(
     resource_type: str = typer.Argument(..., help="data_package | memory_domain"),
     resource_id: str = typer.Argument(..., help="Resource id to unsubscribe from"),
 ):
-    """Remove the local copy of an available data_package or memory_domain.
+    """Remove an available data_package or memory_domain from your stack.
 
-    The resource STAYS in your stack (still queryable server-side) — only
-    the local download is dropped. Removing a *required* resource's local
-    copy is refused with a hint pointing at the grant — required resources
-    are always downloaded, no opt-out; the admin would need to downgrade
-    the grant to `available` first.
+    By default (classic membership) this LEAVES your stack — the resource
+    stops being queryable and ``agnes pull`` stops syncing it (re-add it
+    any time with ``agnes stack add``). Under auto-membership
+    (``features.stack_auto_membership``) the resource stays in your stack,
+    still queryable server-side — only the local download is dropped.
+    Removing a *required* resource is refused with a hint pointing at the
+    grant — required resources are always in the stack and downloaded, no
+    opt-out; the admin would need to downgrade the grant to `available`
+    first.
     """
     rt = _validate_type(resource_type)
     resp = api_delete(f"/api/stack/subscription/{rt}/{resource_id}")
@@ -245,7 +256,11 @@ def stack_remove(
             )
             raise typer.Exit(1)
         _fail(resp)
-    typer.echo(f"Removed the local copy of {rt}/{resource_id} — it stays in your stack, still queryable server-side.")
+    typer.echo(
+        f"Removed {rt}/{resource_id} from your stack subscriptions — under the classic "
+        f"default it leaves your stack (re-add with `agnes stack add`); under "
+        f"auto-membership it stays queryable server-side and only the local copy is dropped."
+    )
 
 
 # ---------------------------------------------------------------------------

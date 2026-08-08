@@ -190,6 +190,31 @@ that shipped `mcp.allow_query_param_token` without a write path.
 | `chat_approvals` | `chat.approvals_enabled` | `AGNES_CHAT_APPROVALS_ENABLED` | `true` | yes | Operator kill-switch for interactive approval prompts. Off denies ask-flagged tool calls instantly instead of waiting for a human. |
 | `data_apps` | `data_apps.enabled` | `AGNES_DATA_APPS_ENABLED` | `false` | no — apps_runner sidecar needs the `apps` Compose profile | New feature — off by default. |
 | `library_show_unverified_trust` | `library.show_unverified_trust` | `AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST` | `true` | yes | 'Community' trust marker for unverified Store items in the Library, so every row states its provenance (Organization / Verified / Community) and none is left silently unlabelled. On by default: the whole trust vocabulary is gated to the paper theme, so upgrade parity for a default blue instance comes from that gate, not from this flag. Set `false` for the older reading, where an unverified item is marked by the ABSENCE of a marker. |
+| `experience` | `instance.experience` | `AGNES_INSTANCE_EXPERIENCE` | `classic` | yes | Select (`classic` \| `redesign`): the one-line redesign adoption preset — see the dedicated section below. Changes only the DEFAULTS of the coupled knobs; any per-knob setting wins; invalid values fall back to `classic`. |
+| `stack_auto_membership` | `features.stack_auto_membership` | `AGNES_STACK_AUTO_MEMBERSHIP` | `false` | yes | Stack membership mode. Off (classic, the default): membership is the subscribe model — required plus subscribed grants — with the grant-downgrade subscription fan-out, exactly the pre-redesign behavior. On: auto-membership — every granted resource is in the caller's stack immediately; subscribe/unsubscribe only control the downloaded local copy, and `agnes pull` manifests list granted-but-unsubscribed tables as `server_only`. Default follows the `instance.experience` preset (below). Flipping OFF after running ON: users lose visibility of granted-but-unsubscribed resources until they subscribe (no data loss — subscriptions are interpreted, never rewritten); flipping ON later only widens visibility. |
 | `mcp_query_param_token` | `mcp.allow_query_param_token` | `AGNES_MCP_ALLOW_QUERY_PARAM_TOKEN` | `true` | yes | Grandfathered on. Accepts the MCP bearer token as `?token=` on SSE GET for header-incapable clients; the token then appears in every request log (CWE-598). Turn off when all MCP clients send the `Authorization` header. **Unlike the other flags here its default is the permissive state, so an unrecognized value — `disabled`, `n` — silently leaves it on; use `false`/`off`/`no`/`0` and verify via `effective`.** |
 | `mcp_source_url_strict` | `mcp.source_url_strict` | `AGNES_MCP_SOURCE_URL_STRICT` | `false` | yes | Holds a registered MCP source's own url to the same bar as its OAuth endpoints (https, public address). Off by default, which is **not** unguarded: the baseline always refuses link-local / metadata / multicast / reserved addresses and cleartext http to a public one. The default only permits a source on an *internal* address — an organization's own tool server, a developer's localhost — because those are ordinary deployments. Turn on for instances that talk only to third-party MCP services; it makes an intranet source unconfigurable, hence opt-in. |
 | `agent_profiles` | `agent_profiles.enabled` | `AGNES_AGENT_PROFILES_ENABLED` | `true` | no — deliberately env-var-only kill switch (owner decision on #1186) | Grandfathered — shipped enabled before this flag existed. Gates the `/agents` builder and the `/api/v1/agents*` management + runtime API (and its CLI clients, `agnes agent`/`agnes chat`). Does not gate default-agent seeding, chat attribution, or the broker's agent policy — those are internal mechanisms, not HTTP surface. Set the env var, or hand-edit the static `instance.yaml`, and restart. |
+
+## The `instance.experience` preset
+
+One line flips the DEFAULTS of every experience-coupled knob (spec
+`docs/superpowers/specs/2026-08-07-default-chrome-ux-parity.md`):
+
+| | |
+|---|---|
+| Config key | `instance.experience` |
+| Values | `classic` (default) \| `redesign` |
+| Env | `AGNES_INSTANCE_EXPERIENCE` |
+
+`redesign` defaults `instance.ui_layout` to `rail`, `instance.theme` to
+`paper` and `features.stack_auto_membership` to `true`; `classic` (or an
+absent/invalid key) is byte-for-byte the pre-redesign experience. The preset
+changes only defaults — any per-knob env/yaml setting still wins, and
+per-knob precedence is unchanged (`env(knob) > yaml(knob) > preset-implied
+default > built-in default`). Deliberately NOT coupled:
+`store.verification_enabled` (a governance opt-in — it needs a reviewer, not
+a theme) and `library.show_unverified_trust` (the trust vocabulary is
+already gated to the paper theme itself). The `/admin/server-config` flag
+inventory leads with the preset's resolved value and labels preset-sourced
+flag defaults with a `preset` badge.

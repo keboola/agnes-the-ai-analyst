@@ -1,5 +1,4 @@
 {% extends "base_ds.html" %}
-{% import "macros/_icon.html" as ico %}
 {% from "macros/_stack_card.html" import card %}
 
 {% block title %}Data Packages — {{ config.INSTANCE_NAME or 'AI Harness' }}{% endblock %}
@@ -13,7 +12,7 @@
 {# ── Hero content — set here so operators can override without touching markup. #}
 {% set catalog_hero_eyebrow     = "Data" %}
 {% set catalog_hero_title       = "What data are you looking for?" %}
-{% set catalog_hero_subtitle    = "Everything you've been granted is already in your My Stack tab. Browse here for anything new your admin publishes." %}
+{% set catalog_hero_subtitle    = "Browse curated data packages your team has approved. Add the ones you need to your stack — required packages are added automatically." %}
 {% set catalog_hero_placeholder = "Search Data Packages by name or description…" %}
 {# Hero — gradient banner mirroring marketplace.html .mp-hero so /catalog
    and /marketplace read as one product. Eyebrow + h1 + sub layered on
@@ -158,21 +157,14 @@
       {% endfor %}
     </div>
     {% else %}
-    {# Empty state — friendly + actionable. Auto-membership means every
-       granted package is already in My Stack, so Browse is empty for the
-       common case of "you have access to everything that exists" — that
-       gets its own copy, distinct from "nothing exists/is granted yet".
-       Admins get a concrete CTA (open /admin/tables with the
-       N-registered-tables hint so they know there IS data to package).
-       Non-admins with zero grants get a different copy because the admin
-       path is gated. #}
+    {# Empty state — friendly + actionable. Admins get a concrete CTA
+       (open /admin/tables with the N-registered-tables hint so they
+       know there IS data to package). Non-admins get a different copy
+       because the admin path is gated. #}
     <div class="stack-empty">
-      <span class="icon">{{ ico.icon('package', 40) }}</span>
-      {% if stack_entries %}
-      <h3>You already have everything available</h3>
-      <p>Every Data Package you've been granted is already in your <strong>My Stack</strong> tab above — Browse only lists ones you don't have yet. Check back once your admin publishes something new.</p>
-      {% elif user.is_admin %}
+      <span class="icon">📦</span>
       <h3>No Data Packages yet</h3>
+      {% if user.is_admin %}
         {% if total_registered_tables and total_registered_tables > 0 %}
         <p>You have <strong>{{ total_registered_tables }}</strong>
            table{{ 's' if total_registered_tables != 1 else '' }} registered
@@ -188,7 +180,6 @@
         <a href="/admin/tables">Open /admin/tables →</a>
       </div>
       {% else %}
-      <h3>No Data Packages yet</h3>
       <p>Ask your admin to create a Data Package or grant your group
          access to an existing one, then refresh this page.</p>
       {% endif %}
@@ -206,7 +197,7 @@
       {% endfor %}
     </div>
     <div class="stack-empty"{% if stack_entries %} hidden{% endif %}>
-      <span class="icon">{{ ico.icon('folder', 40) }}</span>
+      <span class="icon">🗂️</span>
       <h3>Your stack is empty</h3>
       <p>Browse available packages and click <strong>Download locally</strong>.
          Required packages will appear here automatically.</p>
@@ -236,7 +227,7 @@
     </div>
     <div class="stack-grid" id="catalog-grid-recipes">
       <div class="stack-empty" id="catalog-recipes-loading">
-        <span class="icon">{{ ico.icon('recipe', 40) }}</span>
+        <span class="icon">📑</span>
         <h3>Loading recipes…</h3>
       </div>
     </div>
@@ -741,28 +732,19 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
   });
 
   // ── Tab switching ──────────────────────────────────────────────────────
-  function activateTab(tab) {
-    const btn = document.querySelector(`.stack-tabs button[data-tab="${tab}"]`);
-    if (!btn) return;
-    document.querySelectorAll('.stack-tabs button').forEach(x => {
-      x.classList.toggle('is-active', x === btn);
-      x.setAttribute('aria-selected', x === btn ? 'true' : 'false');
-    });
-    document.querySelectorAll('[data-view]').forEach(v => {
-      v.hidden = v.dataset.view !== tab;
-    });
-    if (tab === 'recipes') loadRecipesTab();
-  }
   document.querySelectorAll('.stack-tabs button').forEach(b => {
-    b.addEventListener('click', () => activateTab(b.dataset.tab));
+    b.addEventListener('click', () => {
+      const tab = b.dataset.tab;
+      document.querySelectorAll('.stack-tabs button').forEach(x => {
+        x.classList.toggle('is-active', x === b);
+        x.setAttribute('aria-selected', x === b ? 'true' : 'false');
+      });
+      document.querySelectorAll('[data-view]').forEach(v => {
+        v.hidden = v.dataset.view !== tab;
+      });
+      if (tab === 'recipes') loadRecipesTab();
+    });
   });
-  // Deep-link support — /catalog?tab=my|recipes opens on that tab
-  // (mirrors /marketplace?tab=…). Lets external nav (e.g. the rail
-  // chrome's "My Stack" entry) land directly on a view.
-  {
-    const urlTab = new URLSearchParams(window.location.search).get('tab');
-    if (urlTab && urlTab !== 'browse') activateTab(urlTab);
-  }
 
   // v53 Recipes tab — fetch on first open then cache for the page
   // lifetime. Renders compact cards (no Add-to-stack) so users can
@@ -772,7 +754,7 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
     if (_recipesLoaded && !force) return;
     const grid = document.getElementById('catalog-grid-recipes');
     if (!grid) return;
-    grid.innerHTML = '<div class="stack-empty"><span class="icon">{{ ico.icon('recipe', 40) }}</span><h3>Loading recipes…</h3></div>';
+    grid.innerHTML = '<div class="stack-empty"><span class="icon">📑</span><h3>Loading recipes…</h3></div>';
     try {
       const r = await fetch('/api/recipes', { credentials: 'same-origin' });
       if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -781,7 +763,7 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
       const badge = document.querySelector('.stack-tabs .count[data-count="recipes"]');
       if (badge) badge.textContent = String(items.length);
       if (!items.length) {
-        grid.innerHTML = '<div class="stack-empty"><span class="icon">{{ ico.icon('recipe', 40) }}</span>'
+        grid.innerHTML = '<div class="stack-empty"><span class="icon">📑</span>'
           + '<h3>No recipes yet</h3>'
           + '<p>Recipes are admin-curated query templates — copy + adapt.</p></div>';
         _recipesLoaded = true;

@@ -1558,8 +1558,32 @@ async def setup_advanced_page(
     return templates.TemplateResponse(request, "setup_advanced.html", ctx)
 
 
+def _resolve_in_stack_is_local(explicit: Optional[bool]) -> bool:
+    """Whether `in_stack` on these cards means "a local copy exists".
+
+    True only under auto-membership, where membership follows from the grant
+    and the subscribe control is left governing the download alone. Under the
+    classic subscribe model the key means membership again, so the wording and
+    the removal semantics keyed off this flag (#1206) must stay off: "Remove
+    local copy" on a control that unsubscribes tells the user they are freeing
+    disk while they are giving up access.
+
+    Callers may pass an explicit value; ``None`` asks the instance.
+    """
+    if explicit is not None:
+        return explicit
+    from app.instance_config import get_stack_auto_membership
+
+    return get_stack_auto_membership()
+
+
 def _data_package_entry_dict(
-    entry, drilldown_url: str, table_count: int = 0, source_types: Optional[list] = None, is_admin_view: bool = False
+    entry,
+    drilldown_url: str,
+    table_count: int = 0,
+    source_types: Optional[list] = None,
+    is_admin_view: bool = False,
+    in_stack_is_local: Optional[bool] = None,
 ) -> dict:
     """Adapt a ResourceEntry → template entry dict for the _stack_card macro.
 
@@ -1605,9 +1629,15 @@ def _data_package_entry_dict(
         # stack" — every granted resource already is — it means "a local
         # copy exists". The card macro cannot infer that from the key
         # name, so it read the old meaning and invited you to "Add to
-        # stack" a package listed under My Stack. Consumers that do NOT
-        # re-point the key simply omit this flag and keep the old wording.
-        "in_stack_is_local": True,
+        # stack" a package listed under My Stack.
+        #
+        # Gated on the membership mode rather than hardcoded True. Under the
+        # classic subscribe model `in_stack` means membership again, and the
+        # flag would have the card offer "Remove local copy" for a control
+        # that actually unsubscribes — the user loses ACCESS believing they
+        # are freeing disk. Consumers that do not re-point the key omit the
+        # flag and keep the old wording; classic is one of them.
+        "in_stack_is_local": _resolve_in_stack_is_local(in_stack_is_local),
         "meta": f"{table_count} table{'s' if table_count != 1 else ''}",
         # v56: source-type pills (auto-derived) come first per the spec
         # convention; admin-authored category tags follow. Concatenated
@@ -1644,20 +1674,25 @@ def _data_package_entry_dict(
 # its JS twin. One shape → one component → identical cards everywhere.
 
 
-def _catalog_card_data(e: dict) -> dict:
-    """Data package → catalog_card `c`. Every package reaching this
-    normalizer is already in the caller's stack (auto-membership) —
-    required packages render a locked 'Required' pill (always downloaded);
-    everything else gets the Download-locally/Remove-local-copy toggle
-    (``mode: 'download'``) wired to the generic /api/stack endpoints. The
-    dict's ``in_stack`` key (set by ``_data_package_entry_dict``) actually
-    carries the local-download state, not raw stack membership."""
+def _catalog_card_data(e: dict, *, auto_membership: bool = True) -> dict:
+    """Data package → catalog_card `c`, action semantics per membership mode.
+
+    Auto-membership: every package reaching this normalizer is already in
+    the caller's stack — required packages render a locked 'Required' pill
+    (always downloaded); everything else gets the Download-locally/
+    Remove-local-copy toggle (``mode: 'download'``), and the dict's
+    ``in_stack`` key carries the LOCAL-DOWNLOAD state. Classic (the
+    default membership mode): the same generic /api/stack endpoints JOIN
+    and LEAVE the stack, so the card emits ``mode: 'stack'`` — the macro's
+    Add-to-stack/Remove wording — and ``in_stack`` is real membership
+    (Devin Review on #1199, round 5: download wording on a
+    membership-changing control loses users their query access)."""
     if e.get("requirement") == "required":
         action = {"mode": "required"}
     else:
         rid = e["id"]
         action = {
-            "mode": "download",
+            "mode": "download" if auto_membership else "stack",
             "state": "in" if e.get("in_stack") else "add",
             "add_url": "/api/stack/subscribe",
             "remove_url": f"/api/stack/subscription/data_package/{rid}",
@@ -1680,7 +1715,7 @@ def _catalog_card_data(e: dict) -> dict:
     }
 
 
-def _catalog_card_memory(d: dict) -> dict:
+def _catalog_card_memory(d: dict, *, auto_membership: bool = True) -> dict:
     """Memory domain → catalog_card `c`. Every domain reaching this
     normalizer is already in the caller's stack (auto-membership) —
     download-locally toggle (``mode: 'download'``) wired to the generic
@@ -1692,7 +1727,7 @@ def _catalog_card_memory(d: dict) -> dict:
         action = {"mode": "required"}
     else:
         action = {
-            "mode": "download",
+            "mode": "download" if auto_membership else "stack",
             "state": "in" if d.get("in_stack") else "add",
             "add_url": "/api/stack/subscribe",
             "remove_url": f"/api/stack/subscription/memory_domain/{rid}",
@@ -1873,34 +1908,42 @@ async def catalog(
         logger.warning("could not enumerate data_packages: %s", e)
 
     is_admin_view = is_user_admin(user["id"], conn)
-    # Admin god-mode removed from the user-facing Catalog (follow-up to the
-    # auto-membership reshape): every visitor — admin included — browses through
-    # the same grant-scoped ``browse()``. Auditing every package regardless
-    # of grant now lives at /admin/data-packages (``browse_admin`` still
-    # backs that route).
-    all_granted_entries = resolver.browse(user["id"], ResourceType.DATA_PACKAGE)
+    # Stack-membership mode (spec 2026-08-07-default-chrome-ux-parity):
+    # classic (default) keeps the pre-redesign catalog behavior verbatim —
+    # admin god-mode Browse via ``browse_admin`` and a Browse grid listing
+    # EVERY granted package with its add-to-stack state. Auto-membership
+    # (the redesign semantics) drops god-mode from the user-facing Catalog
+    # (auditing lives at /admin/data-packages) and reshapes Browse into
+    # "things you can ADD" — in that mode ``browse()`` marks everything
+    # granted in_stack, so the grid only shows the rest.
+    from app.instance_config import get_stack_auto_membership
+
+    auto_membership = get_stack_auto_membership()
+    if is_admin_view and not auto_membership:
+        all_granted_entries = resolver.browse_admin(user["id"], ResourceType.DATA_PACKAGE)
+    else:
+        all_granted_entries = resolver.browse(user["id"], ResourceType.DATA_PACKAGE)
     stack_entries = resolver.stack(user["id"], ResourceType.DATA_PACKAGE)
 
     # Group ``required`` packages first so they cluster together at the
     # top of the grid instead of being scattered by creation order —
     # first-demo feedback (2026-05-19): "bylo by dobre ty required mit
     # vzdy nekde seskupene spolu na jedne strane". Secondary order falls
-    # back to the resolver's name-ordered output. Applied to BOTH the
-    # (now addable-only) Browse grid and the My Stack grid — since
-    # auto-membership means most packages a caller sees now render on My
-    # Stack rather than Browse, the required-first grouping needs to
-    # follow them there to keep the feature meaningful.
+    # back to the resolver's name-ordered output. Under auto-membership it
+    # is applied to BOTH grids — most packages a caller sees then render
+    # on My Stack rather than Browse, so the grouping must follow them
+    # there; classic keeps the pre-redesign contract (Browse only).
     _req_first_key = lambda e: (0 if e.requirement == "required" else 1, e.name or "")  # noqa: E731
     all_granted_entries = sorted(all_granted_entries, key=_req_first_key)
-    stack_entries = sorted(stack_entries, key=_req_first_key)
+    if auto_membership:
+        stack_entries = sorted(stack_entries, key=_req_first_key)
 
-    # Catalog reshape: every granted package is already auto-membership
-    # in_stack=True (``browse()`` sets this unconditionally), so the
-    # Catalog's Data grid — whose whole purpose is now "things you can
-    # ADD" — only ever shows entries that are NOT already in the caller's
-    # stack. For governed data this is normally empty; what the caller
-    # already has lives on My Stack (/stack) or the My Stack tab here.
-    addable_entries = [e for e in all_granted_entries if not e.in_stack]
+    # Catalog reshape (auto-membership only): every granted package is
+    # already in_stack=True there, so the Data grid — whose whole purpose
+    # becomes "things you can ADD" — only shows entries NOT already in the
+    # caller's stack. Classic renders the full granted set, pre-redesign
+    # style.
+    addable_entries = [e for e in all_granted_entries if not e.in_stack] if auto_membership else all_granted_entries
 
     def _adapt(e):
         slug = None
@@ -1923,7 +1966,7 @@ async def catalog(
     stack_entries_adapted = [_adapt(e) for e in stack_entries]
 
     # Aggregate distinct source types across the user's visible packages —
-    # drives the per-source chip row in catalog.html.
+    # drives the per-source chip row in the catalog page.
     source_type_chips = sorted({st for e in entries for st in (e.get("tags") or [])})
 
     # Empty-state hint: when no packages exist, the page tells admins how
@@ -1950,20 +1993,28 @@ async def catalog(
     # curated resources. Data/Memory render server-side here; Plugins +
     # Recipes hydrate client-side from their existing APIs. Uploads
     # (file collections) are private user resources and live on My Stack
-    # (see /stack), not in the shared Catalog. Topnav instances keep the
-    # classic catalog.html unchanged.
+    # (see /stack), not in the shared Catalog. Topnav instances render the
+    # frozen pre-redesign catalog_legacy.html.
     if get_ui_layout() == "rail":
-        # Memory kind-tab: mirrors the Data grid's addable-only contract —
+        # Memory kind-tab: mirrors the Data grid's contract in BOTH modes —
         # grant-scoped via ``browse()`` (fixes a pre-existing gap where this
-        # tab enumerated every memory domain with no RBAC check at all),
-        # filtered to entries NOT already in the caller's stack.
-        all_mem_entries = resolver.browse(user["id"], ResourceType.MEMORY_DOMAIN)
-        addable_mem_entries = [e for e in all_mem_entries if not e.in_stack]
+        # tab enumerated every memory domain with no RBAC check at all);
+        # under auto-membership filtered to entries NOT already in the
+        # caller's stack, under classic the full granted set with its
+        # add-to-stack state — INCLUDING the admin god-mode fork, so the one
+        # page an admin sees applies one scope to both server-rendered kinds
+        # (same ``is_admin_view and not auto_membership`` condition as the
+        # Data grid above; Devin Review on #1199, both rounds).
+        if is_admin_view and not auto_membership:
+            all_mem_entries = resolver.browse_admin(user["id"], ResourceType.MEMORY_DOMAIN)
+        else:
+            all_mem_entries = resolver.browse(user["id"], ResourceType.MEMORY_DOMAIN)
+        addable_mem_entries = [e for e in all_mem_entries if not e.in_stack] if auto_membership else all_mem_entries
         memory_cards = _unified_memory_cards(addable_mem_entries)
         # Normalize both server-rendered kinds into the single catalog_card
         # `c` contract (Plugins + Recipes normalize client-side in the JS twin).
-        data_cards = [_catalog_card_data(e) for e in entries]
-        memory_card_models = [_catalog_card_memory(d) for d in memory_cards]
+        data_cards = [_catalog_card_data(e, auto_membership=auto_membership) for e in entries]
+        memory_card_models = [_catalog_card_memory(d, auto_membership=auto_membership) for d in memory_cards]
         # ── "Recommended for you" — intentionally empty for granted data /
         #    memory. The Catalog only surfaces resources the caller does NOT
         #    already have; under auto-membership every granted package is
@@ -1998,6 +2049,15 @@ async def catalog(
             memory_cards=memory_card_models,
             recommended_cards=recommended_cards,
             default_kind=default_kind,
+            # The lede describes what the Data/Memory tabs actually contain,
+            # and that differs by membership mode. Under auto-membership a
+            # grant IS stack membership, so those tabs hold only what you do
+            # NOT have and "granted data lives in My Stack, not here" is true.
+            # Under classic a grant is an invitation you have not accepted, so
+            # the same tabs list granted-but-unsubscribed resources and that
+            # sentence would contradict the grid right under it — the rail +
+            # classic combination this PR makes reachable (Devin on #1199).
+            auto_membership=auto_membership,
         )
         return templates.TemplateResponse(request, "catalog_unified.html", ctx)
 
@@ -2017,7 +2077,10 @@ async def catalog(
         source_type_chips=source_type_chips,
         total_registered_tables=total_registered_tables,
     )
-    return templates.TemplateResponse(request, "catalog.html", ctx)
+    # Topnav renders the frozen pre-redesign catalog page byte-for-byte
+    # (catalog_legacy.html; the /library pattern — LEGACY_FROZEN closed set,
+    # guarded by tests/test_ui_layout_theme.py::TestDefaultContentParity).
+    return templates.TemplateResponse(request, "catalog_legacy.html", ctx)
 
 
 def _unified_memory_cards(entries: list) -> list:
@@ -2163,6 +2226,12 @@ async def my_stack_page(
     # connection that didn't observe just-written subscription rows, so the
     # stack rendered empty even when /api/stack returned entries.
     resolver = StackResolver()
+    from app.instance_config import get_stack_auto_membership
+
+    # My Stack rows carry the same mode-aware action wording as the
+    # Catalog cards: auto → Download-locally toggle, classic → the
+    # remove-from-stack control (leaving is a membership change there).
+    auto_membership = get_stack_auto_membership()
     pkg_repo = data_packages_repo()
 
     def _pkg_table_count(pkg_id: str) -> int:
@@ -2239,13 +2308,13 @@ async def my_stack_page(
     # the inventory-table columns (added_iso · shared_by).
     data_cards = []
     for entry in data_entries:
-        c = _catalog_card_data(entry)
+        c = _catalog_card_data(entry, auto_membership=auto_membership)
         c["added_iso"] = _added_iso("data_package", entry["id"])
         c["shared_by"] = entry.get("owner_name")
         data_cards.append(c)
     memory_card_models = []
     for d in memory_entries:
-        c = _catalog_card_memory(d)
+        c = _catalog_card_memory(d, auto_membership=auto_membership)
         c["added_iso"] = _added_iso("memory_domain", d["id"])
         c["shared_by"] = None
         memory_card_models.append(c)
@@ -3012,6 +3081,7 @@ async def library_page(
         requirement="optional",
         tags=None,
         owner_key=None,
+        in_stack=True,
     ) -> None:
         """Append one access-granted row (never owner-shareable)."""
         items.append(
@@ -3038,27 +3108,48 @@ async def library_page(
                 owner_key=owner_key or "workspace",
             )
         )
-        # Auto-membership: a grant on one of the caller's groups puts the
-        # resource in their Stack with no action needed (see StackResolver's
-        # `browse`), so these rows are always "In Stack" — never addable.
-        items[-1]["stack_state"] = "in_stack"
-        # Every granted row says the same thing about membership — "In Stack",
-        # because it is — and every one of them is LOCKED, because the grant IS
-        # the membership: there is no per-user membership to drop, only a grant
-        # an admin can revoke. So the lock is driven by *droppability*, not by
-        # the grant tier. Keying it on ``requirement == 'required'`` (as this
-        # did) left an optional grant rendering the success-tinted check that a
-        # REMOVABLE row wears at rest — pixel-identical to a control that turns
-        # into "Remove from Stack" on hover, so the only way to learn it wasn't
-        # one was to hover it and watch nothing happen. The tier still differs,
-        # but in the two places where it's legible: the tooltip below, and the
-        # Optional/Required facet where it is actually filterable.
-        items[-1]["stack_pill"] = "In Stack"
-        items[-1]["stack_locked"] = True
-        if requirement == "required":
-            items[-1]["stack_title"] = _LOCKED_STACK_TOOLTIP
+        # Membership is the caller's mode-resolved reality, not the grant
+        # (Devin Review on #1199): under auto-membership every granted row IS
+        # in the Stack (``in_stack`` arrives True, rendering exactly as
+        # before); under the classic default a granted-but-unsubscribed
+        # ``available`` resource is NOT a member — claiming "In Stack" there
+        # would label rows the agent cannot actually query (membership also
+        # drives ``get_accessible_tables``). Callers whose membership
+        # genuinely is the grant (recipes, plugins) omit the argument.
+        if in_stack:
+            items[-1]["stack_state"] = "in_stack"
+            # Every member row says the same thing about membership — "In
+            # Stack" — and is LOCKED, because for a granted member there is
+            # no per-user membership to drop here, only a grant an admin can
+            # revoke (classic members ARE per-user, but their drop surface
+            # is the Catalog/Stack pages, not this listing). The lock is
+            # driven by *droppability*, not by the grant tier: keying it on
+            # ``requirement == 'required'`` (as this once did) left an
+            # optional grant rendering the success-tinted check that a
+            # REMOVABLE row wears at rest. The tier stays legible in the
+            # tooltip and the Optional/Required facet.
+            items[-1]["stack_pill"] = "In Stack"
+            items[-1]["stack_locked"] = True
+            if requirement == "required":
+                items[-1]["stack_title"] = _LOCKED_STACK_TOOLTIP
+            else:
+                items[-1]["stack_title"] = _GRANTED_STACK_TOOLTIP
         else:
-            items[-1]["stack_title"] = _GRANTED_STACK_TOOLTIP
+            # Classic non-member: a real Add control, not a dead pill (Devin
+            # Review on #1199, round 4). The generic subscribe endpoint takes
+            # a JSON body, so the row carries it (`data-stack-body`) for the
+            # shared click handler; after a successful add the row is a
+            # MEMBER — locked like every other granted member (the drop
+            # surface is the Catalog/Stack pages), which
+            # `data-stack-locked-after` tells the handler to render.
+            import json as _json
+
+            items[-1]["stack_state"] = "available"
+            items[-1]["stack_addable"] = True
+            items[-1]["stack_endpoint"] = "/api/stack/subscribe"
+            items[-1]["stack_body"] = _json.dumps({"resource_type": type_key, "resource_id": item_id})
+            items[-1]["stack_locked_after_add"] = True
+            items[-1]["stack_title"] = "Granted to you, but not in your Stack — add it to make it queryable"
 
     # Governed data packages + memory domains — StackResolver.browse() is
     # exactly "required ∪ available for my groups" for these two types.
@@ -3106,6 +3197,9 @@ async def library_page(
                     # values rather than a duplicate pair.
                     requirement=("required" if e.requirement == "required" else "optional"),
                     tags=list(e.tags or []),
+                    # Mode-resolved membership: auto → always True (rendering
+                    # unchanged); classic → required ∪ subscribed only.
+                    in_stack=e.in_stack,
                 )
         except Exception as e:
             logger.warning("/library: could not resolve %s: %s", rt.value, e)
@@ -4220,7 +4314,13 @@ def _human_size(n: int) -> str:
     return f"{n:.1f} PB"
 
 
-def _memory_domain_entry_dict(entry, drilldown_url: str, items_count: int = 0, required_count: int = 0) -> dict:
+def _memory_domain_entry_dict(
+    entry,
+    drilldown_url: str,
+    items_count: int = 0,
+    required_count: int = 0,
+    in_stack_is_local: Optional[bool] = None,
+) -> dict:
     """Adapt a ResourceEntry (memory_domain) → template entry dict.
 
     Always renders a meta line (`N items · K required` — even `0 items`)
@@ -4254,9 +4354,15 @@ def _memory_domain_entry_dict(entry, drilldown_url: str, items_count: int = 0, r
         # stack" — every granted resource already is — it means "a local
         # copy exists". The card macro cannot infer that from the key
         # name, so it read the old meaning and invited you to "Add to
-        # stack" a package listed under My Stack. Consumers that do NOT
-        # re-point the key simply omit this flag and keep the old wording.
-        "in_stack_is_local": True,
+        # stack" a package listed under My Stack.
+        #
+        # Gated on the membership mode rather than hardcoded True. Under the
+        # classic subscribe model `in_stack` means membership again, and the
+        # flag would have the card offer "Remove local copy" for a control
+        # that actually unsubscribes — the user loses ACCESS believing they
+        # are freeing disk. Consumers that do not re-point the key omit the
+        # flag and keep the old wording; classic is one of them.
+        "in_stack_is_local": _resolve_in_stack_is_local(in_stack_is_local),
         "meta": meta,
         "tags": [],
         "drilldown_url": drilldown_url,
@@ -4308,30 +4414,37 @@ async def corporate_memory(
 
     is_admin_view = is_user_admin(user["id"], conn)
 
-    # Admin god-mode removed from the user-facing Catalog (follow-up to
-    # auto-membership): every visitor — admin included — browses through
-    # the same grant-scoped ``browse()``. Auditing every domain regardless
-    # of grant now lives at /admin/data-packages (``browse_admin`` still
-    # backs that route). For MY STACK we still call the resolver — admins
-    # who POST /api/stack/subscribe expect to see those subscriptions in
-    # their stack tab.
-    browse_entries = resolver.browse(user["id"], ResourceType.MEMORY_DOMAIN)
+    # Stack-membership mode — same fork as /catalog (spec
+    # 2026-08-07-default-chrome-ux-parity): classic (default) restores the
+    # pre-redesign behavior verbatim (admin god-mode Browse, full granted
+    # list); auto-membership browses grant-scoped for everyone (auditing
+    # lives at /admin/data-packages) and reshapes Browse to addable-only.
+    # For MY STACK we always call the resolver — admins who POST
+    # /api/stack/subscribe expect to see those subscriptions in their
+    # stack tab.
+    from app.instance_config import get_stack_auto_membership
+
+    auto_membership = get_stack_auto_membership()
+    if is_admin_view and not auto_membership:
+        browse_entries = resolver.browse_admin(user["id"], ResourceType.MEMORY_DOMAIN)
+    else:
+        browse_entries = resolver.browse(user["id"], ResourceType.MEMORY_DOMAIN)
     stack_entries = resolver.stack(user["id"], ResourceType.MEMORY_DOMAIN)
 
-    # Required-first grouping mirrors /catalog (first-demo feedback),
-    # applied to BOTH grids — see /catalog's ``_req_first_key`` comment for
-    # why My Stack needs it too post auto-membership.
+    # Required-first grouping mirrors /catalog (first-demo feedback);
+    # under auto-membership it applies to BOTH grids — see /catalog's
+    # ``_req_first_key`` comment — while classic keeps the pre-redesign
+    # contract (Browse only).
     _req_first_key = lambda e: (0 if e.requirement == "required" else 1, e.name or "")  # noqa: E731
     browse_entries = sorted(browse_entries, key=_req_first_key)
-    stack_entries = sorted(stack_entries, key=_req_first_key)
+    if auto_membership:
+        stack_entries = sorted(stack_entries, key=_req_first_key)
 
-    # Catalog reshape: every granted domain is already auto-membership
-    # in_stack=True (``browse()`` sets this unconditionally), so the
-    # Browse grid — whose purpose is now "things you can ADD" — only
-    # shows entries NOT already in the caller's stack. For governed memory
-    # this is normally empty; what the caller already has lives in the My
-    # Stack tab here (or on /stack).
-    addable_entries = [e for e in browse_entries if not e.in_stack]
+    # Catalog reshape (auto-membership only): every granted domain is
+    # already in_stack=True there, so the Browse grid — "things you can
+    # ADD" — only shows entries NOT already in the caller's stack. Classic
+    # renders the full granted set, pre-redesign style.
+    addable_entries = [e for e in browse_entries if not e.in_stack] if auto_membership else browse_entries
 
     def _adapt(e):
         meta = dom_meta.get(e.id, {})
@@ -4373,7 +4486,11 @@ async def corporate_memory(
         pending_review_count=pending_count,
         is_km_admin=is_admin_view,
     )
-    return templates.TemplateResponse(request, "corporate_memory.html", ctx)
+    # Rail keeps the redesigned page; topnav renders the frozen
+    # pre-redesign copy byte-for-byte (the /library pattern —
+    # LEGACY_FROZEN closed set, TestDefaultContentParity guard).
+    tmpl = "corporate_memory.html" if get_ui_layout() == "rail" else "corporate_memory_legacy.html"
+    return templates.TemplateResponse(request, tmpl, ctx)
 
 
 @router.get("/memory/d/{slug}", response_class=HTMLResponse)

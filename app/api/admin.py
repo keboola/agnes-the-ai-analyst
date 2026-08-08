@@ -403,6 +403,21 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
             ),
         },
     },
+    "features": {
+        "stack_auto_membership": {
+            "kind": "bool",
+            "default": _flag_default("features", "stack_auto_membership", False),
+            "hint": (
+                "Stack membership mode. OFF (classic, the default): membership "
+                "is the subscribe model — required plus subscribed grants, all "
+                "downloaded by agnes pull. ON: auto-membership — every granted "
+                "resource is in the stack immediately; subscribe/unsubscribe "
+                "only control the local copy. Read per request; flips instantly, "
+                "subscriptions are interpreted, never rewritten. The "
+                "instance.experience: redesign preset defaults this ON."
+            ),
+        },
+    },
     "mcp": {
         "allow_query_param_token": {
             "kind": "bool",
@@ -430,19 +445,44 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
         },
     },
     "instance": {
+        # Experience preset — registry-backed (app/switches.py `experience`,
+        # kind select); declared here so the panel renders a select rather
+        # than a free-text field. Resolved by
+        # `app/instance_config.py::get_experience()` via `switch_value`.
+        "experience": {
+            "kind": "select",
+            "options": ["classic", "redesign"],
+            "default": "classic",
+            "hint": (
+                "One-line redesign adoption preset. `redesign` changes the "
+                "DEFAULTS of the coupled knobs — ui_layout → rail, theme → "
+                "paper, features.stack_auto_membership → on; any per-knob "
+                "setting still wins. `classic` (the default) is byte-for-byte "
+                "the pre-redesign experience."
+            ),
+        },
         # UI theme — flips `<html data-theme="...">` so the
         # design-system tokens (`--ds-*`) switch palettes via CSS
         # without any markup change. Resolved by
         # `app/instance_config.py::get_instance_theme()`.
         "theme": {
             "kind": "select",
-            "options": ["blue", "navy"],
+            # Full valid set per get_instance_theme() — a select whose
+            # options lag the resolver can only write values that erase an
+            # operator's working choice.
+            "options": ["blue", "navy", "dark", "auto", "paper"],
+            # Static registry default; `_known_fields_resolved()` patches it
+            # per request to the preset-implied default so the panel never
+            # renders (and a save never persists) a value the runtime
+            # doesn't use (Devin Review on #1199).
             "default": "blue",
             "hint": (
-                "Page-hero colour scheme. `blue` (default) uses the "
-                "brand-blue hero + blue CTAs. `navy` opts into the "
-                "darker palette with the dark navy hero gradient + "
-                "mint-green CTAs and eyebrow accents."
+                "UI palette. `blue` (default) uses the brand-blue hero + "
+                "blue CTAs; `navy` the darker palette with mint-green CTAs; "
+                "`dark` the dark scheme; `auto` follows the OS; `paper` the "
+                "prototype-derived light look (redesign). The "
+                "`instance.experience: redesign` preset defaults this to "
+                "`paper`."
             ),
         },
         # Operator-injected HTML/JS blocks rendered into base.html.
@@ -1337,6 +1377,38 @@ def _ensure_bq_optional_fields(sections: Dict[str, Any]) -> None:
 _UNSET = object()
 
 
+def _known_fields_resolved() -> dict:
+    """Per-request view of ``_KNOWN_FIELDS`` with preset-aware defaults.
+
+    The registry's ``default`` literals are what the panel renders for an
+    UNSET field — and what "Save section" then persists verbatim
+    (``collectSection`` posts every rendered leaf). For the preset-coupled
+    knobs a static literal is therefore a footgun: on an
+    ``instance.experience: redesign`` instance the switch would render OFF
+    (runtime: ON) and a routine section save would silently flip the whole
+    instance back to the classic model / blue theme (Devin Review on
+    #1199 — the same failure mode the #1190 unset-boolean fix addressed).
+    Patch the coupled leaves at request time from the same preset helpers
+    the runtime getters resolve through.
+    """
+    import copy
+
+    from app.instance_config import get_experience, preset_flag_default, preset_knob_default
+
+    fields = copy.deepcopy(_KNOWN_FIELDS)
+    fields["features"]["stack_auto_membership"]["default"] = preset_flag_default("stack_auto_membership")
+    fields["instance"]["theme"]["default"] = preset_knob_default("theme")
+    # The preset ITSELF, not just the leaves it couples. On an instance that
+    # sets it by env (`AGNES_INSTANCE_EXPERIENCE=redesign`) the panel rendered
+    # the static `classic` for the unset key, so a routine section save wrote
+    # `instance.experience: classic` into the overlay — invisible while the
+    # env var is present, and a silent revert of the whole preset the day the
+    # operator drops it. Same failure mode as the coupled leaves above, one
+    # tier up (Devin on #1199).
+    fields["instance"]["experience"]["default"] = get_experience()
+    return fields
+
+
 def _feature_flags_inventory() -> List[Dict[str, Any]]:
     """Read-only snapshot of every registered feature flag (#1022).
 
@@ -1358,19 +1430,73 @@ def _feature_flags_inventory() -> List[Dict[str, Any]]:
     "on" here while the running app has chat off), the chat row resolves
     from the same overlay-only source the runtime uses.
     """
-    from app.instance_config import FEATURE_FLAGS, feature_enabled, get_value
+    from app.instance_config import (
+        FEATURE_FLAGS,
+        PRESET_COUPLED_FLAGS,
+        feature_enabled,
+        get_experience,
+        get_value,
+        preset_flag_default,
+    )
 
-    out = []
+    # The experience preset leads the inventory as its own (string-valued)
+    # row — it is the one-line adoption switch whose value explains why the
+    # preset-coupled rows below may resolve away from their static defaults
+    # (spec 2026-08-07-default-chrome-ux-parity).
+    if os.environ.get("AGNES_INSTANCE_EXPERIENCE") is not None:
+        exp_source = "env"
+    else:
+        exp_probe = get_value("instance", "experience", default=_UNSET)
+        exp_source = "default" if exp_probe is _UNSET else "config"
+    out: List[Dict[str, Any]] = [
+        {
+            "name": "instance.experience",
+            # String-valued row: value_label carries the resolved preset for
+            # display; effective mirrors it as "is the redesign preset on"
+            # so the row satisfies the same schema every switch row carries
+            # (tests/test_feature_flags.py::TestInventoryExposesSwitchMetadata).
+            "value_label": get_experience(),
+            "effective": get_experience() == "redesign",
+            "source": exp_source,
+            "default": "classic",
+            "env_var": "AGNES_INSTANCE_EXPERIENCE",
+            "description": (
+                "Experience preset (classic|redesign). Changes only the DEFAULTS "
+                "of the coupled knobs — instance.ui_layout, instance.theme, "
+                "features.stack_auto_membership — any per-knob env/yaml setting "
+                "still wins."
+            ),
+            "effect": "live",
+            "editable": True,
+            "lock_reason": "",
+        }
+    ]
     for flag in FEATURE_FLAGS:
+        if flag.name == "experience":
+            # The preset's registry entry is kind="select" — the leading
+            # string-valued row above already renders it (value_label +
+            # effective-as-redesign); running it through the boolean
+            # ``feature_enabled`` below would coerce "classic" to True.
+            continue
         if flag.name in _CHAT_RUNTIME_FLAGS:
             effective, source = _chat_flag_runtime_view(flag)
         else:
-            effective = feature_enabled(*flag.config_keys, env_var=flag.env_var, default=flag.default)
+            # Preset-coupled flags resolve against the preset-implied default
+            # (what the runtime getters actually use), so this panel never
+            # reports "off/default" while the running instance has the flag
+            # on via ``experience: redesign``.
+            default_val = preset_flag_default(flag.name) if flag.name in PRESET_COUPLED_FLAGS else flag.default
+            effective = feature_enabled(*flag.config_keys, env_var=flag.env_var, default=default_val)
             if os.environ.get(flag.env_var) is not None:
                 source = "env"
             else:
                 probe = get_value(*flag.config_keys, default=_UNSET)
-                source = "default" if probe is _UNSET else "config"
+                if probe is not _UNSET:
+                    source = "config"
+                elif flag.name in PRESET_COUPLED_FLAGS and default_val != flag.default:
+                    source = "preset"
+                else:
+                    source = "default"
         out.append(
             {
                 "name": flag.name,
@@ -1464,7 +1590,7 @@ async def get_server_config(
         # Subagents 2-4 populate the bodies; the renderer ships now so the
         # mechanism is wired end-to-end and adding entries is purely a
         # data-edit in `_KNOWN_FIELDS` above.
-        "known_fields": _KNOWN_FIELDS,
+        "known_fields": _known_fields_resolved(),
         # Read-only feature-flag inventory (#1022 canonicalization) — every
         # flag registered in app.instance_config.FEATURE_FLAGS, its effective
         # value, and where it resolved from. Toggling still happens through

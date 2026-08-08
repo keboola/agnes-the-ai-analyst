@@ -184,6 +184,47 @@ SWITCHES: tuple[Switch, ...] = (
         ),
     ),
     Switch(
+        name="experience",
+        config_keys=("instance", "experience"),
+        env_var="AGNES_INSTANCE_EXPERIENCE",
+        kind="select",
+        options=("classic", "redesign"),
+        default="classic",
+        effect="live",
+        category="product",
+        editable=True,
+        on_invalid="default",
+        description=(
+            "Experience preset — the one-line redesign adoption switch. Changes only the "
+            "DEFAULTS of the coupled knobs (instance.ui_layout → rail, instance.theme → "
+            "paper, features.stack_auto_membership → true under `redesign`); any per-knob "
+            "env/yaml setting still wins, and `classic` (or an absent/invalid value) is "
+            "byte-for-byte the pre-redesign experience."
+        ),
+    ),
+    Switch(
+        name="stack_auto_membership",
+        config_keys=("features", "stack_auto_membership"),
+        env_var="AGNES_STACK_AUTO_MEMBERSHIP",
+        kind="bool",
+        default=False,
+        effect="live",
+        category="product",
+        editable=True,
+        description=(
+            "Stack membership mode. Off (classic, the default): membership is the subscribe "
+            "model — required plus subscribed grants — with the grant-downgrade subscription "
+            "fan-out, exactly the pre-redesign behavior. On: auto-membership — every granted "
+            "resource is in the stack immediately; subscribe/unsubscribe only control the "
+            "local copy. Read per request, so subscriptions are interpreted, never rewritten. "
+            "Set in instance.yaml it is cached per process: with role-split or several Uvicorn "
+            "workers, saving it here reaches only the process that served the save — restart to "
+            "flip the whole deployment, or set AGNES_STACK_AUTO_MEMBERSHIP, which is read fresh. "
+            "That matters more here than for a cosmetic switch, because this one gates which "
+            "data a user can reach. The `instance.experience: redesign` preset defaults this to on."
+        ),
+    ),
+    Switch(
         name="mcp_query_param_token",
         config_keys=("mcp", "allow_query_param_token"),
         env_var="AGNES_MCP_ALLOW_QUERY_PARAM_TOKEN",

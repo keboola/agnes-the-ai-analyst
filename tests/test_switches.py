@@ -298,7 +298,18 @@ class TestBackwardCompatibility:
             assert isinstance(flag.config_keys, tuple)
             assert isinstance(flag.env_var, str)
             assert isinstance(flag.description, str)
+            if flag.kind == "select":
+                # First non-bool occupant: the `experience` preset. The panel
+                # was taught its type — the inventory renders it through the
+                # string-valued leading row (`value_label`, see
+                # _feature_flags_inventory + renderFeatureFlags) and the
+                # section editor through its `_KNOWN_FIELDS` select entry —
+                # so a select's contract here is default ∈ options.
+                assert flag.options, f"{flag.name}: a select switch must declare options"
+                assert flag.default in flag.options, f"{flag.name}: select default {flag.default!r} not in options"
+                continue
             assert isinstance(flag.default, bool), (
-                f"{flag.name}: PR1 ports only boolean flags; a non-bool default here means "
-                "a PR2 switch landed without the panel being taught its type"
+                f"{flag.name}: the boolean panel path renders this default as a switch; a "
+                "non-bool default needs its own render path first (the `experience` select "
+                "above shows the pattern)"
             )

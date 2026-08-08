@@ -465,10 +465,16 @@
                     {% elif c.stack_addable %}
                     {# Available but not added — the default action, for anything
                        whose membership is the caller's to create: an artefact, a
-                       skill, a plugin. (Not a file inside a folder: membership is
-                       per collection, so it is added by adding its folder.) #}
+                       skill, a plugin — and, under classic membership, a granted
+                       data package / memory domain (its endpoint takes a JSON
+                       body, carried in data-stack-body; data-stack-locked-after
+                       tells the handler the post-add state is the LOCKED member
+                       pill, since a granted member's drop surface is the
+                       Catalog/Stack pages, not this row). #}
                     <button type="button" class="lib-stackpill lib-addstack" data-add-to-stack="{{ c.id }}"
                             data-stack-endpoint="{{ c.stack_endpoint }}"
+                            {% if c.stack_body %}data-stack-body="{{ c.stack_body }}"{% endif %}
+                            {% if c.stack_locked_after_add %}data-stack-locked-after="1"{% endif %}
                             title="{{ c.stack_title }}"
                             aria-label="Add {{ c.title }} to your Stack">
                       <span class="lib-stackpill__rest">
@@ -3064,6 +3070,9 @@
     '<path d="M5 12h14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>';
   const STACK_PLUS_SVG = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
     '<path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>';
+  const STACK_LOCK_SVG = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+    '<path d="M6 11V8a6 6 0 1 1 12 0v3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>' +
+    '<rect x="4" y="11" width="16" height="10" rx="2" stroke="currentColor" stroke-width="2"/></svg>';
 
   function inStackHtml(id, title, endpoint) {
     return '<button type="button" class="lib-stackpill lib-instack" data-stack-badge="' + id + '" ' +
@@ -3093,6 +3102,16 @@
       'aria-label="Add ' + esc(title) + ' to your Stack">' +
       '<span class="lib-stackpill__rest">' + STACK_PLUS_SVG + 'Add to Stack</span>' +
       '</button>';
+  }
+  // Post-add state for a granted row under classic membership: a LOCKED
+  // member pill (its drop surface is the Catalog/Stack pages, not this row)
+  // — mirrors the server-rendered locked branch of library_row().
+  function lockedInStackHtml(id) {
+    return '<span class="lib-stackpill lib-instack lib-instack--fixed lib-instack--locked" ' +
+      'data-stack-badge="' + id + '" role="img" ' +
+      'data-tip="Granted to your group — only an admin can remove it from your Stack." ' +
+      'aria-label="In Stack. Granted to your group — only an admin can remove it from your Stack.">' +
+      '<span class="lib-stackpill__rest">' + STACK_LOCK_SVG + 'In Stack</span></span>';
   }
   function esc(s) {
     return String(s == null ? '' : s)
@@ -3140,13 +3159,25 @@
       || ('/api/stack/artefacts/' + encodeURIComponent(id));
     btn.disabled = true;
     try {
+      // A row whose endpoint takes a JSON body (the generic
+      // /api/stack/subscribe for granted data/memory under classic
+      // membership) carries it in data-stack-body; the path-param
+      // endpoints (artefacts, store installs) send none, as before.
+      const body = add ? btn.dataset.stackBody : null;
       const resp = await fetch(endpoint, {
         method: add ? 'POST' : 'DELETE',
         credentials: 'same-origin',
+        ...(body ? { headers: { 'Content-Type': 'application/json' }, body } : {}),
       });
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
       if (add) {
-        setRowStackState(row, inStackHtml(id, title, endpoint), 'in_stack');
+        // data-stack-locked-after: the post-add state is the LOCKED member
+        // pill (granted membership drops via the Catalog/Stack pages), not
+        // the removable one.
+        const nextHtml = btn.dataset.stackLockedAfter
+          ? lockedInStackHtml(id)
+          : inStackHtml(id, title, endpoint);
+        setRowStackState(row, nextHtml, 'in_stack');
         if (window.appToast) window.appToast({ kind: 'success', msg: 'Added to Stack' });
       } else {
         setRowStackState(row, addToStackHtml(id, title, endpoint), 'available');
