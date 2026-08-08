@@ -87,12 +87,13 @@ def render_safe(markdown: Optional[str], *, html_source: bool = False) -> str:
     stripped by nh3 before return.
 
     ``html_source=True`` for stored text whose dialect is not guaranteed to be
-    markdown — a metric description imported from OpenMetadata, which "stores
-    descriptions as rich HTML", sits in the same column as a hand-authored
-    markdown one. Raw HTML then renders as markup instead of as its own escaped
-    characters; the nh3 allowlist is identical either way, so this widens what
-    is *displayed*, never what is *allowed*. Leave it off for curator-authored
-    content, where pasted HTML showing up as literal text is the intended tell.
+    markdown — a metric description imported verbatim from an external catalog
+    sits in the same column as a hand-authored markdown one, and such catalogs
+    routinely store rich HTML. Raw HTML then renders as markup instead of as
+    its own escaped characters; the nh3 allowlist is identical either way, so
+    this widens what is *displayed*, never what is *allowed*. Leave it off for
+    curator-authored content, where pasted HTML showing up as literal text is
+    the intended tell.
     """
     if not markdown:
         return ""
