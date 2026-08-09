@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **A metric or glossary description laid out with `<div>` lost its line breaks in the expanded detail.** 0.83.1 taught the renderer to read an imported description as HTML rather than as markdown, and gave the plain-text projection a word boundary where a stripped block tag had been. The rendered detail needed the same care from the other side: there a stripped `<div>` cannot be replaced by a space, it has to keep its structure — so a description stored as `<div>…</div><div>…</div>` rendered as one fused line (`Share of qualified sales.Excludes refunds and test orders.`) on `/catalog/semantics` and in the Glossary tab. The `html_source` path now additionally allows the structural block containers (`div`, `section`, `article`, `dl`/`dt`/`dd`). They get no entry in the attribute allowlist, so every attribute including `on*` handlers is still stripped — these carry layout, never behaviour — and curator-authored marketplace content keeps the narrow allowlist unchanged, where a pasted `<div>` staying visible text is the intended tell. Found running the fix against a live instance rather than in a test.
+
 ## [0.83.1] - 2026-08-08
 
 ### Added

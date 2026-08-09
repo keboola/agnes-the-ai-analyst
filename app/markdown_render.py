@@ -77,6 +77,16 @@ _ALLOWED_ATTRIBUTES: dict[str, set[str]] = {
 
 _ALLOWED_URL_SCHEMES: set[str] = {"http", "https", "mailto"}
 
+# Structural block containers kept ONLY on the `html_source` path. An imported
+# description is free to lay its lines out with <div>, and stripping those with
+# no replacement fuses the text they separated ("sales.Excludes refunds") — the
+# same defect render_plain avoids by inserting boundaries before sanitization,
+# except here the fix has to preserve structure rather than a space. No entry is
+# added to _ALLOWED_ATTRIBUTES for them, so every attribute (including on*
+# handlers) is still stripped; these carry layout, never behaviour. Curator
+# markdown keeps the narrow set — it has <p> and never needs these.
+_HTML_SOURCE_EXTRA_TAGS: set[str] = {"div", "section", "article", "dl", "dt", "dd"}
+
 
 def render_safe(markdown: Optional[str], *, html_source: bool = False) -> str:
     """Render curator-authored markdown to sanitized HTML.
@@ -90,17 +100,19 @@ def render_safe(markdown: Optional[str], *, html_source: bool = False) -> str:
     markdown — a metric description imported verbatim from an external catalog
     sits in the same column as a hand-authored markdown one, and such catalogs
     routinely store rich HTML. Raw HTML then renders as markup instead of as
-    its own escaped characters; the nh3 allowlist is identical either way, so
-    this widens what is *displayed*, never what is *allowed*. Leave it off for
-    curator-authored content, where pasted HTML showing up as literal text is
-    the intended tell.
+    its own escaped characters, and the allowlist gains the structural block
+    containers in ``_HTML_SOURCE_EXTRA_TAGS`` so a <div>-laid-out description
+    keeps its line breaks. Attributes, URL schemes and `link_rel` are unchanged,
+    and no tag that can carry behaviour is added — so this widens what is
+    *displayed*, never what can *act*. Leave it off for curator-authored
+    content, where pasted HTML showing up as literal text is the intended tell.
     """
     if not markdown:
         return ""
     html = (_md_html_source if html_source else _md).render(markdown)
     return nh3.clean(
         html,
-        tags=_ALLOWED_TAGS,
+        tags=(_ALLOWED_TAGS | _HTML_SOURCE_EXTRA_TAGS) if html_source else _ALLOWED_TAGS,
         attributes=_ALLOWED_ATTRIBUTES,
         url_schemes=_ALLOWED_URL_SCHEMES,
         link_rel="noopener noreferrer",
