@@ -358,3 +358,33 @@ def test_plain_projection_still_drops_script_content_entirely():
     from app.markdown_render import render_plain
 
     assert render_plain("<script>alert(1)</script>visible", html_source=True) == "visible"
+
+
+def test_html_source_keeps_div_structure_in_the_rendered_output():
+    """The render-side twin of the boundary bug. `render_plain` recovers a
+    space where a stripped <div> was, but the DETAIL view renders markup — so
+    stripping the div there fused the two lines it separated into
+    "sales.Excludes refunds". Structural containers are kept on this path."""
+    from app.markdown_render import render_safe
+
+    out = render_safe(
+        "<div>Share of qualified sales.</div><div>Excludes refunds.</div>", html_source=True
+    )
+    assert out == "<div>Share of qualified sales.</div><div>Excludes refunds.</div>"
+
+
+def test_html_source_extra_tags_carry_no_attributes():
+    """They are laid out, never wired: no _ALLOWED_ATTRIBUTES entry exists for
+    them, so handlers and everything else go."""
+    from app.markdown_render import render_safe
+
+    out = render_safe('<div onclick="steal()" class="x" id="y">hi</div>', html_source=True)
+    assert out == "<div>hi</div>"
+
+
+def test_default_path_still_refuses_div():
+    """The widened set is scoped to html_source — curator markdown keeps the
+    narrow allowlist, where a pasted <div> stays visible text."""
+    from app.markdown_render import render_safe
+
+    assert "<div>" not in render_safe("<div>a</div>")
