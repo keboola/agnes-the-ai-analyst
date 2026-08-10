@@ -1842,6 +1842,12 @@ KNOWN_UNTESTED = {
     "DELETE /api/admin/source-connections/{connection_id}/secret",
     "POST /api/admin/source-connections/{connection_id}/test",
     "GET /api/admin/source-connections/{connection_id}/tables",
+    # Semantic-layer coverage — behaviour is backend-independent (it reads the
+    # table registry through the repo factory and calls the Metastore), and is
+    # covered by tests/test_keboola_semantic_layer_coverage.py plus the endpoint
+    # tests in test_keboola_semantic_layer_refresh_endpoint.py. A parameter-free
+    # smoke hit here would reach a live Keboola stack.
+    "GET /api/admin/semantic-layer/coverage",
     # Admin datasource credentials — vault-backed GWS/BQ instance secrets (web UI only)
     "GET /api/admin/datasource-secrets",
     "GET /admin/datasource-credentials",
