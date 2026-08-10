@@ -46,8 +46,22 @@ def get_static_config_error() -> Optional[str]:
 
     Non-``None`` means the running instance is serving built-in defaults for
     every section the writable overlay does not cover.
+
+    This is a diagnostic accessor, so it must never itself raise — including
+    on the process state it exists to explain. ``load_instance_config()``'s
+    lenient fallback for an unreadable *overlay* only fires once a good
+    config has loaded at least once (``_last_good_config is not None``); on
+    a process where the overlay was unreadable from the very first call, it
+    raises ``InstanceConfigUnreadable`` instead of falling back. Catch that
+    (and any other loader failure) and report it the same way as a static-
+    config error rather than propagating — an admin-UI caller of this
+    accessor must get a string back on precisely the misconfigured instance
+    the page exists to explain.
     """
-    load_instance_config()
+    try:
+        load_instance_config()
+    except InstanceConfigUnreadable as exc:
+        return str(exc)
     return _static_config_error
 
 

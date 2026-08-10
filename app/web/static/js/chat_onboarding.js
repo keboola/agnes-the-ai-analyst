@@ -1041,9 +1041,11 @@ async function maybeHandleAddCommand(text) {
   // No match, or only a weak bag-of-words match, or several equally weak
   // candidates: hand the turn to the model rather than dead-ending on a
   // "couldn't find X" that quotes the user's own sentence back at them.
+  // The bar applies uniformly regardless of how many candidates matched —
+  // a lone addable item on the instance is not itself a reason to trust a
+  // weak match; it just means there's nothing else it *could* be.
   if (!scored.length) return false;
-  const confident =
-    scored[0].s >= ADD_COMMAND_MIN_SCORE || (scored.length === 1 && scored[0].s > 0);
+  const confident = scored[0].s >= ADD_COMMAND_MIN_SCORE;
   if (!confident) return false;
   const target = scored[0].i;
   try {

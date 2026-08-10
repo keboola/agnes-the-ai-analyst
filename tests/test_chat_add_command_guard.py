@@ -95,3 +95,26 @@ def test_min_score_is_at_least_the_substring_tier():
     m = re.search(r"ADD_COMMAND_MIN_SCORE\s*=\s*(\d+)", src)
     assert m, "ADD_COMMAND_MIN_SCORE must be a literal so this bound is checkable"
     assert int(m.group(1)) >= 60
+
+
+def test_single_candidate_still_requires_the_confidence_bar():
+    """A lone addable item on the instance must not bypass MIN_SCORE.
+
+    Regression: `confident` used to accept
+    `scored.length === 1 && scored[0].s > 0` — a single bag-of-words hit
+    (12 points, one incidental word shared with an item's *description*)
+    was enough to `subscribe()` whenever the instance exposed exactly one
+    addable item. That is exactly the fresh-instance / first-run case this
+    shortcut targets, so "never mutate on a weak match" held only when more
+    than one candidate existed. The confidence bar must apply uniformly,
+    regardless of how many candidates matched.
+    """
+    body = _handler()
+    ci = body.index("const confident")
+    confident_expr = body[ci : body.index(";", ci)]
+    assert "> 0" not in confident_expr, (
+        "confident must not fall back to a bare `s > 0` check when there is "
+        "exactly one candidate — that lets a single 12-point bag-of-words "
+        "hit subscribe the user whenever the instance has exactly one "
+        "addable item; the ADD_COMMAND_MIN_SCORE bar must apply uniformly"
+    )
