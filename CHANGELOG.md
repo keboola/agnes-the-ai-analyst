@@ -10,6 +10,23 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- Customer-instance Terraform module: per-VM `experience` field on
+  `prod_instance` / `dev_instances` — the deploy-time twin of the app's
+  `instance.experience` preset (>= 0.83.1). Set `"redesign"` to write
+  `AGNES_INSTANCE_EXPERIENCE=redesign` into the VM's `.env`, flipping the
+  app-side defaults of the coupled knobs (ui_layout → rail, theme → paper,
+  `features.stack_auto_membership` → on) in one line; any per-knob setting
+  (the module's `ui_layout`/`theme` fields, or `instance.yaml`) still wins.
+  Empty (the default) writes no env line, keeping the preset
+  operator-settable at runtime via `/admin/server-config`. Invalid values
+  fail at plan time — the app resolves an unrecognised preset to `classic`
+  silently, so a typo would otherwise strip the redesign from a fresh VM
+  with nothing anywhere saying why. Like every startup-script value it
+  reaches a VM on creation/recreate only (`metadata_startup_script` is in
+  `ignore_changes`); live instances switch at runtime instead.
+
 ### Fixed
 
 - **Four stored fields of a metric definition never reached the semantic-layer detail.** `expression`, `time_column`, `filters` and `sql_variants` are columns on `metric_definitions` that the importers and the bundled YAML pack populate — the Keboola semantic-layer import writes an `expression` on every metric it creates, and eleven of the starter-pack metrics carry `expression` plus `time_column` — but `/catalog/semantics` rendered none of them. The detail therefore showed a metric's *generated* SQL while hiding the upstream expression it was composed from, which is the thing an analyst opens the detail to read. All four now render: `time_column` joins the meta line, `expression` gets its own labelled code block above the SQL, `filters` a list, and `sql_variants` one labelled block per variant. The last of those needed a fix in the route as well: the repository serializes that column on write but does not deserialize on read, so it arrived as a JSON *string* on which Jinja's `.items()` silently yields nothing — parsed in the route rather than in the repository, since changing the read shape there would ripple through both backends and their contract tests.

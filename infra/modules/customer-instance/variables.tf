@@ -65,9 +65,23 @@ variable "prod_instance" {
     # instance.yaml — or the app's own default when that is unset too.
     #   ui_layout: "" | "topnav" (app default) | "rail"
     #   theme:     "" | "blue" (app default) | "navy" | "dark" | "auto" | "paper"
-    # Pair rail + paper for the full redesign look.
+    # Pair rail + paper for the full redesign look — or set `experience`
+    # below instead, which covers both plus the stack-membership mode.
     ui_layout = optional(string, "")
     theme     = optional(string, "")
+    # Experience preset (app >= 0.83.1): the ONE-LINE redesign adoption
+    # switch, written as AGNES_INSTANCE_EXPERIENCE. `redesign` flips the
+    # app-side DEFAULTS of the coupled knobs (ui_layout -> rail, theme ->
+    # paper, features.stack_auto_membership -> on); any per-knob setting —
+    # the two fields above, or instance.yaml — still wins, so don't set
+    # both this and ui_layout/theme unless you mean to pin a divergence.
+    # Empty (the default) writes NO env line: the instance keeps whatever
+    # `instance.experience` says in instance.yaml, or the app's `classic`
+    # default. NOTE: like every startup-script value, this reaches a VM on
+    # creation/recreate only (`ignore_changes = [metadata_startup_script]`);
+    # a live instance is switched at runtime via /admin/server-config.
+    #   experience: "" | "classic" (app default) | "redesign"
+    experience = optional(string, "")
     # Container memory caps written to /opt/agnes/.env and read by
     # docker-compose.yml (mem_limit: $${AGNES_APP_MEM_LIMIT:-4g}). Defaults
     # match the compose defaults; raise on a larger VM together with the
@@ -115,6 +129,15 @@ variable "prod_instance" {
     condition     = contains(["", "blue", "navy", "dark", "auto", "paper"], var.prod_instance.theme)
     error_message = "prod_instance.theme must be \"\", \"blue\", \"navy\", \"dark\", \"auto\" or \"paper\"."
   }
+
+  # Same silent-fallback hazard: the app resolves an unrecognised preset
+  # value to `classic` without a word (see get_experience / the `experience`
+  # entry in app/switches.py), so a typo here would quietly strip the
+  # redesign from a fresh VM. Catch it at plan time.
+  validation {
+    condition     = contains(["", "classic", "redesign"], var.prod_instance.experience)
+    error_message = "prod_instance.experience must be \"\", \"classic\" or \"redesign\"."
+  }
 }
 
 variable "dev_instances" {
@@ -144,6 +167,9 @@ variable "dev_instances" {
     # type, so a bare entry in a caller's list would never reach the module.
     ui_layout = optional(string, "")
     theme     = optional(string, "")
+    # Experience preset — see prod_instance.experience (one-line redesign
+    # adoption; per-knob settings win; reaches the VM on creation/recreate).
+    experience = optional(string, "")
     # Role label used by per-VM OAuth secret naming
     # (var.oauth_secret_name_template `{role}` placeholder), VM tagging in
     # downstream cron/log filters, and dev_defaults selection. Defaults to
@@ -192,6 +218,14 @@ variable "dev_instances" {
       for i in var.dev_instances : contains(["", "blue", "navy", "dark", "auto", "paper"], i.theme)
     ])
     error_message = "each dev_instances[].theme must be \"\", \"blue\", \"navy\", \"dark\", \"auto\" or \"paper\"."
+  }
+
+  # Same silent-fallback hazard as prod_instance.experience above.
+  validation {
+    condition = alltrue([
+      for i in var.dev_instances : contains(["", "classic", "redesign"], i.experience)
+    ])
+    error_message = "each dev_instances[].experience must be \"\", \"classic\" or \"redesign\"."
   }
 }
 
