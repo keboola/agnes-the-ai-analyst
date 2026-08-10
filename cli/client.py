@@ -259,18 +259,28 @@ def _check_moved_server(response: "httpx.Response") -> None:
         return
     location = response.headers.get("Location", "")
     configured = get_server_url().rstrip("/")
-    moved = bool(location) and not location.startswith("/")
-    if moved:
+    # `//host/path` is absolute despite the leading slash — classifying it as
+    # relative would file a cross-host move under "same origin" and say
+    # nothing about where the server went.
+    absolute = bool(location) and (location.startswith("//") or not location.startswith("/"))
+    moved = False
+    new_base = ""
+    if absolute:
         try:
-            moved = httpx.URL(location).netloc != httpx.URL(configured).netloc
+            target = httpx.URL(location)
+            if not target.scheme:
+                # Protocol-relative: inherit the scheme we dialed with, so the
+                # hint is a URL the user can paste rather than `//host`.
+                target = target.copy_with(scheme=httpx.URL(configured).scheme or "https")
+            moved = target.netloc != httpx.URL(configured).netloc
+            new_base = str(target.copy_with(raw_path=b"/")).rstrip("/")
         except Exception:
             moved = False
     lines = [
         f"error: {configured} answered HTTP {response.status_code} "
         f"(redirect{f' to {location}' if location else ''}) instead of handling the request."
     ]
-    if moved:
-        new_base = str(httpx.URL(location).copy_with(raw_path=b"/")).rstrip("/")
+    if moved and new_base:
         lines += [
             "       That address has moved. Redirects are not followed automatically:",
             "       your credentials are stripped on a cross-origin hop, so the retry",
