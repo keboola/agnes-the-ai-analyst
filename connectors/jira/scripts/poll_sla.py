@@ -242,8 +242,14 @@ def update_issue_sla(
                 pass
             raise
 
-        # Re-transform to Parquet (inside lock to prevent stale reads)
-        success = transform_single_issue(issue_key=issue_key)
+        # Re-transform to Parquet (inside lock to prevent stale reads).
+        # `raw_dir` is the directory this function just wrote the JSON into; without
+        # it the transform resolves `$DATA_DIR/extracts/<source>/raw` instead and
+        # fails with "Issue JSON not found" wherever that differs from JIRA_DATA_DIR
+        # — the same reader/writer split fixed on the webhook path. `output_dir`
+        # stays unset on purpose: its default is the served extract layout, while
+        # this module's `parquet_dir` is the legacy Data Broker root.
+        success = transform_single_issue(issue_key=issue_key, raw_dir=raw_dir)
         if not success:
             logger.error(f"Failed to transform {issue_key} after field refresh")
             return "failed"
