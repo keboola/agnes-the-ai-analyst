@@ -2960,9 +2960,16 @@ def get_analytics_db_readonly() -> duckdb.DuckDBPyConnection:
             # connection to it is alive in the same process ("Can't open a
             # connection to same database file with a different configuration
             # than existing connections"). This branch used to *return* that
-            # read-write connection, and `app/api/query.py` never closes it —
-            # so on a fresh install the first request touching the query path
-            # poisoned every subsequent query in that process until restart.
+            # read-write connection instead of a read-only one. Its callers do
+            # close it (`app/api/query.py` and `app/api/query_hybrid.py` each
+            # close in a `finally`), so the damage was narrower than a leak:
+            # the caller got a handle that was writable at the engine level,
+            # on a path whose whole point is that it is not, and it had
+            # skipped this function's `extracts` ATTACH loop and
+            # `_reattach_remote_extensions` — so the query ran against a
+            # database missing its views. A second request arriving inside
+            # that window also failed outright, since the read-write handle
+            # was still alive.
             db_path.parent.mkdir(parents=True, exist_ok=True)
             try:
                 _open_duckdb(str(db_path), read_only=False).close()

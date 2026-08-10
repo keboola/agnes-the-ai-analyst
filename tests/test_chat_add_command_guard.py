@@ -280,3 +280,62 @@ function escapeHtml(s) {{ return String(s); }}
     assert results["add monitoring"]["subscribeCalls"] == [["data_package", "pkg-monitor"]], (
         "the guard must not refuse a genuine name match"
     )
+
+
+def test_bag_of_words_overlap_can_never_reach_the_confidence_bar():
+    """Five incidental word hits must not count as naming an item.
+
+    The per-token tier adds 12 a word (tokens of three characters or more),
+    so five matching tokens reach exactly
+    `ADD_COMMAND_MIN_SCORE` (60) — the same value the *substring* tier
+    returns. An ordinary sentence like "add the sales report for last
+    quarter", whose words merely occur somewhere in a description, would
+    therefore have been treated as a confident naming and subscribed
+    silently. The token total is capped below the bar so only the exact-name
+    and substring tiers can clear it; overlap still orders candidates.
+    """
+    node = _node()
+    runtime = _add_command_runtime_source()
+    harness = f"""
+"use strict";
+{runtime}
+
+// Every content word of the request appears in the description, and none of
+// them forms a substring of the whole query — so only the token tier fires.
+const ITEM = {{
+  id: "pkg-x",
+  name: "warehouse-costs",
+  resource_type: "data_package",
+  in_stack: false,
+  description: "sales report figures spanning last quarter across regions",
+}};
+async function browseStack() {{ return [ITEM]; }}
+let subscribeCalls = [];
+async function subscribe(resourceType, resourceId) {{ subscribeCalls.push([resourceType, resourceId]); }}
+async function patchJourney(_fields) {{}}
+const rendered = [];
+const hooks = {{ renderAssistant(msg) {{ rendered.push(msg); }} }};
+function escapeHtml(s) {{ return String(s); }}
+
+(async () => {{
+  subscribeCalls = [];
+  const handled = await maybeHandleAddCommand("add sales report last quarter regions");
+  const weak = {{ handled, subscribeCalls }};
+  subscribeCalls = [];
+  const named = await maybeHandleAddCommand("add warehouse-costs");
+  process.stdout.write(JSON.stringify({{ weak, named: {{ handled: named, subscribeCalls }} }}));
+}})().catch((err) => {{
+  console.error("harness error:", err);
+  process.exitCode = 1;
+}});
+"""
+    out = subprocess.run([node, "-e", harness], capture_output=True, text=True)
+    assert out.returncode == 0, f"node failed:\n{out.stderr}"
+    r = json.loads(out.stdout)
+    assert r["weak"]["subscribeCalls"] == [], (
+        f"a bag-of-words match must not subscribe, got {r['weak']['subscribeCalls']}"
+    )
+    assert r["weak"]["handled"] is False, "a bag-of-words match must be handed to the model"
+    assert r["named"]["subscribeCalls"] == [["data_package", "pkg-x"]], (
+        "the cap must not stop a genuine exact-name match"
+    )
