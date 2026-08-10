@@ -269,6 +269,33 @@ class TestSemanticLayerPageSources:
         # ... and the one that will never sync is still named.
         assert "Forgotten Project" in body
 
+    def test_a_tokened_connection_without_a_stack_url_says_so(self, seeded_app, vault_key):
+        """"No master token" is only one of three reasons a connection is
+        skipped. Telling an admin to add a token they already added — while
+        the real cause is a missing stack URL — sends them to fix the wrong
+        thing. Devin Review on #1242."""
+        from app.api.admin_source_connections import master_secret_key
+        from src.repositories import connection_secrets_repo, source_connections_repo
+
+        source_connections_repo().create(
+            id="conn-nostack",
+            name="Half Built Project",
+            source_type="keboola",
+            config={},
+            is_default=True,
+            created_by="test",
+        )
+        connection_secrets_repo().upsert(master_secret_key("conn-nostack"), "master-tok")
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        body = c.get("/admin/semantic-layer", headers=_auth(token)).text
+
+        assert "Half Built Project" in body
+        assert "no stack URL" in body
+        # Must NOT claim the token is missing — it isn't.
+        assert "Half Built Project</strong> — no master (owner) token" not in body
+
     def test_orphan_row_naming_a_live_connection_shows_its_name(self, seeded_app):
         """An orphaned ref that still matches a connection is not a mystery
         UUID — it is "this project lost its master token", and the page must
