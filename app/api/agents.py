@@ -76,6 +76,80 @@ def _auto_slug(name: str) -> str:
     return _SLUG_RE.sub("-", name.lower()).strip("-")[:100].strip("-") or "agent"
 
 
+def _slug_tracks_name(slug: str, name: Any) -> bool:
+    """Is ``slug`` what this module would derive from ``name``?
+
+    Accepts the uniqueness suffix (``revenue-analyst-2``), so an agent that
+    lost a name race still counts as tracking. An unnamed agent tracks the
+    literal ``agent`` placeholder, since that is what ``create_agent``
+    derives from an empty name — the placeholder is not a special case, it
+    is just the slug of a nameless agent.
+    """
+    base = _auto_slug((name or "").strip() if isinstance(name, str) else "")
+    return slug == base or re.fullmatch(rf"{re.escape(base)}-\d+", slug) is not None
+
+
+def _draft_slug_rename(before: Dict[str, Any], new_name: Any, owner_user_id: str) -> Optional[str]:
+    """The slug to move to when renaming a draft, else ``None``.
+
+    The builder creates the row on "New agent", before the user types a
+    name, so ``create_agent`` falls back to the slug ``agent`` (then
+    ``agent-2``, …). Nothing re-derived it afterwards, so an agent
+    displayed as "Revenue Analyst" kept answering on ``/agent`` — and the
+    slug is the public address (``POST /api/v1/agents/{slug}/responses``,
+    ``agnes chat <slug>``), which the builder shows nowhere.
+
+    The slug follows the name for as long as BOTH hold:
+
+    - the agent is still a ``draft``. Marking it ready is what publishes
+      the address, and from then on it may be wired into a script, so it
+      freezes — placeholder or not.
+    - its slug still tracks its current name. A slug set by any other
+      means has stopped being a function of the name, so a rename must not
+      silently relocate it.
+
+    Re-deriving on EVERY draft rename, rather than once off the
+    placeholder, is what the builder's save behaviour requires: it PATCHes
+    each field edit behind a short debounce, so pausing mid-word flushes a
+    partial name. A once-only rule would latch onto that fragment and hand
+    the finished agent the address ``rev`` — worse than the placeholder it
+    replaced, and not fixable from the UI (Devin Review on #1225).
+
+    Returns ``None`` when the re-derived slug would equal the current one,
+    so an unsluggable name ("!!!", which falls back to ``agent``) cannot
+    push the agent onto ``agent-2`` via the uniqueness search.
+    """
+    name = (new_name or "").strip() if isinstance(new_name, str) else ""
+    if not name:
+        return None
+    if before.get("is_default"):
+        # The seeded default agent's slug is a RESERVED address —
+        # `POST /api/v1/agents/default/responses`, `_RESERVED_SLUGS` in
+        # agents_admin.py, and every web chat's attribution
+        # (`app/api/chat.py::_default_agent_id`) resolve through it. It is
+        # also seeded with no status, which COALESCEs to `draft`, so it is a
+        # PERMANENT draft the builder happily renames: without this exemption
+        # the rule would relocate that address and never freeze it again.
+        return None
+    if (before.get("status") or "") != "draft":
+        return None
+    current = before.get("slug") or ""
+    if not _slug_tracks_name(current, before.get("name")):
+        return None
+    if _slug_tracks_name(current, name):
+        # Already an acceptable slug for the NEW name — including a suffixed
+        # form. Bailing here is what stops the slug walking upward: the
+        # builder re-sends the unchanged `name` on every field edit, and
+        # `_unique_slug` has no notion of the row being updated, so it counts
+        # this agent's own `revenue-analyst-2` as taken and would answer
+        # `-3`, then `-4` on the next save, up to the 999 cap. It also covers
+        # the unsluggable rename ("!!!" -> the `agent` placeholder the row
+        # already holds).
+        return None
+    resolved = _unique_slug(_auto_slug(name), owner_user_id)
+    return None if resolved == current else resolved
+
+
 def _unique_slug(base: str, owner_user_id: str) -> str:
     """First free slug in ``base``, ``base-2``, ``base-3``, … for one owner.
 
@@ -303,8 +377,14 @@ async def update_agent(
     payload: AgentUpdate,
     user: dict = Depends(get_current_user),
 ):
-    """Patch an agent the caller owns. Only supplied fields change."""
-    _writable(agent_id, user)
+    """Patch an agent the caller owns. Only supplied fields change.
+
+    Renaming a draft also re-derives its slug, so the address it answers
+    on matches what it is called. Marking the agent ready freezes the
+    slug — from then on it is an address other things may hold.
+    """
+    # Implementation of the slug rule above: `_draft_slug_rename`.
+    before = _writable(agent_id, user)
     supplied = payload.model_dump(exclude_unset=True, exclude_none=True)
     # Map the builder's wire names onto the canonical columns.
     fields: Dict[str, Any] = {}
@@ -315,6 +395,13 @@ async def update_agent(
             fields[key] = json.dumps(value)
         else:
             fields[key] = value
+    # The owner's id, not the caller's: `_writable` lets an admin PATCH
+    # someone else's agent, and `_unique_slug` searches per owner. Scoped to
+    # the admin it would call a slug free that the real owner already holds,
+    # and the UPDATE would hit the (owner_user_id, slug) UNIQUE as a 500.
+    new_slug = _draft_slug_rename(before, fields.get("name"), before.get("owner_user_id") or user["id"])
+    if new_slug:
+        fields["slug"] = new_slug
     if fields:
         agents_repo().update(agent_id, **fields)
     row = _live(agent_id)

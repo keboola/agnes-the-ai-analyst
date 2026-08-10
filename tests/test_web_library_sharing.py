@@ -217,7 +217,13 @@ def test_agent_named_default_does_not_claim_the_reserved_slug(seeded_app):
 
 
 def test_agent_patch_cannot_reassign_ownership(seeded_app):
-    """A hostile payload can't move an agent to another owner or hijack a slug."""
+    """A hostile payload can't move an agent to another owner or hijack a slug.
+
+    `AgentUpdate` has no `slug` field, so a client-supplied one is dropped
+    before the handler sees it. The slug CAN still change here — renaming a
+    draft re-derives it (`app/api/agents.py::_draft_slug_rename`) — but only
+    ever to a value derived from the new name, never to the attacker's.
+    """
     tok = seeded_app["admin_token"]
     a = _create_agent(seeded_app, tok, name="Owned")
     r = seeded_app["client"].patch(
@@ -227,8 +233,26 @@ def test_agent_patch_cannot_reassign_ownership(seeded_app):
     )
     assert r.status_code == 200
     assert r.json()["created_by"] == a["created_by"]
-    assert r.json()["slug"] == a["slug"]
+    assert r.json()["slug"] == "still-mine", "slug must follow the name, not the payload"
     assert r.json()["name"] == "Still Mine"
+
+
+def test_agent_patch_cannot_hijack_the_slug_of_a_published_agent(seeded_app):
+    """The stronger form: once ready, the slug does not move at all.
+
+    A published agent's slug is an address callers may hold, so neither a
+    supplied `slug` nor a rename may relocate it.
+    """
+    tok = seeded_app["admin_token"]
+    a = _create_agent(seeded_app, tok, name="Published Bot")
+    seeded_app["client"].patch(f"/api/agents/{a['id']}", json={"status": "ready"}, headers=_auth(tok))
+    r = seeded_app["client"].patch(
+        f"/api/agents/{a['id']}",
+        json={"slug": "hijacked", "name": "Renamed Bot"},
+        headers=_auth(tok),
+    )
+    assert r.status_code == 200
+    assert r.json()["slug"] == "published-bot"
 
 
 def test_agent_is_private_to_owner_until_shared(seeded_app):

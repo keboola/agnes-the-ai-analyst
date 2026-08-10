@@ -1224,6 +1224,160 @@ def test_the_agents_exemption_is_real():
     conn.close()
 
 
+def _insert_agent(conn, *, id, slug, status, is_default=False, name="Agent"):
+    conn.execute(
+        "INSERT INTO agents (id, owner_user_id, name, slug, status, is_default, created_at, updated_at) "
+        "VALUES (?, 'u1', ?, ?, ?, ?, current_timestamp, current_timestamp)",
+        [id, name, slug, status, is_default],
+    )
+
+
+def test_v115_reclassifies_pre_existing_governance_agents_as_ready(tmp_path):
+    """v114→v115: a `draft` agent whose `id` does NOT carry the builder's
+    `agt_` prefix and is not the seeded default agent must have arrived
+    through the governance API (nothing else could have created it — see
+    `_v114_to_v115`'s docstring) — reclassified to `ready` so the
+    draft-rename rule (app/api/agents.py::_draft_slug_rename) freezes its
+    address. Every `agt_`-prefixed builder row and the seeded default agent
+    are left alone, regardless of slug — including a builder draft the user
+    already named, which is the case a slug-only discriminator got wrong.
+    See `test_v114_to_v115_promotes_by_id_prefix_not_slug` for that
+    regression pinned in isolation.
+    """
+    db_path = tmp_path / "v114.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    conn.execute("UPDATE schema_version SET version = 114")
+    _insert_agent(conn, id="gov1", slug="revenue-bot", status="draft", name="Revenue Bot")
+    _insert_agent(conn, id="agt_builder1", slug="agent", status="draft", name="")
+    _insert_agent(conn, id="agt_builder2", slug="agent-2", status="draft", name="")
+    _insert_agent(conn, id="agt_named1", slug="finance-bot", status="draft", name="Finance Bot")
+    _insert_agent(conn, id="def1", slug="default", status="draft", is_default=True, name="Default")
+    _insert_agent(conn, id="ready1", slug="already-ready", status="ready", name="Already Ready")
+    conn.close()
+
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    assert get_schema_version(conn) == SCHEMA_VERSION
+
+    rows = dict(
+        conn.execute(
+            "SELECT id, status FROM agents WHERE id IN "
+            "('gov1', 'agt_builder1', 'agt_builder2', 'agt_named1', 'def1', 'ready1')"
+        ).fetchall()
+    )
+    assert rows["gov1"] == "ready", "a governance-created agent's slug is deliberately chosen — freeze it"
+    assert rows["agt_builder1"] == "draft", "an unnamed builder placeholder must keep re-deriving its slug"
+    assert rows["agt_builder2"] == "draft", "…including a suffixed placeholder"
+    assert rows["agt_named1"] == "draft", (
+        "a builder draft already named by the user is still unpublished — a slug-based "
+        "discriminator would wrongly freeze it because 'finance-bot' isn't placeholder-shaped"
+    )
+    assert rows["def1"] == "draft", "the seeded default agent is a PERMANENT draft by design"
+    assert rows["ready1"] == "ready", "already-ready rows are untouched"
+    conn.close()
+
+
+def test_v114_to_v115_promotes_by_id_prefix_not_slug(tmp_path):
+    """Regression pin: a builder-created draft (`agt_`-prefixed id) that the
+    user already gave a real, non-placeholder-shaped name/slug — e.g.
+    "Finance Bot" -> `finance-bot` — must stay `draft`. It is not yet
+    published: `_draft_slug_rename` (app/api/agents.py) only freezes a
+    draft's slug once `status` reaches `'ready'`, so promoting it here would
+    permanently freeze an address for an agent nobody ever marked ready. A
+    discriminator keyed off the slug's shape (matching only the unnamed
+    placeholder lineage `agent` / `agent-N`) gets this wrong — the `id`
+    prefix is what actually distinguishes a builder row from a
+    governance/default one, in every naming state.
+    """
+    from src.db import _v114_to_v115
+
+    db_path = tmp_path / "named_draft.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    _insert_agent(conn, id="agt_finance1", slug="finance-bot", status="draft", name="Finance Bot")
+
+    _v114_to_v115(conn)
+
+    assert conn.execute("SELECT status FROM agents WHERE id = 'agt_finance1'").fetchone()[0] == "draft"
+    conn.close()
+
+
+def test_v114_to_v115_is_idempotent(tmp_path):
+    """Re-running the step (as a fresh install's ladder walk does) must not
+    raise and must not un-freeze an already-migrated row."""
+    from src.db import _v114_to_v115
+
+    db_path = tmp_path / "idempotent.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    _insert_agent(conn, id="gov1", slug="revenue-bot", status="draft", name="Revenue Bot")
+
+    _v114_to_v115(conn)
+    _v114_to_v115(conn)  # must not raise, must not toggle anything back
+
+    assert conn.execute("SELECT status FROM agents WHERE id = 'gov1'").fetchone()[0] == "ready"
+    conn.close()
+
+
+def test_v114_to_v115_guards_a_legacy_shaped_agents_table(tmp_path):
+    """A database built by the pre-merge paper-theme branch reaches this step
+    with an `agents` table in that branch's own shape — `created_by` /
+    `instructions`, no `is_default` — stamped somewhere in the 10x range (see
+    `_heal_legacy_agents_table`, which alone knows how to rebuild it, and
+    which runs at the *bottom* of `_ensure_schema`, after the migration
+    ladder). Before this step guarded on column existence,
+    `UPDATE agents ... is_default ...` raised a DuckDB Binder Error against
+    that table and aborted startup before the heal ever got a chance to run.
+    """
+    db_path = tmp_path / "legacy_agents.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    conn.execute("UPDATE schema_version SET version = 114")
+    conn.execute("DROP TABLE agents")
+    conn.execute(
+        """
+        CREATE TABLE agents (
+            id           VARCHAR PRIMARY KEY,
+            created_by   VARCHAR NOT NULL,
+            name         VARCHAR NOT NULL,
+            slug         VARCHAR NOT NULL UNIQUE,
+            instructions TEXT,
+            role         VARCHAR,
+            tone         VARCHAR DEFAULT 'concise',
+            greeting     TEXT,
+            knowledge    TEXT DEFAULT '[]',
+            plugins      TEXT DEFAULT '[]',
+            surfaces     TEXT DEFAULT '{}',
+            status       VARCHAR DEFAULT 'draft',
+            created_at   TIMESTAMP DEFAULT current_timestamp,
+            updated_at   TIMESTAMP DEFAULT current_timestamp,
+            deleted_at   TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO agents (id, created_by, name, slug, instructions, status, created_at, updated_at) "
+        "VALUES ('legacy1', 'u1', 'Legacy Agent', 'revenue-bot', 'be helpful', "
+        "'draft', current_timestamp, current_timestamp)"
+    )
+    conn.close()
+
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)  # must not raise Binder Error: is_default
+    assert get_schema_version(conn) == SCHEMA_VERSION
+
+    # _heal_legacy_agents_table runs after the ladder and still gets its
+    # chance to rebuild the table onto the canonical shape.
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('agents')").fetchall()}
+    assert "owner_user_id" in cols, "the legacy table should have been rebuilt onto the canonical shape"
+    assert conn.execute("SELECT owner_user_id, slug FROM agents WHERE id = 'legacy1'").fetchone() == (
+        "u1",
+        "revenue-bot",
+    )
+    conn.close()
+
+
 def test_add_column_default_reaches_pre_existing_rows():
     """Pins what the heals may assume about ADD COLUMN ... DEFAULT.
 

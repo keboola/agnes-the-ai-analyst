@@ -231,6 +231,80 @@ def _translate_transport_error(
     )
 
 
+#: Redirect statuses an API call can come back with. All of them mean the
+#: same thing here: the request never reached a handler.
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+
+
+def _check_moved_server(response: "httpx.Response") -> None:
+    """Hard-stop with an actionable message when the API answers a redirect.
+
+    A deployment that changes hostname leaves the old name answering
+    ``308`` for a while. httpx does not follow redirects by default, so
+    the 3xx reached the caller as an ordinary response and
+    ``cli.error_render`` printed ``HTTP 308:`` — the body of a redirect is
+    empty, so the destination and the remedy were both missing, on every
+    command the user tried.
+
+    Following it is deliberately NOT the fix: httpx strips
+    ``Authorization`` on a cross-origin hop
+    (``httpx._client.Client._redirect_headers``), so the retry would land
+    unauthenticated and report ``401 Not authenticated`` — the same
+    failure wearing a more confusing name, and a silent credential-scope
+    change for anyone whose old hostname is no longer theirs. Naming the
+    new address and stopping keeps the token on the host the user
+    configured.
+    """
+    if response.status_code not in _REDIRECT_STATUSES:
+        return
+    location = response.headers.get("Location", "")
+    configured = get_server_url().rstrip("/")
+    moved = False
+    new_base = ""
+    if location:
+        try:
+            target = httpx.URL(location)
+            if not target.scheme:
+                # Protocol-relative (`//host/path`): inherit the scheme we
+                # dialed with, so the hint is a URL the user can paste rather
+                # than `//host`. Must happen before the host test — the scheme
+                # is what makes the rendered `new_base` usable.
+                target = target.copy_with(scheme=httpx.URL(configured).scheme or "https")
+            # A move is "the target names a DIFFERENT host", decided on the
+            # parsed URL rather than on how the header is spelled. `Location`
+            # may be any URI-reference, so a path-relative `v2/agents` has no
+            # host at all — a textual "does not start with /" test read that
+            # as absolute and derived a hostless `AGNES_SERVER=https://`,
+            # telling the user to point at an address that cannot exist.
+            # No host means same origin, which falls through to the generic
+            # message below.
+            moved = bool(target.netloc) and target.netloc != httpx.URL(configured).netloc
+            if moved:
+                new_base = str(target.copy_with(raw_path=b"/")).rstrip("/")
+        except Exception:
+            moved = False
+    lines = [
+        f"error: {configured} answered HTTP {response.status_code} "
+        f"(redirect{f' to {location}' if location else ''}) instead of handling the request."
+    ]
+    if moved and new_base:
+        lines += [
+            "       That address has moved. Redirects are not followed automatically:",
+            "       your credentials are stripped on a cross-origin hop, so the retry",
+            "       would fail as 'not authenticated' rather than work.",
+            "       Point the CLI at the new address:",
+            f"         AGNES_SERVER={new_base} agnes <command>     (one-off)",
+            f"         or set `server: {new_base}` in {_config_dir() / 'config.yaml'}",
+        ]
+    else:
+        lines.append(
+            "       The CLI does not follow redirects on API calls. If this is "
+            "unexpected, check whether a proxy sits in front of the server."
+        )
+    sys.stderr.write("\n".join(lines) + "\n")
+    sys.exit(2)
+
+
 def _check_version_headers(response: "httpx.Response") -> None:
     """Hard-stop the CLI when the server reports we're below min_version.
 
@@ -283,7 +357,7 @@ def get_client(timeout: float = 30.0) -> httpx.Client:
         base_url=get_server_url(),
         headers={**headers, "User-Agent": _USER_AGENT},
         timeout=timeout,
-        event_hooks={"response": [_check_version_headers]},
+        event_hooks={"response": [_check_moved_server, _check_version_headers]},
     )
 
 
