@@ -301,7 +301,7 @@ class TestSourceConnectionsDelete:
 
 
 class TestSourceConnectionsSecret:
-    def test_set_secret_without_vault_key_returns_409(self, seeded_app):
+    def test_set_secret_without_vault_key_returns_409(self, seeded_app, monkeypatch):
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
         # Create connection
@@ -316,15 +316,26 @@ class TestSourceConnectionsSecret:
         )
         assert resp.status_code == 201
         conn_id = resp.json()["id"]
-        # Try to set secret without vault key configured
-        # Test env doesn't have AGNES_VAULT_KEY → should 409
-        resp2 = c.put(
-            f"{BASE}/{conn_id}/secret",
-            json={"value": "test-storage-token"},
-            headers=_auth(token),
-        )
-        # Either 409 (no vault key) or 204 (vault key present in env)
-        assert resp2.status_code in (204, 409)
+
+        # Pin BOTH halves of the intent rather than accepting whatever the
+        # ambient env produces. The old `status in (204, 409)` passed either
+        # way, and once storing a Keboola storage token gained an upstream
+        # preflight, the 204 branch could only be reached by a real HTTPS call
+        # to connection.example.com — so the test stayed hermetic purely
+        # because AGNES_VAULT_KEY happens to be unset in the suite. Devin
+        # Review on #1242.
+        monkeypatch.delenv("AGNES_VAULT_KEY", raising=False)
+        monkeypatch.setenv("LOCAL_DEV_MODE", "0")
+        _reset_ephemeral_key_for_tests()
+
+        with patch("app.api.admin_source_connections.KeboolaStorageClient.verify_token") as verify:
+            resp2 = c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "test-storage-token"},
+                headers=_auth(token),
+            )
+        assert resp2.status_code == 409, resp2.text
+        verify.assert_not_called()
 
     def test_delete_secret_returns_204(self, seeded_app):
         c = seeded_app["client"]
