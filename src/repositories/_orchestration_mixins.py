@@ -96,12 +96,6 @@ class MetricYamlMixin:
                     "refusing to prune against a single file: a file describes some metrics, "
                     "not the whole scope. Point --prune at the export directory."
                 )
-            if not files:
-                raise ValueError(
-                    f"refusing to prune: no metrics found under {path} — the layout is "
-                    "<dir>/<category>/<name>.yml, so a directory whose files sit one level "
-                    "too high yields nothing and would delete the entire scope."
-                )
 
         # Ids this importer owns right now — the only rows prune may remove.
         # Each --source-ref owns its own partition and the unlabeled import owns
@@ -181,6 +175,18 @@ class MetricYamlMixin:
                     source="yaml_import",
                     source_ref=source_ref,
                 )
+
+        if prune and not written:
+            # Files existing is not the same as metrics parsing out of them: a
+            # directory one level too shallow globs to nothing, and a truncated
+            # or half-written export has files that yield nothing. Both arrive
+            # here as an empty parse, which is exactly how you tell prune to
+            # delete the whole scope.
+            raise ValueError(
+                f"refusing to prune: no metrics parsed from {path} — expected "
+                "<dir>/<category>/<name>.yml files with a `name:` each. Pruning on an empty "
+                "read would delete every metric this importer previously wrote."
+            )
 
         added = [mid for mid in written if mid not in in_scope]
         updated = [mid for mid in written if mid in in_scope]
