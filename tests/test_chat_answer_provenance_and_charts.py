@@ -83,6 +83,11 @@ def test_the_workspace_prompt_makes_the_promise_true():
         re.IGNORECASE,
     ), "the rule needs the hard edge, not just the happy path"
     assert "metric" in md.lower(), "a canonical metric must be citable alongside the table"
+    # The reply is rendered as markdown, so an assumption written on its own
+    # line without a blank line before it silently joins the Sources line —
+    # seen in the rendered bubble, not in any assertion. The rule keeps it to
+    # one line and says why.
+    assert "blank line" in md, "the prompt must say why the Sources line stands alone"
 
 
 def test_the_workspace_prompt_names_the_only_chart_channel():
