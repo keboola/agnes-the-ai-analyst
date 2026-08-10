@@ -125,7 +125,74 @@ class TestEndpointBehaviourItWraps:
         assert r.status_code == 404
 
 
+class TestInlineMediaStillCarriesItsText:
+    """A PDF has extracted text — the read surfaces must get it.
+
+    `preview_file` answers every `_PREVIEW_INLINE_MEDIA` extension (pdf, png,
+    jpg, …) with `{kind: "pdf"|"image", raw_url}` and returns BEFORE the
+    `_extracted_text()` branch. Correct for the modal, which draws the file
+    from `raw_url` — but a CLI or an agent cannot draw anything, and PDFs are
+    a primary collection format. Without this, "what is in this PDF?" — the
+    exact question the read tool exists for — answered "no text preview is
+    available" while the text sat in `corpus_chunks`. Devin Review on #1240.
+    """
+
+    def _pdf_row(self, seeded_app, token: str) -> tuple:
+        c = seeded_app["client"].post("/api/collections", json={"name": "Docs"}, headers=_auth(token))
+        col = c.json()
+        up = seeded_app["client"].post(
+            f"/api/collections/{col['id']}/files",
+            files={"files": ("paper.pdf", b"%PDF-1.4 fake", "application/pdf")},
+            headers=_auth(token),
+        )
+        assert up.status_code == 201, up.text
+        return col["id"], up.json()[0]["file_id"]
+
+    def test_pdf_preview_includes_extracted_text(self, seeded_app, monkeypatch):
+        tok = seeded_app["admin_token"]
+        cid, fid = self._pdf_row(seeded_app, tok)
+        monkeypatch.setattr("app.api.collections._extracted_text", lambda _fid: "Quarterly revenue was 4.2M.")
+
+        body = seeded_app["client"].get(f"/api/collections/{cid}/files/{fid}/preview", headers=_auth(tok)).json()
+
+        assert body["kind"] == "pdf", "the modal's contract must not change"
+        assert body["raw_url"], "the modal still needs its draw URL"
+        assert body["text"] == "Quarterly revenue was 4.2M.", "extracted text not surfaced"
+
+    def test_pdf_without_extracted_text_explains_itself(self, seeded_app, monkeypatch):
+        """No text is fine — a silent `text: null` with no reason is not."""
+        tok = seeded_app["admin_token"]
+        cid, fid = self._pdf_row(seeded_app, tok)
+        monkeypatch.setattr("app.api.collections._extracted_text", lambda _fid: "")
+
+        body = seeded_app["client"].get(f"/api/collections/{cid}/files/{fid}/preview", headers=_auth(tok)).json()
+
+        assert body["kind"] == "pdf"
+        assert not body.get("text")
+        assert body.get("reason"), "a text-less PDF must say why, not return a bare null"
+
+
 class TestCliCat:
+    def test_cat_prints_the_text_of_a_pdf(self):
+        """The CLI keys on `text`, not on `kind` — a PDF with text is readable."""
+        payload = {
+            "kind": "pdf",
+            "text": "Quarterly revenue was 4.2M.",
+            "truncated": False,
+            "filename": "paper.pdf",
+        }
+        with patch("cli.commands.collections.api_get_json", return_value=payload):
+            r = runner.invoke(collections_app, ["cat", "col_1", "cf_1"])
+        assert r.exit_code == 0, r.output
+        assert "Quarterly revenue was 4.2M." in r.output
+
+    def test_cat_on_a_textless_image_relays_the_reason(self):
+        payload = {"kind": "image", "text": None, "reason": "Images carry no extractable text."}
+        with patch("cli.commands.collections.api_get_json", return_value=payload):
+            r = runner.invoke(collections_app, ["cat", "col_1", "cf_1"])
+        assert r.exit_code == 1
+        assert "no extractable text" in r.output.lower()
+
     def test_help_lists_cat(self):
         r = runner.invoke(collections_app, ["--help"])
         assert r.exit_code == 0
