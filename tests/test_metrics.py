@@ -693,7 +693,9 @@ class TestMetricReconcileRefusesEmptyParse:
         (bad / "empty.yml").write_text("")
         (bad / "junk.yml").write_text("just a string\n")
 
-        with pytest.raises(ValueError, match="no metrics"):
+        # Caught by the per-file guard, which fires first and names the files;
+        # the empty-parse guard behind it covers a directory with no files at all.
+        with pytest.raises(ValueError, match="could not be read"):
             repo.reconcile_from_yaml(bad.parent, prune=True)
         assert len(repo.list()) == 2, "refused prune must not have deleted anything"
 
@@ -791,3 +793,40 @@ class TestMetricReconcileAuditsBeforeDeleting:
         seen = []
         repo.reconcile_from_yaml(metrics_dir, prune=True, dry_run=True, on_delete=seen.append)
         assert seen == []
+
+
+class TestMetricReconcileRefusesPartialParse:
+    """A half-written export is the dangerous middle case.
+
+    All-or-nothing shapes were already refused, but a directory where *some*
+    files are truncated still pruned: those metrics silently failed to parse,
+    and prune cannot tell "the file is broken" from "the source dropped it".
+    """
+
+    def _repo(self, db_conn):
+        from src.repositories.metrics import MetricRepository
+
+        return MetricRepository(db_conn)
+
+    def test_prune_is_refused_when_a_file_yields_no_metric(self, db_conn, metrics_dir):
+        repo = self._repo(db_conn)
+        repo.reconcile_from_yaml(metrics_dir)
+        # one good file survives, one is truncated mid-write
+        (metrics_dir / "operations" / "resolution_time.yml").write_text("just a truncated string\n")
+
+        with pytest.raises(ValueError, match="could not be read"):
+            repo.reconcile_from_yaml(metrics_dir, prune=True)
+        assert len(repo.list()) == 2, "refused prune must not have deleted anything"
+
+    def test_the_error_names_the_offending_file(self, db_conn, metrics_dir):
+        repo = self._repo(db_conn)
+        (metrics_dir / "operations" / "resolution_time.yml").write_text("name:\n")  # no usable name
+        with pytest.raises(ValueError, match="resolution_time.yml"):
+            repo.reconcile_from_yaml(metrics_dir, prune=True)
+
+    def test_a_broken_file_without_prune_is_skipped_as_before(self, db_conn, metrics_dir):
+        """Unchanged for the non-destructive path — import has always skipped
+        what it cannot read."""
+        repo = self._repo(db_conn)
+        (metrics_dir / "operations" / "resolution_time.yml").write_text("just a string\n")
+        assert repo.import_from_yaml(metrics_dir) == 1
