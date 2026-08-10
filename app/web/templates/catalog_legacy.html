@@ -3,6 +3,10 @@
 
 {% block title %}Data Packages — {{ config.INSTANCE_NAME or 'AI Harness' }}{% endblock %}
 
+{% block head_extra %}
+<link rel="stylesheet" href="{{ static_url('css/ds_dropdown.css') }}">
+{% endblock %}
+
 {% block content %}
 {# Design-system component macros — admin "+ New Recipe" / "+ New Data
    Package" buttons + 4 modal action buttons (Create/Edit recipe) render

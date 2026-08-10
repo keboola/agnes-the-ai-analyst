@@ -7,6 +7,10 @@
    the old base_login centered card with a hardcoded 520px max-width. #}
 {% block container_modifier %}container--narrow{% endblock %}
 
+{% block head_extra %}
+<link rel="stylesheet" href="{{ static_url('css/ds_dropdown.css') }}">
+{% endblock %}
+
 {% block content %}
 {# All 7 wizard buttons render via `ds.button`; base_ds auto-imports `ds`, so
    no _components.html import is needed. The hidden buttons (`#btn-next-sync`,

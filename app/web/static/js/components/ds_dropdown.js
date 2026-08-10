@@ -64,8 +64,7 @@
       close(true);
     }
 
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
+    btn.addEventListener("click", () => {
       if (isOpen()) {
         close(false);
       } else {

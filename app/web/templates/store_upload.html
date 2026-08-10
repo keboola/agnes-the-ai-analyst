@@ -3,6 +3,7 @@
 {% block title %}Upload to Store — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block head_extra %}
+<link rel="stylesheet" href="{{ static_url('css/ds_dropdown.css') }}">
 <style>
   .upload-lint { border: 1px solid var(--ds-border); border-radius: var(--radius-lg); background: var(--ds-surface); padding: var(--space-4); margin-bottom: var(--space-4); }
   .upload-lint-head { font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .4px; font-weight: var(--font-semibold); color: var(--ds-text-muted); margin-bottom: var(--space-2); }

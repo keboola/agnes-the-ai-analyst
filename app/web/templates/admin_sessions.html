@@ -209,7 +209,25 @@
   const rowCount = $('sx-row-count'), prevBtn = $('sx-prev'), nextBtn = $('sx-next');
   const narrative = $('sx-narrative');
 
+  // ds_dropdown.js only pushes a selection FROM the custom button+menu ONTO
+  // the paired native <select> — URL-state hydration below sets `.value =`
+  // directly, so the paper-theme dropdown needs an explicit re-sync or it
+  // keeps showing whatever was picked last time.
+  function syncDropdownFromSelect(sel) {
+    const dd = document.querySelector('.ds-dropdown[data-ds-dropdown-target="' + sel.id + '"]');
+    if (!dd) return;
+    const label = dd.querySelector('.ds-dropdown-btn-label');
+    const opt = sel.options[sel.selectedIndex];
+    dd.querySelectorAll('.ds-dropdown-menu [role="menuitemradio"]').forEach(item => {
+      const isSelected = item.dataset.value === sel.value;
+      item.classList.toggle('is-selected', isSelected);
+      item.setAttribute('aria-checked', isSelected ? 'true' : 'false');
+    });
+    if (label && opt) label.textContent = opt.textContent.trim();
+  }
+
   winSel.value = String(state.window);
+  syncDropdownFromSelect(winSel);
   fErr.checked = state.only_errors;
   fQ.value = state.q;
 
