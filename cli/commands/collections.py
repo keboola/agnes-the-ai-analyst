@@ -214,9 +214,7 @@ def upload_files(
         }
         data = {"paths": logical_path} if logical_path is not None else None
         try:
-            results = api_post_multipart(
-                f"/api/collections/{collection_id}/files", files=files, data=data
-            )
+            results = api_post_multipart(f"/api/collections/{collection_id}/files", files=files, data=data)
         except V2ClientError as exc:
             # api_post_multipart raises on ALL 4xx, INCLUDING 422. The upload
             # endpoint returns 422 with the full per-file result list when some
@@ -248,6 +246,44 @@ def upload_files(
 # ---------------------------------------------------------------------------
 # reingest
 # ---------------------------------------------------------------------------
+
+
+@collections_app.command("cat")
+def cat_file(
+    collection_id: str = typer.Argument(..., help="Collection id (col_...)"),
+    file_id: str = typer.Argument(..., help="File id (cf_...) from `collections show`"),
+    as_json: bool = typer.Option(False, "--json", help="Emit the raw preview payload"),
+):
+    """Print one file's extracted text (requires access to the collection).
+
+    The companion to `collections search`: search finds a file when you know
+    a word inside it, this reads one you can already name. The server caps
+    the text at ~20k characters — a truncated read says so on stderr rather
+    than handing back a silent prefix.
+    """
+    try:
+        out = api_get_json(f"/api/collections/{collection_id}/files/{file_id}/preview")
+    except V2ClientError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1)
+
+    if as_json:
+        typer.echo(json_lib.dumps(out, indent=2, default=str))
+        return
+
+    if out.get("kind") != "text":
+        # `reason` is the server's own sentence for "indexed yet?", "rejected",
+        # "no extractable text" — relaying it beats inventing a summary.
+        typer.echo(out.get("reason") or "No text preview is available for this file.", err=True)
+        raise typer.Exit(1)
+
+    typer.echo(out.get("text") or "")
+    if out.get("truncated"):
+        typer.echo(
+            f"\n[truncated] Showing the first {len(out.get('text') or '')} characters. "
+            f"Use `agnes collections search <term> --collection {collection_id}` to reach the rest.",
+            err=True,
+        )
 
 
 @collections_app.command("reingest")

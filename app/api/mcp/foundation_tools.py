@@ -50,6 +50,7 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     "collections_list",
     "collection_get",
     "collections_search",
+    "collection_file_read",
     "knowledge_search",
     "glossary_search",
     "collections_reingest",
@@ -363,6 +364,40 @@ def register_foundation_tools(
                 f"{base_url}/api/glossary/search",
                 headers=headers_fn(),
                 params={"q": query, "limit": k},
+                timeout=30,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @tool()
+    async def collection_file_read(collection_id: str, file_id: str) -> dict:
+        """Read one file's text straight, without guessing search terms.
+
+        Use this when you know WHICH file you want — "what is in this
+        document?", "summarise this upload". `collections_search` is for
+        when you do not: it needs words that appear in the body, and it
+        cannot enumerate a collection (see its own note).
+
+        Returns ``kind`` plus, for readable files, ``text`` and
+        ``truncated``. The server caps the text (~20k characters), so
+        ``truncated: true`` means you are holding a PREFIX — do not
+        summarise it as the whole document; fall back to
+        ``collections_search`` with a distinctive term to reach the rest.
+        When there is no text yet (still ingesting, rejected, or a format
+        with no extractable text) ``kind`` is ``none`` and ``reason``
+        explains which — relay that rather than reporting an access error.
+
+        Do not loop this over a whole collection: reading many files to
+        answer one question is what retrieval is for.
+
+        Args:
+            collection_id: Collection id from ``collections_list`` (``col_...``).
+            file_id: File id from ``collection_get`` (``cf_...``).
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.get(
+                f"{base_url}/api/collections/{collection_id}/files/{file_id}/preview",
+                headers=headers_fn(),
                 timeout=30,
             )
             r.raise_for_status()
