@@ -416,11 +416,36 @@ class TestWebLogin:
         assert "/auth/password/reset" in loc
         assert "email=" in loc
         assert "token=" in loc
+        # The reset page must be able to tell the user WHY they are there —
+        # without this the page is indistinguishable from "you forgot your
+        # password" and a correct sign-in reads as a rejected one.
+        assert "reason=must_change" in loc
         # No login cookie must be set.
         assert "access_token" not in resp.cookies
         # A reset_token must have been minted in the DB.
         user = _get_user("web-forced@test.com")
         assert user["reset_token"] is not None
+
+    def test_forced_rotation_reset_page_explains_itself(self, app_client, fresh_db):
+        """`reason=must_change` renders the forced-rotation copy; a plain
+        reset link keeps the generic 'you asked for this' wording."""
+        pw = "seeded-web-pass-2"
+        _seed_user(
+            "web-forced2@test.com",
+            password_hash=_ph().hash(pw),
+            must_change_password=True,
+        )
+        resp = app_client.post(
+            "/auth/password/login/web",
+            data={"email": "web-forced2@test.com", "password": pw},
+        )
+        forced = app_client.get(resp.headers["location"])
+        assert forced.status_code == 200
+        assert "one-time password" in forced.text
+
+        plain = app_client.get("/auth/password/reset?email=web-forced2@test.com&token=whatever")
+        assert plain.status_code == 200
+        assert "one-time password" not in plain.text
 
     def test_must_change_wrong_password_no_redirect(self, app_client, fresh_db):
         """Wrong password must still 302 to error page, not 303 to reset."""
