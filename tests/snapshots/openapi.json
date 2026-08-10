@@ -24749,7 +24749,7 @@
         ]
       },
       "put": {
-        "description": "Update name/config/token_env/is_default of an existing connection.\n\n404 if missing; 409 if renaming to a name already taken by a different\nconnection.",
+        "description": "Update name/config/token_env/is_default of an existing connection.\n\n404 if missing; 409 if renaming to a name already taken by a different\nconnection.\n\nMoving the connection to a different ``stack_url`` drops any recorded\nproject identity: a project id is only meaningful on the stack it came\nfrom, and keeping the old binding would make every token from the new\nstack fail ``project_mismatch`` with no way to clear it from the UI. This\nis also the supported way to re-point a bound connection \u2014 see the note\non :func:`project_mismatch_message`.",
         "operationId": "update_connection_api_admin_source_connections__connection_id__put",
         "parameters": [
           {
@@ -25019,7 +25019,7 @@
     },
     "/api/admin/source-connections/{connection_id}/test": {
       "post": {
-        "description": "Verify connectivity for the connection.\n\nResolves the stack URL and token from the connection row (token_env \u2192\nenvironment lookup, or vault secret), then calls\n``GET {stack_url}/v2/storage?exclude=components`` with a 10-second\ntimeout.\n\nReturns ``{ok: true, project_name: \"\u2026\"}`` on success or\n``{ok: false, error: \"\u2026\"}`` on failure.",
+        "description": "Verify connectivity for the connection.\n\nResolves the stack URL and token from the connection row (token_env \u2192\nenvironment lookup, or vault secret), then calls\n``GET {stack_url}/v2/storage/tokens/verify`` with a 10-second timeout.\n\nReturns ``{ok: true, project_name: \"\u2026\"}`` on success or\n``{ok: false, error: \"\u2026\"}`` on failure.\n\nIt used to probe ``/v2/storage?exclude=components``, which measured\nverified live (2026-08-10): that endpoint is the unauthenticated stack\nindex \u2014 it answers **200 with no token at all** and carries no ``owner``\nblock. So \"Test\" reported OK for any token, including a garbage one, and\nthe ``project_name`` it returned was always the empty string. Verifying\nthe token is the only probe that answers the question the button asks,\nand it is what makes the project identity below readable at all.",
         "operationId": "test_connection_api_admin_source_connections__connection_id__test_post",
         "parameters": [
           {

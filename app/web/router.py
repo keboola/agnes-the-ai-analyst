@@ -6303,10 +6303,34 @@ async def admin_semantic_layer_page(
     # working Keboola connection — the state every wizard-connected instance
     # starts in, since the master token is a SEPARATE slot from the storage
     # token the wizard fills.
+    #
+    # Each carries WHY it isn't syncing, because "no master token" is only one
+    # of three reasons `_enumerate_master_sources()` skips a connection, and
+    # telling an admin to add a token they already added — while the real
+    # cause is a missing stack URL or a token no longer decryptable under the
+    # current AGNES_VAULT_KEY — sends them to fix the wrong thing entirely
+    # (Devin Review on #1242). `has()` is an existence check, so naming the
+    # reason costs no decrypt.
+    from app.api.admin_source_connections import master_secret_key
+    from src.repositories import connection_secrets_repo
+
     keboola_connections = source_connections_repo().list(source_type="keboola")
-    connections_without_master = [
-        {"id": c["id"], "name": c.get("name") or c["id"]} for c in keboola_connections if c["id"] not in known_ids
-    ]
+    secrets = connection_secrets_repo()
+    connections_without_master = []
+    for c in keboola_connections:
+        if c["id"] in known_ids:
+            continue
+        try:
+            has_master = secrets.has(master_secret_key(c["id"]))
+        except Exception:
+            has_master = False
+        if not has_master:
+            reason = "no master (owner) token"
+        elif not ((c.get("config") or {}).get("stack_url") or "").strip():
+            reason = "master token set, but the connection has no stack URL"
+        else:
+            reason = "master token set, but it cannot be read — AGNES_VAULT_KEY changed since it was stored"
+        connections_without_master.append({"id": c["id"], "name": c.get("name") or c["id"], "reason": reason})
     connection_names = {c["id"]: (c.get("name") or c["id"]) for c in keboola_connections}
 
     all_refs = {

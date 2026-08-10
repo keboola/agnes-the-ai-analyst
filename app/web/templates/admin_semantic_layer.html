@@ -126,13 +126,13 @@
        wizard fills, so a fully working, table-syncing connection still shows up
        here as "nothing configured" — which reads as "your project isn't
        connected" and sends admins looking for a problem that isn't there. #}
-    These Keboola projects are connected but have no master (owner) token, so the semantic layer can't sync them:
+    These Keboola projects are connected but the semantic layer can't sync them:
     <ul class="sl-empty-list">
       {% for c in connections_without_master %}
-      <li><strong>{{ c.name }}</strong></li>
+      <li><strong>{{ c.name }}</strong> — {{ c.reason }}</li>
       {% endfor %}
     </ul>
-    Add one in the <em>Master token (semantic layer)</em> row at
+    A master token is set in the <em>Master token (semantic layer)</em> row at
     <a href="/admin/data-sources">Data sources</a> — it is a separate token from the
     storage token used to pull tables, and it must be the project owner's.
     {% else %}
@@ -183,9 +183,13 @@
      all — the same silent state one level up. Devin Review on #1242. #}
   {% if connections_without_master %}
   <div class="sl-orphan-note">
-    Also connected, but with no master (owner) token, so the semantic layer will never sync them:
-    {% for c in connections_without_master %}<strong>{{ c.name }}</strong>{% if not loop.last %}, {% endif %}{% endfor %}.
-    Add one in the <em>Master token (semantic layer)</em> row at <a href="/admin/data-sources">Data sources</a>.
+    Also connected, but not syncing:
+    <ul class="sl-empty-list">
+      {% for c in connections_without_master %}
+      <li><strong>{{ c.name }}</strong> — {{ c.reason }}</li>
+      {% endfor %}
+    </ul>
+    Fix these at <a href="/admin/data-sources">Data sources</a>.
   </div>
   {% endif %}
   {% endif %}
