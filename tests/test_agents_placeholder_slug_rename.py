@@ -12,10 +12,18 @@ shown as "Revenue Analyst" answered on `/agent`, the second such agent on
 `/agent-2`, and the builder shows the slug nowhere — so the only way to
 find it was to enumerate the API.
 
-Renaming re-derives the slug only while BOTH hold: the agent is still a
-draft, and its slug is still the untouched placeholder. A slug that ever
-reflected a real name is an address someone may already have wired up, so
-it stays put.
+The slug follows the name while BOTH hold: the agent is still a draft, and
+its slug still tracks that name. Marking it ready is what publishes the
+address, so that freezes it; a slug set by any other means has stopped
+being a function of the name, so a rename must not relocate it.
+
+Re-deriving on every draft rename, rather than once off the placeholder,
+is forced by how the builder saves: it PATCHes each field edit behind a
+debounce, so a pause mid-word flushes a PARTIAL name. A once-only rule
+latched onto that fragment and gave the finished agent the address `rev` —
+worse than the placeholder it replaced, and uncorrectable from the UI.
+Caught by Devin Review on #1225, along with the uniqueness search being
+scoped to the caller rather than the agent's owner.
 """
 
 from __future__ import annotations
@@ -48,24 +56,79 @@ def test_unnamed_draft_gets_a_real_slug_when_named(seeded_app):
     assert renamed["slug"] == "revenue-analyst"
 
 
-def test_renaming_again_keeps_the_first_real_slug(seeded_app):
-    """Once the slug reflects a name, it is an address — it stops moving."""
+def test_slug_follows_the_name_through_a_keystroke_debounce(seeded_app):
+    """The builder PATCHes while you type, so partial names arrive first.
+
+    `/agents` saves every field edit behind a short debounce, so pausing
+    mid-word flushes a PATCH carrying e.g. "Rev". A rule that re-derives
+    once and then freezes would hand the finished agent the address `rev`
+    — worse than the placeholder it replaced, and uncorrectable from the
+    UI. While the agent is a draft whose slug still tracks its name, the
+    slug keeps following.
+    """
     tok = seeded_app["admin_token"]
     agent = _create(seeded_app, tok)
-    first = _patch(seeded_app, agent["id"], tok, name="Revenue Analyst")
-    assert first["slug"] == "revenue-analyst"
-
-    second = _patch(seeded_app, agent["id"], tok, name="Something Else")
-    assert second["slug"] == "revenue-analyst"
+    assert _patch(seeded_app, agent["id"], tok, name="Rev")["slug"] == "rev"
+    assert _patch(seeded_app, agent["id"], tok, name="Revenue An")["slug"] == "revenue-an"
+    assert _patch(seeded_app, agent["id"], tok, name="Revenue Analyst")["slug"] == "revenue-analyst"
 
 
-def test_named_at_creation_is_untouched_by_rename(seeded_app):
+def test_named_at_creation_still_follows_a_draft_rename(seeded_app):
+    """Same rule regardless of where the first name came from."""
     tok = seeded_app["admin_token"]
     agent = _create(seeded_app, tok, name="Finance Bot")
     assert agent["slug"] == "finance-bot"
 
     renamed = _patch(seeded_app, agent["id"], tok, name="Renamed Bot")
-    assert renamed["slug"] == "finance-bot"
+    assert renamed["slug"] == "renamed-bot"
+
+
+def test_marking_ready_freezes_the_address(seeded_app):
+    """Publishing is what makes the slug an address other things may hold."""
+    tok = seeded_app["admin_token"]
+    agent = _create(seeded_app, tok)
+    _patch(seeded_app, agent["id"], tok, name="Revenue Analyst")
+    _patch(seeded_app, agent["id"], tok, status="ready")
+
+    renamed = _patch(seeded_app, agent["id"], tok, name="Something Else")
+    assert renamed["slug"] == "revenue-analyst"
+
+
+def test_a_slug_that_stopped_tracking_its_name_is_left_alone(seeded_app):
+    """Only a slug still derived from the current name may move.
+
+    Guards the rule against a slug set by any other means (a future
+    user-chosen slug, a migration): it no longer matches the name, so the
+    rename must not silently relocate it.
+    """
+    from src.repositories import agents_repo
+
+    tok = seeded_app["admin_token"]
+    agent = _create(seeded_app, tok, name="Finance Bot")
+    agents_repo().update(agent["id"], slug="hand-picked")
+
+    renamed = _patch(seeded_app, agent["id"], tok, name="Renamed Bot")
+    assert renamed["slug"] == "hand-picked"
+
+
+def test_admin_renaming_a_foreign_draft_checks_the_owners_slugs(seeded_app):
+    """Uniqueness is per owner — searching the admin's own agents is wrong.
+
+    `_writable` lets an admin PATCH someone else's agent. Scoping the
+    free-slug search to the admin reports a candidate free while the real
+    owner already holds it, and the UPDATE then hits the
+    `(owner_user_id, slug)` UNIQUE as an unhandled 500.
+    """
+    from src.repositories import agents_repo
+
+    tok = seeded_app["admin_token"]
+    owner = "other-user-1"
+    agents_repo().create(id="agt_owned_taken", owner_user_id=owner, name="Revenue Analyst", slug="revenue-analyst")
+    agents_repo().create(id="agt_owned_draft", owner_user_id=owner, name="", slug="agent")
+
+    renamed = _patch(seeded_app, "agt_owned_draft", tok, name="Revenue Analyst")
+    assert renamed["slug"] != "revenue-analyst", "collided with the owner's existing agent"
+    assert renamed["slug"].startswith("revenue-analyst")
 
 
 def test_ready_agent_keeps_its_placeholder_slug(seeded_app):

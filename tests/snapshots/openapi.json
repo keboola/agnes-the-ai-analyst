@@ -28068,7 +28068,7 @@
         ]
       },
       "patch": {
-        "description": "Patch an agent the caller owns. Only supplied fields change.\n\nNaming an agent that is still an unnamed draft also re-derives its\nslug from that name, so the address it answers on matches what it is\ncalled. A slug that already reflects a name never moves.",
+        "description": "Patch an agent the caller owns. Only supplied fields change.\n\nRenaming a draft also re-derives its slug, so the address it answers\non matches what it is called. Marking the agent ready freezes the\nslug \u2014 from then on it is an address other things may hold.",
         "operationId": "update_agent_api_agents__agent_id__patch",
         "parameters": [
           {
