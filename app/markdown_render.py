@@ -85,7 +85,20 @@ _ALLOWED_URL_SCHEMES: set[str] = {"http", "https", "mailto"}
 # added to _ALLOWED_ATTRIBUTES for them, so every attribute (including on*
 # handlers) is still stripped; these carry layout, never behaviour. Curator
 # markdown keeps the narrow set — it has <p> and never needs these.
-_HTML_SOURCE_EXTRA_TAGS: set[str] = {"div", "section", "article", "dl", "dt", "dd", "figure", "figcaption"}
+_HTML_SOURCE_EXTRA_TAGS: set[str] = {
+    "div", "section", "article",
+    "dl", "dt", "dd",
+    "figure", "figcaption",
+    # The headings the narrow allowlist omits. It keeps h2-h4 so a curator
+    # cannot outrank the page's own headings; an imported description is not
+    # authored against this page at all, and dropping its <h1> fused the
+    # sections it separated ("Section ASection B").
+    "h1", "h5", "h6",
+    # The headings the narrow allowlist omits. It keeps h2-h4 so a curator
+    # cannot outrank the page's own headings; an imported description is not
+    # authored against this page at all, and dropping its <h1> fused the
+    # sections it separated ("Section ASection B").
+}
 
 
 def render_safe(markdown: Optional[str], *, html_source: bool = False) -> str:

@@ -402,7 +402,14 @@ def test_boundary_and_allowlist_agree_on_what_a_block_container_is():
 
     from app.markdown_render import _ALLOWED_TAGS, _BLOCK_TAGS, _HTML_SOURCE_EXTRA_TAGS
 
-    named = {t for t in re.split(r"\|", _BLOCK_TAGS) if re.fullmatch(r"[a-z]+", t)}
+    named = set()
+    for alt in re.split(r"\|", _BLOCK_TAGS):
+        if re.fullmatch(r"[a-z]+", alt):
+            named.add(alt)
+        elif m := re.fullmatch(r"([a-z]+)\[(\d)-(\d)\]", alt):  # h[1-6]
+            named |= {f"{m[1]}{d}" for d in range(int(m[2]), int(m[3]) + 1)}
+        elif m := re.fullmatch(r"([a-z]+)\[([a-z]+)\]", alt):  # t[dh]
+            named |= {f"{m[1]}{c}" for c in m[2]}
     separators_not_rendered = named - _ALLOWED_TAGS - _HTML_SOURCE_EXTRA_TAGS
     assert not separators_not_rendered, (
         f"treated as a block separator but stripped with no structure: {sorted(separators_not_rendered)}"
