@@ -107,6 +107,14 @@ def test_unresolvable_plugin_dir_still_reconciles_name(tmp_path, monkeypatch):
 # and fell back to the upstream one, which surfaces as the
 # "Plugin <X> not found in marketplace" error name resolution exists to
 # prevent. Both channels serve the same file set, so both are checked.
+#
+# The Cowork single-plugin zip (`cowork_packager`) has no `marketplace.json`
+# to disagree with, but it has the same identity source: `plugin["manifest_name"]`.
+# `coerce_plugin_name` is charset-safe by construction, so a rejected name
+# never breaks Cowork's stricter validator either way — but preferring the
+# plugin's own (rejected) declared `name` over the resolved `manifest_name`
+# still exports the plugin under a kebab-ified form of the name the gate
+# rejected, instead of the identity the other two channels settled on.
 
 import pytest
 
@@ -149,7 +157,18 @@ def _git_files(plugins, monkeypatch):
     return git_backend.file_set_for_user(None, {"id": "u", "email": "u@example.com"})
 
 
-@pytest.mark.parametrize("channel", ["zip", "git"])
+def _cowork_files(plugin):
+    import io
+    import zipfile
+
+    from app.marketplace_server import cowork_packager
+
+    data, _etag = cowork_packager.build_cowork_zip(plugin)
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        return {n: zf.read(n) for n in zf.namelist()}
+
+
+@pytest.mark.parametrize("channel", ["zip", "git", "cowork"])
 @pytest.mark.parametrize(
     "declared_name",
     [
@@ -161,6 +180,20 @@ def _git_files(plugins, monkeypatch):
 )
 def test_served_plugin_json_name_matches_its_catalog_entry(tmp_path, monkeypatch, channel, declared_name):
     plugin = _curated_plugin(tmp_path, declared_name)
+
+    if channel == "cowork":
+        # No marketplace.json here — the identity to agree with is the
+        # resolved `manifest_name` itself (kebab-cased for Cowork's stricter
+        # `[a-z][a-z0-9-]*` rule), not a rejected declared name re-read from
+        # the plugin's own plugin.json.
+        from app.marketplace_server.cowork_packager import coerce_plugin_name
+
+        files = _cowork_files(plugin)
+        served = json.loads(files[".claude-plugin/plugin.json"])
+        entry_name = coerce_plugin_name(plugin["manifest_name"], plugin["manifest_name"])
+        assert served["name"] == entry_name, "served plugin.json identity diverged from its resolved manifest name"
+        return
+
     files = _zip_files([plugin]) if channel == "zip" else _git_files([plugin], monkeypatch)
 
     manifest = json.loads(files[".claude-plugin/marketplace.json"])

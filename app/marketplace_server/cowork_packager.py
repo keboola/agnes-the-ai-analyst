@@ -58,7 +58,11 @@ class CoworkZipError(Exception):
 
 # Bump when the transform rules change so cached ETags bust and clients
 # re-download the newer-shaped zip.
-COWORK_FORMAT_VERSION = "4"
+#
+# v5: `transform_plugin_json` now derives `name` from `manifest_name` (the
+#     resolved, gated identity) instead of the source file's own declared
+#     `name`, matching the ZIP and git channels — see `resolve_manifest_name`.
+COWORK_FORMAT_VERSION = "5"
 
 # Cowork's validator rejects a SKILL.md / plugin.json ``description`` longer
 # than 1024 characters.
@@ -133,10 +137,23 @@ def transform_plugin_json(data: dict, *, manifest_name: str, raw: dict) -> dict:
 
     Returns a NEW dict (does not mutate the input). Preserves every other
     field so the plugin keeps its identity in Cowork.
+
+    ``name`` is always derived from ``manifest_name`` — the identity already
+    resolved (and, for a non-conformant declared name, validated and rejected)
+    by ``marketplace_filter.resolve_manifest_name`` — never from the source
+    file's own ``data.get("name")``. For a conformant plugin the two strings
+    are equal, so this is a no-op. They diverge exactly when the declared name
+    failed ``is_safe_plugin_name`` and ``resolve_manifest_name`` fell back to
+    the upstream one: ``coerce_plugin_name`` alone can't be trusted to close
+    that gap, because it only fixes charset (kebab-cases whatever it's given)
+    and has no length cap, so a declared name over ``MAX_MANIFEST_NAME_LEN``
+    still comes out as itself, just lower-cased — a rejected identity ships
+    anyway, under a different name than the ZIP and git channels settled on
+    for the same plugin.
     """
     out = dict(data) if isinstance(data, dict) else {}
 
-    out["name"] = coerce_plugin_name(out.get("name") or manifest_name, manifest_name)
+    out["name"] = coerce_plugin_name(manifest_name, manifest_name)
 
     version = out.get("version")
     if not (isinstance(version, str) and _SEMVER_RE.match(version)):
