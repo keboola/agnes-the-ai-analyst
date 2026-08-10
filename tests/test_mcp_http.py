@@ -337,6 +337,10 @@ class TestToolRegistration:
             # app owner or Admin. Triple-surface with /api/data-apps* +
             # `agnes app list/show/deploy/logs`.
             "data_apps_list",
+            # `create` completes the family: a draft is a sibling of an
+            # EXISTING app, so without it an agent building a new app from
+            # chat had no first step and got 404 data_app_not_found.
+            "data_app_create",
             "data_app_get",
             "data_app_deploy",
             "data_app_logs",
