@@ -60,30 +60,32 @@ def _run(monkeypatch, tmp_path, report, argv):
 def test_import_without_prune_says_what_it_left_behind(monkeypatch, tmp_path):
     """An operator who forgot --prune must not read a clean import as
     'everything is in sync'."""
-    report = {"added": ["a/1"], "updated": [], "written": ["a/1"], "deleted": []}
+    report = {"added": ["a/1"], "updated": [], "adopted": [], "written": ["a/1"], "deleted": []}
     result, _ = _run(monkeypatch, tmp_path, report, [])
     assert result.exit_code == 0, result.output
     assert "--prune not set" in _clean(result.output)
 
 
 def test_dry_run_says_would_and_passes_the_flag_through(monkeypatch, tmp_path):
-    report = {"added": ["a/1"], "updated": [], "written": ["a/1"], "deleted": ["a/2"]}
+    report = {"added": ["a/1"], "updated": [], "adopted": [], "written": ["a/1"], "deleted": ["a/2"]}
     result, repo = _run(monkeypatch, tmp_path, report, ["--dry-run", "--prune"])
     out = _clean(result.output)
     assert "Would import" in out
     assert "would delete a/2" in out
-    assert repo.calls[0][1] == {"source_ref": None, "prune": True, "dry_run": True}
+    flags = {k: v for k, v in repo.calls[0][1].items() if k != "on_delete"}
+    assert flags == {"source_ref": None, "prune": True, "dry_run": True}
+    assert callable(repo.calls[0][1]["on_delete"]), "the repo must be able to audit before each delete"
 
 
 def test_prune_lists_each_deletion(monkeypatch, tmp_path):
-    report = {"added": [], "updated": ["a/1"], "written": ["a/1"], "deleted": ["a/2", "a/3"]}
+    report = {"added": [], "updated": ["a/1"], "adopted": [], "written": ["a/1"], "deleted": ["a/2", "a/3"]}
     result, _ = _run(monkeypatch, tmp_path, report, ["--prune"])
     out = _clean(result.output)
     assert "deleted a/2" in out and "deleted a/3" in out
 
 
 def test_source_ref_reaches_the_repo(monkeypatch, tmp_path):
-    report = {"added": [], "updated": [], "written": [], "deleted": []}
+    report = {"added": [], "updated": [], "adopted": [], "written": [], "deleted": []}
     _, repo = _run(monkeypatch, tmp_path, report, ["--source-ref", "finance", "--prune"])
     assert repo.calls[0][1]["source_ref"] == "finance"
 
@@ -104,3 +106,13 @@ def test_refused_prune_exits_with_the_reason_not_a_traceback(monkeypatch, tmp_pa
     assert result.exit_code == 1
     assert "refusing to prune" in _clean(result.output)
     assert "Traceback" not in _clean(result.output)
+
+
+def test_taking_over_another_sources_metric_is_called_out(monkeypatch, tmp_path):
+    """"added" would read as "a new metric appears"; this row already exists
+    and is about to change owner, which the operator needs to see."""
+    report = {"added": [], "updated": [], "adopted": ["revenue/mrr"], "written": ["revenue/mrr"], "deleted": []}
+    result, _ = _run(monkeypatch, tmp_path, report, ["--dry-run"])
+    out = _clean(result.output)
+    assert "would take over revenue/mrr" in out
+    assert "another source" in out
