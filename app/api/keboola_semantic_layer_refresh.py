@@ -64,6 +64,9 @@ def get_last_refresh_summary() -> dict[str, Any]:
 _ERROR_CODE_STATUS = {
     "credentials_not_configured": 400,
     "upstream_client_error": 400,
+    # The connection's master token opens a different project than the one it
+    # is bound to — a mis-paste to correct, not an outage.
+    "project_mismatch": 400,
     "upstream_error": 502,
 }
 

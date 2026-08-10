@@ -101,6 +101,13 @@
   }
   .ds-conn-header-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
   .ds-conn-name { font-size: 13px; font-weight: 600; color: var(--text-primary, var(--ds-text-primary)); }
+  /* Project identity sits between the connection's own name and the stack
+     host: it is what distinguishes two connections to the same stack. */
+  .ds-conn-project {
+    font-size: 11px; color: var(--ds-text-secondary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    max-width: 260px;
+  }
   .ds-conn-stack {
     font-size: 11px; color: var(--text-secondary, var(--ds-text-secondary));
     font-family: var(--font-mono, ui-monospace, monospace);
@@ -476,6 +483,13 @@ function _connectionCardHtml(row) {
   const stackUrl = _esc((config.stack_url || "").replace(/\/$/, ""));
   const isDefault = row.is_default === true || row.is_default === 1;
   const defaultBadge = isDefault ? `<span class="ds-badge badge-default">default</span>` : "";
+  // Which Keboola project this connection actually opens, recorded from the
+  // token's own owner block. Several projects on one stack render as the same
+  // host, so the URL alone never told two connections apart — and the "master
+  // token: SET" badge said nothing about WHICH project that token unlocks.
+  const projectLine = config.project_id != null
+    ? `<div class="ds-conn-project">${_esc(config.project_name || "unnamed")} · project ${_esc(String(config.project_id))}</div>`
+    : "";
 
   return `
 <div class="ds-conn-card" id="ds-conn-${id}" data-id="${id}">
@@ -483,6 +497,7 @@ function _connectionCardHtml(row) {
     <div class="ds-conn-header-left">
       <div>
         <div class="ds-conn-name">${name}</div>
+        ${projectLine}
         <div class="ds-conn-stack">${stackUrl || "(no stack URL)"}</div>
       </div>
     </div>
