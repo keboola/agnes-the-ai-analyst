@@ -56,6 +56,7 @@ mirror is missing.
 | New MCP foundation tool | defined in `app/api/mcp/foundation_tools.py` + name appended to `FOUNDATION_TOOL_NAMES` — never hand-added to a single transport module | BLOCKING | `tests/test_mcp_tool_parity.py` |
 | New user-visible switch (feature flag, theme, layout, mode) | an entry in `app.switches.SWITCHES` + a row in `docs/feature-flags.md` (see that doc's "How to add a switch") — never a hand-rolled `os.environ.get(...)` / `get_value(...)` pair | BLOCKING | `tests/test_switches.py` (registry integrity) + `tests/test_admin_configure_api.py` (editable-section derivation) |
 | PR landing the only `[Unreleased]` content | release-cut commit (version bump + CHANGELOG rename) in the same merge | per release rules | NO |
+| Prompt rule edited in `app/initial_workspace_default/CLAUDE.md` (chat-sandbox bundled fallback) | mirror the same section in `config/claude_md_template.txt` (server-rendered default — what `WorkdirManager.run_init` overwrites it with on the common path, and what `agnes init` writes via `GET /api/welcome`) | BLOCKING | `tests/test_chat_answer_provenance_and_charts.py::test_the_bundled_and_server_default_sections_do_not_drift` |
 
 ### Parity enforcement reality
 

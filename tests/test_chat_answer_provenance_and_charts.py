@@ -42,6 +42,7 @@ from pathlib import Path
 import pytest
 
 WORKSPACE_CLAUDE_MD = Path("app/initial_workspace_default/CLAUDE.md")
+SERVER_DEFAULT_TEMPLATE = Path("config/claude_md_template.txt")
 DOCKER_SANDBOX = Path("app/initial_workspace_default/docker-sandbox/Dockerfile")
 E2B_TEMPLATE = Path("app/initial_workspace_default/e2b-template/Dockerfile")
 CLOUD_CHAT_DOC = Path("docs/cloud-chat.md")
@@ -56,10 +57,62 @@ def _read(p: Path) -> str:
     return p.read_text(encoding="utf-8")
 
 
-def _prose(p: Path) -> str:
-    """File text with runs of whitespace collapsed — prose assertions must not
+def _collapse_ws(text: str) -> str:
+    """Text with runs of whitespace collapsed — prose assertions must not
     break because a sentence got re-wrapped at 79 columns."""
-    return re.sub(r"\s+", " ", _read(p))
+    return re.sub(r"\s+", " ", text)
+
+
+def _prose(p: Path) -> str:
+    return _collapse_ws(_read(p))
+
+
+def _rendered_server_default_claude_md() -> str:
+    """Render config/claude_md_template.txt the same way production does on
+    the common (no admin override, no Initial Workspace Template) path:
+    WorkdirManager.run_init's ``_render_workspace_prompt`` callable
+    (app/main.py) calls ``render_claude_md``, which falls back to
+    ``compute_default_claude_md`` — the exact function under test here. This
+    overwrites the bundled ``WORKSPACE_CLAUDE_MD`` in the workspace, and is
+    also what a laptop's ``agnes init`` writes via ``GET /api/welcome``. So
+    the bundled file alone is not sufficient evidence the agent ever sees a
+    rule — this is what actually reaches it on the default path.
+    """
+    from unittest.mock import patch
+
+    import duckdb
+
+    from src.claude_md import compute_default_claude_md
+    from src.db import _ensure_schema
+
+    conn = duckdb.connect(":memory:")
+    try:
+        _ensure_schema(conn)
+        # RBAC reads inside compute_default_claude_md go through the repo
+        # factory (e.g. get_accessible_tables -> data_packages_repo()), which
+        # resolves its connection via src.repositories.get_system_db — not the
+        # conn passed to compute_default_claude_md directly. Redirect that
+        # name to this connection, same as tests/test_claude_md_renderer.py's
+        # fixture, or the factory opens (and may not find) the real system DB.
+        with patch("src.repositories.get_system_db", lambda: conn):
+            user = {
+                "id": "u1",
+                "email": "alice@example.com",
+                "name": "Alice",
+                "is_admin": False,
+                "groups": ["Everyone"],
+            }
+            return compute_default_claude_md(conn, user=user, server_url="https://example.com")
+    finally:
+        conn.close()
+
+
+def _section(text: str, heading: str) -> str:
+    """Body of a ``## <heading>`` markdown section, up to the next ``## ``
+    heading or end of file."""
+    m = re.search(rf"^## {re.escape(heading)}\n(.*?)(?=\n## |\Z)", text, re.DOTALL | re.MULTILINE)
+    assert m, f"section {heading!r} not found"
+    return m.group(1).strip()
 
 
 # ── 1. Contract ─────────────────────────────────────────────────────────────
@@ -73,10 +126,7 @@ def test_the_tour_still_promises_provenance():
     assert "cite it in my answers" in tour
 
 
-def test_the_workspace_prompt_makes_the_promise_true():
-    """The gap Petr reported: the tour promised provenance and nothing in the
-    agent's instructions asked for it."""
-    md = _prose(WORKSPACE_CLAUDE_MD)
+def _assert_promises_provenance(md: str) -> None:
     assert "Sources:" in md, "the workspace prompt must ask for a sources line"
     assert re.search(
         r"never report a (number|figure) whose origin you cannot name",
@@ -91,16 +141,65 @@ def test_the_workspace_prompt_makes_the_promise_true():
     assert "blank line" in md, "the prompt must say why the Sources line stands alone"
 
 
-def test_the_workspace_prompt_names_the_only_chart_channel():
-    """Inline SVG is the delivery mechanism; a file path and a data: URI are the
-    two plausible-looking things that silently fail. All three must be stated —
-    the agent reached for exactly the failing ones."""
-    md = _prose(WORKSPACE_CLAUDE_MD)
+def test_the_workspace_prompt_makes_the_promise_true():
+    """The gap Petr reported: the tour promised provenance and nothing in the
+    agent's instructions asked for it. This pins the bundled fallback file —
+    see the sibling test below for the content that actually reaches the
+    sandbox on the common path."""
+    _assert_promises_provenance(_prose(WORKSPACE_CLAUDE_MD))
+
+
+def test_the_server_rendered_default_makes_the_promise_true():
+    """The bundled ``CLAUDE.md`` above is only the initial file dropped into a
+    fresh workspace — in DEFAULT mode (no admin override, no Initial Workspace
+    Template) ``WorkdirManager.run_init`` immediately overwrites it with the
+    server-rendered default (``config/claude_md_template.txt``), and that is
+    also what a laptop's ``agnes init`` writes. A prompt rule that lives only
+    in the bundled file never reaches an agent on that — the common — path."""
+    _assert_promises_provenance(_collapse_ws(_rendered_server_default_claude_md()))
+
+
+def _assert_names_chart_channel(md: str) -> None:
     assert "inline SVG" in md
     assert "svg.fonttype" in md, "without this matplotlib emits glyph outlines and the SVG is huge"
     assert "Never tell the user to open a file path." in md
     assert "data:" in md, "the failing alternative has to be named to be refused"
     assert "broken image" in md, "say what the user sees, not just that it is forbidden"
+
+
+def test_the_workspace_prompt_names_the_only_chart_channel():
+    """Inline SVG is the delivery mechanism; a file path and a data: URI are the
+    two plausible-looking things that silently fail. All three must be stated —
+    the agent reached for exactly the failing ones. Pins the bundled fallback
+    file — see the sibling test below for the server-rendered default."""
+    _assert_names_chart_channel(_prose(WORKSPACE_CLAUDE_MD))
+
+
+def test_the_server_rendered_default_names_the_only_chart_channel():
+    """Same gap as the provenance rule, for the chart rule: the bundled file
+    is not what an agent sees once ``render_workspace_prompt`` succeeds
+    (the common path in production) — the server-rendered default is."""
+    _assert_names_chart_channel(_collapse_ws(_rendered_server_default_claude_md()))
+
+
+@pytest.mark.parametrize("heading", ["Say where every number came from", "Charts"])
+def test_the_bundled_and_server_default_sections_do_not_drift(heading: str):
+    """The bundled ``CLAUDE.md`` and ``config/claude_md_template.txt`` are two
+    independent files with no shared source for this prose — copy-pasted
+    rather than factored out, because one is a static file and the other a
+    Jinja2 template with a very different overall shape (see CONTRIBUTING.md's
+    sync-map row for this pair). That makes them free to drift silently: an
+    edit to one rule's wording in one file, forgotten in the other, would
+    leave the sandbox and the laptop CLI disagreeing about the rules with no
+    test failure anywhere — exactly how the section went missing from this
+    file the first time. Pin them equal verbatim so a future edit is forced to
+    touch both or explain why not."""
+    bundled = _section(_read(WORKSPACE_CLAUDE_MD), heading)
+    server_default = _section(_read(SERVER_DEFAULT_TEMPLATE), heading)
+    assert bundled == server_default, (
+        f"the {heading!r} section text differs between {WORKSPACE_CLAUDE_MD} and "
+        f"{SERVER_DEFAULT_TEMPLATE} — keep them byte-identical or this guard will always fail"
+    )
 
 
 @pytest.mark.parametrize("dockerfile", [DOCKER_SANDBOX, E2B_TEMPLATE], ids=["docker", "e2b"])
