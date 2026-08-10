@@ -1505,3 +1505,42 @@ class TestProjectMismatchAtSyncTime:
 
         assert result["status"] == "ok"
         assert metric_repo().get("keboola/model-1/a") is not None
+
+
+def test_legacy_connection_slot_path_also_gets_the_mismatch_guard(e2e_env):
+    """Mode 3 stamps rows with the default connection's id, so the same
+    cross-attribution the master-token loop refuses is reachable there
+    whenever that connection's STORAGE token opens a different project than
+    the one it is bound to. Devin Review on #1242.
+    """
+    from connectors.keboola.semantic_layer import sync_semantic_layer
+
+    conn = {
+        "id": "conn-default",
+        "name": "Bound Project",
+        "config": {
+            "stack_url": "https://connection.keboola.com",
+            "project_id": 1234,
+            "project_name": "Acme Analytics",
+        },
+    }
+    fake_storage = MagicMock()
+    fake_storage.verify_token.return_value = {
+        "isMasterToken": True,
+        "owner": {"id": 9999, "name": "Some Other Project"},
+    }
+
+    with (
+        patch("connectors.keboola.semantic_layer._enumerate_master_sources", return_value=[]),
+        patch(
+            "connectors.keboola.semantic_layer._resolve_keboola_credentials_slot",
+            return_value=("https://connection.keboola.com", "storage-tok", "connection"),
+        ),
+        patch("connectors.keboola.semantic_layer._default_keboola_connection", return_value=conn),
+        patch("connectors.keboola.storage_api.KeboolaStorageClient", return_value=fake_storage),
+    ):
+        result = sync_semantic_layer()
+
+    assert result["status"] == "error"
+    assert result["code"] == "project_mismatch"
+    assert "9999" in result["error"] and "1234" in result["error"]
