@@ -135,10 +135,16 @@ def _render_message(request: Request, title: str, message: str, status_code: int
     return templates.TemplateResponse(request, "_message.html", ctx, status_code=status_code)
 
 
-def _render_reset_form(request: Request, email: str, token: str, error: str = ""):
+def _render_reset_form(request: Request, email: str, token: str, error: str = "", reason: str = ""):
     from app.web.router import templates, _build_context
 
-    ctx = _build_context(request, email=email, token=token, error=error)
+    ctx = _build_context(
+        request,
+        email=email,
+        token=token,
+        error=error,
+        forced_rotation=(reason == "must_change"),
+    )
     return templates.TemplateResponse(request, "password_reset.html", ctx)
 
 
@@ -292,7 +298,7 @@ async def password_login_web(
             reset_token_created=datetime.now(timezone.utc),
         )
         return RedirectResponse(
-            url=f"/auth/password/reset?email={quote(email, safe='')}&token={reset_tok}",
+            url=(f"/auth/password/reset?email={quote(email, safe='')}&token={reset_tok}&reason=must_change"),
             status_code=303,
         )
 
@@ -365,11 +371,20 @@ async def reset_page(
     request: Request,
     email: str = "",
     token: str = "",
+    reason: str = "",
 ):
-    """Render the 'set new password' form when arriving via reset link."""
+    """Render the 'set new password' form when arriving via reset link.
+
+    ``reason=must_change`` marks the forced-rotation arrival (see
+    ``password_login_web``): the credentials were correct, but the password
+    was set by someone else and has to be replaced before a session is
+    issued. Without it the page is indistinguishable from "you forgot your
+    password", and first-time users reasonably conclude their password was
+    rejected.
+    """
     if not email or not token:
         return RedirectResponse(url="/login/password", status_code=302)
-    return _render_reset_form(request, email=email, token=token)
+    return _render_reset_form(request, email=email, token=token, reason=reason)
 
 
 @router.post("/reset")
@@ -409,6 +424,25 @@ async def reset_request(
     )
 
 
+def _forced_rotation_reason(user: dict | None) -> str:
+    """Derive the reset form's ``reason`` from an already-fetched account.
+
+    The form only posts back ``email``/``token``/``password``/``confirm_password``
+    — no ``reason`` — so an error re-render can't just thread the query param
+    through like the initial GET does. Reading the account's own
+    ``must_change_password`` flag is the source of truth for which copy
+    belongs on the page, and unlike a hidden form field it can't be forged by
+    editing the POST body to swap one explanation for the other.
+
+    Takes the user dict rather than looking it up by email itself: callers
+    must only derive this AFTER independently establishing that the caller
+    holds a valid reset token (see ``reset_confirm``) — otherwise this
+    becomes an account-enumeration oracle (existence + forced-rotation
+    state, leaked to anyone who can post an email address).
+    """
+    return "must_change" if user and user.get("must_change_password") else ""
+
+
 @router.post("/reset/confirm")
 @_rate_limiter.limit("10/minute")
 async def reset_confirm(
@@ -425,14 +459,54 @@ async def reset_confirm(
     referer leaks have surfaced partial tokens before, and there's no
     reason to allow unbounded attempts.
     """
+    repo = users_repo()
+
+    # Anti-enumeration: validate the token BEFORE deriving any
+    # account-specific copy or reporting a password-mismatch/length error.
+    # `_forced_rotation_reason` used to run unconditionally at the top of
+    # this handler, so an unauthenticated caller could post an arbitrary
+    # email with two deliberately mismatched passwords and read the
+    # rendered heading to learn whether the account exists AND whether it
+    # is flagged for forced rotation — without ever proving they hold the
+    # reset token. Every other surface in this module (`reset_request`,
+    # `setup_request`, `setup_page`) is careful not to do that.
+    #
+    # This lookup only PEEKS at the token — mirrors the equality check
+    # `setup_confirm` does below — it does not consume it. That matters:
+    # a legitimate user who mistypes their confirmation still holds a
+    # valid, unconsumed token and needs the explanatory copy on the
+    # re-rendered form, so validating the token here must not burn it.
+    # The single-use atomic consumption still happens exactly once,
+    # further down, only after the passwords pass validation.
+    user = repo.get_by_email(email)
+    token_valid = (
+        bool(user)
+        and bool(user.get("active", True))
+        and user.get("reset_token") == hash_token(token)
+        and _token_is_fresh(user.get("reset_token_created"), RESET_TOKEN_TTL)
+    )
+    if not token_valid:
+        # Generic copy regardless of whether the account exists or is
+        # flagged for forced rotation — the caller hasn't proven they
+        # hold the token yet.
+        return _render_reset_form(request, email=email, token=token, error="Invalid or expired reset link.")
+
+    # From here the caller has proven token ownership, so it's safe to
+    # derive the forced-rotation copy from the account's own state and
+    # reuse it on every error re-render below — a mistyped confirmation or
+    # a too-short password used to fall back to the generic "Reset Your
+    # Password" copy because the reason never survived the POST, leaving a
+    # forced-rotation user thinking their correct password was rejected.
+    reason = _forced_rotation_reason(user)
     if password != confirm_password:
-        return _render_reset_form(request, email=email, token=token, error="Passwords do not match.")
+        return _render_reset_form(request, email=email, token=token, error="Passwords do not match.", reason=reason)
     if len(password) < MIN_PASSWORD_LEN:
         return _render_reset_form(
             request,
             email=email,
             token=token,
             error=f"Password must be at least {MIN_PASSWORD_LEN} characters.",
+            reason=reason,
         )
 
     # Atomic compare-and-swap to consume the reset token. Mirrors the
@@ -443,7 +517,6 @@ async def reset_confirm(
     # token AND to race the legitimate user) but closes the asymmetry.
     cutoff = datetime.now(timezone.utc) - RESET_TOKEN_TTL
     consume_id = f"CONSUMED:{secrets.token_hex(16)}"
-    repo = users_repo()
     # Atomic compare-and-swap to consume the reset token, via the repo factory so
     # it hits the ACTIVE backend. (A raw DuckDB `conn.execute` here silently
     # failed on Postgres deployments — the token was written to PG by the factory
@@ -453,17 +526,23 @@ async def reset_confirm(
     except Exception as exc:
         err = str(exc).lower()
         if "conflict" in err or "transaction" in err:
-            return _render_reset_form(request, email=email, token=token, error="Invalid or expired reset link.")
+            return _render_reset_form(
+                request, email=email, token=token, error="Invalid or expired reset link.", reason=reason
+            )
         raise
     if not won:
         # Token never matched, expired, account deactivated, or the race was
         # lost. Single error keeps the UX simple and avoids leaking which.
-        return _render_reset_form(request, email=email, token=token, error="Invalid or expired reset link.")
+        return _render_reset_form(
+            request, email=email, token=token, error="Invalid or expired reset link.", reason=reason
+        )
 
     # Won the race — fetch the user and apply the password change.
     user = repo.get_by_email(email)
     if not user:
-        return _render_reset_form(request, email=email, token=token, error="Invalid or expired reset link.")
+        return _render_reset_form(
+            request, email=email, token=token, error="Invalid or expired reset link.", reason=reason
+        )
 
     ph = PasswordHasher()
     repo.update(

@@ -64,6 +64,19 @@ OWNER_TODO_PLACEHOLDER = "owner_todo"
 """Placeholder displayed in the UI when a curated plugin has no owner / curator
 metadata. To be replaced once ``marketplace_plugins.curator_owner`` lands."""
 
+# Visibility states an admin sees on the Browse shelf. Everything except
+# ``archived`` — which is the soft-delete state written by
+# ``store_entities.archive`` when an owner runs `agnes store delete` or hits
+# Delete in the UI.
+#
+# The admin path used to pass no visibility filter at all, so every entity any
+# user had ever deleted stayed on the admin's shelf — carrying the "Quarantined"
+# badge, which means "blocked / under review", not "deleted" — and counted
+# toward the Browse tab's total. Deleted items are not part of the shelf for
+# anyone; an admin who needs them has the Archived tab on
+# ``/admin/store/submissions``.
+ADMIN_BROWSE_VISIBILITY = ["pending", "approved", "hidden"]
+
 # ---------------------------------------------------------------------------
 # Pydantic response models
 # ---------------------------------------------------------------------------
@@ -900,7 +913,8 @@ async def _browse_items(
         verification_states = list(_UNVERIFIED_VERIFICATION_STATES)
 
     if is_admin:
-        visibility_filter: Optional[List[str]] = None
+        # Everything except soft-deleted rows — see ADMIN_BROWSE_VISIBILITY.
+        visibility_filter: Optional[List[str]] = list(ADMIN_BROWSE_VISIBILITY)
         include_owner = None
     else:
         visibility_filter = ["approved"]
@@ -1062,11 +1076,12 @@ async def list_items(
         installed_set = {row["id"] for row in user_store_installs_repo().list_for_user(user["id"])}
         # Visibility filter: non-admin sees approved + their own
         # non-approved (so submitters spot what's still under review
-        # in their own grid). Admin sees everything.
+        # in their own grid). Admin sees everything except soft-deleted
+        # rows — see ADMIN_BROWSE_VISIBILITY.
         from app.auth.access import is_user_admin
 
         if is_user_admin(user["id"], conn):
-            visibility_filter = None
+            visibility_filter = list(ADMIN_BROWSE_VISIBILITY)
             include_owner = None
         else:
             visibility_filter = ["approved"]
@@ -1283,8 +1298,12 @@ async def list_categories(
         from app.auth.access import is_user_admin
 
         if is_user_admin(user["id"], conn):
-            # Admin counts everything — no visibility / owner filter.
-            cat_counts = store_entities_repo().category_counts(type=type)
+            # Admin counts everything the admin grid shows — i.e. everything
+            # except soft-deleted rows, so the facet totals match it.
+            cat_counts = store_entities_repo().category_counts(
+                type=type,
+                visibility_status=list(ADMIN_BROWSE_VISIBILITY),
+            )
         else:
             # Non-admin: approved for everyone, plus own non-archived
             # non-approved (mirrors the listing endpoint's visibility).

@@ -2595,6 +2595,27 @@ def get_analytics_db() -> duckdb.DuckDBPyConnection:
     `_analytics_db_*` globals. `get_analytics_db_readonly()` deliberately
     stays per-call because each invocation re-ATTACHes extract.duckdb
     files into a fresh read-only context.
+
+    Do NOT call this from a request path. The connection it hands back
+    stays open for the life of the process (nothing but
+    `close_analytics_db()`/`close_singleton_connections()` at shutdown ever
+    closes it), and DuckDB refuses to open a *second* connection to the
+    same file with a different configuration while that read-write handle
+    is alive — so every subsequent `get_analytics_db_readonly()` call in
+    the process raises "Can't open a connection to same database file with
+    a different configuration than existing connections" until restart.
+    This is exactly the outage `POST /api/mcp/query-table/{table_id}`
+    (`app/api/mcp_per_table.py`) caused before it was moved onto
+    `get_analytics_db_readonly()` — see the regression tests
+    in `tests/test_analytics_db_singleton.py::TestReadonlyOnFreshDataDir`.
+    As of that fix, nothing under `app/`, `cli/`, `services/`, or
+    `connectors/` calls this function; keep it that way. A static guard
+    (`tests/test_analytics_rw_singleton_guard.py`) fails the build if a new
+    call site appears outside `src/db.py` itself. If you genuinely need a
+    long-lived read-write handle for maintenance work (bulk rebuild,
+    profiling, catalog export), open your own connection rather than
+    reintroducing a caller here — this singleton is reserved for
+    infrastructure that owns the analytics DB's write lifecycle.
     """
     global _analytics_db_conn, _analytics_db_path
     db_path = str(_get_data_dir() / "analytics" / "server.duckdb")
@@ -2911,17 +2932,50 @@ def get_analytics_db_readonly() -> duckdb.DuckDBPyConnection:
         return get_ducklake_read()
 
     db_path = _get_data_dir() / "analytics" / "server.duckdb"
-    if not db_path.exists():
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = _open_duckdb(str(db_path), read_only=False)
-        try:
-            conn.execute("SET enable_external_access = false")
-        except Exception:
-            pass
-        # Memory cap — see get_analytics_db / the _*_MEMORY_LIMIT constants.
-        _apply_memory_caps(conn, _ANALYTICS_RO_MEMORY_LIMIT, label="analytics_ro")
-        return _maybe_instrument(conn, "analytics_ro")
-    conn = _open_duckdb(str(db_path), read_only=True)
+    # Serialize the existence-check + materialization + the following
+    # read-only open under the same lock the singleton accessors use
+    # (`get_analytics_db()` / `close_singleton_connections()` above).
+    #
+    # Without this, two threads racing the very first call on a fresh
+    # install can interleave: thread A sees the file missing and opens it
+    # read-write to materialize it (closing that handle right after), while
+    # thread B — having observed the file already exists — reaches the
+    # read-only open below *before* A's read-write handle is closed.
+    # DuckDB refuses to open a file read-only while a read-write connection
+    # to it is alive in the same process ("Can't open a connection to same
+    # database file with a different configuration than existing
+    # connections"), so B's request 500s. Holding the lock across both the
+    # materialization and the read-only open guarantees every thread's
+    # open happens strictly after any other thread's transient read-write
+    # handle has been closed. Once the file exists permanently (after the
+    # very first successful call), this section is a cheap exists() check
+    # plus a normal read-only open — no meaningful serialization cost.
+    with _analytics_db_lock:
+        if not db_path.exists():
+            # Fresh instance: materialize an empty database file so the
+            # read-only open below has something to attach to, then drop the
+            # read-write handle IMMEDIATELY.
+            #
+            # DuckDB refuses to open a file read-only while a read-write
+            # connection to it is alive in the same process ("Can't open a
+            # connection to same database file with a different configuration
+            # than existing connections"). This branch used to *return* that
+            # read-write connection instead of a read-only one. Its callers do
+            # close it (`app/api/query.py` and `app/api/query_hybrid.py` each
+            # close in a `finally`), so the damage was narrower than a leak:
+            # the caller got a handle that was writable at the engine level,
+            # on a path whose whole point is that it is not, and it had
+            # skipped this function's `extracts` ATTACH loop and
+            # `_reattach_remote_extensions` — so the query ran against a
+            # database missing its views. A second request arriving inside
+            # that window also failed outright, since the read-write handle
+            # was still alive.
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                _open_duckdb(str(db_path), read_only=False).close()
+            except Exception:
+                logger.exception("Failed to initialize empty analytics DB at %s", db_path)
+        conn = _open_duckdb(str(db_path), read_only=True)
     # Memory cap (see get_analytics_db rationale). Read-only conns can
     # still buffer significant memory for analyst queries that hit
     # ``CREATE TEMP TABLE`` over read_parquet — capping keeps a single

@@ -21,6 +21,7 @@ matching how passthrough tools surface today. That generator is a
 small follow-up — it reads the catalog and dynamically registers
 named tools. For now the REST endpoint is the source of truth.
 """
+
 from __future__ import annotations
 
 import logging
@@ -31,7 +32,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.auth.dependencies import _get_db, get_current_user
-from src.db import get_analytics_db
+from src.db import get_analytics_db_readonly
 from src.rbac import can_access_table
 from src.repositories import table_registry_repo
 from src.sql_ident import quote_ident
@@ -73,7 +74,7 @@ def _column_names(analytics_conn: duckdb.DuckDBPyConnection, table_view_name: st
 
 
 @router.post("/{table_id}", response_model=TableQueryResponse)
-async def query_table(
+def query_table(
     table_id: str,
     body: TableQueryRequest,
     user: dict = Depends(get_current_user),
@@ -85,6 +86,15 @@ async def query_table(
     that need richer queries should use the generic ``query(sql)``
     surface from the Agnes MCP foundation; this endpoint is the
     "fast path" for the common per-table lookup.
+
+    Plain ``def`` (not ``async def``) so FastAPI auto-offloads the call to
+    the anyio thread pool — see ``execute_query`` in ``app/api/query.py``
+    for the same rationale. It didn't matter while this endpoint reused
+    the pooled read-write singleton (a cheap cursor), but
+    ``get_analytics_db_readonly()`` opens a fresh connection and
+    re-ATTACHes every extract.duckdb file on each call; under ``async def``
+    that synchronous I/O would hold the single uvicorn event loop and
+    stall every other in-flight request for its duration.
     """
     if body.limit <= 0:
         raise HTTPException(status_code=400, detail="limit must be > 0")
@@ -106,43 +116,56 @@ async def query_table(
     # always exists under the id; .name is a UX label that may collide.
     view_name = table_id
 
-    # Reuse the pooled analytics connection — DuckDB rejects opening a
-    # second read-only connection alongside a writer (the orchestrator
-    # holds one for rebuild_*). Safety against accidental mutation comes
-    # from this endpoint's own SQL builder: SELECT only, parameterized,
-    # plus the column allow-list below.
-    analytics_conn = get_analytics_db()
-    columns = _column_names(analytics_conn, view_name)
-    if not columns:
-        raise HTTPException(
-            status_code=409,
-            detail=f"table view {view_name!r} is not present in analytics.duckdb (sync may not have run yet)",
+    # A transient, per-call read-only connection — the same helper
+    # `/api/query` and `/api/query/hybrid` use — not the process-wide
+    # read-write singleton (`get_analytics_db()`). This endpoint used to
+    # reuse that singleton to dodge DuckDB's "second connection, different
+    # configuration" error when opening a read-only handle alongside an
+    # open writer; the singleton then stayed open for the rest of the
+    # process's life (nothing ever closed it), so any later call to
+    # `get_analytics_db_readonly()` hit that exact same conflict and 500'd
+    # — permanently, for every `/api/query` and `/api/query/hybrid` request
+    # — the moment any authenticated user hit this endpoint once. Safety
+    # against accidental mutation now comes from BOTH the read-only DuckDB
+    # open (blocks CREATE/INSERT/UPDATE/DELETE at the engine level — the
+    # backstop `/api/query` relies on behind its own SQL blocklist) and
+    # this endpoint's own SQL builder: SELECT only, parameterized, plus
+    # the column allow-list below.
+    analytics_conn = get_analytics_db_readonly()
+    try:
+        columns = _column_names(analytics_conn, view_name)
+        if not columns:
+            raise HTTPException(
+                status_code=409,
+                detail=f"table view {view_name!r} is not present in analytics.duckdb (sync may not have run yet)",
+            )
+
+        unknown_keys = [k for k in body.filter.keys() if k not in columns]
+        if unknown_keys:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "unknown_filter_columns",
+                    "unknown": unknown_keys,
+                    "allowed": columns,
+                },
+            )
+
+        sql, params = _build_select(view_name, body.filter, limit)
+        rows = analytics_conn.execute(sql, params).fetchdf()
+        # Coerce dataframe scalars to native Python types — fastapi's JSON
+        # encoder doesn't know about numpy / pandas scalars.
+        result_records = _coerce_records(rows.to_dict(orient="records"))
+
+        return TableQueryResponse(
+            table_id=table_id,
+            rows=result_records,
+            row_count=len(result_records),
+            columns=columns,
+            truncated=truncated,
         )
-
-    unknown_keys = [k for k in body.filter.keys() if k not in columns]
-    if unknown_keys:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "unknown_filter_columns",
-                "unknown": unknown_keys,
-                "allowed": columns,
-            },
-        )
-
-    sql, params = _build_select(view_name, body.filter, limit)
-    rows = analytics_conn.execute(sql, params).fetchdf()
-    # Coerce dataframe scalars to native Python types — fastapi's JSON
-    # encoder doesn't know about numpy / pandas scalars.
-    result_records = _coerce_records(rows.to_dict(orient="records"))
-
-    return TableQueryResponse(
-        table_id=table_id,
-        rows=result_records,
-        row_count=len(result_records),
-        columns=columns,
-        truncated=truncated,
-    )
+    finally:
+        analytics_conn.close()
 
 
 def _build_select(

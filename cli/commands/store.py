@@ -8,6 +8,7 @@ download your own entries. All commands authenticate via the configured PAT
 
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -110,7 +111,29 @@ def delete_entity(
 ):
     """Delete a Flea Market entity (owner or admin only)."""
     if not yes:
-        confirm = typer.confirm(f"Delete entity {entity_id}?")
+        # A piped answer (`echo y | agnes store delete <id>`) must still work —
+        # `typer.confirm` reads it like a terminal would. Only genuine EOF (no
+        # input at all) is the shape a chat sandbox, a CI step, or any other
+        # non-interactive agent context hits; `typer.confirm` surfaces that as
+        # `typer.Abort`, with a bare "Aborted." that names no remedy. Catch
+        # only that case and say what to do instead.
+        try:
+            confirm = typer.confirm(f"Delete entity {entity_id}?")
+        except typer.Abort:
+            # `click.confirm` raises `Abort` for BOTH EOFError and
+            # KeyboardInterrupt, so the exception alone cannot tell "nothing
+            # was ever going to answer" from "a person pressed Ctrl-C". On a
+            # tty it is the latter: re-raise, so the user gets the plain
+            # "Aborted." they asked for rather than being told their terminal
+            # does not exist and nudged toward --yes — which would skip the
+            # very confirmation they just declined.
+            if sys.stdin.isatty():
+                raise
+            typer.echo(
+                f"Refusing to delete {entity_id} without confirmation: no interactive terminal. Re-run with --yes.",
+                err=True,
+            )
+            raise typer.Exit(1)
         if not confirm:
             raise typer.Abort()
     try:
