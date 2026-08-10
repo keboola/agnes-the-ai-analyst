@@ -713,7 +713,14 @@ def _sync_one_source(
     if expected_project is not None:
         expected_id, expected_name = expected_project
         actual_id = (token_info.get("owner") or {}).get("id")
-        if expected_id is not None and actual_id is not None and actual_id != expected_id:
+        # Compared as text for the same reason the API-layer check is
+        # (app/api/admin_source_connections.py): `expected_id` comes straight
+        # out of a JSON config column on either backend, so a 5947 returning
+        # as "5947" would fail a correctly-configured project forever — and
+        # here the only way out is re-pointing the connection to another
+        # stack. Normalising in one layer and not the other was the gap
+        # (Devin Review on #1242).
+        if expected_id is not None and actual_id is not None and str(actual_id) != str(expected_id):
             logger.error(
                 "Keboola semantic layer: connection %s is bound to project %s but its master "
                 "token opens project %s; refusing to import one project's semantic layer under "
