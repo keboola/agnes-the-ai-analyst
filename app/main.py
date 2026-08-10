@@ -1510,7 +1510,11 @@ async def lifespan(app):
                             return None
                         conn = None if use_pg() else get_system_db()
                         try:
-                            return render_claude_md(conn, user=u, server_url=_server_url)
+                            # This is the chat sandbox — its filesystem is
+                            # ephemeral and not the analyst's own machine, so
+                            # the rendered prompt must use the sandbox wording
+                            # (e.g. the Charts section's inline-SVG-only rule).
+                            return render_claude_md(conn, user=u, server_url=_server_url, is_sandbox=True)
                         finally:
                             if conn is not None:
                                 conn.close()

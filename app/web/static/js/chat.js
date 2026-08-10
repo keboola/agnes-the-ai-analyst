@@ -321,11 +321,36 @@ function wireCopyTranscript() {
         // though everything else worked. ClipboardItem lets the *value*
         // resolve later while the write call itself starts right here.
         const md = fetchTranscriptMarkdown(chatId);
-        await navigator.clipboard.write([
-          new ClipboardItem({ "text/plain": md.then((text) => new Blob([text], { type: "text/plain" })) }),
-        ]);
-        showToast("Transcript copied", "ok");
-        return;
+        // `new ClipboardItem({...: blob})` hands the constructor a *derived*
+        // promise. If the constructor or `.write()` throws synchronously
+        // before ever consuming it (a stricter implementation can refuse a
+        // promise-valued entry outright), nothing else has a handler on
+        // `blob` — a later `md` rejection would then surface as an
+        // unhandled rejection independent of the try/catch below. Attach a
+        // no-op handler unconditionally so that can never happen.
+        const blob = md.then((text) => new Blob([text], { type: "text/plain" }));
+        blob.catch(() => {});
+        try {
+          await navigator.clipboard.write([new ClipboardItem({ "text/plain": blob })]);
+          showToast("Transcript copied", "ok");
+          return;
+        } catch (writeErr) {
+          // The rejection could be the write itself (a NotAllowedError from
+          // the permission gate, or a synchronous constructor refusal) or
+          // `md` failing underneath it (the fetch itself failed) — only the
+          // first case has a working fallback, so tell them apart before
+          // reporting anything.
+          let text;
+          try {
+            text = await md;
+          } catch (_) {
+            showToast("Couldn't read this conversation", "error");
+            return;
+          }
+          const ok = await copyTextToClipboard(text);
+          showToast(ok ? "Transcript copied" : "Couldn't copy to clipboard", ok ? "ok" : "error");
+          return;
+        }
       }
       // ClipboardItem unavailable (older Firefox, non-secure context): fall
       // back to the pre-fetch-then-copy path, which still works everywhere
