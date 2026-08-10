@@ -312,3 +312,60 @@ class TestComputeEtag:
         from src.marketplace_filter import compute_etag
 
         assert len(compute_etag([])) == 16
+
+
+class TestResolveManifestNameHygiene:
+    """`manifest_name` comes from a curator-controlled `.claude-plugin/plugin.json`
+    and is emitted verbatim into the served `marketplace.json` `name` field, so it
+    must clear the same bar as its sibling `original_name` (which
+    `src.marketplace.is_safe_plugin_name` already gates at ingest).
+    """
+
+    @staticmethod
+    def _plugin_dir(tmp_path, name):
+        d = tmp_path / "plugins" / "p"
+        (d / ".claude-plugin").mkdir(parents=True)
+        (d / ".claude-plugin" / "plugin.json").write_text(json.dumps({"name": name}), encoding="utf-8")
+        return d
+
+    def test_conformant_name_is_returned(self, tmp_path):
+        from src.marketplace_filter import resolve_manifest_name
+
+        d = self._plugin_dir(tmp_path, "acme-tools")
+        assert resolve_manifest_name(d, fallback="fb") == "acme-tools"
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "My Plugin",  # space — not one safe segment
+            "evil/../escape",  # path separators
+            "ac\nme",  # interior newline — `strip()` cannot save this one
+            "tab\there",  # control char
+            "..",  # traversal token
+            "x" * 65,  # over the 64-char cap
+        ],
+    )
+    def test_unsafe_name_falls_back(self, tmp_path, bad):
+        from src.marketplace_filter import resolve_manifest_name
+
+        d = self._plugin_dir(tmp_path, bad)
+        assert resolve_manifest_name(d, fallback="fb") == "fb"
+
+    def test_name_at_cap_is_kept(self, tmp_path):
+        from src.marketplace_filter import resolve_manifest_name
+
+        d = self._plugin_dir(tmp_path, "x" * 64)
+        assert resolve_manifest_name(d, fallback="fb") == "x" * 64
+
+    def test_surrounding_whitespace_still_stripped(self, tmp_path):
+        from src.marketplace_filter import resolve_manifest_name
+
+        d = self._plugin_dir(tmp_path, "  acme-tools  ")
+        assert resolve_manifest_name(d, fallback="fb") == "acme-tools"
+
+    def test_missing_plugin_json_falls_back(self, tmp_path):
+        from src.marketplace_filter import resolve_manifest_name
+
+        d = tmp_path / "plugins" / "p"
+        d.mkdir(parents=True)
+        assert resolve_manifest_name(d, fallback="fb") == "fb"

@@ -56,6 +56,13 @@ from src.repositories import (
 
 logger = logging.getLogger(__name__)
 
+# Upper bound on a plugin's self-declared `name` (see `resolve_manifest_name`).
+# `is_safe_plugin_name` constrains the charset but not the length, and this
+# value is served in JSON and rendered as a UI chip. 64 matches the cap the
+# Agent Plugins manifest schema puts on the same field, and is far above any
+# real plugin name.
+MAX_MANIFEST_NAME_LEN = 64
+
 
 def _contained_plugin_dir(root: Path, slug: str, name: str) -> Optional[Path]:
     """``root/slug/plugins/name``, or None when that escapes ``root``.
@@ -170,6 +177,20 @@ def resolve_manifest_name(plugin_dir: Path, fallback: str) -> str:
     an empty/whitespace-only `name` — same defensive style as
     ``src.marketplace.read_plugins``: never crash, always return a usable
     value.
+
+    The value is also *validated*, not just read. It comes from a
+    curator-controlled file and is emitted verbatim as the ``name`` of the
+    synth ``marketplace.json`` entry and of the synth bundle ``plugin.json``
+    (``app.marketplace_server.packager``), then rendered in the ``/plugin``
+    UI — so it gets the same bar its sibling ``original_name`` already clears
+    at ingest (``src.marketplace.is_safe_plugin_name``: exactly one
+    filesystem-safe segment, no separators, no control characters), plus a
+    length cap. Unlike ``original_name`` this value never builds a path, so
+    this is a consistency/hygiene gate rather than a traversal defence — and
+    the cap is what keeps an unbounded string out of the served JSON.
+
+    ``fallback`` is returned unchecked: it is ``original_name``, which
+    ``is_safe_plugin_name`` already gated when the row was ingested.
     """
     pj = plugin_dir / ".claude-plugin" / "plugin.json"
     if not pj.is_file():
@@ -181,9 +202,18 @@ def resolve_manifest_name(plugin_dir: Path, fallback: str) -> str:
     if not isinstance(data, dict):
         return fallback
     name = data.get("name")
-    if isinstance(name, str) and name.strip():
-        return name.strip()
-    return fallback
+    if not (isinstance(name, str) and name.strip()):
+        return fallback
+    name = name.strip()
+    if not is_safe_plugin_name(name) or len(name) > MAX_MANIFEST_NAME_LEN:
+        logger.warning(
+            "plugin.json name %r in %s is not a usable plugin identifier; serving upstream name %r instead",
+            name[:80],
+            plugin_dir,
+            fallback,
+        )
+        return fallback
+    return name
 
 
 def resolve_allowed_plugins(conn: duckdb.DuckDBPyConnection, user: dict) -> List[dict]:
