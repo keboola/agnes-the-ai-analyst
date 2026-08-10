@@ -648,3 +648,60 @@ class TestMetricReconcileLabelPartitions:
 
         assert report["deleted"] == []
         assert len(repo.list()) == 3
+
+
+class TestMetricReconcileScopeExcludesWebUploads:
+    """A metric uploaded through the admin page is a different writer.
+
+    Before this, `POST /api/admin/metrics/import` stamped the same
+    `source='yaml_import'` the CLI import uses, so a prune against some
+    directory deleted metrics an admin had uploaded by hand — the exact
+    outcome the "keyed on the writer" scope exists to prevent.
+    """
+
+    def test_prune_spares_a_web_uploaded_metric(self, db_conn, metrics_dir):
+        from src.repositories.metrics import MetricRepository
+
+        repo = MetricRepository(db_conn)
+        repo.reconcile_from_yaml(metrics_dir)
+        repo.create(
+            id="ops/uploaded", name="uploaded", display_name="Uploaded", category="ops",
+            sql="SELECT 1", source="web_upload",
+        )
+        (metrics_dir / "operations" / "resolution_time.yml").unlink()
+
+        report = repo.reconcile_from_yaml(metrics_dir, prune=True)
+        assert report["deleted"] == ["operations/resolution_time"]
+        assert repo.get("ops/uploaded") is not None
+
+
+class TestMetricReconcileRefusesEmptyParse:
+    """`files` existing is not the same as metrics parsing out of them.
+
+    A truncated or half-written export directory has files that yield nothing,
+    and an empty parse is how you tell prune "delete the whole scope".
+    """
+
+    def test_prune_against_unparseable_files_is_refused(self, db_conn, metrics_dir, tmp_path):
+        from src.repositories.metrics import MetricRepository
+
+        repo = MetricRepository(db_conn)
+        repo.reconcile_from_yaml(metrics_dir)
+
+        bad = tmp_path / "bad" / "revenue"
+        bad.mkdir(parents=True)
+        (bad / "empty.yml").write_text("")
+        (bad / "junk.yml").write_text("just a string\n")
+
+        with pytest.raises(ValueError, match="no metrics"):
+            repo.reconcile_from_yaml(bad.parent, prune=True)
+        assert len(repo.list()) == 2, "refused prune must not have deleted anything"
+
+    def test_importing_unparseable_files_without_prune_is_still_a_no_op(self, db_conn, tmp_path):
+        from src.repositories.metrics import MetricRepository
+
+        repo = MetricRepository(db_conn)
+        bad = tmp_path / "bad" / "revenue"
+        bad.mkdir(parents=True)
+        (bad / "empty.yml").write_text("")
+        assert repo.import_from_yaml(bad.parent) == 0
