@@ -1243,3 +1243,213 @@ def build_glossary_row(
         "model_uuid": model_uuid,
         "source": "keboola_semantic_layer",
     }, None
+
+
+# --- Coverage (live, no stored state) ---------------------------------------
+
+# Skip reasons that mean the metric's own DEFINITION cannot be composed. These
+# are defects in the upstream semantic layer — registering a table will not fix
+# one — so they are reported separately from `unresolved_table`, which is the
+# ordinary steady state of any project whose semantic layer describes more
+# tables than the instance registers.
+DEFINITION_BLOCKED_REASONS = frozenset(
+    {
+        "missing_name",
+        "embedded_sql_comment",
+        "foreign_alias_reference",
+        "ambiguous_relationship",
+        "unsupported_relationship_type",
+        "unverified_relationship_direction",
+    }
+)
+
+
+def _connection_storage_token(conn: dict) -> str:
+    """The connection's regular (non-master) Storage token, vault first then
+    ``token_env`` — the same precedence
+    :func:`_resolve_keboola_credentials_slot` applies to its connection branch.
+    """
+    from src.repositories import connection_secrets_repo
+
+    try:
+        secrets = connection_secrets_repo()
+        if secrets.has(conn["id"]):
+            token = secrets.get(conn["id"]) or ""
+            if token:
+                return token
+    except Exception:
+        logger.warning("Could not read storage token for connection %s", conn.get("id"))
+    token_env = conn.get("token_env") or ""
+    return os.environ.get(token_env, "") if token_env else ""
+
+
+def _project_identity(url: str, token: str) -> Optional[dict]:
+    """``{"id", "name"}`` for whichever project ``token`` belongs to, or None
+    when it cannot be established. Never raises and never echoes the token."""
+    import requests
+
+    from connectors.keboola.storage_api import KeboolaStorageClient, StorageApiError
+
+    if not (url and token):
+        return None
+    try:
+        owner = KeboolaStorageClient(url=url, token=token).verify_token().get("owner") or {}
+    except (StorageApiError, requests.RequestException) as e:
+        logger.warning("Project identity lookup failed for %s: %s", url, e)
+        return None
+    if owner.get("id") is None:
+        return None
+    return {"id": owner.get("id"), "name": owner.get("name") or ""}
+
+
+def compute_semantic_coverage() -> dict:
+    """How much of each connected Keboola project's semantic layer actually
+    lands in Agnes, computed live against the Metastore and the table registry.
+
+    Deliberately stateless: nothing is persisted and no counter from the last
+    sync is read. The sync's own counters live in an in-memory dict that resets
+    on every process restart, so a status built on them goes blank exactly when
+    someone restarts and comes looking. This recomputes on demand instead —
+    at the cost of a handful of upstream calls per connection.
+
+    Two things are worth an admin's attention, and they are NOT the same:
+
+    - ``importable == 0`` while the project publishes metrics. Nobody chooses
+      that; it means the two sides never meet — most often because a
+      connection's storage token and master token point at DIFFERENT projects,
+      so tables sync from one project and the semantic layer is read from
+      another. Reported as ``token_project_mismatch``.
+    - metrics blocked by their own definition
+      (:data:`DEFINITION_BLOCKED_REASONS`).
+
+    ``unregistered_tables`` is neither: a semantic layer routinely describes far
+    more tables than an instance registers, and those metrics are *supposed* to
+    stay out. It is reported as a plain fact, never as a pending queue.
+
+    Constraints are not fetched — they only decorate a successfully mapped row
+    (``merge_constraints``) and cannot change a skip decision, so the extra
+    round-trip buys nothing here.
+    """
+    import requests
+
+    from connectors.keboola.metastore_client import MetastoreApiError, MetastoreClient
+    from src.repositories import column_metadata_repo, source_connections_repo, table_registry_repo
+
+    conns_by_id = {c["id"]: c for c in source_connections_repo().list(source_type="keboola")}
+    table_lookup = table_lookup_from_registry(table_registry_repo().list_by_source("keboola"))
+    column_metadata = column_metadata_repo()
+    column_lookup = {
+        name: {c["column_name"] for c in column_metadata.list_for_table(name)} for name in set(table_lookup.values())
+    }
+
+    sources: list[dict] = []
+    for source in _enumerate_master_sources():
+        conn_id = source["connection_id"]
+        stack_url = source["stack_url"]
+        entry: dict[str, Any] = {
+            "connection_id": conn_id,
+            "name": source["name"],
+            "stack_url": stack_url,
+            "project": None,
+            "storage_project": None,
+            "token_project_mismatch": False,
+            "metrics": {"upstream": 0, "importable": 0},
+            "glossary": {"upstream": 0},
+            "blocked": [],
+            "unregistered_tables": [],
+            "warnings": [],
+            "error": None,
+        }
+
+        entry["project"] = _project_identity(stack_url, source["token"])
+        conn = conns_by_id.get(conn_id) or {}
+        entry["storage_project"] = _project_identity(stack_url, _connection_storage_token(conn))
+
+        both = (entry["project"], entry["storage_project"])
+        if all(both) and str(both[0]["id"]) != str(both[1]["id"]):
+            entry["token_project_mismatch"] = True
+            entry["warnings"].append(
+                {
+                    "code": "token_project_mismatch",
+                    "message": (
+                        f"Storage token points at project {both[1]['id']}, master token at "
+                        f"project {both[0]['id']}. Tables sync from one project and the semantic "
+                        f"layer is read from another, so no metric can bind to a table."
+                    ),
+                }
+            )
+
+        try:
+            metastore = MetastoreClient(url=stack_url, token=source["token"])
+            models = metastore.list_items("semantic-model")
+            if not models:
+                sources.append(entry)
+                continue
+            model_uuid = models[0]["id"]
+            entry["model"] = {"uuid": model_uuid, "name": (models[0].get("attributes") or {}).get("name") or ""}
+            datasets = metastore.list_items("semantic-dataset", model_uuid)
+            metrics = metastore.list_items("semantic-metric", model_uuid)
+            relationships = metastore.list_items("semantic-relationship", model_uuid)
+            entry["glossary"]["upstream"] = len(metastore.list_items("semantic-glossary", model_uuid))
+        except (MetastoreApiError, requests.RequestException) as e:
+            entry["error"] = f"Metastore fetch failed: {e}"
+            entry["warnings"].append({"code": "fetch_failed", "message": entry["error"]})
+            sources.append(entry)
+            continue
+
+        dataset_lookup = dataset_lookup_by_table_id(datasets)
+        relationship_lookup = relationship_lookup_by_dataset(relationships)
+
+        importable = 0
+        unregistered: set[str] = set()
+        for item in metrics:
+            row, reason = build_metric_row(
+                item,
+                table_lookup,
+                dataset_lookup,
+                [],
+                model_uuid,
+                relationship_lookup=relationship_lookup,
+                column_lookup=column_lookup,
+            )
+            if row is not None:
+                importable += 1
+                continue
+            attrs = item.get("attributes") or {}
+            if reason == "unresolved_table":
+                unregistered.add(attrs.get("dataset") or "")
+            elif reason in DEFINITION_BLOCKED_REASONS:
+                entry["blocked"].append(
+                    {
+                        "metric": attrs.get("name") or "",
+                        "dataset": attrs.get("dataset") or "",
+                        "reason": reason,
+                    }
+                )
+
+        entry["metrics"] = {"upstream": len(metrics), "importable": importable}
+        entry["unregistered_tables"] = sorted(t for t in unregistered if t)
+
+        if metrics and importable == 0:
+            entry["warnings"].append(
+                {
+                    "code": "no_metrics_bound",
+                    "message": (
+                        f"None of the {len(metrics)} metrics this project publishes can bind to a "
+                        f"registered table."
+                    ),
+                }
+            )
+        if entry["blocked"]:
+            entry["warnings"].append(
+                {
+                    "code": "metrics_blocked",
+                    "message": (
+                        f"{len(entry['blocked'])} metric(s) cannot be composed from their own "
+                        f"definition; registering a table will not fix these."
+                    ),
+                }
+            )
+        sources.append(entry)
+
+    return {"sources": sources}
