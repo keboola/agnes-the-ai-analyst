@@ -429,12 +429,27 @@ class _TextualProgress:
                 started = self._started_at.get(tid, now)
                 duration = max(0.001, now - started)
                 rate = bytes_ / duration
-                line = (
-                    f"[{self._finished_idx}/{self._total_files} files] "
-                    f"{tid}: 100% done "
-                    f"({self._fmt_bytes(bytes_)} in {duration:.1f}s, "
-                    f"{self._fmt_bytes(int(rate))}/s)\n"
-                )
+                # A file we never received all the bytes for did NOT finish.
+                # This line used to read "100% done (0 B in 0.0s, 0 B/s)" for a
+                # download that had 403'd — a green completion line for a
+                # failure, with the real error buried further down. The
+                # progress printer can't see the exception, but it can see that
+                # the transfer fell short of the manifest size, which is enough
+                # to stop claiming success.
+                if total and bytes_ < total:
+                    line = (
+                        f"[{self._finished_idx}/{self._total_files} files] "
+                        f"{tid}: FAILED "
+                        f"({self._fmt_bytes(bytes_)} of {self._fmt_bytes(total)} "
+                        f"in {duration:.1f}s) — see the error below\n"
+                    )
+                else:
+                    line = (
+                        f"[{self._finished_idx}/{self._total_files} files] "
+                        f"{tid}: 100% done "
+                        f"({self._fmt_bytes(bytes_)} in {duration:.1f}s, "
+                        f"{self._fmt_bytes(int(rate))}/s)\n"
+                    )
                 self._stream.write(line)
             try:
                 self._stream.flush()

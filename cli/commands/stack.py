@@ -159,11 +159,22 @@ def stack_browse(
         typer.echo("No resources available to browse.")
         return
 
+    # ID leads the row because it is the one token the reader has to carry to
+    # the sibling command: `agnes stack add <type> <id>` takes the id, and the
+    # table used to print NAME / TYPE / REQUIREMENT / IN STACK / DESCRIPTION
+    # and no id at all. Names are display strings — the ones on a real
+    # instance contain em dashes ("Sales — Northwind Orders"), so they are not
+    # even retypeable — which left `--json` or the raw API as the only way to
+    # learn what `add` wanted.
+    id_w = max(len("ID"), max((len(str(i.get("id", ""))) for i in aggregated), default=2))
     name_w = max(len("NAME"), max((len(i.get("name", "")) for i in aggregated), default=4))
     type_w = max(len("TYPE"), max((len(i.get("type", "")) for i in aggregated), default=4))
     req_w = max(len("REQUIREMENT"), 11)
     in_w = len("IN STACK")
-    header = f"{'NAME':<{name_w}}  {'TYPE':<{type_w}}  {'REQUIREMENT':<{req_w}}  {'IN STACK':<{in_w}}  DESCRIPTION"
+    header = (
+        f"{'ID':<{id_w}}  {'NAME':<{name_w}}  {'TYPE':<{type_w}}  "
+        f"{'REQUIREMENT':<{req_w}}  {'IN STACK':<{in_w}}  DESCRIPTION"
+    )
     typer.echo(header)
     typer.echo("-" * len(header))
     for it in aggregated:
@@ -172,6 +183,7 @@ def stack_browse(
             desc = desc[:57] + "..."
         mark = "✓" if it.get("in_stack") else ""
         typer.echo(
+            f"{str(it.get('id', '')):<{id_w}}  "
             f"{it.get('name', '')[:name_w]:<{name_w}}  "
             f"{it.get('type', ''):<{type_w}}  "
             f"{it.get('requirement', ''):<{req_w}}  "
