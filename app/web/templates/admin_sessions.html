@@ -6,6 +6,7 @@
 {% set page_hero_subtitle = "Every collected JSONL across users plus a transcript viewer with next-error navigation." %}
 
 {% block head_extra %}
+<link rel="stylesheet" href="{{ static_url('css/ds_dropdown.css') }}">
 <style>
 .obs-page { font: 14px/1.5 var(--font-sans, system-ui); color: var(--text-primary, #111827); }
 .obs-topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px;
@@ -86,13 +87,24 @@
     <div class="obs-topbar-right">
       <label class="obs-window">
         <span class="obs-label">Time range</span>
-        <select id="sx-window">
+        <select id="sx-window" class="ds-dropdown-native">
           <option value="1440">Last 24h</option>
           <option value="10080" selected>Last 7d</option>
           <option value="43200">Last 30d</option>
           <option value="129600">Last 90d</option>
           <option value="525600">All time</option>
         </select>
+        {{ ds.dropdown(
+          id='sx-window-dd', target='sx-window',
+          aria_label='Time range', selected='10080',
+          options=[
+            {'value': '1440', 'label': 'Last 24h'},
+            {'value': '10080', 'label': 'Last 7d'},
+            {'value': '43200', 'label': 'Last 30d'},
+            {'value': '129600', 'label': 'Last 90d'},
+            {'value': '525600', 'label': 'All time'},
+          ],
+        ) }}
       </label>
     </div>
   </header>
@@ -162,6 +174,7 @@
   </section>
 </div>
 
+<script src="{{ static_url('js/components/ds_dropdown.js') }}" defer></script>
 <script>
 (function() {
   const state = readUrl();

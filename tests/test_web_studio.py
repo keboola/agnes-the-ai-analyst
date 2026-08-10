@@ -489,3 +489,61 @@ def test_studio_enabled_yaml_fallback_and_precedence(monkeypatch):
     assert ic.get_studio_enabled() is False  # YAML fallback
     monkeypatch.setenv("AGNES_STUDIO_ENABLED", "1")
     assert ic.get_studio_enabled() is True  # env > YAML
+
+
+class TestStudioSelectFieldDropdown:
+    """Custom design-system dropdown on the "mcp" domain's Transport select
+    (#1055). `#studio-f-transport` stays a real `<select>` in the DOM
+    (studio.js's collectPayload() reads its `.value` unchanged) with a
+    `ds.dropdown()` custom button+menu alongside it. Visibility between the
+    two is a CSS theme decision (paper-skin.css), not a template one.
+    """
+
+    def test_native_select_still_renders_for_existing_js_wiring(self, seeded_app):
+        resp = seeded_app["client"].get(
+            "/admin/studio/mcp",
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert resp.status_code == 200
+        text = resp.text
+        assert '<select id="studio-f-transport" class="ds-dropdown-native">' in text
+        assert '<option value="http">http</option>' in text
+        assert '<option value="sse">sse</option>' in text
+        assert '<option value="stdio">stdio</option>' in text
+
+    def test_custom_dropdown_markup_present(self, seeded_app):
+        resp = seeded_app["client"].get(
+            "/admin/studio/mcp",
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert resp.status_code == 200
+        text = resp.text
+        assert 'data-ds-dropdown-target="studio-f-transport"' in text
+        assert 'id="studio-f-transport-dd-btn"' in text
+        assert 'aria-haspopup="menu"' in text
+        assert 'aria-controls="studio-f-transport-dd-menu"' in text
+        assert 'id="studio-f-transport-dd-menu"' in text
+        assert 'role="menu"' in text
+        assert 'role="menuitemradio"' in text
+        for value in ("http", "sse", "stdio"):
+            assert f'data-value="{value}"' in text
+
+    def test_dropdown_js_module_is_loaded(self, seeded_app):
+        resp = seeded_app["client"].get(
+            "/admin/studio/mcp",
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert resp.status_code == 200
+        assert "js/components/ds_dropdown.js" in resp.text
+
+    def test_domains_without_a_select_field_render_unaffected(self, seeded_app):
+        """data-package / marketplace / corporate-memory have no select-type
+        field — no dropdown markup should appear on those pages."""
+        for domain in ("data-package", "marketplace", "corporate-memory"):
+            resp = seeded_app["client"].get(
+                f"/admin/studio/{domain}",
+                headers=_auth(seeded_app["admin_token"]),
+            )
+            assert resp.status_code == 200
+            assert "ds-dropdown-native" not in resp.text
+            assert "ds-dropdown-target" not in resp.text
