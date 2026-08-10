@@ -225,6 +225,47 @@ async def list_collections(
     return {"items": [_collection_out(r) for r in rows]}
 
 
+def _empty_search_hint(searched: int, corpus_id: Optional[str]) -> str:
+    """Why an empty search is empty, in terms the caller can act on.
+
+    Two different diagnoses share one empty ``results``:
+
+    * ``searched == 0`` — genuinely nothing to search. Telling this caller
+      to rephrase would send them in circles; they need a grant.
+    * ``searched > 0`` — the corpora were read and nothing matched. The
+      three behaviours below are the ones that make a *reasonable* query
+      miss, so they are named explicitly rather than left to be inferred
+      from a silent empty list:
+
+      - filenames are not indexed (``src.ingest.retrieval.rank_chunks``
+        scores chunk text; the filename is attached afterwards for the
+        citation), so searching for the file you are looking at fails;
+      - matching is whole-word — ``test`` does not find ``Testovaci``;
+      - there is no wildcard — ``*`` and ``""`` return nothing, not
+        everything, so "show me what is in here" has no query form.
+    """
+    if searched == 0:
+        if corpus_id:
+            return (
+                "That collection is not accessible to you, so nothing was searched. "
+                "Ask an admin to share it, or call collections_list to see what you can reach."
+            )
+        return (
+            "No collections are shared with you yet, so nothing was searched. "
+            "This is an access question, not a query one — call collections_list to confirm, "
+            "then ask an admin to grant a collection."
+        )
+    scope = "the selected collection" if corpus_id else f"{searched} accessible collection(s)"
+    return (
+        f"Searched {scope} and found no match. You DO have access — this is a wording "
+        "miss, not an access problem. Note: filenames are not indexed (search the text, "
+        "not the file name), matching is whole word (`test` will not find `Testovaci`), "
+        "and there is no wildcard (`*` and an empty query return nothing). Try a "
+        "distinctive word you expect inside the document, or call collection_get to list "
+        "the files first."
+    )
+
+
 @router.get("/search")
 async def search_collections(
     q: str,
@@ -241,6 +282,16 @@ async def search_collections(
     The response carries ``retrieval`` (``hybrid | lexical_only``) so clients
     can tell semantic-scored results from the lexical-only degradation that
     kicks in when the embeddings extra is not installed (#898).
+
+    An empty result also carries ``searched_collections`` and a ``hint``.
+    Nothing in a bare ``[]`` separates "you cannot see any collection" from
+    "your words are not in the text", and an agent handed that ambiguity
+    picks the scarier reading: observed live, a chat agent searched six
+    ways, found nothing, and told the owner of the file "I don't have
+    access to your files or collections" — which then became the
+    conversation's permanent title. The count is what makes the difference
+    checkable, and the hint names the three engine behaviours that make a
+    reasonable query miss (see ``src.ingest.retrieval``).
     """
     from src.ingest.retrieval import retrieval_mode, search as _search
 
@@ -248,7 +299,12 @@ async def search_collections(
     if corpus_id is not None:
         allowed = [c for c in allowed if c == corpus_id]
     k = max(1, min(k, 50))
-    return {"results": _search(allowed, q, k=k), "retrieval": retrieval_mode()}
+    results = _search(allowed, q, k=k)
+    payload: dict = {"results": results, "retrieval": retrieval_mode()}
+    if not results:
+        payload["searched_collections"] = len(allowed)
+        payload["hint"] = _empty_search_hint(len(allowed), corpus_id)
+    return payload
 
 
 @router.get("/{collection_id}")

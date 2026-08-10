@@ -285,6 +285,21 @@ def register_foundation_tools(
         ``hybrid`` (lexical + semantic) or ``lexical_only`` — the degraded
         mode when the server has no embedding model installed.
 
+        Three behaviours that make a reasonable query miss — search the
+        document's TEXT, not its metadata:
+
+        * **filenames are not indexed.** Searching ``report`` will not find
+          ``report.md``; only the words inside it are matched.
+        * **matching is whole word.** ``test`` does not find ``Testovaci``.
+        * **there is no wildcard.** ``*`` and an empty query return nothing,
+          not everything — there is no "list all chunks" query. Use
+          ``collection_get`` to enumerate a collection's files.
+
+        An empty ``results`` therefore does NOT mean you lack access. The
+        response carries ``searched_collections`` and a ``hint`` saying which
+        case you are in; read them before concluding anything about
+        permissions.
+
         NOTE (deferred follow-up, "Add artefacts to My Stack" spec): this
         fans out over every RBAC-accessible collection — it does NOT gate by
         the caller's Stack membership (``user_stack_subscriptions``,
@@ -330,6 +345,11 @@ def register_foundation_tools(
         NOTE (deferred follow-up, "Add artefacts to My Stack" spec): the
         Collections leg of this fan-out is not gated by Stack membership
         either — see ``collections_search``'s note.
+
+        The chunk leg carries the same three surprises as
+        ``collections_search``: filenames are not indexed, matching is whole
+        word, and there is no wildcard. An empty result is not evidence that
+        you lack access.
 
         Args:
             query: Natural-language or keyword query.
