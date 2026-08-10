@@ -1017,12 +1017,19 @@ const ADD_COMMAND_MIN_SCORE = 60; // exact name (100) or substring hit (60)
 async function maybeHandleAddCommand(text) {
   const m = text.trim().match(/^(?:add|enable|install)\s+(.+)$/i);
   if (!m) return false;
-  const subject = m[1].trim();
+  // A trailing sentence terminator ("add sales-package.") is punctuation,
+  // not part of what to add — strip it once so every downstream
+  // normalization agrees on the same subject. Previously only the
+  // word-count check was normalized this way; the search query was still
+  // built from the raw capture, so the dot rode along into `q` and broke
+  // the exact-name match, the substring match, and the per-token fallback
+  // alike — the identical message without the trailing "." resolved fine.
+  const subject = m[1].trim().replace(/[.!?]+$/, "");
   // Sentence break or newline => prose, not a command.
   if (/[.!?;:]\s|\n/.test(subject)) return false;
-  const words = subject.replace(/[.!?]+$/, "").split(/\s+/).filter(Boolean);
+  const words = subject.split(/\s+/).filter(Boolean);
   if (words.length > ADD_COMMAND_MAX_WORDS) return false;
-  const query = m[1]
+  const query = subject
     .replace(/\b(the|a|an|package|data|memory|to|my|stack|please)\b/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -1032,7 +1039,7 @@ async function maybeHandleAddCommand(text) {
   } catch (_) {
     return false;
   }
-  const q = (query || m[1]).toLowerCase();
+  const q = (query || subject).toLowerCase();
   const scored = items
     .filter((i) => !i.in_stack)
     .map((i) => ({ i, s: matchScore(q, i) }))
