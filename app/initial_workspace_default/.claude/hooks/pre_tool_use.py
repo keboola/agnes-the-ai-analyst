@@ -37,6 +37,47 @@ ALLOWED_HOSTS = {
     "api.github.com",
 }
 
+
+def _agnes_host() -> str | None:
+    """This instance's own hostname, from the env the sandbox is spawned with.
+
+    It cannot be a literal above: the host differs per deployment, and this
+    file ships verbatim. `app/chat/e2b_provider.py::_effective_allow_out`
+    derives the same host for the VM-level policy and its comment claims the
+    two agree — they did not. The VM allowed the Agnes host and this hook did
+    not, so every in-sandbox request to Agnes was refused here, before it ever
+    reached the network that would have permitted it.
+
+    What that cost, watched live: asked to build a data app, the agent got its
+    git credential from the API, then failed to clone the app's repo by name,
+    by hostname and by IP — including one attempt with the sandbox bypass —
+    because `…/data-apps.git/<slug>` lives on the Agnes host. Authoring a data
+    app from chat was impossible for that reason alone. The MCP tools kept
+    working throughout, which is what made it confusing: they reach the server
+    through the local relay on 127.0.0.1, which was allowed.
+
+    On trust: `AGNES_SERVER` is set by the manager at spawn, but the agent can
+    write to its own environment — so a rewritten value would widen this set.
+    That is not a regression. This hook lives inside the sandbox on a
+    filesystem the agent can write, so it has always been advisory; the
+    authoritative control is the VM egress policy (`deny_out=[ALL_TRAFFIC]`
+    plus an allowlist the sandbox cannot touch), and that policy is unchanged.
+    """
+    import os
+    from urllib.parse import urlparse
+
+    raw = (os.environ.get("AGNES_SERVER") or "").strip()
+    if not raw:
+        return None
+    # A bare `host:port` parses with no hostname — accept both spellings.
+    parsed = urlparse(raw if "//" in raw else f"//{raw}")
+    return parsed.hostname or None
+
+
+_host = _agnes_host()
+if _host:
+    ALLOWED_HOSTS.add(_host)
+
 DESTRUCTIVE_PATHS = ("workspace/snapshots/", "workspace/scripts/")
 DESTRUCTIVE_PREFIXES = ("rm ", "rm\t", "unlink ", "truncate -s 0", "shred ")
 
@@ -376,9 +417,7 @@ def _split_segments_with_seps(cmd: str) -> tuple[tuple[str, str], ...]:
         # Only an UNQUOTED << opens a heredoc. Searching the raw line let a
         # quoted one (echo 'a << b') swallow every later line of a
         # multi-line command (review finding on #1141).
-        found_marker, q_single, q_double = _has_unquoted_heredoc(
-            line, in_single=q_single, in_double=q_double
-        )
+        found_marker, q_single, q_double = _has_unquoted_heredoc(line, in_single=q_single, in_double=q_double)
         if found_marker:
             # The body is data ONLY if the receiving program does not execute
             # it. `bash <<EOF … EOF` runs every line, so skipping it let the
@@ -537,11 +576,7 @@ def _strip_prefix(toks: list[str], *, env_is_wrapper: bool, wrapper: str | None 
         # A bare file-descriptor number is part of the redirection that
         # follows it: the segment lexer splits `2>/dev/null` into `2`, `>`,
         # `/dev/null`, and the lone `2` was becoming the head.
-        if (
-            re.fullmatch(r"\d+", toks[i])
-            and i + 1 < len(toks)
-            and re.match(r"^&?[<>]{1,3}", toks[i + 1])
-        ):
+        if re.fullmatch(r"\d+", toks[i]) and i + 1 < len(toks) and re.match(r"^&?[<>]{1,3}", toks[i + 1]):
             i += 1
             continue
         m_redir = re.match(r"^\d*(?:&?[<>]{1,3})(.*)$", toks[i])
