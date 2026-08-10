@@ -270,16 +270,23 @@
                         data-os-tab="windows" aria-selected="false">Windows (PowerShell)</button>
             </div>
             <div class="install-cmd install-cmd-secret" role="tabpanel" data-os-panel="unix">
-                {# Deliberately guard-free: write the token, launch Claude,
-                   nothing else. The old `command -v claude` gate (token
-                   written only when the flow could continue, so a missing
-                   CLI left no 90-day plaintext credential behind) made the
-                   command unreadable to the audience this page serves.
-                   Accepted trade-off: the file is 0600 under ~/.agnes, a
-                   retry paste overwrites it, `agnes init` deletes it after
-                   use, and a missing CLI now just fails the launch with
-                   'command not found' — the copy below routes that to
-                   "reopen the terminal / re-run step 1, paste again". #}
+                {# Deliberately CLI-guard-free: write the token, launch
+                   Claude, nothing else. The old `command -v claude` gate
+                   (token written only when the flow could continue, so a
+                   missing CLI left no 90-day plaintext credential behind)
+                   made the command unreadable to the audience this page
+                   serves. Accepted trade-off: the file lives under the
+                   user's own profile (0600 via umask on this Unix line;
+                   the PowerShell line inherits the profile dir's ACLs —
+                   user-scoped, not world-readable), a retry paste
+                   overwrites it, `agnes init` deletes it after use, and a
+                   missing CLI now just fails the launch with 'command not
+                   found' — the copy below routes that to "reopen the
+                   terminal / re-run step 1, paste again". The
+                   write-SUCCESS gate before the launch stays on both
+                   lines (`&&` here, `if ($?)` on PowerShell — 5.1 has no
+                   `&&`): a user whose token failed to save must not land
+                   in a session that silently lacks their login. #}
                 <span class="multiline install-cmd-masked" id="install-cmd-token-unix"
                       data-cmd-template="umask 077 &amp;&amp; mkdir -p ~/.agnes &amp;&amp; printf '%s' '{TOKEN}' &gt; ~/.agnes/token &amp;&amp; claude --permission-mode auto --allowedTools &quot;Bash(agnes:*)&quot; &quot;Bash(agnes *)&quot; &quot;Bash(uv tool install:*)&quot;"
                       aria-label="Saves your login token to a file, then launches Claude. The token itself is masked here and never shown on screen."
@@ -287,9 +294,9 @@
             </div>
             <div class="install-cmd install-cmd-secret" role="tabpanel" data-os-panel="windows" hidden>
                 <span class="multiline install-cmd-masked" id="install-cmd-token-windows"
-                      data-cmd-template="New-Item -ItemType Directory -Force &quot;$HOME\.agnes&quot; | Out-Null; [IO.File]::WriteAllText(&quot;$HOME\.agnes\token&quot;, '{TOKEN}'); claude --permission-mode auto --allowedTools &quot;Bash(agnes:*)&quot; &quot;Bash(agnes *)&quot; &quot;Bash(uv tool install:*)&quot;"
+                      data-cmd-template="New-Item -ItemType Directory -Force &quot;$HOME\.agnes&quot; | Out-Null; [IO.File]::WriteAllText(&quot;$HOME\.agnes\token&quot;, '{TOKEN}'); if ($?) { claude --permission-mode auto --allowedTools &quot;Bash(agnes:*)&quot; &quot;Bash(agnes *)&quot; &quot;Bash(uv tool install:*)&quot; }"
                       aria-label="Saves your login token to a file, then launches Claude. The token itself is masked here and never shown on screen."
-                      draggable="false" tabindex="0">New-Item -ItemType Directory -Force "$HOME\.agnes" | Out-Null; [IO.File]::WriteAllText("$HOME\.agnes\token", '&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;'); claude --permission-mode auto --allowedTools "Bash(agnes:*)" "Bash(agnes *)" "Bash(uv tool install:*)"</span>
+                      draggable="false" tabindex="0">New-Item -ItemType Directory -Force "$HOME\.agnes" | Out-Null; [IO.File]::WriteAllText("$HOME\.agnes\token", '&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;'); if ($?) { claude --permission-mode auto --allowedTools "Bash(agnes:*)" "Bash(agnes *)" "Bash(uv tool install:*)" }</span>
             </div>
 
             <div class="setup-cta-row">
