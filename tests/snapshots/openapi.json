@@ -35005,7 +35005,7 @@
     },
     "/api/mcp/query-table/{table_id}": {
       "post": {
-        "description": "Run a constrained filter+limit query against a registered table.\n\nPure SELECT \u2014 no aggregation, no projection control. AI clients\nthat need richer queries should use the generic ``query(sql)``\nsurface from the Agnes MCP foundation; this endpoint is the\n\"fast path\" for the common per-table lookup.",
+        "description": "Run a constrained filter+limit query against a registered table.\n\nPure SELECT \u2014 no aggregation, no projection control. AI clients\nthat need richer queries should use the generic ``query(sql)``\nsurface from the Agnes MCP foundation; this endpoint is the\n\"fast path\" for the common per-table lookup.\n\nPlain ``def`` (not ``async def``) so FastAPI auto-offloads the call to\nthe anyio thread pool \u2014 see ``execute_query`` in ``app/api/query.py``\nfor the same rationale. It didn't matter while this endpoint reused\nthe pooled read-write singleton (a cheap cursor), but\n``get_analytics_db_readonly()`` opens a fresh connection and\nre-ATTACHes every extract.duckdb file on each call; under ``async def``\nthat synchronous I/O would hold the single uvicorn event loop and\nstall every other in-flight request for its duration.",
         "operationId": "query_table_api_mcp_query_table__table_id__post",
         "parameters": [
           {
