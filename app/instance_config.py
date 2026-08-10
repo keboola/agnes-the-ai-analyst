@@ -36,7 +36,8 @@ _last_good_config: Optional[dict] = None
 # not. A validation failure there is NOT fatal — the app boots on built-in
 # defaults — which is a footgun: one typo'd key and the instance runs under
 # the wrong name, with the wrong data source, and the only evidence is a log
-# line. `/admin/server-config` renders this so an operator can see it.
+# line. `get_static_config_error()` exposes this for the admin UI to surface
+# — not wired up there yet.
 _static_config_error: Optional[str] = None
 
 
@@ -164,7 +165,8 @@ def load_instance_config(*, strict: bool = False) -> dict:
         # defaults — wrong instance name, wrong data source, wrong auth
         # domain. That is a misconfigured instance, not a hiccup, and it
         # is invisible in the UI unless we say so (see
-        # `get_static_config_error`, surfaced on /admin/server-config).
+        # `get_static_config_error`, which exists for the admin UI to
+        # surface on /admin/server-config — not wired up there yet).
         _static_config_error = str(e)
         logger.error(
             "Could not load static instance.yaml — serving BUILT-IN DEFAULTS for "
