@@ -11,8 +11,6 @@ Covers:
 
 from __future__ import annotations
 
-import shutil
-import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -23,6 +21,7 @@ import pytest
 def conn(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     from src import db
+
     db._system_db_conn = None
     db._system_db_path = None
     c = db.get_system_db()
@@ -30,8 +29,7 @@ def conn(tmp_path, monkeypatch):
     c.close()
 
 
-def _seed_with_bundle(conn, store_root: Path, owner_id: str, name: str,
-                      status: str, days_old: int) -> tuple[str, str]:
+def _seed_with_bundle(conn, store_root: Path, owner_id: str, name: str, status: str, days_old: int) -> tuple[str, str]:
     """Stage entity + bundle on disk + submission row at a given age."""
     import uuid
     from src.repositories.store_entities import StoreEntitiesRepository
@@ -46,16 +44,28 @@ def _seed_with_bundle(conn, store_root: Path, owner_id: str, name: str,
     (plugin_dir / "SKILL.md").write_text(f"---\nname: {name}\n---\nbody", encoding="utf-8")
 
     StoreEntitiesRepository(conn).create(
-        id=eid, owner_user_id=owner_id, owner_username=owner_id,
-        type="skill", name=name, description="x", category=None,
-        version="1.0.0", file_size=10, visibility_status="hidden",
+        id=eid,
+        owner_user_id=owner_id,
+        owner_username=owner_id,
+        type="skill",
+        name=name,
+        description="x",
+        category=None,
+        version="1.0.0",
+        file_size=10,
+        visibility_status="hidden",
     )
 
     sub_id = StoreSubmissionsRepository(conn).create(
-        submitter_id=owner_id, submitter_email=f"{owner_id}@x.com",
-        type="skill", name=name, version="1.0.0",
-        status=status, entity_id=eid,
-        file_size=42, bundle_sha256="deadbeef" * 8,
+        submitter_id=owner_id,
+        submitter_email=f"{owner_id}@x.com",
+        type="skill",
+        name=name,
+        version="1.0.0",
+        status=status,
+        entity_id=eid,
+        file_size=42,
+        bundle_sha256="deadbeef" * 8,
     )
     # Backdate created_at so the TTL test sees the row as old.
     if days_old > 0:
@@ -74,8 +84,12 @@ class TestPurgeBlockedBundles:
         from src.repositories.store_entities import StoreEntitiesRepository
 
         sub_id, eid = _seed_with_bundle(
-            conn, tmp_path / "store", "u1", "old-bad",
-            status="blocked_llm", days_old=45,
+            conn,
+            tmp_path / "store",
+            "u1",
+            "old-bad",
+            status="blocked_llm",
+            days_old=45,
         )
         plugin_dir = tmp_path / "store" / eid / "plugin"
         assert plugin_dir.exists()
@@ -102,8 +116,12 @@ class TestPurgeBlockedBundles:
         from src.repositories.store_submissions import StoreSubmissionsRepository
 
         sub_id, eid = _seed_with_bundle(
-            conn, tmp_path / "store", "u1", "fresh-bad",
-            status="blocked_llm", days_old=2,
+            conn,
+            tmp_path / "store",
+            "u1",
+            "fresh-bad",
+            status="blocked_llm",
+            days_old=2,
         )
         result = purge_blocked_bundles(
             ttl_days=30,
@@ -118,8 +136,12 @@ class TestPurgeBlockedBundles:
         from src.store_guardrails.purge import purge_blocked_bundles
 
         sub_id, eid = _seed_with_bundle(
-            conn, tmp_path / "store", "u1", "old-approved",
-            status="approved", days_old=100,
+            conn,
+            tmp_path / "store",
+            "u1",
+            "old-approved",
+            status="approved",
+            days_old=100,
         )
         result = purge_blocked_bundles(
             ttl_days=30,
@@ -132,8 +154,12 @@ class TestPurgeBlockedBundles:
         from src.store_guardrails.purge import purge_blocked_bundles
 
         sub_id, eid = _seed_with_bundle(
-            conn, tmp_path / "store", "u1", "old-override",
-            status="overridden", days_old=100,
+            conn,
+            tmp_path / "store",
+            "u1",
+            "old-override",
+            status="overridden",
+            days_old=100,
         )
         result = purge_blocked_bundles(
             ttl_days=30,
@@ -160,8 +186,12 @@ class TestPurgeBlockedBundles:
         assert "review_error" not in TERMINAL_BLOCKED_STATUSES
 
         sub_id, eid = _seed_with_bundle(
-            conn, tmp_path / "store", "u1", "crashed-review",
-            status="review_error", days_old=100,
+            conn,
+            tmp_path / "store",
+            "u1",
+            "crashed-review",
+            status="review_error",
+            days_old=100,
         )
         result = purge_blocked_bundles(
             ttl_days=30,
@@ -176,8 +206,12 @@ class TestPurgeBlockedBundles:
         from src.store_guardrails.purge import purge_blocked_bundles
 
         _seed_with_bundle(
-            conn, tmp_path / "store", "u1", "x",
-            status="blocked_llm", days_old=45,
+            conn,
+            tmp_path / "store",
+            "u1",
+            "x",
+            status="blocked_llm",
+            days_old=45,
         )
         first = purge_blocked_bundles(
             ttl_days=30,
@@ -196,8 +230,12 @@ class TestPurgeBlockedBundles:
         from src.store_guardrails.purge import purge_blocked_bundles
 
         sub_id, eid = _seed_with_bundle(
-            conn, tmp_path / "store", "u1", "x",
-            status="blocked_llm", days_old=999,
+            conn,
+            tmp_path / "store",
+            "u1",
+            "x",
+            status="blocked_llm",
+            days_old=999,
         )
         result = purge_blocked_bundles(
             ttl_days=0,
@@ -205,3 +243,31 @@ class TestPurgeBlockedBundles:
         )
         assert result == {"purged": 0, "ids": [], "skipped": True}
         assert (tmp_path / "store" / eid / "plugin").exists()
+
+
+class TestRetentionDocMatchesCode:
+    """`docs/STORE_GUARDRAILS.md`'s "Retention model" section must state the
+    exact same status set as `TERMINAL_BLOCKED_STATUSES`.
+
+    Regression: the doc kept saying the TTL job purges
+    `{blocked_inline, blocked_llm, review_error}` after `review_error` was
+    removed from the code's set (see `test_skips_review_error` above) — an
+    operator reading the page would expect bytes to disappear that are now
+    deliberately retained.
+    """
+
+    def test_doc_status_set_matches_terminal_blocked_statuses(self):
+        import re
+        from pathlib import Path
+
+        from src.store_guardrails.purge import TERMINAL_BLOCKED_STATUSES
+
+        doc = Path("docs/STORE_GUARDRAILS.md").read_text(encoding="utf-8")
+        m = re.search(r"still in `\{([^}]+)\}`", doc)
+        assert m, "expected a `` `still in {...}` `` status set in the Retention model section"
+        doc_statuses = {s.strip().strip("`") for s in m.group(1).split(",")}
+        assert doc_statuses == set(TERMINAL_BLOCKED_STATUSES), (
+            "docs/STORE_GUARDRAILS.md's Retention model section has drifted from "
+            f"TERMINAL_BLOCKED_STATUSES: doc says {doc_statuses!r}, code says "
+            f"{set(TERMINAL_BLOCKED_STATUSES)!r}"
+        )
