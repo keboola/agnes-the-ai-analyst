@@ -141,6 +141,37 @@ class TestPurgeBlockedBundles:
         )
         assert result["purged"] == 0
 
+    def test_skips_review_error(self, conn, tmp_path):
+        """A crashed review is not a verdict — its bundle must survive.
+
+        `review_error` means the LLM call timed out or crashed, so the
+        submission was never judged; `llm_review.py` documents it as the state
+        that "exposes a retry path". Sweeping it here made that retry
+        impossible without saying so. Seen in production: a skill whose inline
+        checks all passed sat in `review_error` for a month, lost its bundle to
+        this sweep, and can now never be reviewed or recovered.
+        """
+        from src.store_guardrails.purge import (
+            TERMINAL_BLOCKED_STATUSES,
+            purge_blocked_bundles,
+        )
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+
+        assert "review_error" not in TERMINAL_BLOCKED_STATUSES
+
+        sub_id, eid = _seed_with_bundle(
+            conn, tmp_path / "store", "u1", "crashed-review",
+            status="review_error", days_old=100,
+        )
+        result = purge_blocked_bundles(
+            ttl_days=30,
+            store_dir_resolver=lambda: tmp_path / "store",
+        )
+        assert result["purged"] == 0
+        sub = StoreSubmissionsRepository(conn).get(sub_id)
+        assert sub["bundle_purged_at"] is None
+        assert (tmp_path / "store" / eid / "plugin").exists()
+
     def test_idempotent(self, conn, tmp_path):
         from src.store_guardrails.purge import purge_blocked_bundles
 
