@@ -122,15 +122,31 @@ def _draft_slug_rename(before: Dict[str, Any], new_name: Any, owner_user_id: str
     name = (new_name or "").strip() if isinstance(new_name, str) else ""
     if not name:
         return None
+    if before.get("is_default"):
+        # The seeded default agent's slug is a RESERVED address —
+        # `POST /api/v1/agents/default/responses`, `_RESERVED_SLUGS` in
+        # agents_admin.py, and every web chat's attribution
+        # (`app/api/chat.py::_default_agent_id`) resolve through it. It is
+        # also seeded with no status, which COALESCEs to `draft`, so it is a
+        # PERMANENT draft the builder happily renames: without this exemption
+        # the rule would relocate that address and never freeze it again.
+        return None
     if (before.get("status") or "") != "draft":
         return None
     current = before.get("slug") or ""
     if not _slug_tracks_name(current, before.get("name")):
         return None
-    candidate = _auto_slug(name)
-    if candidate == current:
+    if _slug_tracks_name(current, name):
+        # Already an acceptable slug for the NEW name — including a suffixed
+        # form. Bailing here is what stops the slug walking upward: the
+        # builder re-sends the unchanged `name` on every field edit, and
+        # `_unique_slug` has no notion of the row being updated, so it counts
+        # this agent's own `revenue-analyst-2` as taken and would answer
+        # `-3`, then `-4` on the next save, up to the 999 cap. It also covers
+        # the unsluggable rename ("!!!" -> the `agent` placeholder the row
+        # already holds).
         return None
-    resolved = _unique_slug(candidate, owner_user_id)
+    resolved = _unique_slug(_auto_slug(name), owner_user_id)
     return None if resolved == current else resolved
 
 
