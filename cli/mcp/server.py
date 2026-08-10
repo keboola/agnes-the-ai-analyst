@@ -379,7 +379,15 @@ def chat_upload_file(
     register_as_table: bool = False,
     table_name: str = "",
 ) -> dict:
-    """Upload a local file into your chat workspace (POST /api/chat/uploads).
+    """Push a file from THIS machine into your chat workspace (POST /api/chat/uploads).
+
+    **Direction: this machine → workspace. Not a way to hand a file to the
+    user.** An agent inside a chat sandbox that has produced a chart or a
+    report cannot deliver it with this tool — the path it would name is the
+    sandbox's, not the reader's, and this server is not running there anyway
+    (it fails with "No Agnes token configured"). Put the result in the reply:
+    inline ``<svg>`` for a chart, a ```mermaid fence for a diagram, a markdown
+    table for figures.
 
     The file at ``file_path`` (local filesystem path) is read and posted to
     the Agnes server, landing in your per-user workspace ``uploads/`` folder

@@ -33,6 +33,52 @@ logger = logging.getLogger(__name__)
 WORKSPACE_LINK_ENTRIES = (".claude", "CLAUDE.md", "snapshots", "scripts", "scaffolds", "CLAUDE.local.md")
 
 
+#: Bundled skills that only make sense when a feature is switched on, keyed by
+#: the flag that governs them. The workspace tree ships every skill it has, and
+#: nothing consults the instance's own configuration — so on an instance with
+#: data apps OFF the agent still learns the data-app workflow and reaches for
+#: it. Observed on a live instance: asked for a chart, it loaded
+#: `agnes-data-apps-extras`, called `data_apps_list`, and got a 404
+#: `data_apps_disabled` — a wasted round trip, and worse, the skill had already
+#: aimed it at building a hosted dashboard for what was a one-off plot.
+_FEATURE_GATED_SKILLS = {
+    "agnes-data-apps-extras": ("data_apps", "enabled", "AGNES_DATA_APPS_ENABLED"),
+}
+
+
+def _prune_disabled_feature_skills(ws: Path) -> None:
+    """Remove bundled skills whose feature is off on THIS instance.
+
+    Runs after the template copy rather than filtering the copy itself: the
+    workspace is converged repeatedly, and an operator who turns a feature off
+    later must see the skill leave. Removal is by directory, so turning the
+    flag back on restores it on the next convergence — the bundled tree is the
+    source, this only subtracts.
+
+    Best-effort by design. A skill that cannot be removed is a worse outcome
+    than the one it causes (the agent wastes a call on a 404), so a failure
+    here is logged and the workspace is still usable.
+    """
+    import shutil
+
+    from app.instance_config import feature_enabled
+
+    skills_root = ws / ".claude" / "skills"
+    if not skills_root.is_dir():
+        return
+    for skill_name, (section, key, env_var) in _FEATURE_GATED_SKILLS.items():
+        if feature_enabled(section, key, env_var=env_var, default=False):
+            continue
+        target = skills_root / skill_name
+        if not target.is_dir():
+            continue
+        try:
+            shutil.rmtree(target)
+            logger.info("workdir: pruned skill %s (%s.%s is off)", skill_name, section, key)
+        except OSError:
+            logger.warning("workdir: could not prune skill %s", skill_name, exc_info=True)
+
+
 def _safe_email_dir(email: str) -> str:
     """Email → directory-safe slug. Lowercase, replace non-[a-z0-9_-.@] with '_'."""
     return "".join(c if c.isalnum() or c in "._-@" else "_" for c in email.lower())
@@ -154,6 +200,7 @@ class WorkdirManager:
                 server_url=self._server_url,
                 bundled_template_dir=self._bundled_template_dir,
             )
+            _prune_disabled_feature_skills(ws)
             # DEFAULT MODE: overwrite the workspace CLAUDE.md with the
             # server-rendered analyst prompt (admin Workspace Prompt override
             # or shipped default), RBAC-filtered for this user — the same
