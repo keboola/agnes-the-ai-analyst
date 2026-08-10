@@ -222,3 +222,31 @@ def test_unsluggable_rename_does_not_produce_a_duplicate_placeholder(seeded_app)
     agent = _create(seeded_app, tok)
     renamed = _patch(seeded_app, agent["id"], tok, name="!!!")
     assert renamed["slug"] == "agent"
+
+
+def test_governance_created_agent_slug_never_moves_through_a_builder_rename(seeded_app):
+    """A governance-created agent (explicit slug, `POST /api/v1/agents`) is
+    published by definition — the caller chose the slug at creation time, and
+    `create_agent` now marks it `ready` rather than leaving it a `draft`.
+    Before that fix, an agent created this way was indistinguishable from a
+    builder placeholder: `status` defaults to `draft` on both backends, so
+    the very rename rule this module tests would relocate its
+    deliberately-chosen slug — and any PAT already minted against it — on
+    the next `/agents` field-edit save.
+    """
+    tok = seeded_app["admin_token"]
+    client = seeded_app["client"]
+    r = client.post("/api/v1/agents", json={"name": "My Bot", "slug": "my-bot"}, headers=_auth(tok))
+    assert r.status_code == 201, r.text
+    agent = r.json()
+    assert agent["status"] == "ready", "a governance-created agent publishes its slug immediately"
+
+    # The governance PUT route also refuses to move the slug directly.
+    put = client.put(f"/api/v1/agents/{agent['id']}", json={"slug": "renamed"}, headers=_auth(tok))
+    assert put.status_code == 400
+    assert put.json()["detail"]["code"] == "slug_immutable"
+
+    # The builder's PATCH goes through `_draft_slug_rename` — status='ready'
+    # must freeze the slug there too.
+    renamed = _patch(seeded_app, agent["id"], tok, name="Support Bot")
+    assert renamed["slug"] == "my-bot"

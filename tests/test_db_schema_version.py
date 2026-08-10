@@ -1224,6 +1224,68 @@ def test_the_agents_exemption_is_real():
     conn.close()
 
 
+def _insert_agent(conn, *, id, slug, status, is_default=False, name="Agent"):
+    conn.execute(
+        "INSERT INTO agents (id, owner_user_id, name, slug, status, is_default, created_at, updated_at) "
+        "VALUES (?, 'u1', ?, ?, ?, ?, current_timestamp, current_timestamp)",
+        [id, name, slug, status, is_default],
+    )
+
+
+def test_v115_reclassifies_pre_existing_governance_agents_as_ready(tmp_path):
+    """v114→v115: a `draft` agent whose slug is not the builder's placeholder
+    lineage (`agent` / `agent-N`) and is not the seeded default agent must
+    have arrived through the governance API's caller-chosen slug (nothing
+    else could have moved it there before this PR — see `_v114_to_v115`'s
+    docstring) — reclassified to `ready` so the draft-rename rule
+    (app/api/agents.py::_draft_slug_rename) freezes its address. A
+    placeholder-lineage draft and the seeded default agent are left alone.
+    """
+    db_path = tmp_path / "v114.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    conn.execute("UPDATE schema_version SET version = 114")
+    _insert_agent(conn, id="gov1", slug="revenue-bot", status="draft", name="Revenue Bot")
+    _insert_agent(conn, id="builder1", slug="agent", status="draft", name="")
+    _insert_agent(conn, id="builder2", slug="agent-2", status="draft", name="")
+    _insert_agent(conn, id="def1", slug="default", status="draft", is_default=True, name="Default")
+    _insert_agent(conn, id="ready1", slug="already-ready", status="ready", name="Already Ready")
+    conn.close()
+
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    assert get_schema_version(conn) == SCHEMA_VERSION
+
+    rows = dict(
+        conn.execute(
+            "SELECT id, status FROM agents WHERE id IN ('gov1', 'builder1', 'builder2', 'def1', 'ready1')"
+        ).fetchall()
+    )
+    assert rows["gov1"] == "ready", "a governance-created agent's slug is deliberately chosen — freeze it"
+    assert rows["builder1"] == "draft", "an unnamed builder placeholder must keep re-deriving its slug"
+    assert rows["builder2"] == "draft", "…including a suffixed placeholder"
+    assert rows["def1"] == "draft", "the seeded default agent is a PERMANENT draft by design"
+    assert rows["ready1"] == "ready", "already-ready rows are untouched"
+    conn.close()
+
+
+def test_v114_to_v115_is_idempotent(tmp_path):
+    """Re-running the step (as a fresh install's ladder walk does) must not
+    raise and must not un-freeze an already-migrated row."""
+    from src.db import _v114_to_v115
+
+    db_path = tmp_path / "idempotent.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    _insert_agent(conn, id="gov1", slug="revenue-bot", status="draft", name="Revenue Bot")
+
+    _v114_to_v115(conn)
+    _v114_to_v115(conn)  # must not raise, must not toggle anything back
+
+    assert conn.execute("SELECT status FROM agents WHERE id = 'gov1'").fetchone()[0] == "ready"
+    conn.close()
+
+
 def test_add_column_default_reaches_pre_existing_rows():
     """Pins what the heals may assume about ADD COLUMN ... DEFAULT.
 
