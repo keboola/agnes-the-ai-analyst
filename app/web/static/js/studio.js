@@ -195,7 +195,18 @@ async function openAssistant() {
     const sendBtn = $("studio-send");
     if (sendBtn) sendBtn.addEventListener("click", send);
   } catch (e) {
-    appendStream(`Assistant unavailable: ${e.message}\n`);
+    // Don't paste the raw exception into the panel. The common cause is a
+    // missing cloud-chat grant, which used to surface here verbatim as
+    // `Assistant unavailable: "Access denied to chat 'chat'"` — an internal
+    // string, on a page whose banner reads "AI-ASSISTED". The reader cannot
+    // act on it and cannot tell whether it is their permissions or a broken
+    // instance. Say what it means for them; keep the detail for the console.
+    console.warn("studio assistant unavailable:", e);
+    appendStream(
+      "The assistant isn't available on your account — an admin enables it " +
+        "by granting your group the cloud-chat feature. You can still fill " +
+        "in the form below and create this yourself.\n",
+    );
   }
 }
 
