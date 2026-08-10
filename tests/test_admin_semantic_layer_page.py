@@ -199,6 +199,110 @@ class TestSemanticLayerPageSources:
         assert "/admin/data-sources" in body
         assert "no" in body.lower()
 
+    def test_empty_state_names_connections_that_lack_a_master_token(self, seeded_app):
+        """A connected Keboola project with no master token must be named.
+
+        "No Keboola projects have a master token configured yet" was the whole
+        empty state, and to an admin looking at a working, table-syncing
+        connection it reads as "your project isn't connected" — the master
+        token is a separate vault slot the wizard never fills, so this is the
+        state EVERY wizard-connected instance starts in.
+        """
+        from src.repositories import source_connections_repo
+
+        source_connections_repo().create(
+            id="conn-storage-only",
+            name="Acme Warehouse",
+            source_type="keboola",
+            config={"stack_url": "https://connection.keboola.com"},
+            is_default=True,
+            created_by="test",
+        )
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/admin/semantic-layer", headers=_auth(token))
+        assert resp.status_code == 200
+        body = resp.text
+
+        assert "Acme Warehouse" in body
+        assert "/admin/data-sources" in body
+        # The old wording claimed nothing is connected; it must not come back
+        # while a connection exists.
+        assert "No Keboola projects are connected yet" not in body
+
+    def test_orphan_row_naming_a_live_connection_shows_its_name(self, seeded_app):
+        """An orphaned ref that still matches a connection is not a mystery
+        UUID — it is "this project lost its master token", and the page must
+        say so instead of printing a bare id nobody can act on."""
+        from src.repositories import metric_repo, source_connections_repo
+
+        source_connections_repo().create(
+            id="conn-lost-master",
+            name="Acme Warehouse",
+            source_type="keboola",
+            config={"stack_url": "https://connection.keboola.com"},
+            is_default=True,
+            created_by="test",
+        )
+        metric_repo().create(
+            id="revenue/stranded",
+            name="stranded",
+            display_name="Stranded",
+            category="revenue",
+            sql="SELECT 1",
+            source="keboola_semantic_layer",
+            source_ref="conn-lost-master",
+        )
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        body = c.get("/admin/semantic-layer", headers=_auth(token)).text
+
+        assert "orphan" in body.lower()
+        assert "Acme Warehouse" in body
+        assert "master token missing" in body
+
+    def test_skipped_unresolved_metrics_are_surfaced_with_their_tables(self, seeded_app, vault_key):
+        """The skip counter must reach a human.
+
+        Verified on a live instance: a sync reported 9 glossary terms and 0
+        metrics, and the reason — 50 metrics dropped because 12 datasets point
+        at tables nobody registered — existed only as a number in the API
+        response. Neither the page nor the log named a single table.
+        """
+        from app.api import keboola_semantic_layer_refresh as endpoint_module
+
+        _make_master_connection(
+            "conn-a",
+            name="Production Project",
+            stack_url="https://connection.keboola.com",
+            token="master-tok",
+            is_default=True,
+        )
+        endpoint_module._refresh_state["last_result"] = {
+            "status": "ok",
+            "sources": [
+                {
+                    "connection_id": "conn-a",
+                    "status": "ok",
+                    "created_or_updated": 0,
+                    "glossary_created_or_updated": 9,
+                    "skipped_unresolved_table": 50,
+                    "unresolved_tables": ["in.c-demo.customers", "in.c-demo.orders_demo"],
+                }
+            ],
+        }
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        body = c.get("/admin/semantic-layer", headers=_auth(token)).text
+
+        assert "50" in body
+        assert "in.c-demo.customers" in body
+        assert "in.c-demo.orders_demo" in body
+        assert "Browse &amp; register tables" in body or "Browse & register tables" in body
+
     def test_semantic_layer_page_orphaned_rows(self, seeded_app, vault_key):
         from src.repositories import metric_repo
 
@@ -272,6 +376,11 @@ class TestSemanticLayerPageSources:
 
         assert "orphan" in body.lower()
         assert "legacy / unattributed" in body
-        # Not folded into any per-connection row — there is none rendered,
-        # since the only connection has no master token.
-        assert "No Master Token Project" not in body
+        # Not folded into any per-connection row — none is rendered, since the
+        # only connection has no master token. The Sources *table* is what must
+        # stay absent; the connection's NAME now appears deliberately, in the
+        # empty state, so an admin can see which project is missing a token
+        # instead of reading "no projects are configured" next to a project
+        # they just connected.
+        assert "One row per Keboola project with a master token" not in body
+        assert "No Master Token Project" in body

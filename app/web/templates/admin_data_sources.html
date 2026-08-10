@@ -281,9 +281,13 @@
     padding: 10px 16px; border-radius: 8px;
     font-size: 13px; font-weight: 500;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
-    z-index: 9999; display: none; align-items: center; gap: 8px; max-width: 360px;
+    z-index: 9999; display: none; align-items: center; gap: 8px; max-width: 520px;
+    /* The failure text carries the upstream reason ("HTTP 401: invalid token"),
+       so it has to stay readable and selectable rather than clipped. */
+    white-space: pre-wrap; user-select: text;
   }
   .ds-toast.show { display: flex; }
+  .ds-toast.toast-fail { cursor: pointer; }
   .ds-toast.toast-ok   { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); border: 1px solid var(--ds-accent-success-line); }
   .ds-toast.toast-fail { background: var(--ds-accent-danger-bg); color: var(--ds-accent-danger-ink); border: 1px solid var(--ds-accent-danger-line); }
 </style>
@@ -412,8 +416,18 @@ function showToast(msg, ok) {
   el.textContent = msg;
   el.className = "ds-toast show " + (ok ? "toast-ok" : "toast-fail");
   clearTimeout(el._t);
-  el._t = setTimeout(() => { el.className = "ds-toast"; }, 3500);
+  // Only successes auto-dismiss. A failed token save reports the upstream
+  // reason, and a 3.5s window meant it was gone before anyone read it — the
+  // error got relayed as "I get a 502" with the actual cause lost.
+  el.title = ok ? "" : "Click to dismiss";
+  if (ok) {
+    el._t = setTimeout(() => { el.className = "ds-toast"; }, 3500);
+  }
 }
+document.addEventListener("DOMContentLoaded", () => {
+  const el = document.getElementById("ds-toast");
+  if (el) el.addEventListener("click", () => { el.className = "ds-toast"; });
+});
 
 /* ── Connections list ─────────────────────────────────────────────────── */
 
