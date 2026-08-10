@@ -332,6 +332,38 @@ def run(dry_run: bool = False, verbose: bool = False) -> dict:
 
     elapsed = time.time() - start_time
 
+    # One coalesced rebuild for the whole run — not one per issue, and not none
+    # at all. `transform_single_issue` no longer refreshes `_meta` itself (that
+    # moved to `app.worker.kinds._run_jira_refresh`), and this module, unlike the
+    # webhook path in `connectors/jira/service.py`, has never enqueued anything.
+    # Without this the catalog's row/size numbers — and the `CREATE OR REPLACE
+    # VIEW` that `update_meta` also performs — would only be refreshed whenever a
+    # webhook happened to fire, which on an instance where this poller is the main
+    # writer could be never. The parquet the poll just wrote is queryable either
+    # way: the extract views glob it per query.
+    #
+    # Skipped when nothing was written — a rebuild with nothing to publish is pure
+    # cost, and this runs every 15 minutes.
+    if stats["updated"] or stats["healed"]:
+        try:
+            from app.job_correlation import stamp_request_id
+            from src.repositories import jobs_repo
+
+            result = jobs_repo().enqueue("jira-refresh", stamp_request_id({}), idempotency_key="jira-refresh")
+            # Same invariant the webhook path states in `connectors/jira/service.py`:
+            # the dedup matches `status IN ('queued', 'running')`, so collapsing onto
+            # an already-RUNNING refresh is not enough — that job may have read the
+            # parquet before this run's writes landed. Enqueue a coalescing follow-up
+            # under a distinct key to guarantee a rebuild strictly after them. Nothing
+            # else recovers it: the next poll only enqueues if it writes again.
+            if result.get("status") == "running":
+                jobs_repo().enqueue("jira-refresh", stamp_request_id({}), idempotency_key="jira-refresh-followup")
+        except Exception as enqueue_err:
+            # Non-fatal by design: this module also runs as a standalone script
+            # where the job queue need not be reachable, and the poll's own work
+            # — fresh JSON, fresh parquet — is already done and durable.
+            logger.warning(f"Could not enqueue jira-refresh after the SLA poll: {enqueue_err}")
+
     logger.info("=" * 60)
     logger.info("Field refresh polling completed!")
     logger.info(f"Open issues polled: {len(open_issues)}")
