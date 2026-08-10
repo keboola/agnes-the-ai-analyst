@@ -60,6 +60,40 @@ def test_strip_title_truncates_long_titles():
     assert out.endswith("…")
 
 
+def test_strip_title_rejects_answer_shaped_replies():
+    """Haiku sometimes ANSWERS the first message instead of titling it.
+
+    Observed in production: a chat whose first message was "What is currently
+    in my stack? Then remove the sl-toolkit plugin from it" — a turn that went
+    on to read the stack and perform the removal — was titled "I don't have
+    access to information about your stack or the…". The sidebar then reports
+    a refusal the conversation never made. No title beats a wrong one.
+    """
+    answers = [
+        "I don't have access to information about your stack or the plugins in it",
+        "I'm sorry, I can't help with that",
+        "Sure! Here's a summary of your revenue trends for the quarter",
+        "Based on the data you shared, the answer is 42 across all regions",
+        "Unfortunately that table is not registered on this instance",
+    ]
+    for raw in answers:
+        assert auto_title._strip_title(raw) is None, raw
+
+
+def test_strip_title_keeps_real_titles():
+    """The guard must not eat legitimate titles — including ones that merely
+    start with a letter or word the answer-detector cares about."""
+    titles = {
+        "MRR metric definition": "MRR metric definition",
+        "Invoice reconciliation": "Invoice reconciliation",
+        "Czech greeting response": "Czech greeting response",
+        "Q4 revenue by product line": "Q4 revenue by product line",
+        "Iceberg table migration plan": "Iceberg table migration plan",
+    }
+    for raw, expected in titles.items():
+        assert auto_title._strip_title(raw) == expected
+
+
 # --- generate_title (top-level coordinator) ---------------------------------
 
 
