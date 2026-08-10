@@ -54,3 +54,54 @@ def test_progress_pct_normal_when_total_accurate():
     import re
     pcts = [int(m.group(1)) for m in re.finditer(r"t: (\d+)%", stream.getvalue())]
     assert max(pcts) == 100
+
+
+def test_failed_transfer_is_not_reported_as_done():
+    """A file that never received its bytes must not print "100% done".
+
+    Live symptom (analyst persona, `agnes pull` against a table whose
+    download 403'd): the summary read
+
+        [1/1 files] orders: 100% done (0 B in 0.0s, 0 B/s)
+
+    with the real error buried below it. A green completion line for a
+    failure is worse than no line — the analyst reported the pull as
+    successful and went looking for the data.
+    """
+    from io import StringIO
+
+    from cli.lib.pull import _TextualProgress
+
+    stream = StringIO()
+    emitter = _TextualProgress(
+        stream=stream,
+        total_files=1,
+        file_sizes={"orders": 1_000_000},
+    )
+    # No advance() at all — this is the 403 shape: bytes never arrived.
+    emitter.finish()
+
+    output = stream.getvalue()
+    assert "100% done" not in output, output
+    assert "FAILED" in output, output
+    assert "orders" in output
+
+
+def test_partial_transfer_is_not_reported_as_done():
+    """Same guard for a transfer that started and then died mid-flight."""
+    from io import StringIO
+
+    from cli.lib.pull import _TextualProgress
+
+    stream = StringIO()
+    emitter = _TextualProgress(
+        stream=stream,
+        total_files=1,
+        file_sizes={"orders": 1_000_000},
+    )
+    emitter.advance("orders", 250_000)
+    emitter.finish()
+
+    output = stream.getvalue()
+    assert "100% done" not in output, output
+    assert "FAILED" in output, output

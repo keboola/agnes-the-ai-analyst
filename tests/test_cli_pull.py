@@ -209,3 +209,54 @@ def test_pull_no_server_friendly_exit(tmp_path, monkeypatch):
     # Either exit 1 with hint, or exit 0 if a default server URL applies.
     # Either way, there must be no Python traceback in stderr/stdout.
     assert "Traceback" not in (_clean(result.output) + _clean(result.stderr or ""))
+
+
+class TestPullErrorRendering:
+    """`PullResult.errors` entries are dicts built at the failure site; the
+    CLI used to print them with an f-string, so an analyst whose download
+    403'd got a Python repr:
+
+        warn: {'table': 'orders', 'error': "Client error '403 Forbidden' ..."}
+    """
+
+    def test_table_error_renders_as_prose(self):
+        from cli.commands.pull import format_pull_error
+
+        line = format_pull_error(
+            {"table": "orders", "error": "Client error '403 Forbidden' for url '...'"}
+        )
+        assert not line.startswith("{")
+        assert "'table'" not in line
+        assert line == "orders: Client error '403 Forbidden' for url '...'"
+
+    def test_stage_and_package_shapes_render(self):
+        from cli.commands.pull import format_pull_error
+
+        assert format_pull_error({"stage": "manifest", "error": "boom"}) == "manifest: boom"
+        assert (
+            format_pull_error({"package": "sales", "name": "orders", "error": "nope"})
+            == "orders sales: nope"
+        )
+
+    def test_unknown_shape_falls_back_to_str(self):
+        from cli.commands.pull import format_pull_error
+
+        assert format_pull_error("plain string") == "plain string"
+        assert format_pull_error({"weird": 1}) == str({"weird": 1})
+
+    def test_both_warn_sites_use_the_formatter(self):
+        """Static guard: neither emission path may go back to the raw f-string.
+
+        `format_pull_error` only helps if the call sites use it; the quiet
+        (SessionStart-hook) path and the interactive path each print errors
+        and it was the interactive one an analyst hit.
+        """
+        from pathlib import Path
+
+        src = Path("cli/commands/pull.py").read_text(encoding="utf-8")
+        assert 'f"warn: {e}"' not in src, (
+            "raw repr of the error dict is back — route it through format_pull_error"
+        )
+        assert src.count('format_pull_error(e)') == 2, (
+            "both the --quiet and the interactive error paths must format"
+        )
