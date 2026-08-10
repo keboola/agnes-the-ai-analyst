@@ -866,3 +866,34 @@ class TestMetricReconcileRefusalIsAtomic:
         with pytest.raises(ValueError):
             repo.reconcile_from_yaml(metrics_dir, prune=True)
         assert repo.get("revenue/total_revenue")["sql"] == before
+
+
+class TestMetricReconcileHandlesBrokenYaml:
+    """A file with broken *syntax* is the same problem as one that parses to
+    nothing, and likelier in a half-written export — it must not abort the
+    import on a parser traceback partway through the directory."""
+
+    def test_broken_syntax_does_not_crash_the_import(self, db_conn, tmp_path):
+        from src.repositories.metrics import MetricRepository
+
+        repo = MetricRepository(db_conn)
+        d = tmp_path / "in" / "revenue"
+        d.mkdir(parents=True)
+        (d / "ok.yml").write_text("name: ok\ncategory: revenue\nsql: SELECT 1\n")
+        (d / "broken.yml").write_text("name: [unclosed\n")
+
+        assert repo.import_from_yaml(tmp_path / "in") == 1
+        assert {m["id"] for m in repo.list()} == {"revenue/ok"}
+
+    def test_broken_syntax_blocks_prune_and_names_the_file(self, db_conn, tmp_path):
+        from src.repositories.metrics import MetricRepository
+
+        repo = MetricRepository(db_conn)
+        d = tmp_path / "in" / "revenue"
+        d.mkdir(parents=True)
+        (d / "ok.yml").write_text("name: ok\ncategory: revenue\nsql: SELECT 1\n")
+        repo.reconcile_from_yaml(tmp_path / "in")
+
+        (d / "broken.yml").write_text("name: [unclosed\n")
+        with pytest.raises(ValueError, match="broken.yml"):
+            repo.reconcile_from_yaml(tmp_path / "in", prune=True)
