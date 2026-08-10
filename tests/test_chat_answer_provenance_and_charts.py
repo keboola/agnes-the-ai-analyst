@@ -129,18 +129,24 @@ def test_the_tour_still_promises_provenance():
 
 
 def _assert_promises_provenance(md: str) -> None:
-    assert "Sources:" in md, "the workspace prompt must ask for a sources line"
+    """The rule started life as a prose `Sources:` line. That was the right
+    first move and the wrong final shape: prose cannot be checked, so a wrong
+    claim and a missing one both looked like an ordinary answer. It is now a
+    fenced block the server parses and verifies against the turn's own tool
+    calls — see `tests/test_chat_sources_ui.py` for the contract and
+    `tests/test_chat_sources_verdict.py` for the verification.
+
+    What this keeps guarding is what did not change: that the prompt asks at
+    all — in BOTH of its homes, per the two callers below — and that it draws
+    the hard edge rather than only describing the happy path.
+    """
+    assert "```sources" in md, "the prompt must ask for a sources block"
     assert re.search(
         r"never report a (number|figure) whose origin you cannot name",
         md,
         re.IGNORECASE,
     ), "the rule needs the hard edge, not just the happy path"
     assert "metric" in md.lower(), "a canonical metric must be citable alongside the table"
-    # The reply is rendered as markdown, so an assumption written on its own
-    # line without a blank line before it silently joins the Sources line —
-    # seen in the rendered bubble, not in any assertion. The rule keeps it to
-    # one line and says why.
-    assert "blank line" in md, "the prompt must say why the Sources line stands alone"
 
 
 def test_the_workspace_prompt_makes_the_promise_true():
