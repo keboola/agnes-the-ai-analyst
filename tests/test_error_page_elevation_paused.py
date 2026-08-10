@@ -114,6 +114,27 @@ class TestAnchorSurvivesRendering:
         assert r.status_code == 200, r.text
         assert 'id="admin-mode"' in r.text, f"anchor missing from rendered {layout} profile"
 
+    def test_the_layout_parametrization_really_switches_template(self, seeded_app, monkeypatch):
+        """Otherwise the pair above could be testing one chrome twice.
+
+        The env var is set after the app is built, so this only exercises
+        both templates if `get_ui_layout()` re-reads the environment per
+        request rather than caching at import. It does today — pin it, so a
+        future memoization turns this guard's silence into a failure instead
+        of leaving it quietly checking the default chrome twice.
+        """
+        c = seeded_app["client"]
+        c.cookies.set("access_token", seeded_app["admin_token"])
+
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "topnav")
+        topnav = c.get("/me/profile", headers={"Accept": "text/html"}).text
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        rail = c.get("/me/profile", headers={"Accept": "text/html"}).text
+
+        assert topnav != rail, "both layouts rendered identically — is get_ui_layout() cached?"
+        assert 'data-ui-layout="rail"' in rail
+        assert 'data-ui-layout="rail"' not in topnav
+
 
 class TestRenderedPage:
     def test_paused_admin_sees_the_remedy(self, seeded_app, monkeypatch):
