@@ -830,3 +830,39 @@ class TestMetricReconcileRefusesPartialParse:
         repo = self._repo(db_conn)
         (metrics_dir / "operations" / "resolution_time.yml").write_text("just a string\n")
         assert repo.import_from_yaml(metrics_dir) == 1
+
+
+class TestMetricReconcileRefusalIsAtomic:
+    """A refused run must leave the registry exactly as it found it.
+
+    The guards fire on the *shape of the input*, which is knowable before a
+    single row is written — so a run that ends in "fix these files first" has
+    no business having already applied the readable half.
+    """
+
+    def test_a_refused_prune_writes_nothing_at_all(self, db_conn, metrics_dir):
+        from src.repositories.metrics import MetricRepository
+
+        repo = MetricRepository(db_conn)
+        # one good file, one truncated: the good one must NOT land
+        (metrics_dir / "operations" / "resolution_time.yml").write_text("truncated\n")
+
+        with pytest.raises(ValueError):
+            repo.reconcile_from_yaml(metrics_dir, prune=True)
+        assert repo.list() == [], "a refused run half-applied the import"
+
+    def test_a_refused_prune_does_not_update_existing_rows(self, db_conn, metrics_dir):
+        from src.repositories.metrics import MetricRepository
+
+        repo = MetricRepository(db_conn)
+        repo.reconcile_from_yaml(metrics_dir)
+        before = repo.get("revenue/total_revenue")["sql"]
+
+        (metrics_dir / "revenue" / "total_revenue.yml").write_text(
+            "name: total_revenue\ncategory: revenue\nsql: SELECT 'CHANGED'\n"
+        )
+        (metrics_dir / "operations" / "resolution_time.yml").write_text("truncated\n")
+
+        with pytest.raises(ValueError):
+            repo.reconcile_from_yaml(metrics_dir, prune=True)
+        assert repo.get("revenue/total_revenue")["sql"] == before
