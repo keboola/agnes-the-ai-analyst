@@ -111,6 +111,55 @@ def test_a_slug_that_stopped_tracking_its_name_is_left_alone(seeded_app):
     assert renamed["slug"] == "hand-picked"
 
 
+def test_renaming_the_seeded_default_agent_keeps_its_reserved_slug(seeded_app):
+    """`default` is a reserved address, and the seeded agent never leaves draft.
+
+    `get_or_create_default` seeds `name="Default"`, `slug="default"` and no
+    status (COALESCEd to `draft`), and the builder lets the owner rename it —
+    only DELETE is blocked. So the draft rule would relocate the one slug
+    `POST /api/v1/agents/default/responses` and every web chat's attribution
+    resolve through, and nothing would ever freeze it again.
+    """
+    from src.repositories import agents_repo
+
+    tok = seeded_app["admin_token"]
+    default = agents_repo().get_or_create_default("admin1")
+    assert default["slug"] == "default", "precondition: holds the reserved slug"
+
+    renamed = _patch(seeded_app, default["id"], tok, name="My Assistant")
+    assert renamed["slug"] == "default"
+
+
+def test_repeated_saves_do_not_walk_the_slug_up_a_suffix_each_time(seeded_app):
+    """The builder PATCHes the whole payload — including an unchanged name.
+
+    When a sibling agent holds the base slug, this draft legitimately sits on
+    `-2`. Re-deriving from the unchanged name then finds the base taken AND
+    its own `-2` taken (the uniqueness search has no notion of the row being
+    updated), so it returns `-3` — and the next ordinary save `-4`, up to the
+    999 cap. A slug that already tracks the new name is left alone.
+    """
+    tok = seeded_app["admin_token"]
+    _create(seeded_app, tok, name="Revenue Analyst")  # sibling holds the base
+    draft = _create(seeded_app, tok)
+    first = _patch(seeded_app, draft["id"], tok, name="Revenue Analyst")
+    assert first["slug"] == "revenue-analyst-2"
+
+    for _ in range(3):  # ordinary edits re-send the same name
+        again = _patch(seeded_app, draft["id"], tok, name="Revenue Analyst")
+        assert again["slug"] == "revenue-analyst-2", "slug drifted on an unchanged name"
+
+
+def test_an_unrelated_field_edit_never_moves_the_slug(seeded_app):
+    """The payload always carries `name`, so every save enters the rename path."""
+    tok = seeded_app["admin_token"]
+    draft = _create(seeded_app, tok)
+    _patch(seeded_app, draft["id"], tok, name="Revenue Analyst")
+
+    edited = _patch(seeded_app, draft["id"], tok, name="Revenue Analyst", greeting="Hi there")
+    assert edited["slug"] == "revenue-analyst"
+
+
 def test_admin_renaming_a_foreign_draft_checks_the_owners_slugs(seeded_app):
     """Uniqueness is per owner — searching the admin's own agents is wrong.
 
