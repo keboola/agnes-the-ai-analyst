@@ -390,7 +390,7 @@ def test_the_clipboard_write_is_issued_synchronously_from_the_click():
     assert "ClipboardItem" in body, "the standards-track fix (a promise-based ClipboardItem) is gone"
     before_write, _, after = body.partition("await navigator.clipboard.write(")
     assert after, "navigator.clipboard.write(...) call not found in wireCopyTranscript"
-    assert "const md = fetchTranscriptMarkdown(chatId);" in before_write, (
+    assert "const md = fetchTranscriptMarkdown(chatId, title);" in before_write, (
         "the transcript fetch must be a promise handed to ClipboardItem, not awaited first"
     )
     assert "await fetchTranscriptMarkdown" not in before_write, (
@@ -711,3 +711,85 @@ def test_a_synchronous_clipboard_item_failure_never_leaves_an_unhandled_rejectio
         "a synchronous ClipboardItem failure must still fall back once the fetch resolves"
     )
     assert succeeds["showToast"][-1] == {"text": "Transcript copied", "kind": "ok"}
+
+
+def _fetch_transcript_markdown_source() -> str:
+    chat = _read(CHAT_JS)
+    fn = re.search(r"async function fetchTranscriptMarkdown\(.*?\n\}\n", chat, re.DOTALL)
+    assert fn, "fetchTranscriptMarkdown moved — re-point this guard"
+    return fn.group(0)
+
+
+def test_the_exported_title_survives_a_conversation_switch_mid_export():
+    """``wireCopyTranscript`` already snapshots ``chatId`` synchronously at
+    click time (see test_the_clipboard_write_is_issued_synchronously_from_
+    the_click). The title beside it must be captured at that same instant —
+    reading it any later leaves a window, opened by the two real `await`s in
+    ``fetchTranscriptMarkdown`` (`fetch(...)` then `res.json()`), during
+    which opening another conversation calls `setThreadTitle()` and repaints
+    `#chat-thread-title`. Runs the real `wireCopyTranscript` +
+    `fetchTranscriptMarkdown` out of chat.js and simulates exactly that race:
+    the stubbed `fetch` repaints the title node before resolving, standing in
+    for a user switching conversations while the export is in flight."""
+    node = _node()
+    harness = f"""
+"use strict";
+const titleNode = {{ textContent: "Old Chat" }};
+const _btn = {{
+  disabled: false,
+  addEventListener(evt, fn) {{ if (evt === "click") this._handler = fn; }},
+}};
+function $(id) {{
+  if (id === "chat-copy-transcript") return _btn;
+  if (id === "chat-thread-title") return titleNode;
+  return null;
+}}
+let currentChatId = "chat-old";
+const calls = {{ copyTextToClipboard: [] }};
+async function copyTextToClipboard(text) {{
+  calls.copyTextToClipboard.push(text);
+  return true;
+}}
+function showToast() {{}}
+
+// No ClipboardItem / non-secure context: forces the plain fetch-then-copy
+// fallback path, so the title flows straight through fetchTranscriptMarkdown
+// with nothing else in between.
+Object.defineProperty(global, "window", {{ configurable: true, value: {{ isSecureContext: false }} }});
+Object.defineProperty(global, "navigator", {{ configurable: true, value: {{}} }});
+Object.defineProperty(global, "fetch", {{
+  configurable: true,
+  value: async (url) => {{
+    // The race: between the click firing (chatId/title captured) and this
+    // response arriving, the user opens a different conversation — the real
+    // setThreadTitle() repaints #chat-thread-title exactly like this.
+    titleNode.textContent = "New Chat";
+    return {{ ok: true, json: async () => [] }};
+  }},
+}});
+
+{_fetch_transcript_markdown_source()}
+
+{_wire_copy_transcript_source()}
+
+(async () => {{
+  wireCopyTranscript();
+  await _btn._handler();
+  process.stdout.write(JSON.stringify({{ md: calls.copyTextToClipboard[0] || null }}));
+}})().catch((err) => {{
+  console.error("harness error:", err);
+  process.exitCode = 1;
+}});
+"""
+    out = subprocess.run([node, "-e", harness], capture_output=True, text=True)
+    assert out.returncode == 0, f"node failed:\n{out.stderr}"
+    md = json.loads(out.stdout)["md"]
+    assert md is not None, "wireCopyTranscript never reached copyTextToClipboard"
+    assert md.startswith("# Old Chat\n"), (
+        f"exported transcript must keep the title captured at click time, got: {md.splitlines()[0]!r}"
+    )
+    assert "New Chat" not in md, (
+        "the title read mid-flight (after fetch/json awaits) leaked into the export — "
+        "capture it synchronously alongside chatId, not off the live DOM inside "
+        "fetchTranscriptMarkdown"
+    )

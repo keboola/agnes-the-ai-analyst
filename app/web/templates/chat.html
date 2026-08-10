@@ -171,9 +171,14 @@
        for anyone else, admins included), so a user who hits a bad answer has
        nothing to hand to whoever could look at it. This puts the whole thread
        — including the tool calls, which are the provenance — on the clipboard
-       as markdown. #}
+       as markdown.
+
+       Rail-only, like every other redesign addition to this template: a
+       default topnav instance's header must render exactly as it did before
+       (guarded by tests/test_ui_layout_theme.py::TestDefaultContentParity). #}
     <header id="chat-thread-header" class="cloud-chat-thread-header" hidden>
       <h2 id="chat-thread-title" class="cloud-chat-thread-title">Untitled chat</h2>
+      {% if ui_layout == 'rail' %}
       <button type="button" id="chat-copy-transcript"
               class="cloud-chat-thread-action"
               title="Copy this whole conversation as markdown"
@@ -185,6 +190,7 @@
         </svg>
         <span>Copy transcript</span>
       </button>
+      {% endif %}
     </header>
 
     <div id="chat-status" class="cloud-chat-status" aria-live="polite"></div>

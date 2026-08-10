@@ -380,17 +380,9 @@ body.chat-page-body main { margin: 0; padding: 0; }
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  /* Reserve the trailing action's width. The title is the header's only
-     flexible item, and the action's `margin-left:auto` eats the free space
-     BEFORE flex shrinking runs — so a title long enough to fill the row keeps
-     its full width and the button is painted on top of its last ~109px, with
-     the ellipsis hidden underneath. Measured on the rendered page, not
-     reasoned about: `min-width:0` does not help (the title still resolves to
-     the full 856px content width) and moving the action off `margin-left:auto`
-     is worse (it detaches from the trailing edge). Capping the title is what
-     works — 130px covers the 109px button plus the 12px flex gap, and a short
-     title is untouched. */
-  max-width: calc(100% - 130px);
+  /* No trailing-action width reserve here: #chat-copy-transcript is
+     rail-only (see the html[data-ui-layout="rail"] override below), so the
+     topnav title is the header's only content and gets the full row. */
 }
 
 /* Header actions (Copy transcript). ``margin-left:auto`` pushes them to the
@@ -2434,6 +2426,19 @@ html[data-ui-layout="rail"] .cloud-chat-thread-title {
   font-size: var(--text-lg);
   font-weight: var(--font-semibold);
   letter-spacing: -0.01em;
+  /* Reserve the trailing action's width. The title is the header's only
+     flexible item, and #chat-copy-transcript's `margin-left:auto` eats the
+     free space BEFORE flex shrinking runs — so a title long enough to fill
+     the row keeps its full width and the button is painted on top of its
+     last ~109px, with the ellipsis hidden underneath. Measured on the
+     rendered page, not reasoned about: `min-width:0` does not help (the
+     title still resolves to the full content width) and moving the action
+     off `margin-left:auto` is worse (it detaches from the trailing edge).
+     Capping the title is what works — 130px covers the 109px button plus
+     the 12px flex gap, and a short title is untouched. Rail-only because
+     the button is rail-only (see chat.html); topnav's title gets the full
+     row back in the base rule above. */
+  max-width: calc(100% - 130px);
 }
 
 /* Connection state → compact pill in the top-right corner of the chat
