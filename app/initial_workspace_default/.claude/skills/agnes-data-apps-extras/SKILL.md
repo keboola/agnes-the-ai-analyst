@@ -21,8 +21,13 @@ detected by the presence of the `data_app_*` MCP tools.
 ## 1. Scaffold-first, custom-code-second
 
 Never start from a blank repo. `cp -R` the baked scaffold at
-`scaffolds/nodejs-dashboard/` (sibling of this skill's session workspace)
-into the app's managed repo **before** writing a single line of real code,
+**`/work/scaffolds/nodejs-dashboard/`** — an absolute path, at the session
+workspace root. It is **not** inside this skill's own directory: watched
+live, "sibling of this skill's session workspace" was read as a path
+relative to the skill, and three `ls`/`cp` attempts against
+`.claude/skills/agnes-data-apps-extras/scaffolds/` all failed with "No such
+file or directory" before the run stalled. Copy it into the app's managed
+repo **before** writing a single line of real code,
 then immediately call `data_app_deploy(draft_slug, mode="dev")`. This boots
 the container and warms `npm install` while you write the real
 `src/App.tsx` / `server/index.ts` — HMR picks up your edits from there. Do
