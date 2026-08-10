@@ -1406,3 +1406,102 @@ class TestSyncErrorCodes:
 
         assert result["status"] == "error"
         assert result["code"] == "credentials_not_configured"
+
+
+class TestProjectMismatchAtSyncTime:
+    """A connection bound to one project must never import another's layer.
+
+    The preflight already fetches the token's owner, so this costs nothing —
+    and the alternative is silent: the wrong project's metrics land under this
+    connection's `source_ref`, inside its prune scope, so the next sync of the
+    correct project deletes them again. Nothing on the page would say why.
+    """
+
+    def _fakes(self, owner_id):
+        fake_storage = MagicMock()
+        fake_storage.verify_token.return_value = {
+            "isMasterToken": True,
+            "owner": {"id": owner_id, "name": f"Project {owner_id}"},
+        }
+        fake_metastore = MagicMock()
+        fake_metastore.list_items.side_effect = lambda item_type, model_uuid=None: {
+            "semantic-model": [_model_item()],
+            "semantic-dataset": [],
+            "semantic-metric": [_metric_item("a", 'SUM("amount")', "in.c-example_source.orders")],
+            "semantic-constraint": [],
+            "semantic-relationship": [],
+            "semantic-glossary": [],
+        }[item_type]
+        return fake_storage, fake_metastore
+
+    def test_mismatched_project_fails_the_source_without_writing(self, e2e_env):
+        from connectors.keboola.semantic_layer import _sync_one_source
+        from src.repositories import metric_repo
+
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+        fake_storage, fake_metastore = self._fakes(owner_id=9999)
+
+        with (
+            patch("connectors.keboola.storage_api.KeboolaStorageClient", return_value=fake_storage),
+            patch("connectors.keboola.metastore_client.MetastoreClient", return_value=fake_metastore),
+        ):
+            result = _sync_one_source(
+                "https://connection.keboola.com",
+                "master-tok",
+                "conn-a",
+                adopt_null=False,
+                expected_project=(1234, "Acme Analytics"),
+            )
+
+        assert result["status"] == "error"
+        assert result["code"] == "project_mismatch"
+        assert "9999" in result["error"] and "1234" in result["error"]
+        # Refused BEFORE the Metastore was touched — nothing imported.
+        assert metric_repo().get("keboola/model-1/a") is None
+        fake_metastore.list_items.assert_not_called()
+
+    def test_matching_project_syncs_normally(self, e2e_env):
+        from connectors.keboola.semantic_layer import _sync_one_source
+        from src.repositories import metric_repo
+
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+        fake_storage, fake_metastore = self._fakes(owner_id=1234)
+
+        with (
+            patch("connectors.keboola.storage_api.KeboolaStorageClient", return_value=fake_storage),
+            patch("connectors.keboola.metastore_client.MetastoreClient", return_value=fake_metastore),
+        ):
+            result = _sync_one_source(
+                "https://connection.keboola.com",
+                "master-tok",
+                "conn-a",
+                adopt_null=False,
+                expected_project=(1234, "Acme Analytics"),
+            )
+
+        assert result["status"] == "ok"
+        assert metric_repo().get("keboola/model-1/a") is not None
+
+    def test_unbound_connection_still_syncs(self, e2e_env):
+        """expected_project=None (identity never recorded) must not block a
+        sync that worked before this check existed."""
+        from connectors.keboola.semantic_layer import _sync_one_source
+        from src.repositories import metric_repo
+
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+        fake_storage, fake_metastore = self._fakes(owner_id=777)
+
+        with (
+            patch("connectors.keboola.storage_api.KeboolaStorageClient", return_value=fake_storage),
+            patch("connectors.keboola.metastore_client.MetastoreClient", return_value=fake_metastore),
+        ):
+            result = _sync_one_source(
+                "https://connection.keboola.com",
+                "master-tok",
+                "conn-a",
+                adopt_null=False,
+                expected_project=None,
+            )
+
+        assert result["status"] == "ok"
+        assert metric_repo().get("keboola/model-1/a") is not None
