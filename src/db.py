@@ -7133,14 +7133,35 @@ def _v114_to_v115(conn: duckdb.DuckDBPyConnection) -> None:
     Naturally idempotent: an already-``'ready'`` row no longer matches the
     ``WHERE``, so re-running this (as a fresh install's ladder walk does) is
     a no-op.
+
+    Guarded on ``agents`` existing with ``status``/``is_default``/``slug`` —
+    same style as ``_v111_to_v112``. A database built by the pre-merge
+    paper-theme branch reaches this step still in that branch's own shape
+    (``created_by``/``instructions``, no ``is_default`` — see
+    :func:`_heal_legacy_agents_table`), stamped somewhere in the 10x range,
+    so the ladder walk lands here with a table this ``UPDATE`` cannot bind
+    against. ``_heal_legacy_agents_table`` is the only thing that knows how
+    to rebuild that table, and it runs at the *bottom* of ``_ensure_schema``,
+    after the migration ladder — so an unguarded ``UPDATE`` here raises a
+    DuckDB ``Binder Error`` and aborts startup before the heal ever gets a
+    chance to run. Skipping the reclassification on that shape is safe: the
+    heal's own INSERT ... SELECT will still carry over whatever ``status``
+    the row already had.
     """
-    conn.execute("""
-        UPDATE agents
-        SET status = 'ready', updated_at = current_timestamp
-        WHERE COALESCE(status, 'draft') = 'draft'
-          AND NOT COALESCE(is_default, FALSE)
-          AND NOT (slug = 'agent' OR regexp_matches(slug, '^agent-[0-9]+$'))
-    """)
+    cols = {
+        r[0]
+        for r in conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'agents'"
+        ).fetchall()
+    }
+    if {"status", "is_default", "slug"} <= cols:
+        conn.execute("""
+            UPDATE agents
+            SET status = 'ready', updated_at = current_timestamp
+            WHERE COALESCE(status, 'draft') = 'draft'
+              AND NOT COALESCE(is_default, FALSE)
+              AND NOT (slug = 'agent' OR regexp_matches(slug, '^agent-[0-9]+$'))
+        """)
     conn.execute("UPDATE schema_version SET version = 115")
 
 

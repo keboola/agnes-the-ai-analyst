@@ -1286,6 +1286,64 @@ def test_v114_to_v115_is_idempotent(tmp_path):
     conn.close()
 
 
+def test_v114_to_v115_guards_a_legacy_shaped_agents_table(tmp_path):
+    """A database built by the pre-merge paper-theme branch reaches this step
+    with an `agents` table in that branch's own shape — `created_by` /
+    `instructions`, no `is_default` — stamped somewhere in the 10x range (see
+    `_heal_legacy_agents_table`, which alone knows how to rebuild it, and
+    which runs at the *bottom* of `_ensure_schema`, after the migration
+    ladder). Before this step guarded on column existence,
+    `UPDATE agents ... is_default ...` raised a DuckDB Binder Error against
+    that table and aborted startup before the heal ever got a chance to run.
+    """
+    db_path = tmp_path / "legacy_agents.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    conn.execute("UPDATE schema_version SET version = 114")
+    conn.execute("DROP TABLE agents")
+    conn.execute(
+        """
+        CREATE TABLE agents (
+            id           VARCHAR PRIMARY KEY,
+            created_by   VARCHAR NOT NULL,
+            name         VARCHAR NOT NULL,
+            slug         VARCHAR NOT NULL UNIQUE,
+            instructions TEXT,
+            role         VARCHAR,
+            tone         VARCHAR DEFAULT 'concise',
+            greeting     TEXT,
+            knowledge    TEXT DEFAULT '[]',
+            plugins      TEXT DEFAULT '[]',
+            surfaces     TEXT DEFAULT '{}',
+            status       VARCHAR DEFAULT 'draft',
+            created_at   TIMESTAMP DEFAULT current_timestamp,
+            updated_at   TIMESTAMP DEFAULT current_timestamp,
+            deleted_at   TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO agents (id, created_by, name, slug, instructions, status, created_at, updated_at) "
+        "VALUES ('legacy1', 'u1', 'Legacy Agent', 'revenue-bot', 'be helpful', "
+        "'draft', current_timestamp, current_timestamp)"
+    )
+    conn.close()
+
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)  # must not raise Binder Error: is_default
+    assert get_schema_version(conn) == SCHEMA_VERSION
+
+    # _heal_legacy_agents_table runs after the ladder and still gets its
+    # chance to rebuild the table onto the canonical shape.
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('agents')").fetchall()}
+    assert "owner_user_id" in cols, "the legacy table should have been rebuilt onto the canonical shape"
+    assert conn.execute("SELECT owner_user_id, slug FROM agents WHERE id = 'legacy1'").fetchone() == (
+        "u1",
+        "revenue-bot",
+    )
+    conn.close()
+
+
 def test_add_column_default_reaches_pre_existing_rows():
     """Pins what the heals may assume about ADD COLUMN ... DEFAULT.
 
