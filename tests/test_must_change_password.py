@@ -542,7 +542,11 @@ class TestForcedRotationSurvivesFormErrors:
     no `reason` — so an error re-render used to always fall back to the
     generic "Reset Your Password" copy, even for a forced-rotation user. The
     account's own `must_change_password` flag must be re-derived on every
-    error path in `reset_confirm`, not just the happy path."""
+    error path in `reset_confirm` — but only once the token has been
+    validated (see TestResetConfirmAntiEnumeration below): the legitimate
+    user who mistypes their confirmation DOES hold a valid token, so they
+    keep the forced-rotation copy without opening an enumeration oracle for
+    callers who don't."""
 
     def test_mismatched_confirmation_keeps_forced_rotation_copy(self, app_client, fresh_db):
         _seed_user(
@@ -568,11 +572,52 @@ class TestForcedRotationSurvivesFormErrors:
         # touched the database.
         user = _get_user("typo@test.com")
         assert user["must_change_password"] is True
+        # The typo did not burn the single-use token — it's still the
+        # active, unconsumed reset_token on the account.
+        from app.auth.token_hash import hash_token
 
-    def test_invalid_token_keeps_forced_rotation_copy_when_account_resolves(self, app_client, fresh_db):
-        """A stale/invalid token still fails the CAS, but the email in the
-        form resolves to a real, still-flagged account — the forced-rotation
-        copy is the true state of that account regardless of the token."""
+        assert user["reset_token"] == hash_token("tok-typo")
+
+    def test_too_short_password_keeps_forced_rotation_copy(self, app_client, fresh_db):
+        """Same as the mismatch case, for the other pre-CAS validation
+        branch (password too short) — both must derive `reason` from the
+        now-validated token, not skip it."""
+        _seed_user(
+            "short@test.com",
+            password_hash=_ph().hash("seeded-pass"),
+            must_change_password=True,
+            reset_token="tok-short",
+            reset_token_created=datetime.now(timezone.utc),
+        )
+        resp = app_client.post(
+            "/auth/password/reset/confirm",
+            data={
+                "email": "short@test.com",
+                "token": "tok-short",
+                "password": "short",
+                "confirm_password": "short",
+            },
+        )
+        assert resp.status_code == 200
+        assert "one-time password" in resp.text
+        assert "at least 8 characters" in resp.text
+        user = _get_user("short@test.com")
+        assert user["must_change_password"] is True
+
+
+class TestResetConfirmAntiEnumeration:
+    """`_forced_rotation_reason` must only be derived AFTER the reset token
+    has been validated — otherwise an unauthenticated caller can post an
+    arbitrary email with two deliberately mismatched passwords and read the
+    rendered heading to learn (a) whether the account exists and (b)
+    whether it's flagged for forced rotation, without ever proving they
+    hold the reset token. This is the property that must stay green
+    regardless of whether the account exists or is flagged."""
+
+    def test_invalid_token_gets_generic_copy_even_for_flagged_account(self, app_client, fresh_db):
+        """A stale/wrong token must NOT leak the account's forced-rotation
+        state — even though the email resolves to a real, flagged account,
+        the caller hasn't proven they hold ITS token."""
         _seed_user(
             "staletoken@test.com",
             password_hash=_ph().hash("seeded-pass"),
@@ -586,11 +631,54 @@ class TestForcedRotationSurvivesFormErrors:
                 "email": "staletoken@test.com",
                 "token": "tok-wrong",  # does not match the seeded token
                 "password": "new-pass-123",
-                "confirm_password": "new-pass-123",
+                "confirm_password": "new-pass-124",  # also mismatched — the oracle vector
             },
         )
         assert resp.status_code == 200
-        assert "one-time password" in resp.text
+        assert "one-time password" not in resp.text
+        assert "Invalid or expired reset link." in resp.text
+
+    def test_invalid_token_gets_generic_copy_for_nonexistent_account(self, app_client, fresh_db):
+        """Same generic copy whether the account exists or not — an absent
+        account and a wrong token for a real account must be
+        indistinguishable from the response."""
+        resp = app_client.post(
+            "/auth/password/reset/confirm",
+            data={
+                "email": "does-not-exist@test.com",
+                "token": "tok-wrong",
+                "password": "new-pass-123",
+                "confirm_password": "new-pass-124",
+            },
+        )
+        assert resp.status_code == 200
+        assert "one-time password" not in resp.text
+        assert "Invalid or expired reset link." in resp.text
+
+    def test_expired_token_gets_generic_copy_regardless_of_flag(self, app_client, fresh_db):
+        """An expired-but-otherwise-matching token must also fall back to
+        the generic copy — validity includes freshness, not just the hash
+        match."""
+        from datetime import timedelta
+
+        _seed_user(
+            "expired@test.com",
+            password_hash=_ph().hash("seeded-pass"),
+            must_change_password=True,
+            reset_token="tok-expired",
+            reset_token_created=datetime.now(timezone.utc) - timedelta(hours=25),
+        )
+        resp = app_client.post(
+            "/auth/password/reset/confirm",
+            data={
+                "email": "expired@test.com",
+                "token": "tok-expired",
+                "password": "new-pass-123",
+                "confirm_password": "new-pass-124",
+            },
+        )
+        assert resp.status_code == 200
+        assert "one-time password" not in resp.text
         assert "Invalid or expired reset link." in resp.text
 
 

@@ -33,6 +33,7 @@ def _reset_singleton(monkeypatch, tmp_path):
     """
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     import src.db as db_mod
+
     db_mod._analytics_db_conn = None
     db_mod._analytics_db_path = None
     yield
@@ -45,6 +46,7 @@ def test_get_analytics_db_caches_connection():
     connection object — not open a fresh one each time."""
     from src.db import get_analytics_db
     import src.db as db_mod
+
     cur1 = get_analytics_db()
     cur2 = get_analytics_db()
     # Cursors are different objects (DuckDB returns a fresh cursor each
@@ -65,6 +67,7 @@ def test_closing_cursor_does_not_close_connection():
     handle, the underlying connection stays usable for the next call."""
     from src.db import get_analytics_db
     import src.db as db_mod
+
     cur1 = get_analytics_db()
     cur1.execute("CREATE TABLE probe (x INTEGER)")
     cur1.close()  # caller is allowed to do this; mustn't break #2 call
@@ -82,6 +85,7 @@ def test_get_analytics_db_reopens_on_data_dir_change(tmp_path, monkeypatch):
     mid-process, but pytest fixtures do."""
     import src.db as db_mod
     from src.db import get_analytics_db
+
     cur1 = get_analytics_db()
     cur1.execute("CREATE TABLE marker_a (x INTEGER)")
     conn_a = db_mod._analytics_db_conn
@@ -138,6 +142,7 @@ def test_close_analytics_db_clears_singleton_and_reopen_works():
     re-init (test process keeps running) must reopen cleanly."""
     import src.db as db_mod
     from src.db import close_analytics_db, get_analytics_db
+
     cur1 = get_analytics_db()
     cur1.execute("CREATE TABLE probe (x INTEGER)")
     assert db_mod._analytics_db_conn is not None
@@ -189,3 +194,60 @@ class TestReadonlyOnFreshDataDir:
         conn = get_analytics_db_readonly()
         with pytest.raises(duckdb.Error):
             conn.execute("CREATE TABLE writes_should_fail (x INTEGER)")
+
+
+class TestReadonlyFreshDataDirConcurrency:
+    """Unsynchronized create-then-reopen on a fresh data dir.
+
+    `get_analytics_db_readonly()` materializes `analytics/server.duckdb`
+    with a transient read-write handle when it doesn't exist yet, then
+    opens a read-only handle. Without a lock around that sequence, thread A
+    can be mid-materialization (read-write handle still alive) while
+    thread B — having observed the file already exists — reaches its own
+    read-only open first, and DuckDB raises "Can't open a connection to
+    same database file with a different configuration than existing
+    connections", 500-ing thread B's request.
+
+    This exercises real concurrent threads (not just an assertion that a
+    lock object is referenced): it widens the race window by delaying the
+    return of the read-write open, then fires several threads at a fresh
+    `DATA_DIR` and asserts none of them raise.
+    """
+
+    def test_concurrent_first_calls_do_not_raise(self, monkeypatch, tmp_path):
+        import time
+
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        import src.db as db_mod
+
+        real_open = db_mod._open_duckdb
+
+        def slow_open(path, **kwargs):
+            conn = real_open(path, **kwargs)
+            if kwargs.get("read_only") is False:
+                # Keep the transient read-write handle (materialization
+                # branch) alive a little longer so a concurrent thread's
+                # read-only open — if not properly serialized — reliably
+                # lands while it's still open, instead of only sometimes.
+                time.sleep(0.1)
+            return conn
+
+        monkeypatch.setattr(db_mod, "_open_duckdb", slow_open)
+
+        errors: list[BaseException] = []
+
+        def worker():
+            try:
+                conn = db_mod.get_analytics_db_readonly()
+                assert conn.execute("SELECT 1").fetchone() == (1,)
+                conn.close()
+            except BaseException as e:  # noqa: BLE001 - collecting for assertion below
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        assert errors == [], errors
