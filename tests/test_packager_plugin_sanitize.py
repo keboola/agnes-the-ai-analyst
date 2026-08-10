@@ -5,6 +5,7 @@ only a `.gitkeep`. Claude Code's `plugin install` rejects such a plugin
 ("agents: Invalid input"), which broke the keboola-howto install in the
 cloud-chat sandbox. The marketplace packager now drops those keys when serving.
 """
+
 import json
 
 from app.marketplace_server.packager import _sanitize_served_plugin_json
@@ -25,17 +26,21 @@ def _plugin(tmp_path, manifest, *, with_skill=True, empty_agents=True):
 
 def test_drops_empty_component_dir_keeps_populated(tmp_path):
     manifest = {
-        "name": "keboola-howto", "version": "0.1.0", "description": "d",
-        "skills": "./skills", "agents": "./agents", "commands": "./commands",
+        "name": "keboola-howto",
+        "version": "0.1.0",
+        "description": "d",
+        "skills": "./skills",
+        "agents": "./agents",
+        "commands": "./commands",
     }
     pdir = _plugin(tmp_path, manifest)  # skills populated, agents empty, commands absent
     raw = (pdir / ".claude-plugin" / "plugin.json").read_bytes()
 
-    out = json.loads(_sanitize_served_plugin_json(raw, pdir))
+    out = json.loads(_sanitize_served_plugin_json(raw, pdir, "keboola-howto"))
 
-    assert out["skills"] == "./skills"   # populated → kept
-    assert "agents" not in out           # empty dir → dropped
-    assert "commands" not in out         # absent dir → dropped
+    assert out["skills"] == "./skills"  # populated → kept
+    assert "agents" not in out  # empty dir → dropped
+    assert "commands" not in out  # absent dir → dropped
     assert out["name"] == "keboola-howto"  # other fields untouched
 
 
@@ -44,7 +49,7 @@ def test_noop_when_all_dirs_populated(tmp_path):
     pdir = _plugin(tmp_path, manifest, empty_agents=False)
     raw = (pdir / ".claude-plugin" / "plugin.json").read_bytes()
     # No changes → returns the exact same bytes (determinism preserved).
-    assert _sanitize_served_plugin_json(raw, pdir) == raw
+    assert _sanitize_served_plugin_json(raw, pdir, "p") == raw
 
 
 def test_leaves_non_string_component_untouched(tmp_path):
@@ -52,10 +57,179 @@ def test_leaves_non_string_component_untouched(tmp_path):
     pdir = _plugin(tmp_path, manifest, with_skill=False, empty_agents=False)
     raw = (pdir / ".claude-plugin" / "plugin.json").read_bytes()
     # Array form is a valid explicit list — not our concern; leave as-is.
-    assert _sanitize_served_plugin_json(raw, pdir) == raw
+    assert _sanitize_served_plugin_json(raw, pdir, "p") == raw
 
 
 def test_bad_json_returned_unchanged(tmp_path):
     pdir = tmp_path / "p"
     pdir.mkdir()
-    assert _sanitize_served_plugin_json(b"not json{", pdir) == b"not json{"
+    assert _sanitize_served_plugin_json(b"not json{", pdir, "p") == b"not json{"
+
+
+def test_unresolvable_plugin_dir_still_reconciles_name(tmp_path, monkeypatch):
+    """An OSError resolving `plugin_dir` must not discard the name fix.
+
+    The name-reconciliation edit runs first and only needs `manifest_name`;
+    the component-key pruning pass is what actually needs a resolved
+    `plugin_dir`. A plugin dir that fails to resolve (a broken symlink, a
+    permission error) should therefore still serve the corrected name — only
+    the pruning pass is skipped. Discarding the name fix here would silently
+    resurrect the "Plugin <X> not found in marketplace" failure this function
+    exists to prevent.
+    """
+    from pathlib import Path
+
+    manifest = {"name": "vendor/plugin", "version": "1.0", "description": "d"}
+    pdir = tmp_path / "vendor-plugin"
+    (pdir / ".claude-plugin").mkdir(parents=True)
+    (pdir / ".claude-plugin" / "plugin.json").write_text(json.dumps(manifest))
+    raw = (pdir / ".claude-plugin" / "plugin.json").read_bytes()
+
+    def _boom(self):
+        raise OSError("simulated unresolvable plugin dir")
+
+    monkeypatch.setattr(Path, "resolve", _boom)
+
+    out = json.loads(_sanitize_served_plugin_json(raw, pdir, "vendor-plugin"))
+
+    assert out["name"] == "vendor-plugin", "rejected name reached the served file"
+
+
+# --- served identity matches the catalog entry ---------------------------
+#
+# Claude Code resolves a loaded plugin back to its catalog entry BY NAME, so
+# the `name` in the served `plugins/<prefix>/.claude-plugin/plugin.json` must
+# equal the `name` of that plugin's entry in the served `marketplace.json`.
+# The two are produced by different code for the two entry kinds — a bundle
+# gets a synthesized file (`_bundle_plugin_json_bytes`), a curated plugin gets
+# the curator's real file copied through `_sanitize_served_plugin_json` — and
+# they diverged exactly when `resolve_manifest_name` rejected a declared name
+# and fell back to the upstream one, which surfaces as the
+# "Plugin <X> not found in marketplace" error name resolution exists to
+# prevent. Both channels serve the same file set, so both are checked.
+#
+# The Cowork single-plugin zip (`cowork_packager`) has no `marketplace.json`
+# to disagree with, but it has the same identity source: `plugin["manifest_name"]`.
+# `coerce_plugin_name` is charset-safe by construction, so a rejected name
+# never breaks Cowork's stricter validator either way — but preferring the
+# plugin's own (rejected) declared `name` over the resolved `manifest_name`
+# still exports the plugin under a kebab-ified form of the name the gate
+# rejected, instead of the identity the other two channels settled on.
+
+import pytest
+
+from src.marketplace_filter import resolve_manifest_name
+
+
+def _curated_plugin(tmp_path, declared_name: str) -> dict:
+    pdir = tmp_path / "vendor-plugin"
+    (pdir / ".claude-plugin").mkdir(parents=True)
+    (pdir / ".claude-plugin" / "plugin.json").write_text(
+        json.dumps({"name": declared_name, "version": "1.0", "description": "d", "skills": "./skills"})
+    )
+    (pdir / "skills" / "s").mkdir(parents=True)
+    (pdir / "skills" / "s" / "SKILL.md").write_text("# s")
+    return {
+        "marketplace_id": "test",
+        "marketplace_slug": "test",
+        "original_name": "vendor-plugin",
+        "prefixed_name": "test-vendor-plugin",
+        # what the serving path computes for this dir
+        "manifest_name": resolve_manifest_name(pdir, "vendor-plugin"),
+        "version": "1.0",
+        "plugin_dir": pdir,
+        "raw": {"name": declared_name, "version": "1.0", "description": "d"},
+        "source": "marketplace",
+    }
+
+
+def _zip_files(plugins):
+    from app.marketplace_server import packager
+
+    return {arc: data for arc, data in packager._collect_members(plugins, etag="e")}
+
+
+def _git_files(plugins, monkeypatch):
+    from app.marketplace_server import git_backend
+
+    monkeypatch.setattr(git_backend.marketplace_filter, "resolve_user_marketplace", lambda *a, **k: plugins)
+    monkeypatch.setattr(git_backend.marketplace_filter, "compute_etag", lambda *a, **k: "e")
+    return git_backend.file_set_for_user(None, {"id": "u", "email": "u@example.com"})
+
+
+def _cowork_files(plugin):
+    import io
+    import zipfile
+
+    from app.marketplace_server import cowork_packager
+
+    data, _etag = cowork_packager.build_cowork_zip(plugin)
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        return {n: zf.read(n) for n in zf.namelist()}
+
+
+@pytest.mark.parametrize("channel", ["zip", "git", "cowork"])
+@pytest.mark.parametrize(
+    "declared_name",
+    [
+        "vendor/plugin",  # separator — rejected by is_safe_plugin_name
+        "vendor\x00plugin",  # control character
+        "v" * 100,  # over MAX_MANIFEST_NAME_LEN
+        "vendor-plugin",  # conformant — the invariant must hold here too
+    ],
+)
+def test_served_plugin_json_name_matches_its_catalog_entry(tmp_path, monkeypatch, channel, declared_name):
+    plugin = _curated_plugin(tmp_path, declared_name)
+
+    if channel == "cowork":
+        # No marketplace.json here — the identity to agree with is the
+        # resolved `manifest_name` itself (kebab-cased for Cowork's stricter
+        # `[a-z][a-z0-9-]*` rule), not a rejected declared name re-read from
+        # the plugin's own plugin.json.
+        from app.marketplace_server.cowork_packager import coerce_plugin_name
+
+        files = _cowork_files(plugin)
+        served = json.loads(files[".claude-plugin/plugin.json"])
+        entry_name = coerce_plugin_name(plugin["manifest_name"], plugin["manifest_name"])
+        assert served["name"] == entry_name, "served plugin.json identity diverged from its resolved manifest name"
+        return
+
+    files = _zip_files([plugin]) if channel == "zip" else _git_files([plugin], monkeypatch)
+
+    manifest = json.loads(files[".claude-plugin/marketplace.json"])
+    entry_name = next(e["name"] for e in manifest["plugins"] if e["source"].endswith("test-vendor-plugin"))
+    served = json.loads(files["plugins/test-vendor-plugin/.claude-plugin/plugin.json"])
+
+    assert served["name"] == entry_name, "served plugin.json identity diverged from its catalog entry"
+
+
+def test_a_rejected_name_is_not_what_gets_served(tmp_path):
+    """Guards the direction: the bad name must be gone, not merely consistent."""
+    plugin = _curated_plugin(tmp_path, "vendor/plugin")
+    files = _zip_files([plugin])
+    served = json.loads(files["plugins/test-vendor-plugin/.claude-plugin/plugin.json"])
+    assert served["name"] == "vendor-plugin"
+    assert served["skills"] == "./skills", "unrelated keys still pass through"
+
+
+def test_packaging_changes_reach_clients_that_already_hold_a_copy(tmp_path, monkeypatch):
+    """A packaging fix must move the ETag, or no existing client ever sees it.
+
+    `compute_etag` is content-addressed over the plugin files on disk, so a
+    change to how those files are *packaged* leaves every hashed byte
+    identical. Both delivery caches key off this value — the ZIP channel
+    answers `If-None-Match` with it, the git channel names its bare repo
+    `<etag>.v<N>.git` — so without `SERVED_FORMAT_VERSION` folded in, the
+    name rewrite above would reach only users whose plugins happen to change
+    afterwards. Everyone else would keep serving the identity their catalog
+    entry disagrees with, indefinitely.
+    """
+    from src import marketplace_filter
+
+    plugin = _curated_plugin(tmp_path, "vendor-plugin")
+    before = marketplace_filter.compute_etag([plugin])
+
+    monkeypatch.setattr(marketplace_filter, "SERVED_FORMAT_VERSION", marketplace_filter.SERVED_FORMAT_VERSION + 1)
+    after = marketplace_filter.compute_etag([plugin])
+
+    assert before != after, "packaging version does not reach the ETag — cached clients would keep the old bytes"

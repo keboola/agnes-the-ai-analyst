@@ -1009,3 +1009,64 @@ class TestFleaOwnerDisplayBatched:
         # returning blank owners).
         owners = sorted(it["owner"] for it in items)
         assert owners == ["alice", "bob", "carol"]
+
+
+class TestListMcpsTransport:
+    """`_list_mcps` labels the transport shown on the plugin detail page.
+
+    An explicit `type` in `.mcp.json` is authoritative — both Claude Code and
+    the Agent Plugins `mcp.json` schema spell the transport that way. Only when
+    it is absent do we infer, and a bare `url` is Streamable HTTP: HTTP+SSE was
+    deprecated by the MCP spec and labelling every URL server `sse` mislabels
+    the common case.
+    """
+
+    @staticmethod
+    def _plugin_root(tmp_path, servers):
+        root = tmp_path / "plug"
+        root.mkdir(parents=True, exist_ok=True)
+        (root / ".mcp.json").write_text(
+            json.dumps({"mcpServers": servers}), encoding="utf-8"
+        )
+        return root
+
+    def _one(self, tmp_path, cfg):
+        from app.api.marketplace import _list_mcps
+        entries = _list_mcps(self._plugin_root(tmp_path, {"srv": cfg}))
+        assert len(entries) == 1
+        return entries[0]
+
+    def test_explicit_streamable_http_is_honored(self, tmp_path):
+        e = self._one(tmp_path, {"type": "streamable-http", "url": "https://x.test/mcp"})
+        assert e.type == "streamable-http"
+
+    def test_explicit_sse_is_honored(self, tmp_path):
+        e = self._one(tmp_path, {"type": "sse", "url": "https://x.test/sse"})
+        assert e.type == "sse"
+
+    def test_explicit_stdio_is_honored(self, tmp_path):
+        e = self._one(tmp_path, {"type": "stdio", "command": "srv-bin"})
+        assert e.type == "stdio"
+
+    def test_explicit_type_wins_over_inference(self, tmp_path):
+        """A server carrying both `type` and `command` must not be re-inferred."""
+        e = self._one(tmp_path, {"type": "sse", "command": "legacy-bin", "url": "https://x.test"})
+        assert e.type == "sse"
+
+    def test_bare_url_infers_http_not_sse(self, tmp_path):
+        e = self._one(tmp_path, {"url": "https://x.test/mcp"})
+        assert e.type == "http"
+
+    def test_bare_command_infers_stdio(self, tmp_path):
+        e = self._one(tmp_path, {"command": "srv-bin", "args": ["--flag"]})
+        assert e.type == "stdio"
+        assert e.description == "srv-bin --flag"
+
+    def test_unrecognized_type_is_not_invented(self, tmp_path):
+        """An unknown transport string is passed through, not coerced."""
+        e = self._one(tmp_path, {"type": "websocket", "url": "wss://x.test"})
+        assert e.type == "websocket"
+
+    def test_no_transport_signal_leaves_type_none(self, tmp_path):
+        e = self._one(tmp_path, {"description": "nothing actionable"})
+        assert e.type is None

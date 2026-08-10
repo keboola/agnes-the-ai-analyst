@@ -56,6 +56,28 @@ from src.repositories import (
 
 logger = logging.getLogger(__name__)
 
+# Upper bound on a plugin's self-declared `name` (see `resolve_manifest_name`).
+# `is_safe_plugin_name` constrains the charset but not the length, and this
+# value is served in JSON and rendered as a UI chip. 64 matches the cap the
+# Agent Plugins manifest schema puts on the same field, and is far above any
+# real plugin name.
+MAX_MANIFEST_NAME_LEN = 64
+
+# Bump whenever the BYTES WE SERVE change for an unchanged set of source files.
+#
+# `compute_etag` is content-addressed over the plugin files on disk, which is
+# what makes a stale 304 impossible when a curator edits a plugin — but it also
+# means a change to how we *package* those files is invisible to it. Both
+# caches key off this ETag (the ZIP channel answers `If-None-Match` with it;
+# the git channel names its bare repo `<etag>.v<N>.git`), so without this
+# constant a packaging fix reaches only users whose plugins happen to change
+# afterwards, and everyone else keeps the old bytes indefinitely.
+#
+# v2: the served `plugin.json` `name` is forced to the resolved manifest name
+#     (`_sanitize_served_plugin_json`), so a plugin whose declared name was
+#     rejected no longer ships an identity its catalog entry disagrees with.
+SERVED_FORMAT_VERSION = 2
+
 
 def _contained_plugin_dir(root: Path, slug: str, name: str) -> Optional[Path]:
     """``root/slug/plugins/name``, or None when that escapes ``root``.
@@ -170,6 +192,20 @@ def resolve_manifest_name(plugin_dir: Path, fallback: str) -> str:
     an empty/whitespace-only `name` — same defensive style as
     ``src.marketplace.read_plugins``: never crash, always return a usable
     value.
+
+    The value is also *validated*, not just read. It comes from a
+    curator-controlled file and is emitted verbatim as the ``name`` of the
+    synth ``marketplace.json`` entry and of the synth bundle ``plugin.json``
+    (``app.marketplace_server.packager``), then rendered in the ``/plugin``
+    UI — so it gets the same bar its sibling ``original_name`` already clears
+    at ingest (``src.marketplace.is_safe_plugin_name``: exactly one
+    filesystem-safe segment, no separators, no control characters), plus a
+    length cap. Unlike ``original_name`` this value never builds a path, so
+    this is a consistency/hygiene gate rather than a traversal defence — and
+    the cap is what keeps an unbounded string out of the served JSON.
+
+    ``fallback`` is returned unchecked: it is ``original_name``, which
+    ``is_safe_plugin_name`` already gated when the row was ingested.
     """
     pj = plugin_dir / ".claude-plugin" / "plugin.json"
     if not pj.is_file():
@@ -181,9 +217,18 @@ def resolve_manifest_name(plugin_dir: Path, fallback: str) -> str:
     if not isinstance(data, dict):
         return fallback
     name = data.get("name")
-    if isinstance(name, str) and name.strip():
-        return name.strip()
-    return fallback
+    if not (isinstance(name, str) and name.strip()):
+        return fallback
+    name = name.strip()
+    if not is_safe_plugin_name(name) or len(name) > MAX_MANIFEST_NAME_LEN:
+        logger.warning(
+            "plugin.json name %r in %s is not a usable plugin identifier; serving upstream name %r instead",
+            name[:80],
+            plugin_dir,
+            fallback,
+        )
+        return fallback
+    return name
 
 
 def resolve_allowed_plugins(conn: duckdb.DuckDBPyConnection, user: dict) -> List[dict]:
@@ -719,6 +764,12 @@ def compute_etag(plugins: Iterable[dict]) -> str:
     share the same bare-repo cache entry. When the source files change, the
     hash changes, so a stale 304 can never leak.
 
+    ``SERVED_FORMAT_VERSION`` is folded in because content-addressing alone
+    cannot see a change in how those files are packaged: a packaging fix
+    leaves every hashed byte identical, so both caches would keep answering
+    with the pre-fix bytes. Bumping the constant is what makes such a fix
+    reach clients that already hold a copy.
+
     For bundle entries (``bundle_dirs`` set, ``plugin_dir`` is None) we hash
     every file under each source dir except the per-entity ``.claude-plugin/``
     content; the bundle ships one synth plugin.json so the per-entity ones
@@ -740,5 +791,9 @@ def compute_etag(plugins: Iterable[dict]) -> str:
                     rel = f.relative_to(plugin_dir).as_posix()
                     files.append([rel, _sha256_file(f)])
         tokens.append([plugin["prefixed_name"], plugin.get("version") or "", files])
-    payload = json.dumps({"plugins": tokens}, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    payload = json.dumps(
+        {"format": SERVED_FORMAT_VERSION, "plugins": tokens},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()[:16]
