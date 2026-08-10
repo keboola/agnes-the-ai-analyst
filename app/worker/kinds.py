@@ -354,12 +354,23 @@ def _run_jira_refresh(payload: dict) -> None:
     served immediately. ``_meta`` holds the catalog's row/size numbers only.
     """
     from connectors.jira.extract_init import get_default_output_dir, update_meta
-    from src.orchestrator import SyncOrchestrator
+    from src.orchestrator import SyncOrchestrator, rebuild_mutex
 
     try:
         extract_dir = get_default_output_dir()
-        for table_name in ("issues", "comments", "attachments", "changelog", "issuelinks", "remote_links"):
-            update_meta(extract_dir, table_name)
+        # Under the same mutex `rebuild()`/`rebuild_source()` take — the pattern
+        # `_run_ducklake_maintenance` below already follows. Running in the HEAVY
+        # lane (concurrency 1) serialises this against the rebuild on the next
+        # line, but NOT against the other processes that rebuild: API startup,
+        # the admin and sync endpoints, collections, tabular ingest. Those ATTACH
+        # this same file, and DuckDB is single-writer, so without the mutex a
+        # rebuild elsewhere can still collide with this loop.
+        #
+        # Held around the loop ONLY. `rebuild_source` acquires the same mutex
+        # itself, so keeping it across that call would deadlock.
+        with rebuild_mutex():
+            for table_name in ("issues", "comments", "attachments", "changelog", "issuelinks", "remote_links"):
+                update_meta(extract_dir, table_name)
     except Exception as meta_err:
         # Non-fatal, exactly as it was on the per-event path: stale catalog
         # numbers must not cost us the rebuild that publishes the data.

@@ -192,3 +192,129 @@ class TestSlaPollEnqueuesTheRefresh:
         enqueued, _ = self._drive(monkeypatch, ["updated"], enqueue_status="queued")
 
         assert enqueued == ["jira-refresh"]
+
+
+def test_meta_pass_is_held_under_the_rebuild_mutex(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The HEAVY lane only serialises this against the rebuild in the same worker.
+
+    `rebuild()`/`rebuild_source()` are also reachable from the API process (startup,
+    admin and sync endpoints, collections, tabular ingest), and those ATTACH the same
+    single-writer file. The mutex is what covers that; the lane is not.
+
+    Also pins that it is released before `rebuild_source`, which takes the same mutex —
+    holding it across that call would deadlock.
+    """
+    import contextlib
+
+    events: list = []
+
+    @contextlib.contextmanager
+    def _tracking_mutex():
+        events.append("mutex:enter")
+        try:
+            yield
+        finally:
+            events.append("mutex:exit")
+
+    class _FakeOrchestrator:
+        def rebuild_source(self, name):
+            events.append("rebuild_source")
+
+    monkeypatch.setattr("src.orchestrator.rebuild_mutex", _tracking_mutex)
+    monkeypatch.setattr("src.orchestrator.SyncOrchestrator", _FakeOrchestrator)
+    monkeypatch.setattr(
+        "connectors.jira.extract_init.update_meta",
+        lambda _d, table_name: events.append(f"update_meta:{table_name}"),
+    )
+
+    kinds._run_jira_refresh({})
+
+    assert events[0] == "mutex:enter"
+    assert events.count("mutex:enter") == 1, "one critical section for the whole pass"
+    meta_calls = [i for i, e in enumerate(events) if e.startswith("update_meta:")]
+    assert meta_calls, "guard would assert nothing if the pass never ran"
+    assert max(meta_calls) < events.index("mutex:exit"), "every refresh belongs inside the mutex"
+    assert events.index("mutex:exit") < events.index("rebuild_source"), "released before the rebuild takes it"
+
+
+class TestConsistencyCheckAnnouncesItsWrites:
+    """The checker shells out to the transform CLI, which writes parquet and nothing else.
+
+    It never announced anything, which was invisible while the transform refreshed
+    `_meta` inline. A run where this checker is the only writer is exactly a webhook
+    outage — when it matters most.
+    """
+
+    @staticmethod
+    def _checker(monkeypatch, enqueue_status="queued"):
+        from connectors.jira.scripts.consistency_check import Config, JiraConsistencyChecker
+
+        enqueued: list = []
+
+        class _FakeJobs:
+            def enqueue(self, kind, payload, idempotency_key=None):
+                enqueued.append(idempotency_key)
+                return {"status": enqueue_status if len(enqueued) == 1 else "queued"}
+
+        monkeypatch.setattr("src.repositories.jobs_repo", lambda: _FakeJobs())
+        config = Config(
+            jira_domain="example.atlassian.net",
+            jira_email="e@example.com",
+            jira_api_token="t",
+            raw_dir=Path("/srv/raw"),
+            parquet_dir=Path("/srv/parquet"),
+            repo_dir=Path("/srv/repo"),
+            venv_python=Path("/srv/python"),
+        )
+        return JiraConsistencyChecker(config), enqueued
+
+    def test_it_enqueues_one_refresh(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        checker, enqueued = self._checker(monkeypatch)
+
+        checker._enqueue_jira_refresh()
+
+        assert enqueued == ["jira-refresh"]
+
+    def test_dedup_onto_a_running_refresh_gets_a_follow_up(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        checker, enqueued = self._checker(monkeypatch, enqueue_status="running")
+
+        checker._enqueue_jira_refresh()
+
+        assert enqueued == ["jira-refresh", "jira-refresh-followup"]
+
+    def test_an_unreachable_queue_does_not_raise(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """It runs from a systemd timer and as a plain script, and its writes are already durable."""
+        from connectors.jira.scripts.consistency_check import Config, JiraConsistencyChecker
+
+        def _boom():
+            raise RuntimeError("no queue here")
+
+        monkeypatch.setattr("src.repositories.jobs_repo", _boom)
+        checker = JiraConsistencyChecker(
+            Config(
+                jira_domain="example.atlassian.net",
+                jira_email="e@example.com",
+                jira_api_token="t",
+                raw_dir=Path("/srv/raw"),
+                parquet_dir=Path("/srv/parquet"),
+                repo_dir=Path("/srv/repo"),
+                venv_python=Path("/srv/python"),
+            )
+        )
+
+        checker._enqueue_jira_refresh()  # must not raise
+
+    def test_run_check_actually_calls_it(self) -> None:
+        """A helper nothing invokes is decoration."""
+        source = (
+            Path(__file__).resolve().parent.parent / "connectors" / "jira" / "scripts" / "consistency_check.py"
+        ).read_text()
+        tree = ast.parse(source)
+        run_check = next(
+            n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "run_check"
+        )
+        called = {
+            getattr(n.func, "attr", None) for n in ast.walk(run_check) if isinstance(n, ast.Call)
+        }
+
+        assert "_enqueue_jira_refresh" in called
