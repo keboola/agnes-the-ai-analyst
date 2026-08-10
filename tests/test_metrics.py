@@ -560,3 +560,91 @@ class TestMetricRepositoryReconcile:
         """The old entry point keeps its signature — eleven callers rely on it."""
         repo = self._repo(db_conn)
         assert repo.import_from_yaml(metrics_dir) == 2
+
+
+class TestMetricReconcileRefusesToWipe:
+    """`--prune` deletes everything in scope that the input does not mention,
+    so an input that mentions almost nothing is indistinguishable from "the
+    source dropped almost everything". These are the two shapes where that
+    reading is nearly always wrong, and the cost of being wrong is data loss.
+    """
+
+    def _repo(self, db_conn):
+        from src.repositories.metrics import MetricRepository
+
+        return MetricRepository(db_conn)
+
+    def test_prune_against_a_single_file_is_refused(self, db_conn, metrics_dir):
+        """A file describes some metrics; it cannot be the source of truth for
+        a whole scope. Before this guard, pointing prune at one file deleted
+        every other imported metric."""
+        repo = self._repo(db_conn)
+        repo.reconcile_from_yaml(metrics_dir)
+        with pytest.raises(ValueError, match="single file"):
+            repo.reconcile_from_yaml(metrics_dir / "revenue" / "total_revenue.yml", prune=True)
+        assert len(repo.list()) == 2, "refused prune must not have deleted anything"
+
+    def test_prune_against_a_directory_that_yields_nothing_is_refused(self, db_conn, metrics_dir, tmp_path):
+        """The worst shape: the layout is `<dir>/<category>/<name>.yml`, so a
+        directory whose files sit one level too high globs to zero files — and
+        an empty input told prune to delete the entire scope."""
+        repo = self._repo(db_conn)
+        repo.reconcile_from_yaml(metrics_dir)
+        flat = tmp_path / "flat"
+        flat.mkdir()
+        (flat / "mrr.yml").write_text("name: mrr\ncategory: revenue\nsql: SELECT 1\n")
+
+        with pytest.raises(ValueError, match="no metrics"):
+            repo.reconcile_from_yaml(flat, prune=True)
+        assert len(repo.list()) == 2
+
+    def test_those_inputs_are_still_fine_without_prune(self, db_conn, metrics_dir):
+        """The guard is on the destructive combination only — importing a
+        single file has always been legitimate."""
+        repo = self._repo(db_conn)
+        n = repo.import_from_yaml(metrics_dir / "revenue" / "total_revenue.yml")
+        assert n == 1
+
+    def test_dry_run_is_refused_too(self, db_conn, metrics_dir):
+        """A dry run that reports 'would delete everything' would teach the
+        operator the wrong thing about a path that must never be pruned."""
+        repo = self._repo(db_conn)
+        repo.reconcile_from_yaml(metrics_dir)
+        with pytest.raises(ValueError):
+            repo.reconcile_from_yaml(metrics_dir / "revenue" / "total_revenue.yml", prune=True, dry_run=True)
+
+
+class TestMetricReconcileLabelPartitions:
+    """Each `--source-ref` owns its own partition, and the unlabeled import
+    owns the unlabeled one. Without this, an unlabeled prune deleted labeled
+    exports' metrics — the exact coexistence the flag promises."""
+
+    def _repo(self, db_conn):
+        from src.repositories.metrics import MetricRepository
+
+        return MetricRepository(db_conn)
+
+    def test_unlabeled_prune_spares_a_labeled_export(self, db_conn, metrics_dir, tmp_path):
+        repo = self._repo(db_conn)
+        repo.reconcile_from_yaml(metrics_dir, source_ref="finance")
+
+        other = tmp_path / "other" / "growth"
+        other.mkdir(parents=True)
+        (other / "signups.yml").write_text("name: signups\ncategory: growth\nsql: SELECT 1\n")
+        report = repo.reconcile_from_yaml(other.parent, prune=True)
+
+        assert report["deleted"] == []
+        ids = {m["id"] for m in repo.list()}
+        assert "revenue/total_revenue" in ids, "unlabeled prune deleted a labeled export's metrics"
+
+    def test_labeled_prune_spares_the_unlabeled_rows(self, db_conn, metrics_dir, tmp_path):
+        repo = self._repo(db_conn)
+        repo.reconcile_from_yaml(metrics_dir)  # unlabeled
+
+        other = tmp_path / "other" / "growth"
+        other.mkdir(parents=True)
+        (other / "signups.yml").write_text("name: signups\ncategory: growth\nsql: SELECT 1\n")
+        report = repo.reconcile_from_yaml(other.parent, source_ref="growth", prune=True)
+
+        assert report["deleted"] == []
+        assert len(repo.list()) == 3
