@@ -388,3 +388,43 @@ def test_default_path_still_refuses_div():
     from app.markdown_render import render_safe
 
     assert "<div>" not in render_safe("<div>a</div>")
+
+
+def test_boundary_and_allowlist_agree_on_what_a_block_container_is():
+    """Guard against the two lists drifting apart.
+
+    `_BLOCK_BOUNDARY_RE` decides what leaves a space behind in the plain-text
+    projection; `_HTML_SOURCE_EXTRA_TAGS` decides what keeps its structure in
+    the rendered detail. A tag treated as a block separator by one and dropped
+    by the other fuses the lines it separated — which is how figure/figcaption
+    slipped through the first version of this fix."""
+    import re
+
+    from app.markdown_render import _ALLOWED_TAGS, _BLOCK_TAGS, _HTML_SOURCE_EXTRA_TAGS
+
+    named = {t for t in re.split(r"\|", _BLOCK_TAGS) if re.fullmatch(r"[a-z]+", t)}
+    separators_not_rendered = named - _ALLOWED_TAGS - _HTML_SOURCE_EXTRA_TAGS
+    assert not separators_not_rendered, (
+        f"treated as a block separator but stripped with no structure: {sorted(separators_not_rendered)}"
+    )
+
+
+def test_nested_structure_separated_by_an_opening_tag_does_not_fuse():
+    """`<figure>A<figcaption>B` has no CLOSING tag between A and B, so a
+    close-only boundary pattern fused them."""
+    from app.markdown_render import render_plain
+
+    out = render_plain(
+        "<figure>Chart of live deals.<figcaption>Measured daily.</figcaption></figure>", html_source=True
+    )
+    assert out == "Chart of live deals. Measured daily."
+    assert render_plain("<div>Line one<div>Line two</div></div>", html_source=True) == "Line one Line two"
+
+
+def test_br_is_still_a_boundary():
+    """It is the one non-container in the pattern; a rewrite of the tag
+    alternation must not drop it."""
+    from app.markdown_render import render_plain
+
+    assert render_plain("a<br>b", html_source=True) == "a b"
+    assert render_plain("a<br/>b", html_source=True) == "a b"

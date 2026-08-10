@@ -85,7 +85,7 @@ _ALLOWED_URL_SCHEMES: set[str] = {"http", "https", "mailto"}
 # added to _ALLOWED_ATTRIBUTES for them, so every attribute (including on*
 # handlers) is still stripped; these carry layout, never behaviour. Curator
 # markdown keeps the narrow set — it has <p> and never needs these.
-_HTML_SOURCE_EXTRA_TAGS: set[str] = {"div", "section", "article", "dl", "dt", "dd"}
+_HTML_SOURCE_EXTRA_TAGS: set[str] = {"div", "section", "article", "dl", "dt", "dd", "figure", "figcaption"}
 
 
 def render_safe(markdown: Optional[str], *, html_source: bool = False) -> str:
@@ -120,15 +120,19 @@ def render_safe(markdown: Optional[str], *, html_source: bool = False) -> str:
     )
 
 
-# Closing tags of block-level elements (plus <br>) mark word boundaries when
-# flattening rendered HTML to plain text; without this, "<p>a</p><p>b</p>"
-# collapses to "ab". The list deliberately includes block elements the render
-# allowlist does NOT keep (div, section, …): an imported description is free to
-# separate its lines with <div>, and those tags must still leave a boundary
-# behind when they are stripped — see the ordering note in render_plain.
-_BLOCK_BOUNDARY_RE = re.compile(
-    r"</(?:p|li|h[1-6]|tr|t[dh]|blockquote|pre|div|section|article|figure|figcaption|dd|dt|dl)>|<br ?/?>"
-)
+# Block-level element tags (plus <br>) mark word boundaries when flattening
+# rendered HTML to plain text; without this, "<p>a</p><p>b</p>" collapses to
+# "ab". The list deliberately includes block elements the render allowlist does
+# NOT keep (div, section, …): an imported description is free to separate its
+# lines with <div>, and those tags must still leave a boundary behind when they
+# are stripped — see the ordering note in render_plain.
+#
+# OPENING tags count too, not just closing ones. Nested structure separates text
+# with an opening tag and no closing tag in between — "<figure>A<figcaption>B"
+# has nothing but `<figcaption>` between A and B — so a close-only pattern
+# fused them. Redundant spaces are free: render_plain collapses runs at the end.
+_BLOCK_TAGS = "p|li|h[1-6]|tr|t[dh]|blockquote|pre|div|section|article|figure|figcaption|dd|dt|dl"
+_BLOCK_BOUNDARY_RE = re.compile(rf"</?(?:{_BLOCK_TAGS})\b[^>]*>|<br ?/?>")
 
 
 def render_plain(markdown: Optional[str], *, html_source: bool = False) -> str:
