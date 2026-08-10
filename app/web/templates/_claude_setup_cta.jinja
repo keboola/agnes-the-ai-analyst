@@ -259,10 +259,17 @@
     // Step 5 ("Get the install script"). No token involved any more — the
     // script reads its credential from ~/.agnes/token (written by Step 4),
     // so this is just a static clipboard copy with {server_url} resolved.
+    //
+    // Restore the label as innerHTML, not textContent: these buttons carry
+    // an inline <svg> copy icon before their text, and writing textContent
+    // drops every child — the icon was gone after the first click and never
+    // came back. Round-tripping innerHTML is the same fix /how-it-works and
+    // /install already use, and what it restores is our own static markup
+    // captured before any transition, never anything user-supplied.
     function setupNewClaude(btn) {
         var errEl = document.getElementById('setupClaudeError');
         if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
-        var origText = btn.textContent;
+        var origHTML = btn.innerHTML;
         var instructions;
         try {
             instructions = renderSetupInstructions(window.location.origin);
@@ -280,7 +287,7 @@
             btn.textContent = 'Copied! Paste into Claude Code';
             btn.classList.add('copied');
             setTimeout(function () {
-                btn.textContent = origText;
+                btn.innerHTML = origHTML;
                 btn.classList.remove('copied');
                 btn.disabled = false;
             }, 3000);
@@ -292,7 +299,7 @@
                 document.dispatchEvent(new CustomEvent('agnes:setup-script-copied'));
             } catch (_e) { /* CustomEvent ctor missing — IE-era, ignore */ }
         }).catch(function () {
-            btn.textContent = origText;
+            btn.innerHTML = origHTML;
             btn.disabled = false;
             showSetupFallback(instructions);
         });
@@ -347,7 +354,7 @@
     async function launchClaudeWithToken(btn) {
         var errEl = document.getElementById('launchClaudeError');
         if (errEl) { errEl.style.display = 'none'; errEl.innerHTML = ''; }
-        var origText = btn.textContent;
+        var origHTML = btn.innerHTML;
         var scope = btn.closest('.install-block') || document;
         btn.disabled = true;
         btn.textContent = 'Generating token…';
@@ -357,7 +364,7 @@
             token = await mintAccessToken();
         } catch (err) {
             btn.disabled = false;
-            btn.textContent = origText;
+            btn.innerHTML = origHTML;
             showLaunchError(
                 errEl,
                 'Could not generate your login token: ' + (err && err.message ? err.message : err) + '.',
@@ -370,12 +377,12 @@
         var command = buildTokenCommand(scope, os, token);
         if (!command) {
             btn.disabled = false;
-            btn.textContent = origText;
+            btn.innerHTML = origHTML;
             showLaunchError(errEl, 'Internal error: could not build the launch command.', []);
             return;
         }
 
-        await deliverTokenCommand(btn, errEl, origText, command);
+        await deliverTokenCommand(btn, errEl, origHTML, command);
     }
 
     // Clipboard delivery for the already-built (token-bearing) command.
@@ -383,7 +390,7 @@
     // clipboard write — the mint already succeeded, and re-minting on
     // every retry click would pile up live 90-day credentials
     // server-side.
-    async function deliverTokenCommand(btn, errEl, origText, command) {
+    async function deliverTokenCommand(btn, errEl, origHTML, command) {
         try {
             await copyToClipboard(command);
             // A Retry lands here without passing launchClaudeWithToken's
@@ -393,13 +400,13 @@
             btn.textContent = 'Copied! Paste into your terminal';
             btn.classList.add('copied');
             setTimeout(function () {
-                btn.textContent = origText;
+                btn.innerHTML = origHTML;
                 btn.classList.remove('copied');
                 btn.disabled = false;
             }, 3000);
         } catch (clipErr) {
             btn.disabled = false;
-            btn.textContent = origText;
+            btn.innerHTML = origHTML;
             // Reveal-once escape hatch: clipboard access failed, but we
             // never dead-end. The real command (including the token) is
             // shown only after this SECOND, deliberate click — never
@@ -413,7 +420,7 @@
                     label: 'Reveal the command once so I can copy it manually',
                     onClick: function () { showSetupFallback(command, { pasteTarget: 'your terminal (not the Claude Code chat — it would record the token)' }); },
                 },
-                { label: 'Retry', onClick: function () { deliverTokenCommand(btn, errEl, origText, command); } },
+                { label: 'Retry', onClick: function () { deliverTokenCommand(btn, errEl, origHTML, command); } },
             ]);
         }
     }
