@@ -41,6 +41,14 @@ class _JiraConfig:
     JIRA_EMAIL = os.environ.get("JIRA_EMAIL", "")
     JIRA_API_TOKEN = os.environ.get("JIRA_API_TOKEN", "")
     JIRA_DATA_DIR = Path(os.environ.get("JIRA_DATA_DIR", "/data/src_data/raw/jira"))
+    # Explicit parquet destination, when the operator sets one. Deliberately has no
+    # default of its own: unset must fall through to `incremental_transform`'s own
+    # default (the extract.duckdb-contract location, `$DATA_DIR/extracts/<source>/data`)
+    # rather than to the legacy Data Broker path the same variable defaults to in
+    # `scripts/consistency_check.py`. Adopting that default here would move the
+    # webhook's parquet writes off the served layout on every deployment that
+    # leaves the variable unset.
+    JIRA_PARQUET_DIR = Path(os.environ["JIRA_PARQUET_DIR"]) if os.environ.get("JIRA_PARQUET_DIR") else None
     JIRA_CLOUD_ID = os.environ.get("JIRA_CLOUD_ID", "")
     JIRA_WEBHOOK_SECRET = os.environ.get("JIRA_WEBHOOK_SECRET", "")
     DEBUG = os.environ.get("DEBUG", "").lower() in ("1", "true")
@@ -97,6 +105,20 @@ def trigger_incremental_transform(issue_key: str, deleted: bool = False) -> bool
 
         success = transform_single_issue(
             issue_key=issue_key,
+            # The transform has to read the JSON out of the directory `save_issue`
+            # just wrote it to. Left unset, `transform_single_issue` falls back to
+            # `$DATA_DIR/extracts/<source>/raw` — derived from DATA_DIR, so it
+            # ignores JIRA_DATA_DIR entirely. On any deployment where the two do not
+            # coincide (including the default one, where JIRA_DATA_DIR is unset and
+            # resolves to the legacy raw path) every webhook transform died on
+            # "Issue JSON not found" while the endpoint still answered Jira 200 —
+            # so edits to issues already in the parquet silently stopped landing,
+            # and only *new* issues appeared, backfilled later by the consistency
+            # check. Passing the paths explicitly, as `scripts/consistency_check.py`
+            # already does, anchors the read side to the same config as the write
+            # side instead of to a second, independently-defaulted one.
+            raw_dir=Config.JIRA_DATA_DIR,
+            output_dir=Config.JIRA_PARQUET_DIR,
             deleted=deleted,
         )
 
