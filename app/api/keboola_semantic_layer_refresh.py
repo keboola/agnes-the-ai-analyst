@@ -57,6 +57,24 @@ def get_last_refresh_summary() -> dict[str, Any]:
     }
 
 
+# Error codes `sync_semantic_layer` attaches to a returned {"status": "error"}
+# and the HTTP status each deserves. Anything unmapped (including a missing
+# code, e.g. an older caller) stays 502, so the fallback is the historical
+# behavior rather than a silently-wrong 400.
+_ERROR_CODE_STATUS = {
+    "credentials_not_configured": 400,
+    "upstream_client_error": 400,
+    "upstream_error": 502,
+}
+
+
+def _status_for_error_code(code: Any) -> int:
+    """HTTP status for a sync error code — 400 when the admin can fix it
+    (nothing configured, Keboola refused the token), 502 when the upstream is
+    genuinely unreachable or broken."""
+    return _ERROR_CODE_STATUS.get(code, 502) if isinstance(code, str) else 502
+
+
 def _record_completion(status: str, result: Any) -> None:
     _refresh_state["last_completed_at"] = datetime.now(timezone.utc).isoformat()
     _refresh_state["last_status"] = status
@@ -70,6 +88,11 @@ async def run_keboola_semantic_layer_refresh(
     """Sync the configured Keboola project's semantic layer into
     metric_definitions. See connectors/keboola/semantic_layer.py for the
     mapping/prune logic.
+
+    409 if a sync is already in flight. 400 when the sync fails for a reason
+    the admin controls — no Keboola credentials configured, or a token the
+    Storage/Metastore API refuses (4xx). 502 only when the upstream is
+    unreachable or answers 5xx.
     """
     if _refresh_lock.locked():
         raise HTTPException(
@@ -104,7 +127,11 @@ async def run_keboola_semantic_layer_refresh(
             if result.get("status") == "error":
                 message = result.get("error", "Keboola semantic layer sync failed")
                 _record_completion("error", message)
-                raise HTTPException(status_code=502, detail=message)
+                # Only a real upstream failure is a Bad Gateway. "Nothing is
+                # configured yet" and "Keboola refused this token" are the
+                # admin's to fix, and answering 502 for them reads as an Agnes
+                # outage — the exact misdiagnosis this endpoint kept causing.
+                raise HTTPException(status_code=_status_for_error_code(result.get("code")), detail=message)
             _record_completion("ok", result)
         finally:
             _refresh_state["run_id"] = None
