@@ -58,6 +58,26 @@ def require_master_token(storage_client) -> None:
     check_master_token(storage_client.verify_token())
 
 
+# Cap on how many unresolved table ids a run names — in a log line and in the
+# per-source result the admin page renders. A model with hundreds of unregistered
+# datasets should still produce a readable line; the count next to it stays exact.
+_MAX_REPORTED_UNRESOLVED_TABLES = 20
+
+
+def _upstream_error_code(exc: Exception) -> str:
+    """Classify an upstream Keboola failure for the endpoint's status mapping.
+
+    ``upstream_client_error`` — Keboola understood the request and refused it
+    (4xx): an invalid/expired token, or a stack URL pointing at a project the
+    token doesn't belong to. The admin fixes that, so the endpoint answers
+    4xx. ``upstream_error`` — unreachable, timed out, or 5xx: a real gateway
+    failure, and the only case that still deserves a 502.
+    """
+    from connectors.keboola.storage_api import is_upstream_client_error
+
+    return "upstream_client_error" if is_upstream_client_error(exc) else "upstream_error"
+
+
 def table_lookup_from_registry(rows: list[dict]) -> dict[tuple[str, str], str]:
     """Build {(bucket, source_table): agnes_view_name} from table_registry
     rows (from `table_registry_repo().list_by_source("keboola")`).
@@ -666,7 +686,12 @@ def _sync_one_source(
         token_info = storage_client.verify_token()
     except (StorageApiError, requests.RequestException) as e:
         logger.error("Keboola Storage API preflight (verify_token) failed: %s", e)
-        return {"status": "error", "error": f"Storage API preflight failed: {e}", "source_ref": source_ref}
+        return {
+            "status": "error",
+            "error": f"Storage API preflight failed: {e}",
+            "code": _upstream_error_code(e),
+            "source_ref": source_ref,
+        }
     check_master_token(token_info)
 
     project_key = _project_key(url, token_info)
@@ -700,7 +725,12 @@ def _sync_one_source(
         models = metastore.list_items("semantic-model")
     except (MetastoreApiError, requests.RequestException) as e:
         logger.error("Keboola Metastore fetch failed (semantic-model): %s", e)
-        return {"status": "error", "error": f"Metastore fetch failed: {e}", "source_ref": source_ref}
+        return {
+            "status": "error",
+            "error": f"Metastore fetch failed: {e}",
+            "code": _upstream_error_code(e),
+            "source_ref": source_ref,
+        }
 
     empty_result = {"status": "ok", **_empty_counters(), "source_ref": source_ref, "project_key": project_key}
     if not models:
@@ -721,7 +751,12 @@ def _sync_one_source(
         glossary_items = metastore.list_items("semantic-glossary", model_uuid)
     except (MetastoreApiError, requests.RequestException) as e:
         logger.error("Keboola Metastore fetch failed (model %s): %s", model_uuid, e)
-        return {"status": "error", "error": f"Metastore fetch failed: {e}", "source_ref": source_ref}
+        return {
+            "status": "error",
+            "error": f"Metastore fetch failed: {e}",
+            "code": _upstream_error_code(e),
+            "source_ref": source_ref,
+        }
 
     table_lookup = table_lookup_from_registry(table_registry_repo().list_by_source("keboola"))
     dataset_lookup = dataset_lookup_by_table_id(datasets)
@@ -730,6 +765,23 @@ def _sync_one_source(
     column_lookup = {
         name: {c["column_name"] for c in column_metadata.list_for_table(name)} for name in set(table_lookup.values())
     }
+
+    # Every metric hangs off a dataset, and a dataset whose Keboola table is not
+    # registered in Agnes takes all of its metrics down with it as
+    # `skipped_unresolved_table`. That count alone is a dead end — verified on a
+    # live instance where 50 of 50 metrics vanished and neither the UI nor the
+    # log named a single table, so the only way to find out was querying the
+    # Metastore by hand. Name the tables here, once, and hand them to the caller
+    # so the admin page can say which ones to register.
+    unresolved_tables = sorted(tid for tid in dataset_lookup if resolve_table_name(tid, table_lookup) is None)
+    if unresolved_tables:
+        logger.warning(
+            "Keboola semantic layer: %d of %d datasets reference tables that are not registered "
+            "in Agnes; every metric on them will be skipped. Register them to pick the metrics up: %s",
+            len(unresolved_tables),
+            len(dataset_lookup),
+            ", ".join(unresolved_tables[:_MAX_REPORTED_UNRESOLVED_TABLES]),
+        )
 
     repo = metric_repo()
     seen_ids: set[str] = set()
@@ -884,6 +936,7 @@ def _sync_one_source(
         "glossary_pruned": glossary_pruned,
         "skipped_missing_term": skipped_missing_term,
         "skipped_duplicate_project": 0,
+        "unresolved_tables": unresolved_tables[:_MAX_REPORTED_UNRESOLVED_TABLES],
         "source_ref": source_ref,
         "project_key": project_key,
     }
@@ -915,8 +968,10 @@ def _aggregate_sources(sources: list[dict]) -> dict:
 
     Top-level ``status`` is "ok" when at least one source synced; otherwise
     "error" carrying the first source's error message — which keeps the
-    endpoint's 502-on-returned-error contract intact for the single-source
-    (legacy) shape it has always seen.
+    endpoint's error-on-returned-error contract intact for the single-source
+    (legacy) shape it has always seen. The first source's ``code`` rides along
+    so the endpoint can tell an admin-fixable failure (bad token, nothing
+    configured) from a genuine upstream outage instead of calling both 502.
     """
     totals = {key: sum(int(s.get(key) or 0) for s in sources) for key in _COUNTER_KEYS}
     any_ok = any(s.get("status") == "ok" for s in sources)
@@ -926,6 +981,9 @@ def _aggregate_sources(sources: list[dict]) -> dict:
             (s.get("error") for s in sources if s.get("error")),
             "Keboola semantic layer sync failed",
         )
+        code = next((s.get("code") for s in sources if s.get("code")), None)
+        if code:
+            result["code"] = code
     return result
 
 
@@ -999,6 +1057,7 @@ def sync_semantic_layer(
         return {
             "status": "error",
             "error": "Keboola credentials not configured",
+            "code": "credentials_not_configured",
             **_empty_counters(),
             "sources": [],
         }

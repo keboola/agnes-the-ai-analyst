@@ -1122,6 +1122,85 @@ class TestSourceConnectionsMasterSecret:
         assert "<redacted-storage-token>" in caplog.text
         assert "super-secret-master-token" not in caplog.text
 
+    def test_master_secret_rejected_token_is_a_400_not_a_gateway_error(self, seeded_app):
+        """A 4xx from the Storage API means the pasted token is wrong — an
+        admin-fixable mistake, not a gateway failure.
+
+        Reported from a live instance: pasting a non-Storage token returned
+        502, the operator read "Bad Gateway", and the incident was chased as
+        an Agnes outage for a day. The detail still carries the upstream
+        reason; only the status changes.
+        """
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="test-master-bad-token")
+
+        from connectors.keboola.storage_api import StorageApiError
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                side_effect=StorageApiError(
+                    "GET https://connection.example.com/v2/storage/tokens/verify -> HTTP 401: "
+                    '{"error": "Invalid access token", "code": "storage.tokenInvalid"}',
+                    status=401,
+                ),
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+        ):
+            resp = c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "wrong-kind-of-token", "kind": "master"},
+                headers=_auth(token),
+            )
+        assert resp.status_code == 400, resp.text
+        assert "storage.tokenInvalid" in resp.json()["detail"]
+
+    def test_master_secret_upstream_5xx_is_still_a_502(self, seeded_app):
+        """The gateway status survives for what it actually means."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="test-master-upstream-5xx")
+
+        from connectors.keboola.storage_api import StorageApiError
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                side_effect=StorageApiError("HTTP 503: upstream unavailable", status=503),
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+        ):
+            resp = c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "a-real-master-token", "kind": "master"},
+                headers=_auth(token),
+            )
+        assert resp.status_code == 502, resp.text
+
+    def test_master_secret_network_failure_is_still_a_502(self, seeded_app):
+        """A transport error has no status at all — it must not be mistaken
+        for a client error just because the classifier found no 4xx."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="test-master-netfail")
+
+        import requests
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                side_effect=requests.ConnectionError("name resolution failed"),
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+        ):
+            resp = c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "a-real-master-token", "kind": "master"},
+                headers=_auth(token),
+            )
+        assert resp.status_code == 502, resp.text
+
     def test_connection_delete_clears_master_secret(self, seeded_app):
         c = seeded_app["client"]
         token = seeded_app["admin_token"]

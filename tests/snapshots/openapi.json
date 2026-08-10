@@ -23310,7 +23310,7 @@
     },
     "/api/admin/run-keboola-semantic-layer-refresh": {
       "post": {
-        "description": "Sync the configured Keboola project's semantic layer into\nmetric_definitions. See connectors/keboola/semantic_layer.py for the\nmapping/prune logic.",
+        "description": "Sync the configured Keboola project's semantic layer into\nmetric_definitions. See connectors/keboola/semantic_layer.py for the\nmapping/prune logic.\n\n409 if a sync is already in flight. 400 when the sync fails for a reason\nthe admin controls \u2014 no Keboola credentials configured, or a token the\nStorage/Metastore API refuses (4xx). 502 only when the upstream is\nunreachable or answers 5xx.",
         "operationId": "run_keboola_semantic_layer_refresh_api_admin_run_keboola_semantic_layer_refresh_post",
         "parameters": [
           {
@@ -24888,7 +24888,7 @@
         ]
       },
       "put": {
-        "description": "Store (or rotate) the vault secret for a connection token.\n\n``kind=\"storage\"`` (default): the plain Storage API token used for pulls.\n``kind=\"master\"``: a *separate* slot for a Keboola master (owner) Storage\nAPI token, required by the semantic-layer sync (Metastore API rejects\nnon-master tokens). 400 if the connection isn't ``source_type=\"keboola\"``,\nor if the token fails a live ``verify_token`` preflight (not a master\ntoken). 502 if the Storage API preflight call itself fails.\n\n409 if AGNES_VAULT_KEY is not configured on the server.",
+        "description": "Store (or rotate) the vault secret for a connection token.\n\n``kind=\"storage\"`` (default): the plain Storage API token used for pulls.\n``kind=\"master\"``: a *separate* slot for a Keboola master (owner) Storage\nAPI token, required by the semantic-layer sync (Metastore API rejects\nnon-master tokens). 400 if the connection isn't ``source_type=\"keboola\"``,\nif the token fails a live ``verify_token`` preflight (not a master token),\nor if the Storage API refuses the token outright (4xx \u2014 an invalid or\nexpired token is the admin's to fix, not a gateway failure). 502 only when\nthe Storage API is unreachable or answers 5xx.\n\n409 if AGNES_VAULT_KEY is not configured on the server.",
         "operationId": "set_connection_secret_api_admin_source_connections__connection_id__secret_put",
         "parameters": [
           {

@@ -1349,3 +1349,60 @@ class TestIsOwnedBySource:
 
     def test_no_existing_row_is_owned(self):
         assert self._gate(None) is True
+
+
+class TestUpstreamErrorClassification:
+    """Which upstream failures are the admin's to fix, and which are outages.
+
+    Everything used to collapse into 502 Bad Gateway, so "you pasted the wrong
+    token" and "Keboola is down" were indistinguishable — operators read Bad
+    Gateway and went looking for an infrastructure problem.
+    """
+
+    def test_4xx_is_a_client_error(self):
+        from connectors.keboola.storage_api import StorageApiError, is_upstream_client_error
+
+        assert is_upstream_client_error(StorageApiError("nope", status=401))
+        assert is_upstream_client_error(StorageApiError("nope", status=403))
+
+    def test_5xx_is_not_a_client_error(self):
+        from connectors.keboola.storage_api import StorageApiError, is_upstream_client_error
+
+        assert not is_upstream_client_error(StorageApiError("boom", status=500))
+        assert not is_upstream_client_error(StorageApiError("boom", status=503))
+
+    def test_statusless_transport_failure_is_not_a_client_error(self):
+        """A ConnectionError/Timeout carries no status. Absence of a 4xx must
+        never be read as "not the upstream's fault"."""
+        import requests
+
+        from connectors.keboola.storage_api import StorageApiError, is_upstream_client_error
+
+        assert not is_upstream_client_error(requests.ConnectionError("dns"))
+        assert not is_upstream_client_error(StorageApiError("no status at all"))
+
+    def test_metastore_error_classifies_without_a_cross_import(self):
+        """The classifier is duck-typed on `.status`, so it covers the
+        Metastore client's error type too."""
+        from connectors.keboola.metastore_client import MetastoreApiError
+        from connectors.keboola.storage_api import is_upstream_client_error
+
+        assert is_upstream_client_error(MetastoreApiError("nope", status=401))
+        assert not is_upstream_client_error(MetastoreApiError("boom", status=502))
+
+
+class TestSyncErrorCodes:
+    def test_missing_credentials_reports_a_config_code(self, e2e_env):
+        """The endpoint maps this to 400: nothing is configured yet, which is
+        a setup step, not a gateway failure."""
+        from connectors.keboola.semantic_layer import sync_semantic_layer
+
+        with patch("connectors.keboola.semantic_layer._enumerate_master_sources", return_value=[]):
+            with patch(
+                "connectors.keboola.semantic_layer._resolve_keboola_credentials_slot",
+                return_value=("", "", "none"),
+            ):
+                result = sync_semantic_layer()
+
+        assert result["status"] == "error"
+        assert result["code"] == "credentials_not_configured"
