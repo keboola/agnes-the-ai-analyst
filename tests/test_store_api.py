@@ -1786,6 +1786,62 @@ class TestInstallCycle:
         archived_entry = next(e for e in ms["store"] if e["entity_id"] == eid)
         assert archived_entry["visibility_status"] == "archived"
 
+    def test_archived_entity_leaves_the_admin_browse_shelf(self, web_client):
+        """Soft-deleted entities must not sit on anyone's Browse shelf.
+
+        The admin listing branch passed no visibility filter at all, so every
+        entity any user had ever deleted stayed on the admin's shelf — badged
+        "Quarantined", which means blocked/under-review, not deleted — and
+        counted toward the Browse tab total. Seen on a live instance: a skill
+        deleted seconds earlier was still on the shelf and the Browse counter
+        had gone up by one. Admins who need deleted rows have the Archived tab
+        on /admin/store/submissions.
+        """
+        from argon2 import PasswordHasher
+        from src.db import get_system_db
+        from src.repositories.users import UserRepository
+        from tests.helpers.auth import grant_admin
+
+        _, owner_cookies = _create_user(web_client, "owner-arch@x.com")
+        eid = web_client.post(
+            "/api/store/entities",
+            files={"file": ("s.zip", _make_skill_zip("arch-shelf"), "application/zip")},
+            data={"type": "skill", "description": _OK_DESC},
+            cookies=owner_cookies,
+        ).json()["id"]
+
+        ph = PasswordHasher()
+        conn = get_system_db()
+        UserRepository(conn).create(
+            id="adm-arch",
+            email="adm-arch@x.com",
+            name="adm",
+            password_hash=ph.hash("AdminPass1!"),
+        )
+        grant_admin(conn, "adm-arch")
+        admin_token = web_client.post(
+            "/auth/token",
+            json={"email": "adm-arch@x.com", "password": "AdminPass1!"},
+        ).json()["access_token"]
+        admin_cookies = {"access_token": admin_token}
+
+        def _admin_shelf_ids():
+            r = web_client.get("/api/marketplace/items?tab=flea", cookies=admin_cookies)
+            assert r.status_code == 200, r.text
+            return {i["id"] for i in r.json()["items"]}
+
+        # The listing prefixes flea ids with "flea-".
+        card_id = f"flea-{eid}"
+        assert card_id in _admin_shelf_ids(), "precondition: live entity is on the shelf"
+
+        assert web_client.delete(
+            f"/api/store/entities/{eid}", cookies=owner_cookies
+        ).status_code == 204
+
+        assert card_id not in _admin_shelf_ids(), (
+            "a soft-deleted entity must not stay on the admin Browse shelf"
+        )
+
     def test_admin_hard_delete_cascades_installs(self, web_client):
         """v35 hard delete (admin only): bundle dropped + install rows
         cascade. Existing users lose the plugin on next sync."""

@@ -540,3 +540,40 @@ def test_store_status_wait_times_out(monkeypatch):
     result = runner.invoke(store_app, ["status", "e1", "--wait", "--timeout", "300"])
     assert result.exit_code == 2
     assert "still" in _clean(result.output).lower()
+
+
+def test_store_delete_without_tty_names_the_remedy(monkeypatch):
+    """A non-interactive caller must be told about --yes, not just "Aborted."
+
+    `typer.confirm` reads EOF when there is no terminal and aborts with a bare
+    "Aborted." naming no remedy — which is what a chat sandbox, a CI step or
+    any agent context hits. Observed live: the assistant ran
+    `agnes store delete <id>`, got exit 1 + "Aborted.", and had to go read
+    --help to discover the flag.
+    """
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    called = []
+    monkeypatch.setattr(
+        "cli.commands.store.api_delete", lambda *a, **k: called.append(a)
+    )
+
+    result = runner.invoke(store_app, ["delete", "ent123"])
+
+    assert result.exit_code == 1
+    assert "--yes" in result.output
+    assert not called, "must not delete without confirmation"
+
+
+def test_store_delete_with_yes_skips_confirmation(monkeypatch):
+    """--yes deletes outright, terminal or not."""
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    called = []
+    monkeypatch.setattr(
+        "cli.commands.store.api_delete", lambda *a, **k: called.append(a)
+    )
+
+    result = runner.invoke(store_app, ["delete", "ent123", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert called, "--yes must go through to the API"
+    assert "Deleted: ent123" in result.output
