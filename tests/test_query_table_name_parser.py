@@ -203,19 +203,19 @@ def test_labelling_a_long_query_stays_linear():
     # Linear is ~8x, quadratic ~64x — 20x sits between them, so the RATIO is
     # the real check. Measured here: linear 8.3x, a quadratic stand-in 57x.
     #
-    # The floor exists only so timer noise on an unmeasurably fast `small`
-    # cannot fail the ratio — it must therefore sit just above honest linear
-    # cost, not far above it. It used to be 0.5s, which silently disabled
-    # the entire test: this parser does 3200 joins in ~9ms and a quadratic
-    # walk takes ~54ms, so BOTH satisfied `large < 0.5` and the ratio was
-    # never reached. A quadratic regression would have landed green.
+    # The floor is the escape hatch for timer noise, so it has to sit ABOVE
+    # honest cost to do anything at all, and BELOW quadratic cost to not
+    # hide the bug. Measured: linear ~9ms, quadratic ~59ms, so 25ms is
+    # inside that window. It used to be 0.5s — above both, which silently
+    # disabled the entire test: the ratio was never reached and a quadratic
+    # regression could have landed green.
     #
     # The input sizes moved up (200/1600 -> 400/3200) for the same reason
     # the samples are best-of-N: a `small` of ~1ms is far enough above
-    # timer resolution that the ratio means something, and the gap between
-    # linear and quadratic (9ms vs 54ms) is wide enough to survive a loaded
-    # runner without either masking the bug or inventing one.
-    assert large < max(small * 20, 0.005), f"{small=} {large=}"
+    # timer resolution that the ratio means something, and the linear/
+    # quadratic gap is wide enough to survive a loaded runner without
+    # either masking the bug or inventing one.
+    assert large < max(small * 20, 0.025), f"{small=} {large=}"
 
 
 def test_quoted_remote_catalog_path_keeps_its_table():

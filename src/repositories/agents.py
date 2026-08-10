@@ -29,13 +29,15 @@ _UPDATABLE = frozenset(
         "plugins",
         "surfaces",
         "status",
-        # Naming a still-unnamed draft re-derives its slug off the new name
-        # (app/api/agents.py::_placeholder_slug_rename) — the builder creates
-        # the row before the user types anything, so the slug would otherwise
+        # Renaming a DRAFT re-derives its slug off the new name
+        # (app/api/agents.py::_draft_slug_rename) — the builder creates the
+        # row before the user types anything, so the slug would otherwise
         # stay the literal "agent" placeholder that the public address
         # (POST /api/v1/agents/{slug}/responses) is built from. Writers must
-        # keep the (owner_user_id, slug) UNIQUE intact: go through
-        # ``_unique_slug``, never assign a raw value here.
+        # keep the (owner_user_id, slug) UNIQUE intact: resolve through
+        # ``_unique_slug`` scoped to the agent's OWNER (not the caller — an
+        # admin may be editing someone else's agent), never assign a raw
+        # value here.
         "slug",
     }
 )
