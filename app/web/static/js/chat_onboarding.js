@@ -1089,7 +1089,12 @@ function matchScore(needle, item) {
     .forEach((t) => {
       if (hay.includes(t)) s += 12;
     });
-  return s;
+  // Bag-of-words overlap ranks candidates but must never *be* confidence:
+  // five matching tokens reach 60, which is exactly ADD_COMMAND_MIN_SCORE, so
+  // an ordinary five-word sentence whose words happen to appear in a
+  // description would have counted as naming that item. Capped below the bar
+  // so only the exact-name (100) and substring (60) tiers can clear it.
+  return Math.min(s, ADD_COMMAND_MIN_SCORE - 1);
 }
 
 // ── escaping ─────────────────────────────────────────────────────────────────
