@@ -247,7 +247,7 @@ def pull(
         # canonical `agnes init` template).
         if result.errors:
             for e in result.errors:
-                typer.echo(f"warn: {e}", err=True)
+                typer.echo(f"warn: {format_pull_error(e)}", err=True)
             # #596 — even in the silent SessionStart-hook path, a table that
             # failed to land must exit non-zero so the canonical hook's
             # trailing `|| true` is what swallows it (a deliberate operator
@@ -267,7 +267,6 @@ def pull(
     else:
         typer.echo(f"Updated {result.tables_updated} tables ({result.parquets_total} total).")
     typer.echo(f"Rules: {result.rules_count}.")
-
 
     # WF-4 (wave 2H) — provenance summary. Only printed once a
     # `signed_url` has actually been used (an instance with no object
@@ -310,11 +309,35 @@ def pull(
 
     if result.errors:
         for e in result.errors:
-            typer.echo(f"warn: {e}", err=True)
+            typer.echo(f"warn: {format_pull_error(e)}", err=True)
         # #596 — a partial pull (any table failed to land) must exit non-zero
         # so manual invocation and CI both see the failure instead of a
         # success-looking exit 0 that silently hides missing tables.
         raise typer.Exit(1)
+
+
+_ERROR_SUBJECT_KEYS = ("table", "name", "package", "slug", "digest", "corpus_id", "stage")
+
+
+def format_pull_error(entry) -> str:
+    """One readable line for an entry of ``PullResult.errors``.
+
+    The entries are dicts assembled at the failure site
+    (``{"table": ..., "error": ...}`` and friends). They used to be printed
+    with an f-string, so an analyst whose download 403'd got the repr:
+
+        warn: {'table': 'orders', 'error': "Client error '403 Forbidden' ..."}
+
+    Anything unrecognized falls back to ``str`` so this never renders less
+    than before.
+    """
+    if not isinstance(entry, dict):
+        return str(entry)
+    subject = " ".join(str(entry[k]) for k in _ERROR_SUBJECT_KEYS if entry.get(k) not in (None, ""))
+    message = str(entry.get("error") or "").strip()
+    if subject and message:
+        return f"{subject}: {message}"
+    return message or subject or str(entry)
 
 
 def _emit_stack_sync_block(stack) -> None:
