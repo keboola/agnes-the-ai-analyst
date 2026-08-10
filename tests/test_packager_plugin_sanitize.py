@@ -5,6 +5,7 @@ only a `.gitkeep`. Claude Code's `plugin install` rejects such a plugin
 ("agents: Invalid input"), which broke the keboola-howto install in the
 cloud-chat sandbox. The marketplace packager now drops those keys when serving.
 """
+
 import json
 
 from app.marketplace_server.packager import _sanitize_served_plugin_json
@@ -25,17 +26,21 @@ def _plugin(tmp_path, manifest, *, with_skill=True, empty_agents=True):
 
 def test_drops_empty_component_dir_keeps_populated(tmp_path):
     manifest = {
-        "name": "keboola-howto", "version": "0.1.0", "description": "d",
-        "skills": "./skills", "agents": "./agents", "commands": "./commands",
+        "name": "keboola-howto",
+        "version": "0.1.0",
+        "description": "d",
+        "skills": "./skills",
+        "agents": "./agents",
+        "commands": "./commands",
     }
     pdir = _plugin(tmp_path, manifest)  # skills populated, agents empty, commands absent
     raw = (pdir / ".claude-plugin" / "plugin.json").read_bytes()
 
     out = json.loads(_sanitize_served_plugin_json(raw, pdir, "keboola-howto"))
 
-    assert out["skills"] == "./skills"   # populated → kept
-    assert "agents" not in out           # empty dir → dropped
-    assert "commands" not in out         # absent dir → dropped
+    assert out["skills"] == "./skills"  # populated → kept
+    assert "agents" not in out  # empty dir → dropped
+    assert "commands" not in out  # absent dir → dropped
     assert out["name"] == "keboola-howto"  # other fields untouched
 
 
@@ -59,6 +64,35 @@ def test_bad_json_returned_unchanged(tmp_path):
     pdir = tmp_path / "p"
     pdir.mkdir()
     assert _sanitize_served_plugin_json(b"not json{", pdir, "p") == b"not json{"
+
+
+def test_unresolvable_plugin_dir_still_reconciles_name(tmp_path, monkeypatch):
+    """An OSError resolving `plugin_dir` must not discard the name fix.
+
+    The name-reconciliation edit runs first and only needs `manifest_name`;
+    the component-key pruning pass is what actually needs a resolved
+    `plugin_dir`. A plugin dir that fails to resolve (a broken symlink, a
+    permission error) should therefore still serve the corrected name — only
+    the pruning pass is skipped. Discarding the name fix here would silently
+    resurrect the "Plugin <X> not found in marketplace" failure this function
+    exists to prevent.
+    """
+    from pathlib import Path
+
+    manifest = {"name": "vendor/plugin", "version": "1.0", "description": "d"}
+    pdir = tmp_path / "vendor-plugin"
+    (pdir / ".claude-plugin").mkdir(parents=True)
+    (pdir / ".claude-plugin" / "plugin.json").write_text(json.dumps(manifest))
+    raw = (pdir / ".claude-plugin" / "plugin.json").read_bytes()
+
+    def _boom(self):
+        raise OSError("simulated unresolvable plugin dir")
+
+    monkeypatch.setattr(Path, "resolve", _boom)
+
+    out = json.loads(_sanitize_served_plugin_json(raw, pdir, "vendor-plugin"))
+
+    assert out["name"] == "vendor-plugin", "rejected name reached the served file"
 
 
 # --- served identity matches the catalog entry ---------------------------

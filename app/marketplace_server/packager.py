@@ -260,6 +260,14 @@ def _sanitize_served_plugin_json(raw: bytes, plugin_dir, manifest_name: str) -> 
     Returns ``raw`` unchanged on any parse problem or when neither edit
     applies, keeping byte-for-byte determinism for the common case — which
     is what lets the ETag stay stable across repackaging.
+
+    The two edits are independent: an unresolvable ``plugin_dir`` (``OSError``,
+    e.g. a broken symlink or a permission error) only disables the
+    component-key pruning pass, since that is the one that needs the
+    directory. Name reconciliation must still apply — it is the edit that
+    keeps the served file from disagreeing with the catalog entry, and
+    bailing out on it here would silently resurrect the exact "Plugin <X>
+    not found in marketplace" failure this function exists to prevent.
     """
     try:
         data = json.loads(raw)
@@ -274,16 +282,17 @@ def _sanitize_served_plugin_json(raw: bytes, plugin_dir, manifest_name: str) -> 
     try:
         base = plugin_dir.resolve()
     except OSError:
-        return raw
-    for key in _PLUGIN_COMPONENT_KEYS:
-        val = data.get(key)
-        # Only handle the string-path form (e.g. "./agents"); leave arrays /
-        # other shapes untouched — a populated dir or explicit list is valid.
-        if not isinstance(val, str):
-            continue
-        if not _dir_has_real_files(plugin_dir / val, base):
-            data.pop(key, None)
-            changed = True
+        base = None
+    if base is not None:
+        for key in _PLUGIN_COMPONENT_KEYS:
+            val = data.get(key)
+            # Only handle the string-path form (e.g. "./agents"); leave arrays /
+            # other shapes untouched — a populated dir or explicit list is valid.
+            if not isinstance(val, str):
+                continue
+            if not _dir_has_real_files(plugin_dir / val, base):
+                data.pop(key, None)
+                changed = True
     if not changed:
         return raw
     return json.dumps(data, indent=2).encode("utf-8")
