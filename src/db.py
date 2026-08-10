@@ -2595,6 +2595,27 @@ def get_analytics_db() -> duckdb.DuckDBPyConnection:
     `_analytics_db_*` globals. `get_analytics_db_readonly()` deliberately
     stays per-call because each invocation re-ATTACHes extract.duckdb
     files into a fresh read-only context.
+
+    Do NOT call this from a request path. The connection it hands back
+    stays open for the life of the process (nothing but
+    `close_analytics_db()`/`close_singleton_connections()` at shutdown ever
+    closes it), and DuckDB refuses to open a *second* connection to the
+    same file with a different configuration while that read-write handle
+    is alive — so every subsequent `get_analytics_db_readonly()` call in
+    the process raises "Can't open a connection to same database file with
+    a different configuration than existing connections" until restart.
+    This is exactly the outage `POST /api/mcp/query-table/{table_id}`
+    (`app/api/mcp_per_table.py`) caused before it was moved onto
+    `get_analytics_db_readonly()` — see the regression tests
+    in `tests/test_analytics_db_singleton.py::TestReadonlyOnFreshDataDir`.
+    As of that fix, nothing under `app/`, `cli/`, `services/`, or
+    `connectors/` calls this function; keep it that way. A static guard
+    (`tests/test_analytics_rw_singleton_guard.py`) fails the build if a new
+    call site appears outside `src/db.py` itself. If you genuinely need a
+    long-lived read-write handle for maintenance work (bulk rebuild,
+    profiling, catalog export), open your own connection rather than
+    reintroducing a caller here — this singleton is reserved for
+    infrastructure that owns the analytics DB's write lifecycle.
     """
     global _analytics_db_conn, _analytics_db_path
     db_path = str(_get_data_dir() / "analytics" / "server.duckdb")
