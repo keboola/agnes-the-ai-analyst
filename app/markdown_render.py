@@ -147,12 +147,18 @@ def render_safe(markdown: Optional[str], *, html_source: bool = False) -> str:
 _BLOCK_TAGS = "p|li|h[1-6]|tr|t[dh]|blockquote|pre|div|section|article|figure|figcaption|dd|dt|dl"
 # The attribute run skips over quoted values, because `>` inside one does not
 # close the tag — `<div title="a>b">` is a single tag, and a `[^>]*>` run cut it
-# in half and left `b">` as visible text in the preview. The three alternatives
-# are mutually exclusive on their first character (a quote starts a quoted run,
-# anything else is the bare branch), so the pattern cannot backtrack
-# exponentially on a tag that never closes.
+# in half and left `b">` as visible text in the preview.
+#
+# Two properties keep it cheap on hostile input. The three alternatives are
+# mutually exclusive on their first character (a quote starts a quoted run,
+# anything else takes the bare branch), so there is no exponential backtracking.
+# And the bare branch excludes `<`, so an unterminated tag stops at the next
+# tag start instead of scanning to the end of the text — without that, N
+# unclosed tags each rescanned the remainder and the whole substitution went
+# quadratic (20 KB of `<div ` took 620 ms). A `<` inside a quoted value is
+# still consumed by the quoted branch, so well-formed tags are unaffected.
 _BLOCK_BOUNDARY_RE = re.compile(
-    rf"</?(?:{_BLOCK_TAGS})\b(?:\"[^\"]*\"|'[^']*'|[^'\">])*>|<br ?/?>"
+    rf"</?(?:{_BLOCK_TAGS})\b(?:\"[^\"]*\"|'[^']*'|[^'\"<>])*>|<br ?/?>"
 )
 
 

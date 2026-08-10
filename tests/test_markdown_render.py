@@ -447,14 +447,31 @@ def test_a_quoted_gt_inside_a_layout_tag_does_not_leak():
     assert render_plain("<div title='a>b'>First.</div><div>Second.</div>", html_source=True) == "First. Second."
 
 
-def test_boundary_pattern_stays_linear_on_an_unclosed_tag():
-    """The attribute run is an alternation inside a star, which is the shape
-    that goes exponential when the branches overlap. They are mutually
-    exclusive on their first character; this pins that they stay so."""
+def test_boundary_pattern_stays_linear_on_unclosed_tags():
+    """Two separate hazards in one pattern, so two shapes of hostile input.
+
+    ONE unterminated tag with many quoted runs is the exponential-backtracking
+    shape (alternation inside a star). MANY unterminated tags is the quadratic
+    one: each restarts a scan over the remainder unless the bare branch stops
+    at the next `<`. The second is what actually bit — 20 KB of `<div ` took
+    620 ms before the `<` exclusion — so it is measured against a growth ratio
+    rather than a wall-clock threshold that a slow runner could trip."""
     import time
 
-    from app.markdown_render import render_plain
+    from app.markdown_render import _BLOCK_BOUNDARY_RE, render_plain
 
     started = time.perf_counter()
     render_plain("<div " + '"x"' * 4000, html_source=True)
     assert time.perf_counter() - started < 1.0
+
+    def elapsed(n: int) -> float:
+        text = "<div " * n
+        started = time.perf_counter()
+        _BLOCK_BOUNDARY_RE.sub(" ", text)
+        return time.perf_counter() - started
+
+    elapsed(2000)  # warm up, so the first call does not carry setup cost
+    small, large = elapsed(2000), elapsed(8000)
+    # Linear would be ~4x for 4x the input; quadratic ~16x. Generous ceiling —
+    # the point is to catch the class, not to benchmark the runner.
+    assert large < max(small * 8, 0.05), f"superlinear growth: {small=:.4f} {large=:.4f}"
