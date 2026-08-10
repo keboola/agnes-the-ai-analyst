@@ -1,4 +1,5 @@
 {% extends "base_page.html" %}
+{% import "macros/_icon.html" as ico %}
 {% block title %}Semantic layer — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% set page_hero_eyebrow = "Sources" %}
@@ -122,6 +123,11 @@
     </span>
     <span><a href="/catalog/semantics">Browse it →</a></span>
   </div>
+
+  {# The warning rows are built in JS, but their icon is not: it is rendered
+     once here by the shared macro and cloned, so no markup string is assembled
+     client-side. #}
+  <template id="sl-warn-icon">{{ ico.icon('warning', 16) }}</template>
 
   <div class="sl-section-title">Sources</div>
   {% if not sources %}
@@ -254,9 +260,10 @@ function renderCoverage(source) {
   box.textContent = "";
   let any = false;
 
+  const iconTpl = document.getElementById("sl-warn-icon");
   for (const w of source.warnings || []) {
     const warn = el("div", "sl-warn");
-    warn.appendChild(el("span", null, "⚠"));
+    if (iconTpl) warn.appendChild(iconTpl.content.cloneNode(true));
     warn.appendChild(el("span", null, w.message || ""));
     box.appendChild(warn);
     any = true;
