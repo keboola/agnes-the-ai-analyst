@@ -68,6 +68,12 @@ _COHORT: dict[str, tuple[str, str]] = {
     "/api/admin/config-surface": ("admin config-surface", "admin_config_surface"),
     # Multi-project Keboola: named source-connections (#731).
     "/api/admin/source-connections": ("admin connection list", "admin_source_connections_list"),
+    # Semantic-layer coverage: why a connected project's metrics are (or are
+    # not) landing in metric_definitions.
+    "/api/admin/semantic-layer/coverage": (
+        "admin semantic-layer coverage",
+        "admin_semantic_layer_coverage",
+    ),
     # Contributed-skill triple-surface (GET list + DELETE; POST contribute is _EXEMPT below).
     "/api/admin/contributed-skills": ("admin skill list", "list_contributed_skills"),
     "/api/admin/contributed-skills/{name}": ("admin skill delete", "delete_contributed_skill"),
