@@ -153,13 +153,15 @@ def file_set_for_user(
             rel = f.relative_to(plugin_dir).as_posix()
             arc = f"plugins/{prefix}/{rel}"
             data = f.read_bytes()
-            # Mirror the ZIP path: drop plugin.json component keys pointing at
+            # Mirror the ZIP path: force `name` to the resolved manifest name
+            # so this channel can't serve a different identity than the
+            # catalog entry, and drop plugin.json component keys pointing at
             # an empty/absent dir so `claude plugin install` doesn't reject the
             # plugin ("agents: Invalid input"). See packager._collect_members.
             if rel == ".claude-plugin/plugin.json":
                 from app.marketplace_server.packager import _sanitize_served_plugin_json
 
-                data = _sanitize_served_plugin_json(data, plugin_dir)
+                data = _sanitize_served_plugin_json(data, plugin_dir, plugin["manifest_name"])
             files[arc] = data
     return files
 
