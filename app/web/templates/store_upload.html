@@ -242,6 +242,17 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  .no-review-banner {
+    margin-bottom: 14px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    font-size: 13px;
+    line-height: 1.45;
+    background: var(--ds-accent-warn-bg);
+    color: var(--ds-accent-warn-ink);
+    border: 1px solid var(--ds-accent-warn-line);
+  }
+  .no-review-banner strong { display: block; margin-bottom: 2px; }
   .guidelines {
     margin-bottom: 14px;
     background: var(--background, #f9fafb);
@@ -368,6 +379,20 @@
       <div class="card-body">
         <p class="card-sub">Pick what you're uploading and the ZIP archive.
           The server validates the layout when you click <code>Next</code>.</p>
+
+        {# Guardrails on, no LLM provider configured: the automated review
+           step cannot run, so anything published here parks at
+           `pending_llm` — hidden from everyone — until an admin retries it.
+           The server logs this at boot; the person about to publish had no
+           way to know, and the surrounding copy promises "a few seconds". #}
+        {% if not guardrails_llm_ready %}
+        <div class="no-review-banner" role="alert" id="no-llm-review-warning">
+          <strong>Automated review is not available on this instance.</strong>
+          You can publish, but your submission stays hidden from everyone
+          until an administrator runs the review manually. Ask an admin
+          before you rely on colleagues seeing it.
+        </div>
+        {% endif %}
 
         <div id="guidelines" class="guidelines">
           <button type="button" class="guidelines-toggle" id="guidelines-toggle"

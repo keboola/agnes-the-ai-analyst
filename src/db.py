@@ -2912,15 +2912,22 @@ def get_analytics_db_readonly() -> duckdb.DuckDBPyConnection:
 
     db_path = _get_data_dir() / "analytics" / "server.duckdb"
     if not db_path.exists():
+        # Fresh instance: materialize an empty database file so the
+        # read-only open below has something to attach to, then drop the
+        # read-write handle IMMEDIATELY.
+        #
+        # DuckDB refuses to open a file read-only while a read-write
+        # connection to it is alive in the same process ("Can't open a
+        # connection to same database file with a different configuration
+        # than existing connections"). This branch used to *return* that
+        # read-write connection, and `app/api/query.py` never closes it —
+        # so on a fresh install the first request touching the query path
+        # poisoned every subsequent query in that process until restart.
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = _open_duckdb(str(db_path), read_only=False)
         try:
-            conn.execute("SET enable_external_access = false")
+            _open_duckdb(str(db_path), read_only=False).close()
         except Exception:
-            pass
-        # Memory cap — see get_analytics_db / the _*_MEMORY_LIMIT constants.
-        _apply_memory_caps(conn, _ANALYTICS_RO_MEMORY_LIMIT, label="analytics_ro")
-        return _maybe_instrument(conn, "analytics_ro")
+            logger.exception("Failed to initialize empty analytics DB at %s", db_path)
     conn = _open_duckdb(str(db_path), read_only=True)
     # Memory cap (see get_analytics_db rationale). Read-only conns can
     # still buffer significant memory for analyst queries that hit
