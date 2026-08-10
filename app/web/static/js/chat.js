@@ -1666,14 +1666,15 @@ function finalizeAssistantMessage(frame) {
 // ---------- Inline tool-call blocks --------------------------------------
 // Each tool call renders as a self-contained block in the message stream:
 //
-//   ┌─ ⏳ run_query ························ args ─┐    while running
-//   ├─ ✓ run_query · 1.2s ······························┤    once result arrives
+//   ┌─ ⏳ run_query ───────────────────────────────┐    while running
+//   ├─ ✓ run_query · 1.2s ───────────────────────────┤    once result arrives
 //   │   <result preview — first N rows as a table, or  │
 //   │    a short text snippet, or a JSON code block>    │
 //   └────────────────────────────────────────────────────┘
 //
-// Args + full result are always reachable behind "Show args" / "Show
-// full result" toggles so power users can dig in. Tabular results
+// Args + full result are reachable behind "Show args" / "Show
+// full result" toggles so power users can dig in without the raw SQL/JSON
+// sitting in the message stream by default. Tabular results
 // (the most common — `agnes catalog`, `agnes query`, `agnes describe`)
 // get a real <table> preview so the user sees what came back without
 // having to expand.
@@ -1692,31 +1693,6 @@ function _toolCallId(frame) {
   // so pairing on it left every tool block stuck on "running…" forever.
   // Fall back to id (pre-envelope runners) then tool name.
   return frame.tool_use_id || frame.id || frame.tool;
-}
-
-function _summarizeArgs(args) {
-  if (args == null) return "";
-  if (typeof args === "string") return args.length > 80 ? args.slice(0, 78) + "…" : args;
-  if (typeof args !== "object") return String(args);
-  const keys = Object.keys(args);
-  if (keys.length === 0) return "";
-  // Heuristic: prefer the SQL arg if present (run_query, agnes query)
-  // — that's what the user actually wants to see. Otherwise show the
-  // first scalar value or a "k=v, k=v" sketch.
-  if (typeof args.sql === "string") {
-    const sql = args.sql.replace(/\s+/g, " ").trim();
-    return sql.length > 100 ? sql.slice(0, 98) + "…" : sql;
-  }
-  if (typeof args.table === "string") return args.table;
-  if (typeof args.name === "string") return args.name;
-  const parts = [];
-  for (const k of keys.slice(0, 3)) {
-    const v = args[k];
-    if (v == null) continue;
-    const text = typeof v === "object" ? JSON.stringify(v) : String(v);
-    parts.push(`${k}=${text.length > 30 ? text.slice(0, 28) + "…" : text}`);
-  }
-  return parts.join(", ");
 }
 
 function renderApprovalRequest(frame) {
@@ -1828,7 +1804,9 @@ function renderToolCallStart(frame) {
   wrap.dataset.tool = frame.tool;
   wrap.dataset.startedAt = String(performance.now());
 
-  // Header line — icon + tool name + args summary. Always visible.
+  // Header line — icon + tool name + status. Always visible; the args
+  // summary (e.g. the SQL a query tool ran) stays behind the "Show args"
+  // toggle below rather than sitting unhidden in the message stream.
   const head = document.createElement("div");
   head.className = "cloud-chat-tool-head";
   const icon = document.createElement("span");
@@ -1857,11 +1835,6 @@ function renderToolCallStart(frame) {
     name.textContent = frame.tool || "tool";
   }
   head.appendChild(name);
-
-  const summary = document.createElement("span");
-  summary.className = "cloud-chat-tool-summary";
-  summary.textContent = _summarizeArgs(frame.args);
-  head.appendChild(summary);
 
   const meta = document.createElement("span");
   meta.className = "cloud-chat-tool-meta";

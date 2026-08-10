@@ -819,7 +819,7 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
           <span class="aic-sub-icon">{{ ico.icon('link', 20) }}</span>
           <div>
             <h3 class="aic-sub-title">Add the server</h3>
-            <p class="aic-sub-desc">Run this once in a terminal. The <span class="aic-code">--scope user</span> flag makes it available in every folder.</p>
+            <p class="aic-sub-desc">Requires the Claude Code CLI installed, signed in to your Claude account. Run this once in a terminal — the <span class="aic-code">--scope user</span> flag makes it available in every folder.</p>
             <div class="aic-term">
               <div class="aic-term-head"><span class="aic-term-file">terminal</span><button type="button" class="aic-term-copy" data-copy="#cc-cmd">{{ ico.icon('doc', 13) }} Copy</button></div>
               <pre class="aic-term-body" id="cc-cmd">claude mcp add --scope user --transport http agnes <span class="aic-term-url">{{ server_url }}/api/mcp/http</span></pre>
@@ -864,6 +864,7 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
               <li>Paste the connector URL above and click <strong>Add</strong>.</li>
             </ol>
             <div class="aic-callout">{{ ico.icon('bulb', 16) }}<span>Don't search the directory — {{ instance_brand }} isn't a listed app. Use <strong>Add custom connector</strong>.</span></div>
+            <div class="aic-callout">{{ ico.icon('warning', 16) }}<span>On <strong>Team or Enterprise</strong> plans, only a workspace admin can add a custom connector. If you don't see the option, ask your admin to add it once for the whole workspace.<span class="aic-admin-row"><button type="button" class="btn btn-secondary btn-sm" data-copy="#aic-admin-msg">Copy request for your admin</button></span></span></div>
           </div>
         </div>
         <div class="aic-sub">
