@@ -1412,6 +1412,49 @@ class TestProjectIdentityBinding:
         assert resp.status_code == 409, resp.text
         verify.assert_not_called()
 
+    def test_test_endpoint_reports_a_disagreement_instead_of_re_binding(self, seeded_app):
+        """/test must not quietly re-point a bound connection.
+
+        The token /test resolves is not necessarily the one that established
+        the binding (`_resolve_token` falls back to `token_env`), so
+        overwriting on a probe would leave the stored master token failing a
+        mismatch nobody caused. Devin Review on #1242.
+        """
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="test-identity-probe")
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                return_value=self._verify(project_id=1234, master=False),
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+        ):
+            c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "storage-token", "kind": "storage"},
+                headers=_auth(token),
+            )
+
+        probe = MagicMock()
+        probe.status_code = 200
+        probe.json.return_value = {"owner": {"id": 9999, "name": "Other Project"}}
+        with (
+            patch("httpx.AsyncClient.get", AsyncMock(return_value=probe)),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+        ):
+            resp = c.post(f"{BASE}/{conn_id}/test", json={}, headers=_auth(token))
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["ok"] is False
+        assert "project_mismatch" in body["error"]
+
+        # The binding is untouched — this is the whole point.
+        row = c.get(f"{BASE}/{conn_id}", headers=_auth(token)).json()
+        assert row["config"]["project_id"] == 1234
+
     def test_owner_without_an_id_is_not_recorded_as_an_identity(self, seeded_app):
         """An identity we cannot read must not be persisted as a known one —
         otherwise the mismatch check compares against a hole and passes
