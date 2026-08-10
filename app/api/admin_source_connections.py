@@ -201,16 +201,31 @@ def _record_project_identity(connection_id: str, row: Dict[str, Any], payload: D
     if project_id is None:
         return
     config = dict(row.get("config") or {})
-    if config.get("project_id") == project_id and config.get("project_name") == project_name:
+    known_id = config.get("project_id")
+    if known_id is not None and known_id != project_id:
+        # NEVER silently re-bind. Callers are expected to detect the
+        # disagreement and report it, but this is the backstop: a caller that
+        # forgets would rewrite the binding under a stored master token that
+        # still matches the ORIGINAL project, and that token then starts
+        # failing a mismatch check nobody triggered (Devin Review on #1242).
+        logger.warning(
+            "connection %s is bound to Keboola project %s but a token for project %s verified; "
+            "leaving the binding alone",
+            connection_id,
+            known_id,
+            project_id,
+        )
+        return
+    if known_id == project_id and config.get("project_name") == project_name:
         return
     config["project_id"] = project_id
     config["project_name"] = project_name
     source_connections_repo().update(connection_id, config=config)
 
 
-def _reject_project_mismatch(row: Dict[str, Any], payload: Dict[str, Any], *, what: str) -> None:
-    """400 if this token opens a different Keboola project than the one the
-    connection is already bound to.
+def project_mismatch_message(row: Dict[str, Any], payload: Dict[str, Any], *, what: str) -> Optional[str]:
+    """Why this token disagrees with the connection's recorded project, or
+    ``None`` when there is no disagreement.
 
     The failure this closes: a master token pasted onto the wrong connection
     was stored happily and badged "SET", and the semantic layer then synced
@@ -219,26 +234,35 @@ def _reject_project_mismatch(row: Dict[str, Any], payload: Dict[str, Any], *, wh
     visible as metrics that make no sense for the project you thought you
     were looking at.
 
-    Skipped when the connection has no recorded identity yet (nothing to
-    contradict — the caller records it instead).
+    Returns ``None`` when the connection has no recorded identity yet
+    (nothing to contradict — the caller records it instead).
+
+    Separate from the raising wrapper because ``/test`` reports failures as
+    ``{"ok": false, "error": …}`` rather than an HTTP error, and it must be
+    able to say the same thing in its own shape.
     """
     config = row.get("config") or {}
     known_id = config.get("project_id")
     if known_id is None:
-        return
+        return None
     token_id, token_name = project_identity(payload)
     if token_id is None or token_id == known_id:
-        return
+        return None
     known_name = config.get("project_name") or "unnamed"
-    raise HTTPException(
-        status_code=400,
-        detail=(
-            f"project_mismatch: this {what} belongs to Keboola project "
-            f"{token_id} ({token_name or 'unnamed'}), but the connection is bound to project "
-            f"{known_id} ({known_name}). Use a token from that project, or create a separate "
-            f"connection for project {token_id}."
-        ),
+    return (
+        f"project_mismatch: this {what} belongs to Keboola project "
+        f"{token_id} ({token_name or 'unnamed'}), but the connection is bound to project "
+        f"{known_id} ({known_name}). Use a token from that project, or create a separate "
+        f"connection for project {token_id}."
     )
+
+
+def _reject_project_mismatch(row: Dict[str, Any], payload: Dict[str, Any], *, what: str) -> None:
+    """400 if this token opens a different Keboola project than the one the
+    connection is already bound to. See :func:`project_mismatch_message`."""
+    message = project_mismatch_message(row, payload, what=what)
+    if message is not None:
+        raise HTTPException(status_code=400, detail=message)
 
 
 class _VerifiedTokenInfo:
@@ -595,7 +619,22 @@ async def test_connection(
             # Persisting it here is what gives the "Add Keboola project" wizard
             # a project identity at all — /test is the wizard's own last step,
             # so a connection is bound to its project the moment it is created.
+            #
+            # A disagreement is a FAILED test, not a re-binding: the token this
+            # probe resolves is not necessarily the one that established the
+            # binding (`_resolve_token` falls back to `token_env`), so
+            # overwriting here would quietly re-point the connection and leave
+            # the stored master token failing a mismatch nobody caused
+            # (Devin Review on #1242).
             if row.get("source_type") == "keboola":
+                mismatch = project_mismatch_message(row, data, what="connection's token")
+                if mismatch:
+                    logger.warning(
+                        "connection test for %s (%s): project mismatch",
+                        connection_id,
+                        _log_host(stack_url),
+                    )
+                    return {"ok": False, "error": mismatch}
                 _record_project_identity(connection_id, row, data)
             # project_name is response-body content — it goes to the caller
             # but deliberately NOT into the log line (see comment above).
