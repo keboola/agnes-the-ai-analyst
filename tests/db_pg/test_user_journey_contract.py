@@ -67,6 +67,7 @@ def test_get_defaults_for_unknown_user(repo):
         "use_anywhere": False,
         "onboarded": False,
         "successful_answers": 0,
+        "news_seen_version": 0,
     }
 
 
@@ -91,6 +92,23 @@ def test_update_rejects_unknown_field(repo):
         repo.update("user_a", not_a_real_field=True)
 
 
+def test_news_seen_version_settable_and_persisted(repo):
+    """#1053: news_seen_version defaults to 0 and is settable via update(),
+    independent of the other journey fields (mirrors successful_answers)."""
+    assert repo.get("user_a")["news_seen_version"] == 0
+
+    result = repo.update("user_a", news_seen_version=3)
+    assert result["news_seen_version"] == 3
+    assert result["onboarded"] is False  # unrelated field untouched
+
+    fetched = repo.get("user_a")
+    assert fetched["news_seen_version"] == 3
+
+    # A later partial update that doesn't mention it preserves the value.
+    result2 = repo.update("user_a", onboarded=True)
+    assert result2["news_seen_version"] == 3
+
+
 def test_update_does_not_bleed_across_users(repo):
     repo.update("user_a", onboarded=True)
     repo.update("user_b", onboarded=False)
@@ -109,6 +127,7 @@ def test_reset(repo):
         "use_anywhere": False,
         "onboarded": False,
         "successful_answers": 0,
+        "news_seen_version": 0,
     }
 
 

@@ -383,6 +383,9 @@ class JourneyUpdateBody(BaseModel):
     use_anywhere: Optional[bool] = None
     onboarded: Optional[bool] = None
     successful_answers: Optional[int] = None
+    # #1053: highest news_template.version the caller has acknowledged —
+    # the /news page PUTs this on load to clear the unread-dot indicator.
+    news_seen_version: Optional[int] = None
 
 
 @router.get("/journey")

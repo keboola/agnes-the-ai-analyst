@@ -508,7 +508,7 @@
                    command palette are both conditional). Mirrors the topnav
                    `_app_header.html` row; label "News", not the page's
                    "What's new" heading (tests/test_web_news_page.py). #}
-                <a class="app-user-menu-item {% if _path.startswith('/news') %}is-active{% endif %}" role="menuitem" href="/news">News</a>
+                <a class="app-user-menu-item {% if _path.startswith('/news') %}is-active{% endif %}" role="menuitem" href="/news">News{% if has_unread_news %}<span class="app-user-menu-news-dot" aria-hidden="true"></span>{% endif %}</a>
 
                 {# ── Get your bearings ──────────────────────────────────────
                    Two items, one job, hence their own group behind a separator.

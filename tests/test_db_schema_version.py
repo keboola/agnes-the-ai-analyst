@@ -1175,6 +1175,51 @@ def test_v114_heal_flushes_its_ddl_to_the_main_db_file(tmp_path):
     assert not wal.exists() or wal.stat().st_size == 0, "WAL still holds the heal DDL after the checkpoint"
 
 
+def test_v115_fresh_install_has_news_seen_version_column(tmp_path):
+    """v115 (#1053 /news unread-dot indicator): a fresh install carries
+    ``user_journey_state.news_seen_version``, defaulting to 0."""
+    db_path = tmp_path / "system.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('user_journey_state')").fetchall()}
+    assert "news_seen_version" in cols
+    assert get_schema_version(conn) == SCHEMA_VERSION
+
+    # idempotency — re-running the step must not raise
+    from src.db import _v114_to_v115
+
+    _v114_to_v115(conn)
+    conn.close()
+
+
+def test_v114_db_upgrades_to_v115_adds_news_seen_version(tmp_path):
+    """A DB pinned at v114 (a live instance's state before this migration)
+    climbs to v115 via the upgrade-block dispatch, keeping existing
+    ``user_journey_state`` rows intact with ``news_seen_version`` reading
+    back the column default (0) rather than losing the row."""
+    db_path = tmp_path / "v114.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    # Simulate the pre-v115 shape: user_journey_state without
+    # news_seen_version, version 114.
+    conn.execute("ALTER TABLE user_journey_state DROP COLUMN news_seen_version")
+    conn.execute("UPDATE schema_version SET version = 114")
+    conn.execute("INSERT INTO user_journey_state (user_id, successful_answers) VALUES ('keep', 3)")
+    conn.close()
+
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    assert get_schema_version(conn) == SCHEMA_VERSION
+
+    cols = {r[1] for r in conn.execute("PRAGMA table_info('user_journey_state')").fetchall()}
+    assert "news_seen_version" in cols
+    row = conn.execute(
+        "SELECT successful_answers, news_seen_version FROM user_journey_state WHERE user_id = 'keep'"
+    ).fetchone()
+    assert row == (3, 0)  # data preserved, news_seen_version defaults to 0
+    conn.close()
+
+
 def test_every_stranded_column_is_covered_by_some_heal():
     """Derives the repair list from the ladder instead of trusting it.
 

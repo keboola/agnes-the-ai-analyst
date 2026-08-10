@@ -283,7 +283,7 @@
                    page's "What's new" heading — tests/test_web_news_page.py
                    asserts that phrase is absent from /home when nothing is
                    published. #}
-                <a class="app-user-menu-item {% if _path.startswith('/news') %}is-active{% endif %}" role="menuitem" href="/news">News</a>
+                <a class="app-user-menu-item {% if _path.startswith('/news') %}is-active{% endif %}" role="menuitem" href="/news">News{% if has_unread_news %}<span class="app-user-menu-news-dot" aria-hidden="true"></span>{% endif %}</a>
 
                 <div class="app-user-menu-sep" role="separator"></div>
                 <a class="app-user-menu-item" role="menuitem" href="{{ url_for('auth.logout') }}">Logout</a>

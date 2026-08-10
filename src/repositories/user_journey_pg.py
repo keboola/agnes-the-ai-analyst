@@ -27,7 +27,7 @@ class UserJourneyPgRepository:
                 sa.text(
                     "SELECT first_asked, stack_setup_done, explored_stack, "
                     "catalog_discovered, use_anywhere, onboarded, "
-                    "successful_answers "
+                    "successful_answers, news_seen_version "
                     "FROM user_journey_state WHERE user_id = :user_id"
                 ),
                 {"user_id": user_id},
@@ -42,6 +42,7 @@ class UserJourneyPgRepository:
             "use_anywhere": bool(row[4]),
             "onboarded": bool(row[5]),
             "successful_answers": int(row[6]),
+            "news_seen_version": int(row[7]),
         }
 
     def update(self, user_id: str, **fields: Any) -> Dict[str, Any]:
@@ -59,11 +60,11 @@ class UserJourneyPgRepository:
                     INSERT INTO user_journey_state
                       (user_id, first_asked, stack_setup_done, explored_stack,
                        catalog_discovered, use_anywhere, onboarded,
-                       successful_answers, updated_at)
+                       successful_answers, news_seen_version, updated_at)
                     VALUES
                       (:user_id, :first_asked, :stack_setup_done, :explored_stack,
                        :catalog_discovered, :use_anywhere, :onboarded,
-                       :successful_answers, now())
+                       :successful_answers, :news_seen_version, now())
                     ON CONFLICT (user_id) DO UPDATE SET
                       first_asked = EXCLUDED.first_asked,
                       stack_setup_done = EXCLUDED.stack_setup_done,
@@ -72,6 +73,7 @@ class UserJourneyPgRepository:
                       use_anywhere = EXCLUDED.use_anywhere,
                       onboarded = EXCLUDED.onboarded,
                       successful_answers = EXCLUDED.successful_answers,
+                      news_seen_version = EXCLUDED.news_seen_version,
                       updated_at = now()
                     """
                 ),

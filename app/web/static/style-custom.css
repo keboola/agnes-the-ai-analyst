@@ -4245,6 +4245,19 @@ a.app-header-logo:focus-visible {
 }
 .app-user-menu-item:hover { background: var(--border-light, #f3f4f6); }
 .app-user-menu-item.is-active { background: var(--primary-light); color: var(--primary); font-weight: 500; }
+/* "News" nav-item unread dot (#1053) — lit when a newer version is published
+   than the caller has seen (server-side gate: app/web/router.py's
+   _compute_has_unread_news). Decorative only (aria-hidden); visiting /news
+   is what clears it, not a click on the dot itself. */
+.app-user-menu-news-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin-left: 6px;
+    vertical-align: middle;
+    border-radius: var(--ds-radius-pill);
+    background: var(--ds-primary);
+}
 /* Onboarding launcher — the "?" help icon in the header that re-opens the
    guided tour. Borderless icon button that sits next to the user menu. */
 .app-onboarding-launch {

@@ -10,6 +10,21 @@ document.addEventListener('DOMContentLoaded', function () {
     document.body.classList.add('news-page');
 });
 </script>
+{% if can_chat and news %}
+<script>
+// #1053: mark the currently-published version as seen so the "News" nav-item
+// unread dot clears. Optimistic + fire-and-forget — a dropped PUT just
+// re-shows the dot next load, which matches the "click through to clear it"
+// UX (no client-side chrome-state patch needed here).
+document.addEventListener('DOMContentLoaded', function () {
+    fetch('/api/chat/journey', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ news_seen_version: {{ news.version }} }),
+    }).catch(function () { /* soft state — ignore */ });
+});
+</script>
+{% endif %}
 {% endblock %}
 
 {% block content %}

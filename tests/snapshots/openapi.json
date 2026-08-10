@@ -4623,6 +4623,17 @@
             ],
             "title": "First Asked"
           },
+          "news_seen_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "News Seen Version"
+          },
           "onboarded": {
             "anyOf": [
               {

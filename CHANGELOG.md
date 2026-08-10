@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **Unread-dot indicator on the "News" nav entry (#1053).** The user-dropdown "News" link (both chromes) now carries a small dot when an admin has published a news version the caller hasn't seen yet — gated on cloud-chat access, since the only write path that clears it is the chat-gated `PUT /api/chat/journey`, which the `/news` page now calls (fire-and-forget, `news_seen_version`) the moment it renders. `user_journey_state` gains a `news_seen_version` column (schema v115) tracking the highest version each user has acknowledged.
+
 ### Fixed
 
 - **Four stored fields of a metric definition never reached the semantic-layer detail.** `expression`, `time_column`, `filters` and `sql_variants` are columns on `metric_definitions` that the importers and the bundled YAML pack populate — the Keboola semantic-layer import writes an `expression` on every metric it creates, and eleven of the starter-pack metrics carry `expression` plus `time_column` — but `/catalog/semantics` rendered none of them. The detail therefore showed a metric's *generated* SQL while hiding the upstream expression it was composed from, which is the thing an analyst opens the detail to read. All four now render: `time_column` joins the meta line, `expression` gets its own labelled code block above the SQL, `filters` a list, and `sql_variants` one labelled block per variant. The last of those needed a fix in the route as well: the repository serializes that column on write but does not deserialize on read, so it arrived as a JSON *string* on which Jinja's `.items()` silently yields nothing — parsed in the route rather than in the repository, since changing the read shape there would ripple through both backends and their contract tests.

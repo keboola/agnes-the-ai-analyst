@@ -4,6 +4,9 @@ Per-user onboarding "journey" progress — the backend foundation for
 chat-driven onboarding. Mirrors the DuckDB DDL in ``src/db.py``
 (``_v91_to_v92`` / ``_SYSTEM_SCHEMA``) and the Alembic migration
 ``migrations/versions/0039_user_journey_state_v92.py``.
+
+``news_seen_version`` (v115, #1053) was added on top — the /news
+unread-dot indicator. Mirrors ``_v114_to_v115`` / ``0061_news_seen_version_v115.py``.
 """
 
 from __future__ import annotations
@@ -28,3 +31,4 @@ class UserJourneyState(Base):
     onboarded: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     successful_answers: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default="now()")
+    news_seen_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")

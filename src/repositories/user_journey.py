@@ -23,6 +23,7 @@ JOURNEY_DEFAULT: Dict[str, Any] = {
     "use_anywhere": False,
     "onboarded": False,
     "successful_answers": 0,
+    "news_seen_version": 0,
 }
 
 _BOOL_FIELDS = (
@@ -33,7 +34,9 @@ _BOOL_FIELDS = (
     "use_anywhere",
     "onboarded",
 )
-_INT_FIELDS = ("successful_answers",)
+# news_seen_version (#1053): highest news_template.version the caller has
+# acknowledged — backs the /news unread-dot indicator.
+_INT_FIELDS = ("successful_answers", "news_seen_version")
 _ALL_FIELDS = _BOOL_FIELDS + _INT_FIELDS
 
 
@@ -45,7 +48,8 @@ class UserJourneyRepository:
         """Return the user's journey state, or the defaults if no row exists."""
         row = self.conn.execute(
             "SELECT first_asked, stack_setup_done, explored_stack, "
-            "catalog_discovered, use_anywhere, onboarded, successful_answers "
+            "catalog_discovered, use_anywhere, onboarded, successful_answers, "
+            "news_seen_version "
             "FROM user_journey_state WHERE user_id = ?",
             [user_id],
         ).fetchone()
@@ -59,6 +63,7 @@ class UserJourneyRepository:
             "use_anywhere": bool(row[4]),
             "onboarded": bool(row[5]),
             "successful_answers": int(row[6]),
+            "news_seen_version": int(row[7]),
         }
 
     def update(self, user_id: str, **fields: Any) -> Dict[str, Any]:
@@ -75,8 +80,8 @@ class UserJourneyRepository:
             "INSERT INTO user_journey_state "
             "(user_id, first_asked, stack_setup_done, explored_stack, "
             "catalog_discovered, use_anywhere, onboarded, successful_answers, "
-            "updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, now()) "
+            "news_seen_version, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, now()) "
             "ON CONFLICT (user_id) DO UPDATE SET "
             "first_asked = EXCLUDED.first_asked, "
             "stack_setup_done = EXCLUDED.stack_setup_done, "
@@ -85,6 +90,7 @@ class UserJourneyRepository:
             "use_anywhere = EXCLUDED.use_anywhere, "
             "onboarded = EXCLUDED.onboarded, "
             "successful_answers = EXCLUDED.successful_answers, "
+            "news_seen_version = EXCLUDED.news_seen_version, "
             "updated_at = now()",
             [
                 user_id,
@@ -95,6 +101,7 @@ class UserJourneyRepository:
                 current["use_anywhere"],
                 current["onboarded"],
                 current["successful_answers"],
+                current["news_seen_version"],
             ],
         )
         return current

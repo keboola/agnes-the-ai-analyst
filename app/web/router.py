@@ -69,6 +69,7 @@ from src.repositories import (
     usage_repo,
     user_group_members_repo,
     user_groups_repo,
+    user_journey_repo,
     user_stack_subscriptions_repo,
     user_store_installs_repo,
     users_repo,
@@ -704,6 +705,33 @@ def _compute_can_chat(request: Request, user: Optional[dict]) -> bool:
     return False
 
 
+def _compute_has_unread_news(request: Request, user: Optional[dict]) -> bool:
+    """ "News" nav-item unread-dot visibility (#1053).
+
+    True only when a news version is published AND the caller has not yet
+    acknowledged it (their ``news_seen_version`` journey field is behind the
+    latest published ``news_template.version``) AND the caller has cloud-chat
+    access. That last gate is not cosmetic: the only write path that clears
+    ``news_seen_version`` is the chat-gated ``PUT /api/chat/journey`` (the
+    ``/news`` page's mark-seen script), so a caller without chat access could
+    never clear the dot — lighting it for them would be a permanent, un-
+    dismissable nag rather than a "there's something new" cue.
+
+    Computed on EVERY page — like `_compute_can_chat`, both `_build_context`
+    and `_chrome_ctx` must set it, or the dot flickers out on whichever
+    builder skips it.
+    """
+    if not user:
+        return False
+    if not _compute_can_chat(request, user):
+        return False
+    published = news_template_repo().get_current_published()
+    if not published:
+        return False
+    seen_version = user_journey_repo().get(user["id"])["news_seen_version"]
+    return bool(published["version"] > seen_version)
+
+
 def _config_proxy() -> type:
     """Template-facing ``config`` object, shared by every page-context builder.
 
@@ -887,6 +915,10 @@ def _build_context(
         "custom_scripts": get_custom_scripts(),
     }
     ctx["can_chat"] = _compute_can_chat(request, user)
+    # "News" nav-item unread dot (#1053) — same "compute on every page-context
+    # builder" contract as can_chat, so the dot doesn't flicker out on the
+    # pages using the other builder.
+    ctx["has_unread_news"] = _compute_has_unread_news(request, user)
     # Studio nav visibility. Pure instance-level toggle (no per-user grant,
     # unlike can_chat) — the enclosing `{% if session.user %}` already scopes
     # the nav to signed-in users. The hard gate lives on the routes.
@@ -4796,6 +4828,10 @@ def _chrome_ctx(request: Request, user: Optional[dict]) -> dict:
         # the Chat nav link when this key is missing/False, so skipping it
         # here made the link vanish on every _chrome_ctx page (/admin/studio*).
         "can_chat": _compute_can_chat(request, user),
+        # "News" nav-item unread dot (#1053) — same "compute on every
+        # page-context builder" contract as can_chat above, so the dot
+        # doesn't flicker out on _chrome_ctx pages.
+        "has_unread_news": _compute_has_unread_news(request, user),
     }
 
 

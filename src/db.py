@@ -53,8 +53,9 @@ _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 # file_corpora.origin, 111 store_entities trust columns, 112 agents builder
 # superset columns, 113 chat_sessions.pinned_at, 114
 # data_packages.publisher_kind (the stored trust axis that retired the
-# render-time-derived `curated` badge).
-SCHEMA_VERSION = 114
+# render-time-derived `curated` badge), 115 user_journey_state.news_seen_version
+# (the /news unread-dot indicator, #1053).
+SCHEMA_VERSION = 115
 
 # v96: data_apps registry (hosted user web apps). Extracted as a shared
 # module-level constant so the fresh-install DDL (appended to
@@ -1669,7 +1670,11 @@ CREATE TABLE IF NOT EXISTS user_journey_state (
     use_anywhere        BOOLEAN NOT NULL DEFAULT FALSE,
     onboarded           BOOLEAN NOT NULL DEFAULT FALSE,
     successful_answers  INTEGER NOT NULL DEFAULT 0,
-    updated_at          TIMESTAMP NOT NULL DEFAULT current_timestamp
+    updated_at          TIMESTAMP NOT NULL DEFAULT current_timestamp,
+    -- v115: latest news_template.version the user has seen (/news unread
+    -- dot, #1053). 0 means "never seen any version" — every published
+    -- version renders as unread until the caller PUTs their own value.
+    news_seen_version   INTEGER NOT NULL DEFAULT 0
 );
 
 -- glossary_terms: v93. Keboola semantic-glossary import destination
@@ -6830,7 +6835,8 @@ def _v97_to_v98(conn: duckdb.DuckDBPyConnection) -> None:
             use_anywhere        BOOLEAN NOT NULL DEFAULT FALSE,
             onboarded           BOOLEAN NOT NULL DEFAULT FALSE,
             successful_answers  INTEGER NOT NULL DEFAULT 0,
-            updated_at          TIMESTAMP NOT NULL DEFAULT current_timestamp
+            updated_at          TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            news_seen_version   INTEGER NOT NULL DEFAULT 0
         )
     """)
     conn.execute("UPDATE schema_version SET version = 98")
@@ -7089,10 +7095,37 @@ def _v113_to_v114(conn: duckdb.DuckDBPyConnection) -> None:
             use_anywhere        BOOLEAN NOT NULL DEFAULT FALSE,
             onboarded           BOOLEAN NOT NULL DEFAULT FALSE,
             successful_answers  INTEGER NOT NULL DEFAULT 0,
-            updated_at          TIMESTAMP NOT NULL DEFAULT current_timestamp
+            updated_at          TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            news_seen_version   INTEGER NOT NULL DEFAULT 0
         )
     """)
     conn.execute("UPDATE schema_version SET version = 114")
+
+
+def _v114_to_v115(conn: duckdb.DuckDBPyConnection) -> None:
+    """v114→v115: add ``user_journey_state.news_seen_version`` (#1053).
+
+    Backs the /news unread-dot indicator: the highest ``news_template.version``
+    the caller has acknowledged, PUT alongside every other journey field
+    through the existing self-scoped ``PUT /api/chat/journey`` endpoint. Every
+    existing row (and every user with no row at all — the repository default)
+    reads 0, which is lower than any real published version, so every
+    instance's first published news update lights the dot for everyone until
+    each user visits ``/news``.
+
+    Idempotent: ``ADD COLUMN IF NOT EXISTS`` guarded on table existence — a
+    no-op on fresh installs where ``_SYSTEM_SCHEMA`` already declares the
+    column. DuckDB rejects ``ADD COLUMN ... NOT NULL`` ("Adding columns with
+    constraints not yet supported"), so — same pattern as v106's ``surface``
+    and v107's ``managed`` columns — the ALTER adds a plain ``DEFAULT 0``
+    column and a follow-up ``UPDATE`` backfills existing NULLs (pre-existing
+    rows read NULL, not the DEFAULT, which only applies to new inserts).
+    """
+    exists = conn.execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'user_journey_state'").fetchone()
+    if exists:
+        conn.execute("ALTER TABLE user_journey_state ADD COLUMN IF NOT EXISTS news_seen_version INTEGER DEFAULT 0")
+        conn.execute("UPDATE user_journey_state SET news_seen_version = 0 WHERE news_seen_version IS NULL")
+    conn.execute("UPDATE schema_version SET version = 115")
 
 
 def _add_store_entity_trust_columns(conn: duckdb.DuckDBPyConnection) -> None:
@@ -8116,6 +8149,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # No-op on fresh installs — _SYSTEM_SCHEMA already declares the
             # column, and the backfill then finds no rows to promote.
             _v113_to_v114(conn)
+            # v114→v115: user_journey_state.news_seen_version (/news unread
+            # dot, #1053). No-op on fresh installs — _SYSTEM_SCHEMA already
+            # declares the column.
+            _v114_to_v115(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -8397,6 +8434,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v112_to_v113(conn)
             if current < 114:
                 _v113_to_v114(conn)
+            if current < 115:
+                _v114_to_v115(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
