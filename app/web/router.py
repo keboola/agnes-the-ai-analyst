@@ -3958,6 +3958,24 @@ async def catalog_semantics(
     accessible_ids = get_accessible_tables(user, conn)
     allowed = None if accessible_ids is None else set(accessible_ids)
     metrics = [m for m in metric_repo().list() if _first_inaccessible_table(m, allowed) is None]
+    def _variants(raw) -> dict:
+        """``sql_variants`` as a mapping the template can iterate.
+
+        The repository serializes this column on write but does not
+        deserialize on read, so it arrives as a JSON *string* — on which
+        ``.items()`` silently yields nothing in Jinja, which is how the
+        variants stayed invisible. Parsed here rather than in the repo:
+        changing the read shape there would ripple through both backends and
+        their contract tests. Anything that is not an object is dropped,
+        since the template renders one labelled block per key.
+        """
+        if isinstance(raw, str):
+            try:
+                raw = _json.loads(raw)
+            except ValueError:
+                return {}
+        return raw if isinstance(raw, dict) else {}
+
     # Two projections of the description: sanitized HTML for the expanded
     # detail, plain text for the one-line row preview and the client-side
     # filter index. Metric descriptions carry the business definition; the
@@ -3973,6 +3991,7 @@ async def catalog_semantics(
             **m,
             "description_html": render_safe(m.get("description"), html_source=stores_html(m)),
             "description_text": render_plain(m.get("description"), html_source=stores_html(m)),
+            "sql_variants": _variants(m.get("sql_variants")),
         }
         for m in metrics
     ]
