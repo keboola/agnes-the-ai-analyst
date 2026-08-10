@@ -77,6 +77,36 @@ class TestMovedServerHook:
         err = capsys.readouterr().err
         assert "AGNES_SERVER" not in err
 
+    def test_protocol_relative_location_is_treated_as_a_move(self, capsys):
+        """`Location: //host/path` is absolute, despite the leading slash.
+
+        Classifying it by `startswith("/")` files a cross-host move under
+        "same origin" and tells the user nothing about the new host.
+        """
+        from cli.client import _check_moved_server
+
+        resp = _redirect_response(308, "//new.example/api/v1/agents", "https://old.example/api/v1/agents")
+        with patch("cli.client.get_server_url", return_value="https://old.example"):
+            with pytest.raises(SystemExit):
+                _check_moved_server(resp)
+        err = capsys.readouterr().err
+        assert "AGNES_SERVER" in err
+        # A scheme-less base would be pasted into the config as `//new.example`.
+        assert "AGNES_SERVER=https://new.example" in err
+
+    def test_hint_keeps_a_non_default_port(self, capsys):
+        from cli.client import _check_moved_server
+
+        resp = _redirect_response(
+            308, "https://new.example:8443/api/v1/agents?x=1", "https://old.example/api/v1/agents"
+        )
+        with patch("cli.client.get_server_url", return_value="https://old.example"):
+            with pytest.raises(SystemExit):
+                _check_moved_server(resp)
+        err = capsys.readouterr().err
+        assert "AGNES_SERVER=https://new.example:8443" in err
+        assert "x=1" not in err.split("AGNES_SERVER=")[1].split()[0]
+
     def test_redirect_without_location_still_reports_the_status(self, capsys):
         from cli.client import _check_moved_server
 
