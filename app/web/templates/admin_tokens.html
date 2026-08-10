@@ -634,7 +634,12 @@
         <button type="button" class="chip-btn" role="radio" data-val="expired"  aria-pressed="false" aria-checked="false"><span class="chip-dot" aria-hidden="true"></span>Expired</button>
         <button type="button" class="chip-btn" role="radio" data-val="revoked"  aria-pressed="false" aria-checked="false"><span class="chip-dot" aria-hidden="true"></span>Revoked</button>
       </div>
-      <!-- Hidden legacy select — kept so test assertion id="flt-status" stays valid -->
+      <!-- Hidden legacy select — kept so test assertion id="flt-status" stays valid.
+           #1055: not converted to ds.dropdown() — this control was already
+           superseded by the visible .chip-btn radiogroup above; it is
+           sr-only/aria-hidden/tabindex=-1 and not part of the rendered UI, so
+           there is no visible native <select> here for the dropdown component
+           to stand in for. Same reasoning for #flt-last-used below. -->
       <select id="flt-status" class="sr-only" tabindex="-1" aria-hidden="true">
         <option value="all" selected>All</option>
         <option value="active">Active</option>

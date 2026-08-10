@@ -285,6 +285,50 @@ def test_an_unreadable_overlay_raises_rather_than_falling_back(tmp_path, monkeyp
         ic.reset_cache()
 
 
+def test_get_static_config_error_does_not_raise_when_never_loaded(tmp_path, monkeypatch):
+    """`get_static_config_error()` is a diagnostic accessor — it must never
+    itself raise, even on the exact process state it exists to explain.
+
+    It calls `load_instance_config()` (default `strict=False`) before
+    reading `_static_config_error`. `load_instance_config()`'s lenient
+    fallback for an unreadable overlay only fires when `_last_good_config`
+    is already set (`not strict and _last_good_config is not None`); on a
+    process where the overlay was unreadable from the very first call —
+    nothing good has EVER loaded — that condition is false regardless of
+    `strict`, so it raises `InstanceConfigUnreadable` instead of falling
+    back. A future admin-UI caller of this accessor would 500 on precisely
+    the misconfigured instance the page exists to explain.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("running as root — mode bits do not deny reads")
+
+    import app.instance_config as ic
+
+    state = tmp_path / "state"
+    state.mkdir()
+    overlay = state / "instance.yaml"
+    overlay.write_text("database:\n  backend: postgres\n", encoding="utf-8")
+    overlay.chmod(0o000)
+
+    monkeypatch.setattr("app.secrets._state_dir", lambda: state)
+    # Simulate a fresh process that has never loaded a good config —
+    # `ic.reset_cache()` alone does not clear `_last_good_config` /
+    # `_loaded_once`, and other tests in this worker process may have
+    # already populated them.
+    ic._instance_config = None
+    ic._last_good_config = None
+    ic._loaded_once = False
+    try:
+        error = ic.get_static_config_error()
+        assert isinstance(error, str) and error, (
+            "get_static_config_error() must return a non-empty diagnostic string "
+            "in this state, not raise or return None"
+        )
+    finally:
+        overlay.chmod(0o600)
+        ic.reset_cache()
+
+
 def test_a_malformed_overlay_still_falls_back(tmp_path, monkeypatch):
     """The other half of the split — this one must NOT refuse to start.
 
@@ -319,7 +363,7 @@ def test_the_boot_path_reraises_it_instead_of_logging_it():
         "to start is a comment, not a behaviour"
     )
     specific = body.index("except InstanceConfigUnreadable:")
-    broad = body.index("logger.warning(f\"Could not load instance config")
+    broad = body.index('logger.warning(f"Could not load instance config')
     assert specific < broad, "the specific arm must come before the broad one to be reachable"
 
 
@@ -431,8 +475,7 @@ def test_neither_restart_path_starts_the_app_on_an_in_progress_backend():
     """
     body = APPLIER.read_text()
     assert "RECOVERY_SKIP_RESTART=1" in body and "SKIP_APP_RESTART=1" in body, (
-        "both the stuck-job recovery and the post-migration path must be able to withhold "
-        "their restart"
+        "both the stuck-job recovery and the post-migration path must be able to withhold their restart"
     )
     assert '[ "$recovered_any" -eq 1 ] && [ "${RECOVERY_SKIP_RESTART:-0}" != "1" ]' in body, (
         "the stuck-job recovery's own restart must honour its own flag — it is a separate "
@@ -486,7 +529,7 @@ def test_the_chmod_is_conditional_on_the_pin_having_taken():
     goes to the console.
     """
     body = TPL.read_text()
-    assert 'APPLIER_UID=$(id -u agnes-applier' in body, "provisioning must read back the uid it pinned"
+    assert "APPLIER_UID=$(id -u agnes-applier" in body, "provisioning must read back the uid it pinned"
     gate = body.index('if [ "$APPLIER_UID" = "999" ]')
     chmod_at = body.index('chmod 600 "$INSTANCE_YAML"')
     assert gate < chmod_at, "the chmod must sit inside the uid gate, not before it"
@@ -541,7 +584,7 @@ def test_the_boot_path_drops_the_cache_before_its_strict_read():
     """
     body = Path("app/main.py").read_text()
     i = body.index("load_instance_config(strict=True)")
-    window = body[max(0, i - 600):i]
+    window = body[max(0, i - 600) : i]
     assert "reset_cache()" in window, (
         "the boot check must drop the cache first; otherwise it validates a config that "
         "was loaded at import time and reads nothing"
@@ -559,8 +602,7 @@ def test_a_failed_flip_verification_does_not_revert_the_backend():
     """
     body = Path("scripts/db_state_migrator.py").read_text()
     assert "class BackendFlipNotVerified(" in body, (
-        "the verification failure needs its own type — a bare RuntimeError falls to the "
-        "generic handler, which reverts"
+        "the verification failure needs its own type — a bare RuntimeError falls to the generic handler, which reverts"
     )
     specific = body.index("except BackendFlipNotVerified as e:")
     generic = body.index("except Exception as e:\n        # Revert state to the source backend")
@@ -596,11 +638,7 @@ def test_every_logging_call_resolves_to_a_real_module_logger():
             continue
         tree = ast.parse(Path(rel).read_text())
         bound = {
-            t.id
-            for node in tree.body
-            if isinstance(node, ast.Assign)
-            for t in node.targets
-            if isinstance(t, ast.Name)
+            t.id for node in tree.body if isinstance(node, ast.Assign) for t in node.targets if isinstance(t, ast.Name)
         }
         for node in tree.body:
             if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -650,7 +688,7 @@ def test_the_applier_honours_the_migrator_no_revert_decision():
     the app at the old store while every row lives in the new one.
     """
     body = APPLIER.read_text()
-    assert 'FAIL_CLASS' in body and 'BackendFlipNotVerified' in body, (
+    assert "FAIL_CLASS" in body and "BackendFlipNotVerified" in body, (
         "the applier must read the failure class the migrator recorded"
     )
     guard = body.index('[ "$FAIL_CLASS" = "BackendFlipNotVerified" ]')

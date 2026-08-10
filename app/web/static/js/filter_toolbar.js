@@ -650,9 +650,29 @@
     //: headers live in one <thead> PER GROUP on a sectioned page, so all of
     //: them are updated — a group showing a stale arrow would be claiming a
     //: different order for its own rows.
+    //: ds_dropdown.js (#1055) only pushes a selection FROM its own menu ONTO
+    //: the paired native <select> — it never reads the select back. Sortable
+    //: column headers write `sortEl.value` directly (above), which a paired
+    //: dropdown under the paper theme would otherwise never see, so re-sync
+    //: its button label + aria-checked state here too.
+    function syncPairedDropdown() {
+      if (!sortEl) return;
+      var dd = document.querySelector('.ds-dropdown[data-ds-dropdown-target="' + sortEl.id + '"]');
+      if (!dd) return;
+      var label = dd.querySelector('.ds-dropdown-btn-label');
+      var opt = sortEl.options[sortEl.selectedIndex];
+      dd.querySelectorAll('.ds-dropdown-menu [role="menuitemradio"]').forEach(function (item) {
+        var isSelected = item.dataset.value === sortEl.value;
+        item.classList.toggle('is-selected', isSelected);
+        item.setAttribute('aria-checked', isSelected ? 'true' : 'false');
+      });
+      if (label && opt) label.textContent = opt.textContent.trim();
+    }
+
     function syncSortControls() {
       var cur = sortParts(sortValue);
       if (sortEl && sortEl.value !== sortValue) sortEl.value = sortValue;
+      syncPairedDropdown();
       sortBtns.forEach(function (btn) {
         var on = btn.getAttribute('data-sort-key') === cur.key;
         var dir = on ? cur.dir : firstDir(btn);

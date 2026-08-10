@@ -265,6 +265,14 @@
       User is not in any groups.
     </div>
     <div class="add-member-row">
+      {# #1055: not converted to ds.dropdown() — refreshGroupDropdown() fully
+         rebuilds this <select>'s options (sel.innerHTML = ...) every time
+         membership changes (initial load, after add, after remove), filtering
+         out groups the user already belongs to / is Google-managed. Keeping a
+         custom dropdown's menu in sync would need re-running ds_dropdown.js's
+         per-instance init() on every rebuild, which it doesn't expose (self-
+         bootstraps once at DOMContentLoaded) — out of scope without touching
+         that file. #}
       <select id="add-group-select">
         <option value="">— Pick a group —</option>
       </select>

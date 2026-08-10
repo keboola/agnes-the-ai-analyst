@@ -816,8 +816,10 @@ class StoreEntitiesRepository:
         Filters (all optional, combined with AND):
         - ``type`` — restrict to one entity type.
         - ``visibility_status`` — whitelist of visible guardrail states.
-          Admin callers pass ``None`` (count everything); non-admins pass
-          ``["approved"]``.
+          Admin callers pass ``ADMIN_BROWSE_VISIBILITY`` (everything except
+          the ``archived`` soft-delete state); non-admins pass
+          ``["approved"]``. ``None`` counts every state including deleted
+          rows and is only appropriate for moderation surfaces.
         - ``owner_id`` — when set ALONGSIDE ``visibility_status``, the
           visibility clause becomes ``(visibility_status IN (...) OR
           (owner_user_id = ? AND visibility_status != 'archived'))`` so the

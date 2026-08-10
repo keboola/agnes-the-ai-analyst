@@ -13,7 +13,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Literals that intentionally classify as 'other' (deliberate outcomes that
 # are neither success nor error nor denial). Extend consciously.
-ALLOWED_OTHER = {"skipped"}
+# "attempted": written BEFORE the action it describes, so the outcome is not
+# knowable yet. Used by `agnes admin metrics import --prune`, where the record
+# has to survive an interruption between the audit write and the delete — a
+# row claiming success it cannot vouch for would be worse than a vague one.
+ALLOWED_OTHER = {"skipped", "attempted"}
 
 _RESULT_RE = re.compile(r'result="([a-z_.0-9]+)"')
 

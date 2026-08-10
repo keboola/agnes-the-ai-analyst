@@ -380,6 +380,42 @@ body.chat-page-body main { margin: 0; padding: 0; }
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* No trailing-action width reserve here: #chat-copy-transcript is
+     rail-only (see the html[data-ui-layout="rail"] override below), so the
+     topnav title is the header's only content and gets the full row. */
+}
+
+/* Header actions (Copy transcript). ``margin-left:auto`` pushes them to the
+   trailing edge; ``flex-shrink:0`` keeps the label whole and lets the title's
+   ellipsis absorb the squeeze instead. Under the rail the header already
+   reserves 160px of right padding for the connection pill, so this lands
+   clear of it without a layout override. */
+.cloud-chat-thread-action {
+  margin-left: auto;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-pill);
+  background: transparent;
+  color: var(--ds-text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.cloud-chat-thread-action svg { width: 14px; height: 14px; }
+.cloud-chat-thread-action:hover {
+  background: var(--ds-surface-dim);
+  color: var(--ds-text-primary);
+}
+.cloud-chat-thread-action:disabled { opacity: 0.6; cursor: default; }
+/* Below the narrow breakpoint the label goes, the icon stays — the action is
+   still reachable and the title keeps the room. */
+@media (max-width: 640px) {
+  .cloud-chat-thread-action span { display: none; }
 }
 
 /* Status banner. Tone reflects the kind set by setStatus() in
@@ -540,6 +576,33 @@ body.chat-page-body main { margin: 0; padding: 0; }
 /* While the model is streaming, keep the actions hidden — a half-
    written turn has no stable content to copy. */
 .msg.is-streaming .msg-actions { display: none; }
+
+/* Inline SVG is the ONE channel an answer has for a chart: the sandbox
+   filesystem is not the user's computer, so a file path delivers nothing, and
+   a `data:` image URI is stripped by renderMarkdownSafe's scheme allowlist.
+   `<svg>` survives sanitization (it is not in _DANGEROUS_TAGS, and its `on*`
+   handlers are stripped attribute-by-attribute), so it renders — which means
+   the bubble has to be ready for one. A chart carries its own absolute size —
+   matplotlib stamps pt dimensions on the root element, a hand-authored one
+   px — and `.msg-bubble` is a shrink-to-fit flex item, so nothing caps it.
+   Measured against a real `figsize=(7, 3.2)` figure with this rule removed: it
+   overflows the bubble by 242px in a 420px column (it fits a wide one), and a
+   hand-written 900×300 chart with no viewBox overflows by 197px even at 860px,
+   taking the message body's horizontal scroll with it both times. Height:auto
+   keeps the aspect ratio once max-width bites (1.99 and 3.00 held exactly);
+   `display:block` drops the inline baseline gap.
+
+   Scoped to the CHART positions, not `.msg-body svg`: a multi-line figure comes
+   through marked as a top-level block, a one-liner gets wrapped in `<p>`, and
+   the third `svg` in a bubble is the code-block copy button's 14px icon inside
+   `pre` — which a blanket rule would stretch to full width. */
+.msg-body > svg,
+.msg-body > p > svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 8px 0;
+}
 
 .msg-time { font-variant-numeric: tabular-nums; }
 
@@ -2363,6 +2426,19 @@ html[data-ui-layout="rail"] .cloud-chat-thread-title {
   font-size: var(--text-lg);
   font-weight: var(--font-semibold);
   letter-spacing: -0.01em;
+  /* Reserve the trailing action's width. The title is the header's only
+     flexible item, and #chat-copy-transcript's `margin-left:auto` eats the
+     free space BEFORE flex shrinking runs — so a title long enough to fill
+     the row keeps its full width and the button is painted on top of its
+     last ~109px, with the ellipsis hidden underneath. Measured on the
+     rendered page, not reasoned about: `min-width:0` does not help (the
+     title still resolves to the full content width) and moving the action
+     off `margin-left:auto` is worse (it detaches from the trailing edge).
+     Capping the title is what works — 130px covers the 109px button plus
+     the 12px flex gap, and a short title is untouched. Rail-only because
+     the button is rail-only (see chat.html); topnav's title gets the full
+     row back in the base rule above. */
+  max-width: calc(100% - 130px);
 }
 
 /* Connection state → compact pill in the top-right corner of the chat

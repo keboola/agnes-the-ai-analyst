@@ -67,6 +67,21 @@ def _open_duckdb(path, **kwargs):
             "this connection will be host-local-clock naive."
         )
         if os.environ.get("AGNES_DUCKDB_TZ_STRICT") == "1":
+            # `duckdb.connect()` above already succeeded — `conn` holds
+            # DuckDB's exclusive lock on `path` — and this raise
+            # propagates out of `_open_duckdb` entirely, so the caller
+            # never receives a `conn` to close themselves (a chained
+            # ``_open_duckdb(...).close()`` never reaches `.close()`).
+            # Without this, a caller that treats `_open_duckdb` as a
+            # disposable materialization step — e.g.
+            # `get_analytics_db_readonly()`'s fresh-instance branch in
+            # `src/db.py`, which opens read-write only to create the file
+            # and immediately needs a *read-only* connection to the same
+            # path right after — leaks the read-write handle for the
+            # life of the process, and that very next read-only open
+            # fails with DuckDB's "different configuration than existing
+            # connections" error.
+            conn.close()
             raise RuntimeError(msg)
         logger.warning(msg)
     return conn

@@ -41,10 +41,19 @@ logger = logging.getLogger(__name__)
 # already-quarantined bundle. Sweeping these here matches operator
 # expectation: an admin Rescan should not cause a previously-purged
 # bundle to outlive its TTL just because the verdict changed.
+#
+# `review_error` is deliberately NOT here. It is not a verdict — it means the
+# LLM call crashed or timed out, so the submission was never judged at all,
+# and `store_guardrails/llm_review.py` documents it as the state that "exposes
+# a retry path" with "a retry button" in the admin queue. Purging its bundle
+# silently makes that documented retry impossible: seen in production, a skill
+# whose inline checks all passed sat in `review_error` for a month, had its
+# bundle purged by this sweep, and can now never be reviewed or recovered.
+# Bytes for un-judged content are the cheaper side of that trade — an admin
+# who wants them gone can still Delete the submission by hand.
 TERMINAL_BLOCKED_STATUSES = (
     "blocked_inline",
     "blocked_llm",
-    "review_error",
 )
 
 
@@ -79,13 +88,16 @@ def purge_blocked_bundles(
 
     if store_dir_resolver is None:
         from app.utils import get_store_dir as _get_store
+
         store_dir_resolver = _get_store
 
     if subs_repo is None:
         from src.repositories import store_submissions_repo
+
         subs_repo = store_submissions_repo()
     if ents_repo is None:
         from src.repositories import store_entities_repo
+
         ents_repo = store_entities_repo()
 
     now = now or datetime.now(timezone.utc)
@@ -111,14 +123,18 @@ def purge_blocked_bundles(
             except OSError as e:
                 logger.warning(
                     "purge: failed to rmtree %s for sub=%s: %s",
-                    entity_dir, sub_id, e,
+                    entity_dir,
+                    sub_id,
+                    e,
                 )
             try:
                 ents_repo.delete(entity_id)
             except Exception as e:
                 logger.warning(
                     "purge: failed to delete entity %s for sub=%s: %s",
-                    entity_id, sub_id, e,
+                    entity_id,
+                    sub_id,
+                    e,
                 )
         # mark_bundle_purged also nulls entity_id on the submission row
         # so the admin UI shows the bundle is gone without orphaning a

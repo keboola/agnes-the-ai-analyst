@@ -9,6 +9,8 @@
 <span class="badge badge--success">Keboola sync</span>
 {%- elif source == 'yaml_import' -%}
 <span class="badge badge--info">YAML import</span>
+{%- elif source == 'web_upload' -%}
+<span class="badge badge--info">Uploaded</span>
 {%- elif source == 'openmetadata' -%}
 <span class="badge badge--warn">OpenMetadata</span>
 {%- else -%}
@@ -18,6 +20,27 @@
 
 {% block head_extra %}
 <style>
+/* ── Back link ───────────────────────────────────────────────────────────
+   Mirrors `.detail-back` from macros/_detail.html — same chevron, size and
+   ink — but restated here because that CSS ships with the detail scaffold
+   and this is a listing page on the plain base_ds shell. `--ds-text-muted`
+   would be the intuitive choice for a secondary control and is what the
+   detail pages deliberately do NOT use: it measures 3.67:1 on this page's
+   background, under the 4.5:1 AA floor for 13px text. */
+.sl-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: var(--space-6) 0 0;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--ds-text-secondary);
+    text-decoration: none;
+}
+.sl-back:hover { color: var(--ds-text-primary); }
+.sl-back svg { width: 15px; height: 15px; }
+.sl-back + .sl-page-head { padding-top: var(--space-3); }
+
 /* ── Page header ─────────────────────────────────────────────────────── */
 .sl-page-head {
     display: flex;
@@ -307,6 +330,7 @@
     line-height: 1.5;
 }
 .sl-detail__desc { margin: 0 0 10px; overflow-x: auto; }
+.sl-variant-name { margin: 0 0 4px; font-size: 11px; color: var(--ds-text-muted); }
 /* Every heading level, not just h2-h3. The html_source allowlist preserves
    h1/h5/h6 because dropping them fused the sections they separated
    ("Section ASection B") — but a preserved tag with no rule here falls back
@@ -415,6 +439,21 @@
 {% endblock %}
 
 {% block content %}
+{# ── Back link ───────────────────────────────────────────────────────────
+   This page is reached from a link (the Library's Definitions block, the
+   Catalog's Semantic layer card, a chat citation, global search) but is not
+   itself a nav destination in either chrome — so without this the only way
+   out was the browser's Back button. `detail_back` resolves it per layout:
+   topnav keeps /catalog (the entry it links from, and the nav item its own
+   /catalog/* path highlights); rail has no key for this kind and falls
+   through to /library, which is both the rail's one browse surface and the
+   block the reader clicked to get here. #}
+{% set _back = detail_back('semantics', '/catalog', 'Data Packages') %}
+<a class="sl-back" href="{{ _back.href }}">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M15 18l-6-6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  {{ _back.label }}
+</a>
+
 {# ── Page header ─────────────────────────────────────────────────────── #}
 <div class="sl-page-head">
   <div class="sl-page-head__left">
@@ -516,8 +555,25 @@
                   {% elif m.table_name %}<span><strong>Table</strong> {{ m.table_name }}</span>{% endif %}
                   {% if m.dimensions %}<span><strong>Dimensions</strong> {{ m.dimensions | join(', ') }}</span>{% endif %}
                   {% if m.synonyms %}<span><strong>Synonyms</strong> {{ m.synonyms | join(', ') }}</span>{% endif %}
+                  {% if m.time_column %}<span><strong>Time column</strong> {{ m.time_column }}</span>{% endif %}
                 </div>
+                {# The upstream definition, above the SQL composed from it. A
+                   metric imported from an external catalog carries its
+                   expression verbatim, and that — not the generated query — is
+                   what an analyst opens this detail to read. #}
+                {% if m.expression %}
+                <p><strong>Expression</strong></p>
+                <pre><code>{{ m.expression }}</code></pre>
+                {% endif %}
                 <pre><code>{{ m.sql }}</code></pre>
+                {% if m.sql_variants %}
+                <p><strong>Variants</strong></p>
+                {% for variant, variant_sql in m.sql_variants.items() %}
+                <p class="sl-variant-name"><code>{{ variant }}</code></p>
+                <pre><code>{{ variant_sql }}</code></pre>
+                {% endfor %}
+                {% endif %}
+                {% if m.filters %}<p><strong>Filters</strong></p><ul>{% for f in m.filters %}<li><code>{{ f }}</code></li>{% endfor %}</ul>{% endif %}
                 {% if m.notes %}<p><strong>Notes:</strong></p><ul>{% for n in m.notes %}<li>{{ n }}</li>{% endfor %}</ul>{% endif %}
                 {% if m.validation %}<p><strong>Validation:</strong> <code>{{ m.validation }}</code></p>{% endif %}
               </div>

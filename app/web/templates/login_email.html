@@ -1,6 +1,6 @@
 {% extends "base_ds.html" %}
 
-{% block title %}Sign in with Email - Data Analyst Portal{% endblock %}
+{% block title %}Sign in with Email - {{ config.INSTANCE_NAME or 'Data Analyst Portal' }}{% endblock %}
 
 {% block content %}
 {# Sign In / Forgot Password / Request Access / Google OAuth render via
@@ -8,10 +8,23 @@
    page-local (heavier login-page variant). #}
 <div class="login-container">
     <div class="login-card">
+        {# The email/password page doubles as (a) the secondary door for
+           partners and investors on an SSO instance and (b) the ONLY door on
+           an instance with no Google OAuth configured — where every employee,
+           the admin included, signs in here. Labelling that door "External
+           User Access" told first-time admins they had the wrong URL, so the
+           heading follows what the instance actually offers. #}
+        {% if google_available %}
         <h2>External User Access</h2>
         <p class="login-description">
             For partners, investors, and other external users.
         </p>
+        {% else %}
+        <h2>Sign In</h2>
+        <p class="login-description">
+            Sign in to {{ config.INSTANCE_NAME or 'your workspace' }}.
+        </p>
+        {% endif %}
 
         <!-- Tab navigation -->
         <div class="auth-tabs">

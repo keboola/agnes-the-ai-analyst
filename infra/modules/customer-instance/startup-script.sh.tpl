@@ -688,6 +688,9 @@ AGNES_HOME_ROUTE=${home_route}
 %{ if !studio_enabled ~}
 AGNES_STUDIO_ENABLED=false
 %{ endif ~}
+%{ if experience != "" ~}
+AGNES_INSTANCE_EXPERIENCE=${experience}
+%{ endif ~}
 %{ if ui_layout != "" ~}
 AGNES_UI_LAYOUT=${ui_layout}
 %{ endif ~}

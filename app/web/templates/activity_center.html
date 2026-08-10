@@ -3,6 +3,7 @@
 
 {% block head_extra %}
 <link rel="stylesheet" href="{{ static_url('css/activity_center.css') }}">
+<link rel="stylesheet" href="{{ static_url('css/ds_dropdown.css') }}">
 {% endblock %}
 
 {# Canonical page hero — full container width, matches every other admin
@@ -24,16 +25,35 @@
       <div class="obs-narrative" id="obs-narrative">Loading…</div>
     </div>
     <div class="obs-topbar-right">
-      <label class="obs-window">
+      <div class="obs-window">
         <span class="obs-label">Time range</span>
-        <select id="obs-window">
+        {# The real <select> stays what the JS below reads/listens on
+           (winSel.value / 'change') — untouched. The custom dropdown
+           alongside it is a visual replacement only; which one is visible
+           is a theme decision (paper-skin.css), not a template one. See
+           _components.html's `dropdown` macro. Not wrapped in a <label>
+           (unlike the visual text next to it) so a click on the dropdown
+           button doesn't also fire the browser's implicit label→control
+           forwarding onto the now-hidden native select. #}
+        <select id="obs-window" aria-label="Time range" class="ds-dropdown-native">
           <option value="60">Last 1h</option>
           <option value="360">Last 6h</option>
           <option value="1440" selected>Last 24h</option>
           <option value="10080">Last 7d</option>
           <option value="43200">Last 30d</option>
         </select>
-      </label>
+        {{ ds.dropdown(
+          id='obs-window-dd', target='obs-window',
+          aria_label='Time range', selected='1440',
+          options=[
+            {'value': '60', 'label': 'Last 1h'},
+            {'value': '360', 'label': 'Last 6h'},
+            {'value': '1440', 'label': 'Last 24h'},
+            {'value': '10080', 'label': 'Last 7d'},
+            {'value': '43200', 'label': 'Last 30d'},
+          ],
+        ) }}
+      </div>
       <label class="obs-live" title="The Activity Center writes an 'activity.read' audit row for its own reads; they are hidden by default so the page doesn't inflate its own numbers.">
         <input type="checkbox" id="obs-selfreads" />
         <span>Include Activity Center reads</span>
@@ -74,15 +94,26 @@
   <section class="obs-filters" aria-label="Filter audit log">
     <div class="obs-filter">
       <label for="f-user">User</label>
+      {# Not converted to ds.dropdown() (#1055): options are entirely
+         built at runtime from /api/admin/observability/facets
+         (fillSelect() below), and ds_dropdown.js snapshots its menu items
+         once at page load with no public API to re-init a host after its
+         menu is rebuilt — mirroring this control would mean duplicating
+         ds_dropdown.js's selection/keyboard-nav logic in page-local JS.
+         Left as a plain native select. #}
       <select id="f-user" class="obs-select"><option value="">Any</option></select>
     </div>
     <div class="obs-filter">
       <label for="f-action">Action</label>
+      {# Not converted — see the f-user comment above; same dynamic-options
+         constraint (fillSelect() from facets). #}
       <select id="f-action" class="obs-select"><option value="">Any</option></select>
     </div>
     <div class="obs-filter">
       <label for="f-result">Result</label>
-      <select id="f-result" class="obs-select">
+      {# See _components.html's `dropdown` macro — the real <select> stays
+         what the JS below reads/listens on (fRes.value / 'change'). #}
+      <select id="f-result" class="obs-select ds-dropdown-native">
         <option value="">Any</option>
         <option value="success">success</option>
         <option value="error">errors</option>
@@ -90,14 +121,32 @@
         <option value="none">no result</option>
         <option value="other">other</option>
       </select>
+      {{ ds.dropdown(
+        id='f-result-dd', target='f-result',
+        aria_label='Filter by result', selected='',
+        options=[
+          {'value': '', 'label': 'Any'},
+          {'value': 'success', 'label': 'success'},
+          {'value': 'error', 'label': 'errors'},
+          {'value': 'denied', 'label': 'denied / blocked'},
+          {'value': 'none', 'label': 'no result'},
+          {'value': 'other', 'label': 'other'},
+        ],
+      ) }}
     </div>
     <div class="obs-filter">
       <label for="f-source">Source</label>
+      {# Not converted — see the f-user comment above; same dynamic-options
+         constraint (fillSelect() from facets). #}
       <select id="f-source" class="obs-select"><option value="">Any</option></select>
     </div>
     <div class="obs-filter">
       <label for="f-resource">Resource</label>
-      <select id="f-resource" class="obs-select" aria-label="Filter by resource type">
+      {# See _components.html's `dropdown` macro — the real <select> stays
+         what the JS below reads/listens on (fResource.value / 'change'),
+         plus the resource-detail-panel "Filter to this resource type"
+         button (openPanel()). #}
+      <select id="f-resource" class="obs-select ds-dropdown-native" aria-label="Filter by resource type">
         <option value="">Any</option>
         <option value="table:">Tables</option>
         <option value="knowledge_item:">Knowledge items</option>
@@ -110,6 +159,23 @@
         <option value="job:">Scheduled jobs</option>
         <option value="memory_domain_suggestion:">Memory domain suggestions</option>
       </select>
+      {{ ds.dropdown(
+        id='f-resource-dd', target='f-resource',
+        aria_label='Filter by resource type', selected='',
+        options=[
+          {'value': '', 'label': 'Any'},
+          {'value': 'table:', 'label': 'Tables'},
+          {'value': 'knowledge_item:', 'label': 'Knowledge items'},
+          {'value': 'marketplace:', 'label': 'Marketplaces'},
+          {'value': 'store_submission:', 'label': 'Store submissions'},
+          {'value': 'store_entity:', 'label': 'Store entities'},
+          {'value': 'store_upload:', 'label': 'Store uploads'},
+          {'value': 'user:', 'label': 'Users'},
+          {'value': 'token:', 'label': 'Tokens'},
+          {'value': 'job:', 'label': 'Scheduled jobs'},
+          {'value': 'memory_domain_suggestion:', 'label': 'Memory domain suggestions'},
+        ],
+      ) }}
     </div>
     <div class="obs-filter obs-filter-grow">
       <label for="f-q">Search params</label>
@@ -236,12 +302,38 @@
   const rowCount = $('obs-row-count');
   const narrative = $('obs-narrative');
 
+  // ---------------------------------------------------------------------
+  // Custom dropdown reverse-sync (#1055)
+  // ---------------------------------------------------------------------
+  // ds_dropdown.js only pushes a selection FROM the custom button+menu ONTO
+  // the paired native <select> (one-directional — see the macro's target=
+  // wiring). This page sets several of those selects' `.value` straight
+  // from code in a few places (URL-state hydration on load, KPI
+  // quick-filters, the detail panel's "Filter to this…" buttons, Reset) —
+  // call this after each such assignment so the visible custom dropdown
+  // (paper theme) never shows a stale label/checked item.
+  function syncDropdownFromSelect(sel) {
+    const dd = document.querySelector('.ds-dropdown[data-ds-dropdown-target="' + sel.id + '"]');
+    if (!dd) return;
+    const label = dd.querySelector('.ds-dropdown-btn-label');
+    const opt = sel.options[sel.selectedIndex];
+    dd.querySelectorAll('.ds-dropdown-menu [role="menuitemradio"]').forEach(item => {
+      const isSelected = item.dataset.value === sel.value;
+      item.classList.toggle('is-selected', isSelected);
+      item.setAttribute('aria-checked', isSelected ? 'true' : 'false');
+    });
+    if (label && opt) label.textContent = opt.textContent.trim();
+  }
+
   // Apply state -> controls
   winSel.value = String(state.window);
+  syncDropdownFromSelect(winSel);
   live.checked = state.live;
   $('obs-selfreads').checked = state.self_reads;
   fRes.value = state.result;
+  syncDropdownFromSelect(fRes);
   fResource.value = state.resource_prefix;
+  syncDropdownFromSelect(fResource);
   fQ.value = state.q;
 
   // ---------------------------------------------------------------------
@@ -513,6 +605,7 @@
         resourceBtn.onclick = () => {
           state.resource_prefix = prefix;
           fResource.value = prefix;
+          syncDropdownFromSelect(fResource);
           panel.hidden = true; writeUrl(); refreshAll();
         };
       } else {
@@ -550,6 +643,7 @@
       const k = b.dataset.filter;
       if (k === 'errors') {
         state.result = 'error'; fRes.value = 'error';
+        syncDropdownFromSelect(fRes);
       } else if (k === 'users') {
         fUser.focus();
         return;
@@ -559,6 +653,8 @@
       } else if (k === '') {
         Object.assign(state, { user_id:'', action_prefix:'', result:'', source:'', resource_prefix:'', q:'' });
         fUser.value=''; fAct.value=''; fRes.value=''; fSrc.value=''; fResource.value=''; fQ.value='';
+        syncDropdownFromSelect(fRes);
+        syncDropdownFromSelect(fResource);
       }
       writeUrl(); refreshAll();
     });
@@ -607,6 +703,8 @@
   fReset.addEventListener('click', () => {
     Object.assign(state, { user_id:'', action_prefix:'', result:'', source:'', resource_prefix:'', q:'' });
     fUser.value=''; fAct.value=''; fRes.value=''; fSrc.value=''; fResource.value=''; fQ.value='';
+    syncDropdownFromSelect(fRes);
+    syncDropdownFromSelect(fResource);
     writeUrl(); refreshAll();
   });
   more.addEventListener('click', () => loadTable(true));
@@ -641,4 +739,8 @@
   if (state.live) { livePollId = setInterval(refreshLight, 30000); }
 })();
 </script>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ static_url('js/components/ds_dropdown.js') }}" defer></script>
 {% endblock %}

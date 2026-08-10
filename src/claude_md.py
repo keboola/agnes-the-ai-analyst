@@ -185,8 +185,19 @@ def build_claude_md_context(
     *,
     user: dict[str, Any],
     server_url: str,
+    is_sandbox: bool = False,
 ) -> dict[str, Any]:
-    """Compose the Jinja2 render context for the CLAUDE.md template. Pure, no side effects."""
+    """Compose the Jinja2 render context for the CLAUDE.md template. Pure, no side effects.
+
+    ``is_sandbox`` distinguishes the two surfaces that render this same
+    template: the ephemeral chat sandbox (``app/main.py``'s
+    ``_render_workspace_prompt``, always ``True``) versus an analyst's own
+    laptop workspace (``GET /api/welcome``, called by ``agnes init`` — the
+    default, ``False``). A handful of claims in the template (preinstalled
+    libraries, "this filesystem is not the user's computer") are only true
+    for the former; template sections that need to say something different
+    for a laptop workspace branch on this flag.
+    """
     now = datetime.now(timezone.utc)
     parsed = urlparse(server_url)
     return {
@@ -212,6 +223,7 @@ def build_claude_md_context(
         },
         "now": now,
         "today": now.date().isoformat(),
+        "is_sandbox": is_sandbox,
     }
 
 
@@ -220,6 +232,7 @@ def compute_default_claude_md(
     *,
     user: dict[str, Any],
     server_url: str,
+    is_sandbox: bool = False,
 ) -> str:
     """Return the rendered default CLAUDE.md from config/claude_md_template.txt.
 
@@ -229,7 +242,7 @@ def compute_default_claude_md(
     source = _load_default_template()
     env = make_prompt_env()
     template = env.from_string(source)
-    return template.render(**build_claude_md_context(conn, user=user, server_url=server_url))
+    return template.render(**build_claude_md_context(conn, user=user, server_url=server_url, is_sandbox=is_sandbox))
 
 
 def render_claude_md(
@@ -237,6 +250,7 @@ def render_claude_md(
     *,
     user: dict[str, Any],
     server_url: str,
+    is_sandbox: bool = False,
 ) -> str:
     """Resolve the active template (override or default) and render it for the given user.
 
@@ -250,6 +264,10 @@ def render_claude_md(
     behavior); ``'git'`` binds to the IWT clone file. A None result (no
     override, or a git-bound file that's missing) falls back to the shipped
     default, then renders through Jinja as before.
+
+    ``is_sandbox``: see ``build_claude_md_context``. Callers rendering for the
+    chat sandbox must pass ``True``; the default (``False``) matches the
+    laptop-workspace / ``GET /api/welcome`` path.
     """
     from src.initial_workspace import resolve_prompt
 
@@ -257,4 +275,4 @@ def render_claude_md(
     source = content if content else _load_default_template()
     env = make_prompt_env()
     template = env.from_string(source)
-    return template.render(**build_claude_md_context(conn, user=user, server_url=server_url))
+    return template.render(**build_claude_md_context(conn, user=user, server_url=server_url, is_sandbox=is_sandbox))

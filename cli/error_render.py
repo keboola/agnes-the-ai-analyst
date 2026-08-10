@@ -63,11 +63,46 @@ def render_error(status_code: int, body: Any) -> str:
     if detail is not None and ("kind" in detail or "reason" in detail or "code" in detail):
         return _format_dict(status_code, detail)
     if isinstance(body, dict) and isinstance(body.get("detail"), str):
-        return f"HTTP {status_code}: {body['detail']}"
+        return _with_session_only_hint(f"HTTP {status_code}: {body['detail']}", body["detail"])
     text = str(body) if not isinstance(body, str) else body
     if len(text) > 500:
         text = text[:497] + "..."
     return f"HTTP {status_code}: {text}"
+
+
+#: The server's refusals for a PAT (or service token) on a route that
+#: requires interactive owner auth — `app/auth/dependencies.py::
+#: require_session_token`. Matched on the stable prefix both share.
+_SESSION_ONLY_MARKER = "requires an interactive session"
+
+
+def _with_session_only_hint(rendered: str, detail: str) -> str:
+    """Append a way forward to a session-only refusal.
+
+    `agnes agent list/show/create/...` authenticate with the PAT that
+    `agnes auth login` stores, and every `/api/v1/agents` management route
+    rejects PATs on purpose (a PAT must not be able to mint another PAT or
+    re-scope an agent). So those subcommands cannot succeed from a plain
+    CLI login, and the bare server sentence reads as a CLI bug rather than
+    a deliberate boundary. The runtime call `agnes agent ask` is
+    unaffected — it is not a management route.
+    """
+    if _SESSION_ONLY_MARKER not in detail:
+        return rendered
+    try:
+        from cli.config import get_server_url
+
+        base = get_server_url().rstrip("/")
+    except Exception:
+        # Never let the error path raise a second error on top of the first.
+        return rendered
+    return (
+        f"{rendered}\n"
+        f"  hint: agent management is deliberately web-only — manage agents at "
+        f"{base}/agents.\n"
+        f"        From the CLI, `agnes agent ask <slug>` and `agnes chat <slug>` "
+        f"work with your token."
+    )
 
 
 def _detail_dict(body: Any) -> dict | None:
@@ -182,10 +217,12 @@ def _format_validation_failed(status_code: int, detail: dict) -> str:
             lines.append(head)
             hint = issue.get("hint")
             if hint:
-                lines.append(fill(
-                    str(hint),
-                    width=80,
-                    initial_indent="        ",
-                    subsequent_indent="        ",
-                ))
+                lines.append(
+                    fill(
+                        str(hint),
+                        width=80,
+                        initial_indent="        ",
+                        subsequent_indent="        ",
+                    )
+                )
     return "\n".join(lines)

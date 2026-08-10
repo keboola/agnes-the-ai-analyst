@@ -8,7 +8,9 @@ uninstall) moved to `agnes marketplace` — see test_cli_marketplace.py.
 from __future__ import annotations
 
 import re
+from types import SimpleNamespace
 
+import typer
 from typer.testing import CliRunner
 
 from cli.commands.my_stack import my_stack_app
@@ -540,3 +542,112 @@ def test_store_status_wait_times_out(monkeypatch):
     result = runner.invoke(store_app, ["status", "e1", "--wait", "--timeout", "300"])
     assert result.exit_code == 2
     assert "still" in _clean(result.output).lower()
+
+
+def test_store_delete_without_tty_names_the_remedy(monkeypatch):
+    """A non-interactive caller must be told about --yes, not just "Aborted."
+
+    `typer.confirm` reads EOF when there is no terminal and aborts with a bare
+    "Aborted." naming no remedy — which is what a chat sandbox, a CI step or
+    any agent context hits. Observed live: the assistant ran
+    `agnes store delete <id>`, got exit 1 + "Aborted.", and had to go read
+    --help to discover the flag.
+    """
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    called = []
+    monkeypatch.setattr("cli.commands.store.api_delete", lambda *a, **k: called.append(a))
+
+    result = runner.invoke(store_app, ["delete", "ent123"])
+
+    assert result.exit_code == 1
+    assert "--yes" in result.output
+    assert not called, "must not delete without confirmation"
+
+
+def test_store_delete_ctrl_c_on_a_tty_does_not_claim_there_is_no_terminal(monkeypatch):
+    """Ctrl-C at the prompt is a decision, not a missing terminal.
+
+    `click.confirm` raises `Abort` for BOTH `EOFError` and `KeyboardInterrupt`,
+    so the exception alone cannot tell the two apart. Reporting every abort as
+    "no interactive terminal. Re-run with --yes" is false for the interactive
+    case, and it points the user at the flag that skips the very confirmation
+    they just declined.
+    """
+    # Patch the module's own `sys` name, not the real `sys.stdin`: click's
+    # CliRunner swaps `sys.stdin` for its own stream inside `invoke()`, so a
+    # patch on the real object is silently discarded and the test would pass
+    # or fail for reasons unrelated to what it claims to check.
+    monkeypatch.setattr(
+        "cli.commands.store.sys",
+        SimpleNamespace(stdin=SimpleNamespace(isatty=lambda: True)),
+    )
+
+    def _interrupted(*_a, **_k):
+        raise typer.Abort()
+
+    monkeypatch.setattr("cli.commands.store.typer.confirm", _interrupted)
+    called = []
+    monkeypatch.setattr("cli.commands.store.api_delete", lambda *a, **k: called.append(a))
+
+    result = runner.invoke(store_app, ["delete", "ent123"])
+
+    assert result.exit_code != 0
+    assert "no interactive terminal" not in result.output
+    assert "--yes" not in result.output
+    assert not called, "must not delete after an aborted confirmation"
+
+
+def test_store_delete_with_yes_skips_confirmation(monkeypatch):
+    """--yes deletes outright, terminal or not."""
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    called = []
+    monkeypatch.setattr("cli.commands.store.api_delete", lambda *a, **k: called.append(a))
+
+    result = runner.invoke(store_app, ["delete", "ent123", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert called, "--yes must go through to the API"
+    assert "Deleted: ent123" in result.output
+
+
+def test_store_delete_piped_yes_proceeds(monkeypatch):
+    """A piped confirmation answer must reach `typer.confirm`, not be blocked.
+
+    `sys.stdin.isatty()` is False under a pipe just like it is under true
+    EOF, so a guard that checks isatty *before* prompting refuses
+    `echo y | agnes store delete <id>` even though a valid answer is
+    waiting on stdin — breaking existing automation and one-liners that
+    used to work when the prompt read whatever was on stdin directly.
+    """
+    called = []
+    monkeypatch.setattr("cli.commands.store.api_delete", lambda *a, **k: called.append(a))
+
+    result = runner.invoke(store_app, ["delete", "ent123"], input="y\n")
+
+    assert result.exit_code == 0, result.output
+    assert called, "a piped 'y' must proceed with the delete"
+    assert "Deleted: ent123" in result.output
+
+
+def test_store_delete_piped_no_declines(monkeypatch):
+    """A piped 'n' must decline cleanly, without ever calling the API."""
+    called = []
+    monkeypatch.setattr("cli.commands.store.api_delete", lambda *a, **k: called.append(a))
+
+    result = runner.invoke(store_app, ["delete", "ent123"], input="n\n")
+
+    assert result.exit_code != 0
+    assert not called, "must not delete after a declined confirmation"
+
+
+def test_store_delete_true_eof_names_the_remedy(monkeypatch):
+    """Genuinely no input at all (not even a piped answer) still gets the
+    actionable message — this is the case the guard was meant for."""
+    called = []
+    monkeypatch.setattr("cli.commands.store.api_delete", lambda *a, **k: called.append(a))
+
+    result = runner.invoke(store_app, ["delete", "ent123"], input="")
+
+    assert result.exit_code == 1
+    assert "--yes" in result.output
+    assert not called, "must not delete without confirmation"

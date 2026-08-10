@@ -26,6 +26,18 @@ which reads ``frame.get("tool")`` / ``frame.get("args", {})`` off the same
 frame) — NOT ``name``/``input``. Only the *AG-UI event* uses the key name
 ``"name"`` (per the AG-UI vocabulary); the *source frame* field is
 ``"tool"``.
+
+Same trap on ``token``, which is where it actually bit: the frame field is
+``text`` (``app.chat.runner`` emits ``{"type": "token", "text": piece}``),
+NOT ``content`` — ``content`` belongs to ``assistant_message``. Reading
+``content`` here put ``delta: None`` on every streamed token, so a client
+assembling the answer from deltas saw nothing while the full text still
+arrived in the trailing ``TEXT_MESSAGE_END``. Because the two frame types
+sit one line apart in this mapper and the unit fixtures were hand-written
+to match the mapper rather than the emitter, no test caught it;
+``tests/test_agent_sse.py::TestMapperFieldsMatchRealEmitters`` now diffs
+the fields this module reads against the fields ``app/chat/`` really
+writes, so the next such drift fails instead of shipping.
 """
 
 from __future__ import annotations
@@ -49,7 +61,7 @@ def frame_to_agui(frame: dict[str, Any]) -> Optional[dict[str, Any]]:
     if ftype == "ready":
         return {"type": "RUN_STARTED"}
     if ftype == "token":
-        return {"type": "TEXT_MESSAGE_CONTENT", "delta": frame.get("content")}
+        return {"type": "TEXT_MESSAGE_CONTENT", "delta": frame.get("text")}
     if ftype == "assistant_message":
         return {"type": "TEXT_MESSAGE_END", "content": frame.get("content")}
     if ftype == "tool_call":

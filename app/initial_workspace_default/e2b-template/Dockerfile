@@ -37,8 +37,16 @@ RUN npm install -g @anthropic-ai/claude-code
 # whole `agnes` binary crash on launch, not just one subcommand. The set below
 # mirrors the CLI-relevant entries of [project.dependencies] in pyproject.toml;
 # keep it in sync when the CLI gains a new top-level third-party import. (The
-# heavier server-only deps — fastapi, google-cloud-*, matplotlib, … — are
-# deliberately omitted: the CLI never imports them.)
+# heavier server-only deps — fastapi, google-cloud-*, … — are deliberately
+# omitted: the CLI never imports them.)
+#
+# `matplotlib` is the exception: the CLI never imports it either, but the AGENT
+# needs it and cannot obtain it. E2B's per-hostname egress allowlist (and
+# `chat.docker_egress_mode: none` on the Docker sibling) means an in-sandbox
+# `pip install matplotlib` does not reach PyPI, so the agent improvises — the
+# reported failure was an SVG written to `/tmp` and a user told to open a path
+# that does not exist on their machine. The workspace CLAUDE.md carries the
+# delivery half: a chart is returned as inline SVG in the reply, never a file.
 # Pin the SDK to the same range the Agnes server depends on so a template
 # rebuild stays in lockstep with the runner version.
 RUN pip install --no-cache-dir --break-system-packages \
@@ -53,7 +61,8 @@ RUN pip install --no-cache-dir --break-system-packages \
     "pyarrow>=12.0.0" \
     "pandas>=2.0.0" \
     "numpy>=1.24.0" \
-    "sqlglot>=30.0.0"
+    "sqlglot>=30.0.0" \
+    "matplotlib>=3.8"
 
 # Per-session working dir; populated at spawn time by e2b_workspace_sync.
 RUN mkdir -p /work && chmod 755 /work

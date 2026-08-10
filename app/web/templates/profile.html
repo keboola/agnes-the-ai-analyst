@@ -35,6 +35,7 @@
 <link rel="stylesheet" href="{{ static_url('css/section_card.css') }}">
 <link rel="stylesheet" href="{{ static_url('css/catalog_card.css') }}">
 <link rel="stylesheet" href="{{ static_url('css/filter_toolbar.css') }}">
+<link rel="stylesheet" href="{{ static_url('css/ds_dropdown.css') }}">
 <style>
   /* Page chrome only — every colour rides a --ds-* token. The person's own
      identity (avatar, aside head) uses the --ds-agnes platform accent, the
@@ -737,4 +738,5 @@ async function unlinkChannel(channel) {
   }
 }
 </script>
+<script src="{{ static_url('js/components/ds_dropdown.js') }}" defer></script>
 {% endblock %}

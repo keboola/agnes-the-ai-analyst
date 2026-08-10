@@ -93,10 +93,20 @@ class TestTransformPluginJson:
         assert "homepage" not in out
 
     def test_name_coerced_to_kebab(self):
-        assert self._t({"name": "My Cool Plugin!", "version": "1.0.0"})["name"] == "my-cool-plugin"
+        out = self._t({"name": "ignored"}, manifest_name="My Cool Plugin!")
+        assert out["name"] == "my-cool-plugin"
 
     def test_name_must_start_with_letter(self):
         assert cp.coerce_plugin_name("123-abc", "fallback") == "abc"
+
+    def test_name_sourced_from_manifest_name_not_the_raw_file(self):
+        # `manifest_name` is the identity `resolve_manifest_name` already
+        # resolved (and validated) — the source file's own `name` field must
+        # never override it, or a plugin whose declared name was rejected
+        # ships under a different identity than the ZIP/git channels serve
+        # for the same plugin.
+        out = self._t({"name": "vendor/plugin", "version": "1.0.0"}, manifest_name="vendor-plugin")
+        assert out["name"] == "vendor-plugin"
 
     def test_description_sanitized(self):
         out = self._t({"name": "x", "version": "1.0.0", "description": 'a <b> "c"'})

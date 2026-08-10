@@ -3,6 +3,7 @@
 {% block title %}Upload to Store — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block head_extra %}
+<link rel="stylesheet" href="{{ static_url('css/ds_dropdown.css') }}">
 <style>
   .upload-lint { border: 1px solid var(--ds-border); border-radius: var(--radius-lg); background: var(--ds-surface); padding: var(--space-4); margin-bottom: var(--space-4); }
   .upload-lint-head { font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .4px; font-weight: var(--font-semibold); color: var(--ds-text-muted); margin-bottom: var(--space-2); }
@@ -241,6 +242,17 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  .no-review-banner {
+    margin-bottom: 14px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    font-size: 13px;
+    line-height: 1.45;
+    background: var(--ds-accent-warn-bg);
+    color: var(--ds-accent-warn-ink);
+    border: 1px solid var(--ds-accent-warn-line);
+  }
+  .no-review-banner strong { display: block; margin-bottom: 2px; }
   .guidelines {
     margin-bottom: 14px;
     background: var(--background, #f9fafb);
@@ -367,6 +379,23 @@
       <div class="card-body">
         <p class="card-sub">Pick what you're uploading and the ZIP archive.
           The server validates the layout when you click <code>Next</code>.</p>
+
+        {# Guardrails on, no LLM provider configured: the automated review
+           step cannot run, so anything published here parks at
+           `pending_llm` — hidden from everyone — until an admin retries it.
+           The server logs this at boot; the person about to publish had no
+           way to know, and the surrounding copy promises "a few seconds".
+           Guardrails off entirely is a DIFFERENT state: publication runs on
+           the inline tier alone and nothing is parked, so this warning
+           would be false there — gate on both. #}
+        {% if guardrails_enabled and not guardrails_llm_ready %}
+        <div class="no-review-banner" role="alert" id="no-llm-review-warning">
+          <strong>Automated review is not available on this instance.</strong>
+          You can publish, but your submission stays hidden from everyone
+          until an administrator runs the review manually. Ask an admin
+          before you rely on colleagues seeing it.
+        </div>
+        {% endif %}
 
         <div id="guidelines" class="guidelines">
           <button type="button" class="guidelines-toggle" id="guidelines-toggle"
@@ -551,12 +580,25 @@
 
         <div class="field">
           <label class="field-label" for="category">Category</label>
-          <select id="category">
-            <option value="">— None —</option>
-            {% for cat in categories %}
-            <option value="{{ cat }}">{{ cat }}</option>
+          {% set category_options = [{'value': '', 'label': '— None —'}] %}
+          {% for cat in categories %}
+          {% set _ = category_options.append({'value': cat, 'label': cat}) %}
+          {% endfor %}
+          {# The real <select> stays the control the JS below reads at submit
+             time (`document.getElementById('category').value`) — untouched.
+             The custom dropdown alongside it is a visual replacement only:
+             which one is visible is a theme decision (paper-skin.css), not a
+             template one. See _components.html's `dropdown` macro. #}
+          <select id="category" class="ds-dropdown-native">
+            {% for opt in category_options %}
+            <option value="{{ opt.value }}">{{ opt.label }}</option>
             {% endfor %}
           </select>
+          {{ ds.dropdown(
+            id='category-dd', target='category',
+            aria_label='Category', selected='',
+            options=category_options,
+          ) }}
           <div class="field-hint">Subject area of your entity — helps people filter the Store.</div>
         </div>
 
@@ -1402,4 +1444,8 @@ function formatSize(n) {
   return (n / 1024 / 1024).toFixed(1) + ' MB';
 }
 </script>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ static_url('js/components/ds_dropdown.js') }}" defer></script>
 {% endblock %}
