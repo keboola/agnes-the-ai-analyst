@@ -1233,21 +1233,25 @@ def _insert_agent(conn, *, id, slug, status, is_default=False, name="Agent"):
 
 
 def test_v115_reclassifies_pre_existing_governance_agents_as_ready(tmp_path):
-    """v114→v115: a `draft` agent whose slug is not the builder's placeholder
-    lineage (`agent` / `agent-N`) and is not the seeded default agent must
-    have arrived through the governance API's caller-chosen slug (nothing
-    else could have moved it there before this PR — see `_v114_to_v115`'s
-    docstring) — reclassified to `ready` so the draft-rename rule
-    (app/api/agents.py::_draft_slug_rename) freezes its address. A
-    placeholder-lineage draft and the seeded default agent are left alone.
+    """v114→v115: a `draft` agent whose `id` does NOT carry the builder's
+    `agt_` prefix and is not the seeded default agent must have arrived
+    through the governance API (nothing else could have created it — see
+    `_v114_to_v115`'s docstring) — reclassified to `ready` so the
+    draft-rename rule (app/api/agents.py::_draft_slug_rename) freezes its
+    address. Every `agt_`-prefixed builder row and the seeded default agent
+    are left alone, regardless of slug — including a builder draft the user
+    already named, which is the case a slug-only discriminator got wrong.
+    See `test_v114_to_v115_promotes_by_id_prefix_not_slug` for that
+    regression pinned in isolation.
     """
     db_path = tmp_path / "v114.duckdb"
     conn = duckdb.connect(str(db_path))
     _ensure_schema(conn)
     conn.execute("UPDATE schema_version SET version = 114")
     _insert_agent(conn, id="gov1", slug="revenue-bot", status="draft", name="Revenue Bot")
-    _insert_agent(conn, id="builder1", slug="agent", status="draft", name="")
-    _insert_agent(conn, id="builder2", slug="agent-2", status="draft", name="")
+    _insert_agent(conn, id="agt_builder1", slug="agent", status="draft", name="")
+    _insert_agent(conn, id="agt_builder2", slug="agent-2", status="draft", name="")
+    _insert_agent(conn, id="agt_named1", slug="finance-bot", status="draft", name="Finance Bot")
     _insert_agent(conn, id="def1", slug="default", status="draft", is_default=True, name="Default")
     _insert_agent(conn, id="ready1", slug="already-ready", status="ready", name="Already Ready")
     conn.close()
@@ -1258,14 +1262,44 @@ def test_v115_reclassifies_pre_existing_governance_agents_as_ready(tmp_path):
 
     rows = dict(
         conn.execute(
-            "SELECT id, status FROM agents WHERE id IN ('gov1', 'builder1', 'builder2', 'def1', 'ready1')"
+            "SELECT id, status FROM agents WHERE id IN "
+            "('gov1', 'agt_builder1', 'agt_builder2', 'agt_named1', 'def1', 'ready1')"
         ).fetchall()
     )
     assert rows["gov1"] == "ready", "a governance-created agent's slug is deliberately chosen — freeze it"
-    assert rows["builder1"] == "draft", "an unnamed builder placeholder must keep re-deriving its slug"
-    assert rows["builder2"] == "draft", "…including a suffixed placeholder"
+    assert rows["agt_builder1"] == "draft", "an unnamed builder placeholder must keep re-deriving its slug"
+    assert rows["agt_builder2"] == "draft", "…including a suffixed placeholder"
+    assert rows["agt_named1"] == "draft", (
+        "a builder draft already named by the user is still unpublished — a slug-based "
+        "discriminator would wrongly freeze it because 'finance-bot' isn't placeholder-shaped"
+    )
     assert rows["def1"] == "draft", "the seeded default agent is a PERMANENT draft by design"
     assert rows["ready1"] == "ready", "already-ready rows are untouched"
+    conn.close()
+
+
+def test_v114_to_v115_promotes_by_id_prefix_not_slug(tmp_path):
+    """Regression pin: a builder-created draft (`agt_`-prefixed id) that the
+    user already gave a real, non-placeholder-shaped name/slug — e.g.
+    "Finance Bot" -> `finance-bot` — must stay `draft`. It is not yet
+    published: `_draft_slug_rename` (app/api/agents.py) only freezes a
+    draft's slug once `status` reaches `'ready'`, so promoting it here would
+    permanently freeze an address for an agent nobody ever marked ready. A
+    discriminator keyed off the slug's shape (matching only the unnamed
+    placeholder lineage `agent` / `agent-N`) gets this wrong — the `id`
+    prefix is what actually distinguishes a builder row from a
+    governance/default one, in every naming state.
+    """
+    from src.db import _v114_to_v115
+
+    db_path = tmp_path / "named_draft.duckdb"
+    conn = duckdb.connect(str(db_path))
+    _ensure_schema(conn)
+    _insert_agent(conn, id="agt_finance1", slug="finance-bot", status="draft", name="Finance Bot")
+
+    _v114_to_v115(conn)
+
+    assert conn.execute("SELECT status FROM agents WHERE id = 'agt_finance1'").fetchone()[0] == "draft"
     conn.close()
 
 
