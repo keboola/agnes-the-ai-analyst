@@ -2,6 +2,10 @@
 {% block title %}{{ target_group.name }} — Group detail — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block head_extra %}
+{# Resource-tree styles (.rt-section / .mp-block / .item-cell / .ic-*) — the
+   grant matrix moved here from the retired standalone /admin/access page, so
+   its stylesheet comes with it rather than being duplicated. #}
+<link rel="stylesheet" href="{{ static_url('css/admin_access.css') }}">
 <style>
   .gd-page { max-width: 1100px; margin: 0 auto; padding: 0; }
 
@@ -90,24 +94,41 @@
     color: var(--ds-text-secondary, #6b7280); font-size: 13px;
   }
 
-  /* Resources summary */
-  .res-summary {
-    padding: 16px 18px;
-    display: flex; align-items: center; gap: 14px;
-  }
-  .res-count {
-    font-size: 32px; font-weight: 600; color: var(--ds-text-primary, #111827);
-    line-height: 1; min-width: 60px;
-  }
-  .res-text { flex: 1; font-size: 13px; color: var(--ds-text-secondary, #6b7280); }
-  .res-link {
-    padding: 8px 14px; border-radius: 8px; font-size: 13px; font-weight: 500;
-    background: var(--ds-primary, #6366f1); color: #fff !important;
-    border: 1px solid var(--ds-primary, #6366f1); text-decoration: none;
-  }
-  .res-link:hover { filter: brightness(1.05); }
+  /* Tab panes — Members / Access. The group's identity (name, origin chip,
+     description, Edit/Delete) stays in the header above the strip, so it is
+     visible from either tab; only the two working surfaces switch. */
+  .gd-pane[hidden] { display: none; }
+  .gd-tabs { margin-bottom: 16px; }
 
+  /* Access pane — the grant matrix. Card chrome from `.gd-section`; the
+     tree itself is styled by admin_access.css. */
+  .gd-access-head {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--ds-border, #e4e7ee);
+    background: var(--ds-surface-dim, #f9fafb);
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  }
+  .gd-access-head h2 { margin: 0; font-size: 14px; font-weight: 600; }
+  .gd-access-head .sub { font-size: 11px; color: var(--ds-text-secondary, #6b7280); }
+  .gd-access-body { padding: 14px 18px; }
 
+  /* Deep-link notice when arriving from /admin/tables' Manage-access
+     button (#table:<id>) — says which resource the filter is pinned to. */
+  .gd-pinned {
+    margin-bottom: 12px; padding: 8px 12px; border-radius: 8px;
+    font-size: 12px; line-height: 1.5;
+    background: var(--ds-accent-info-bg, #eff6ff);
+    border: 1px solid var(--ds-accent-info-line, #bfdbfe);
+    color: var(--ds-accent-info-ink, #1e40af);
+  }
+  .gd-pinned code {
+    font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
+  }
+  .gd-pinned button {
+    background: none; border: none; padding: 0; margin-left: 6px;
+    color: inherit; text-decoration: underline; cursor: pointer;
+    font-size: 12px; font-family: inherit;
+  }
 </style>
 {% endblock %}
 
@@ -168,8 +189,23 @@
   </div>
   {% endif %}
 
+  {# Members / Access tabs. Everything about a group now lives on the group:
+     identity in the header above, membership and authority in these two
+     panes. The standalone /admin/access matrix is retired — it was the same
+     editor reached through a second group picker. #}
+  <div class="gd-tabs">
+    {{ ds.tabs(
+        kind='button',
+        aria_label='Group sections',
+        items=[
+            {'label': 'Members', 'data_tab': 'members', 'active': True},
+            {'label': 'Access',  'data_tab': 'access',  'active': False},
+        ],
+    ) }}
+  </div>
+
   <!-- Members section -->
-  <section class="gd-section">
+  <section class="gd-section gd-pane" data-pane="members">
     <div class="gd-section-head">
       <h2>Members</h2>
       <span class="sub" id="members-sub">Loading…</span>
@@ -192,19 +228,26 @@
     {% endif %}
   </section>
 
-  <!-- Resource grants summary -->
-  <section class="gd-section">
-    <div class="gd-section-head">
-      <h2>Resource grants</h2>
-      <span class="sub">Manage on the dedicated page.</span>
+  <!-- Access section — the grant matrix, scoped to this group -->
+  <section class="gd-section gd-pane" data-pane="access" hidden>
+    <div class="gd-access-head">
+      <h2>Access</h2>
+      <span class="sub" id="access-sub">Loading…</span>
     </div>
-    <div class="res-summary">
-      <div class="res-count" id="res-count">—</div>
-      <div class="res-text" id="res-text">
-        Resources this group has been granted access to. Click through to
-        the matrix view to add or remove grants.
+    <div class="gd-access-body">
+      <div class="gd-pinned" id="access-pinned" style="display:none;">
+        Filtered to <code id="access-pinned-target"></code>.
+        <button type="button" id="access-pinned-clear">Show everything</button>
       </div>
-      <a class="res-link" href="/admin/access?group={{ target_group.id }}">Manage access →</a>
+      <div class="ax-hint" id="access-hint" style="display:none;">
+        No resources have been registered yet. Add a marketplace on the
+        <a href="/admin/marketplaces">Marketplaces</a> page and run a sync.
+      </div>
+      <div class="ax-filter" id="access-filter-wrap" style="display:none;">
+        <input id="access-filter" type="search" placeholder="Filter by name, marketplace, category…" autocomplete="off">
+      </div>
+      <div class="gd-loading" id="access-loading">Loading resources…</div>
+      <div id="access-body"></div>
     </div>
   </section>
 </div>
@@ -272,11 +315,6 @@ async function loadGroup() {
   chip.textContent = origin.replace("_", " ");
   chip.className = "origin-chip origin-" + origin;
   chip.style.display = "inline-block";
-  document.getElementById("res-count").textContent = groupState.grant_count || 0;
-  if (!groupState.grant_count) {
-    document.getElementById("res-text").textContent =
-      "No resources granted yet. Open the Grants page to assign access.";
-  }
 }
 
 async function loadMembers() {
@@ -425,7 +463,349 @@ if (delBtn) {
   });
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// Access pane — the resource grant matrix, scoped to THIS group.
+//
+// Ported from the retired standalone /admin/access page. That page was the
+// same editor behind a second group picker: you chose a group on the left
+// and toggled resources on the right. Grants are group-scoped in the RBAC
+// model (`resource_grants` keys on group_id), so the group's own page is
+// where the editor belongs — the picker was pure indirection.
+//
+// Data comes from the same /api/admin/access-overview the old page used
+// (resources tree + every grant); we filter grants to GROUP_ID client-side
+// rather than adding an endpoint.
+// ═══════════════════════════════════════════════════════════════════════
+const OVERVIEW_API = "/api/admin/access-overview";
+const GRANTS_API = "/api/admin/grants";
+
+const access = {
+  resources: [],   // [{type_key, type_display, blocks: [{name, items: [...]}]}]
+  grants: [],      // this group's grants only: [{id, resource_type, resource_id}]
+  filter: "",
+  loaded: false,
+};
+
+function isGranted(resource_type, resource_id) {
+  return access.grants.some(g =>
+    g.resource_type === resource_type && g.resource_id === resource_id);
+}
+function findGrant(resource_type, resource_id) {
+  return access.grants.find(g =>
+    g.resource_type === resource_type && g.resource_id === resource_id);
+}
+
+// Single-flight: showTab('access') fires this without awaiting and the hash
+// router awaits it right after, so without the shared promise the first
+// reveal would issue two /access-overview fetches.
+let _accessInFlight = null;
+function loadAccess() {
+  if (access.loaded) return Promise.resolve();
+  if (!_accessInFlight) _accessInFlight = _loadAccess();
+  return _accessInFlight;
+}
+
+async function _loadAccess() {
+  try {
+    const r = await fetch(OVERVIEW_API, { credentials: "include" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const data = await r.json();
+    access.resources = data.resources || [];
+    access.grants = (data.grants || [])
+      .filter(g => g.group_id === GROUP_ID)
+      .map(g => ({ id: g.id, resource_type: g.resource_type, resource_id: g.resource_id }));
+    access.loaded = true;
+  } catch (e) {
+    document.getElementById("access-loading").textContent =
+      "Failed to load resources: " + e.message;
+    toast("Failed to load resources", "error");
+    // Drop the cached promise so leaving and re-entering the tab retries —
+    // otherwise the single-flight guard hands back this failed run forever
+    // and the pane stays on its error until a full page reload.
+    _accessInFlight = null;
+    return;
+  }
+  document.getElementById("access-loading").style.display = "none";
+  renderAccess();
+}
+
+function renderAccess() {
+  const body = document.getElementById("access-body");
+  const hint = document.getElementById("access-hint");
+  const filterWrap = document.getElementById("access-filter-wrap");
+
+  const totalItems = access.resources.reduce(
+    (acc, rt) => acc + rt.blocks.reduce((a, b) => a + b.items.length, 0), 0);
+  if (totalItems === 0) {
+    hint.style.display = "block";
+    filterWrap.style.display = "none";
+    body.innerHTML = "";
+    refreshAccessCounts();
+    return;
+  }
+  hint.style.display = "none";
+  filterWrap.style.display = "block";
+
+  const ft = access.filter.trim().toLowerCase();
+  body.innerHTML = "";
+
+  for (const rt of access.resources) {
+    const section = document.createElement("div");
+    section.className = "rt-section";
+    section.innerHTML = `<div class="rt-section-head">${esc(rt.type_display)}</div>`;
+
+    let sectionItemCount = 0;
+
+    for (const block of rt.blocks) {
+      const items = block.items.filter(it => {
+        if (!ft) return true;
+        // `resource_id` is in the match set on purpose: it's the only field
+        // carrying a resource's fully-qualified identity. A table projects
+        // as block "in.c-customer_360" + name "customer_accounts", so the
+        // #table:<id> deep link (which passes the whole `in.c-….customer_
+        // accounts`) matches neither on its own.
+        return (it.name || "").toLowerCase().includes(ft)
+            || (it.resource_id || "").toLowerCase().includes(ft)
+            || (block.name || "").toLowerCase().includes(ft)
+            || (it.category || "").toLowerCase().includes(ft)
+            || (it.description || "").toLowerCase().includes(ft);
+      });
+      if (ft && items.length === 0) continue;
+      sectionItemCount += items.length;
+
+      const grantedHere = items.filter(it => isGranted(rt.type_key, it.resource_id)).length;
+
+      const blockEl = document.createElement("div");
+      blockEl.className = "mp-block";
+      blockEl.innerHTML = `
+        <div class="mp-block-head" data-toggle="collapse">
+          <svg class="chev" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+            <path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <h4>${esc(block.name)}</h4>
+          <span class="count">${grantedHere}/${items.length}</span>
+          <span class="spacer"></span>
+          <button class="bulk-btn" data-bulk="all">Grant all</button>
+          <button class="bulk-btn" data-bulk="none">Revoke all</button>
+        </div>
+        <div class="item-grid"></div>
+      `;
+      const grid = blockEl.querySelector(".item-grid");
+      if (items.length === 0) {
+        grid.innerHTML = `<div class="ax-empty" style="grid-column: 1/-1;">No items.</div>`;
+      } else {
+        for (const it of items) {
+          const granted = isGranted(rt.type_key, it.resource_id);
+          // System plugins are pre-granted to every group by mark_system and
+          // the checkbox is locked here so admins can't revoke via the UI.
+          // The backend (DELETE /api/admin/grants) also refuses; the visual
+          // lock just prevents the round-trip.
+          const isSystem = !!it.is_system;
+          const cell = document.createElement("label");
+          cell.className = "item-cell"
+            + (granted ? " is-granted" : "")
+            + (isSystem ? " is-system" : "");
+          const sysPill = isSystem
+            ? `<span class="ic-system-pill" title="Mandatory plugin — managed via /admin/marketplaces">SYSTEM</span>`
+            : "";
+          cell.innerHTML = `
+            <input type="checkbox" ${granted || isSystem ? "checked" : ""} ${isSystem ? "disabled" : ""}
+                   ${isSystem ? `title="System plugin — managed via /admin/marketplaces"` : ""}>
+            <div class="ic-text">
+              <div>
+                <span class="ic-name">${esc(it.name)}</span>
+                ${it.source_type ? `<span class="ic-src">${esc(it.source_type)}</span>` : ""}
+                ${sysPill}
+              </div>
+              ${(it.version || it.category) ? `<div class="ic-meta">
+                ${it.version ? `v${esc(it.version)}` : ""}${it.version && it.category ? " · " : ""}${it.category ? esc(it.category) : ""}
+              </div>` : ""}
+              ${it.description ? `<div class="ic-desc">${esc(it.description)}</div>` : ""}
+            </div>
+          `;
+          const cb = cell.querySelector("input");
+          if (!isSystem) {
+            cb.addEventListener("change", () => toggleGrant(cb, cell, rt.type_key, it.resource_id));
+          }
+          grid.appendChild(cell);
+        }
+      }
+      blockEl.querySelector('[data-toggle="collapse"]').addEventListener("click", e => {
+        if (e.target.closest("[data-bulk]")) return;
+        blockEl.classList.toggle("is-collapsed");
+      });
+      blockEl.querySelector('[data-bulk="all"]').addEventListener("click", () =>
+        bulkSet(rt.type_key, items, true));
+      blockEl.querySelector('[data-bulk="none"]').addEventListener("click", () =>
+        bulkSet(rt.type_key, items, false));
+      section.appendChild(blockEl);
+    }
+
+    if (sectionItemCount > 0 || !ft) body.appendChild(section);
+  }
+  refreshAccessCounts();
+}
+
+async function toggleGrant(checkbox, cell, resource_type, resource_id) {
+  const grant = checkbox.checked;
+  checkbox.disabled = true;
+  try {
+    if (grant) {
+      const r = await fetch(GRANTS_API, {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ group_id: GROUP_ID, resource_type, resource_id }),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        toast("Grant failed: " + (err.detail || r.status), "error");
+        checkbox.checked = false;
+        return;
+      }
+      const created = await r.json();
+      access.grants.push({ id: created.id, resource_type, resource_id });
+      cell.classList.add("is-granted");
+    } else {
+      const existing = findGrant(resource_type, resource_id);
+      if (!existing) return;
+      if (!await confirmModal({
+        title: "Revoke access?",
+        message: "This group will lose access to this resource.",
+        confirmText: "Revoke",
+        danger: true,
+      })) {
+        checkbox.checked = true; // user cancelled — undo the visual uncheck
+        return;
+      }
+      const r = await fetch(`${GRANTS_API}/${encodeURIComponent(existing.id)}`, {
+        method: "DELETE", credentials: "include",
+      });
+      if (!r.ok) {
+        toast("Revoke failed: " + r.status, "error");
+        checkbox.checked = true;
+        return;
+      }
+      access.grants = access.grants.filter(g => g.id !== existing.id);
+      cell.classList.remove("is-granted");
+    }
+    refreshAccessCounts();
+  } catch (e) {
+    toast("Network error: " + e.message, "error");
+    checkbox.checked = !grant;
+  } finally {
+    checkbox.disabled = false;
+  }
+}
+
+async function bulkSet(resource_type, items, grant) {
+  for (const it of items) {
+    // Skip system plugins — the API refuses to revoke them and a bulk grant
+    // on a checkbox mark_system already auto-granted is a noop. Lets "Grant
+    // all" / "Revoke all" finish cleanly without 409s in the toast log.
+    if (it.is_system) continue;
+    const has = isGranted(resource_type, it.resource_id);
+    if (grant === has) continue;
+    try {
+      if (grant) {
+        const r = await fetch(GRANTS_API, {
+          method: "POST", credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ group_id: GROUP_ID, resource_type, resource_id: it.resource_id }),
+        });
+        if (!r.ok) continue;
+        const created = await r.json();
+        access.grants.push({ id: created.id, resource_type, resource_id: it.resource_id });
+      } else {
+        const existing = findGrant(resource_type, it.resource_id);
+        if (!existing) continue;
+        const r = await fetch(`${GRANTS_API}/${encodeURIComponent(existing.id)}`, {
+          method: "DELETE", credentials: "include",
+        });
+        if (!r.ok) continue;
+        access.grants = access.grants.filter(g => g.id !== existing.id);
+      }
+    } catch (_e) { /* ignore */ }
+  }
+  toast(`${grant ? "Grant" : "Revoke"} all applied`, "success");
+  renderAccess();
+}
+
+function refreshAccessCounts() {
+  const n = access.grants.length;
+  document.getElementById("access-sub").textContent =
+    `${n} resource${n === 1 ? "" : "s"} granted`;
+  // Per-block counts inside the rendered tree.
+  document.querySelectorAll(".rt-section").forEach(section => {
+    section.querySelectorAll(".mp-block").forEach(blockEl => {
+      const visibleItems = Array.from(blockEl.querySelectorAll(".item-cell"));
+      const grantedHere = visibleItems.filter(c => c.classList.contains("is-granted")).length;
+      blockEl.querySelector(".mp-block-head .count").textContent =
+        `${grantedHere}/${visibleItems.length}`;
+    });
+  });
+}
+
+document.getElementById("access-filter").addEventListener("input", e => {
+  access.filter = e.target.value;
+  renderAccess();
+});
+document.getElementById("access-pinned-clear").addEventListener("click", () => {
+  access.filter = "";
+  document.getElementById("access-filter").value = "";
+  document.getElementById("access-pinned").style.display = "none";
+  history.replaceState(null, "", window.location.pathname + "#access");
+  renderAccess();
+});
+
+// ── Tab switching ────────────────────────────────────────────────────────
+// The Access pane loads lazily on first reveal — /access-overview projects
+// every grantable resource on the instance, so a member-management visit
+// shouldn't pay for it.
+function showTab(name) {
+  document.querySelectorAll(".gd-pane").forEach(p => {
+    p.hidden = p.dataset.pane !== name;
+  });
+  document.querySelectorAll('.gd-tabs [role="tab"]').forEach(t => {
+    const on = t.dataset.tab === name;
+    t.classList.toggle("is-active", on);
+    t.setAttribute("aria-selected", on ? "true" : "false");
+  });
+  if (name === "access") loadAccess();
+}
+document.querySelectorAll('.gd-tabs [role="tab"]').forEach(t => {
+  t.addEventListener("click", () => {
+    showTab(t.dataset.tab);
+    history.replaceState(null, "", window.location.pathname + "#" + t.dataset.tab);
+  });
+});
+
+// Hash routing: `#access` / `#members` pick a tab; `#table:<id>` (the
+// deep link /admin/tables → /admin/groups → here) opens Access with the
+// resource filter pinned to that table.
+async function applyHash() {
+  const hash = window.location.hash || "";
+  if (hash.startsWith("#table:")) {
+    const tableId = decodeURIComponent(hash.slice("#table:".length));
+    showTab("access");
+    await loadAccess();
+    // `access.loaded` gates the pin: on a failed load, re-rendering over an
+    // empty resource tree would replace the "Failed to load" message with a
+    // "Filtered to <table>" banner over nothing, which reads as "this group
+    // can't be granted that" rather than "the fetch broke".
+    if (tableId && access.loaded) {
+      access.filter = tableId;
+      document.getElementById("access-filter").value = tableId;
+      document.getElementById("access-pinned-target").textContent = tableId;
+      document.getElementById("access-pinned").style.display = "block";
+      renderAccess();
+    }
+    return;
+  }
+  showTab(hash === "#access" ? "access" : "members");
+}
+
 loadGroup();
 loadMembers();
+applyHash();
 </script>
 {% endblock %}

@@ -134,9 +134,10 @@ def test_admin_tables_renders_register_modals_in_dom(seeded_app):
 
 def test_registry_listing_renders_manage_access_button(seeded_app):
     """Each row in the package-centric listing has an Edit affordance.
-    The Manage-access deep-link helper survives in the JS (used by
-    other surfaces — kept callable so existing /admin/access flows that
-    reference it don't break)."""
+    The Manage-access deep-link helper survives in the JS (used by other
+    surfaces — kept callable). It now targets /admin/groups: grants are
+    group-scoped, so the operator picks a group and the hash rides along
+    to that group's Access tab."""
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
     auth = {"Authorization": f"Bearer {token}"}
@@ -156,21 +157,39 @@ def test_registry_listing_renders_manage_access_button(seeded_app):
 
     r = c.get("/admin/tables", headers=auth)
     body = r.text
-    # The manageAccess() helper still exists in the JS (deep-links to
-    # /admin/access scoped to a table_id).
+    # The manageAccess() helper still exists in the JS (deep-links to the
+    # group list scoped to a table_id).
     assert "function manageAccess(" in body or "manageAccess =" in body
-    # It targets the access page.
-    assert "/admin/access" in body
+    # It targets the group list, which is where a grant target is chosen.
+    assert "/admin/groups#table:" in body
 
 
-def test_admin_access_supports_deep_link_for_table(seeded_app):
-    """Unchanged: /admin/access reads the deep link from URL on load so
-    operators can land on a pre-filtered view scoped to a single
-    table."""
+def test_group_list_forwards_the_table_deep_link(seeded_app):
+    """/admin/groups reads `#table:<id>` on load: it shows the "pick a
+    group" banner and carries the hash onto each group's detail link."""
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
-    r = c.get("/admin/access", headers={"Authorization": f"Bearer {token}"})
+    r = c.get("/admin/groups", headers={"Authorization": f"Bearer {token}"})
     body = r.text
-    # The page reads window.location.hash on load and dispatches by prefix.
-    assert "location.hash" in body and "table:" in body, \
-        "/admin/access must read the deep-link from URL on load"
+    assert "location.hash" in body and "#table:" in body, \
+        "/admin/groups must read the deep-link from URL on load"
+    assert "gp-picking" in body, "the pick-a-group banner must be present"
+
+
+def test_group_detail_applies_the_table_deep_link(seeded_app):
+    """The group detail page's Access tab reads `#table:<id>` and pins its
+    resource filter to that table — the far end of the deep link that used
+    to terminate on the standalone /admin/access page."""
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    auth = {"Authorization": f"Bearer {token}"}
+    groups = c.get("/api/admin/groups", headers=auth).json()
+    assert groups, "seeded instance must have at least the system groups"
+
+    r = c.get(f"/admin/groups/{groups[0]['id']}", headers=auth)
+    body = r.text
+    assert r.status_code == 200
+    assert "location.hash" in body and "#table:" in body
+    # The grant matrix itself now lives here.
+    assert "/api/admin/access-overview" in body
+    assert 'data-pane="access"' in body

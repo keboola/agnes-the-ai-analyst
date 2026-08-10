@@ -164,6 +164,37 @@
     display: inline-block; margin-right: 6px;
     padding: 1px 6px; border-radius: 4px;
     background: var(--ds-accent-info-bg, #e0e7ff); color: var(--ds-accent-info-ink, #3730a3); font-weight: 500;
+    text-decoration: none;
+  }
+  .ea-via .via-group:hover { text-decoration: underline; }
+
+  /* Token status pills — same vocabulary as /admin/tokens' fleet list. */
+  .tok-pill {
+    display: inline-block; padding: 2px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 600;
+  }
+  .tok-pill.active  { background: var(--ds-accent-success-bg, #dcfce7); color: var(--ds-accent-success-ink, #166534); }
+  .tok-pill.expired { background: var(--ds-surface-dim, #f3f4f6); color: var(--ds-text-secondary, #4b5563); }
+  .tok-pill.revoked { background: var(--ds-accent-danger-bg, #fee2e2); color: var(--ds-accent-danger-ink, #b91c1c); }
+  /* Row action button — `.icon-btn` isn't global; same box the other admin
+     tables use, defined locally like they do. */
+  .icon-btn {
+    background: transparent; border: 1px solid var(--ds-border, #e4e7ee);
+    border-radius: 6px; padding: 5px 10px; font-size: 12px; cursor: pointer;
+    color: var(--ds-text-secondary, #6b7280); font-family: inherit;
+    line-height: 1.4; white-space: nowrap; transition: all 0.15s;
+  }
+  .icon-btn:hover { color: var(--ds-text-primary, #111827); background: var(--ds-surface-dim, #f9fafb); }
+  .icon-btn.danger:hover {
+    color: var(--ds-accent-danger-ink, #b91c1c);
+    border-color: var(--ds-accent-danger-bg, #fecaca);
+    background: var(--ds-accent-danger-bg, #fef2f2);
+  }
+
+  .tok-name { font-weight: 500; }
+  .tok-prefix {
+    display: block; font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
+    font-size: 11px; color: var(--ds-text-secondary, #6b7280);
   }
 
   /* Sessions section */
@@ -231,6 +262,14 @@
   <section class="ud-section">
     <div class="ud-section-head">
       <h2>Account</h2>
+      {# The Active/Deactivated pill. `renderHeader()` has always written to
+         `#status-pill`, but the element was lost when this header became the
+         shared `_page_hero.html` include — so the lookup returned null,
+         renderHeader() threw, and `renderAccountStatus()` (the next call in
+         `loadUser`) never ran, leaving Account stuck on "Loading…". It sits
+         next to the Account heading rather than back in the hero: that is
+         the state it describes. #}
+      <span id="status-pill" class="ud-status-pill" style="display:none;"></span>
     </div>
     <div class="account-grid">
       <div id="account-status-text" style="font-size:13px;color:var(--ds-text-secondary,#6b7280);">
@@ -281,6 +320,34 @@
     </div>
     <div id="effective-loading" class="ea-loading">Loading…</div>
     <div id="effective-content" style="display:none;"></div>
+  </section>
+
+  <!-- Access tokens -->
+  {# Offboarding is one page now: deactivate above, drop group memberships
+     above, revoke credentials here. /admin/tokens keeps the fleet-wide view
+     for incident response; this is the per-user slice of the same list. #}
+  <section class="ud-section" id="tokens">
+    <div class="ud-section-head">
+      <h2>Access tokens</h2>
+      <span class="sub" id="ud-tokens-sub">Personal access tokens issued to this user</span>
+    </div>
+    <div class="ud-empty" id="ud-tokens-loading">Loading…</div>
+    <table class="ud-table" id="ud-tokens-table" hidden>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Created</th>
+          <th>Last used</th>
+          <th>Expires</th>
+          <th>Status</th>
+          <th style="text-align:right">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="ud-tokens-tbody"></tbody>
+    </table>
+    <div class="ud-empty" id="ud-tokens-empty" hidden>
+      No access tokens for this user.
+    </div>
   </section>
 
   <!-- Sessions -->
@@ -372,7 +439,17 @@ const GOOGLE_GROUP_PREFIX = {{ config.AGNES_GOOGLE_GROUP_PREFIX | tojson }};
 const GROUPS_API = "/api/admin/groups";
 
 function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
-function fmtDate(s) { return s ? (window.AgnesTime.formatDateTime(s) || "-") : "-"; }
+// datetime.js is loaded `defer`, so window.AgnesTime does not exist until
+// parsing finishes — but this script starts its fetches during parse. A fast
+// endpoint (the tokens list) can resolve first and would otherwise throw
+// here, aborting that section's render mid-loop with no visible error.
+// Fall back to the raw timestamp rather than taking the whole section down.
+function fmtDate(s) {
+  if (!s) return "-";
+  const T = window.AgnesTime;
+  if (!T || typeof T.formatDateTime !== "function") return String(s);
+  return T.formatDateTime(s) || "-";
+}
 
 // Same logic as /admin/groups + /admin/users: only safe to call on
 // google_sync rows whose `name` is the raw Workspace email; calling it
@@ -637,8 +714,12 @@ async function loadEffectiveAccess() {
       <th>Type</th><th>Resource</th><th>Granted via</th>
     </tr></thead><tbody>`;
   for (const it of data.items) {
+    // "Why can they see this?" — each granting group links straight to its
+    // own Access tab, where the grant can be inspected or revoked. Read path
+    // and write path are one click apart instead of on different pages.
     const viaHtml = it.via_groups
-      .map(g => `<span class="via-group">${esc(g.group_name)}</span>`).join(" ");
+      .map(g => `<a class="via-group" href="/admin/groups/${encodeURIComponent(g.group_id)}#access"
+                    title="Open ${esc(g.group_name)} → Access">${esc(g.group_name)}</a>`).join(" ");
     html += `
       <tr>
         <td style="white-space:nowrap">${esc(it.resource_type)}</td>
@@ -855,10 +936,103 @@ document.getElementById('ud-activity-next').addEventListener('click', () => {
   }
 });
 
-async function loadAll() {
-  await Promise.all([loadUser(), loadMemberships(), loadGroups(), loadEffectiveAccess(), loadSessions(), loadActivity()]);
+// ── Access tokens (this user's slice of the fleet list) ──────────────────
+// GET /auth/admin/tokens returns every token with its owner; there is no
+// per-user variant, so we filter client-side rather than add an endpoint.
+// Revoke goes through the same admin DELETE the fleet page uses.
+async function loadTokens() {
+  const loading = document.getElementById("ud-tokens-loading");
+  const table = document.getElementById("ud-tokens-table");
+  const empty = document.getElementById("ud-tokens-empty");
+  const tbody = document.getElementById("ud-tokens-tbody");
+
+  let rows;
+  try {
+    const r = await fetch("/auth/admin/tokens", { credentials: "include" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    rows = (await r.json()).filter(t => t.user_id === USER_ID);
+  } catch (e) {
+    loading.textContent = "Failed to load tokens: " + e.message;
+    return;
+  }
+  loading.hidden = true;
+  loading.style.display = "none";
+
+  const active = rows.filter(t => tokenStatus(t) === "active").length;
+  document.getElementById("ud-tokens-sub").textContent =
+    `${rows.length} token${rows.length === 1 ? "" : "s"} · ${active} active`;
+
+  if (rows.length === 0) {
+    table.hidden = true;
+    empty.hidden = false;
+    return;
+  }
+  empty.hidden = true;
+  table.hidden = false;
+  tbody.innerHTML = "";
+  for (const t of rows) {
+    const status = tokenStatus(t);
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>
+        <span class="tok-name">${esc(t.name)}</span>
+        <span class="tok-prefix">${esc(t.prefix)}…</span>
+      </td>
+      <td>${fmtDate(t.created_at)}</td>
+      <td>${t.last_used_at ? fmtDate(t.last_used_at) : "Never"}</td>
+      <td>${t.expires_at ? fmtDate(t.expires_at) : "Never"}</td>
+      <td><span class="tok-pill ${status}">${status}</span></td>
+      <td style="text-align:right">${
+        status === "revoked"
+          ? `<span style="color:var(--ds-text-muted,#9ca3af);font-size:11px">revoked</span>`
+          : `<button class="icon-btn danger" data-revoke="${esc(t.id)}" data-name="${esc(t.name)}">Revoke</button>`
+      }</td>`;
+    tbody.appendChild(tr);
+  }
+  tbody.querySelectorAll("[data-revoke]").forEach(btn =>
+    btn.addEventListener("click", () => revokeToken(btn.dataset.revoke, btn.dataset.name)));
 }
 
-loadAll();
+function tokenStatus(t) {
+  if (t.revoked_at) return "revoked";
+  if (t.expires_at && new Date(t.expires_at) < new Date()) return "expired";
+  return "active";
+}
+
+async function revokeToken(tokenId, name) {
+  if (!(await confirmModal({
+    title: "Revoke this token?",
+    message: `"${name}" stops working immediately. Anything using it must be re-authorized.`,
+    confirmText: "Revoke token",
+    danger: true,
+  }))) return;
+  const r = await fetch(`/auth/admin/tokens/${encodeURIComponent(tokenId)}`, {
+    method: "DELETE", credentials: "include",
+  });
+  if (!r.ok) {
+    toast("Revoke failed: " + r.status, "error");
+    return;
+  }
+  toast("Token revoked", "success");
+  loadTokens();
+}
+
+async function loadAll() {
+  await Promise.all([loadUser(), loadMemberships(), loadGroups(), loadEffectiveAccess(), loadTokens(), loadSessions(), loadActivity()]);
+  // #tokens deep-link from the /admin/users row action — the section renders
+  // after the fetches, so scroll once the content is actually there.
+  if (window.location.hash === "#tokens") {
+    document.getElementById("tokens").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+}
+
+// Wait for DOMContentLoaded: deferred scripts (datetime.js → window.AgnesTime)
+// execute just before it fires, so every section formats timestamps with the
+// shared helper instead of racing it. fmtDate stays defensive regardless.
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", loadAll, { once: true });
+} else {
+  loadAll();
+}
 </script>
 {% endblock %}

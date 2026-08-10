@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 # Cloud chat is an RBAC resource: denied to everyone by default, granted to a
-# group on /admin/access. Every chat endpoint depends on this gate (the WS
+# group on /admin/groups. Every chat endpoint depends on this gate (the WS
 # stream is covered transitively — its ticket is only mintable through the
 # gated create/reissue endpoints). Admins short-circuit via god-mode. The
 # resource is a singleton, so the path template is the fixed id "chat".

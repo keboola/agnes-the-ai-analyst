@@ -390,15 +390,35 @@ class TestAdminRoleGuards:
         resp = web_client.get("/admin/tables", cookies=admin_cookie)
         assert resp.status_code == 200
 
-    def test_analyst_cannot_access_admin_access_page(self, web_client, analyst_cookie):
-        """The unified /admin/access page replaces the dropped
-        /admin/permissions page. Non-admin must still be blocked."""
-        resp = web_client.get("/admin/access", cookies=analyst_cookie)
+    def test_analyst_cannot_access_admin_groups_page(self, web_client, analyst_cookie):
+        """Grants moved onto the group detail page's Access tab; /admin/groups
+        is the entry point. Non-admin must still be blocked."""
+        resp = web_client.get("/admin/groups", cookies=analyst_cookie)
         assert resp.status_code == 403
 
-    def test_admin_can_access_admin_access_page(self, web_client, admin_cookie):
-        resp = web_client.get("/admin/access", cookies=admin_cookie)
+    def test_admin_can_access_admin_groups_page(self, web_client, admin_cookie):
+        resp = web_client.get("/admin/groups", cookies=admin_cookie)
         assert resp.status_code == 200
+
+    def test_legacy_access_url_redirects_to_groups(self, web_client, admin_cookie):
+        """/admin/access is retired — the grant matrix is the group detail
+        page's Access tab. The old URL 308s rather than 404s, and a
+        ?group= deep link lands on that group's Access tab directly."""
+        resp = web_client.get("/admin/access", cookies=admin_cookie, follow_redirects=False)
+        assert resp.status_code == 308
+        assert resp.headers["location"] == "/admin/groups"
+
+        resp = web_client.get(
+            "/admin/access?group=grp-123", cookies=admin_cookie, follow_redirects=False
+        )
+        assert resp.status_code == 308
+        assert resp.headers["location"] == "/admin/groups/grp-123#access"
+
+    def test_legacy_access_url_keeps_its_admin_gate(self, web_client, analyst_cookie):
+        """The retired URL keeps the gate the page carried — a non-admin gets
+        403, not a 308 naming where the surface moved."""
+        resp = web_client.get("/admin/access", cookies=analyst_cookie, follow_redirects=False)
+        assert resp.status_code == 403
 
     def test_analyst_cannot_access_corporate_memory_admin(self, web_client, admin_cookie, analyst_cookie):
         resp = web_client.get("/admin/corporate-memory", cookies=analyst_cookie)

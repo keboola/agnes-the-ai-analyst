@@ -1,9 +1,12 @@
 {% extends "base_page.html" %}
 {% block title %}Users — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% set page_hero_eyebrow = "Users & Access" %}
-{% set page_hero_title = "Users" %}
-{% set page_hero_subtitle = "Manage analyst accounts and group membership." %}
+{# One hero for the whole section — the tab strip below identifies the
+   sub-view, so People / Groups / Tokens read as one place rather than
+   three sibling pages. #}
+{% set page_hero_eyebrow = "Administration" %}
+{% set page_hero_title = "Users & Access" %}
+{% set page_hero_subtitle = "Accounts, group membership, resource grants and credentials." %}
 
 {% block head_extra %}
 <style>
@@ -213,6 +216,8 @@
   .toast.error { background: var(--ds-accent-danger-line, #b91c1c); }
 </style>
 {% endblock %}
+
+{% block toolbar %}{% include "_people_tabs.html" %}{% endblock %}
 
 {% block page %}
 {# Design-system component macros — toolbar "+ Add user" + 9 modal action
@@ -533,7 +538,7 @@ function renderUsers(users) {
       <td>
         <div class="row-actions">
           <a class="icon-btn" href="/admin/users/${encodeURIComponent(u.id)}" title="Open detail view: memberships + effective access">Detail</a>
-          <a class="icon-btn" href="/admin/tokens?user=${encodeURIComponent(u.email || "")}" title="View this user's personal access tokens">Tokens</a>
+          <a class="icon-btn" href="/admin/users/${encodeURIComponent(u.id)}#tokens" title="Jump to this user's personal access tokens">Tokens</a>
           ${u.is_sso_user ? "" : `
           <button class="icon-btn" data-action="reset-password" data-user-id="${esc(u.id)}" data-user-email="${esc(u.email)}" title="Generate a reset link (user picks their own new password)">Reset</button>
           <button class="icon-btn" data-action="set-password" data-user-id="${esc(u.id)}" data-user-email="${esc(u.email)}" title="Assign a password directly">Set pwd</button>

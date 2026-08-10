@@ -311,7 +311,7 @@
         {# v55 Recipes RBAC matrix on Create — same inline pattern as
            Create Memory Domain. Optional; with no rows ticked, the new
            recipe is admin-only (default-closed). Admins can grant later
-           via Edit Recipe or /admin/access. #}
+           via Edit Recipe or a group's Access tab. #}
         <details id="rcp-rbac-details"
                  style="border:1px solid var(--border); border-radius:8px; padding:8px 12px;">
           <summary style="cursor:pointer; font-weight:600; font-size:13px; user-select:none;">
@@ -322,7 +322,7 @@
             Grant per-group access tiers — <em>available</em> surfaces
             the recipe on the group's Recipes tab; <em>required</em>
             pins it. Leave blank to manage later from
-            <a href="/admin/access">Resource access</a>.
+            <a href="/admin/groups">a group's Access tab</a>.
           </p>
           <div id="rcp-rbac-rows"
                style="display:flex; flex-direction:column; gap:6px; max-height:30vh; overflow-y:auto;">
@@ -928,7 +928,7 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
       const body = await r.json();
       const groups = Array.isArray(body) ? body : (body.groups || []);
       if (!groups.length) {
-        rowsEl.innerHTML = '<div style="padding:8px; color:var(--text-secondary); font-size:12px;">No groups defined yet. Create groups in <a href="/admin/access">Resource access</a> first.</div>';
+        rowsEl.innerHTML = '<div style="padding:8px; color:var(--text-secondary); font-size:12px;">No groups defined yet. Create groups in <a href="/admin/groups">Groups</a> first.</div>';
         return;
       }
       const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c =>
@@ -1055,7 +1055,7 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
       _ercpRbacOriginal = Object.assign({}, current);
 
       if (!groups.length) {
-        rowsEl.innerHTML = '<div style="padding:8px; color:var(--text-secondary); font-size:12px;">No groups defined yet. Create groups in <a href="/admin/access">Resource access</a> first.</div>';
+        rowsEl.innerHTML = '<div style="padding:8px; color:var(--text-secondary); font-size:12px;">No groups defined yet. Create groups in <a href="/admin/groups">Groups</a> first.</div>';
         return;
       }
       const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c =>

@@ -120,7 +120,7 @@ def _user_group_ids(user_id: str, conn: Optional[duckdb.DuckDBPyConnection] = No
     "every user is in Everyone" virtual row was removed when Google-prefix
     mapping landed — every membership is now sourced from a concrete row
     (``admin``, ``google_sync``, or ``system_seed``) so an operator
-    auditing /admin/access sees the same set the authorization layer
+    auditing /admin/groups sees the same set the authorization layer
     enforces. Callers that want Everyone-style "always granted" plugins
     must grant them to a real group the user is a member of.
 

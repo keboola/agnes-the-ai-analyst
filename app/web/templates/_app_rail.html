@@ -316,7 +316,12 @@
        Native <details> throughout: click toggles, Escape/blur closes, and the
        whole thing works with zero JS — which it has to, since the rail's only
        script (rail_history.js) is chat-gated and an admin without a chat grant
-       would otherwise get a dead Admin section. #}
+       would otherwise get a dead Admin section.
+
+       Users & Access carries three items matching the tab strip that section
+       renders (_people_tabs.html). "Resource access" is gone as a
+       destination: grants are group-scoped, so they live on the group's own
+       detail page (Access tab) under Groups. #}
     {% set admin_sections = [
         {'label': 'Activity Center', 'items': [
             {'label': 'Adoption', 'href': '/admin/adoption', 'match': ['/admin/adoption']},
@@ -325,9 +330,8 @@
             {'label': 'Analyst sessions', 'href': '/admin/sessions', 'match': ['/admin/sessions']},
             {'label': 'Chat sessions', 'href': '/admin/chat', 'match': ['/admin/chat']}]},
         {'label': 'Users & Access', 'items': [
-            {'label': 'Users', 'href': '/admin/users', 'match': ['/admin/users']},
-            {'label': 'Groups', 'href': '/admin/groups', 'match': ['/admin/groups']},
-            {'label': 'Resource access', 'href': '/admin/access', 'match': ['/admin/access']},
+            {'label': 'People', 'href': '/admin/users', 'match': ['/admin/users']},
+            {'label': 'Groups', 'href': '/admin/groups', 'match': ['/admin/groups', '/admin/access']},
             {'label': 'Tokens', 'href': '/admin/tokens', 'match': ['/admin/tokens']}]},
         {'label': 'Data Packages', 'items': [
             {'label': 'Tables', 'href': '/admin/tables', 'match': ['/admin/tables']},

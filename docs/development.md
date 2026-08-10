@@ -65,7 +65,7 @@ LOG_LEVEL=DEBUG
 SESSION_SECRET=<32+ chars>
 ```
 
-Visit any HTML page (`/setup`, `/login`, `/dashboard`, `/admin/access`) →
+Visit any HTML page (`/setup`, `/login`, `/dashboard`, `/admin/groups`) →
 small collapsed handle on the right edge of the viewport → click to expand.
 
 ### Panels

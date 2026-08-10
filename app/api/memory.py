@@ -129,7 +129,7 @@ def _caller_granted_memory_domains(
     """Domains the caller has been granted access to via resource_grants.
 
     The grant model is generic — admins assign ``MEMORY_DOMAIN`` resources
-    (e.g. ``md_finance``) to ``user_groups`` rows via ``/admin/access``.
+    (e.g. ``md_finance``) to ``user_groups`` rows via ``/admin/groups``.
     This helper resolves the caller's group memberships against
     ``resource_grants`` and returns the union of ``memory_domains.id``
     values (v49: the migration re-pointed grants from slug to id).

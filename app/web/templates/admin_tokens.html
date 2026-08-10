@@ -585,7 +585,10 @@
   <section class="page-header page-header--hero tokens-hero" aria-labelledby="tokens-title">
     <div class="page-header__main">
       <div class="page-header__eyebrow">Administration</div>
-      <h1 class="page-header__title" id="tokens-title">Access tokens</h1>
+      {# Section-level hero, matching /admin/users + /admin/groups — the tab
+         strip below identifies the sub-view. The old "Access tokens" title
+         lives on in the subtitle so the page still says what it lists. #}
+      <h1 class="page-header__title" id="tokens-title">Users &amp; Access</h1>
       <p class="page-header__subtitle">
         Personal access tokens across all users &mdash; for incident response and offboarding.
       </p>
@@ -622,6 +625,8 @@
       </div>
     </div>
   </section>
+
+  {% include "_people_tabs.html" %}
 
   <!-- ═════════ TOOLBAR ═════════ -->
   <section class="toolbar" aria-label="Filter and sort tokens">

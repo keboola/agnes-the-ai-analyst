@@ -6101,8 +6101,13 @@ async def admin_group_detail_page(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Single-group detail page — header + members table. Resource grants
-    live on /admin/grants (deep-linked from here)."""
+    """Single-group detail page — header + Members/Access tabs.
+
+    The Access tab carries the resource-grant matrix that used to live on a
+    standalone /admin/access page. Grants key on ``group_id``, so the group's
+    own page is where the editor belongs; the old page was the same editor
+    behind a second group picker. ``#access`` / ``#table:<id>`` deep-links
+    open that tab directly."""
     from app.api.access import _is_google_managed, _mapped_email
 
     g = user_groups_repo().get(group_id)
@@ -6119,28 +6124,38 @@ async def admin_group_detail_page(
     return templates.TemplateResponse(request, "admin_group_detail.html", ctx)
 
 
-@router.get("/admin/access", response_class=HTMLResponse)
-async def admin_access_page(
-    request: Request,
-    user: dict = Depends(require_admin),
-):
-    """Resource access management — master-detail layout with the group list
-    on the left and per-resource-type checkbox tree on the right. Supports
-    ``?group=<id>`` deep-link from the group detail page.
+def _access_redirect_target(request: Request) -> str:
+    """Where the retired grant-matrix page now lives.
 
-    Underlying entity is `resource_grants`; the UI label "Resource access"
-    matches what admins think about (who has access) rather than the table
-    name (grants)."""
-    ctx = _build_context(request, user=user)
-    return templates.TemplateResponse(request, "admin_access.html", ctx)
+    ``resource_grants`` keys on ``group_id``, so the matrix moved onto the
+    group's own detail page (Access tab) — the standalone page was the same
+    editor reached through a second group picker. With ``?group=<id>`` we can
+    land directly on that group's Access tab; without one the operator has to
+    pick a group first, which is the groups list. The ``#table:<id>`` deep
+    link from /admin/tables is carried in the fragment, which the browser
+    preserves across the redirect on its own.
+    """
+    gid = request.query_params.get("group", "").strip()
+    if gid:
+        return f"/admin/groups/{quote(gid, safe='')}#access"
+    return "/admin/groups"
+
+
+@router.get("/admin/access", response_class=HTMLResponse)
+async def admin_access_redirect(request: Request, user: dict = Depends(require_admin)):
+    """Retired — the grant matrix is now the group detail page's Access tab.
+
+    Keeps the admin gate the page itself carried: the destination is gated
+    too, but a bare redirect would answer a non-admin with a 308 naming an
+    internal URL where the page answered 403.
+    """
+    return RedirectResponse(url=_access_redirect_target(request), status_code=308)
 
 
 @router.get("/admin/grants", response_class=HTMLResponse)
-async def admin_grants_redirect(request: Request):
+async def admin_grants_redirect(request: Request, user: dict = Depends(require_admin)):
     """Backward-compat redirect for the page's previous URL."""
-    qs = request.url.query
-    target = "/admin/access" + (f"?{qs}" if qs else "")
-    return RedirectResponse(url=target, status_code=308)
+    return RedirectResponse(url=_access_redirect_target(request), status_code=308)
 
 
 @router.get("/admin/marketplaces", response_class=HTMLResponse)

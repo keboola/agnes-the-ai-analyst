@@ -207,24 +207,25 @@ def test_access_overview_returns_origin_and_mapped_email(fresh_db, monkeypatch):
     assert everyone["is_google_managed"] is False
 
 
-def test_admin_access_template_renders_origin_pill_and_mapped_email(fresh_db, monkeypatch):
-    """The /admin/access page JS must read `origin` / `mapped_email` from
-    each group so the sidebar gets the same pill + subtitle as
-    /admin/groups. Pin the JS contract so a renderer regression that
-    drops the consult on these fields fails CI."""
+def test_admin_groups_template_renders_origin_pill_and_mapped_email(fresh_db, monkeypatch):
+    """The /admin/groups list JS must read `origin` / `mapped_email` from
+    each group so every row gets the same pill + subtitle. (This contract
+    used to be pinned on the standalone /admin/access sidebar; that page is
+    retired — its grant matrix is now the group detail page's Access tab —
+    so the list view is where the renderer contract lives.)"""
     monkeypatch.setenv("AGNES_GROUP_ADMIN_EMAIL", "admins@workspace.test")
     from app.main import app
 
     client = TestClient(app)
     _, token = _seed_admin()
     resp = client.get(
-        "/admin/access",
+        "/admin/groups",
         headers={"Accept": "text/html"},
         cookies={"access_token": token},
     )
     assert resp.status_code == 200, resp.text
     body = resp.text
-    # JS reads these fields per group when rendering the sidebar.
+    # JS reads these fields per group when rendering each row.
     assert "g.origin" in body
     assert "g.mapped_email" in body
     assert "g.is_google_managed" in body

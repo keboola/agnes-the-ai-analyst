@@ -1,0 +1,26 @@
+{# Section tab strip for Users & Access — the one place people, groups and
+   credentials are administered.
+
+   Three real URLs sharing one strip (not a JS pane switcher): each tab is
+   deep-linkable, bookmarkable, and server-rendered, and the existing
+   /admin/{users,groups,tokens} routes keep working untouched. The rail's
+   "Users & Access" section carries the same three items, so nav and tabs
+   agree.
+
+   Resource grants deliberately have NO tab: they are group-scoped by the
+   RBAC model, so they live on the group's own detail page (Access tab).
+   /admin/access 308s there.
+
+   `ds` comes from base_ds.html's auto-import — includes inherit the
+   template context, same as _app_header.html / _app_rail.html. #}
+{{ ds.tabs(
+    aria_label='Users & Access sections',
+    items=[
+        {'label': 'People', 'href': '/admin/users',
+         'active': request.url.path.startswith('/admin/users')},
+        {'label': 'Groups', 'href': '/admin/groups',
+         'active': request.url.path.startswith('/admin/groups')},
+        {'label': 'Tokens', 'href': '/admin/tokens',
+         'active': request.url.path.startswith('/admin/tokens')},
+    ],
+) }}

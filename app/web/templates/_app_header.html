@@ -142,9 +142,10 @@
 
                     <section class="app-admin-menu-col">
                         <div class="app-admin-menu-section">Users &amp; Access</div>
-                        <a class="app-nav-menu-item {% if _path.startswith('/admin/users') %}is-active{% endif %}" role="menuitem" href="/admin/users">Users</a>
-                        <a class="app-nav-menu-item {% if _path.startswith('/admin/groups') %}is-active{% endif %}" role="menuitem" href="/admin/groups">Groups</a>
-                        <a class="app-nav-menu-item {% if _path.startswith('/admin/access') %}is-active{% endif %}" role="menuitem" href="/admin/access">Resource access</a>
+                        {# Same three items as the rail + the section's tab
+                           strip; grants moved onto the group detail page. #}
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/users') %}is-active{% endif %}" role="menuitem" href="/admin/users">People</a>
+                        <a class="app-nav-menu-item {% if _path.startswith('/admin/groups') or _path.startswith('/admin/access') %}is-active{% endif %}" role="menuitem" href="/admin/groups">Groups</a>
                         <a class="app-nav-menu-item {% if _path.startswith('/admin/tokens') %}is-active{% endif %}" role="menuitem" href="/admin/tokens">Tokens</a>
                     </section>
 

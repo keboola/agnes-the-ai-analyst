@@ -1,9 +1,9 @@
 {% extends "base_page.html" %}
 {% block title %}Groups — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% set page_hero_eyebrow = "Users & Access" %}
-{% set page_hero_title = "Groups" %}
-{% set page_hero_subtitle = "Named groups + members. Resource access lives on the Resource access page." %}
+{% set page_hero_eyebrow = "Administration" %}
+{% set page_hero_title = "Users & Access" %}
+{% set page_hero_subtitle = "Accounts, group membership, resource grants and credentials." %}
 
 {% block head_extra %}
 <style>
@@ -70,6 +70,20 @@
      renders via `ds.button(variant='primary')` carrying canonical
      .btn family. */
 
+  /* "Pick a group for this resource" banner (#table: deep link). */
+  .gp-picking {
+    margin-bottom: 16px; padding: 10px 14px; border-radius: 10px;
+    font-size: 13px; line-height: 1.5;
+    background: var(--ds-accent-info-bg, #eff6ff);
+    border: 1px solid var(--ds-accent-info-line, #bfdbfe);
+    color: var(--ds-accent-info-ink, #1e40af);
+  }
+  .gp-picking code {
+    font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
+    font-size: 12px;
+  }
+  .gp-picking a { color: inherit; }
+
   /* Modal — same vocabulary as the rest of the admin pages */
   .modal-backdrop {
     position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55);
@@ -112,11 +126,23 @@
 </style>
 {% endblock %}
 
+{% block toolbar %}{% include "_people_tabs.html" %}{% endblock %}
+
 {% block page %}
 {# Design-system component macros — toolbar "+ New group" + 4 modal
    action buttons render via `ds.button` (auto-imported by base_ds).
    JS-generated `.icon-btn` row actions stay page-local. #}
 <div class="gp-page">
+
+  {# "Granting access to <resource>" banner — /admin/tables' per-row
+     Manage-access button deep-links here as /admin/groups#table:<id>.
+     Grants are group-scoped, so the operator picks the group first and the
+     hash rides along to that group's Access tab, where it pre-fills the
+     resource filter. Populated by JS from the hash; hidden otherwise. #}
+  <div class="gp-picking" id="gp-picking" style="display:none;" role="status">
+    Granting access to <code id="gp-picking-target"></code> — pick the group
+    that should get it. <a href="/admin/groups" id="gp-picking-cancel">Cancel</a>
+  </div>
 
   <div class="gp-toolbar">
     <div>
@@ -230,6 +256,30 @@ document.addEventListener("keydown", e => {
 let allGroups = [];
 let editingId = null;
 
+// ── "Pick a group for this resource" mode ─────────────────────────────────
+// /admin/tables' per-row Manage-access button deep-links here as
+// /admin/groups#table:<table_id>. Grants live on the group, so the operator
+// picks the group here and the hash rides along to that group's Access tab,
+// which pre-fills its resource filter. Empty string = normal browsing.
+const _rawHash = window.location.hash || "";
+const PICK_TABLE = _rawHash.startsWith("#table:")
+  ? decodeURIComponent(_rawHash.slice("#table:".length)) : "";
+
+// Rebuilt with encodeURIComponent rather than passed through verbatim: these
+// hrefs are interpolated into an `href="…"` inside an innerHTML template, and
+// esc() (textContent-based) does not escape a double quote, so a raw fragment
+// could close the attribute. Re-encoding also normalizes what the detail page
+// decodes on the other end.
+function detailHref(gid) {
+  const base = `/admin/groups/${encodeURIComponent(gid)}`;
+  return PICK_TABLE ? `${base}#table:${encodeURIComponent(PICK_TABLE)}` : base;
+}
+
+if (PICK_TABLE) {
+  document.getElementById("gp-picking-target").textContent = PICK_TABLE;
+  document.getElementById("gp-picking").style.display = "block";
+}
+
 async function loadGroups() {
   const r = await fetch(API, { credentials: "include" });
   document.getElementById("groups-loading").style.display = "none";
@@ -285,13 +335,13 @@ function render() {
     //   - everything else → single-line name, no subtitle
     let nameCell;
     if (g.mapped_email) {
-      nameCell = `<a class="gp-name" href="/admin/groups/${encodeURIComponent(g.id)}">${esc(g.name)}</a>
+      nameCell = `<a class="gp-name" href="${detailHref(g.id)}">${esc(g.name)}</a>
                   <span class="gp-name-sub">${esc(g.mapped_email)}</span>`;
     } else if (isGoogleManaged) {
-      nameCell = `<a class="gp-name" href="/admin/groups/${encodeURIComponent(g.id)}">${esc(deriveDisplayName(g.name))}</a>
+      nameCell = `<a class="gp-name" href="${detailHref(g.id)}">${esc(deriveDisplayName(g.name))}</a>
                   <span class="gp-name-sub">${esc(g.name)}</span>`;
     } else {
-      nameCell = `<a class="gp-name" href="/admin/groups/${encodeURIComponent(g.id)}">${esc(g.name)}</a>`;
+      nameCell = `<a class="gp-name" href="${detailHref(g.id)}">${esc(g.name)}</a>`;
     }
     tr.innerHTML = `
       <td>${nameCell}</td>
@@ -300,7 +350,7 @@ function render() {
       <td class="count-cell">${g.member_count || 0}</td>
       <td class="count-cell">
         ${g.grant_count || 0}
-        ${g.grant_count > 0 ? `<a class="icon-btn" style="margin-left:6px" href="/admin/access?group=${encodeURIComponent(g.id)}" data-action="grants">→</a>` : ""}
+        ${g.grant_count > 0 ? `<a class="icon-btn" style="margin-left:6px" href="/admin/groups/${encodeURIComponent(g.id)}#access" data-action="grants" title="Open this group's Access tab">→</a>` : ""}
       </td>
       <td class="date-cell">${fmtDate(g.created_at)}</td>
       <td><div class="gp-actions">${actions}</div></td>
@@ -308,7 +358,7 @@ function render() {
     // Row click → detail (unless action button)
     tr.addEventListener("click", e => {
       if (e.target.closest("[data-action]")) return;
-      window.location.href = `/admin/groups/${encodeURIComponent(g.id)}`;
+      window.location.href = detailHref(g.id);
     });
     const editBtn = tr.querySelector('[data-action="edit"]');
     if (editBtn) editBtn.addEventListener("click", e => { e.stopPropagation(); openEdit(g); });

@@ -255,7 +255,7 @@ function renderCapabilities() {
   if (dataSummary) {
     dataSummary.textContent = total > 0
       ? `You can query ${total} table${total === 1 ? "" : "s"} across ${sourceCount} data source${sourceCount === 1 ? "" : "s"}.`
-      : "No tables in your catalog yet — an admin grants access via /admin/access.";
+      : "No tables in your catalog yet — an admin grants access on your group's Access tab.";
   }
   const dataUl = $("cap-data-sources");
   if (dataUl && total > 0) {

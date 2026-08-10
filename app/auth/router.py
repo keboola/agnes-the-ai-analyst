@@ -191,7 +191,7 @@ async def bootstrap(
                 "Bootstrap disabled — this instance is already initialised (an "
                 "admin or a password-holding user exists). Provision the first "
                 "admin via SEED_ADMIN_EMAIL / sign in and manage admins under "
-                "/admin/access, or present a valid X-Bootstrap-Token header when "
+                "/admin/groups, or present a valid X-Bootstrap-Token header when "
                 "AGNES_BOOTSTRAP_TOKEN is configured."
             ),
         )

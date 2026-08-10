@@ -1109,8 +1109,10 @@ class TestRailAdminSubitems:
             "/admin/sessions",
             "/admin/chat",
             "/admin/users",
+            # /admin/access is deliberately absent: resource grants are
+            # group-scoped, so they live on the group detail page's Access
+            # tab rather than as their own nav destination.
             "/admin/groups",
-            "/admin/access",
             "/admin/tokens",
             "/admin/tables",
             "/admin/sync",

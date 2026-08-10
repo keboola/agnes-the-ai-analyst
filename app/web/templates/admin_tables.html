@@ -2059,7 +2059,7 @@
               package in the group's Browse; <em>required</em>
               auto-installs it into the group's stack on next pull. Leave
               everything blank to manage access later from
-              <a href="/admin/access">Resource access</a>.
+              <a href="/admin/groups">a group's Access tab</a>.
             </p>
             <div id="cdp-rbac-rows"
                  style="display:flex; flex-direction:column; gap:6px; max-height:30vh; overflow-y:auto;">
@@ -2269,7 +2269,7 @@
           _edpRbacOriginal = Object.assign({}, current);
 
           if (!groups.length) {
-            rowsEl.innerHTML = '<div style="padding:8px; color:var(--text-secondary); font-size:12px;">No groups defined yet. Create groups in <a href="/admin/access">Resource access</a> first.</div>';
+            rowsEl.innerHTML = '<div style="padding:8px; color:var(--text-secondary); font-size:12px;">No groups defined yet. Create groups in <a href="/admin/groups">Groups</a> first.</div>';
             return;
           }
           rowsEl.innerHTML = groups.map(g => {
@@ -2686,8 +2686,8 @@
           // Inline grants — read any per-group requirement the admin set
           // in the collapsible "Group access" section and POST in parallel.
           // Per-grant failures surface in the success toast; they don't
-          // roll back the package creation (admin can retry from
-          // /admin/access).
+          // roll back the package creation (admin can retry from a group's
+          // Access tab).
           const grantFailures = await _submitCdpGrantsInline(newPkgId);
 
           closeCreateDataPackageModal();
@@ -2725,7 +2725,7 @@
           const body = await r.json();
           const groups = Array.isArray(body) ? body : (body.groups || []);
           if (!groups.length) {
-            rowsEl.innerHTML = '<div style="padding:8px; color:var(--text-secondary); font-size:12px;">No groups defined yet. Create groups in <a href="/admin/access">Resource access</a> first.</div>';
+            rowsEl.innerHTML = '<div style="padding:8px; color:var(--text-secondary); font-size:12px;">No groups defined yet. Create groups in <a href="/admin/groups">Groups</a> first.</div>';
             return;
           }
           rowsEl.innerHTML = groups.map(g => {
@@ -5350,12 +5350,12 @@
         return '<span class="' + cls + '" title="' + escapeHtmlAttr(tip) + '">' + escapeHtml(m) + '</span>';
     }
 
-    // Deep-link from a table row to /admin/access scoped to this table_id.
-    // The /admin/access page reads window.location.hash on bootstrap and,
-    // when it matches `table:<id>`, pre-fills the resource filter so the
-    // operator lands on the just-clicked table once they pick a group.
+    // Deep-link from a table row into the grant editor, scoped to this
+    // table_id. Grants are group-scoped, so this lands on the group list
+    // with a "pick a group" banner; picking one carries the hash to that
+    // group's Access tab, which pre-fills its resource filter.
     function manageAccess(tableId) {
-        window.location.href = '/admin/access#table:' + encodeURIComponent(tableId);
+        window.location.href = '/admin/groups#table:' + encodeURIComponent(tableId);
     }
 
     async function deleteTable(tableId) {

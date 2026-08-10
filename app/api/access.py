@@ -142,7 +142,7 @@ async def get_resource_types(
 
 
 # ---------------------------------------------------------------------------
-# Access overview — single-shot payload for the /admin/access page
+# Access overview — single-shot payload for the group Access tab
 # ---------------------------------------------------------------------------
 
 
@@ -150,7 +150,7 @@ async def get_resource_types(
 async def access_overview(
     user: dict = Depends(require_admin),
 ):
-    """One-shot snapshot for the /admin/access page.
+    """One-shot snapshot for the group detail page's Access tab.
 
     Returns:
       - ``groups``: every user_group with member + grant counts
@@ -177,7 +177,7 @@ async def access_overview(
                 "is_system": bool(g.get("is_system", False)),
                 "created_by": g.get("created_by"),
                 # Same origin / google-management surface as `/api/admin/groups`
-                # so the /admin/access sidebar can render the identical pill +
+                # so the group list can render the identical pill +
                 # subtitle treatment without a second source of truth.
                 "origin": _derive_origin(g),
                 "is_google_managed": _is_google_managed(g),
@@ -406,7 +406,7 @@ async def update_group(
         # System groups: block renames (the canonical names "Admin" /
         # "Everyone" are referenced from app.auth.access and the
         # marketplace filter), but description edits are cosmetic and
-        # allowed (admins curate them in /admin/access). The repo
+        # allowed (admins curate them in /admin/groups). The repo
         # layer's narrowed guard (src/repositories/user_groups.py) is
         # the second line of defense.
         raise HTTPException(
@@ -616,7 +616,7 @@ class CreateGrantRequest(BaseModel):
     resource_id: str
     # v49 added the ``requirement`` enum on ``resource_grants``; the POST
     # endpoint must accept it so clients can create a grant at the
-    # ``required`` tier in one round-trip. Without this, /admin/access
+    # ``required`` tier in one round-trip. Without this, /admin/groups
     # + the inline RBAC matrices (Edit Data Package / Edit Memory Domain
     # / Edit Recipe) silently fell through to the column default
     # (``available``), and a re-open of the same modal showed the

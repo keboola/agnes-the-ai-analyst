@@ -143,7 +143,7 @@ No DB migration, no startup hook, no second wiring step in `access-overview` —
 Members are added to groups by three sources, distinguished by the `source` column:
 
 - **`google_sync`** — written by the OAuth callback on every login. The previous Google-sync set is wholesale replaced (DELETE + INSERT) so a removed Workspace membership disappears immediately.
-- **`admin`** — written by admin actions in the UI (`/admin/access`), CLI (`agnes admin group add-member …`), or REST (`POST /api/admin/groups/{id}/members`). Survives Google sync. Admin can only delete admin-source rows.
+- **`admin`** — written by admin actions in the UI (`/admin/groups/{id}` → Members), CLI (`agnes admin group add-member …`), or REST (`POST /api/admin/groups/{id}/members`). Survives Google sync. Admin can only delete admin-source rows.
 - **`system_seed`** — written at deploy time (the `SEED_ADMIN_EMAIL` → Admin-group binding) **and** at every new-user creation (the Everyone auto-grant, issue #748 — every creation path: Google OAuth first sign-in, `POST /auth/bootstrap`, admin `POST /api/users`, marketplace import stubs — unless `AGNES_GROUP_EVERYONE_EMAIL` maps Everyone to a Workspace group instead, in which case Everyone comes exclusively from `google_sync`). The Everyone grant fires once, at creation time, and is never re-asserted afterward — an admin who later removes a user from Everyone stays removed on their next login/boot.
 
 Removing a user from a group via the admin path (UI/CLI/REST) only deletes admin-source rows. To revoke a Google-synced membership, the operator must change the upstream Workspace group instead — Agnes will pick up the change on the user's next login.
@@ -154,12 +154,20 @@ Removing a user from a group via the admin path (UI/CLI/REST) only deletes admin
 
 ### UI
 
-`/admin/access` is the single admin page. Two tabs:
+**Users & Access** is one admin section over three tabbed pages, each a real URL:
 
-- **Groups** — list user-groups with member/grant counts. Click a group to manage members. System groups are read-only.
-- **Resource grants** — list grants across all groups (filterable by group / resource_type), create new grants via dropdowns wired against `/api/admin/resource-types`.
+- **People** (`/admin/users`) — accounts: invite, activate/deactivate, passwords, delete.
+- **Groups** (`/admin/groups`) — user-groups with member/grant counts. System groups are read-only.
+- **Tokens** (`/admin/tokens`) — every personal access token across users, for incident response and offboarding.
 
-`/admin/users/{id}` (the existing user detail page) toggles the Admin-group membership when an operator switches a user's "role" between admin and non-admin — there's no four-level hierarchy left, just admin / non-admin.
+Resource grants have no page of their own: `resource_grants` keys on `group_id`, so they are edited on the group they belong to. `/admin/groups/{id}` has two tabs:
+
+- **Members** — add/remove members (admin-source rows only; see *Group membership sources*).
+- **Access** — the grant matrix for that group, grouped by resource type, with per-block *Grant all* / *Revoke all* and a filter that matches name, `resource_id`, block, category and description. Backed by `/api/admin/access-overview` + `/api/admin/grants`.
+
+`/admin/access` and `/admin/grants` are retired URLs and 308 to `/admin/groups` (with `?group=<id>`, straight to that group's Access tab).
+
+`/admin/users/{id}` (the user detail page) toggles the Admin-group membership when an operator switches a user's "role" between admin and non-admin — there's no four-level hierarchy left, just admin / non-admin. It also lists that user's **effective access** (each row links to the granting group's Access tab) and their **access tokens**, so an offboarding runs on one page.
 
 ### CLI
 
@@ -237,7 +245,7 @@ TTL change. See [`docs/HEADLESS_USAGE.md`](./HEADLESS_USAGE.md#renewal-interacti
 1. Creates a `users` row for that email if missing (with `password_hash` from `SEED_ADMIN_PASSWORD` if provided).
 2. Adds an Admin-group membership with `source='system_seed'`.
 
-The hook is idempotent — re-running deploy does not duplicate or revoke. To add additional initial admins post-deploy, log in as the seed admin and use `/admin/access` or `agnes admin group add-member Admin <email>`.
+The hook is idempotent — re-running deploy does not duplicate or revoke. To add additional initial admins post-deploy, log in as the seed admin and use `/admin/groups` or `agnes admin group add-member Admin <email>`.
 
 ---
 

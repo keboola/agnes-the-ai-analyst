@@ -1673,7 +1673,7 @@
               Grant per-group access tiers — <em>available</em> shows the
               domain in the group's Browse; <em>required</em> auto-installs
               it into the group's stack on next pull. Leave blank to manage
-              later from <a href="/admin/access">Resource access</a>.
+              later from <a href="/admin/groups">a group's Access tab</a>.
             </p>
             <div id="cmd-rbac-rows"
                  style="display:flex; flex-direction:column; gap:6px; max-height:30vh; overflow-y:auto;">
@@ -2043,7 +2043,7 @@
           const body = await r.json();
           const groups = Array.isArray(body) ? body : (body.groups || []);
           if (!groups.length) {
-            rowsEl.innerHTML = '<div style="padding:8px; color:var(--text-secondary); font-size:12px;">No groups defined yet. Create groups in <a href="/admin/access">Resource access</a> first.</div>';
+            rowsEl.innerHTML = '<div style="padding:8px; color:var(--text-secondary); font-size:12px;">No groups defined yet. Create groups in <a href="/admin/groups">Groups</a> first.</div>';
             return;
           }
           rowsEl.innerHTML = groups.map(g => {
@@ -2346,7 +2346,7 @@
             _emdRbacOriginal = Object.assign({}, current);
 
             if (!groups.length) {
-                rowsEl.innerHTML = '<div style="padding:8px; color:var(--text-secondary); font-size:12px;">No groups defined yet. Create groups in <a href="/admin/access">Resource access</a> first.</div>';
+                rowsEl.innerHTML = '<div style="padding:8px; color:var(--text-secondary); font-size:12px;">No groups defined yet. Create groups in <a href="/admin/groups">Groups</a> first.</div>';
                 return;
             }
             rowsEl.innerHTML = groups.map(g => {
