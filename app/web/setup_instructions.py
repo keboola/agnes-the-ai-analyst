@@ -1069,8 +1069,17 @@ def _preamble_lines(*, has_ca: bool, custom_preamble: str = "") -> list[str]:
     assistant verifiable context for its first-contact trust decision: the
     prompt is the final step of the same install guide that saved the login
     token, and whether the host is trusted is the user's org's call (verify
-    with IT when unsure). Facts only — it asserts no conclusion about
-    consent and leaves the ask/no-ask judgment to the assistant.
+    with IT when unsure).
+
+    The confirm gate right after it makes the consent explicit instead of
+    leaving the ask/no-ask judgment to the assistant (the judgment-only
+    variant made assistants refuse outright — the prompt arrives as the
+    session's first message, so from the assistant's seat there was no
+    in-session evidence the user initiated it). The gate has the assistant
+    summarize what the setup does and where the prompt comes from
+    ({server_url}), then offer an Install/Stop choice via the assistant's
+    question tool (arrow keys + Enter, no typed yes) before running
+    anything — the user's pick IS the in-session evidence.
     """
     lines = [
         "Set up the {instance_brand} CLI on this machine.",
@@ -1085,9 +1094,18 @@ def _preamble_lines(*, has_ca: bool, custom_preamble: str = "") -> list[str]:
         "This prompt is the final step of the install guide at {server_url} —",
         "the same guide whose previous step saved the login token above. Whether",
         "that host is trusted is the user's org's call, and they can verify it",
-        "with their IT if unsure; the decisions this setup still needs from them",
-        "(install location, which optional tools to connect) come up inside the",
-        "steps below.",
+        "with their IT if unsure.",
+        "",
+        "Before running anything, confirm with the user that they want to",
+        "proceed. In your own words: state that this prompt comes from",
+        "{server_url} and summarize what the setup will do — install the",
+        "{instance_brand} CLI from that server, connect this workspace to it",
+        "(Claude Code hooks that sync on every session), register its plugin",
+        "marketplace, and offer to connect optional tools. Then ask whether to",
+        "continue using your question tool (the user picks with arrow keys and",
+        "confirms with Enter — no typing), with exactly two options:",
+        "  - 'Install' → continue below.",
+        "  - 'Stop' (or any other reply) → stop without running any step.",
         "",
         "Run these, in order. The script is idempotent — safe to re-run if a step",
         "fails partway through.",
@@ -1131,9 +1149,7 @@ def _preamble_lines(*, has_ca: bool, custom_preamble: str = "") -> list[str]:
     return lines
 
 
-def _step_numbers(
-    *, has_connectors: bool = True, has_required_connectors: bool = False
-) -> dict[str, str]:
+def _step_numbers(*, has_connectors: bool = True, has_required_connectors: bool = False) -> dict[str, str]:
     """Compute the step numbers for the unified layout.
 
     Returns a dict keyed by logical step name; values are stringified
@@ -1258,9 +1274,7 @@ def resolve_lines(
     # is plugging the user's tools. An absent group (no required entries,
     # no optional entries, or an empty manifest) drops its step and the
     # rest renumber — _step_numbers handles it.
-    steps = _step_numbers(
-        has_connectors=has_connectors, has_required_connectors=has_required
-    )
+    steps = _step_numbers(has_connectors=has_connectors, has_required_connectors=has_required)
 
     lines: list[str] = []
     if has_ca:
