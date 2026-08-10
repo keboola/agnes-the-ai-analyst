@@ -105,3 +105,24 @@ def test_scope_prefixes_match_what_the_git_surface_admits():
     assert f'f"{prefix}{{repo_slug}}"' in src, (
         f"the container token's scope must start with {prefix!r}, the prefix the git surface checks"
     )
+
+
+def test_the_clone_url_prefers_a_reachable_base_over_the_compose_hostname():
+    """`_mint_git_credential`'s URL is handed to a REMOTE sandbox, an analyst
+    laptop and the MCP tool — none of which can resolve `http://app:8000`.
+
+    `get_public_url()` reads `PUBLIC_URL` / `server.public_url` only, and a
+    compose deployment sets `SERVER_URL` instead, so the chain fell straight
+    through to the compose-internal name. Watched live on a box with
+    `SERVER_URL=https://…` and no `server.public_url`: the agent fetched its
+    credential, ran `git clone`, and the egress hook reported the target host
+    as `app`.
+    """
+    src = SOURCE.read_text(encoding="utf-8")
+    m = re.search(r"    base = get_public_url\(\)(.*?)\n", src)
+    assert m, "the credential base chain moved — re-point this guard"
+    chain = m.group(1)
+    assert "SERVER_URL" in chain, "SERVER_URL must sit between the public URL and the internal fallback"
+    assert chain.index("SERVER_URL") < chain.index("AGNES_INTERNAL_URL"), (
+        "the internal compose hostname must stay the LAST resort"
+    )
