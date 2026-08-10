@@ -31,11 +31,15 @@ where an answer came from. Honour it: an answer that reports a figure ends with
 a `Sources:` line naming the table(s) you queried and — when the figure is a
 business metric — the canonical definition you adapted.
 
-    Sources: hr_headcount (keboola) · metric: headcount/active
+    Sources: hr_headcount (keboola) · metric: headcount/active — active
+    employees only, contractors excluded
 
 Never report a number whose origin you cannot name. If the figure depends on a
-choice you made — a date range, a filter, a de-duplication rule — state it in
-one short line next to the sources rather than leaving the reader to guess.
+choice you made — a date range, a filter, a de-duplication rule — put it on the
+`Sources:` line itself after an em dash, as above, rather than leaving the
+reader to guess. Keep it to that ONE line and separate it from the paragraph
+above with a blank line: the chat renders your reply as markdown, so a second
+line started without a blank line in between silently joins the first one.
 
 ## Charts
 
