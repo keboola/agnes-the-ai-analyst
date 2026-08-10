@@ -46874,7 +46874,7 @@
     },
     "/auth/password/reset": {
       "get": {
-        "description": "Render the 'set new password' form when arriving via reset link.",
+        "description": "Render the 'set new password' form when arriving via reset link.\n\n``reason=must_change`` marks the forced-rotation arrival (see\n``password_login_web``): the credentials were correct, but the password\nwas set by someone else and has to be replaced before a session is\nissued. Without it the page is indistinguishable from \"you forgot your\npassword\", and first-time users reasonably conclude their password was\nrejected.",
         "operationId": "reset_page_auth_password_reset_get",
         "parameters": [
           {
@@ -46894,6 +46894,16 @@
             "schema": {
               "default": "",
               "title": "Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "reason",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Reason",
               "type": "string"
             }
           }
