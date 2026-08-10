@@ -1,0 +1,107 @@
+"""The credential a hosted container clones with must be git-scoped.
+
+The deploy path handed the container its `data-app:<slug>` *service* token as
+the git password. The git surface (`app/api/data_apps_git.py`) is the only
+caller of `resolve_token_to_user` that passes `allow_data_app_git_scope=True`,
+and it admits exactly `data-app-git:<slug>` — a service token is rejected there
+like anywhere else. So every hosted app's entrypoint failed its first clone
+with ``remote: authentication required`` and crash-looped forever: data apps
+could not deploy at all.
+
+Reproduced end to end on a live instance before the fix — container
+`Restarting (128)`, `fatal: Authentication failed for
+'http://app:8000/data-apps.git/<slug>/'` on repeat, the row stuck in `error` —
+and confirmed by swapping only the token in the generated `config.json` for a
+git-scoped one: the clone succeeded, `npm install` and the vite build ran, and
+the app served HTTP 200. Nothing else about the pipeline was wrong.
+
+Nothing in the Agnes log said so, which is why this needed a container-log
+read to find: the rejection happens inside the git surface, which does not log
+a denial.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import re
+from pathlib import Path
+
+SOURCE = Path("app/api/data_apps.py")
+
+
+def _claims(tok: str) -> dict:
+    payload = tok.split(".")[1]
+    payload += "=" * (-len(payload) % 4)
+    return json.loads(base64.urlsafe_b64decode(payload))
+
+
+def test_the_deploy_path_does_not_hand_the_service_token_to_git():
+    """The one-line regression. `clone_token=jwt_token` is the bug verbatim."""
+    src = SOURCE.read_text(encoding="utf-8")
+    assert "clone_token=git_token" in src
+    assert "clone_token=jwt_token" not in src, (
+        "the service token is `data-app:<slug>`-scoped and the git surface refuses it — "
+        "every container would crash-loop on its first clone"
+    )
+
+
+def test_the_container_token_is_git_scoped():
+    src = SOURCE.read_text(encoding="utf-8")
+    body = src[src.index("def _mint_container_git_token") : src.index("_GIT_CREDENTIAL_TTL")]
+    assert 'f"data-app-git:{repo_slug}"' in body, "must carry the scope the git surface admits"
+
+
+def test_the_container_token_is_scoped_to_the_repo_not_the_app():
+    """A draft clones its PARENT's repo, and the git surface pins the scope's
+    slug to the repo being requested. Minting against the draft's own slug
+    would be refused — the failure would look identical to the original bug
+    and only for drafts."""
+    src = SOURCE.read_text(encoding="utf-8")
+    assert "_mint_container_git_token(repo_slug, owner)" in src
+    mint_at = src.index("_mint_container_git_token(repo_slug, owner)")
+    resolve_at = src.index('repo_slug = parent["slug"]')
+    assert resolve_at < mint_at, "repo_slug must be resolved to the parent before the mint"
+
+
+def test_the_container_token_does_not_expire():
+    """The container re-clones whenever it is recreated, including waking from
+    `sleep_mode: recreate`. A 24h token would leave an app that deployed on
+    Monday unable to wake on Wednesday — indistinguishable from a hosting bug."""
+    src = SOURCE.read_text(encoding="utf-8")
+    body = src[src.index("def _mint_container_git_token") : src.index("_GIT_CREDENTIAL_TTL")]
+    assert "expires_at=None" in body
+    assert "_GIT_CREDENTIAL_TTL" not in body, "that TTL belongs to the analyst's authoring credential"
+
+
+def test_a_failed_deploy_revokes_the_unused_container_token():
+    """Symmetry with `_rollback_new_service_token`: a credential no container
+    ever received is dead weight if left live."""
+    src = SOURCE.read_text(encoding="utf-8")
+    up_block = src[src.index("        _runner().up(slug, spec, config_json)") :][:600]
+    assert "_revoke_quietly(git_token_id)" in up_block
+    spec_block = src[src.index("        config_json = build_config_json(") :][:800]
+    assert "_revoke_quietly(git_token_id)" in spec_block
+
+
+def test_the_two_minters_stay_distinct():
+    """They differ in scope AND lifetime; collapsing them re-creates the bug in
+    one direction or breaks `AGNES_TOKEN` in the other — the service token is
+    what the app calls the rest of the REST API with, and `data-app-git:` is
+    refused everywhere except the git surface."""
+    src = SOURCE.read_text(encoding="utf-8")
+    service = src[src.index("def _mint_service_token") : src.index("def _revoke_quietly")]
+    assert 'f"data-app:{slug}"' in service, "the service token must NOT become git-scoped"
+
+
+def test_scope_prefixes_match_what_the_git_surface_admits():
+    """Pin the two strings together across the module boundary — a rename on
+    one side would silently restore the crash loop."""
+    resolver = Path("app/auth/pat_resolver.py").read_text(encoding="utf-8")
+    m = re.search(r'DATA_APP_GIT_SCOPE_PREFIX = "([^"]+)"', resolver)
+    assert m, "DATA_APP_GIT_SCOPE_PREFIX moved — re-point this guard"
+    prefix = m.group(1)
+    src = SOURCE.read_text(encoding="utf-8")
+    assert f'f"{prefix}{{repo_slug}}"' in src, (
+        f"the container token's scope must start with {prefix!r}, the prefix the git surface checks"
+    )
