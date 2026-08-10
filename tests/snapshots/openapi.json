@@ -24881,6 +24881,125 @@
         ]
       }
     },
+    "/api/admin/source-connections/{connection_id}/chat-tools": {
+      "delete": {
+        "description": "Remove the derived MCP source and its copy of the token (idempotent).",
+        "operationId": "disable_chat_tools_api_admin_source_connections__connection_id__chat_tools_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "title": "Connection Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Disable Chat Tools",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "description": "Expose this Keboola project's own MCP tools to the chat agent.\n\nDerives an ``mcp_sources`` stdio row from the connection (see\n``src/keboola_chat_tools.py``) and copies the connection's storage token\ninto the MCP shared vault, so the admin registers the project once rather\nthan a second time under ``/admin/mcp``.\n\nIdempotent: re-running re-syncs the token, which is how a rotation is\npropagated. The derived source lands with **no** ``tool_grants``, so\nenabling exposes nothing until an admin grants the tools to a group.\n\n400 if the connection isn't ``source_type='keboola'`` or has no resolvable\ntoken; 404 if the connection doesn't exist; 409 if the vault key is unset.",
+        "operationId": "enable_chat_tools_api_admin_source_connections__connection_id__chat_tools_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "title": "Connection Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Enable Chat Tools",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/api/admin/source-connections/{connection_id}/secret": {
       "delete": {
         "description": "Clear the vault secret for a connection (idempotent).\n\n``kind`` is a query param: ``storage`` (default) or ``master``.",
