@@ -467,3 +467,96 @@ class TestMetricRepositoryExport:
         # Verify sql_variants are expanded back to sql_by_* keys
         assert "sql_by_channel" in data
         assert "sql_variants" not in data
+
+
+class TestMetricRepositoryReconcile:
+    """`reconcile_from_yaml` — the import that can also SHRINK the registry.
+
+    `import_from_yaml` is upsert-only, so a metric deleted upstream stays
+    forever and a rename leaves both ids behind, indistinguishable from a
+    hand-authored metric (#1219). Reconcile adds the missing direction, keyed
+    on the writer recorded in `source` (+ optional `source_ref`) so it can
+    never reach a metric a human wrote in the UI.
+    """
+
+    def _repo(self, db_conn):
+        from src.repositories.metrics import MetricRepository
+
+        return MetricRepository(db_conn)
+
+    def test_dry_run_reports_without_writing(self, db_conn, metrics_dir):
+        repo = self._repo(db_conn)
+        report = repo.reconcile_from_yaml(metrics_dir, dry_run=True)
+        assert set(report["added"]) == {"revenue/total_revenue", "operations/resolution_time"}
+        assert report["updated"] == [] and report["deleted"] == []
+        assert repo.list() == [], "dry run must not write"
+
+    def test_second_run_reports_updates_not_adds(self, db_conn, metrics_dir):
+        repo = self._repo(db_conn)
+        repo.reconcile_from_yaml(metrics_dir)
+        report = repo.reconcile_from_yaml(metrics_dir, dry_run=True)
+        assert report["added"] == []
+        assert set(report["updated"]) == {"revenue/total_revenue", "operations/resolution_time"}
+
+    def test_prune_removes_a_metric_the_source_dropped(self, db_conn, metrics_dir):
+        repo = self._repo(db_conn)
+        repo.reconcile_from_yaml(metrics_dir)
+        (metrics_dir / "operations" / "resolution_time.yml").unlink()
+
+        report = repo.reconcile_from_yaml(metrics_dir, prune=True)
+        assert report["deleted"] == ["operations/resolution_time"]
+        assert {m["id"] for m in repo.list()} == {"revenue/total_revenue"}
+
+    def test_without_prune_the_dropped_metric_survives(self, db_conn, metrics_dir):
+        """The default stays upsert-only — shrinking is opt-in."""
+        repo = self._repo(db_conn)
+        repo.reconcile_from_yaml(metrics_dir)
+        (metrics_dir / "operations" / "resolution_time.yml").unlink()
+
+        report = repo.reconcile_from_yaml(metrics_dir)
+        assert report["deleted"] == []
+        assert len(repo.list()) == 2
+
+    def test_prune_never_touches_a_hand_authored_metric(self, db_conn, metrics_dir):
+        """The whole reason the scope is keyed on the writer: a metric an
+        admin wrote in the UI is not in any directory, and must not be read
+        as 'deleted upstream'."""
+        repo = self._repo(db_conn)
+        repo.create(id="manual/nps", name="nps", display_name="NPS", category="manual", sql="SELECT 1", source="manual")
+        repo.reconcile_from_yaml(metrics_dir, prune=True)
+        assert repo.get("manual/nps") is not None
+
+    def test_prune_never_touches_another_importers_metric(self, db_conn, metrics_dir):
+        repo = self._repo(db_conn)
+        repo.create(
+            id="keboola/live_deals", name="live_deals", display_name="Live Deals",
+            category="keboola", sql="SELECT 1", source="keboola_semantic_layer",
+        )
+        repo.reconcile_from_yaml(metrics_dir, prune=True)
+        assert repo.get("keboola/live_deals") is not None
+
+    def test_source_ref_narrows_the_scope_to_one_export(self, db_conn, metrics_dir, tmp_path):
+        """Two YAML exports into one instance both carry source='yaml_import',
+        so without a narrower key the second import would delete the first's
+        metrics. `--source-ref` is that key."""
+        repo = self._repo(db_conn)
+        repo.reconcile_from_yaml(metrics_dir, source_ref="finance")
+
+        other = tmp_path / "other" / "growth"
+        other.mkdir(parents=True)
+        (other / "signups.yml").write_text("name: signups\nsql: SELECT 1\n")
+        repo.reconcile_from_yaml(other.parent, source_ref="growth", prune=True)
+
+        ids = {m["id"] for m in repo.list()}
+        assert "growth/signups" in ids
+        assert "revenue/total_revenue" in ids, "pruning the 'growth' export deleted the 'finance' one"
+
+    def test_source_ref_is_stamped_on_the_rows(self, db_conn, metrics_dir):
+        repo = self._repo(db_conn)
+        repo.reconcile_from_yaml(metrics_dir, source_ref="finance")
+        assert repo.get("revenue/total_revenue")["source_ref"] == "finance"
+
+    def test_import_from_yaml_still_returns_a_count(self, db_conn, metrics_dir):
+        """The old entry point keeps its signature — eleven callers rely on it."""
+        repo = self._repo(db_conn)
+        assert repo.import_from_yaml(metrics_dir) == 2
