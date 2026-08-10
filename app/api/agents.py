@@ -348,9 +348,11 @@ async def update_agent(
 ):
     """Patch an agent the caller owns. Only supplied fields change.
 
-    Naming a still-unnamed draft also re-derives its slug — see
-    ``_placeholder_slug_rename``.
+    Naming an agent that is still an unnamed draft also re-derives its
+    slug from that name, so the address it answers on matches what it is
+    called. A slug that already reflects a name never moves.
     """
+    # Implementation of the slug rule above: `_placeholder_slug_rename`.
     before = _writable(agent_id, user)
     supplied = payload.model_dump(exclude_unset=True, exclude_none=True)
     # Map the builder's wire names onto the canonical columns.
