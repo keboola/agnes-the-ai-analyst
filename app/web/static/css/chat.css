@@ -1062,6 +1062,7 @@ pre.code-block-wrap code .hljs-deletion {
 }
 .cloud-chat-tool-meta {
   flex: 0 0 auto;
+  margin-left: auto;
   font-size: var(--text-xs);
   color: var(--ds-text-muted);
   font-variant-numeric: tabular-nums;
