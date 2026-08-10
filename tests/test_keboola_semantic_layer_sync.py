@@ -1460,6 +1460,33 @@ class TestProjectMismatchAtSyncTime:
         assert metric_repo().get("keboola/model-1/a") is None
         fake_metastore.list_items.assert_not_called()
 
+    def test_matching_project_survives_an_id_stored_as_text(self, e2e_env):
+        """The stored id round-trips through a JSON config column on two
+        backends. A 1234 coming back as "1234" must not fail a correctly
+        configured project — and here the only escape is re-pointing the
+        connection to another stack. Devin Review on #1242.
+        """
+        from connectors.keboola.semantic_layer import _sync_one_source
+        from src.repositories import metric_repo
+
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+        fake_storage, fake_metastore = self._fakes(owner_id=1234)
+
+        with (
+            patch("connectors.keboola.storage_api.KeboolaStorageClient", return_value=fake_storage),
+            patch("connectors.keboola.metastore_client.MetastoreClient", return_value=fake_metastore),
+        ):
+            result = _sync_one_source(
+                "https://connection.keboola.com",
+                "master-tok",
+                "conn-a",
+                adopt_null=False,
+                expected_project=("1234", "Acme Analytics"),
+            )
+
+        assert result["status"] == "ok", result
+        assert metric_repo().get("keboola/model-1/a") is not None
+
     def test_matching_project_syncs_normally(self, e2e_env):
         from connectors.keboola.semantic_layer import _sync_one_source
         from src.repositories import metric_repo
