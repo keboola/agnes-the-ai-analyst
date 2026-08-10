@@ -13,11 +13,12 @@ parity structural: there is only one implementation, so it cannot diverge.
 The mixins depend solely on public methods the cross-engine parity guard
 (``tests/db_pg/test_repo_method_parity.py``) already pins on both backends.
 """
+
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 
 import yaml
 
@@ -33,11 +34,49 @@ class MetricYamlMixin:
     def import_from_yaml(self, path: Union[str, Path]) -> int:
         """Import metrics from a YAML file or directory of YAML files.
 
+        Upsert-only: the registry can grow but never shrink. Use
+        :meth:`reconcile_from_yaml` when the directory is meant to be the
+        source of truth.
+
         Args:
             path: Path to a single .yml file or a directory containing */*.yml files.
 
         Returns:
             Number of metrics imported.
+        """
+        return len(self.reconcile_from_yaml(path)["written"])
+
+    def reconcile_from_yaml(
+        self,
+        path: Union[str, Path],
+        *,
+        source_ref: Optional[str] = None,
+        prune: bool = False,
+        dry_run: bool = False,
+    ) -> Dict[str, List[str]]:
+        """Import metrics, optionally making the registry MATCH the directory.
+
+        ``import_from_yaml`` only ever adds, so a metric deleted upstream stays
+        forever and a rename leaves both ids behind (#1219). ``prune=True``
+        removes the rows this importer previously wrote that the directory no
+        longer contains.
+
+        **What prune may delete is keyed on the writer, never on the id.** The
+        scope is ``source='yaml_import'`` — so a metric an admin wrote in the
+        UI (``manual``) or another importer created (``keboola_semantic_layer``)
+        is out of reach by construction, not by luck. ``source_ref`` narrows it
+        further: two YAML exports into one instance both carry
+        ``source='yaml_import'``, so without a second key the later import
+        would delete the earlier one's metrics. Passing it also stamps the rows,
+        so the scope exists from the first run.
+
+        A rename is indistinguishable from delete + create at this level — the
+        id is ``category/name`` — which is precisely why ``dry_run=True``
+        exists: it returns the same report and writes nothing.
+
+        Returns a report of metric ids: ``added`` (not previously in scope),
+        ``updated`` (already there), ``written`` (both, in file order) and
+        ``deleted`` (pruned, empty unless ``prune``).
         """
         path = Path(path)
         files: List[Path] = []
@@ -47,7 +86,15 @@ class MetricYamlMixin:
         elif path.is_dir():
             files = sorted(path.glob("*/*.yml"))
 
-        count = 0
+        # Ids this importer owns right now — the only rows prune may remove.
+        in_scope = {
+            m["id"]
+            for m in self.list()
+            if (m.get("source") or "") == "yaml_import"
+            and (source_ref is None or (m.get("source_ref") or "") == source_ref)
+        }
+
+        written: List[str] = []
         for file_path in files:
             # Infer category from parent directory name
             category_from_dir = file_path.parent.name
@@ -84,8 +131,12 @@ class MetricYamlMixin:
                 sql_variants: Dict[str, str] = {}
                 for key, value in data.items():
                     if key.startswith("sql_by_"):
-                        variant_key = key[len("sql_"):]  # strip 'sql_' prefix → 'by_channel'
+                        variant_key = key[len("sql_") :]  # strip 'sql_' prefix → 'by_channel'
                         sql_variants[variant_key] = value
+
+                written.append(metric_id)
+                if dry_run:
+                    continue
 
                 self.create(
                     id=metric_id,
@@ -108,10 +159,18 @@ class MetricYamlMixin:
                     sql_variants=sql_variants if sql_variants else None,
                     validation=data.get("validation"),
                     source="yaml_import",
+                    source_ref=source_ref,
                 )
-                count += 1
 
-        return count
+        added = [mid for mid in written if mid not in in_scope]
+        updated = [mid for mid in written if mid in in_scope]
+        deleted = sorted(in_scope - set(written)) if prune else []
+
+        if not dry_run:
+            for metric_id in deleted:
+                self.delete(metric_id)
+
+        return {"added": added, "updated": updated, "written": written, "deleted": deleted}
 
     def export_to_yaml(self, output_dir: Union[str, Path]) -> int:
         """Export all metrics to YAML files under output_dir/{category}/{name}.yml.
