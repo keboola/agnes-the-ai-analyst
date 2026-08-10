@@ -77,6 +77,25 @@ class TestMovedServerHook:
         err = capsys.readouterr().err
         assert "AGNES_SERVER" not in err
 
+    def test_path_relative_location_does_not_claim_the_server_moved(self, capsys):
+        """`Location: v2/agents` carries no host, so it is not a move.
+
+        `Location` may be any URI-reference. Classifying by spelling — anything
+        not starting with `/` is absolute — files this as a cross-host move and
+        derives the base from a URL with an empty netloc, so the user is told
+        to set `AGNES_SERVER=https://`, an address that cannot exist.
+        """
+        from cli.client import _check_moved_server
+
+        resp = _redirect_response(308, "v2/agents", "https://agnes.example/api/v1/agents")
+        with patch("cli.client.get_server_url", return_value="https://agnes.example"):
+            with pytest.raises(SystemExit) as exc:
+                _check_moved_server(resp)
+        assert exc.value.code == 2
+        err = capsys.readouterr().err
+        assert "AGNES_SERVER" not in err, "a hostless target must fall through to the generic message"
+        assert "has moved" not in err
+
     def test_protocol_relative_location_is_treated_as_a_move(self, capsys):
         """`Location: //host/path` is absolute, despite the leading slash.
 

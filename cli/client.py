@@ -259,21 +259,28 @@ def _check_moved_server(response: "httpx.Response") -> None:
         return
     location = response.headers.get("Location", "")
     configured = get_server_url().rstrip("/")
-    # `//host/path` is absolute despite the leading slash — classifying it as
-    # relative would file a cross-host move under "same origin" and say
-    # nothing about where the server went.
-    absolute = bool(location) and (location.startswith("//") or not location.startswith("/"))
     moved = False
     new_base = ""
-    if absolute:
+    if location:
         try:
             target = httpx.URL(location)
             if not target.scheme:
-                # Protocol-relative: inherit the scheme we dialed with, so the
-                # hint is a URL the user can paste rather than `//host`.
+                # Protocol-relative (`//host/path`): inherit the scheme we
+                # dialed with, so the hint is a URL the user can paste rather
+                # than `//host`. Must happen before the host test — the scheme
+                # is what makes the rendered `new_base` usable.
                 target = target.copy_with(scheme=httpx.URL(configured).scheme or "https")
-            moved = target.netloc != httpx.URL(configured).netloc
-            new_base = str(target.copy_with(raw_path=b"/")).rstrip("/")
+            # A move is "the target names a DIFFERENT host", decided on the
+            # parsed URL rather than on how the header is spelled. `Location`
+            # may be any URI-reference, so a path-relative `v2/agents` has no
+            # host at all — a textual "does not start with /" test read that
+            # as absolute and derived a hostless `AGNES_SERVER=https://`,
+            # telling the user to point at an address that cannot exist.
+            # No host means same origin, which falls through to the generic
+            # message below.
+            moved = bool(target.netloc) and target.netloc != httpx.URL(configured).netloc
+            if moved:
+                new_base = str(target.copy_with(raw_path=b"/")).rstrip("/")
         except Exception:
             moved = False
     lines = [
