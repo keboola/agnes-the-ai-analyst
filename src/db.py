@@ -53,8 +53,10 @@ _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 # file_corpora.origin, 111 store_entities trust columns, 112 agents builder
 # superset columns, 113 chat_sessions.pinned_at, 114
 # data_packages.publisher_kind (the stored trust axis that retired the
-# render-time-derived `curated` badge).
-SCHEMA_VERSION = 114
+# render-time-derived `curated` badge), 115 one-time reclassification of
+# pre-existing governance-created agents from `draft` to `ready` (see
+# `_v114_to_v115`).
+SCHEMA_VERSION = 115
 
 # v96: data_apps registry (hosted user web apps). Extracted as a shared
 # module-level constant so the fresh-install DDL (appended to
@@ -7095,6 +7097,53 @@ def _v113_to_v114(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 114")
 
 
+def _v114_to_v115(conn: duckdb.DuckDBPyConnection) -> None:
+    """v114→v115: one-time reclassification of pre-existing governance-created
+    agents from ``status='draft'`` to ``'ready'``.
+
+    An agent created through the governance API (``POST /api/v1/agents``,
+    ``app/api/agents_admin.py::create_agent``) always carries an explicit,
+    caller-chosen slug, and that route refuses to change it afterwards
+    (``PUT`` 400s ``slug_immutable``) — the agent is published by definition
+    the moment it exists. Before this release the create route never set a
+    ``status`` at all, and both repositories' ``create()`` COALESCE a missing
+    one to ``'draft'`` — so a governance-created agent was indistinguishable
+    from a ``/agents`` builder placeholder that was never named. The
+    builder's draft-rename rule (``app/api/agents.py::_draft_slug_rename``)
+    only freezes a slug once the agent is ``'ready'``, so a
+    deliberately-chosen slug — the one a PAT may already be minted against —
+    stayed renameable forever through the builder's PATCH. The create route
+    now sets ``status='ready'`` going forward; this step closes the gap for
+    every agent created before that fix shipped.
+
+    The discriminator is sound ONLY for rows that predate this release: prior
+    to this PR ``update_agent`` never wrote ``slug`` at all, so a ``draft``
+    row's slug is exactly what ``create()`` put there. The builder's
+    placeholder lineage is the literal ``agent`` or a suffixed ``agent-N``
+    (``app/api/agents.py::_auto_slug``'s fallback for an unnamed agent) — a
+    ``draft`` row on that slug is a builder-created agent never given a real
+    address, and must keep re-deriving its slug on the next rename. Anything
+    else on a ``draft`` row can only have arrived through an explicit,
+    caller-chosen slug at create time. The seeded default agent
+    (``is_default``) is excluded regardless of its slug: it is seeded with no
+    status (COALESCEd to ``'draft'``) and is a PERMANENT draft by design —
+    see ``_draft_slug_rename``'s ``is_default`` exemption — so promoting it
+    here would freeze an address that must keep renaming freely.
+
+    Naturally idempotent: an already-``'ready'`` row no longer matches the
+    ``WHERE``, so re-running this (as a fresh install's ladder walk does) is
+    a no-op.
+    """
+    conn.execute("""
+        UPDATE agents
+        SET status = 'ready', updated_at = current_timestamp
+        WHERE COALESCE(status, 'draft') = 'draft'
+          AND NOT COALESCE(is_default, FALSE)
+          AND NOT (slug = 'agent' OR regexp_matches(slug, '^agent-[0-9]+$'))
+    """)
+    conn.execute("UPDATE schema_version SET version = 115")
+
+
 def _add_store_entity_trust_columns(conn: duckdb.DuckDBPyConnection) -> None:
     """The v111 column DDL on its own, with no version stamp.
 
@@ -8116,6 +8165,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # No-op on fresh installs — _SYSTEM_SCHEMA already declares the
             # column, and the backfill then finds no rows to promote.
             _v113_to_v114(conn)
+            # v114→v115: reclassify pre-existing governance-created agents
+            # from draft to ready. No-op on fresh installs — no agents exist
+            # yet to reclassify.
+            _v114_to_v115(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -8397,6 +8450,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v112_to_v113(conn)
             if current < 114:
                 _v113_to_v114(conn)
+            if current < 115:
+                _v114_to_v115(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
