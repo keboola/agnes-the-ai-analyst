@@ -108,7 +108,8 @@ The numbered steps are arranged so that:
     step before Confirm — the whole prompt is non-interactive, no
     decision questions for the user.
 
-Layout:
+Layout (the preamble — and its Install/Stop confirm gate — renders above
+everything below, so no command, step 0 included, precedes the gate):
   0  TLS trust block (only when ca_pem is supplied)
   1  Install CLI
   2  agnes init (auth + workspace bootstrap)
@@ -1129,7 +1130,7 @@ def _preamble_lines(*, has_ca: bool, custom_preamble: str = "") -> list[str]:
         "steps themselves.",
         "",
         "First, a quick check: run `test -s ~/.agnes/token`.",
-        "  - If the file exists, continue with step 1.",
+        f"  - If the file exists, continue with step {'0' if has_ca else '1'}.",
         "  - If it is missing and this machine was already set up (the checks",
         "    above say reconcile) AND a saved credential exists (`test -s",
         "    ~/.config/agnes/token.json`), that's fine: the token file is",
@@ -1286,9 +1287,14 @@ def resolve_lines(
     steps = _step_numbers(has_connectors=has_connectors, has_required_connectors=has_required)
 
     lines: list[str] = []
+    # Preamble FIRST, trust block second: the preamble carries the
+    # Install/Stop confirm gate, and nothing executable — including the
+    # step-0 TLS bootstrap — may precede it (Devin review on #1229: with
+    # ca_pem the trust commands used to render above the gate, so an agent
+    # reading top-to-bottom ran them before the user ever confirmed).
+    lines.extend(_preamble_lines(has_ca=has_ca, custom_preamble=custom_preamble))
     if has_ca:
         lines.extend(_tls_trust_block(ca_pem))  # type: ignore[arg-type]
-    lines.extend(_preamble_lines(has_ca=has_ca, custom_preamble=custom_preamble))
     lines.extend(_install_cli_lines(has_ca=has_ca))  # 1
     lines.extend(_init_lines())  # 2, 3
     lines.extend(_preflight_block(steps["preflight"]))  # 4

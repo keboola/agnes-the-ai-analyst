@@ -489,6 +489,11 @@ def test_resolve_lines_with_ca_pem_emits_step_zero_trust_block():
 
     # Step 0 header (must come BEFORE step 1 in the rendered prompt).
     assert "0) Trust the Agnes TLS certificate" in joined
+    # ...but AFTER the preamble's confirm gate — nothing executable may
+    # precede the Install/Stop ask, the TLS bootstrap included.
+    assert joined.index("Before running anything, confirm") < joined.index("0) Trust the Agnes TLS certificate")
+    # And the token-check pointer names step 0 as the first step here.
+    assert "If the file exists, continue with step 0." in joined
     # The "1) Install the CLI" line wording differs between the ca_pem and
     # no-ca_pem paths; the ca_pem path leads with "1) Install the CLI."
     # (period). Ordering is what matters.
