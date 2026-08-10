@@ -1,5 +1,6 @@
 """Tests for MetricRepository (metric_definitions table)."""
 
+import pathlib
 import pytest
 
 
@@ -913,3 +914,17 @@ def test_reconcile_reads_yaml_and_yml_alike(db_conn, tmp_path):
     report = repo.reconcile_from_yaml(tmp_path / "in", prune=True)
     assert set(report["written"]) == {"revenue/a", "revenue/b"}
     assert report["deleted"] == []
+
+
+def test_reconcile_reports_unreadable_files(db_conn, tmp_path):
+    from src.repositories.metrics import MetricRepository
+
+    repo = MetricRepository(db_conn)
+    d = tmp_path / "in" / "revenue"
+    d.mkdir(parents=True)
+    (d / "ok.yml").write_text("name: ok\ncategory: revenue\nsql: SELECT 1\n")
+    (d / "broken.yml").write_text("name: [unclosed\n")
+
+    report = repo.reconcile_from_yaml(tmp_path / "in")
+    assert report["written"] == ["revenue/ok"]
+    assert [pathlib.Path(x).name for x in report["unreadable"]] == ["broken.yml"]

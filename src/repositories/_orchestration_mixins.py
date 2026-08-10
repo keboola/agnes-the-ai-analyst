@@ -83,8 +83,10 @@ class MetricYamlMixin:
         Returns a report of metric ids: ``added`` (did not exist), ``updated``
         (already owned by this scope), ``adopted`` (existed under a different
         writer or label — overwritten and re-stamped, so it JOINS this scope),
-        ``written`` (all three, in file order) and ``deleted`` (pruned, empty
-        unless ``prune``).
+        ``written`` (all three, in file order), ``deleted`` (pruned, empty
+        unless ``prune``) and ``unreadable`` (file paths skipped because no
+        metric could be parsed from them — reported so a partial import cannot
+        pass for a complete one).
         """
         path = Path(path)
         files: List[Path] = []
@@ -254,6 +256,10 @@ class MetricYamlMixin:
             "adopted": adopted,
             "written": written,
             "deleted": deleted,
+            # Reported, not swallowed: skipping is right (one broken file must
+            # not abort a directory) but silence makes a partial import read as
+            # a complete one.
+            "unreadable": unreadable,
         }
 
     def export_to_yaml(self, output_dir: Union[str, Path]) -> int:

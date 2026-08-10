@@ -133,3 +133,15 @@ def test_no_caveat_when_there_is_nothing_to_delete(monkeypatch, tmp_path):
     report = {"added": ["a/1"], "updated": [], "adopted": [], "written": ["a/1"], "deleted": []}
     result, _ = _run(monkeypatch, tmp_path, report, ["--prune"])
     assert "indistinguishable" not in _clean(result.output)
+
+
+def test_unreadable_files_are_reported_not_swallowed(monkeypatch, tmp_path):
+    """Skipping a broken file is right — one bad file must not abort a
+    directory — but silence lets a partial import read as a complete one."""
+    report = {
+        "added": ["a/1"], "updated": [], "adopted": [], "written": ["a/1"],
+        "deleted": [], "unreadable": ["/x/revenue/broken.yml"],
+    }
+    result, _ = _run(monkeypatch, tmp_path, report, [])
+    out = _clean(result.output)
+    assert "skipped /x/revenue/broken.yml" in out

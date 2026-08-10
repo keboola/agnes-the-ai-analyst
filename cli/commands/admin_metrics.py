@@ -91,6 +91,8 @@ def _echo_report(report: dict, *, path: str, dry_run: bool, prune: bool) -> None
     typer.echo(f"  updated {len(report['updated'])}")
     for metric_id in report.get("adopted", []):
         typer.echo(f"  {'would take over' if dry_run else 'took over'} {metric_id} (was owned by another source)")
+    for bad in report.get("unreadable", []):
+        typer.echo(f"  skipped {bad} (no metric could be parsed from it)", err=True)
     for metric_id in report["deleted"]:
         typer.echo(f"  {'would delete' if dry_run else 'deleted'} {metric_id}")
     if not prune:
