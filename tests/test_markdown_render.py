@@ -475,3 +475,15 @@ def test_boundary_pattern_stays_linear_on_unclosed_tags():
     # Linear would be ~4x for 4x the input; quadratic ~16x. Generous ceiling —
     # the point is to catch the class, not to benchmark the runner.
     assert large < max(small * 8, 0.05), f"superlinear growth: {small=:.4f} {large=:.4f}"
+
+
+def test_layout_tags_are_matched_regardless_of_case():
+    """This pattern runs on the RENDERED html, before nh3 — and nh3 is what
+    normalizes tag case, so `<DIV>` arrives exactly as the upstream catalog
+    wrote it. A lower-case-only pattern left those lines fused."""
+    from app.markdown_render import render_plain
+
+    assert render_plain("<DIV>First.</DIV><DIV>Second.</DIV>", html_source=True) == "First. Second."
+    assert render_plain("<Div>A</Div><Div>B</Div>", html_source=True) == "A B"
+    assert render_plain("<H1>A</H1><H1>B</H1>", html_source=True) == "A B"
+    assert render_plain("a<BR>b", html_source=True) == "a b"

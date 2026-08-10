@@ -157,8 +157,12 @@ _BLOCK_TAGS = "p|li|h[1-6]|tr|t[dh]|blockquote|pre|div|section|article|figure|fi
 # unclosed tags each rescanned the remainder and the whole substitution went
 # quadratic (20 KB of `<div ` took 620 ms). A `<` inside a quoted value is
 # still consumed by the quoted branch, so well-formed tags are unaffected.
+# IGNORECASE because this runs on the RENDERED html, before nh3 — and nh3 is
+# what normalizes tag case. `<DIV>` reaches this pattern exactly as the upstream
+# catalog wrote it, and a lower-case-only pattern left those lines fused.
 _BLOCK_BOUNDARY_RE = re.compile(
-    rf"</?(?:{_BLOCK_TAGS})\b(?:\"[^\"]*\"|'[^']*'|[^'\"<>])*>|<br ?/?>"
+    rf"</?(?:{_BLOCK_TAGS})\b(?:\"[^\"]*\"|'[^']*'|[^'\"<>])*>|<br ?/?>",
+    re.IGNORECASE,
 )
 
 
