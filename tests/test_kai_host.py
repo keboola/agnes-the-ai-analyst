@@ -10,6 +10,7 @@ egress tickets must not destroy the session credential the engine still holds.
 from __future__ import annotations
 
 import base64
+import io
 import hashlib
 import hmac
 import json
@@ -262,3 +263,134 @@ def test_tickets_are_scoped_to_their_own_session(seeded_app, kai_env):
     still_live = ticket_repo().resolve(first_tickets["llm"])
     assert still_live is not None
     assert still_live["session_id"] == first["chat_id"]
+
+
+# ---------------------------------------------------------------------------
+# MCP passthrough
+# ---------------------------------------------------------------------------
+
+
+def _mcp_ticket(seeded_app):
+    """A ticket in the mcp scope, as the engine's relay would hold."""
+    from src.repositories import ticket_repo
+
+    body = _mint_session(seeded_app)
+    return ticket_repo().mint(body["chat_id"], "mcp"), body
+
+
+def test_mcp_requires_an_mcp_scoped_ticket(seeded_app, kai_env):
+    """An llm ticket must not reach the tool surface — scope split is the
+    whole point of minting two."""
+    from src.repositories import ticket_repo
+
+    body = _mint_session(seeded_app)
+    llm_ticket = ticket_repo().mint(body["chat_id"], "main")
+
+    resp = seeded_app["client"].post("/api/kai/mcp", headers={"Authorization": f"Bearer {llm_ticket}"})
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "ticket_scope_mismatch"
+
+
+def test_mcp_rejects_an_unknown_ticket(seeded_app, kai_env):
+    resp = seeded_app["client"].post("/api/kai/mcp", headers={"Authorization": "Bearer nope"})
+    assert resp.status_code == 401
+
+
+def test_mcp_mints_a_registered_access_token_for_the_ticket_identity(seeded_app, kai_env):
+    """The mounted MCP app resolves a bearer against `oauth_access_tokens`, so
+    a bare session JWT would not authenticate — the token has to be minted AND
+    registered, carrying scope='mcp-oauth' so resolve_token_to_user stamps the
+    agent-surface posture."""
+    import base64
+    import json as _json
+
+    from app.api.kai import _mint_mcp_access_token
+    from src.repositories import oauth_clients_repo
+
+    body = _mint_session(seeded_app)
+    token = _mint_mcp_access_token(body["chat_id"])
+
+    row = oauth_clients_repo().get_access_token(token)
+    assert row is not None, "token must be resolvable by the MCP verifier"
+    assert row["client_id"] == "kai-agent-broker"
+
+    payload = token.split(".")[1]
+    claims = _json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    assert claims["scope"] == "mcp-oauth"
+    assert claims["chat_session_id"] == body["chat_id"]
+
+
+def test_mcp_access_token_is_reused_across_calls_for_one_session(seeded_app, kai_env):
+    """Minting is a DB write and an MCP turn makes many JSON-RPC calls."""
+    from app.api.kai import _mint_mcp_access_token
+
+    body = _mint_session(seeded_app)
+    assert _mint_mcp_access_token(body["chat_id"]) == _mint_mcp_access_token(body["chat_id"])
+
+
+def test_mcp_token_is_scoped_to_its_own_session(seeded_app, kai_env):
+    from app.api.kai import _mint_mcp_access_token
+
+    first = _mint_session(seeded_app)
+    second = _mint_session(seeded_app)
+    assert _mint_mcp_access_token(first["chat_id"]) != _mint_mcp_access_token(second["chat_id"])
+
+
+# ---------------------------------------------------------------------------
+# workspace payload
+# ---------------------------------------------------------------------------
+
+
+def test_workspace_requires_the_session_credential(seeded_app, kai_env):
+    assert seeded_app["client"].get("/api/kai/workspace").status_code == 401
+
+
+def test_workspace_rejects_a_broker_ticket(seeded_app, kai_env):
+    """Only the engine's server fetches this; a sandbox-held ticket must not."""
+    from src.repositories import ticket_repo
+
+    body = _mint_session(seeded_app)
+    ticket = ticket_repo().mint(body["chat_id"], "mcp")
+    resp = seeded_app["client"].get("/api/kai/workspace", headers={"Authorization": f"Bearer {ticket}"})
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "kai_credential_scope_mismatch"
+
+
+def test_workspace_serves_a_gzipped_tar_of_the_template(seeded_app, kai_env):
+    """The engine rejects anything but 200-with-body or 204, and rejects the
+    whole payload on an absolute path, a `..` segment or a non-file member."""
+    import tarfile as _tarfile
+
+    credential = _claims(_mint_session(seeded_app)["token"])["downstream_credential"]
+    resp = seeded_app["client"].get("/api/kai/workspace", headers={"Authorization": f"Bearer {credential}"})
+    assert resp.status_code == 200
+    assert resp.content, "an empty 200 is a contract violation — 204 means 'none'"
+
+    with _tarfile.open(fileobj=io.BytesIO(resp.content), mode="r:gz") as tar:
+        members = tar.getmembers()
+
+    names = [m.name for m in members]
+    assert members, "archive must not be empty"
+    assert all(m.isfile() for m in members), "non-file members fail the engine's validation"
+    assert not any(n.startswith("/") for n in names), "absolute paths are rejected"
+    assert not any(".." in n.split("/") for n in names), "dot segments are rejected"
+
+    # The three things that make this Agnes's harness rather than bare Claude Code.
+    assert "CLAUDE.md" in names
+    assert any(n.startswith(".claude/skills/") for n in names)
+    assert ".claude/hooks/pre_tool_use.py" in names
+
+    # Sandbox-image build assets describe how to BUILD a sandbox, not how to
+    # work in one — they have no place in another engine's workspace.
+    assert not any(n.startswith("e2b-template/") for n in names)
+    assert not any(n.startswith("docker-sandbox/") for n in names)
+
+
+def test_workspace_archive_is_byte_stable(seeded_app, kai_env):
+    """The engine re-fetches on every SDK respawn; a payload differing only by
+    timestamp would churn the sandbox tree for nothing."""
+    credential = _claims(_mint_session(seeded_app)["token"])["downstream_credential"]
+    headers = {"Authorization": f"Bearer {credential}"}
+    first = seeded_app["client"].get("/api/kai/workspace", headers=headers).content
+    second = seeded_app["client"].get("/api/kai/workspace", headers=headers).content
+    assert first == second

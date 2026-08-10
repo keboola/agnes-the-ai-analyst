@@ -84,7 +84,21 @@ def progressive_tool(mcp: Any, docs_registry: MutableMapping[str, str]) -> Calla
     The decorated function is returned unchanged, matching ``FastMCP.tool``.
     """
 
-    def tool() -> Callable[[Callable], Callable]:
+    def tool(read_only: bool = False) -> Callable[[Callable], Callable]:
+        """``read_only=True`` advertises the standard MCP ``readOnlyHint``
+        annotation on the tool.
+
+        It is a **hint to callers, not an authorization decision** — RBAC is
+        enforced by the endpoint the tool calls either way. What it buys is
+        that an agent harness can auto-approve the call instead of stopping to
+        ask: a client with no annotation has to treat every tool as a possible
+        mutation, which on a surface with no approval UI means the call waits
+        out the approval timeout and the tool is effectively unusable.
+
+        Mark a tool only when it cannot mutate anything. Over-marking a write
+        tool silently removes a human gate; under-marking only costs a prompt.
+        """
+
         def decorate(fn: Callable) -> Callable:
             full = inspect.cleandoc(fn.__doc__ or "").strip()
             summary, has_more = summarize_docstring(full)
@@ -92,6 +106,13 @@ def progressive_tool(mcp: Any, docs_registry: MutableMapping[str, str]) -> Calla
             if has_more:
                 description += f" Full contract: tool_docs('{fn.__name__}')."
             docs_registry[fn.__name__] = full
+            if read_only:
+                from mcp.types import ToolAnnotations
+
+                return mcp.tool(
+                    description=description,
+                    annotations=ToolAnnotations(readOnlyHint=True),
+                )(fn)
             return mcp.tool(description=description)(fn)
 
         return decorate

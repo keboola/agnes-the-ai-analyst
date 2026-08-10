@@ -19,15 +19,23 @@ three:
   native chat relay uses (``src/repositories/ticket.py``) — the engine's
   ``llm`` scope maps onto our ``main`` ticket scope, its ``mcp`` scope onto
   ``mcp``.
-- **A broker.** Already built: ``/api/broker/anthropic/{subpath}``
+- **Brokers.** The LLM one was already built: ``/api/broker/anthropic/{subpath}``
   (``app/api/broker.py``) is a plain pass-through that authenticates a
   ``main``-scoped ticket over ``Authorization: Bearer`` and injects the real
   upstream credential server-side. The engine's relay speaks exactly that
   shape, so no new LLM route is needed — point ``HOST_BROKER_LLM_URL`` at it.
+  ``POST /api/kai/mcp`` is the tool equivalent: it forwards the sandbox's
+  verbatim Streamable-HTTP request to Agnes's own MCP server under the
+  ticket's real identity.
+
+Optionally, a fourth: ``GET /api/kai/workspace`` serves the caller's workspace
+tree as one gzipped tarball, which the engine materializes into its sandbox's
+project scope. That is what gives the embedded engine Agnes's CLAUDE.md, org
+safety hook and bundled skills instead of a bare Claude Code.
 
 The security posture is inherited, not re-invented: the E2B sandbox holds no
-credential, only a per-turn ticket, and every LLM byte transits our broker
-where it is already authorized, model-gated, budgeted and metered.
+credential, only a per-turn ticket, and every LLM and MCP byte transits our
+broker where it is already authorized, model-gated, budgeted and metered.
 
 Deployment config (all env, like the rest of the broker's upstream wiring):
 
@@ -40,6 +48,9 @@ Deployment config (all env, like the rest of the broker's upstream wiring):
 - ``KAI_TENANT_ID`` — the ``tenant`` claim, i.e. the engine's ``projectId``
   tenant key. One value per deployment; every chat row the engine writes is
   scoped by it.
+- ``KAI_BROKER_MCP_ENABLED`` — issue the ``mcp`` ticket scope, i.e. let the
+  engine's sandbox reach ``/api/kai/mcp``. Unset means the engine registers no
+  host MCP server and the agent runs with its built-in tools only.
 """
 
 from __future__ import annotations
@@ -47,19 +58,28 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import io
 import json
+import logging
 import os
+import tarfile
 import time
 import uuid
 from base64 import urlsafe_b64encode
-from typing import Any, Dict
+from pathlib import Path
+from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from app.api.broker import _require_scope, require_broker_ticket
 from app.auth.dependencies import get_current_user
 from app.chat.types import Surface
 from src.repositories import audit_repo, chat_session_repo, ticket_repo
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/kai", tags=["kai"])
 
@@ -287,3 +307,285 @@ async def issue_kai_tickets(row: Dict[str, Any] = Depends(_require_session_crede
     if not os.environ.get("KAI_BROKER_MCP_ENABLED", "").strip():
         scopes.pop("mcp", None)
     return await asyncio.to_thread(_rotate_egress_tickets, row["session_id"], scopes)
+
+
+# ---------------------------------------------------------------------------
+# MCP passthrough
+#
+# The engine's in-sandbox relay speaks plain pass-through: it forwards the
+# SDK's verbatim Streamable-HTTP request to whatever URL the host put in the
+# `mcp` scope, carrying only that turn's ticket. So this route is a proxy, not
+# a replay envelope like `/api/broker/agnes-mcp` — there is no
+# `{method, path, body}` to describe, just bytes to forward.
+# ---------------------------------------------------------------------------
+
+#: Where the brokered request is dispatched, in-process. This is the mounted
+#: Streamable-HTTP MCP app — the same surface, tools and RBAC a Claude Desktop
+#: connector reaches; the broker adds no authority of its own.
+_MCP_STREAMABLE_PATH = "/api/mcp/http/"
+
+#: TTL of the access token minted for the brokered identity. Short, because it
+#: exists only to carry one chat's MCP traffic and is re-minted on demand.
+_MCP_ACCESS_TOKEN_TTL_SECONDS = 15 * 60
+
+#: Re-mint this long before expiry so a token cannot lapse mid-request.
+_MCP_ACCESS_TOKEN_REFRESH_MARGIN_SECONDS = 60
+
+#: Client id recorded on the minted access token. Not a registered OAuth
+#: client — nothing in the verify path requires one — but it labels the rows
+#: so an operator reading `oauth_access_tokens` can tell brokered engine
+#: traffic from a real connector.
+_MCP_CLIENT_ID = "kai-agent-broker"
+
+#: Scopes the brokered token carries. Must be exactly the MCP app's own
+#: vocabulary — `AuthSettings(required_scopes=["read"])` in
+#: ``app/api/mcp_streamable.py``, which is also the only scope its client
+#: registration issues. Anything else authenticates and then fails the
+#: middleware's scope check with `403 insufficient_scope`. This is an OAuth
+#: scope, not an authorization decision: RBAC is enforced downstream from the
+#: resolved identity, exactly as it is for a real connector.
+_MCP_SCOPES = ["read"]
+
+#: session_id -> (token, expires_at). Minting is a DB write, and an MCP turn
+#: makes many JSON-RPC calls, so the token is reused across them. In-process
+#: like the broker's own budget cache — Agnes runs a single chat worker, and a
+#: lost cache just re-mints.
+_mcp_token_cache: Dict[str, tuple[str, int]] = {}
+
+#: Headers never copied from the sandbox's request. `authorization` is
+#: replaced with the minted identity; the rest are hop-by-hop or recomputed by
+#: httpx. Mirrors the relay's own drop list.
+_MCP_DROP_REQUEST_HEADERS = frozenset(
+    {
+        "authorization",
+        "host",
+        "content-length",
+        "connection",
+        "keep-alive",
+        "transfer-encoding",
+        "upgrade",
+        "te",
+        "trailer",
+        "proxy-authorization",
+        "proxy-connection",
+        "accept-encoding",
+        "expect",
+        "cookie",
+        "x-api-key",
+    }
+)
+
+#: Response headers httpx recomputes or that must not cross back into the
+#: sandbox. `mcp-session-id` deliberately DOES pass through — the MCP session
+#: dies without it.
+_MCP_DROP_RESPONSE_HEADERS = frozenset(
+    {"content-encoding", "content-length", "transfer-encoding", "connection", "keep-alive", "set-cookie"}
+)
+
+
+def _mint_mcp_access_token(session_id: str) -> str:
+    """An access token the mounted MCP app's verifier accepts, for the
+    identity behind ``session_id``.
+
+    The verifier resolves a bearer against ``oauth_access_tokens`` — a plain
+    session JWT is not enough — so this mints the same shape the OAuth code
+    exchange does and registers it: an Agnes session JWT carrying
+    ``scope='mcp-oauth'``, saved with its digest. That scope is load-bearing,
+    not decoration: ``resolve_token_to_user`` reads it to stamp the stack
+    data-read surface, which is the correct posture for an agent surface —
+    the engine follows its user's stack rather than inheriting an admin's
+    catalog god-mode.
+    """
+    import time as _time
+    import uuid as _uuid
+    from datetime import timedelta
+
+    from app.auth.jwt import create_access_token
+    from src.repositories import oauth_clients_repo, users_repo
+
+    cached = _mcp_token_cache.get(session_id)
+    now = int(_time.time())
+    if cached and cached[1] - _MCP_ACCESS_TOKEN_REFRESH_MARGIN_SECONDS > now:
+        return cached[0]
+
+    session = chat_session_repo().get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=401, detail="ticket_session_not_found")
+    user = users_repo().get_by_email(session.user_email)
+    if user is None:
+        raise HTTPException(status_code=401, detail="ticket_user_not_found")
+
+    expires_at = now + _MCP_ACCESS_TOKEN_TTL_SECONDS
+    token = create_access_token(
+        user_id=user["id"],
+        email=user["email"],
+        expires_delta=timedelta(seconds=_MCP_ACCESS_TOKEN_TTL_SECONDS),
+        token_id=_uuid.uuid4().hex,
+        typ="session",
+        extra_claims={"scope": "mcp-oauth", "chat_session_id": session_id},
+    )
+    oauth_clients_repo().save_access_token(
+        token=token,
+        client_id=_MCP_CLIENT_ID,
+        scopes=list(_MCP_SCOPES),
+        expires_at=expires_at,
+        subject=user["id"],
+    )
+    _mcp_token_cache[session_id] = (token, expires_at)
+    return token
+
+
+@router.post("/mcp")
+async def kai_mcp(request: Request, row: Dict[str, Any] = Depends(require_broker_ticket)) -> Response:
+    """Forward the engine sandbox's MCP request to Agnes's own MCP server,
+    under the ticket's real identity.
+
+    Scope-gated on ``mcp``: an ``llm``-scoped ticket cannot reach the tool
+    surface, mirroring `_require_scope` on every other broker route.
+
+    The response streams. A Streamable-HTTP server answers either as JSON or
+    as an SSE stream, and a tool that takes a while to produce its result
+    would otherwise be buffered whole — the same mistake the Anthropic proxy
+    had to fix for token deltas.
+    """
+    _require_scope(row, "mcp")
+    token = await asyncio.to_thread(_mint_mcp_access_token, row["session_id"])
+
+    body = await request.body()
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in _MCP_DROP_REQUEST_HEADERS}
+    headers["Authorization"] = f"Bearer {token}"
+
+    transport = httpx.ASGITransport(app=request.app)
+    client = httpx.AsyncClient(
+        transport=transport,
+        base_url="http://kai-mcp-broker",
+        timeout=httpx.Timeout(connect=15.0, read=600.0, write=60.0, pool=15.0),
+    )
+    try:
+        upstream_req = client.build_request("POST", _MCP_STREAMABLE_PATH, headers=headers, content=body)
+        upstream = await client.send(upstream_req, stream=True)
+    except Exception:
+        await client.aclose()
+        raise
+
+    passthrough_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in _MCP_DROP_RESPONSE_HEADERS}
+
+    async def _body_iter():
+        try:
+            async for chunk in upstream.aiter_raw():
+                yield chunk
+        finally:
+            await upstream.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        _body_iter(),
+        status_code=upstream.status_code,
+        headers=passthrough_headers,
+        media_type=upstream.headers.get("content-type"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Workspace payload
+#
+# The engine materializes an opaque gzipped tarball into its sandbox's project
+# scope, where the Claude Agent SDK's `project` setting source discovers it —
+# so a shipped tree behaves like a local checkout. We ship the same bundled
+# workspace template Agnes's own chat sandbox is prepared from, which is what
+# makes the embedded engine feel like the native harness rather than a generic
+# agent: the platform CLAUDE.md, the org safety hook, and the bundled skills.
+# ---------------------------------------------------------------------------
+
+#: Subtrees of the template that describe how to BUILD an Agnes sandbox rather
+#: than how to work inside one. They are meaningless in another engine's
+#: sandbox — it has its own image — so they are not shipped. Everything else in
+#: the template is workspace content and goes as-is.
+_WORKSPACE_EXCLUDED_TOPLEVEL = frozenset({"e2b-template", "docker-sandbox"})
+
+#: Hard ceiling mirroring the engine's own (100 MiB, wire and extracted). The
+#: bundled template is ~160 KiB, so this only fires if an operator's override
+#: template is enormous — better a clear error here than a failed turn there.
+_MAX_WORKSPACE_ARCHIVE_BYTES = 100 * 1024 * 1024
+
+
+def _workspace_template_root() -> "Path":
+    """The tree to pack: an admin-registered Initial Workspace Template when
+    one is synced, else the bundled default.
+
+    Same precedence the analyst-facing template flow uses, so the embedded
+    engine's sandbox and an analyst's local workspace are prepared from one
+    source of truth rather than drifting apart.
+    """
+    from app.chat.skills_catalog import BUNDLED_TEMPLATE_DIR
+    from src.initial_workspace import get_initial_workspace_dir
+
+    try:
+        override = get_initial_workspace_dir() / "workspace"
+        if override.is_dir():
+            return override
+    except Exception:
+        # A broken/unsynced override must not deny the caller a workspace —
+        # fall back to the bundled tree, which is always present.
+        logger.warning("kai workspace: override template unreadable, using bundled", exc_info=True)
+    return BUNDLED_TEMPLATE_DIR
+
+
+def _build_workspace_archive() -> Optional[bytes]:
+    """Pack the template into the gzipped tar the engine's contract expects,
+    or ``None`` when there is nothing to ship.
+
+    Members are relative POSIX paths of regular files only — the engine
+    rejects the whole payload on an absolute path, a `..` segment, or any
+    non-file member (symlink, device), so those are filtered here rather than
+    failing someone's turn. Directories are implicit.
+    """
+    root = _workspace_template_root()
+    if not root.is_dir():
+        return None
+
+    buffer = io.BytesIO()
+    members = 0
+    # mtime=0 so the same template packs to the same bytes every time: the
+    # engine re-fetches on every SDK respawn, and a payload that differs only
+    # by timestamp would churn the sandbox tree for no reason.
+    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+        for path in sorted(root.rglob("*")):
+            if not path.is_file() or path.is_symlink():
+                continue
+            rel = path.relative_to(root)
+            if rel.parts[0] in _WORKSPACE_EXCLUDED_TOPLEVEL or ".git" in rel.parts:
+                continue
+            info = tar.gettarinfo(str(path), arcname=rel.as_posix())
+            info.mtime = 0
+            info.uid = info.gid = 0
+            info.uname = info.gname = ""
+            with path.open("rb") as fh:
+                tar.addfile(info, fh)
+            members += 1
+
+    if members == 0:
+        return None
+    archive = buffer.getvalue()
+    if len(archive) > _MAX_WORKSPACE_ARCHIVE_BYTES:
+        raise HTTPException(status_code=500, detail="kai_workspace_too_large")
+    return archive
+
+
+@router.get("/workspace")
+async def kai_workspace(row: Dict[str, Any] = Depends(_require_session_credential)) -> Response:
+    """Serve this caller's workspace tree as one gzipped tarball.
+
+    Closed contract: exactly ``200`` with the archive, or ``204`` for "this
+    caller has no workspace". Any other status fails the engine's turn, so
+    there is no partial answer — an unreadable template falls back to the
+    bundled tree rather than erroring.
+
+    Authenticated by the session credential, not a broker ticket: the engine's
+    *server* fetches this once per SDK process spawn, and the sandbox never
+    sees it.
+    """
+    archive = await asyncio.to_thread(_build_workspace_archive)
+    if archive is None:
+        return Response(status_code=204)
+    return Response(content=archive, media_type="application/gzip")

@@ -205,7 +205,7 @@ def register_foundation_tools(
     """
     tool = progressive_tool(mcp, TOOL_DOCS)
 
-    @tool()
+    @tool(read_only=True)
     async def server_info() -> dict:
         """Return Agnes server health and your account email.
 
@@ -227,7 +227,7 @@ def register_foundation_tools(
                 pass
         return result
 
-    @tool()
+    @tool(read_only=True)
     async def catalog() -> dict:
         """List all tables available to you (RBAC-filtered).
 
@@ -245,7 +245,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def collections_list() -> dict:
         """List the file Collections you can access (RBAC-filtered).
 
@@ -259,7 +259,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def collection_get(collection_id: str) -> dict:
         """Show one Collection's detail plus its files and per-file status.
 
@@ -275,7 +275,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def collections_search(query: str, k: int = 10, collection_id: str = "") -> dict:
         """Hybrid search across your accessible file Collections (RBAC-filtered).
 
@@ -311,7 +311,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def knowledge_search(query: str, k: int = 10) -> dict:
         """One query across documents, the knowledge base, and the data catalog.
 
@@ -345,7 +345,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def glossary_search(query: str, k: int = 10) -> dict:
         """Search Keboola-imported business-term definitions (glossary).
 
@@ -390,7 +390,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def schema(table_id: str) -> dict:
         """Show column names, types, and SQL dialect hints for a table.
 
@@ -405,7 +405,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def describe(table_id: str, rows: int = 5) -> dict:
         """Show schema plus sample rows for a table.
 
@@ -435,7 +435,7 @@ def register_foundation_tools(
             hint="lower `rows` or select specific columns with the query tool",
         )
 
-    @tool()
+    @tool(read_only=True)
     async def query(sql: str, limit: int = 1000) -> dict:
         """Execute a SQL query against Agnes data.
 
@@ -459,7 +459,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return ensure_output_size(r.json(), "query")
 
-    @tool()
+    @tool(read_only=True)
     async def skills() -> dict:
         """List all skills from marketplace plugins you are authorised to access.
 
@@ -484,7 +484,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def chat_skills() -> dict:
         """List skills + slash commands invokable in your web chat sandbox.
 
@@ -508,7 +508,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def stack_browse(resource_type: Literal["data_package", "memory_domain"]) -> dict:
         """List every data package or memory domain your groups are granted.
 
@@ -603,7 +603,7 @@ def register_foundation_tools(
             r.raise_for_status()
         return {"unsubscribed": True}
 
-    @tool()
+    @tool(read_only=True)
     async def stack_artefacts_candidates() -> dict:
         """List artefacts (file Collections) you could add to your Stack.
 
@@ -694,7 +694,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def store_status(entity_id: str) -> dict:
         """Check the review-pipeline status of a flea-market entity you own (owner or admin only).
 
@@ -763,7 +763,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def marketplace_search(
         query: str = "",
         type: str = "",
@@ -810,7 +810,7 @@ def register_foundation_tools(
                 items.extend(r.json().get("items", []))
         return {"items": items, "total": len(items)}
 
-    @tool()
+    @tool(read_only=True)
     async def marketplace_detail(item_id: str) -> dict:
         """Show full details for one marketplace item (curated or flea).
 
@@ -1031,7 +1031,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def documentation_api() -> str:
         """Return the curated Agnes REST API reference as Markdown.
 
@@ -1048,7 +1048,7 @@ def register_foundation_tools(
         except OSError:
             return "# API reference unavailable\n\nThe source markdown file is missing from this deployment."
 
-    @tool()
+    @tool(read_only=True)
     async def list_contributed_skills() -> dict:
         """List all plugins in the Agnes Contributed marketplace (admin only).
 
@@ -1101,7 +1101,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return {"deleted": name, "status": r.status_code}
 
-    @tool()
+    @tool(read_only=True)
     async def admin_config_surface() -> dict:
         """Return the complete per-instance configuration surface (admin only).
 
@@ -1126,7 +1126,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def admin_source_connections_list(source_type: str = "") -> dict:
         """List named source connections (multi-project Keboola support).
 
@@ -1149,7 +1149,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return {"connections": r.json()}
 
-    @tool()
+    @tool(read_only=True)
     async def admin_knowledge_digests_list() -> dict:
         """List all maintained digests (admin only).
 
@@ -1176,7 +1176,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def admin_knowledge_digest_get(digest_id: str) -> dict:
         """Show one maintained digest's full detail (admin only).
 
@@ -1384,7 +1384,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def admin_jobs_list(status: str = "", kind: str = "", limit: int = 50) -> dict:
         """List jobs on the wave-2B durable job queue (admin only).
 
@@ -1417,7 +1417,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def admin_job_get(job_id: str) -> dict:
         """Show one job's full detail, incl. payload and error (admin only).
 
@@ -1498,7 +1498,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def agent_list() -> dict:
         """List your own agent profiles.
 
@@ -1560,7 +1560,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def agent_usage(slug: str, period: str = "") -> dict:
         """Show one of your agents' monthly token usage against its budget.
 
@@ -1591,7 +1591,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def data_apps_list(kind: Literal["", "hosted", "linked"] = "") -> dict:
         """List data apps you can see (RBAC-filtered).
 
@@ -1615,7 +1615,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def data_app_get(slug: str) -> dict:
         """Show one hosted data app's detail.
 
@@ -1745,7 +1745,7 @@ def register_foundation_tools(
             r.raise_for_status()
             return r.json()
 
-    @tool()
+    @tool(read_only=True)
     async def data_app_logs(slug: str, tail: int = 200) -> dict:
         """Show the last N lines of runner logs for a hosted data app — app owner or Admin only.
 
@@ -1922,7 +1922,7 @@ def register_foundation_tools(
             "password": None,
         }
 
-    @tool()
+    @tool(read_only=True)
     async def tool_docs(tool_name: str) -> dict:
         """Return the full reference documentation (docstring) for one registered MCP tool — arguments, return shape, and usage tips beyond the short description shown in the tool list."""
         doc = TOOL_DOCS.get(tool_name)

@@ -659,6 +659,18 @@ _EXEMPT: dict[str, str] = {
         "minting per-turn scope-split broker tickets, gated by an opaque "
         "credential (not user auth), like the other /api/broker/* routes"
     ),
+    "/api/kai/mcp": (
+        "embedded kai-agent turn engine — internal sandbox→Agnes MCP "
+        "pass-through gated by an mcp-scoped broker ticket (not user auth); "
+        "the tools it reaches are already the CLI/MCP surface, so a CLI "
+        "command calling the proxy would be circular"
+    ),
+    "/api/kai/workspace": (
+        "embedded kai-agent turn engine — internal engine-server→Agnes route "
+        "serving the caller's workspace tree as a tarball, gated by an opaque "
+        "credential (not user auth); the analyst-facing equivalent is the "
+        "existing /api/initial-workspace.zip flow"
+    ),
     "/api/admin/run-keboola-semantic-layer-refresh": (
         "scheduler-driven Keboola semantic layer (Metastore) sync trigger — "
         "admin/scheduler maintenance op, mirrors the run-bq-metadata-refresh / "

@@ -1206,6 +1206,25 @@ the engine exposes nothing.
   *egress* tickets only — one live set per chat, while the session credential
   in its own scope survives (the engine has no way to be handed a replacement).
 
+- /api/kai/mcp — `POST`, authenticated by an **`mcp`-scoped broker ticket**
+  (an `llm` ticket is rejected). Forwards the sandbox's verbatim
+  Streamable-HTTP MCP request to Agnes's own MCP server under the ticket's
+  real identity, and streams the response back (a Streamable-HTTP server may
+  answer as SSE). The brokered identity is a short-lived `mcp-oauth` access
+  token minted for the ticket's user, so the engine reaches exactly the tools
+  and RBAC a Claude Desktop connector would — the broker adds no authority.
+  Point the engine's `HOST_BROKER_MCP_URL` here and set
+  `KAI_BROKER_MCP_ENABLED`.
+- /api/kai/workspace — `GET`, authenticated by the session credential (the
+  engine's *server* calls it once per SDK process spawn; the sandbox never
+  sees it). Returns `200` with a gzipped tar of the caller's workspace tree,
+  or `204` for "no workspace" — the engine treats any other status as a
+  failed turn. The tree is the admin-registered Initial Workspace Template
+  when one is synced, else the bundled default: `CLAUDE.md`, the org
+  `PreToolUse` safety hook, and `.claude/skills/*`. Agnes's own sandbox-image
+  build assets (`e2b-template/`, `docker-sandbox/`) are excluded — they
+  describe how to build a sandbox, not how to work in one.
+
 The LLM upstream needs no new route: the engine's in-sandbox relay speaks plain
 pass-through, which is exactly what `/api/broker/anthropic/{subpath}` already
 is. Point the engine's `HOST_BROKER_LLM_URL` at it and the `llm` ticket
