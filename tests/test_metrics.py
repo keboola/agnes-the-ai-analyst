@@ -897,3 +897,19 @@ class TestMetricReconcileHandlesBrokenYaml:
         (d / "broken.yml").write_text("name: [unclosed\n")
         with pytest.raises(ValueError, match="broken.yml"):
             repo.reconcile_from_yaml(tmp_path / "in", prune=True)
+
+
+def test_reconcile_reads_yaml_and_yml_alike(db_conn, tmp_path):
+    """A `.yaml` file was invisible to the import — merely incomplete before,
+    destructive once prune reads "not in the directory" as "deleted upstream"."""
+    from src.repositories.metrics import MetricRepository
+
+    repo = MetricRepository(db_conn)
+    d = tmp_path / "in" / "revenue"
+    d.mkdir(parents=True)
+    (d / "a.yml").write_text("name: a\ncategory: revenue\nsql: SELECT 1\n")
+    (d / "b.yaml").write_text("name: b\ncategory: revenue\nsql: SELECT 2\n")
+
+    report = repo.reconcile_from_yaml(tmp_path / "in", prune=True)
+    assert set(report["written"]) == {"revenue/a", "revenue/b"}
+    assert report["deleted"] == []
