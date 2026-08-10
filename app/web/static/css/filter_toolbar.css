@@ -485,8 +485,15 @@ html[data-ui-layout="rail"] .fbar-dock__veil { left: 240px; }
 
    The category popovers beside it need no rule — they are `position: fixed` and
    filter_toolbar.js already clamps them into the viewport, which from down here
-   resolves upward on its own. */
-.fbar-dock .fbar-menu {
+   resolves upward on its own.
+
+   `.ds-dropdown-menu` (#1055's custom-dropdown component) rides the same rule:
+   it opens downward by default (ds_dropdown.css), which inside this
+   bottom-pinned, fixed-position dock puts its options below the viewport
+   floor with no way to reach them — same problem this rule already exists
+   to solve for `.fbar-menu`. */
+.fbar-dock .fbar-menu,
+.fbar-dock .ds-dropdown-menu {
   top: auto;
   bottom: calc(100% + 8px + var(--fbar-dock-chips, 0px));
 }

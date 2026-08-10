@@ -602,6 +602,11 @@
    ───────────────────────────────────────────────────────────────────── #}
 {% macro dropdown(id, options=[], selected=None, target=None, aria_label=None, klass='', attrs='') -%}
   {%- set selected_opt = (options | selectattr('value', 'equalto', selected) | first) if selected is not none else None -%}
+  {#- `current` is what's ACTUALLY shown as chosen — the button label already
+     falls back to the first option when `selected` is absent/unmatched, so
+     the per-item is-selected/aria-checked below must fall back the same way,
+     or the list opens with the button's own displayed value marked nowhere. -#}
+  {%- set current = selected_opt.value if selected_opt else (options[0].value if options else None) -%}
   {%- set selected_label = selected_opt.label if selected_opt else (options[0].label if options else '') -%}
   {%- set classes = ['ds-dropdown'] -%}
   {%- if klass %}{%- set _ = classes.append(klass) -%}{%- endif -%}
@@ -616,9 +621,9 @@
     <ul class="ds-dropdown-menu" id="{{ id }}-menu" role="menu"
         aria-label="{{ aria_label or 'Options' }}" hidden>
         {%- for opt in options %}
-        <li class="ds-dropdown-menu-item{% if opt.value == selected %} is-selected{% endif %}"
+        <li class="ds-dropdown-menu-item{% if opt.value == current %} is-selected{% endif %}"
             role="menuitemradio"
-            aria-checked="{{ 'true' if opt.value == selected else 'false' }}"
+            aria-checked="{{ 'true' if opt.value == current else 'false' }}"
             tabindex="0"
             data-value="{{ opt.value }}">{{ opt.label }}</li>
         {%- endfor %}
