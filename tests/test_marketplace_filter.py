@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from pathlib import Path
 
 import pytest
 
@@ -17,17 +16,15 @@ import pytest
 def db_conn(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     from src.db import get_system_db
+
     conn = get_system_db()
     yield conn
     conn.close()
 
 
-def _register_marketplace(
-    conn, *, id: str, registered_at: datetime, plugins: list[dict]
-) -> None:
+def _register_marketplace(conn, *, id: str, registered_at: datetime, plugins: list[dict]) -> None:
     conn.execute(
-        "INSERT INTO marketplace_registry "
-        "(id, name, url, registered_at) VALUES (?, ?, ?, ?)",
+        "INSERT INTO marketplace_registry (id, name, url, registered_at) VALUES (?, ?, ?, ?)",
         [id, id.upper(), f"https://example.test/{id}.git", registered_at],
     )
     for p in plugins:
@@ -41,21 +38,25 @@ def _register_marketplace(
 
 def _make_user(conn, *, user_id: str, email: str) -> None:
     from src.repositories.users import UserRepository
+
     UserRepository(conn).create(id=user_id, email=email, name=email.split("@")[0])
 
 
 def _make_group(conn, *, name: str) -> str:
     from src.repositories.user_groups import UserGroupsRepository
+
     return UserGroupsRepository(conn).create(name=name)["id"]
 
 
 def _add_member(conn, *, user_id: str, group_id: str) -> None:
     from src.repositories.user_group_members import UserGroupMembersRepository
+
     UserGroupMembersRepository(conn).add_member(user_id, group_id, source="admin")
 
 
 def _grant(conn, *, group_id: str, marketplace: str, plugin: str) -> None:
     from src.repositories.resource_grants import ResourceGrantsRepository
+
     ResourceGrantsRepository(conn).create(
         group_id=group_id,
         resource_type="marketplace_plugin",
@@ -70,11 +71,15 @@ class TestResolveAllowedPlugins:
         # groups), an admin sees nothing; with grants, they see exactly what
         # those grants allow.
         from src.marketplace_filter import resolve_allowed_plugins
+
         t = datetime.now(timezone.utc)
-        _register_marketplace(db_conn, id="mkt-a", registered_at=t,
-            plugins=[{"name": "p1", "version": "1.0"}])
-        _register_marketplace(db_conn, id="mkt-b", registered_at=t,
-            plugins=[{"name": "p2", "version": "2.0"}, {"name": "p3", "version": "3.0"}])
+        _register_marketplace(db_conn, id="mkt-a", registered_at=t, plugins=[{"name": "p1", "version": "1.0"}])
+        _register_marketplace(
+            db_conn,
+            id="mkt-b",
+            registered_at=t,
+            plugins=[{"name": "p2", "version": "2.0"}, {"name": "p3", "version": "3.0"}],
+        )
         _make_user(db_conn, user_id="u-admin", email="admin@x")
         admin_gid = db_conn.execute("SELECT id FROM user_groups WHERE name='Admin'").fetchone()[0]
         _add_member(db_conn, user_id="u-admin", group_id=admin_gid)
@@ -95,12 +100,10 @@ class TestResolveAllowedPlugins:
         # implicitly a member of Everyone, so a grant on Everyone is
         # invisible until the user is added as an explicit member.
         from src.marketplace_filter import resolve_allowed_plugins
+
         t = datetime.now(timezone.utc)
-        _register_marketplace(db_conn, id="mkt", registered_at=t,
-            plugins=[{"name": "public", "version": "1.0"}])
-        everyone_gid = db_conn.execute(
-            "SELECT id FROM user_groups WHERE name='Everyone'"
-        ).fetchone()[0]
+        _register_marketplace(db_conn, id="mkt", registered_at=t, plugins=[{"name": "public", "version": "1.0"}])
+        everyone_gid = db_conn.execute("SELECT id FROM user_groups WHERE name='Everyone'").fetchone()[0]
         _grant(db_conn, group_id=everyone_gid, marketplace="mkt", plugin="public")
 
         _make_user(db_conn, user_id="u1", email="u1@x")
@@ -114,9 +117,9 @@ class TestResolveAllowedPlugins:
 
     def test_multi_group_distinct(self, db_conn):
         from src.marketplace_filter import resolve_allowed_plugins
+
         t = datetime.now(timezone.utc)
-        _register_marketplace(db_conn, id="mkt", registered_at=t,
-            plugins=[{"name": "shared", "version": "1.0"}])
+        _register_marketplace(db_conn, id="mkt", registered_at=t, plugins=[{"name": "shared", "version": "1.0"}])
         g1 = _make_group(db_conn, name="G1")
         g2 = _make_group(db_conn, name="G2")
         _grant(db_conn, group_id=g1, marketplace="mkt", plugin="shared")
@@ -130,11 +133,10 @@ class TestResolveAllowedPlugins:
 
     def test_same_name_across_marketplaces(self, db_conn):
         from src.marketplace_filter import resolve_allowed_plugins
+
         t = datetime.now(timezone.utc)
-        _register_marketplace(db_conn, id="internal", registered_at=t,
-            plugins=[{"name": "grpn-eng", "version": "1.0"}])
-        _register_marketplace(db_conn, id="vendor", registered_at=t,
-            plugins=[{"name": "grpn-eng", "version": "9.0"}])
+        _register_marketplace(db_conn, id="internal", registered_at=t, plugins=[{"name": "grpn-eng", "version": "1.0"}])
+        _register_marketplace(db_conn, id="vendor", registered_at=t, plugins=[{"name": "grpn-eng", "version": "9.0"}])
         gid = _make_group(db_conn, name="Mixed")
         _grant(db_conn, group_id=gid, marketplace="internal", plugin="grpn-eng")
         _grant(db_conn, group_id=gid, marketplace="vendor", plugin="grpn-eng")
@@ -148,12 +150,11 @@ class TestResolveAllowedPlugins:
     def test_deterministic_order_by_registered_at(self, db_conn):
         from src.marketplace_filter import resolve_allowed_plugins
         from datetime import timedelta
+
         earlier = datetime(2026, 1, 1, tzinfo=timezone.utc)
         later = earlier + timedelta(days=30)
-        _register_marketplace(db_conn, id="later-mkt", registered_at=later,
-            plugins=[{"name": "p", "version": "1"}])
-        _register_marketplace(db_conn, id="earlier-mkt", registered_at=earlier,
-            plugins=[{"name": "p", "version": "1"}])
+        _register_marketplace(db_conn, id="later-mkt", registered_at=later, plugins=[{"name": "p", "version": "1"}])
+        _register_marketplace(db_conn, id="earlier-mkt", registered_at=earlier, plugins=[{"name": "p", "version": "1"}])
         _make_user(db_conn, user_id="u2", email="a2@x")
         gid = _make_group(db_conn, name="Order")
         _add_member(db_conn, user_id="u2", group_id=gid)
@@ -166,9 +167,9 @@ class TestResolveAllowedPlugins:
 
     def test_user_with_no_groups_sees_nothing(self, db_conn):
         from src.marketplace_filter import resolve_allowed_plugins
+
         t = datetime.now(timezone.utc)
-        _register_marketplace(db_conn, id="mkt", registered_at=t,
-            plugins=[{"name": "p", "version": "1"}])
+        _register_marketplace(db_conn, id="mkt", registered_at=t, plugins=[{"name": "p", "version": "1"}])
         _make_user(db_conn, user_id="u-nogroup", email="ng@x")
         # Auto-Everyone removal: a brand-new user has zero memberships and
         # therefore sees nothing regardless of what's granted on Everyone.
@@ -176,14 +177,11 @@ class TestResolveAllowedPlugins:
         assert result == []
 
 
-def _seed_grant_and_user(
-    conn, *, slug: str, plugin: str, user_id: str = "u-mn"
-) -> None:
+def _seed_grant_and_user(conn, *, slug: str, plugin: str, user_id: str = "u-mn") -> None:
     """Helper for TestManifestName: register a marketplace + plugin, create
     a user in a group with a grant on that plugin."""
     t = datetime.now(timezone.utc)
-    _register_marketplace(conn, id=slug, registered_at=t,
-        plugins=[{"name": plugin, "version": "1.0"}])
+    _register_marketplace(conn, id=slug, registered_at=t, plugins=[{"name": plugin, "version": "1.0"}])
     gid = _make_group(conn, name=f"G-{slug}")
     _grant(conn, group_id=gid, marketplace=slug, plugin=plugin)
     _make_user(conn, user_id=user_id, email=f"{user_id}@x")
@@ -199,6 +197,7 @@ class TestManifestName:
 
     def test_manifest_name_from_plugin_json(self, db_conn, tmp_path):
         from src.marketplace_filter import resolve_allowed_plugins
+
         _seed_grant_and_user(db_conn, slug="mkt", plugin="dirname")
         plugin_dir = tmp_path / "marketplaces" / "mkt" / "plugins" / "dirname"
         (plugin_dir / ".claude-plugin").mkdir(parents=True)
@@ -216,6 +215,7 @@ class TestManifestName:
 
     def test_manifest_name_falls_back_when_plugin_json_missing(self, db_conn, tmp_path):
         from src.marketplace_filter import resolve_allowed_plugins
+
         _seed_grant_and_user(db_conn, slug="mkt", plugin="myplugin")
         # No plugin_dir on disk at all → falls back to upstream name.
         result = resolve_allowed_plugins(db_conn, {"id": "u-mn"})
@@ -224,11 +224,13 @@ class TestManifestName:
 
     def test_manifest_name_falls_back_on_malformed_plugin_json(self, db_conn, tmp_path):
         from src.marketplace_filter import resolve_allowed_plugins
+
         _seed_grant_and_user(db_conn, slug="mkt", plugin="myplugin")
         plugin_dir = tmp_path / "marketplaces" / "mkt" / "plugins" / "myplugin"
         (plugin_dir / ".claude-plugin").mkdir(parents=True)
         (plugin_dir / ".claude-plugin" / "plugin.json").write_text(
-            "{ this is : not json", encoding="utf-8",
+            "{ this is : not json",
+            encoding="utf-8",
         )
 
         result = resolve_allowed_plugins(db_conn, {"id": "u-mn"})
@@ -237,11 +239,13 @@ class TestManifestName:
 
     def test_manifest_name_falls_back_when_name_field_missing(self, db_conn, tmp_path):
         from src.marketplace_filter import resolve_allowed_plugins
+
         _seed_grant_and_user(db_conn, slug="mkt", plugin="myplugin")
         plugin_dir = tmp_path / "marketplaces" / "mkt" / "plugins" / "myplugin"
         (plugin_dir / ".claude-plugin").mkdir(parents=True)
         (plugin_dir / ".claude-plugin" / "plugin.json").write_text(
-            json.dumps({"version": "1.0"}), encoding="utf-8",
+            json.dumps({"version": "1.0"}),
+            encoding="utf-8",
         )
 
         result = resolve_allowed_plugins(db_conn, {"id": "u-mn"})
@@ -255,8 +259,10 @@ class TestManifestName:
 class TestComputeEtag:
     def test_same_inputs_same_etag(self, tmp_path):
         from src.marketplace_filter import compute_etag
+
         plugin = {
-            "prefixed_name": "mkt-p", "version": "1.0",
+            "prefixed_name": "mkt-p",
+            "version": "1.0",
             "plugin_dir": tmp_path / "mkt" / "plugins" / "p",
         }
         plugin["plugin_dir"].mkdir(parents=True)
@@ -267,8 +273,10 @@ class TestComputeEtag:
 
     def test_content_change_changes_etag(self, tmp_path):
         from src.marketplace_filter import compute_etag
+
         plugin = {
-            "prefixed_name": "mkt-p", "version": "1.0",
+            "prefixed_name": "mkt-p",
+            "version": "1.0",
             "plugin_dir": tmp_path / "mkt" / "plugins" / "p",
         }
         plugin["plugin_dir"].mkdir(parents=True)
@@ -281,8 +289,10 @@ class TestComputeEtag:
 
     def test_version_change_changes_etag(self, tmp_path):
         from src.marketplace_filter import compute_etag
+
         plugin = {
-            "prefixed_name": "mkt-p", "version": "1.0",
+            "prefixed_name": "mkt-p",
+            "version": "1.0",
             "plugin_dir": tmp_path / "mkt" / "plugins" / "p",
         }
         plugin["plugin_dir"].mkdir(parents=True)
@@ -294,11 +304,11 @@ class TestComputeEtag:
 
     def test_missing_plugin_dir_does_not_crash(self, tmp_path):
         from src.marketplace_filter import compute_etag
-        e = compute_etag(
-            [{"prefixed_name": "x", "version": "1", "plugin_dir": tmp_path / "missing"}]
-        )
+
+        e = compute_etag([{"prefixed_name": "x", "version": "1", "plugin_dir": tmp_path / "missing"}])
         assert len(e) == 16
 
     def test_empty_plugin_list(self):
         from src.marketplace_filter import compute_etag
+
         assert len(compute_etag([])) == 16
