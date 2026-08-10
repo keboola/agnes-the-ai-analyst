@@ -1,6 +1,6 @@
 {% extends "base_ds.html" %}
 
-{% block title %}Error {{ code }} — Data Analyst Portal{% endblock %}
+{% block title %}Error {{ code }} — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block content %}
 {# ds.button (Go home / Back) is auto-imported by base_ds. #}
@@ -29,11 +29,28 @@
             <code>{{ request_id }}</code>
         </p>
         {% endif %}
+        {# `admin_elevation_paused` is a DISTINCT detail precisely so a client
+           can offer the way out (app/auth/access.py says so at the raise site).
+           Without this branch the caller reads a machine string and has to
+           already know the control lives on /me/profile. #}
+        {% if message and 'admin_elevation_paused' in message %}
+        <p class="error-message">
+            You paused admin mode for this browser, so admin pages refuse.
+            Re-enable it to continue — your access itself is unchanged.
+        </p>
+        {% endif %}
         <div class="error-actions">
+            {% if message and 'admin_elevation_paused' in message %}
+            {{ ds.button('Re-enable admin mode', variant='primary',
+                         href='/me/profile#admin-mode') }}
+            {{ ds.button('Go home', variant='secondary',
+                         href=url_for('index')) }}
+            {% else %}
             {{ ds.button('Go home', variant='primary',
                          href=url_for('index')) }}
             {{ ds.button('Back', variant='secondary',
                          href='javascript:history.back()') }}
+            {% endif %}
         </div>
     </div>
 </div>

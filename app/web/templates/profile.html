@@ -451,7 +451,9 @@
     {# Open while paused: the reduced-privilege state must stay visible, not
        sit behind a collapsed drawer an admin forgot about. #}
     {% if is_admin %}
-    <details class="dsec" aria-label="Admin mode" {% if elevation_paused %}open{% endif %}>
+    {# `id` is the anchor target the 403 page links to (error.html) — without
+       it that link lands on the page top and the admin hunts for the drawer. #}
+    <details id="admin-mode" class="dsec" aria-label="Admin mode" {% if elevation_paused %}open{% endif %}>
       <summary>
         <div class="dsec-head">
           <span class="dsec-ico">{{ ico.icon('shield-check', 14) }}</span>
