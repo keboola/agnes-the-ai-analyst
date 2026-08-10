@@ -330,16 +330,21 @@ def transform_single_issue(
                     f"(fetch failure). Existing rows preserved."
                 )
 
-        # Update extract.duckdb _meta for all affected tables
-        try:
-            from .extract_init import update_meta
-
-            extract_dir = output_dir.parent  # output_dir is .../data, parent is .../jira
-            for table_name in ["issues", "comments", "attachments", "changelog", "issuelinks", "remote_links"]:
-                update_meta(extract_dir, table_name)
-        except Exception as meta_err:
-            logger.warning(f"Could not update extract.duckdb _meta: {meta_err}")
-
+        # `_meta` is deliberately NOT refreshed here — see `app.worker.kinds._run_jira_refresh`,
+        # which does it once per coalesced rebuild instead of once per event.
+        #
+        # The parquet write above is already visible to readers: the views inside
+        # extract.duckdb are `read_parquet('.../<table>/month=*/*.parquet',
+        # hive_partitioning=true)` and the glob is evaluated per query, so a rewritten
+        # partition — or an entirely new month — is served on the next SELECT with no
+        # rebuild at all. `_meta` carries only the catalog's row/size numbers.
+        #
+        # Refreshing it here cost a write-open of extract.duckdb plus a full count over
+        # every partition of all six tables, on every single event. DuckDB is
+        # single-writer, and the same event enqueues a rebuild that ATTACHes that file,
+        # so the two raced: a lost ATTACH is only logged, and the rebuild then swaps in
+        # a freshly built analytics DB that has no Jira views — the tables vanish until
+        # a later rebuild wins.
         logger.info(f"Successfully updated {issue_key} in Parquet files")
         return True
 
