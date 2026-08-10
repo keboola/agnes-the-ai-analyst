@@ -12,6 +12,9 @@
      marketplaces                 — list of {slug, name, plugins:[{name}]}
      user.id, user.email, user.name, user.is_admin, user.groups
      now, today                   — datetime / date string
+     is_sandbox                   — True when rendering for the ephemeral
+                                     chat sandbox, False for an analyst's own
+                                     laptop workspace (agnes init)
 #}
 # {{ instance.name }} — AI Harness
 
@@ -52,11 +55,22 @@ line started without a blank line in between silently joins the first one.
 
 ## Charts
 
+{% if is_sandbox %}
 You have `matplotlib`, `pandas` and `numpy` preinstalled. What you do **not**
 have is any way to hand the user a file: this sandbox's filesystem is not their
 computer, so `/tmp/chart.svg` — or any other path — is worthless to them. A
 chart reaches the user in exactly one way: as **inline SVG inside your reply**.
-
+{% else %}
+If `matplotlib`, `pandas` and `numpy` are installed here, chart the same way —
+the code below doesn't change. What changes is how the chart reaches the user,
+and that depends on which surface you are actually running in, not on this
+file: inside a **chat** (this workspace pasted into a co-presence session, or
+any Agnes web chat) only **inline SVG in your reply** renders — a file path or
+a `data:` image URI both silently fail there, same as the chat sandbox. In a
+plain **terminal** session, though, this filesystem really is the user's own
+computer: save the file and tell them the path instead — inline SVG in a
+terminal reply is unreadable markup, not a picture.
+{% endif %}
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -65,7 +79,7 @@ chart reaches the user in exactly one way: as **inline SVG inside your reply**.
     fig, ax = plt.subplots(figsize=(7, 3.2))
     ...
     fig.savefig("chart.svg", format="svg", bbox_inches="tight")
-
+{% if is_sandbox %}
 Then read `chart.svg` and paste its `<svg>…</svg>` verbatim into your reply. The
 chat renders it; keep it under roughly 20 KB (modest `figsize`, aggregate before
 plotting, no dense scatter) and fall back to a markdown table when the data
@@ -76,6 +90,16 @@ Two things that look like they should work and don't:
 - **Never tell the user to open a file path.** They cannot reach it.
 - **Never use a `data:` image URI.** The chat strips it and they see a broken
   image. Inline `<svg>` is the channel.
+{% else %}
+Read `chart.svg` and act on the surface you're in: in a **chat**, paste its
+`<svg>…</svg>` verbatim into your reply — keep it under roughly 20 KB (modest
+`figsize`, aggregate before plotting, no dense scatter) and fall back to a
+markdown table when the data won't compress to that. In a **terminal**, just
+tell the user the path you saved it to.
+
+One thing that never works, on either surface: **a `data:` image URI.** A chat
+strips it and shows a broken image; a terminal has no image renderer at all.
+{% endif %}
 
 ## Data Sync
 - `agnes pull` — download current data from server
