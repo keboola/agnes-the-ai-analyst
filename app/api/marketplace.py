@@ -198,7 +198,7 @@ class HookEntry(BaseModel):
 
 class McpEntry(BaseModel):
     name: str
-    type: Optional[str] = None  # "stdio" / "sse" / etc.
+    type: Optional[str] = None  # declared `type`, else inferred "stdio" / "http"
     description: Optional[str] = None
 
 
@@ -1465,10 +1465,20 @@ def _list_mcps(plugin_root: Path) -> List[McpEntry]:
     """Parse MCP server declarations from ``.mcp.json`` (or legacy
     ``mcp_servers.json``). Returns ``[(name, type, description)]``.
 
-    Standard shape: ``{"mcpServers": {<name>: {<config>}}}`` where ``<config>``
-    contains either ``command`` (stdio) or ``url`` (sse). Type is inferred
-    from those fields. Description falls through to ``command`` so the
-    operator at least sees what's launched.
+    Standard shape: ``{"mcpServers": {<name>: {<config>}}}``.
+
+    Transport comes from ``<config>["type"]`` when the author declared one —
+    that key is how both Claude Code's ``.mcp.json`` and the Agent Plugins
+    ``mcp.json`` schema spell it, and an unrecognized value is surfaced as
+    written rather than coerced into something we recognize.
+
+    Only when ``type`` is absent do we infer from the config shape:
+    ``command`` → ``stdio``, ``url`` → ``http``. A bare ``url`` is Streamable
+    HTTP; HTTP+SSE is the deprecated predecessor transport, so labelling every
+    URL server ``sse`` (as this did before) mislabels the common case.
+
+    Description falls through to ``command`` / ``url`` so the operator at
+    least sees what's launched.
     """
     candidates = [
         plugin_root / ".mcp.json",
@@ -1491,16 +1501,17 @@ def _list_mcps(plugin_root: Path) -> List[McpEntry]:
             if not isinstance(cfg, dict):
                 out.append(McpEntry(name=str(name)))
                 continue
-            kind: Optional[str] = None
+            declared = cfg.get("type")
+            kind: Optional[str] = declared.strip() if isinstance(declared, str) and declared.strip() else None
             description: Optional[str] = None
             if "command" in cfg:
-                kind = "stdio"
+                kind = kind or "stdio"
                 description = str(cfg.get("command"))
                 args = cfg.get("args")
                 if isinstance(args, list) and args:
                     description = description + " " + " ".join(str(a) for a in args)
             elif "url" in cfg:
-                kind = "sse"
+                kind = kind or "http"
                 description = str(cfg.get("url"))
             out.append(
                 McpEntry(
