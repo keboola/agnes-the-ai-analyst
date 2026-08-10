@@ -212,3 +212,71 @@ function escapeHtml(s) {{ return String(s); }}
         assert result["subscribeCalls"] == [["data_package", "pkg-1"]], (
             f"'add sales-package{suffix}' must subscribe to the exact-name match, got {result['subscribeCalls']}"
         )
+
+
+def test_a_two_letter_subject_never_clears_the_confidence_bar():
+    """ "install it" must not add whatever happens to contain "it".
+
+    `ADD_COMMAND_MIN_SCORE` is exactly the substring tier, so before this
+    guard a needle of one or two characters — left over after the stopword
+    strip, as in "install it" or "add a" — scored the full 60 as soon as
+    those characters occurred anywhere in `name + id + description`, which
+    is nearly always. The handler then subscribed silently to an item the
+    person never named.
+
+    The per-token tier already refused tokens of two characters or fewer;
+    the substring tier simply had not been held to the same bar. Exact-name
+    equality is deliberately still exempt — an item genuinely called "ai"
+    is a real match, and equality cannot happen by accident.
+    """
+    node = _node()
+    runtime = _add_command_runtime_source()
+    harness = f"""
+"use strict";
+{runtime}
+
+// "it" occurs in "monitoring", so the old substring tier scored it 60.
+const ITEM = {{
+  id: "pkg-monitor",
+  name: "monitoring",
+  resource_type: "data_package",
+  in_stack: false,
+  description: "Site monitoring figures",
+}};
+async function browseStack() {{ return [ITEM]; }}
+let subscribeCalls = [];
+async function subscribe(resourceType, resourceId) {{ subscribeCalls.push([resourceType, resourceId]); }}
+async function patchJourney(_fields) {{}}
+const rendered = [];
+const hooks = {{ renderAssistant(msg) {{ rendered.push(msg); }} }};
+function escapeHtml(s) {{ return String(s); }}
+
+(async () => {{
+  const results = {{}};
+  for (const msg of ["install it", "add a"]) {{
+    subscribeCalls = [];
+    const handled = await maybeHandleAddCommand(msg);
+    results[msg] = {{ handled, subscribeCalls }};
+  }}
+  // The real name must still resolve, so the guard cannot be satisfied by
+  // simply refusing everything.
+  subscribeCalls = [];
+  const handled = await maybeHandleAddCommand("add monitoring");
+  results["add monitoring"] = {{ handled, subscribeCalls }};
+  process.stdout.write(JSON.stringify(results));
+}})().catch((err) => {{
+  console.error("harness error:", err);
+  process.exitCode = 1;
+}});
+"""
+    out = subprocess.run([node, "-e", harness], capture_output=True, text=True)
+    assert out.returncode == 0, f"node failed:\n{out.stderr}"
+    results = json.loads(out.stdout)
+    for msg in ("install it", "add a"):
+        assert results[msg]["subscribeCalls"] == [], (
+            f"{msg!r} must not subscribe to anything, got {results[msg]['subscribeCalls']}"
+        )
+        assert results[msg]["handled"] is False, f"{msg!r} must be handed to the model, not handled"
+    assert results["add monitoring"]["subscribeCalls"] == [["data_package", "pkg-monitor"]], (
+        "the guard must not refuse a genuine name match"
+    )
