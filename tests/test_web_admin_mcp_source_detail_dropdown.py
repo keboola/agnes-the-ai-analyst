@@ -31,7 +31,7 @@ class TestMcpSourceDetailEditFormDropdowns:
         for dd_id, target, values in (
             ("edit-transport-dd", "edit-transport", ("stdio", "http", "sse")),
             ("edit-scope-dd", "edit-scope", ("shared", "per_user")),
-            ("edit-auth-method-dd", "edit-auth-method", ("", "bearer", "header")),
+            ("edit-auth-method-dd", "edit-auth-method", ("", "bearer", "oauth")),
         ):
             assert f'data-ds-dropdown-target="{target}"' in text
             assert f'id="{dd_id}-btn"' in text
