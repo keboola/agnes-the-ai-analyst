@@ -88,6 +88,10 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     "delete_contributed_skill",
     "admin_config_surface",
     "admin_source_connections_list",
+    # Why imported metrics are missing — coverage of each Keboola project's
+    # semantic layer against the table registry. Triple-surface with
+    # /api/admin/semantic-layer/coverage + `agnes admin semantic-layer coverage`.
+    "admin_semantic_layer_coverage",
     # Maintained digests (K4, #799) — admin CRUD, triple-surface with
     # /api/admin/knowledge-digests* + `agnes admin digest`.
     "admin_knowledge_digests_list",
@@ -1210,6 +1214,34 @@ def register_foundation_tools(
             )
             r.raise_for_status()
             return {"connections": r.json()}
+
+    @tool()
+    async def admin_semantic_layer_coverage() -> dict:
+        """How much of each Keboola project's semantic layer reaches Agnes (admin only).
+
+        Per connection: how many of the metrics the project publishes can bind
+        to a table registered here, which metrics are blocked by their own
+        definition, and which datasets have no registered table. Use it when
+        imported metrics are missing or a project's metrics never appear.
+
+        Two entries in ``warnings[]`` are worth acting on: a connection whose
+        storage and master tokens point at different projects, and a project
+        none of whose metrics bind. ``unregistered_tables`` is normal — a
+        semantic layer usually describes more than an instance registers.
+
+        Mirrors ``GET /api/admin/semantic-layer/coverage`` and
+        ``agnes admin semantic-layer coverage``.
+
+        Requires an admin PAT.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.get(
+                f"{base_url}/api/admin/semantic-layer/coverage",
+                headers=headers_fn(),
+                timeout=60,
+            )
+            r.raise_for_status()
+            return r.json()
 
     @tool()
     async def admin_knowledge_digests_list() -> dict:
