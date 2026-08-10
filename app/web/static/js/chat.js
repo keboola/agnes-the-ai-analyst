@@ -232,6 +232,57 @@ function setThreadTitle(title) {
   if (railNewChat) railNewChat.classList.toggle("on", !title);
 }
 
+// ---------- Copy transcript ----------------------------------------------
+// A chat session is owner-only by design: GET /api/chat/sessions/{id}/messages
+// 404s for everyone else, admins included, and /admin/sessions browses the
+// JSONLs collected from the CLI, not web chat. So a user who hits a wrong or
+// broken answer has literally nothing to hand to whoever could look at it —
+// "can I report this session?" had no answer. This is that answer: the whole
+// thread on the clipboard as markdown.
+//
+// Read back from the API rather than scraped off the DOM. The rendered bubbles
+// have already been through markdown → HTML, and the tool calls — which are
+// the provenance, the part that makes a report diagnosable — sit inside
+// collapsed <details>. The endpoint returns both, in order, as stored.
+
+/** Markdown transcript of one conversation. Throws on a failed fetch so the
+ *  caller can distinguish "couldn't read it" from "couldn't copy it". */
+async function fetchTranscriptMarkdown(chatId) {
+  const res = await fetch(`/api/chat/sessions/${encodeURIComponent(chatId)}/messages`);
+  if (!res.ok) throw new Error(`messages → ${res.status}`);
+  const msgs = await res.json();
+  const title = ($("chat-thread-title")?.textContent || "Untitled chat").trim();
+  const out = [`# ${title}`, "", `Session: \`${chatId}\``, `Exported: ${new Date().toISOString()}`, ""];
+  for (const m of msgs) {
+    const who = m.role === "user" ? "You" : m.role === "assistant" ? "Agnes" : m.role;
+    out.push(`## ${who} · ${m.created_at}`, "", (m.content || "").trim(), "");
+    for (const tc of m.tool_calls || []) {
+      // Fenced, not inline: an `agnes query` argument is multi-line SQL, and
+      // the point of carrying tool calls at all is that they stay readable.
+      out.push(`<details><summary>tool: ${tc.tool}</summary>`, "", "```json", JSON.stringify(tc.args, null, 2), "```", "", "</details>", "");
+    }
+  }
+  return out.join("\n");
+}
+
+function wireCopyTranscript() {
+  const btn = $("chat-copy-transcript");
+  if (!btn) return;
+  btn.addEventListener("click", async () => {
+    if (!currentChatId) return;
+    btn.disabled = true;
+    try {
+      const md = await fetchTranscriptMarkdown(currentChatId);
+      const ok = await copyTextToClipboard(md);
+      showToast(ok ? "Transcript copied" : "Couldn't copy to clipboard", ok ? "ok" : "error");
+    } catch (_) {
+      showToast("Couldn't read this conversation", "error");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
 function readCapabilitySnapshot() {
   const blob = document.getElementById("chat-capabilities-data");
   if (!blob) return null;
@@ -3591,6 +3642,7 @@ function renderCoPresence(host, participants) {
 (async () => {
   renderCapabilities();
   wireSuggestionButtons();
+  wireCopyTranscript();
   autosizeComposer();
   // Rail pre-conversation Dashboard (no-op on topnav): greeting fix-up +
   // suggested-next-actions wiring, handed submitUserMessage/openSession so
