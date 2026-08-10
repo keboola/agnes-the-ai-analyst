@@ -86,12 +86,32 @@ class MetricYamlMixin:
         elif path.is_dir():
             files = sorted(path.glob("*/*.yml"))
 
+        if prune:
+            # --prune deletes everything in scope the input does not mention, so
+            # an input that mentions almost nothing reads as "the source dropped
+            # almost everything". These two shapes are nearly always a mistyped
+            # path instead, and the cost of that reading is the whole scope.
+            if path.is_file():
+                raise ValueError(
+                    "refusing to prune against a single file: a file describes some metrics, "
+                    "not the whole scope. Point --prune at the export directory."
+                )
+            if not files:
+                raise ValueError(
+                    f"refusing to prune: no metrics found under {path} — the layout is "
+                    "<dir>/<category>/<name>.yml, so a directory whose files sit one level "
+                    "too high yields nothing and would delete the entire scope."
+                )
+
         # Ids this importer owns right now — the only rows prune may remove.
+        # Each --source-ref owns its own partition and the unlabeled import owns
+        # the unlabeled one, so labelling an export genuinely protects it: an
+        # unlabeled prune that also swept labelled rows would contradict the
+        # coexistence the flag exists to provide.
         in_scope = {
             m["id"]
             for m in self.list()
-            if (m.get("source") or "") == "yaml_import"
-            and (source_ref is None or (m.get("source_ref") or "") == source_ref)
+            if (m.get("source") or "") == "yaml_import" and (m.get("source_ref") or "") == (source_ref or "")
         }
 
         written: List[str] = []

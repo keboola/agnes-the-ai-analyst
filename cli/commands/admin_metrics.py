@@ -58,7 +58,14 @@ def import_metrics(
     conn = None if use_pg() else get_system_db()
     try:
         repo = metric_repo()
-        report = repo.reconcile_from_yaml(import_path, source_ref=source_ref, prune=prune, dry_run=dry_run)
+        try:
+            report = repo.reconcile_from_yaml(import_path, source_ref=source_ref, prune=prune, dry_run=dry_run)
+        except ValueError as e:
+            # The repo refuses prune shapes that would delete the whole scope.
+            # Surface the reason, not a traceback — the operator is one flag
+            # away from the safe form.
+            typer.echo(f"Error: {e}", err=True)
+            raise typer.Exit(1)
         _echo_report(report, path=path, dry_run=dry_run, prune=prune)
         if report["deleted"] and not dry_run:
             _audit_prune(report["deleted"], source_ref=source_ref)
