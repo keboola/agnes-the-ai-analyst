@@ -52,24 +52,67 @@ class TestElevationPausedGetsItsAction:
         )
 
 
+#: `/me/profile` renders one of two templates depending on chrome
+#: (`app/web/router.py`: rail -> the redesigned page, topnav -> the frozen
+#: pre-redesign copy). An anchor added to only one is a dead link on the
+#: other — and topnav is the DEFAULT, so a guard that checks the redesigned
+#: page alone passes while most instances get nothing. Devin Review caught
+#: exactly that on this PR.
+PROFILE_TEMPLATES = ("profile.html", "profile_legacy.html")
+
+
+def _template(name: str) -> str:
+    return (Path(__file__).resolve().parents[1] / "app" / "web" / "templates" / name).read_text(encoding="utf-8")
+
+
 class TestTheLinkTargetExists:
-    def test_profile_carries_the_anchor_the_403_links_to(self):
+    @pytest.mark.parametrize("template_name", PROFILE_TEMPLATES)
+    def test_every_profile_chrome_carries_the_anchor(self, template_name):
         """A link to `#admin-mode` is only useful if something has that id.
 
-        The section previously carried `aria-label="Admin mode"` and no id,
+        Both panels previously carried `aria-label="Admin mode"` and no id,
         so the anchor would have scrolled nowhere — the same silent dead end
         this change set is fixing elsewhere.
         """
-        profile = (Path(__file__).resolve().parents[1] / "app" / "web" / "templates" / "profile.html").read_text(
-            encoding="utf-8"
-        )
-        assert 'id="admin-mode"' in profile
-
         error_page = TEMPLATE.read_text(encoding="utf-8")
         anchors = re.findall(r"/me/profile#([\w-]+)", error_page)
         assert anchors, "error page links to /me/profile without an anchor"
+
+        profile = _template(template_name)
         for anchor in anchors:
-            assert f'id="{anchor}"' in profile, f"#{anchor} has no target on the profile page"
+            assert f'id="{anchor}"' in profile, (
+                f"#{anchor} has no target in {template_name} — the 403 link is dead "
+                f"on the {'rail' if template_name == 'profile.html' else 'topnav (default)'} chrome"
+            )
+
+    def test_the_guard_covers_every_template_the_route_can_render(self):
+        """Pin the template set against the route, so a third chrome cannot
+        be added with the anchor guard silently still checking only two."""
+        router = (Path(__file__).resolve().parents[1] / "app" / "web" / "router.py").read_text(encoding="utf-8")
+        rendered = set(re.findall(r'"(profile(?:_\w+)?\.html)"', router))
+        assert rendered, "could not find the profile template choice in the router"
+        assert rendered <= set(PROFILE_TEMPLATES), (
+            f"route can render {sorted(rendered - set(PROFILE_TEMPLATES))}, which this guard does not check"
+        )
+
+
+class TestAnchorSurvivesRendering:
+    """The static guard reads source; `ds.panel` could still drop `attrs`.
+
+    Rendering both chromes is what proves the anchor actually reaches the
+    browser — a source-only assertion would stay green on a macro that
+    silently ignored the attribute.
+    """
+
+    @pytest.mark.parametrize("layout", ["topnav", "rail"])
+    def test_profile_page_renders_the_anchor(self, seeded_app, monkeypatch, layout):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", layout)
+        c = seeded_app["client"]
+        c.cookies.set("access_token", seeded_app["admin_token"])
+        r = c.get("/me/profile", headers={"Accept": "text/html"})
+
+        assert r.status_code == 200, r.text
+        assert 'id="admin-mode"' in r.text, f"anchor missing from rendered {layout} profile"
 
 
 class TestRenderedPage:
