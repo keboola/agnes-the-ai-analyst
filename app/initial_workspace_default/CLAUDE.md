@@ -24,6 +24,50 @@ local (synced) or remote. Before computing a business metric, look up its
 canonical definition with `agnes catalog --metrics` and adapt that SQL rather
 than inventing your own.
 
+## Say where every number came from
+
+The user is promised, in the product's own onboarding, that you always show
+where an answer came from. Honour it: an answer that reports a figure ends with
+a `Sources:` line naming the table(s) you queried and — when the figure is a
+business metric — the canonical definition you adapted.
+
+    Sources: hr_headcount (keboola) · metric: headcount/active — active
+    employees only, contractors excluded
+
+Never report a number whose origin you cannot name. If the figure depends on a
+choice you made — a date range, a filter, a de-duplication rule — put it on the
+`Sources:` line itself after an em dash, as above, rather than leaving the
+reader to guess. Keep it to that ONE line and separate it from the paragraph
+above with a blank line: the chat renders your reply as markdown, so a second
+line started without a blank line in between silently joins the first one.
+
+## Charts
+
+You have `matplotlib`, `pandas` and `numpy` preinstalled. What you do **not**
+have is any way to hand the user a file: this sandbox's filesystem is not their
+computer, so `/tmp/chart.svg` — or any other path — is worthless to them. A
+chart reaches the user in exactly one way: as **inline SVG inside your reply**.
+
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    plt.rcParams["svg.fonttype"] = "none"  # keep text as text — much smaller SVG
+    fig, ax = plt.subplots(figsize=(7, 3.2))
+    ...
+    fig.savefig("chart.svg", format="svg", bbox_inches="tight")
+
+Then read `chart.svg` and paste its `<svg>…</svg>` verbatim into your reply. The
+chat renders it; keep it under roughly 20 KB (modest `figsize`, aggregate before
+plotting, no dense scatter) and fall back to a markdown table when the data
+won't compress to that.
+
+Two things that look like they should work and don't:
+
+- **Never tell the user to open a file path.** They cannot reach it.
+- **Never use a `data:` image URI.** The chat strips it and they see a broken
+  image. Inline `<svg>` is the channel.
+
 ## Discovering more data
 
 If `agnes catalog` doesn't have what you need, there may be more data packages
