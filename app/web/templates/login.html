@@ -1,6 +1,6 @@
 {% extends "base_login.html" %}
 
-{% block title %}Login - Data Analyst Portal{% endblock %}
+{% block title %}Login - {{ config.INSTANCE_NAME or 'Data Analyst Portal' }}{% endblock %}
 
 {% block content %}
 {# Design-system component macros — provider buttons render via
