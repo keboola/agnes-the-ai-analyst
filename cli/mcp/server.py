@@ -150,6 +150,21 @@ def collections_search(query: str, k: int = 10, collection_id: str = "") -> dict
     The response's ``retrieval`` field says how results were ranked:
     ``hybrid`` (lexical + semantic) or ``lexical_only`` — the degraded mode
     when the server has no embedding model installed.
+
+    Three behaviours that make a reasonable query miss — search the
+    document's TEXT, not its metadata:
+
+    * **filenames are not indexed.** Searching ``report`` will not find
+      ``report.md``; only the words inside it are matched.
+    * **matching is whole word.** ``test`` does not find ``Testovaci``.
+    * **there is no wildcard.** ``*`` and an empty query return nothing,
+      not everything — there is no "list all chunks" query. Use
+      ``collection_get`` to enumerate a collection's files.
+
+    An empty ``results`` therefore does NOT mean you lack access. The
+    response carries ``searched_collections`` and a ``hint`` saying which
+    case you are in; read them before concluding anything about
+    permissions.
     """
     params: dict = {"q": query, "k": k}
     if collection_id:
@@ -173,6 +188,11 @@ def knowledge_search(query: str, k: int = 10) -> dict:
     The response's ``retrieval`` field labels the chunk engine's mode:
     ``hybrid`` (lexical + semantic) or ``lexical_only`` — the degraded mode
     when no embedding model is installed where the ranking ran.
+
+    The chunk leg carries the same three surprises as
+    ``collections_search``: filenames are not indexed, matching is whole
+    word, and there is no wildcard. An empty result is not evidence that
+    you lack access — check the ``hint`` before saying so.
 
     Offline fallback (K3, #798): if the server is unreachable (network/VPN
     down), falls back to `agnes pull`-shipped knowledge artifacts under
