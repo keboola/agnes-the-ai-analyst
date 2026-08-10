@@ -21,6 +21,7 @@ from app.chat.persistence import ChatRepository
 from app.chat.profiles import get_profile
 from app.chat.replay import GapReplayGate, replay_since
 from app.chat.skills_catalog import BUNDLED_TEMPLATE_DIR, list_recognized_commands, merged_skills
+from app.chat.sources import verdict as sources_verdict
 from app.chat.types import Surface
 from app.coordination.base import CoordinationUnavailable
 from app.coordination.factory import coordination
@@ -454,6 +455,11 @@ async def list_messages(
             "content": m.content,
             "tool_calls": m.tool_calls,
             "created_at": m.created_at.isoformat(),
+            # Recomputed on read rather than stored (see app/chat/sources.py):
+            # the pair it needs is already here, so this costs no column, no
+            # migration step and no DuckDB/Postgres parity surface — and a
+            # better matcher improves history instead of only new answers.
+            **({"sources": sources_verdict(m.content or "", m.tool_calls).to_dict()} if m.role == "assistant" else {}),
         }
         for m in msgs
     ]

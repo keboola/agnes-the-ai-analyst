@@ -26,6 +26,7 @@ from app.chat.persistence import ChatRepository
 from app.chat.profiles import get_profile
 from app.chat.provider import SandboxHandle, SandboxProvider
 from app.chat.replay import append_frame
+from app.chat.sources import verdict as sources_verdict
 from app.chat.types import RELAY_PROTOCOL_VERSION, ChatSession, SessionState, Surface
 from app.chat.workdir import WorkdirManager
 from app.coordination.base import CoordinationUnavailable
@@ -2078,6 +2079,14 @@ class ChatManager:
                 # bridge posts its "approve this on the web" nudge only when
                 # nobody is.
                 frame["attended"] = _approval_attended(live)
+            if frame.get("type") == "assistant_message":
+                # Stamp provenance BEFORE the fan-out, so the live turn and a
+                # later reload of the same thread agree — `GET
+                # /sessions/{id}/messages` recomputes the identical verdict
+                # from the identical pair. Both derive it rather than store it
+                # (see app/chat/sources.py); this is the only place the pair
+                # exists before it reaches a sink.
+                frame["sources"] = sources_verdict(frame.get("content", "") or "", frame.get("tool_calls")).to_dict()
             await self._broadcast(live, frame)
             ftype = frame.get("type")
             # Accumulate in-flight turn frames for mid-turn replay and partial
