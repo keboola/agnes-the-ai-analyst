@@ -76,6 +76,48 @@ def test_run_refresh_maps_master_token_error_to_400(seeded_app):
     assert "master token" in r.json()["detail"]
 
 
+def test_non_master_token_answers_400_however_many_connections_exist(seeded_app):
+    """The same misconfiguration must not change status with the topology.
+
+    The single-source paths let MasterTokenRequiredError propagate and the
+    endpoint maps it to 400 (test above). The multi-source loop CAPTURES it
+    per connection, so without a code the aggregate carried none and fell
+    back to 502 — the same broken token answering 400 on one instance and
+    502 on another, which is exactly the inconsistency this endpoint's status
+    mapping exists to remove. Devin Review on #1242.
+    """
+    from connectors.keboola.semantic_layer import MasterTokenRequiredError
+
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+
+    # Drive the REAL master-source loop — patching only its two edges, so the
+    # code the loop attaches (or fails to attach) is what decides the status.
+    # Hard-coding the aggregate here would have tested the mapping table and
+    # nothing else, and passed just as happily with the bug in place.
+    fake_source = {
+        "connection_id": "conn-a",
+        "name": "Production",
+        "stack_url": "https://connection.keboola.com",
+        "token": "downgraded-token",
+        "project_id": None,
+        "project_name": "",
+    }
+    with (
+        patch("connectors.keboola.semantic_layer._enumerate_master_sources", return_value=[fake_source]),
+        patch(
+            "connectors.keboola.semantic_layer._sync_one_source",
+            side_effect=MasterTokenRequiredError("needs a master token"),
+        ),
+    ):
+        r = c.post(
+            "/api/admin/run-keboola-semantic-layer-refresh",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert r.status_code == 400, r.text
+    assert "master token" in r.json()["detail"]
+
+
 def test_run_refresh_maps_returned_error_to_an_error_status(seeded_app):
     """sync_semantic_layer() reports config/upstream failures (missing
     credentials, Storage/Metastore API errors) by *returning*

@@ -1085,7 +1085,16 @@ def sync_semantic_layer(
                 )
             except MasterTokenRequiredError as e:
                 logger.error("Keboola semantic layer: connection %s rejected: %s", connection_id, e)
-                result = {"status": "error", "error": str(e)}
+                # Coded, because this path CAPTURES the exception instead of
+                # letting it propagate: the single-source paths let it reach
+                # the endpoint, which maps it to 400. Without a code here the
+                # aggregate carries none and the endpoint falls back to 502 —
+                # so the very same misconfiguration answered 400 on a
+                # one-connection instance and 502 once a master token existed
+                # (Devin Review on #1242). Reachable whenever a stored master
+                # token is later downgraded upstream; the store-time preflight
+                # cannot see that.
+                result = {"status": "error", "error": str(e), "code": "master_token_required"}
             except Exception as e:
                 # Per-source isolation is the whole point of the loop: one
                 # connection blowing up in an unforeseen way (a client bug, an

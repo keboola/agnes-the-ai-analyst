@@ -67,6 +67,11 @@ _ERROR_CODE_STATUS = {
     # The connection's master token opens a different project than the one it
     # is bound to — a mis-paste to correct, not an outage.
     "project_mismatch": 400,
+    # The stored token is no longer a master token. The single-source paths
+    # reach this endpoint as a raised MasterTokenRequiredError and answer 400;
+    # the multi-source loop captures it per connection, so it needs the code
+    # to answer the same.
+    "master_token_required": 400,
     "upstream_error": 502,
 }
 
