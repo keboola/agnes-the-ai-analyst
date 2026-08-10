@@ -131,15 +131,24 @@ def can_access_table(
             return True
 
         # Collection-derived tables (uploaded files → SQL-queryable tables, #4)
-        # inherit their owning collection's access — owner OR group share — not
-        # the data-package stack. Mirrors app.auth.access.can_access_collection.
+        # inherit their owning collection's access — owner OR group share.
+        #
+        # This is an ADDITIONAL path, not a replacement: it used to `return`
+        # here, which made data-package membership a no-op for anything that
+        # arrived via a file upload. An admin who followed this module's own
+        # denial message — "ask an admin to add it to a Data Package you have
+        # access to" — changed nothing, while `/catalog` (package-based)
+        # cheerfully showed the table as in-stack and LOCAL. Falling through
+        # to the stack check below makes the documented path work and leaves
+        # collection sharing untouched.
         from src.repositories import table_registry_repo as _tr_repo
 
         _row = _tr_repo().get(table_id)
         if _row and (_row.get("source_type") or "") == "collection":
             from app.auth.access import can_access_collection
 
-            return can_access_collection(user_id, _row.get("bucket") or "", conn)
+            if can_access_collection(user_id, _row.get("bucket") or "", conn):
+                return True
 
         from app.services.stack_resolver import StackResolver
         from app.resource_types import ResourceType

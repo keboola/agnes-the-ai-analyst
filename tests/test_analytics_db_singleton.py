@@ -151,3 +151,41 @@ def test_close_analytics_db_clears_singleton_and_reopen_works():
     cur2 = get_analytics_db()
     rows = cur2.execute("SELECT COUNT(*) FROM probe").fetchall()
     assert rows == [(0,)]
+
+
+class TestReadonlyOnFreshDataDir:
+    """`get_analytics_db_readonly()` must stay usable on a fresh install.
+
+    Regression: when ``analytics/server.duckdb`` did not exist yet, the
+    read-only factory created it with a **read-write** connection and
+    handed that back. The file then existed, so every later call took the
+    read-only branch — and DuckDB refuses to open a file read-only while a
+    read-write connection to it is alive in the same process:
+
+        ConnectionException: Can't open a connection to same database file
+        with a different configuration than existing connections
+
+    `app/api/query.py` never closes the handle, so on a fresh instance the
+    first request touching the query path poisoned every subsequent query
+    in that process until restart.
+    """
+
+    def test_second_call_on_fresh_data_dir_does_not_raise(self):
+        from src.db import get_analytics_db_readonly
+
+        first = get_analytics_db_readonly()
+        assert first.execute("SELECT 1").fetchone() == (1,)
+
+        # The poisoning call: file now exists → read-only branch.
+        second = get_analytics_db_readonly()
+        assert second.execute("SELECT 1").fetchone() == (1,)
+
+    def test_readonly_handle_cannot_write(self):
+        """The connection handed to the query path must be read-only even
+        on the very first call, when the factory had to create the file."""
+        import duckdb
+        from src.db import get_analytics_db_readonly
+
+        conn = get_analytics_db_readonly()
+        with pytest.raises(duckdb.Error):
+            conn.execute("CREATE TABLE writes_should_fail (x INTEGER)")

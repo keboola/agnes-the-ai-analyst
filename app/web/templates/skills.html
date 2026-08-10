@@ -54,6 +54,17 @@
    to the unstyled browser default. #}
 <link rel="stylesheet" href="{{ static_url('css/catalog_card.css') }}">
 <style>
+  .sk-no-review {
+    margin-bottom: var(--space-4);
+    padding: 10px 12px;
+    border-radius: 10px;
+    font-size: 13px;
+    line-height: 1.45;
+    background: var(--ds-accent-warn-bg);
+    color: var(--ds-accent-warn-ink);
+    border: 1px solid var(--ds-accent-warn-line);
+  }
+  .sk-no-review strong { display: block; margin-bottom: 2px; }
   /* Page chrome only — all colors ride --ds-* tokens. Each type carries its
      own categorical accent (--ds-kind-skill / -plugin / -agent) on the avatar,
      kicker and preview; actions stay on --ds-primary so the primary action
@@ -367,6 +378,17 @@
 {% endblock %}
 
 {% block page_surface %}
+{# Guardrails on, no LLM provider configured: the automated review step
+   cannot run, so anything published here parks at `pending_llm` — hidden
+   from everyone — until an admin retries it. The server logs this at boot;
+   the author had no way to know, and the copy elsewhere promises seconds. #}
+{% if not guardrails_llm_ready %}
+<div class="sk-no-review" role="alert">
+  <strong>Automated review is not available on this instance.</strong>
+  You can publish, but your submission stays hidden from everyone until an
+  administrator runs the review manually.
+</div>
+{% endif %}
 <script type="application/json" id="sk-categories">{{ store_categories | tojson }}</script>
 
 <div id="sk-builder-view"></div>

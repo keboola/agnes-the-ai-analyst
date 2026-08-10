@@ -173,7 +173,7 @@ Copy this and adjust:
     "data-explorer": {
       "cover_photo": ".agnes/data-explorer-cover.png",
       "video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-      "category": "Data analysis",
+      "category": "Data & Analytics",
       "doc_links": [
         { "name": "Setup guide", "path": "docs/setup.md" },
         { "name": "API reference (PDF)", "url": "https://example.com/data-explorer-api.pdf" }
@@ -197,7 +197,7 @@ Copy this and adjust:
     },
     "report-generator": {
       "cover_photo": "https://cdn.example.com/report-generator-cover.png",
-      "category": "Reporting"
+      "category": "Documentation"
     }
   }
 }
