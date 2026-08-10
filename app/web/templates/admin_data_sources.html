@@ -52,6 +52,17 @@
   }
   .ds-semantic-summary a { color: inherit; font-weight: 600; text-decoration: underline; }
 
+  /* Storage token and master token resolving to different projects — the fix
+     belongs on this page, so the warning does too. */
+  .ds-token-mismatch {
+    display: flex; gap: 8px; align-items: flex-start;
+    margin-top: 8px; padding: 8px 10px; border-radius: 8px;
+    font-size: 12px; line-height: 1.5;
+    background: var(--ds-accent-warn-bg);
+    border: 1px solid var(--ds-accent-warn-line);
+    color: var(--ds-accent-warn-ink);
+  }
+
   .ds-section-header {
     display: flex;
     align-items: center;
@@ -452,7 +463,8 @@ function _masterTokenRowHtml(row) {
     <input type="password" id="ds-master-input-${id}" placeholder="paste master (owner) token" autocomplete="off">
     <button type="button" class="btn btn-primary" onclick="saveMasterToken('${id}')">Save token</button>
     <button type="button" class="btn btn-secondary" onclick="toggleMasterToken('${id}')">Cancel</button>
-  </div>`;
+  </div>
+  <div class="ds-token-mismatch" id="ds-mismatch-${id}" hidden></div>`;
 }
 
 function _connectionCardHtml(row) {
@@ -517,6 +529,41 @@ function renderConnList() {
     return;
   }
   list.innerHTML = _connections.map(_connectionCardHtml).join("");
+  loadTokenMismatchWarnings();
+}
+
+// A connection whose storage token and master token resolve to DIFFERENT
+// projects syncs tables from one project while reading the semantic layer of
+// another — so no imported metric can ever bind to a table. It looks like a
+// working connection from every other angle, which is exactly why it earns a
+// warning here, next to the two tokens that disagree.
+//
+// Coverage is computed server-side on demand; this runs after the cards paint
+// so a slow upstream never delays the list itself.
+async function loadTokenMismatchWarnings() {
+  let sources;
+  try {
+    const r = await fetch("/api/admin/semantic-layer/coverage", { credentials: "include" });
+    if (!r.ok) return;
+    sources = (await r.json()).sources || [];
+  } catch (e) {
+    return; // Additive only — the page is fully usable without it.
+  }
+  for (const source of sources) {
+    const box = document.getElementById(`ds-mismatch-${source.connection_id}`);
+    if (!box) continue;
+    const warning = (source.warnings || []).find((w) => w.code === "token_project_mismatch");
+    box.hidden = !warning;
+    box.textContent = "";
+    if (!warning) continue;
+    // Upstream project names/ids — untrusted, so textContent, never innerHTML.
+    const icon = document.createElement("span");
+    icon.textContent = "⚠";
+    const text = document.createElement("span");
+    text.textContent = warning.message || "";
+    box.appendChild(icon);
+    box.appendChild(text);
+  }
 }
 
 async function testConn(id) {

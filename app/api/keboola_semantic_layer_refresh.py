@@ -124,3 +124,27 @@ async def run_keboola_semantic_layer_refresh(
         len(result.get("sources") or []),
     )
     return {**result, "run_id": run_id, "started_at": started_at}
+
+
+@router.get("/api/admin/semantic-layer/coverage")
+async def get_semantic_layer_coverage(
+    user: dict = Depends(require_admin),
+):
+    """How much of each connected Keboola project's semantic layer actually
+    reaches Agnes, recomputed live (see
+    ``connectors.keboola.semantic_layer.compute_semantic_coverage``).
+
+    Read-only and stateless — it does not touch metric_definitions and does not
+    read the last sync's counters, which live in a process-local dict that
+    empties on restart. Two conditions are worth acting on and are surfaced as
+    ``warnings[]``: a connection whose storage and master tokens point at
+    different projects, and a project none of whose metrics can bind to a
+    registered table. Tables the instance simply does not register are reported
+    as a plain count, never as pending work.
+
+    Upstream calls run off the event loop — one project's Metastore being slow
+    must not stall every other request in the process.
+    """
+    from connectors.keboola.semantic_layer import compute_semantic_coverage
+
+    return await asyncio.to_thread(compute_semantic_coverage)
