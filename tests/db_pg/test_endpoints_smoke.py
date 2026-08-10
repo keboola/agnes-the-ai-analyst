@@ -1850,6 +1850,9 @@ KNOWN_UNTESTED = {
     "DELETE /api/admin/source-connections/{connection_id}/secret",
     "POST /api/admin/source-connections/{connection_id}/test",
     "GET /api/admin/source-connections/{connection_id}/tables",
+    # Derived Keboola chat-tools MCP source — tested in test_keboola_chat_tools.py
+    "POST /api/admin/source-connections/{connection_id}/chat-tools",
+    "DELETE /api/admin/source-connections/{connection_id}/chat-tools",
     # Admin datasource credentials — vault-backed GWS/BQ instance secrets (web UI only)
     "GET /api/admin/datasource-secrets",
     "GET /admin/datasource-credentials",
