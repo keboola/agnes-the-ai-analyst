@@ -8,6 +8,7 @@ download your own entries. All commands authenticate via the configured PAT
 
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -110,6 +111,15 @@ def delete_entity(
 ):
     """Delete a Flea Market entity (owner or admin only)."""
     if not yes:
+        # Without a terminal, `typer.confirm` reads EOF and aborts with a bare
+        # "Aborted." that names no remedy — the shape a caller hits from a
+        # chat sandbox, a CI step or any agent context. Say what to do instead.
+        if not sys.stdin.isatty():
+            typer.echo(
+                f"Refusing to delete {entity_id} without confirmation: no interactive terminal. Re-run with --yes.",
+                err=True,
+            )
+            raise typer.Exit(1)
         confirm = typer.confirm(f"Delete entity {entity_id}?")
         if not confirm:
             raise typer.Abort()
