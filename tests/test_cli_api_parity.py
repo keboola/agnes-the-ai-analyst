@@ -295,6 +295,7 @@ def parity_env(seeded_app, monkeypatch):
             "cli.commands.admin",
             "cli.commands.admin_jobs",
             "cli.commands.admin_mcp",
+            "cli.commands.admin_connection",
             "cli.commands.mcp",
         ],
         client=client,
@@ -1610,3 +1611,95 @@ class TestMcpOAuthDisconnectParity:
         delta_cli = tokens.has(sid, "admin1")
 
         assert delta_api == delta_cli is False
+
+
+class TestKeboolaChatToolsParity:
+    """``POST/DELETE /api/admin/source-connections/{id}/chat-tools`` ↔
+    ``agnes admin connection chat-tools [--disable]``.
+
+    Both paths must land the same derived ``mcp_sources`` row AND the same
+    vault copy of the connection's token — a CLI that created the source but
+    skipped the secret would produce a source that starts and then fails every
+    tool call at the far end.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _stable_vault_key(self, monkeypatch):
+        from cryptography.fernet import Fernet
+
+        from app.secrets_vault import _reset_ephemeral_key_for_tests
+
+        monkeypatch.setenv("AGNES_VAULT_KEY", Fernet.generate_key().decode())
+        _reset_ephemeral_key_for_tests()
+        yield
+        _reset_ephemeral_key_for_tests()
+
+    def _seed_connection(self, parity_env, name: str) -> str:
+        c, token = parity_env["client"], parity_env["admin_token"]
+        r = c.post(
+            "/api/admin/source-connections",
+            json={
+                "name": name,
+                "source_type": "keboola",
+                "config": {"stack_url": "https://connection.example.com"},
+            },
+            headers=_auth(token),
+        )
+        assert r.status_code == 201, r.text
+        conn_id = r.json()["id"]
+        assert (
+            c.put(
+                f"/api/admin/source-connections/{conn_id}/secret",
+                json={"value": "parity-token"},
+                headers=_auth(token),
+            ).status_code
+            == 204
+        )
+        return conn_id
+
+    def _snapshot(self, conn_id: str) -> tuple:
+        from src.keboola_chat_tools import derived_source_id
+        from src.repositories import mcp_sources_repo, shared_secrets_repo
+
+        row = mcp_sources_repo().get(derived_source_id(conn_id))
+        projected = None
+        if row is not None:
+            projected = (row["transport"], row["command"], json.dumps(row.get("args")), row.get("auth_secret_env"))
+        return (projected, shared_secrets_repo().get(derived_source_id(conn_id)))
+
+    def test_enable_parity(self, parity_env):
+        conn_id = self._seed_connection(parity_env, "parity-chat-tools")
+
+        r = parity_env["client"].post(
+            f"/api/admin/source-connections/{conn_id}/chat-tools",
+            headers=_auth(parity_env["admin_token"]),
+        )
+        assert r.status_code == 201, r.text
+        delta_api = self._snapshot(conn_id)
+
+        parity_env["client"].delete(
+            f"/api/admin/source-connections/{conn_id}/chat-tools",
+            headers=_auth(parity_env["admin_token"]),
+        )
+        assert self._snapshot(conn_id) == (None, None)
+
+        parity_env["run_cli"](["admin", "connection", "chat-tools", conn_id])
+        delta_cli = self._snapshot(conn_id)
+
+        assert delta_api == delta_cli
+        assert delta_api[1] == "parity-token"
+
+    def test_disable_parity(self, parity_env):
+        conn_id = self._seed_connection(parity_env, "parity-chat-tools-off")
+        client, token = parity_env["client"], parity_env["admin_token"]
+
+        client.post(f"/api/admin/source-connections/{conn_id}/chat-tools", headers=_auth(token))
+        r = client.delete(f"/api/admin/source-connections/{conn_id}/chat-tools", headers=_auth(token))
+        assert r.status_code == 204
+        delta_api = self._snapshot(conn_id)
+
+        client.post(f"/api/admin/source-connections/{conn_id}/chat-tools", headers=_auth(token))
+        parity_env["run_cli"](["admin", "connection", "chat-tools", conn_id, "--disable"])
+        delta_cli = self._snapshot(conn_id)
+
+        assert delta_api == delta_cli == (None, None)

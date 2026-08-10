@@ -38,8 +38,11 @@ from app.auth.access import require_admin
 from app.secrets_vault import VaultKeyNotConfiguredError
 from connectors.keboola.semantic_layer import MasterTokenRequiredError, require_master_token
 from connectors.keboola.storage_api import KeboolaStorageClient, StorageApiError
+from src.keboola_chat_tools import build_stdio_spec, derived_source_id
 from src.repositories import (
     connection_secrets_repo,
+    mcp_sources_repo,
+    shared_secrets_repo,
     source_connections_repo,
     table_registry_repo,
 )
@@ -112,6 +115,10 @@ def _with_secret_status(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any
         row["has_master_secret"] = bool(connection_secrets_repo().has(master_secret_key(row["id"])))
     except Exception:
         row["has_master_secret"] = False
+    try:
+        row["has_chat_tools"] = mcp_sources_repo().get(derived_source_id(row["id"])) is not None
+    except Exception:
+        row["has_chat_tools"] = False
     return row
 
 
@@ -317,6 +324,10 @@ async def delete_connection(
         connection_secrets_repo().delete(master_secret_key(connection_id))
     except Exception:
         logger.debug("no master vault secret for connection %s (expected)", connection_id)
+    # A derived chat-tools source outlives its connection otherwise, keeping a
+    # live Keboola credential in the vault and still offering the project's
+    # tools to the agent.
+    _remove_chat_tools(connection_id)
 
 
 @router.put("/{connection_id}/secret", status_code=204)
@@ -406,6 +417,114 @@ async def delete_connection_secret(
         raise HTTPException(status_code=400, detail="invalid_kind")
     key = master_secret_key(connection_id) if kind == "master" else connection_id
     connection_secrets_repo().delete(key)
+
+
+def _remove_chat_tools(connection_id: str) -> None:
+    """Drop a connection's derived MCP source and its vault secret.
+
+    Shared by the explicit disable and by ``delete_connection`` — a deleted
+    connection that left its derived source behind would keep a live Keboola
+    credential in the vault and keep offering tools for a project the admin
+    believes they disconnected.
+    """
+    source_id = derived_source_id(connection_id)
+    try:
+        mcp_sources_repo().delete(source_id)
+    except Exception:
+        logger.debug("no derived MCP source for connection %s (expected)", connection_id)
+    try:
+        shared_secrets_repo().delete(source_id)
+    except Exception:
+        logger.debug("no derived MCP secret for connection %s (expected)", connection_id)
+
+
+@router.post("/{connection_id}/chat-tools", status_code=201)
+async def enable_chat_tools(
+    connection_id: str,
+    _user: dict = Depends(require_admin),
+):
+    """Expose this Keboola project's own MCP tools to the chat agent.
+
+    Derives an ``mcp_sources`` stdio row from the connection (see
+    ``src/keboola_chat_tools.py``) and copies the connection's storage token
+    into the MCP shared vault, so the admin registers the project once rather
+    than a second time under ``/admin/mcp``.
+
+    Idempotent: re-running re-syncs the token, which is how a rotation is
+    propagated. The derived source lands with **no** ``tool_grants``, so
+    enabling exposes nothing until an admin grants the tools to a group.
+
+    400 if the connection isn't ``source_type='keboola'`` or has no resolvable
+    token; 404 if the connection doesn't exist; 409 if the vault key is unset.
+    """
+    row = source_connections_repo().get(connection_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="connection_not_found")
+    if row.get("source_type") != "keboola":
+        raise HTTPException(status_code=400, detail="chat_tools_only_for_keboola")
+
+    config = row.get("config") or {}
+    stack_url = (config.get("stack_url") or "").rstrip("/")
+    # Deliberately NOT the DNS-resolving `_validate_stack_url(required=True)`
+    # used by /test and /tables: those validate-at-use because they are about
+    # to make the outbound call themselves, and DNS is the rebind window they
+    # are closing. This endpoint makes no request — it stores a config row —
+    # and the URL it stores is the connection's own, already SSRF-validated on
+    # create/update. Resolving here would only make enabling fail whenever DNS
+    # is unavailable, without narrowing any window.
+    if not stack_url:
+        raise HTTPException(status_code=400, detail="no stack_url in connection config")
+    if not stack_url.lower().startswith("https://"):
+        raise HTTPException(status_code=400, detail="stack_url must be an https:// URL")
+
+    token = _resolve_token(connection_id, row)
+    if not token:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "connection has no storage token — store one via "
+                f"PUT {router.prefix}/{connection_id}/secret first. Without it the "
+                "MCP server would start and fail every tool call at the far end."
+            ),
+        )
+
+    spec = build_stdio_spec(
+        connection_id=connection_id,
+        connection_name=row.get("name") or connection_id,
+        stack_url=stack_url,
+    )
+    try:
+        shared_secrets_repo().upsert(spec["id"], token)
+    except VaultKeyNotConfiguredError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="vault_key_not_configured: set AGNES_VAULT_KEY on the server before storing secrets",
+        ) from exc
+
+    try:
+        mcp_sources_repo().upsert(**spec)
+    except Exception:
+        # Never leave the token behind under a source id that does not exist.
+        shared_secrets_repo().delete(spec["id"])
+        raise
+
+    logger.info(
+        "chat tools enabled for connection %s (source %s)",
+        connection_id,
+        spec["id"],
+    )
+    return {"source_id": spec["id"], "name": spec["name"], "granted_to_groups": 0}
+
+
+@router.delete("/{connection_id}/chat-tools", status_code=204)
+async def disable_chat_tools(
+    connection_id: str,
+    _user: dict = Depends(require_admin),
+):
+    """Remove the derived MCP source and its copy of the token (idempotent)."""
+    if source_connections_repo().get(connection_id) is None:
+        raise HTTPException(status_code=404, detail="connection_not_found")
+    _remove_chat_tools(connection_id)
 
 
 @router.post("/{connection_id}/test")
