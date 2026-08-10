@@ -88,6 +88,11 @@
         e.preventDefault();
         if (items[idx]) selectItem(items[idx]);
       } else if (e.key === "Escape") {
+        // Stop here so an enclosing dialog's own Escape handler (bubble-
+        // phase, listening on document) doesn't ALSO see this keypress and
+        // close itself on the same press that was meant to just close this
+        // menu — innermost-first dismissal.
+        e.stopPropagation();
         close(true);
       }
     });

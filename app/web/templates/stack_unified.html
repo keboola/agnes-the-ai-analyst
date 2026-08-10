@@ -1095,6 +1095,11 @@
   function afOnKeydown(ev) {
     if (!afPicker.classList.contains('is-open')) return;
     if (ev.key === 'Escape') {
+      // A custom dropdown (#1055) inside this dialog handles its own Escape
+      // to close just its menu — closing the whole dialog too would drop
+      // the picker's selections on the same keypress. Let the dropdown
+      // close first; a second Escape then reaches here.
+      if (document.querySelector('.ds-dropdown-menu:not([hidden])')) return;
       ev.preventDefault();
       afClosePicker();
       return;

@@ -3,10 +3,6 @@
 
 {% block title %}Data Packages — {{ config.INSTANCE_NAME or 'AI Harness' }}{% endblock %}
 
-{% block head_extra %}
-<link rel="stylesheet" href="{{ static_url('css/ds_dropdown.css') }}">
-{% endblock %}
-
 {% block content %}
 {# Design-system component macros — admin "+ New Recipe" / "+ New Data
    Package" buttons + 4 modal action buttons (Create/Edit recipe) render
@@ -298,23 +294,16 @@
           </label>
           <label style="flex:1; display:flex; flex-direction:column; gap:4px;">
             <span style="font-size:12px; color:var(--text-muted);">Status</span>
-            <select id="rcp-status" class="ds-dropdown-native"
+            {# #1055: not converted to ds.dropdown() — catalog_legacy.html is
+               a frozen legacy copy (spec 2026-08-07 default-chrome-ux-parity),
+               and no new features land on the legacy path. #}
+            <select id="rcp-status"
                     style="padding:8px; border:1px solid var(--border); border-radius:6px; height:38px;">
               <option value="prod" selected>Prod</option>
               <option value="poc">POC</option>
               <option value="coming-soon">Coming soon</option>
               <option value="draft">Draft (admin-only)</option>
             </select>
-            {{ ds.dropdown(
-              id='rcp-status-dd', target='rcp-status',
-              aria_label='Status', selected='prod',
-              options=[
-                {'value': 'prod', 'label': 'Prod'},
-                {'value': 'poc', 'label': 'POC'},
-                {'value': 'coming-soon', 'label': 'Coming soon'},
-                {'value': 'draft', 'label': 'Draft (admin-only)'},
-              ],
-            ) }}
           </label>
         </div>
         {# v55 Recipes RBAC matrix on Create — same inline pattern as
@@ -411,23 +400,16 @@
           </label>
           <label style="flex:1; display:flex; flex-direction:column; gap:4px;">
             <span style="font-size:12px; color:var(--text-muted);">Status</span>
-            <select id="ercp-status" class="ds-dropdown-native"
+            {# #1055: not converted to ds.dropdown() — catalog_legacy.html is
+               a frozen legacy copy (spec 2026-08-07 default-chrome-ux-parity),
+               and no new features land on the legacy path. #}
+            <select id="ercp-status"
                     style="padding:8px; border:1px solid var(--border); border-radius:6px; height:38px;">
               <option value="prod">Prod</option>
               <option value="poc">POC</option>
               <option value="coming-soon">Coming soon</option>
               <option value="draft">Draft (admin-only)</option>
             </select>
-            {{ ds.dropdown(
-              id='ercp-status-dd', target='ercp-status',
-              aria_label='Status', selected='prod',
-              options=[
-                {'value': 'prod', 'label': 'Prod'},
-                {'value': 'poc', 'label': 'POC'},
-                {'value': 'coming-soon', 'label': 'Coming soon'},
-                {'value': 'draft', 'label': 'Draft (admin-only)'},
-              ],
-            ) }}
           </label>
         </div>
         {# v55 Recipes RBAC matrix — same lazy-hydrate + diff-on-save pattern
@@ -474,8 +456,6 @@
               box-shadow:0 6px 20px rgba(0,0,0,.2); font-size:13px; z-index:1000;"></div>
 </div>
 
-{# ds.dropdown() (#1055) — Create/Edit Recipe "Status" custom dropdowns. #}
-<script src="{{ static_url('js/components/ds_dropdown.js') }}" defer></script>
 <script>
 'use strict';
 
@@ -950,24 +930,6 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
     return (s || '').toLowerCase()
       .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
   }
-  // ds.dropdown() (#1055) only mirrors a *user pick* onto its paired
-  // <select> (ds_dropdown.js sets .value + dispatches change) — it never
-  // reads the <select> back. Whenever this page sets rcp-status/ercp-status
-  // .value directly (modal reset/reopen), re-sync the dropdown's own label
-  // + aria-checked state so the two controls don't disagree under the
-  // paper theme.
-  function _syncStatusDropdown(selectId, ddId) {
-    const sel = document.getElementById(selectId);
-    const menu = document.getElementById(ddId + '-menu');
-    if (!sel || !menu) return;
-    const btnLabel = document.querySelector('#' + ddId + '-btn .ds-dropdown-btn-label');
-    menu.querySelectorAll('[role="menuitemradio"]').forEach((item) => {
-      const match = item.getAttribute('data-value') === sel.value;
-      item.classList.toggle('is-selected', match);
-      item.setAttribute('aria-checked', match ? 'true' : 'false');
-      if (match && btnLabel) btnLabel.textContent = item.textContent.trim();
-    });
-  }
   window.openCreateRecipeModal = function () {
     const el = document.getElementById('createRecipeModal');
     if (!el) return;
@@ -977,7 +939,6 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
     });
     const status = document.getElementById('rcp-status');
     if (status) status.value = 'prod';
-    _syncStatusDropdown('rcp-status', 'rcp-status-dd');
     const color = document.getElementById('rcp-color');
     if (color) color.value = 'var(--ds-primary)';
     // Collapse + reset the RBAC matrix so reopen doesn't show last
@@ -1087,7 +1048,6 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
         (rec.related_table_ids || []).join(',');
       document.getElementById('ercp-color').value = rec.color || 'var(--ds-primary)';
       document.getElementById('ercp-status').value = rec.status || 'prod';
-      _syncStatusDropdown('ercp-status', 'ercp-status-dd');
       // Reset the RBAC matrix; lazy-rehydrates next time the admin
       // expands the <details>, so the panel always reflects the recipe
       // the modal is currently editing.
