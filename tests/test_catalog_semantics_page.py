@@ -415,3 +415,27 @@ class TestCatalogSemanticsSidebarLayout:
             ".sl-cat-nav must declare `display: block` so its category buttons "
             "stack vertically instead of inheriting the global `nav` flex-row layout"
         )
+
+
+def test_every_heading_the_allowlist_admits_is_styled_in_the_detail():
+    """A preserved tag with no rule falls back to the browser default.
+
+    The `html_source` allowlist keeps `h1`/`h5`/`h6` because dropping them
+    fused the sections they separated. But `.sl-detail__desc` styled only
+    `h2, h3`, so an imported `<h1>` rendered at ~2em with large margins inside
+    a compact metric row — and out-shouted the page's own `<h1>Semantic
+    layer</h1>` in the document outline. Preserving structure and sizing it
+    are two halves of the same change.
+    """
+    from pathlib import Path
+
+    import app.markdown_render as mr
+
+    tpl = Path("app/web/templates/catalog_semantics.html").read_text(encoding="utf-8")
+    admitted = {t for t in (mr._ALLOWED_TAGS | mr._HTML_SOURCE_EXTRA_TAGS) if len(t) == 2 and t[0] == "h" and t[1].isdigit()}
+    assert admitted, "expected the allowlists to admit heading tags"
+    missing = [h for h in sorted(admitted) if f".sl-detail__desc {h}" not in tpl]
+    assert not missing, (
+        f"headings admitted by the allowlist but unstyled in .sl-detail__desc: {missing} — "
+        "they will render at browser-default size inside a compact metric row"
+    )
