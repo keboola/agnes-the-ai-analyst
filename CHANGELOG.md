@@ -29,7 +29,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - **Publishing surfaces say so when automated review cannot run.** With guardrails enabled and no LLM provider configured, a submission parks at `pending_llm` — hidden from everyone — until an admin retries it. The server has always logged this at boot; the person about to publish had no way to know, and the surrounding copy promises "a few seconds" in three separate places. `/store/new` and the Builder now carry a warning when the provider is missing.
 
-- A failure to load the static `CONFIG_DIR/instance.yaml` is logged at ERROR rather than WARNING, and says what the consequence is: the app keeps serving, on built-in defaults, for every section the writable overlay does not cover. One mistyped key is enough — the instance then runs under the wrong name, the wrong data source and the wrong auth domain, with a single log line as the only evidence. `app.instance_config.get_static_config_error()` exposes the reason for surfacing in the admin UI.
+- A failure to load the static `CONFIG_DIR/instance.yaml` is logged at ERROR rather than WARNING, and says what the consequence is: the app keeps serving, on built-in defaults, for every section the writable overlay does not cover. One mistyped key is enough — the instance then runs under the wrong name, the wrong data source and the wrong auth domain, with a single log line as the only evidence. `app.instance_config.get_static_config_error()` now exposes the reason, for a future admin UI to consume — nothing renders it yet.
 
 ## [0.83.2] - 2026-08-10
 

@@ -347,7 +347,6 @@ def _is_paper_theme() -> bool:
 templates.env.globals["is_paper"] = _is_paper_theme
 
 
-
 # The ONE default behind `library.show_unverified_trust`, read off the registry
 # rather than restated at each read site. Three callsites resolve this flag (the
 # Jinja global below plus /library and the store-item detail route), and each
@@ -3959,6 +3958,7 @@ async def catalog_semantics(
     accessible_ids = get_accessible_tables(user, conn)
     allowed = None if accessible_ids is None else set(accessible_ids)
     metrics = [m for m in metric_repo().list() if _first_inaccessible_table(m, allowed) is None]
+
     def _variants(raw) -> dict:
         """``sql_variants`` as a mapping the template can iterate.
 
@@ -5464,6 +5464,7 @@ async def store_new(
         owner_username = ""
     from app.instance_config import get_guardrails_enabled, get_guardrails_llm_provider_ready
 
+    _guardrails_enabled = get_guardrails_enabled()
     ctx = _build_context(
         request,
         user=user,
@@ -5471,7 +5472,8 @@ async def store_new(
         guardrail=_guardrail_thresholds(),
         title_acronyms=TITLE_ACRONYMS,
         owner_username=owner_username,
-        guardrails_llm_ready=get_guardrails_enabled() and get_guardrails_llm_provider_ready(),
+        guardrails_enabled=_guardrails_enabled,
+        guardrails_llm_ready=_guardrails_enabled and get_guardrails_llm_provider_ready(),
     )
     return templates.TemplateResponse(request, "store_upload.html", ctx)
 
