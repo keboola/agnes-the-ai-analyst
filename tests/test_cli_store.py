@@ -8,7 +8,9 @@ uninstall) moved to `agnes marketplace` — see test_cli_marketplace.py.
 from __future__ import annotations
 
 import re
+from types import SimpleNamespace
 
+import typer
 from typer.testing import CliRunner
 
 from cli.commands.my_stack import my_stack_app
@@ -560,6 +562,39 @@ def test_store_delete_without_tty_names_the_remedy(monkeypatch):
     assert result.exit_code == 1
     assert "--yes" in result.output
     assert not called, "must not delete without confirmation"
+
+
+def test_store_delete_ctrl_c_on_a_tty_does_not_claim_there_is_no_terminal(monkeypatch):
+    """Ctrl-C at the prompt is a decision, not a missing terminal.
+
+    `click.confirm` raises `Abort` for BOTH `EOFError` and `KeyboardInterrupt`,
+    so the exception alone cannot tell the two apart. Reporting every abort as
+    "no interactive terminal. Re-run with --yes" is false for the interactive
+    case, and it points the user at the flag that skips the very confirmation
+    they just declined.
+    """
+    # Patch the module's own `sys` name, not the real `sys.stdin`: click's
+    # CliRunner swaps `sys.stdin` for its own stream inside `invoke()`, so a
+    # patch on the real object is silently discarded and the test would pass
+    # or fail for reasons unrelated to what it claims to check.
+    monkeypatch.setattr(
+        "cli.commands.store.sys",
+        SimpleNamespace(stdin=SimpleNamespace(isatty=lambda: True)),
+    )
+
+    def _interrupted(*_a, **_k):
+        raise typer.Abort()
+
+    monkeypatch.setattr("cli.commands.store.typer.confirm", _interrupted)
+    called = []
+    monkeypatch.setattr("cli.commands.store.api_delete", lambda *a, **k: called.append(a))
+
+    result = runner.invoke(store_app, ["delete", "ent123"])
+
+    assert result.exit_code != 0
+    assert "no interactive terminal" not in result.output
+    assert "--yes" not in result.output
+    assert not called, "must not delete after an aborted confirmation"
 
 
 def test_store_delete_with_yes_skips_confirmation(monkeypatch):

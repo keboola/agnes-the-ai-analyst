@@ -8,6 +8,7 @@ download your own entries. All commands authenticate via the configured PAT
 
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -119,6 +120,15 @@ def delete_entity(
         try:
             confirm = typer.confirm(f"Delete entity {entity_id}?")
         except typer.Abort:
+            # `click.confirm` raises `Abort` for BOTH EOFError and
+            # KeyboardInterrupt, so the exception alone cannot tell "nothing
+            # was ever going to answer" from "a person pressed Ctrl-C". On a
+            # tty it is the latter: re-raise, so the user gets the plain
+            # "Aborted." they asked for rather than being told their terminal
+            # does not exist and nudged toward --yes — which would skip the
+            # very confirmation they just declined.
+            if sys.stdin.isatty():
+                raise
             typer.echo(
                 f"Refusing to delete {entity_id} without confirmation: no interactive terminal. Re-run with --yes.",
                 err=True,
