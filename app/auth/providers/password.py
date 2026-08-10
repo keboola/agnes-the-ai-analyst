@@ -135,10 +135,16 @@ def _render_message(request: Request, title: str, message: str, status_code: int
     return templates.TemplateResponse(request, "_message.html", ctx, status_code=status_code)
 
 
-def _render_reset_form(request: Request, email: str, token: str, error: str = ""):
+def _render_reset_form(request: Request, email: str, token: str, error: str = "", reason: str = ""):
     from app.web.router import templates, _build_context
 
-    ctx = _build_context(request, email=email, token=token, error=error)
+    ctx = _build_context(
+        request,
+        email=email,
+        token=token,
+        error=error,
+        forced_rotation=(reason == "must_change"),
+    )
     return templates.TemplateResponse(request, "password_reset.html", ctx)
 
 
@@ -292,7 +298,7 @@ async def password_login_web(
             reset_token_created=datetime.now(timezone.utc),
         )
         return RedirectResponse(
-            url=f"/auth/password/reset?email={quote(email, safe='')}&token={reset_tok}",
+            url=(f"/auth/password/reset?email={quote(email, safe='')}&token={reset_tok}&reason=must_change"),
             status_code=303,
         )
 
@@ -365,11 +371,20 @@ async def reset_page(
     request: Request,
     email: str = "",
     token: str = "",
+    reason: str = "",
 ):
-    """Render the 'set new password' form when arriving via reset link."""
+    """Render the 'set new password' form when arriving via reset link.
+
+    ``reason=must_change`` marks the forced-rotation arrival (see
+    ``password_login_web``): the credentials were correct, but the password
+    was set by someone else and has to be replaced before a session is
+    issued. Without it the page is indistinguishable from "you forgot your
+    password", and first-time users reasonably conclude their password was
+    rejected.
+    """
     if not email or not token:
         return RedirectResponse(url="/login/password", status_code=302)
-    return _render_reset_form(request, email=email, token=token)
+    return _render_reset_form(request, email=email, token=token, reason=reason)
 
 
 @router.post("/reset")
