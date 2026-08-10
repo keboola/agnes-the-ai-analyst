@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import yaml
 
@@ -53,6 +53,7 @@ class MetricYamlMixin:
         source_ref: Optional[str] = None,
         prune: bool = False,
         dry_run: bool = False,
+        on_delete: Optional[Callable[[str], None]] = None,
     ) -> Dict[str, List[str]]:
         """Import metrics, optionally making the registry MATCH the directory.
 
@@ -74,9 +75,16 @@ class MetricYamlMixin:
         id is ``category/name`` — which is precisely why ``dry_run=True``
         exists: it returns the same report and writes nothing.
 
-        Returns a report of metric ids: ``added`` (not previously in scope),
-        ``updated`` (already there), ``written`` (both, in file order) and
-        ``deleted`` (pruned, empty unless ``prune``).
+        ``on_delete`` is called with each id immediately BEFORE its row goes,
+        so a caller can record the deletion where an interruption cannot lose
+        it. The mixin stays free of any audit dependency, which is what keeps
+        it backend-neutral.
+
+        Returns a report of metric ids: ``added`` (did not exist), ``updated``
+        (already owned by this scope), ``adopted`` (existed under a different
+        writer or label — overwritten and re-stamped, so it JOINS this scope),
+        ``written`` (all three, in file order) and ``deleted`` (pruned, empty
+        unless ``prune``).
         """
         path = Path(path)
         files: List[Path] = []
@@ -97,14 +105,16 @@ class MetricYamlMixin:
                     "not the whole scope. Point --prune at the export directory."
                 )
 
+        existing = {m["id"]: m for m in self.list()}
+
         # Ids this importer owns right now — the only rows prune may remove.
         # Each --source-ref owns its own partition and the unlabeled import owns
         # the unlabeled one, so labelling an export genuinely protects it: an
         # unlabeled prune that also swept labelled rows would contradict the
         # coexistence the flag exists to provide.
         in_scope = {
-            m["id"]
-            for m in self.list()
+            mid
+            for mid, m in existing.items()
             if (m.get("source") or "") == "yaml_import" and (m.get("source_ref") or "") == (source_ref or "")
         }
 
@@ -188,15 +198,32 @@ class MetricYamlMixin:
                 "read would delete every metric this importer previously wrote."
             )
 
-        added = [mid for mid in written if mid not in in_scope]
+        # `added` means "did not exist", not "is not mine". An incoming id that
+        # already belongs to another writer is ADOPTED: create() upserts, so the
+        # row is overwritten and its `source` re-stamped — which also moves it
+        # into this importer's prune scope. Reporting that as an addition told
+        # the operator a new metric would appear while a hand-authored one was
+        # about to be taken over.
+        added = [mid for mid in written if mid not in existing]
         updated = [mid for mid in written if mid in in_scope]
+        adopted = [mid for mid in written if mid in existing and mid not in in_scope]
         deleted = sorted(in_scope - set(written)) if prune else []
 
         if not dry_run:
             for metric_id in deleted:
+                # Before the delete, never after: an interruption between the
+                # two would otherwise leave a metric gone with no record of it.
+                if on_delete is not None:
+                    on_delete(metric_id)
                 self.delete(metric_id)
 
-        return {"added": added, "updated": updated, "written": written, "deleted": deleted}
+        return {
+            "added": added,
+            "updated": updated,
+            "adopted": adopted,
+            "written": written,
+            "deleted": deleted,
+        }
 
     def export_to_yaml(self, output_dir: Union[str, Path]) -> int:
         """Export all metrics to YAML files under output_dir/{category}/{name}.yml.

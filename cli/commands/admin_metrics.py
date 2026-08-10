@@ -59,7 +59,13 @@ def import_metrics(
     try:
         repo = metric_repo()
         try:
-            report = repo.reconcile_from_yaml(import_path, source_ref=source_ref, prune=prune, dry_run=dry_run)
+            report = repo.reconcile_from_yaml(
+                import_path,
+                source_ref=source_ref,
+                prune=prune,
+                dry_run=dry_run,
+                on_delete=lambda mid: _audit_prune(mid, source_ref=source_ref),
+            )
         except ValueError as e:
             # The repo refuses prune shapes that would delete the whole scope.
             # Surface the reason, not a traceback — the operator is one flag
@@ -67,8 +73,6 @@ def import_metrics(
             typer.echo(f"Error: {e}", err=True)
             raise typer.Exit(1)
         _echo_report(report, path=path, dry_run=dry_run, prune=prune)
-        if report["deleted"] and not dry_run:
-            _audit_prune(report["deleted"], source_ref=source_ref)
     finally:
         if conn is not None:
             conn.close()
@@ -85,6 +89,8 @@ def _echo_report(report: dict, *, path: str, dry_run: bool, prune: bool) -> None
     typer.echo(f"{prefix} {len(report['written'])} metric(s) from {path}")
     typer.echo(f"  added   {len(report['added'])}")
     typer.echo(f"  updated {len(report['updated'])}")
+    for metric_id in report.get("adopted", []):
+        typer.echo(f"  {'would take over' if dry_run else 'took over'} {metric_id} (was owned by another source)")
     for metric_id in report["deleted"]:
         typer.echo(f"  {'would delete' if dry_run else 'deleted'} {metric_id}")
     if not prune:
@@ -93,23 +99,27 @@ def _echo_report(report: dict, *, path: str, dry_run: bool, prune: bool) -> None
         typer.echo("  nothing to prune")
 
 
-def _audit_prune(deleted: list, *, source_ref: Optional[str]) -> None:
-    """One audit row per deletion — this is the only destructive metric path,
-    and it runs direct against the repo with no API request behind it."""
+def _audit_prune(metric_id: str, *, source_ref: Optional[str]) -> None:
+    """Audit one deletion, called by the repo BEFORE the row goes.
+
+    This is the only destructive metric path and it runs direct against the
+    repo, with no API request behind it to be audited instead — so the record
+    has to be written here, and written first: an interruption between the two
+    otherwise leaves a metric deleted with nothing saying so.
+    """
     from src.repositories import audit_repo
 
-    for metric_id in deleted:
-        try:
-            audit_repo().log(
-                user_id=None,
-                action="metrics.prune",
-                resource=f"metric:{metric_id}"[:256],
-                params={"source_ref": source_ref},
-                result="success",
-                client_kind="cli",
-            )
-        except Exception:  # noqa: BLE001 - an audit outage must not abort the import
-            typer.echo(f"  (audit write failed for {metric_id})", err=True)
+    try:
+        audit_repo().log(
+            user_id=None,
+            action="metrics.prune",
+            resource=f"metric:{metric_id}"[:256],
+            params={"source_ref": source_ref},
+            result="success",
+            client_kind="cli",
+        )
+    except Exception:  # noqa: BLE001 - an audit outage must not abort the import
+        typer.echo(f"  (audit write failed for {metric_id})", err=True)
 
 
 @admin_metrics_app.command("export")
