@@ -534,3 +534,49 @@ class TestDownloadPathTraversal:
         # is the expected outcome (NOT 422 / 400 from the safety check).
         resp = c.get("/api/data/in.c-crm.orders/download", headers=_auth(seeded_app["admin_token"]))
         assert resp.status_code == 404
+
+
+class TestAccessDeniedDetail:
+    """The 403 text a user actually reads.
+
+    Cloud chat is modelled as a singleton feature-gate: resource type `chat`
+    with one resource whose id is the literal string "chat". The generic
+    "Access denied to {type} {id!r}" therefore rendered as
+    `Access denied to chat 'chat'` — which the Studio builders printed
+    verbatim into their assistant panel, on a page whose banner reads
+    "AI-ASSISTED". Two independent testers reported it and neither could tell
+    whether it was their permissions or a broken instance.
+    """
+
+    def test_singleton_feature_resource_names_the_feature(self):
+        from app.auth.access import access_denied_detail
+        from app.resource_types import ResourceType
+
+        detail = access_denied_detail(ResourceType.CHAT, "chat")
+        assert "chat 'chat'" not in detail
+        assert "Cloud chat" in detail
+        assert "not enabled for your account" in detail
+
+    def test_multi_instance_resource_keeps_naming_the_id(self):
+        """The generic shape is right when there really are many instances —
+        the id is the thing the reader needs."""
+        from app.auth.access import access_denied_detail
+        from app.resource_types import ResourceType
+
+        detail = access_denied_detail(ResourceType.TABLE, "orders")
+        assert detail == "Access denied to table 'orders'"
+
+    def test_every_singleton_resource_type_reads_cleanly(self):
+        """Guard against a future resource type repeating the shape: any spec
+        whose `id_format` is a literal (no `<placeholder>`) is a singleton."""
+        from app.auth.access import access_denied_detail
+        from app.resource_types import RESOURCE_TYPES
+
+        for rt, spec in RESOURCE_TYPES.items():
+            id_format = getattr(spec, "id_format", "") or ""
+            if "<" in id_format:
+                continue  # multi-instance
+            detail = access_denied_detail(rt, id_format)
+            assert f"{rt.value} '{rt.value}'" not in detail, (
+                f"{rt.value} still renders the type-as-id shape: {detail}"
+            )
