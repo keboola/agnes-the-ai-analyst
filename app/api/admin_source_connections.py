@@ -35,7 +35,7 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from app.auth.access import require_admin
-from app.secrets_vault import VaultKeyNotConfiguredError
+from app.secrets_vault import VaultKeyNotConfiguredError, can_store_secrets
 from connectors.keboola.semantic_layer import MasterTokenRequiredError, require_master_token
 from connectors.keboola.storage_api import KeboolaStorageClient, StorageApiError, is_upstream_client_error
 from src.repositories import (
@@ -169,6 +169,76 @@ def _reject_disallowed_token_env(token_env: Optional[str]) -> None:
                 "or store the token in the vault via PUT .../secret instead."
             ),
         )
+
+
+def project_identity(payload: Optional[Dict[str, Any]]) -> tuple[Optional[Any], str]:
+    """``(project_id, project_name)`` from a Storage API payload that carries
+    an ``owner`` block — both ``GET /tokens/verify`` and ``GET /v2/storage``
+    do, so one reader serves the token preflights and the /test probe.
+
+    Returns ``(None, "")`` when the payload has no owner id: an identity we
+    cannot read must never be persisted as a *known* identity, or the
+    cross-token check below would compare against a hole and pass anything.
+    """
+    owner = (payload or {}).get("owner") or {}
+    owner_id = owner.get("id")
+    if owner_id is None:
+        return None, ""
+    return owner_id, owner.get("name") or ""
+
+
+def _record_project_identity(connection_id: str, row: Dict[str, Any], payload: Dict[str, Any]) -> None:
+    """Persist the upstream project's id + name onto the connection config.
+
+    A connection is one Keboola project, but nothing used to record WHICH —
+    so an instance with several projects showed several identical-looking
+    connections and a "master token: SET" badge that said nothing about
+    which project the token actually opened. Recording the identity at every
+    point a token verifies is what makes :func:`_reject_project_mismatch`
+    possible at all.
+    """
+    project_id, project_name = project_identity(payload)
+    if project_id is None:
+        return
+    config = dict(row.get("config") or {})
+    if config.get("project_id") == project_id and config.get("project_name") == project_name:
+        return
+    config["project_id"] = project_id
+    config["project_name"] = project_name
+    source_connections_repo().update(connection_id, config=config)
+
+
+def _reject_project_mismatch(row: Dict[str, Any], payload: Dict[str, Any], *, what: str) -> None:
+    """400 if this token opens a different Keboola project than the one the
+    connection is already bound to.
+
+    The failure this closes: a master token pasted onto the wrong connection
+    was stored happily and badged "SET", and the semantic layer then synced
+    a *different* project's metrics under this connection's name — with no
+    surface anywhere showing the two tokens disagreed. Silent, and only
+    visible as metrics that make no sense for the project you thought you
+    were looking at.
+
+    Skipped when the connection has no recorded identity yet (nothing to
+    contradict — the caller records it instead).
+    """
+    config = row.get("config") or {}
+    known_id = config.get("project_id")
+    if known_id is None:
+        return
+    token_id, token_name = project_identity(payload)
+    if token_id is None or token_id == known_id:
+        return
+    known_name = config.get("project_name") or "unnamed"
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"project_mismatch: this {what} belongs to Keboola project "
+            f"{token_id} ({token_name or 'unnamed'}), but the connection is bound to project "
+            f"{known_id} ({known_name}). Use a token from that project, or create a separate "
+            f"connection for project {token_id}."
+        ),
+    )
 
 
 class _VerifiedTokenInfo:
@@ -328,6 +398,11 @@ async def set_connection_secret(
     """Store (or rotate) the vault secret for a connection token.
 
     ``kind="storage"`` (default): the plain Storage API token used for pulls.
+    For a Keboola connection it is preflighted like the master token, and the
+    project it opens (``owner.id``/``owner.name``) is recorded on the
+    connection — that identity is what later tokens are checked against.
+    400 ``project_mismatch`` if the token opens a different project than the
+    one this connection is already bound to; a connection is one project.
     ``kind="master"``: a *separate* slot for a Keboola master (owner) Storage
     API token, required by the semantic-layer sync (Metastore API rejects
     non-master tokens). 400 if the connection isn't ``source_type="keboola"``,
@@ -336,7 +411,9 @@ async def set_connection_secret(
     expired token is the admin's to fix, not a gateway failure). 502 only when
     the Storage API is unreachable or answers 5xx.
 
-    409 if AGNES_VAULT_KEY is not configured on the server.
+    409 if AGNES_VAULT_KEY is not configured on the server — checked FIRST, so
+    an instance that cannot store secrets says so instead of spending an
+    upstream round-trip and reporting a token problem it never had.
     """
     row = source_connections_repo().get(connection_id)
     if row is None:
@@ -345,6 +422,20 @@ async def set_connection_secret(
         raise HTTPException(status_code=400, detail="secret value required")
     if body.kind not in ("storage", "master"):
         raise HTTPException(status_code=400, detail="invalid_kind")
+
+    # Refuse a doomed write before asking Keboola anything. Both branches below
+    # now preflight the token upstream, and a round-trip to validate a secret
+    # this instance cannot store is both wasted and actively misleading — the
+    # admin would get a token error for what is really an unconfigured vault.
+    if not can_store_secrets():
+        raise HTTPException(
+            status_code=409,
+            detail="vault_key_not_configured: set AGNES_VAULT_KEY on the server before storing secrets",
+        )
+
+    # Stays None for a non-Keboola connection (no Storage API to ask), which
+    # is what the identity-recording step below keys off.
+    info: Optional[Dict[str, Any]] = None
 
     if body.kind == "master":
         if row.get("source_type") != "keboola":
@@ -386,8 +477,37 @@ async def set_connection_secret(
                 require_master_token(_VerifiedTokenInfo(info))
             except MasterTokenRequiredError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # A master token is only "the" master token for THIS connection if it
+        # opens the same project the connection is bound to. Without this, a
+        # token pasted onto the wrong row stored fine, badged "SET", and the
+        # semantic layer synced another project's metrics under this name.
+        _reject_project_mismatch(row, info, what="master token")
         key = master_secret_key(connection_id)
     else:
+        if row.get("source_type") == "keboola":
+            config = row.get("config") or {}
+            # Keboola storage tokens get the same preflight as master tokens.
+            # It is what makes the project identity knowable at all — the
+            # storage token is the one the wizard fills, so it is where a
+            # connection's project comes from. The cost is real and worth
+            # naming: a Storage API outage now blocks storing a storage token
+            # instead of accepting one nobody has checked.
+            _validate_stack_url(config, required=True)
+            stack_url = (config.get("stack_url") or "").rstrip("/")
+            client = KeboolaStorageClient(url=stack_url, token=body.value)
+            try:
+                info = await run_in_threadpool(client.verify_token)
+            except (StorageApiError, requests.RequestException) as exc:
+                redacted = client._redact(exc)
+                logger.warning(
+                    "storage-token preflight failed for connection %s (%s): %s",
+                    connection_id,
+                    _log_host(stack_url),
+                    redacted,
+                )
+                status = 400 if is_upstream_client_error(exc) else 502
+                raise HTTPException(status_code=status, detail=f"storage_api_error: {redacted}") from exc
+            _reject_project_mismatch(row, info, what="storage token")
         key = connection_id
 
     try:
@@ -397,6 +517,11 @@ async def set_connection_secret(
             status_code=409,
             detail="vault_key_not_configured: set AGNES_VAULT_KEY on the server before storing secrets",
         ) from exc
+
+    # Only after the secret is safely stored: a recorded identity whose token
+    # failed to persist would bind the connection to a project it cannot open.
+    if row.get("source_type") == "keboola" and info is not None:
+        _record_project_identity(connection_id, row, info)
 
 
 @router.delete("/{connection_id}/secret", status_code=204)
@@ -466,6 +591,12 @@ async def test_connection(
         if resp.status_code == 200:
             data = resp.json()
             project_name = data.get("owner", {}).get("name") or data.get("name") or ""
+            # The probe already knew which project answered and threw it away.
+            # Persisting it here is what gives the "Add Keboola project" wizard
+            # a project identity at all — /test is the wizard's own last step,
+            # so a connection is bound to its project the moment it is created.
+            if row.get("source_type") == "keboola":
+                _record_project_identity(connection_id, row, data)
             # project_name is response-body content — it goes to the caller
             # but deliberately NOT into the log line (see comment above).
             logger.info(

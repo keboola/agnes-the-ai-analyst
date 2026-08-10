@@ -622,12 +622,19 @@ def _enumerate_master_sources() -> list[dict]:
                 conn["id"],
             )
             continue
+        config = conn.get("config") or {}
         sources.append(
             {
                 "connection_id": conn["id"],
                 "name": conn.get("name") or conn["id"],
                 "stack_url": stack_url,
                 "token": token,
+                # The project this connection is bound to, when known. Carried
+                # so the sync can refuse to import a DIFFERENT project's
+                # semantic layer under this connection's name — the token
+                # preflight already fetches the owner, so the check is free.
+                "project_id": config.get("project_id"),
+                "project_name": config.get("project_name") or "",
             }
         )
 
@@ -645,6 +652,7 @@ def _sync_one_source(
     adopt_null: bool,
     prune_scope_refs: Optional[set] = None,
     seen_project_keys: Optional[set[tuple[str, Any]]] = None,
+    expected_project: Optional[tuple[Any, str]] = None,
 ) -> dict:
     """Fetch ONE Keboola project's semantic layer (Metastore) and upsert it
     into Agnes's metric_definitions / glossary_terms tables, pruning stale
@@ -663,6 +671,14 @@ def _sync_one_source(
     already synced in this run: if this source resolves to one of them it
     short-circuits as ``skipped_duplicate_project`` before touching any row;
     otherwise its own identity is added to the set.
+
+    ``expected_project`` is the ``(project_id, project_name)`` the connection
+    is bound to. When the token turns out to open a DIFFERENT project the
+    source fails with ``project_mismatch`` instead of importing, because the
+    alternative is silent and expensive: another project's metrics land under
+    this connection's name and its prune scope, so the next sync of the right
+    project deletes them again. The preflight already fetched the owner, so
+    the check costs nothing.
 
     Raises MasterTokenRequiredError if the token is not a master token (see
     require_master_token) — a configuration error the caller surfaces loudly
@@ -693,6 +709,31 @@ def _sync_one_source(
             "source_ref": source_ref,
         }
     check_master_token(token_info)
+
+    if expected_project is not None:
+        expected_id, expected_name = expected_project
+        actual_id = (token_info.get("owner") or {}).get("id")
+        if expected_id is not None and actual_id is not None and actual_id != expected_id:
+            logger.error(
+                "Keboola semantic layer: connection %s is bound to project %s but its master "
+                "token opens project %s; refusing to import one project's semantic layer under "
+                "another's name",
+                source_ref,
+                expected_id,
+                actual_id,
+            )
+            actual_name = (token_info.get("owner") or {}).get("name") or "unnamed"
+            return {
+                "status": "error",
+                "error": (
+                    f"Master token belongs to Keboola project {actual_id} ({actual_name}), but this "
+                    f"connection is bound to project {expected_id} ({expected_name or 'unnamed'}). "
+                    "Replace the master token with one from the bound project, or connect the other "
+                    "project as its own data source."
+                ),
+                "code": "project_mismatch",
+                "source_ref": source_ref,
+            }
 
     project_key = _project_key(url, token_info)
     # A missing owner id (project_key is None) gives no reliable identity to
@@ -1038,6 +1079,9 @@ def sync_semantic_layer(
                     # connection may claim them.
                     adopt_null=connection_id == default_id,
                     seen_project_keys=seen_project_keys,
+                    expected_project=(
+                        (source["project_id"], source["project_name"]) if source.get("project_id") is not None else None
+                    ),
                 )
             except MasterTokenRequiredError as e:
                 logger.error("Keboola semantic layer: connection %s rejected: %s", connection_id, e)
