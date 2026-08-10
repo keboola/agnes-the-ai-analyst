@@ -290,10 +290,15 @@ def test_stack_state_is_visible_on_every_row(seeded_app):
     assert "data-add-to-stack=" in text
 
 
-def test_granted_resources_report_in_stack_not_addable(seeded_app):
-    """Auto-membership: a grant on the caller's group puts a resource in their
-    Stack with no action, so those rows say "In Stack" and offer no Add."""
+def test_granted_resources_report_in_stack_not_addable(seeded_app, monkeypatch):
+    """Auto-membership (opt-in): a grant on the caller's group puts a resource
+    in their Stack with no action, so those rows say "In Stack" and offer no
+    Add. The classic default renders granted-but-unsubscribed rows as
+    not-a-member (tests/test_web_library.py::
+    test_library_available_grant_classic_is_not_claimed_in_stack)."""
     import re
+
+    monkeypatch.setenv("AGNES_STACK_AUTO_MEMBERSHIP", "1")
 
     from src.db import get_system_db
     from src.repositories import data_packages_repo

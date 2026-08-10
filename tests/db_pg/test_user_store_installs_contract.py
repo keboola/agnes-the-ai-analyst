@@ -39,11 +39,24 @@ def _make_duckdb(tmp_path):
 
     conn = _open_duckdb(str(tmp_path / "duck.duckdb"))
     _ensure_schema(conn)
+
+    def seed_group(group_id, user_ids):
+        conn.execute(
+            "INSERT INTO user_groups (id, name, is_system) VALUES (?, ?, FALSE)",
+            [group_id, f"grp-{group_id}"],
+        )
+        for uid in user_ids:
+            conn.execute(
+                "INSERT INTO user_group_members (user_id, group_id, source) VALUES (?, ?, 'admin')",
+                [uid, group_id],
+            )
+
     return (
         UserStoreInstallsRepository(conn),
         StoreEntitiesRepository(conn),
         StoreSubmissionsRepository(conn),
         conn,
+        seed_group,
     )
 
 
@@ -67,11 +80,27 @@ def _make_pg(pg_engine, monkeypatch):
     from src.repositories.user_store_installs_pg import UserStoreInstallsPgRepository
 
     engine = db_pg.get_engine()
+
+    def seed_group(group_id, user_ids):
+        import sqlalchemy as sa
+
+        with engine.begin() as conn:
+            conn.execute(
+                sa.text("INSERT INTO user_groups (id, name, is_system) VALUES (:i, :n, FALSE)"),
+                {"i": group_id, "n": f"grp-{group_id}"},
+            )
+            for uid in user_ids:
+                conn.execute(
+                    sa.text("INSERT INTO user_group_members (user_id, group_id, source) VALUES (:u, :g, 'admin')"),
+                    {"u": uid, "g": group_id},
+                )
+
     return (
         UserStoreInstallsPgRepository(engine),
         StoreEntitiesPgRepository(engine),
         StoreSubmissionsPgRepository(engine),
         None,
+        seed_group,
     )
 
 
@@ -79,13 +108,27 @@ def _make_pg(pg_engine, monkeypatch):
 def repos(request, tmp_path, pg_engine, monkeypatch):
     """Yields ``(installs, entities, submissions)`` bound to one backend."""
     if request.param == "duckdb":
-        installs, entities, submissions, conn = _make_duckdb(tmp_path)
+        installs, entities, submissions, conn, _seed = _make_duckdb(tmp_path)
         yield installs, entities, submissions
         if conn is not None:
             conn.close()
     else:
-        installs, entities, submissions, _ = _make_pg(pg_engine, monkeypatch)
+        installs, entities, submissions, _, _seed = _make_pg(pg_engine, monkeypatch)
         yield installs, entities, submissions
+
+
+@pytest.fixture(params=["duckdb", "pg"])
+def repos_with_groups(request, tmp_path, pg_engine, monkeypatch):
+    """``(installs, entities, seed_group)`` — the Required-tier fan-out needs
+    ``user_group_members`` rows, which the plain ``repos`` fixture does not seed."""
+    if request.param == "duckdb":
+        installs, entities, _subs, conn, seed = _make_duckdb(tmp_path)
+        yield installs, entities, seed
+        if conn is not None:
+            conn.close()
+    else:
+        installs, entities, _subs, _, seed = _make_pg(pg_engine, monkeypatch)
+        yield installs, entities, seed
 
 
 def _entity(entities, *, name: str, visibility_status: str, owner: str = OWNER) -> str:
@@ -199,3 +242,98 @@ def test_list_for_user_projection_matches_across_engines(repos):
         assert key in row, f"{key} missing from list_for_user projection"
     assert row["owner_user_id"] == OWNER
     assert row["visibility_status"] == "approved"
+
+
+# ---------------------------------------------------------------------------
+# Required-tier fan-out (install_for_group_members / install_required_for_user)
+#
+# These two materialize the Required tier: a store entity granted `required` to a
+# group must end up as a real row per member, or the "locked, can't uninstall"
+# state is a label with nothing behind it. They were added to both backends with
+# matching SQL but no cross-engine coverage, so the two implementations' RETURN
+# VALUES came from different mechanisms — DuckDB diffs `installer_count` either
+# side of the INSERT, Postgres counts `RETURNING` rows — with nothing asserting
+# they agree. Reached in production via `app/api/access.py`'s
+# `_fanout_required_store_entity` and `src/marketplace_filter.py`.
+# ---------------------------------------------------------------------------
+
+
+def test_install_for_group_members_installs_once_per_member(repos_with_groups):
+    installs, entities, seed_group = repos_with_groups
+    eid = _entity(entities, name="req-fanout", visibility_status="approved")
+    seed_group("g-req", ["u-1", "u-2", "u-3"])
+
+    created = installs.install_for_group_members("g-req", eid)
+
+    assert created == 3
+    assert installs.installer_count(eid) == 3
+    for uid in ("u-1", "u-2", "u-3"):
+        assert installs.is_installed(uid, eid) is True
+
+
+def test_install_for_group_members_is_idempotent(repos_with_groups):
+    """Re-running the fan-out must report 0 new rows, not re-count the group.
+
+    This is where the two engines could disagree: the DuckDB return value is a
+    before/after count difference and the Postgres one is a `RETURNING` row
+    count, and `ON CONFLICT DO NOTHING` makes the second call insert nothing on
+    both. A regression on either side shows up here as a non-zero second call.
+    """
+    installs, entities, seed_group = repos_with_groups
+    eid = _entity(entities, name="req-idem", visibility_status="approved")
+    seed_group("g-idem", ["u-1", "u-2"])
+
+    assert installs.install_for_group_members("g-idem", eid) == 2
+    assert installs.install_for_group_members("g-idem", eid) == 0
+    assert installs.installer_count(eid) == 2
+
+
+def test_install_for_group_members_counts_only_new_rows(repos_with_groups):
+    """One member already had it installed by hand — only the other two are new."""
+    installs, entities, seed_group = repos_with_groups
+    eid = _entity(entities, name="req-partial", visibility_status="approved")
+    seed_group("g-partial", ["u-1", "u-2", "u-3"])
+    installs.install("u-2", eid)
+
+    assert installs.install_for_group_members("g-partial", eid) == 2
+    assert installs.installer_count(eid) == 3
+
+
+def test_install_for_group_members_on_an_empty_group(repos_with_groups):
+    installs, entities, seed_group = repos_with_groups
+    eid = _entity(entities, name="req-empty", visibility_status="approved")
+    seed_group("g-empty", [])
+
+    assert installs.install_for_group_members("g-empty", eid) == 0
+    assert installs.installer_count(eid) == 0
+
+
+def test_install_for_group_members_ignores_other_groups(repos_with_groups):
+    """The fan-out is scoped to one group — a member of a different group must
+    not be swept in, or a Required grant would install for the whole instance."""
+    installs, entities, seed_group = repos_with_groups
+    eid = _entity(entities, name="req-scoped", visibility_status="approved")
+    seed_group("g-in", ["u-in"])
+    seed_group("g-out", ["u-out"])
+
+    assert installs.install_for_group_members("g-in", eid) == 1
+    assert installs.is_installed("u-in", eid) is True
+    assert installs.is_installed("u-out", eid) is False
+
+
+def test_install_required_for_user_is_idempotent_and_counts_new(repos_with_groups):
+    """The join-later half: a user added after the grant catches up on resolve."""
+    installs, entities, _seed = repos_with_groups
+    a = _entity(entities, name="req-a", visibility_status="approved")
+    b = _entity(entities, name="req-b", visibility_status="approved")
+
+    assert installs.install_required_for_user("u-late", [a, b]) == 2
+    assert installs.install_required_for_user("u-late", [a, b]) == 0
+    assert installs.install_required_for_user("u-late", [a, b, "ent-req-a"]) == 0
+    assert installs.installer_count(a) == 1
+    assert installs.installer_count(b) == 1
+
+
+def test_install_required_for_user_with_no_ids(repos_with_groups):
+    installs, _entities, _seed = repos_with_groups
+    assert installs.install_required_for_user("u-none", []) == 0

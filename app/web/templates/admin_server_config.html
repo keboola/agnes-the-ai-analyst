@@ -45,6 +45,14 @@
     overflow-y: auto;
     display: flex;
     flex-direction: column;
+    /* `align-items` and `gap` were inherited from the bare `nav {}` rule in
+       style-custom.css until #1207 removed it. This element overrode only
+       `display`, so it was a silent dependent of the other two: without them
+       the links lose their 15px separation and stretch to full width instead
+       of centring. Declared here so the removal changes nothing that renders
+       (Devin Review on #1211). */
+    align-items: center;
+    gap: 15px;
     padding: 12px 0 8px;
   }
   /* Group label — visually non-clickable: all-caps, muted, no cursor affordance */
@@ -384,7 +392,7 @@
       <div>
         <h3>Feature flags</h3>
         <div class="section-help">
-          Every flag registered in <code>app.instance_config.FEATURE_FLAGS</code>,
+          Every flag registered in <code>app/switches.py</code>,
           resolved <strong>env var &gt; instance.yaml &gt; default</strong>
           (see <code>docs/feature-flags.md</code>). Read-only summary — a flag
           is editable in the UI only if its config section appears above
@@ -562,7 +570,15 @@ function renderLeafInput(fieldId, section, pathSegments, kind, value, opts, isUn
     return `<input id="${fieldId}" type="number" step="any" data-section="${section}" data-key="${escHtml(dottedKey)}" data-path="${dataPath}" data-cast="float" value="${escHtml(v)}">`;
   }
   if (kind === "bool") {
-    const v = !!value;
+    // Unset falls back to the registry default, exactly like the text branch
+    // below — `!!undefined` is false, so a never-configured switch whose real
+    // default is ON rendered as OFF and the next "Save section" wrote that
+    // false back. Concretely: enabling chat also silently disabled tool-call
+    // approvals, and saving the Studio section disabled the Studio surface.
+    // Latent until booleans with a true default became editable
+    // (Devin Review on #1190).
+    const dflt = opts && opts.spec && typeof opts.spec.default === "boolean" ? opts.spec.default : false;
+    const v = isUnset ? dflt : !!value;
     return `<select id="${fieldId}" data-section="${section}" data-key="${escHtml(dottedKey)}" data-path="${dataPath}" data-cast="bool">
       <option value="true" ${v ? "selected" : ""}>true</option>
       <option value="false" ${!v ? "selected" : ""}>false</option>
@@ -1045,6 +1061,7 @@ function buildSidenav(sections) {
 function flagSourceBadge(source) {
   if (source === "env") return '<span style="color: #2a8c4a;">env</span>';
   if (source === "config") return '<span style="color: #6366f1;">config</span>';
+  if (source === "preset") return '<span style="color: #b45309;">preset</span>';
   return '<span style="color: #888;">default</span>';
 }
 
@@ -1058,7 +1075,9 @@ function renderFeatureFlags(flags) {
   const rows = flags.map(f => `
     <tr>
       <td><code>${escHtml(f.name)}</code></td>
-      <td>${f.effective ? '<span style="color: #2a8c4a;">&#10003; on</span>' : '<span style="color: #888;">&#10007; off</span>'}</td>
+      <td>${f.value_label !== undefined
+            ? `<code>${escHtml(f.value_label)}</code>`
+            : (f.effective ? '<span style="color: #2a8c4a;">&#10003; on</span>' : '<span style="color: #888;">&#10007; off</span>')}</td>
       <td>${flagSourceBadge(f.source)}</td>
       <td><code>${escHtml(f.env_var)}</code></td>
       <td style="color: var(--text-secondary, #6b7280);">${escHtml(f.description)}</td>

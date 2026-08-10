@@ -7,7 +7,6 @@ Server-health checks live under `agnes diagnose system` (see the
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -35,7 +34,9 @@ status_app = typer.Typer(help="Show workspace status (initialized? data fresh? h
 def status(
     as_json: bool = typer.Option(False, "--json", help="Machine-readable output"),
 ):
-    workspace = Path(os.environ.get("AGNES_LOCAL_DIR", ".")).resolve()
+    from cli.lib.workspace_resolve import resolve_data_workspace
+
+    workspace = resolve_data_workspace() or Path.cwd().resolve()
 
     initialized = (workspace / _INIT_SENTINEL).exists()
     if not initialized:

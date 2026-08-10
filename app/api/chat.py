@@ -38,6 +38,29 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 require_chat_access = require_resource_access(ResourceType.CHAT, "chat")
 
 
+def _reject_restricted_principal(user: object, what: str) -> None:
+    """403 a co-session / agent-session caller before the handler subscripts ``user``.
+
+    ``require_resource_access`` returns whatever principal it authorized, and for
+    a restricted principal that is a FROZEN DATACLASS
+    (``SessionPrincipal`` / ``AgentPrincipal``), not a dict — see
+    ``app/auth/access.py`` where the two branches diverge. So ``user["email"]``
+    raises ``TypeError: 'SessionPrincipal' object is not subscriptable`` and the
+    caller gets a 500 where it should get a 403.
+
+    Semantically these operations have no restricted-principal meaning anyway: a
+    co-session has no single identity to own a conversation or an onboarding
+    journey, and an agent-session must not mutate its owner's. ``app/api/stack.py``
+    added the identical guard for the identical hazard in this same change
+    (``_reject_co_session``) — this is that guard for the chat routes, which were
+    missed (review of #1104).
+    """
+    from app.auth.session_principal import PRINCIPAL_TYPES
+
+    if isinstance(user, PRINCIPAL_TYPES):
+        raise HTTPException(403, f"co_session cannot {what}")
+
+
 # WS auth tickets ride the coordination backend (single-use KV with TTL) —
 # not a module-level dict. In single-process ``memory`` mode that's still
 # just an in-process dict under the hood (see app.coordination.memory), so
@@ -182,6 +205,7 @@ async def set_session_pinned(
     pinned session just re-stamps ``pinned_at``, which re-orders it to the front
     of the Pinned group.
     """
+    _reject_restricted_principal(user, "pin a conversation")
     repo = _get_repo(request)
     s = repo.get_session(chat_id)
     if s is None or s.user_email != user["email"]:
@@ -218,6 +242,7 @@ async def rename_session(
     all-whitespace title is a 400 rather than a silent no-op — the row would
     otherwise render as "Untitled chat" with no explanation.
     """
+    _reject_restricted_principal(user, "rename a conversation")
     title = body.title.strip()
     if not title:
         raise HTTPException(
@@ -281,6 +306,7 @@ async def set_session_archived(
     endpoint cannot be used to probe for other users' session ids. Idempotent in
     both directions.
     """
+    _reject_restricted_principal(user, "archive a conversation")
     repo = _get_repo(request)
     s = repo.get_session(chat_id)
     if s is None or s.user_email != user["email"]:
@@ -310,6 +336,7 @@ async def delete_session_permanently(
     Same ownership gate (404, never 403) and the same sandbox kill first: the
     row is about to go, so a runner still holding it would be orphaned.
     """
+    _reject_restricted_principal(user, "delete a conversation")
     repo = _get_repo(request)
     s = repo.get_session(chat_id)
     if s is None or s.user_email != user["email"]:
@@ -366,6 +393,7 @@ async def get_journey(
     the RBAC gate is the chat-access resource; there is no cross-user
     read/write here since the repo call is always keyed off the caller's
     own ``user["id"]``)."""
+    _reject_restricted_principal(user, "read an onboarding journey")
     return user_journey_repo().get(user["id"])
 
 
@@ -375,6 +403,7 @@ async def update_journey(
     user: dict = Depends(require_chat_access),
 ):
     fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    _reject_restricted_principal(user, "update an onboarding journey")
     return user_journey_repo().update(user["id"], **fields)
 
 

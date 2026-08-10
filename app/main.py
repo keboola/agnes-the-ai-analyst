@@ -77,14 +77,15 @@ def _chat_jwt_secret_ok(chat_config) -> bool:
     ``JWT_SECRET_KEY`` (unset or shorter than 32 bytes).
 
     The chat path mints session JWTs that authenticate the sandboxed
-    runner back to the Agnes server.  If ``JWT_SECRET_KEY`` is unset, the
-    auth layer falls back to the public test constant
-    (``test-jwt-secret-key-minimum-32-chars!!`` — committed in jwt.py for
-    local-dev convenience).  A production deployment that flips
-    ``chat.enabled: true`` without setting a real secret would mint and
-    verify tokens against that constant — anyone who reads the source
-    could mint runner JWTs.  Refuse to enable chat in that state and
-    surface a fatal log so the operator knows why.
+    runner back to the Agnes server.  ``app.auth.jwt._get_secret_key`` is
+    fail-closed — production without ``JWT_SECRET_KEY`` refuses to boot,
+    and local dev signs with an auto-generated per-instance key — so this
+    gate is the narrower, earlier check: it names chat as the reason and
+    logs it, rather than letting the deployment die at lifespan with a
+    generic message, and it rejects a key local dev would otherwise accept
+    (auto-generated or shorter than 32 bytes).  Anything reachable here is
+    a misconfiguration, never the committed test constant: that one is
+    gated on ``TESTING=1`` in jwt.py and reachable from no server path.
 
     Returns True when chat is disabled (irrelevant) or when the secret is
     set and >= 32 bytes; False otherwise.
@@ -2255,10 +2256,27 @@ def create_app() -> FastAPI:
 
     # Load instance config on startup
     try:
-        from app.instance_config import load_instance_config
+        from app.instance_config import InstanceConfigUnreadable, load_instance_config, reset_cache
 
-        load_instance_config()
+        # `strict=True` + a cache drop: this is THE boot check, and it has to
+        # actually read the file. Importing this module already loads the
+        # config once, so without the reset the startup call returns the cache
+        # and inspects nothing — which is how the refusal quietly stopped
+        # existing when it was gated on a "have we booted yet" flag instead.
+        reset_cache()
+        load_instance_config(strict=True)
         logger.info("Instance config loaded")
+    except InstanceConfigUnreadable:
+        # Re-raised, unlike everything else here. The broad `except` below is
+        # deliberate — a soft config problem should not stop an instance from
+        # serving — but an overlay that exists and cannot be READ is not soft:
+        # `database.backend` lives in it, so continuing means either running
+        # against the wrong store or 500ing every `get_value()` consumer while
+        # looking healthy from the outside. Refusing at boot is the whole point
+        # of raising it, and swallowing it here would have made that a comment
+        # rather than a behaviour.
+        logger.critical("instance config overlay is unreadable — refusing to start")
+        raise
     except Exception as e:
         logger.warning(f"Could not load instance config: {e}")
 

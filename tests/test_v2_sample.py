@@ -367,3 +367,254 @@ class TestBqAccessErrors:
         assert captured["billing_project"] == "billing-proj"
         # FROM clause uses data project (where the table actually lives)
         assert "`data-proj.ds.bq_view`" in captured["bq_sql"]
+
+
+class TestNotSyncedDetail:
+    """Registered-but-dataless tables must explain the pending/failing first
+    sync instead of the misleading bare "table not found" (which reads as
+    "registration failed" to the admin who just registered the table)."""
+
+    @staticmethod
+    def _register_keboola_row(conn, table_id):
+        from src.repositories.table_registry import TableRegistryRepository
+
+        TableRegistryRepository(conn).register(
+            id=table_id,
+            name=table_id,
+            source_type="keboola",
+            bucket="in.c-main",
+            source_table="orders",
+            query_mode="materialized",
+        )
+
+    def test_registered_but_unsynced_table_explains_pending_sync(self, reload_db):
+        from app.api import v2_sample
+
+        conn = reload_db.get_system_db()
+        try:
+            _ensure_admin1(conn)
+            self._register_keboola_row(conn, "kbc_fresh")
+            user = {"id": "admin1", "email": "a@x.com"}
+            with pytest.raises(v2_sample.TableNotSyncedError) as exc_info:
+                v2_sample.build_sample(conn, user, "kbc_fresh", n=5, bq=_bq())
+        finally:
+            conn.close()
+        assert "no synced data yet" in exc_info.value.detail
+        assert "kbc_fresh" in exc_info.value.detail
+
+    def test_last_sync_error_included_when_recorded(self, reload_db):
+        from app.api import v2_sample
+        from src.repositories.sync_state import SyncStateRepository
+
+        conn = reload_db.get_system_db()
+        try:
+            _ensure_admin1(conn)
+            self._register_keboola_row(conn, "kbc_broken")
+            SyncStateRepository(conn).set_error(
+                "kbc_broken", "GET .../export-async -> HTTP 404: nonexistent table"
+            )
+            user = {"id": "admin1", "email": "a@x.com"}
+            with pytest.raises(v2_sample.TableNotSyncedError) as exc_info:
+                v2_sample.build_sample(conn, user, "kbc_broken", n=5, bq=_bq())
+        finally:
+            conn.close()
+        assert "last sync error" in exc_info.value.detail
+        assert "HTTP 404" in exc_info.value.detail
+
+    def test_endpoint_maps_not_synced_detail_to_404(self, reload_db):
+        """The route handler must surface TableNotSyncedError.detail — not the
+        generic `table '…' not found` message."""
+        from app.api import v2_sample
+
+        conn = reload_db.get_system_db()
+        try:
+            _ensure_admin1(conn)
+            self._register_keboola_row(conn, "kbc_endpoint")
+            user = {"id": "admin1", "email": "a@x.com"}
+            with pytest.raises(HTTPException) as exc_info:
+                v2_sample.sample(table_id="kbc_endpoint", n=5, user=user, conn=conn, bq=_bq())
+        finally:
+            conn.close()
+        assert exc_info.value.status_code == 404
+        assert "no synced data yet" in exc_info.value.detail
+
+
+class TestByDesignNotLocalTablesDoNotBlameTheSync:
+    """A row that is never materialized locally must not be reported as a
+    pending or failing first sync.
+
+    `build_sample` special-cased only BigQuery non-materialized rows, so a
+    Keboola row registered `query_mode='remote'` — the shape this PR adds — and
+    any `server_only` row fell through to `resolve_local_parquet`, got `None`
+    legitimately, and were explained as "the first sync is pending or failing".
+    That sends an admin hunting a sync job that does not exist and never will
+    (Devin Review on #1189).
+    """
+
+    @staticmethod
+    def _register(conn, table_id, *, query_mode="remote", server_only=False):
+        from src.repositories.table_registry import TableRegistryRepository
+
+        TableRegistryRepository(conn).register(
+            id=table_id,
+            name=table_id,
+            source_type="keboola",
+            bucket="in.c-main",
+            source_table="orders",
+            query_mode=query_mode,
+            server_only=server_only,
+        )
+
+    def _detail_for(self, reload_db, table_id, **kw):
+        from app.api import v2_sample
+
+        conn = reload_db.get_system_db()
+        try:
+            _ensure_admin1(conn)
+            self._register(conn, table_id, **kw)
+            user = {"id": "admin1", "email": "a@x.com"}
+            with pytest.raises(v2_sample.TableNotPreviewableError) as exc_info:
+                v2_sample.build_sample(conn, user, table_id, n=5, bq=_bq())
+        finally:
+            conn.close()
+        return exc_info.value.detail
+
+    def test_remote_mode_row_is_not_described_as_a_pending_sync(self, reload_db):
+        detail = self._detail_for(reload_db, "kbc_remote", query_mode="remote")
+        assert "first sync" not in detail, detail
+        assert "no synced data yet" not in detail, detail
+        assert "query_mode='remote'" in detail
+        assert "--remote" in detail, "must point at the way to actually read it"
+
+    def test_server_only_still_blames_the_sync_because_the_server_does_copy_it(self, reload_db):
+        """`server_only` suppresses DISTRIBUTION, not materialization.
+
+        The server still writes the parquet — `app/api/sync.py` says as much
+        ("remote tables have no server parquet at all, and server_only ones are
+        deliberately not distributed"), and the registration validator rejects
+        `server_only` together with `query_mode='remote'` for exactly that
+        reason. So a missing parquet HERE is a real pending or failing sync. An
+        earlier version of this fix lumped it in with remote and reassured the
+        admin that nothing was wrong, hiding a broken job (Devin Review on
+        #1189).
+
+        The predicate that was borrowed from — sync.py's signed-URL gate —
+        combines the two correctly, because for DISTRIBUTION they coincide. For
+        previewability on the server they do not.
+        """
+        from app.api import v2_sample
+
+        conn = reload_db.get_system_db()
+        try:
+            _ensure_admin1(conn)
+            self._register(conn, "kbc_srv_only", query_mode="materialized", server_only=True)
+            user = {"id": "admin1", "email": "a@x.com"}
+            with pytest.raises(v2_sample.TableNotSyncedError) as exc_info:
+                v2_sample.build_sample(conn, user, "kbc_srv_only", n=5, bq=_bq())
+        finally:
+            conn.close()
+        assert not isinstance(exc_info.value, v2_sample.TableNotPreviewableError)
+        assert "no synced data yet" in exc_info.value.detail
+
+    def test_server_only_with_remote_is_rejected_at_registration(self):
+        """Why there is no "both" case to disambiguate: the combination cannot
+        be persisted. An earlier test asserted a precedence rule between the two
+        by writing straight to the repository, bypassing this validator — a test
+        for a state the product does not allow."""
+        import pytest as _pytest
+
+        from app.api.admin import RegisterTableRequest
+
+        with _pytest.raises(ValueError, match="server_only"):
+            RegisterTableRequest(
+                id="x", name="x", source_type="keboola", bucket="in.c-main",
+                source_table="orders", query_mode="remote", server_only=True,
+            )
+
+    def test_still_a_not_synced_error_so_existing_catches_and_the_404_hold(self, reload_db):
+        from app.api import v2_sample
+
+        assert issubclass(v2_sample.TableNotPreviewableError, v2_sample.TableNotSyncedError)
+        assert issubclass(v2_sample.TableNotPreviewableError, FileNotFoundError)
+
+    def test_a_genuinely_unsynced_local_row_still_blames_the_sync(self, reload_db):
+        """The regression guard for the fix itself: narrowing must not silence
+        the case the not-synced message was written for."""
+        from app.api import v2_sample
+
+        conn = reload_db.get_system_db()
+        try:
+            _ensure_admin1(conn)
+            self._register(conn, "kbc_local_fresh", query_mode="materialized")
+            user = {"id": "admin1", "email": "a@x.com"}
+            with pytest.raises(v2_sample.TableNotSyncedError) as exc_info:
+                v2_sample.build_sample(conn, user, "kbc_local_fresh", n=5, bq=_bq())
+        finally:
+            conn.close()
+        assert not isinstance(exc_info.value, v2_sample.TableNotPreviewableError)
+        assert "no synced data yet" in exc_info.value.detail
+
+
+class TestPartitionedTablePreview:
+    """A partitioned table lays its data out as a DIRECTORY of per-period files
+    (`data/<table_id>/2025_11.parquet`), so the single-file lookup returned None
+    and `build_sample` reported a pending or failing first sync for a table whose
+    every sync had succeeded (Devin Review on #1189)."""
+
+    def test_glob_resolver_finds_a_partitioned_directory(self, tmp_path, monkeypatch):
+        import pandas as pd
+
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        part_dir = tmp_path / "extracts" / "keboola" / "data" / "kbc_sales"
+        part_dir.mkdir(parents=True)
+        pd.DataFrame({"amount": [1, 2]}).to_parquet(part_dir / "2025_11.parquet")
+        pd.DataFrame({"amount": [3]}).to_parquet(part_dir / "2025_12.parquet")
+
+        from app.utils import resolve_local_parquet, resolve_local_parquet_glob
+
+        assert resolve_local_parquet("kbc_sales", "keboola") is None, "precondition: no single file"
+        target = resolve_local_parquet_glob("kbc_sales", "keboola")
+        assert target is not None and target.endswith("*.parquet"), target
+
+        # ...and DuckDB reads every partition through it.
+        from src.db import _open_duckdb
+
+        c = _open_duckdb(":memory:")
+        try:
+            total = c.execute("SELECT COUNT(*) FROM read_parquet(?)", [target]).fetchone()[0]
+        finally:
+            c.close()
+        assert total == 3, "all partitions must be readable through the glob"
+
+    def test_single_file_layout_still_wins(self, tmp_path, monkeypatch):
+        """The common case must not regress: a plain parquet resolves to the file
+        itself, not to a glob."""
+        import pandas as pd
+
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        data = tmp_path / "extracts" / "keboola" / "data"
+        data.mkdir(parents=True)
+        pd.DataFrame({"a": [1]}).to_parquet(data / "kbc_orders.parquet")
+
+        from app.utils import resolve_local_parquet_glob
+
+        target = resolve_local_parquet_glob("kbc_orders", "keboola")
+        assert target is not None and target.endswith("kbc_orders.parquet")
+        assert "*" not in target
+
+    def test_neither_layout_still_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        (tmp_path / "extracts" / "keboola" / "data").mkdir(parents=True)
+        from app.utils import resolve_local_parquet_glob
+
+        assert resolve_local_parquet_glob("kbc_missing", "keboola") is None
+
+    def test_an_empty_partition_directory_is_not_mistaken_for_data(self, tmp_path, monkeypatch):
+        """A directory with no parquet in it means the sync has not produced a
+        partition yet — that IS the pending-sync case, so it must stay None
+        rather than resolve to a glob matching nothing."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        (tmp_path / "extracts" / "keboola" / "data" / "kbc_empty").mkdir(parents=True)
+        from app.utils import resolve_local_parquet_glob
+
+        assert resolve_local_parquet_glob("kbc_empty", "keboola") is None

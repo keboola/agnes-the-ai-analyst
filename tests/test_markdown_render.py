@@ -251,3 +251,239 @@ def test_render_plain_emits_no_tags():
     out = render_plain("[x](https://example.com)\n\n| a | b |\n|---|---|\n| 1 | 2 |")
     assert "<" not in out
     assert "x" in out and "1 2" in out
+
+
+# ---------------------------------------------------------------------------
+# html_source=True: the stored text may itself be an HTML blob
+#
+# OpenMetadata "stores descriptions as rich HTML" (connectors/openmetadata/
+# transformer.py::strip_html says so), and those descriptions land verbatim in
+# `metric_definitions.description` alongside hand-authored markdown from
+# docs/metrics/*.yaml. One column, two dialects — so the metric surfaces opt
+# into a renderer that accepts both.
+# ---------------------------------------------------------------------------
+
+
+HTML_BLOB = "<p><strong>Live Deals</strong> &mdash; deals currently live.</p>"
+
+
+def test_render_plain_html_source_strips_tags_instead_of_resurrecting_them():
+    """The reported bug: an HTML-blob description leaked `<p><strong>` as
+    literal text into the one-line preview.
+
+    Without `html_source`, the markdown renderer escapes the blob into
+    entities, nh3's tag-strip finds no tags left to remove, and the closing
+    `html.unescape` turns the entities back into visible characters — a
+    plain-text projection containing markup, which is exactly what
+    render_plain exists to prevent."""
+    from app.markdown_render import render_plain
+
+    out = render_plain(HTML_BLOB, html_source=True)
+    assert out == "Live Deals — deals currently live."
+    assert "<" not in out and ">" not in out
+
+
+def test_render_safe_html_source_renders_the_blob_as_markup():
+    """The detail view shows bold text, not the characters `<strong>`."""
+    from app.markdown_render import render_safe
+
+    out = render_safe(HTML_BLOB, html_source=True)
+    assert "<strong>Live Deals</strong>" in out
+    assert "&lt;strong&gt;" not in out
+
+
+def test_html_source_still_renders_plain_markdown():
+    """The same column also holds hand-authored markdown, so the permissive
+    mode must not stop being a markdown renderer."""
+    from app.markdown_render import render_plain, render_safe
+
+    assert "<strong>hello</strong>" in render_safe("**hello** world", html_source=True)
+    assert render_plain("**Bold** and `code`.", html_source=True) == "Bold and code."
+
+
+def test_html_source_still_sanitizes():
+    """Accepting HTML from the source is nh3's job to make safe, not a hole:
+    the allowlist is unchanged, so script/handlers/unknown tags still go."""
+    from app.markdown_render import render_plain, render_safe
+
+    out = render_safe('<p onclick="steal()">hi</p><script>alert(1)</script>', html_source=True)
+    assert "<script" not in out.lower()
+    assert "onclick" not in out.lower()
+    assert "alert(1)" not in out
+    assert "hi" in out
+    assert "alert(1)" not in render_plain("<script>alert(1)</script>", html_source=True)
+
+
+def test_default_mode_is_unchanged_by_the_new_parameter():
+    """Marketplace content keeps its stricter posture — a curator's pasted
+    HTML renders as visible text there, deliberately."""
+    from app.markdown_render import render_safe
+
+    out = render_safe(HTML_BLOB)
+    assert "<strong>" not in out
+    assert "&lt;strong&gt;" in out
+
+
+def test_html_source_eats_angle_bracketed_words_and_the_default_does_not():
+    """The cost of the permissive renderer, pinned so it stays a decision.
+
+    markdown-it reads `<shipped>` as an unknown tag, nh3's allowlist rejects
+    it, and a pseudo-tag carries no child text — so the characters vanish
+    rather than being escaped and shown. `<int>.` takes the rest of the line
+    with it (unclosed tag). This is exactly why callers must not route every
+    row through `html_source=True` on a hunch about the content: the flag is
+    keyed on the writer (see `app.api.metrics.stores_html`)."""
+    from app.markdown_render import render_plain
+
+    prose = "Counts orders <shipped> per day; column type List<int>."
+    assert render_plain(prose) == prose
+    assert render_plain(prose, html_source=True) == "Counts orders per day; column type List"
+
+
+def test_html_source_keeps_a_boundary_where_a_stripped_block_tag_was():
+    """`<div>` is not on the render allowlist, so it is removed — but it was
+    separating two lines, and a removal that leaves no boundary fuses them
+    into "First line.Second line.". Boundaries are therefore inserted into the
+    RENDERED html, before sanitization, not into `render_safe`'s output."""
+    from app.markdown_render import render_plain
+
+    out = render_plain("<div>First line.</div><div>Second line.</div>", html_source=True)
+    assert out == "First line. Second line."
+
+
+def test_plain_projection_still_drops_script_content_entirely():
+    """Inserting boundaries pre-sanitization must not turn script bodies into
+    visible text: the empty-allowlist clean removes those tags WITH their
+    contents, which is stricter than the render allowlist, not weaker."""
+    from app.markdown_render import render_plain
+
+    assert render_plain("<script>alert(1)</script>visible", html_source=True) == "visible"
+
+
+def test_html_source_keeps_div_structure_in_the_rendered_output():
+    """The render-side twin of the boundary bug. `render_plain` recovers a
+    space where a stripped <div> was, but the DETAIL view renders markup — so
+    stripping the div there fused the two lines it separated into
+    "sales.Excludes refunds". Structural containers are kept on this path."""
+    from app.markdown_render import render_safe
+
+    out = render_safe(
+        "<div>Share of qualified sales.</div><div>Excludes refunds.</div>", html_source=True
+    )
+    assert out == "<div>Share of qualified sales.</div><div>Excludes refunds.</div>"
+
+
+def test_html_source_extra_tags_carry_no_attributes():
+    """They are laid out, never wired: no _ALLOWED_ATTRIBUTES entry exists for
+    them, so handlers and everything else go."""
+    from app.markdown_render import render_safe
+
+    out = render_safe('<div onclick="steal()" class="x" id="y">hi</div>', html_source=True)
+    assert out == "<div>hi</div>"
+
+
+def test_default_path_still_refuses_div():
+    """The widened set is scoped to html_source — curator markdown keeps the
+    narrow allowlist, where a pasted <div> stays visible text."""
+    from app.markdown_render import render_safe
+
+    assert "<div>" not in render_safe("<div>a</div>")
+
+
+def test_boundary_and_allowlist_agree_on_what_a_block_container_is():
+    """Guard against the two lists drifting apart.
+
+    `_BLOCK_BOUNDARY_RE` decides what leaves a space behind in the plain-text
+    projection; `_HTML_SOURCE_EXTRA_TAGS` decides what keeps its structure in
+    the rendered detail. A tag treated as a block separator by one and dropped
+    by the other fuses the lines it separated — which is how figure/figcaption
+    slipped through the first version of this fix."""
+    import re
+
+    from app.markdown_render import _ALLOWED_TAGS, _BLOCK_TAGS, _HTML_SOURCE_EXTRA_TAGS
+
+    named = set()
+    for alt in re.split(r"\|", _BLOCK_TAGS):
+        if re.fullmatch(r"[a-z]+", alt):
+            named.add(alt)
+        elif m := re.fullmatch(r"([a-z]+)\[(\d)-(\d)\]", alt):  # h[1-6]
+            named |= {f"{m[1]}{d}" for d in range(int(m[2]), int(m[3]) + 1)}
+        elif m := re.fullmatch(r"([a-z]+)\[([a-z]+)\]", alt):  # t[dh]
+            named |= {f"{m[1]}{c}" for c in m[2]}
+    separators_not_rendered = named - _ALLOWED_TAGS - _HTML_SOURCE_EXTRA_TAGS
+    assert not separators_not_rendered, (
+        f"treated as a block separator but stripped with no structure: {sorted(separators_not_rendered)}"
+    )
+
+
+def test_nested_structure_separated_by_an_opening_tag_does_not_fuse():
+    """`<figure>A<figcaption>B` has no CLOSING tag between A and B, so a
+    close-only boundary pattern fused them."""
+    from app.markdown_render import render_plain
+
+    out = render_plain(
+        "<figure>Chart of live deals.<figcaption>Measured daily.</figcaption></figure>", html_source=True
+    )
+    assert out == "Chart of live deals. Measured daily."
+    assert render_plain("<div>Line one<div>Line two</div></div>", html_source=True) == "Line one Line two"
+
+
+def test_br_is_still_a_boundary():
+    """It is the one non-container in the pattern; a rewrite of the tag
+    alternation must not drop it."""
+    from app.markdown_render import render_plain
+
+    assert render_plain("a<br>b", html_source=True) == "a b"
+    assert render_plain("a<br/>b", html_source=True) == "a b"
+
+
+def test_a_quoted_gt_inside_a_layout_tag_does_not_leak():
+    """`>` inside a quoted attribute value does not close the tag, so a
+    `[^>]*>` attribute run cut `<div title="a>b">` in half and left `b">` as
+    visible characters in the preview."""
+    from app.markdown_render import render_plain
+
+    assert render_plain('<div title="a>b">First.</div><div>Second.</div>', html_source=True) == "First. Second."
+    assert render_plain("<div title='a>b'>First.</div><div>Second.</div>", html_source=True) == "First. Second."
+
+
+def test_boundary_pattern_stays_linear_on_unclosed_tags():
+    """Two separate hazards in one pattern, so two shapes of hostile input.
+
+    ONE unterminated tag with many quoted runs is the exponential-backtracking
+    shape (alternation inside a star). MANY unterminated tags is the quadratic
+    one: each restarts a scan over the remainder unless the bare branch stops
+    at the next `<`. The second is what actually bit — 20 KB of `<div ` took
+    620 ms before the `<` exclusion — so it is measured against a growth ratio
+    rather than a wall-clock threshold that a slow runner could trip."""
+    import time
+
+    from app.markdown_render import _BLOCK_BOUNDARY_RE, render_plain
+
+    started = time.perf_counter()
+    render_plain("<div " + '"x"' * 4000, html_source=True)
+    assert time.perf_counter() - started < 1.0
+
+    def elapsed(n: int) -> float:
+        text = "<div " * n
+        started = time.perf_counter()
+        _BLOCK_BOUNDARY_RE.sub(" ", text)
+        return time.perf_counter() - started
+
+    elapsed(2000)  # warm up, so the first call does not carry setup cost
+    small, large = elapsed(2000), elapsed(8000)
+    # Linear would be ~4x for 4x the input; quadratic ~16x. Generous ceiling —
+    # the point is to catch the class, not to benchmark the runner.
+    assert large < max(small * 8, 0.05), f"superlinear growth: {small=:.4f} {large=:.4f}"
+
+
+def test_layout_tags_are_matched_regardless_of_case():
+    """This pattern runs on the RENDERED html, before nh3 — and nh3 is what
+    normalizes tag case, so `<DIV>` arrives exactly as the upstream catalog
+    wrote it. A lower-case-only pattern left those lines fused."""
+    from app.markdown_render import render_plain
+
+    assert render_plain("<DIV>First.</DIV><DIV>Second.</DIV>", html_source=True) == "First. Second."
+    assert render_plain("<Div>A</Div><Div>B</Div>", html_source=True) == "A B"
+    assert render_plain("<H1>A</H1><H1>B</H1>", html_source=True) == "A B"
+    assert render_plain("a<BR>b", html_source=True) == "a b"

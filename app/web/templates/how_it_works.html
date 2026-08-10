@@ -573,7 +573,12 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
       <div class="hiw-toc-foot">
         <a href="/chat"><span class="hiw-toc-label">Start a chat &rarr;</span></a>
         <a href="/library"><span class="hiw-toc-label">Your Library &rarr;</span></a>
+        {# Same `can_agent_profiles` gate as the topnav dropdown, the rail row and
+           the command palette: with the flag off `GET /agents` redirects home, so
+           an ungated link here is a dead end that silently bounces the user. #}
+        {% if can_agent_profiles %}
         <a href="/agents"><span class="hiw-toc-label">Your agents &rarr;</span></a>
+        {% endif %}
       </div>
     </div>
   </nav>
@@ -672,7 +677,7 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
       </div>
       <div class="hiw-next hiw-next--tight">
         <a href="/library">Browse your Library &rarr;</a>
-        <a href="/agents">Your agents &rarr;</a>
+        {% if can_agent_profiles %}<a href="/agents">Your agents &rarr;</a>{% endif %}
       </div>
         </div>
       </details>
@@ -1451,7 +1456,7 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
       <div class="hiw-next">
         <a href="/chat">Ask your first question</a>
         <a href="/library">Browse your Library</a>
-        <a href="/agents">Build an agent</a>
+        {% if can_agent_profiles %}<a href="/agents">Build an agent</a>{% endif %}
         <a href="#connect">Set up your tools</a>
       </div>
     </section>

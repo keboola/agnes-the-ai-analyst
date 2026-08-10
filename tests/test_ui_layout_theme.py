@@ -119,6 +119,43 @@ class TestDefaultChromeUnchanged:
         assert "img/agnes-orb.png" not in resp.text
 
 
+class TestRailBodyClearance:
+    """The 240px body padding must be tied to the rail actually rendering.
+
+    `data-ui-layout="rail"` is stamped on <html> from instance config, but the
+    rail nav renders only for a signed-in user — so an unconditional padding
+    survived onto pre-auth pages that have no rail, and `/login/password`
+    centred its card inside a box shifted 240px right of the viewport (#1170).
+    """
+
+    def test_pre_auth_page_carries_no_rail(self, web_client, monkeypatch):
+        """The premise of the fix: on a logged-out page the rail is absent
+        while the layout attribute is still stamped."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/login/password")
+        assert resp.status_code == 200
+        assert 'data-ui-layout="rail"' in resp.text, "layout attribute should still be stamped"
+        assert 'class="rail"' not in resp.text, "the rail nav must not render pre-auth"
+
+    def test_body_clearance_is_conditional_on_the_rail(self, web_client):
+        css = web_client.get("/static/css/rail.css").text
+        assert 'html[data-ui-layout="rail"] body {' not in css, (
+            "unconditional body padding is back — it applies on pre-auth pages that render no rail (#1170)"
+        )
+        assert 'html[data-ui-layout="rail"] body:has(.rail) {' in css
+
+    def test_narrow_override_matches_the_desktop_selector(self, web_client):
+        """`:has()` takes its argument's specificity, so the ≤1024px override
+        must carry `:has(.rail)` too. A plain `body` there would lose to the
+        desktop rule and keep reserving 240px in the top-bar layout — where the
+        rail is a static block and the reservation is pure dead margin."""
+        css = web_client.get("/static/css/rail.css").text
+        narrow = css[css.index("@media (max-width: 1024px)") :]
+        assert 'html[data-ui-layout="rail"] body:has(.rail) {\n        padding-left: 0;' in narrow, (
+            "the narrow-screen override no longer matches the desktop rule's specificity"
+        )
+
+
 class TestRailOptIn:
     def test_rail_layout_swaps_chrome(self, web_client, admin_cookie, monkeypatch):
         # Probe a real rail landing surface (/stack). /dashboard is no longer a
@@ -666,7 +703,7 @@ class TestRailChatHistory:
         assert "(done / total) * 100" in body
         assert 'classList.toggle("is-complete"' in body
 
-    def test_new_token_button_cancels_the_summary_toggle(self, web_client, admin_cookie):
+    def test_new_token_button_cancels_the_summary_toggle(self, web_client, admin_cookie, monkeypatch):
         """`+ New token` lives inside a <summary>, so it must cancel the disclosure.
 
         stopPropagation() alone is NOT enough and was the original bug: it keeps
@@ -674,7 +711,12 @@ class TestRailChatHistory:
         default ACTIVATION BEHAVIOUR, which only preventDefault() cancels. With
         just the former, minting a token also collapsed the section it was
         launched from.
+
+        Rail-pinned: the <summary>-hosted token panel is the REDESIGNED
+        profile's; the default chrome serves the frozen pre-redesign page
+        (spec 2026-08-07 wave 2), whose classic panel has no disclosure.
         """
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         resp = web_client.get("/me/profile", cookies=admin_cookie)
         assert resp.status_code == 200
         marker = 'id="new-token-btn"'
@@ -1511,6 +1553,13 @@ class TestCatalogRecommendations:
     content). The download-a-local-copy action for a granted-but-not-yet-
     materialized package lives on My Stack, not here."""
 
+    @pytest.fixture(autouse=True)
+    def _auto_membership_mode(self, monkeypatch):
+        """The reshape is auto-membership behavior, opt-in since the classic
+        subscribe model became the default again (spec
+        2026-08-07-default-chrome-ux-parity)."""
+        monkeypatch.setenv("AGNES_STACK_AUTO_MEMBERSHIP", "1")
+
     def test_granted_package_absent_from_catalog_present_on_my_stack(self, web_client, admin_cookie, monkeypatch):
         """A granted-but-not-yet-downloaded package must not appear anywhere
         on /catalog. It lives on My Stack. Materializing (subscribing) it
@@ -1717,21 +1766,22 @@ class TestSharedDetailLayout:
             )
 
     def test_default_instance_gets_neither_shell_nor_badge(self, web_client, admin_cookie, monkeypatch):
-        """The whole layout is gated: a default instance renders the page it
-        rendered before, with the sections stacked in the main flow."""
+        """The whole layout is gated: a default instance renders the TRUE
+        pre-redesign page (the frozen ``catalog_package_detail_legacy.html``
+        served by ``_detail_template`` — see TestDetailPageParity), not the
+        redesigned template's blue variant it briefly got."""
         monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
         self._package("blue-detail-pkg")
         text = web_client.get("/catalog/p/blue-detail-pkg", cookies=admin_cookie).text
         assert "detail-cols" not in text, "the two-column shell must not reach default instances"
         assert "detail-aside" not in text
         assert 'class="detail-type"' not in text
-        # Match on MARKUP, not the class name: `detail.styles()` emits the
-        # baseline CSS for the shared components on every theme, so the name
-        # itself is in the page whether or not anything renders with it.
         assert 'class="detail-side__rows"' not in text, "rail content must not append itself as extra sections"
-        # …and it still renders the legacy hero the scaffold has always drawn.
-        assert "detail-hero" in text
-        assert "detail-hero__deco" in text
+        assert "detail-hero" not in text, "redesigned scaffold markup must not reach default instances"
+        # …and the pre-redesign page's own anatomy still renders.
+        assert 'class="pkg-hero"' in text
+        assert 'class="back-link"' in text
 
     def test_overflow_menu_holds_the_secondary_action(self, web_client, admin_cookie, monkeypatch):
         """One prominent action per header; the admin errand moves into the
@@ -1881,21 +1931,24 @@ class TestDetailPageTemplateIsShared:
     def test_the_marketplace_pages_keep_the_legacy_page_on_a_default_instance(
         self, web_client, admin_cookie, monkeypatch
     ):
-        """The whole redesign is gated. A default instance renders the
-        gradient hero with its nested panel, and none of the rail."""
+        """The whole redesign is gated. A default instance renders the TRUE
+        pre-redesign page (the frozen ``*_legacy.html`` copy served by
+        ``_detail_template`` — see TestDetailPageParity), not the redesigned
+        template's blue variant it briefly got: none of the shared-scaffold
+        anatomy, and none of the restyled hero-panel markup either."""
         monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
         text = web_client.get("/marketplace/curated/agnes-builtin/agnes-analyst", cookies=admin_cookie).text
         assert "detail--panels" not in text
         assert "detail-cols" not in text, "the two-column shell must not reach default instances"
         assert "detail-aside" not in text
         assert 'class="detail-type"' not in text
-        # …and it still renders the nested hero panel it has always drawn,
-        # with "What it does" and Details inside the header rather than split
-        # between a section and the rail.
-        assert "detail-hero--paneled" in text
-        assert "detail-hero__panel-split" in text
+        assert "detail-hero--paneled" not in text, "restyled hero markup must not reach default instances"
+        # The pre-redesign page's own anatomy — including the async hydration
+        # hooks, which predate the redesign — still renders.
         assert 'id="lead-text"' in text
         assert 'id="details-list"' in text
+        assert 'id="hero-name"' in text
 
     def test_shared_concepts_use_one_component_each(self):
         """Sharing, versions, the admin ladder and 'what is inside this' are
@@ -2058,3 +2111,265 @@ class TestDefaultContentParity:
         assert len(re.findall(r"if \(!IS_RAIL\) return", src)) >= 2, (
             "both chat_onboarding.js boot paths must early-return when the chrome is not rail"
         )
+
+    # ── Wave 2 (spec 2026-08-07-default-chrome-ux-parity): the page rewrites
+    # that were never layout-gated, both directions pinned per surface. ──
+
+    def test_topnav_profile_is_the_legacy_page(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        resp = web_client.get("/me/profile", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert 'id="pf-name-edit"' not in resp.text, "redesigned profile leaked into topnav"
+
+    def test_rail_profile_is_the_redesigned_page(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/me/profile", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert 'id="pf-name-edit"' in resp.text
+
+    def test_topnav_activity_is_the_legacy_page(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        resp = web_client.get("/me/activity", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert "Sessions, token usage, data access, and sync activity" in resp.text, (
+            "topnav /me/activity must keep the legacy hero subtitle"
+        )
+
+    def test_rail_activity_is_the_redesigned_page(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/me/activity", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert "Sessions, token usage, data access, and sync activity" not in resp.text
+
+    def test_topnav_agents_is_the_legacy_management_page(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        resp = web_client.get("/agents", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert 'id="ag-builder-view"' not in resp.text, "rail agents builder leaked into topnav"
+
+    def test_rail_agents_is_the_builder(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/agents", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert 'id="ag-builder-view"' in resp.text
+
+    def test_topnav_ai_connector_renders_the_legacy_page(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        resp = web_client.get("/me/ai-connector", cookies=admin_cookie, follow_redirects=False)
+        assert resp.status_code == 200, "topnav /me/ai-connector must render, not redirect"
+        assert "/mcp-connect" in resp.text, "legacy page must keep the token-fallback link"
+
+    def test_rail_ai_connector_stays_consolidated(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/me/ai-connector", cookies=admin_cookie, follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/how-it-works#connect"
+
+    def test_topnav_user_menu_has_ai_connector_row(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        resp = web_client.get("/me/profile", cookies=admin_cookie)
+        assert ">AI Connector<" in resp.text, "default chrome must keep the AI Connector menu row"
+        assert "Learn how it works" not in resp.text
+
+    def test_paper_user_menu_keeps_the_redesign_wording(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
+        resp = web_client.get("/me/profile", cookies=admin_cookie)
+        assert "Learn how it works" in resp.text
+        assert ">AI Connector<" not in resp.text
+
+    def test_topnav_ships_the_legacy_tour(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        resp = web_client.get("/me/profile", cookies=admin_cookie)
+        assert 'id="agnesTour"' in resp.text, "default chrome must ship the legacy tour overlay"
+        assert "tour_legacy.js" in resp.text
+        assert "data-tour-start" in resp.text, "header must keep the (?) tour launcher"
+
+    def test_rail_does_not_ship_the_legacy_tour(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/me/profile", cookies=admin_cookie)
+        assert 'id="agnesTour"' not in resp.text
+        assert "tour_legacy.js" not in resp.text
+
+    def test_paper_topnav_does_not_ship_the_legacy_tour(self, web_client, admin_cookie, monkeypatch):
+        """The overlay must key on the same condition as its header launcher
+        (`not is_paper()`) — shipped without the launcher, the intro modal
+        auto-pops once with no way to ever reopen it (Devin Review on #1200)."""
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
+        resp = web_client.get("/me/profile", cookies=admin_cookie)
+        assert 'id="agnesTour"' not in resp.text
+        assert "tour_legacy.js" not in resp.text
+        assert "data-tour-start" not in resp.text
+
+    def test_paper_topnav_ai_connector_stays_consolidated(self, web_client, admin_cookie, monkeypatch):
+        """The route keys on the same opt-in expression as the user-menu row:
+        under paper-on-topnav the menu says "Learn how it works", so a
+        bookmark or /me/mcp alias hop must not resurrect the standalone
+        page (Devin Review on #1200)."""
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
+        resp = web_client.get("/me/ai-connector", cookies=admin_cookie, follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/how-it-works#connect"
+
+    def test_topnav_chat_welcome_cards_are_the_frozen_copy(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        resp = self._chat(web_client, admin_cookie)
+        assert "I'm the Agnes data agent." in resp.text, "topnav chat must keep the pre-redesign welcome-card copy"
+        assert "📊 Your data" in resp.text, "pre-redesign card icons (emoji) must survive on topnav"
+
+
+class TestDetailPageParity:
+    """The redesign restructured seven DETAIL templates in place (the
+    kind-coloured hero + columns anatomy from ``macros/_detail.html``).
+    Topnav keeps the pre-redesign pages — same contract as
+    ``TestDefaultContentParity``, extended to the detail level: every render
+    site resolves through ``_detail_template()``, which serves
+    ``<name>_legacy.html`` (a frozen pre-redesign copy) off the rail.
+
+    Layered: a unit test on the switch, a closed-set static sweep proving all
+    seven pairs are wired (no bare literal left behind), and live render
+    pairs for the two cheaply-seedable pages (collection + catalog table).
+    """
+
+    DETAIL_TEMPLATES = (
+        "catalog_table_detail",
+        "catalog_package_detail",
+        "catalog_recipe_detail",
+        "marketplace_plugin_detail",
+        "marketplace_item_detail",
+        "library_detail",
+        "memory_domain_detail",
+    )
+
+    def test_detail_template_switch_resolves_by_redesign_opt_in(self, monkeypatch):
+        """Same condition as the base templates' chrome gate: rail OR paper
+        opts into the redesigned detail anatomy; a default instance gets the
+        frozen pre-redesign page."""
+        from app.web.router import _detail_template
+
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        assert _detail_template("catalog_table_detail") == "catalog_table_detail_legacy.html"
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        assert _detail_template("catalog_table_detail") == "catalog_table_detail.html"
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
+        assert _detail_template("catalog_table_detail") == "catalog_table_detail.html"
+
+    #: Behaviours that must hold on BOTH halves of a frozen pair, as the token
+    #: that implements them. Freezing a copy forks the page permanently, so a
+    #: fix that lands on the redesigned template alone silently reverts itself
+    #: for every default instance — which is what happened when this branch met
+    #: #1177/#1178 in main: the copies were snapshotted before those fixes, so
+    #: the author of a Private entity lost Archive AND install on the default
+    #: look while the redesign kept both (Devin Review on #1195).
+    #:
+    #: A token list rather than a diff: the two halves are SUPPOSED to differ
+    #: (that is the whole point of the freeze), so only the load-bearing
+    #: predicates can be asserted equal. Add a row whenever a fix has to reach
+    #: both.
+    FORKED_PAIR_INVARIANTS = (
+        (
+            "marketplace_plugin_detail",
+            "own_private",
+            "#1177 — the author's own Private row sits at 'hidden' and must stay deletable",
+        ),
+        ("marketplace_item_detail", "own_private", "#1177 — same gate on the skill/agent page"),
+        (
+            "marketplace_plugin_detail",
+            "d.installable !== true",
+            "#1178 — install is gated on the server-resolved flag, not on the status alone",
+        ),
+        ("marketplace_item_detail", "d.installable !== true", "#1178 — same gate on the skill/agent page"),
+        (
+            "library_detail",
+            "/f/",
+            "the per-file page's only entry point on a default instance — without it, "
+            "`/library/<slug>/f/<id>` is reachable only by typing the URL",
+        ),
+    )
+
+    @pytest.mark.parametrize("base,token,why", FORKED_PAIR_INVARIANTS)
+    def test_frozen_copy_carries_the_same_invariant(self, base, token, why):
+        from pathlib import Path
+
+        live = Path(f"app/web/templates/{base}.html").read_text()
+        legacy = Path(f"app/web/templates/{base}_legacy.html").read_text()
+
+        assert token in live, f"premise moved — {token!r} is no longer in {base}.html ({why})"
+        assert token in legacy, (
+            f"{base}_legacy.html is missing {token!r} — {why}. A default instance renders the "
+            "frozen copy, so a fix applied only to the redesigned template reverts itself there."
+        )
+
+    def test_every_detail_render_site_is_switched(self):
+        """No render site may keep the bare redesigned template literal — a
+        new call site that bypasses the switch reintroduces the redesign on
+        topnav silently."""
+        from pathlib import Path
+
+        src = Path("app/web/router.py").read_text()
+        for name in self.DETAIL_TEMPLATES:
+            assert Path(f"app/web/templates/{name}_legacy.html").exists(), f"{name}_legacy.html missing"
+            assert f'_detail_template("{name}")' in src, f"{name} render not switched"
+            assert f'"{name}.html"' not in src, f"bare {name}.html literal left in router"
+
+    def _seed_collection(self, web_client, admin_cookie, name):
+        r = web_client.post("/api/collections", json={"name": name}, cookies=admin_cookie)
+        assert r.status_code == 201, r.text
+        return r.json()
+
+    def test_topnav_library_detail_is_legacy(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        col = self._seed_collection(web_client, admin_cookie, "Parity Files")
+        resp = web_client.get(f"/library/{col['slug']}", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert 'class="lib-sec"' in resp.text, "topnav must render the legacy collection detail"
+        assert 'class="detail-page"' not in resp.text, "redesigned detail anatomy leaked into topnav"
+
+    def test_rail_library_detail_is_redesigned(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        col = self._seed_collection(web_client, admin_cookie, "Parity Files Rail")
+        resp = web_client.get(f"/library/{col['slug']}", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert 'class="detail-page"' in resp.text
+        assert 'class="lib-sec"' not in resp.text
+
+    def _seed_table(self, name):
+        from src.repositories import table_registry_repo
+
+        table_registry_repo().register(
+            id=name,
+            name=name,
+            source_type="keboola",
+            bucket="in.c-test",
+            source_table=name,
+            query_mode="local",
+        )
+
+    def test_topnav_catalog_table_detail_is_legacy(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        self._seed_table("parity_table")
+        resp = web_client.get("/catalog/t/parity_table", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert "td-back" in resp.text, "topnav must render the legacy table detail"
+        assert 'class="detail-page"' not in resp.text
+
+    def test_rail_catalog_table_detail_is_redesigned(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        self._seed_table("parity_table_rail")
+        resp = web_client.get("/catalog/t/parity_table_rail", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert 'class="detail-page"' in resp.text
+        assert "td-back" not in resp.text

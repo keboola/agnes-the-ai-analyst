@@ -16,6 +16,7 @@ same migrator with a different source connection.
 
 Spec: docs/superpowers/specs/2026-05-27-db-backend-state-machine-design.md
 """
+
 from __future__ import annotations
 
 import json
@@ -43,6 +44,7 @@ def _bounded_engine(url: str):
     enough to surface a runaway as a clear error.
     """
     import sqlalchemy as sa
+
     return sa.create_engine(
         url,
         connect_args={
@@ -59,6 +61,22 @@ class JobStatus(StrEnum):
     SUCCESS = "success"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+
+class BackendFlipNotVerified(RuntimeError):
+    """The data moved, but the overlay does not name the target afterwards.
+
+    Its own type because the generic ``except Exception`` handler reverts the
+    backend to the source before marking the job failed — which is right when
+    the failure happened BEFORE the rows moved, and exactly wrong here. At this
+    point the data is already on the target, so reverting writes a config that
+    disagrees with where the rows are: the source-vs-target split the H1
+    machinery exists to prevent, arriving through the guard meant to catch it.
+
+    So this is handled without the revert. The overlay is left as-is (whatever
+    it names, an operator has to look), the job records the mismatch, and
+    nothing writes over the one clue about what actually happened.
+    """
 
 
 class JobCancelled(RuntimeError):
@@ -260,6 +278,7 @@ def _format_alembic_timeout_message(target_url: str, timeout_sec: int) -> str:
     """
     try:
         from sqlalchemy.engine import make_url
+
         safe = make_url(target_url).render_as_string(hide_password=True)
     except Exception:
         safe = "<unparseable-url>"
@@ -303,13 +322,10 @@ def alembic_upgrade_head(target_url: str) -> None:
             timeout=ALEMBIC_UPGRADE_TIMEOUT_SEC,
         )
     except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(
-            _format_alembic_timeout_message(target_url, ALEMBIC_UPGRADE_TIMEOUT_SEC)
-        ) from exc
+        raise RuntimeError(_format_alembic_timeout_message(target_url, ALEMBIC_UPGRADE_TIMEOUT_SEC)) from exc
     if result.returncode != 0:
         raise RuntimeError(
-            f"alembic upgrade head failed (exit {result.returncode}):\n"
-            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+            f"alembic upgrade head failed (exit {result.returncode}):\nstdout: {result.stdout}\nstderr: {result.stderr}"
         )
 
 
@@ -411,9 +427,7 @@ def scrub_audit_log_pii(duckdb_path: Path) -> dict[str, int]:
         # Pull only id + the two JSON cols; rewrite the matching rows
         # in a single UPDATE-per-row pass. The DBs we care about have
         # O(10^5) audit rows; a per-row UPDATE is acceptable.
-        rows = conn.execute(
-            "SELECT id, params, params_before FROM audit_log"
-        ).fetchall()
+        rows = conn.execute("SELECT id, params, params_before FROM audit_log").fetchall()
         for rid, params, params_before in rows:
             new_params = params
             new_params_before = params_before
@@ -490,7 +504,6 @@ def copy_duckdb_to_pg(
     progress bar advances during the long data_copy step instead of
     freezing at 40%.
     """
-    import sqlalchemy as sa
 
     from scripts.migrate_duckdb_to_pg import reset_target_state_tables, run_all
 
@@ -498,6 +511,7 @@ def copy_duckdb_to_pg(
 
     progress_cb = None
     if writer is not None:
+
         def progress_cb(table: str, done: int, total: int) -> None:
             try:
                 writer.update_table_progress(table, done, total)
@@ -508,6 +522,7 @@ def copy_duckdb_to_pg(
                 pass
 
     from src.duckdb_conn import _open_duckdb
+
     duck_conn = _open_duckdb(str(duckdb_path), read_only=True)
     try:
         pg_engine = _bounded_engine(target_url)
@@ -539,14 +554,8 @@ def copy_duckdb_to_pg(
         "rows_total": sum(r.get("pg_rows", 0) for r in ok),
         "tables_migrated": len(ok),
         "target_rows_reset": reset_discarded,
-        "tables_failed": [
-            {"table": r["table"], "error": str(r["error"])}
-            for r in err
-        ],
-        "tables_skipped": [
-            {"table": r["table"], "reason": r.get("reason", "")}
-            for r in skipped
-        ],
+        "tables_failed": [{"table": r["table"], "error": str(r["error"])} for r in err],
+        "tables_skipped": [{"table": r["table"], "reason": r.get("reason", "")} for r in skipped],
         "audit_pii_scrub": scrub_summary,
     }
 
@@ -581,6 +590,7 @@ def _json_dumps_for_jsonb(value):
     PG source returns decoded values, so we re-encode here.
     """
     import json as _json
+
     if value is None:
         return None
     return _json.dumps(value)
@@ -697,24 +707,20 @@ def copy_pg_to_pg(
             # ``.all()`` would defeat the streaming and is what H4
             # flagged.
             with source.connect() as src_conn:
-                stmt = sa.text(
-                    f'SELECT {", ".join(cols)} FROM ' + quote_ident(tname)
-                ).execution_options(yield_per=PG_TO_PG_BATCH_SIZE)
+                stmt = sa.text(f"SELECT {', '.join(cols)} FROM " + quote_ident(tname)).execution_options(
+                    yield_per=PG_TO_PG_BATCH_SIZE
+                )
                 result = src_conn.execute(stmt)
                 batch: list[dict] = []
                 for r in result:
-                    batch.append(
-                        _row_to_dict(r, cols, array_cols, jsonb_cols, default_cols)
-                    )
+                    batch.append(_row_to_dict(r, cols, array_cols, jsonb_cols, default_cols))
                     if len(batch) >= PG_TO_PG_BATCH_SIZE:
                         _flush_batch(target, insert_sql, batch)
                         batch = []
                 _flush_batch(target, insert_sql, batch)
 
             with target.connect() as tgt_conn:
-                count = tgt_conn.execute(
-                    sa.text(f"SELECT COUNT(*) FROM {quote_ident(tname)}")
-                ).scalar()
+                count = tgt_conn.execute(sa.text(f"SELECT COUNT(*) FROM {quote_ident(tname)}")).scalar()
             rows_total += int(count or 0)
             tables_migrated += 1
         # Final progress tick — UI sees done==total at the end of the
@@ -722,9 +728,7 @@ def copy_pg_to_pg(
         # update the writer.
         if writer is not None and total_tables:
             try:
-                writer.update_table_progress(
-                    all_tables[-1].name, total_tables, total_tables
-                )
+                writer.update_table_progress(all_tables[-1].name, total_tables, total_tables)
             except Exception:
                 pass
     finally:
@@ -782,9 +786,7 @@ def _content_hash_sample(
 
     pk_order = ", ".join(quote_ident(c) for c in pk_cols)
     sel_cols = ", ".join(quote_ident(c) for c in non_pk_cols)
-    sql = sa.text(
-        f"SELECT {sel_cols} FROM {quote_ident(table_name)} ORDER BY {pk_order} LIMIT {int(sample_size)}"
-    )
+    sql = sa.text(f"SELECT {sel_cols} FROM {quote_ident(table_name)} ORDER BY {pk_order} LIMIT {int(sample_size)}")
     h = hashlib.sha256()
     with engine.connect() as conn:
         for row in conn.execute(sql):
@@ -820,9 +822,7 @@ def verify_pg_row_counts(source_url: str, target_url: str) -> list[dict]:
             tname = table.name
             try:
                 with source.connect() as c:
-                    src_count = c.execute(
-                        sa.text(f"SELECT COUNT(*) FROM {quote_ident(tname)}")
-                    ).scalar()
+                    src_count = c.execute(sa.text(f"SELECT COUNT(*) FROM {quote_ident(tname)}")).scalar()
             except sa.exc.ProgrammingError as exc:
                 # Was: silent src_count=0. Hard-fail so the operator can act —
                 # a missing source table means the schema is broken and migration
@@ -834,9 +834,7 @@ def verify_pg_row_counts(source_url: str, target_url: str) -> list[dict]:
                 ) from exc
             try:
                 with target.connect() as c:
-                    tgt_count = c.execute(
-                        sa.text(f"SELECT COUNT(*) FROM {quote_ident(tname)}")
-                    ).scalar()
+                    tgt_count = c.execute(sa.text(f"SELECT COUNT(*) FROM {quote_ident(tname)}")).scalar()
             except sa.exc.ProgrammingError as exc:
                 # Was: silent tgt_count=0. That collapsed to a 0==0 "match"
                 # whenever source also had 0 rows, hiding typos and partial-
@@ -848,12 +846,14 @@ def verify_pg_row_counts(source_url: str, target_url: str) -> list[dict]:
                     f"complete safely. Underlying error: {exc!s}"
                 ) from exc
             if src_count != tgt_count:
-                diffs.append({
-                    "table": tname,
-                    "kind": "row_count",
-                    "source_rows": int(src_count or 0),
-                    "target_rows": int(tgt_count or 0),
-                })
+                diffs.append(
+                    {
+                        "table": tname,
+                        "kind": "row_count",
+                        "source_rows": int(src_count or 0),
+                        "target_rows": int(tgt_count or 0),
+                    }
+                )
                 # When counts disagree, content drift is implied; skip
                 # the hash sample to keep the verify step bounded.
                 continue
@@ -864,12 +864,14 @@ def verify_pg_row_counts(source_url: str, target_url: str) -> list[dict]:
             src_hash = _content_hash_sample(source, tname, pk_cols, non_pk_cols)
             tgt_hash = _content_hash_sample(target, tname, pk_cols, non_pk_cols)
             if src_hash != tgt_hash:
-                diffs.append({
-                    "table": tname,
-                    "kind": "content_drift",
-                    "source_hash": src_hash[:16],
-                    "target_hash": tgt_hash[:16],
-                })
+                diffs.append(
+                    {
+                        "table": tname,
+                        "kind": "content_drift",
+                        "source_hash": src_hash[:16],
+                        "target_hash": tgt_hash[:16],
+                    }
+                )
     finally:
         source.dispose()
         target.dispose()
@@ -897,21 +899,18 @@ def verify_row_counts(duckdb_path: Path, target_url: str) -> list[dict]:
     # clutter and can confuse subsequent reads if the migrator crashes
     # between verify and flip.
     from src.duckdb_conn import _open_duckdb
+
     duck_conn = _open_duckdb(str(duckdb_path), read_only=True)
     pg_engine = _bounded_engine(target_url)
     try:
         for table in tables:
             try:
-                src_count = duck_conn.execute(
-                    f"SELECT COUNT(*) FROM {quote_ident(table)}"
-                ).fetchone()[0]
+                src_count = duck_conn.execute(f"SELECT COUNT(*) FROM {quote_ident(table)}").fetchone()[0]
             except _duckdb.CatalogException:
                 src_count = 0
             try:
                 with pg_engine.connect() as pg_conn:
-                    tgt_count = pg_conn.execute(
-                        sa.text(f"SELECT COUNT(*) FROM {quote_ident(table)}")
-                    ).fetchone()[0]
+                    tgt_count = pg_conn.execute(sa.text(f"SELECT COUNT(*) FROM {quote_ident(table)}")).fetchone()[0]
             except sa.exc.ProgrammingError as exc:
                 # Was: silent tgt_count=0. That collapsed to a 0==0 "match"
                 # whenever source also had 0 rows, hiding typos and partial-
@@ -923,11 +922,13 @@ def verify_row_counts(duckdb_path: Path, target_url: str) -> list[dict]:
                     f"complete safely. Underlying error: {exc!s}"
                 ) from exc
             if src_count != tgt_count:
-                diffs.append({
-                    "table": table,
-                    "source_rows": src_count,
-                    "target_rows": tgt_count,
-                })
+                diffs.append(
+                    {
+                        "table": table,
+                        "source_rows": src_count,
+                        "target_rows": tgt_count,
+                    }
+                )
     finally:
         duck_conn.close()
         pg_engine.dispose()
@@ -1017,8 +1018,7 @@ def backup_duckdb(duckdb_path: Path, backups_dir: Path) -> Path:
     if result.returncode != 0:
         out.unlink(missing_ok=True)
         raise RuntimeError(
-            f"DuckDB backup gzip failed (exit {result.returncode}): "
-            f"{result.stderr.decode(errors='replace')}"
+            f"DuckDB backup gzip failed (exit {result.returncode}): {result.stderr.decode(errors='replace')}"
         )
     return out
 
@@ -1182,10 +1182,7 @@ def main(
                     error_class="CopyTableError",
                     error_message=(
                         "Per-table copy failed: "
-                        + ", ".join(
-                            f"{t['table']}={t['error']!r}"
-                            for t in copy_summary["tables_failed"]
-                        )
+                        + ", ".join(f"{t['table']}={t['error']!r}" for t in copy_summary["tables_failed"])
                     ),
                 )
                 return 1
@@ -1224,6 +1221,7 @@ def main(
                     try:
                         from src.db_state_machine import BackendState as _BS
                         from src.db_state_machine import write_backend_state as _wbs
+
                         _wbs(_BS(source_backend), url=source_url)
                     except Exception:
                         pass
@@ -1240,10 +1238,7 @@ def main(
                     error_class="CopyTableError",
                     error_message=(
                         "Per-table copy failed: "
-                        + ", ".join(
-                            f"{t['table']}={t['error']!r}"
-                            for t in copy_summary["tables_failed"]
-                        )
+                        + ", ".join(f"{t['table']}={t['error']!r}" for t in copy_summary["tables_failed"])
                     ),
                 )
                 return 1
@@ -1281,17 +1276,51 @@ def main(
         # cancel_job is currently holding the lock for its revert; by
         # the time we re-acquire, the cancel sentinel is on disk and
         # the re-check will raise JobCancelled.
-        from src.db_state_machine import MigrationInProgressError, MigrationLock
+        from src.db_state_machine import MigrationInProgressError, MigrationLock, read_backend_state
+
+        def _flip_and_verify() -> None:
+            """Flip the backend and confirm it landed — both under the lock.
+
+            The applier treats `status=success` as proof that instance.yaml
+            already names the target; it downgrades its own write to a url
+            normalization it can afford to lose on that basis. Nothing but
+            call order was enforcing that, so a future path returning 0
+            without writing would have the applier assert a move the config
+            does not reflect. One read of a file we just wrote makes it
+            explicit.
+
+            Inside the lock, not after it: a cancel landing in the gap
+            reverts instance.yaml to the source, the read-back sees a
+            mismatch, and a bare RuntimeError routes to `except Exception`
+            -> `mark_failed`, losing the cancelled/failed distinction that
+            `_check_cancel_before_flip`'s own docstring calls out as
+            load-bearing for the host applier. Holding the lock across both
+            means a mismatch here really is the write not having landed.
+            """
+            _check_cancel_before_flip(job_path=writer._path, target_state=target_state)
+            write_backend_state(target_state, url=target_url)
+            landed, _ = read_backend_state()
+            if landed != target_state:
+                raise BackendFlipNotVerified(
+                    f"refusing to report success: instance.yaml names {landed!r} after the flip "
+                    f"to {target_state!r}. The data migration completed, but the backend was not "
+                    "switched, so reporting success would leave the applier and the admin UI "
+                    "asserting a move that the config does not reflect."
+                )
+
         try:
             with MigrationLock():
-                _check_cancel_before_flip(job_path=writer._path, target_state=target_state)
-                write_backend_state(target_state, url=target_url)
+                _flip_and_verify()
         except MigrationInProgressError:
             time.sleep(0.5)
             with MigrationLock():
-                _check_cancel_before_flip(job_path=writer._path, target_state=target_state)
-                write_backend_state(target_state, url=target_url)
+                _flip_and_verify()
 
+        # The read-back that guards this lives in `_flip_and_verify` above,
+        # inside the migration lock. The applier leans on the ordering: when
+        # it sees status=success it treats instance.yaml as already naming
+        # the target and its own write as a url normalization it can afford
+        # to lose — so a success must not be reachable without the flip.
         writer.mark_success(summary=copy_summary)
         return 0
 
@@ -1302,8 +1331,10 @@ def main(
         # but doing it here too closes the race where the cancel
         # endpoint runs while the migrator is between step writes.
         try:
-            revert_state = BackendState(source_backend) if source_backend else (
-                BackendState.DUCKDB if to == "side_car" else BackendState.SIDE_CAR
+            revert_state = (
+                BackendState(source_backend)
+                if source_backend
+                else (BackendState.DUCKDB if to == "side_car" else BackendState.SIDE_CAR)
             )
             write_backend_state(
                 revert_state,
@@ -1315,6 +1346,23 @@ def main(
         # status: cancelled in the job JSON, not the exit code.
         return 0
 
+    except BackendFlipNotVerified as e:
+        # NO revert. The rows are on the target by the time this can fire, so
+        # writing the source back would create precisely the config/data split
+        # the check exists to detect. Record it and leave the overlay alone.
+        log.error(
+            "backend flip could not be verified after a completed migration: %s. "
+            "instance.yaml is NOT being reverted — the data is on the target. "
+            "Inspect the overlay by hand.",
+            e,
+        )
+        writer.mark_failed(
+            step=writer._read().get("current_step", "unknown"),
+            error_class=type(e).__name__,
+            error_message=str(e),
+        )
+        return 1
+
     except Exception as e:
         # Revert state to the source backend (best-effort). The source
         # is the authoritative "what's still working" — the in-progress
@@ -1323,8 +1371,10 @@ def main(
         # backend on the next /api/admin/db/state read, not the
         # *_in_progress that hung from a half-finished migration.
         try:
-            revert_state = BackendState(source_backend) if source_backend else (
-                BackendState.DUCKDB if to == "side_car" else BackendState.SIDE_CAR
+            revert_state = (
+                BackendState(source_backend)
+                if source_backend
+                else (BackendState.DUCKDB if to == "side_car" else BackendState.SIDE_CAR)
             )
             # For the PG sources, preserve the URL we came from so the
             # app can keep reading after restart. For DuckDB source the
@@ -1346,10 +1396,12 @@ def main(
 def _log_backup_skip(writer: JobWriter, reason: str) -> None:
     """Annotate the job file with a non-fatal backup skip."""
     data = writer._read()
-    data.setdefault("warnings", []).append({
-        "step": "backup",
-        "message": f"backup skipped: {reason}",
-    })
+    data.setdefault("warnings", []).append(
+        {
+            "step": "backup",
+            "message": f"backup skipped: {reason}",
+        }
+    )
     writer._write(data)
 
 
@@ -1361,6 +1413,7 @@ def _resolve_source_url_from_instance_yaml() -> str | None:
     or lacks the key — caller decides whether to error.
     """
     import yaml as _yaml
+
     overlay = Path(os.environ.get("DATA_DIR", "/data")) / "state" / "instance.yaml"
     if not overlay.exists():
         return None
@@ -1382,8 +1435,8 @@ if __name__ == "__main__":
         "--source-backend",
         choices=["duckdb", "side_car", "cloud"],
         help="Explicit source backend; the applier always passes this. "
-             "When omitted, defaults to 'duckdb' for --to=side_car and "
-             "'side_car' for --to=cloud (legacy forward-only paths).",
+        "When omitted, defaults to 'duckdb' for --to=side_car and "
+        "'side_car' for --to=cloud (legacy forward-only paths).",
     )
     parser.add_argument(
         "--source-url",
@@ -1403,13 +1456,15 @@ if __name__ == "__main__":
     if source_backend in ("side_car", "cloud") and not source_url:
         source_url = _resolve_source_url_from_instance_yaml()
 
-    sys.exit(main(
-        job_id=args.job_id,
-        to=args.to,
-        target_url=args.target_url,
-        duckdb_path=args.duckdb_path,
-        jobs_dir=args.jobs_dir,
-        backups_dir=args.backups_dir,
-        source_url=source_url,
-        source_backend=source_backend,
-    ))
+    sys.exit(
+        main(
+            job_id=args.job_id,
+            to=args.to,
+            target_url=args.target_url,
+            duckdb_path=args.duckdb_path,
+            jobs_dir=args.jobs_dir,
+            backups_dir=args.backups_dir,
+            source_url=source_url,
+            source_backend=source_backend,
+        )
+    )

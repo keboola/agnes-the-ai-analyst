@@ -157,9 +157,11 @@ class TestStackAdd:
             "resource_type": "data_package",
             "resource_id": "pkg_sales",
         }
-        # Auto-membership: the resource was already in the stack the moment
-        # it was granted — this call only requests a local download.
-        assert "Downloading a local copy" in result.output
+        # Mode-neutral success copy: classic (the default) joins the stack,
+        # auto-membership only requests the local copy — the echo leads with
+        # the membership action and points at `agnes pull` either way.
+        assert "Added data_package/pkg_sales to your stack" in result.output
+        assert "agnes pull" in result.output
 
     def test_add_memory_domain(self):
         with patch("cli.commands.stack.api_post", return_value=_resp(200, {"subscribed": True})) as m:

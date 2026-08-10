@@ -2,6 +2,7 @@
 knowledge_items, knowledge_votes, knowledge_item_user_dismissed,
 knowledge_contradictions, verification_evidence, knowledge_item_relations.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -24,6 +25,7 @@ def k_engine(pg_engine, monkeypatch):
 
     monkeypatch.setenv("AGNES_DB_URL", str(pg_engine.url))
     import src.db_pg as db_pg
+
     db_pg.dispose()
     return db_pg.get_engine()
 
@@ -32,15 +34,21 @@ def k_engine(pg_engine, monkeypatch):
 # items: create / get / update
 # ---------------------------------------------------------------------------
 
+
 def test_knowledge_create_and_get(k_engine):
     from src.repositories.knowledge_pg import KnowledgePgRepository
 
     repo = KnowledgePgRepository(k_engine)
     repo.create(
-        id="k1", title="Pricing Policy", content="USD only.",
-        category="finance", source_user="alice",
-        tags=["billing", "tax"], status="approved",
-        domain="finance", entities=["pricing", "USD"],
+        id="k1",
+        title="Pricing Policy",
+        content="USD only.",
+        category="finance",
+        source_user="alice",
+        tags=["billing", "tax"],
+        status="approved",
+        domain="finance",
+        entities=["pricing", "USD"],
     )
     item = repo.get_by_id("k1")
     assert item["title"] == "Pricing Policy"
@@ -84,16 +92,14 @@ def test_knowledge_update_partial_with_tags(k_engine):
 # list_items + search + count_items
 # ---------------------------------------------------------------------------
 
+
 def test_knowledge_list_items_filters(k_engine):
     from src.repositories.knowledge_pg import KnowledgePgRepository
 
     repo = KnowledgePgRepository(k_engine)
-    repo.create(id="k1", title="a", content="c", category="x",
-                domain="finance", status="approved")
-    repo.create(id="k2", title="b", content="c", category="y",
-                domain="finance", status="pending")
-    repo.create(id="k3", title="c", content="c", category="x",
-                domain="ops", status="approved")
+    repo.create(id="k1", title="a", content="c", category="x", domain="finance", status="approved")
+    repo.create(id="k2", title="b", content="c", category="y", domain="finance", status="pending")
+    repo.create(id="k3", title="c", content="c", category="x", domain="ops", status="approved")
 
     rows = repo.list_items(statuses=["approved"], category="x")
     assert {r["id"] for r in rows} == {"k1", "k3"}
@@ -106,12 +112,10 @@ def test_knowledge_search_finds_by_content(k_engine):
     from src.repositories.knowledge_pg import KnowledgePgRepository
 
     repo = KnowledgePgRepository(k_engine)
-    repo.create(id="k1", title="Revenue policy",
-                content="We use USD for all invoices.",
-                category="finance", status="approved")
-    repo.create(id="k2", title="Latency targets",
-                content="P95 under 300ms.", category="ops",
-                status="approved")
+    repo.create(
+        id="k1", title="Revenue policy", content="We use USD for all invoices.", category="finance", status="approved"
+    )
+    repo.create(id="k2", title="Latency targets", content="P95 under 300ms.", category="ops", status="approved")
 
     rows = repo.search("invoices")
     ids = {r["id"] for r in rows}
@@ -124,8 +128,7 @@ def test_knowledge_count_items_matches_list(k_engine):
 
     repo = KnowledgePgRepository(k_engine)
     for i in range(5):
-        repo.create(id=f"k{i}", title=f"t{i}", content="c",
-                    category="x", status="approved")
+        repo.create(id=f"k{i}", title=f"t{i}", content="c", category="x", status="approved")
     assert repo.count_items(statuses=["approved"]) == 5
     assert len(repo.list_items(statuses=["approved"], limit=100)) == 5
 
@@ -133,6 +136,7 @@ def test_knowledge_count_items_matches_list(k_engine):
 # ---------------------------------------------------------------------------
 # votes
 # ---------------------------------------------------------------------------
+
 
 def test_knowledge_vote_aggregates(k_engine):
     from src.repositories.knowledge_pg import KnowledgePgRepository
@@ -177,6 +181,7 @@ def test_knowledge_get_votes_by_user(k_engine):
 # dismissals
 # ---------------------------------------------------------------------------
 
+
 def test_knowledge_dismiss_idempotent(k_engine):
     from src.repositories.knowledge_pg import KnowledgePgRepository
 
@@ -192,25 +197,42 @@ def test_knowledge_dismiss_idempotent(k_engine):
     repo.undismiss("u1", "k1")
 
 
-def test_knowledge_list_items_hides_dismissed_but_not_mandatory(k_engine):
+def test_knowledge_list_items_hides_dismissed_but_not_required(k_engine):
+    """A Required item is never hidden by a dismissal — same rule as before,
+    written against the column that still exists.
+
+    This used to seed ``status="mandatory"`` and assert that row survived. The
+    intent was right and is kept; the spelling was retired by v49, which split
+    that overload into ``is_required`` and rewrote every legacy row
+    (``src/db.py``: ``UPDATE … SET is_required = TRUE, status = 'approved'
+    WHERE status = 'mandatory'``). Nothing in the app writes the old value
+    since — ``create()`` takes ``status`` and ``is_required`` as separate
+    arguments and does not translate, and the API's ``mandate`` action writes
+    the boolean while the status actions are approve/reject/revoke. So the old
+    version constructed a state the application cannot produce and asserted a
+    guard that, against real data, was dead — which is exactly how the
+    Postgres repository kept a ``status != 'mandatory'`` filter that protected
+    nothing (/agnes-review parity reviewer on #1204).
+    """
     from src.repositories.knowledge_pg import KnowledgePgRepository
 
     repo = KnowledgePgRepository(k_engine)
-    repo.create(id="k1", title="dismissable", content="c", category="c",
-                status="approved")
-    repo.create(id="k_mand", title="mandatory", content="c", category="c",
-                status="mandatory")
+    repo.create(id="k1", title="dismissable", content="c", category="c", status="approved")
+    repo.create(id="k_req", title="required", content="c", category="c", status="approved")
     repo.dismiss("u1", "k1")
-    repo.dismiss("u1", "k_mand")
+    repo.dismiss("u1", "k_req")
+    # Required only AFTER the dismissal — the stale-opt-out shape the rule exists for.
+    repo.set_is_required("k_req", True)
     rows = repo.list_items(hide_dismissed=True, dismissed_by_user="u1")
     ids = {r["id"] for r in rows}
     assert "k1" not in ids
-    assert "k_mand" in ids  # mandatory never hidden
+    assert "k_req" in ids  # a Required item is never hidden
 
 
 # ---------------------------------------------------------------------------
 # contradictions
 # ---------------------------------------------------------------------------
+
 
 def test_knowledge_create_and_resolve_contradiction(k_engine):
     from src.repositories.knowledge_pg import KnowledgePgRepository
@@ -219,7 +241,8 @@ def test_knowledge_create_and_resolve_contradiction(k_engine):
     repo.create(id="ka", title="a", content="c", category="c")
     repo.create(id="kb", title="b", content="c", category="c")
     cid = repo.create_contradiction(
-        item_a_id="ka", item_b_id="kb",
+        item_a_id="ka",
+        item_b_id="kb",
         explanation="conflict",
         suggested_resolution={"merged_content": "..."},
     )
@@ -238,14 +261,13 @@ def test_knowledge_create_and_resolve_contradiction(k_engine):
 # evidence
 # ---------------------------------------------------------------------------
 
+
 def test_knowledge_evidence_create_and_list(k_engine):
     from src.repositories.knowledge_pg import KnowledgePgRepository
 
     repo = KnowledgePgRepository(k_engine)
     repo.create(id="k1", title="t", content="c", category="c")
-    eid = repo.create_evidence("k1", source_user="bob",
-                                detection_type="quote",
-                                user_quote="they said X")
+    eid = repo.create_evidence("k1", source_user="bob", detection_type="quote", user_quote="they said X")
     assert eid.startswith("ev_")
     rows = repo.list_evidence("k1")
     assert len(rows) == 1
@@ -256,6 +278,7 @@ def test_knowledge_evidence_create_and_list(k_engine):
 # ---------------------------------------------------------------------------
 # relations
 # ---------------------------------------------------------------------------
+
 
 def test_knowledge_relation_canonicalizes_pair(k_engine):
     from src.repositories.knowledge_pg import KnowledgePgRepository
@@ -279,8 +302,7 @@ def test_knowledge_relation_resolve(k_engine):
     repo.create(id="a", title="a", content="c", category="c")
     repo.create(id="b", title="b", content="c", category="c")
     repo.create_relation("a", "b", "dup", score=0.7)
-    rc = repo.resolve_relation("a", "b", "dup", resolved_by="admin",
-                                resolution="merge")
+    rc = repo.resolve_relation("a", "b", "dup", resolved_by="admin", resolution="merge")
     assert rc == 1
     rel = repo.get_relation("a", "b", "dup")
     assert rel["resolved"] is True
@@ -295,8 +317,7 @@ def test_knowledge_count_relations_filters_match_list_relations(k_engine):
     repo.create_relation("a", "b", "likely_duplicate")
     repo.create_relation("c", "d", "likely_duplicate")
     repo.create_relation("e", "f", "other_type")
-    repo.resolve_relation("a", "b", "likely_duplicate", resolved_by="admin",
-                           resolution="duplicate")
+    repo.resolve_relation("a", "b", "likely_duplicate", resolved_by="admin", resolution="duplicate")
     assert repo.count_relations() == 3
     assert repo.count_relations(relation_type="likely_duplicate") == 2
     assert repo.count_relations(relation_type="likely_duplicate", resolved=False) == 1
@@ -307,24 +328,46 @@ def test_knowledge_count_relations_filters_match_list_relations(k_engine):
 # duplicate-candidate finder + aggregations
 # ---------------------------------------------------------------------------
 
+
 def test_knowledge_find_duplicate_candidates(k_engine):
     from src.repositories.knowledge_pg import KnowledgePgRepository
 
     repo = KnowledgePgRepository(k_engine)
-    repo.create(id="new", title="t", content="c", category="c",
-                domain="ops", entities=["alpha", "beta", "gamma"],
-                status="approved")
-    repo.create(id="match", title="t", content="c", category="c",
-                domain="ops", entities=["alpha", "beta", "delta"],
-                status="approved")
-    repo.create(id="diff", title="t", content="c", category="c",
-                domain="ops", entities=["x", "y", "z"],
-                status="approved")
-    repo.create(id="wrong_domain", title="t", content="c", category="c",
-                domain="finance", entities=["alpha", "beta", "gamma"],
-                status="approved")
+    repo.create(
+        id="new",
+        title="t",
+        content="c",
+        category="c",
+        domain="ops",
+        entities=["alpha", "beta", "gamma"],
+        status="approved",
+    )
+    repo.create(
+        id="match",
+        title="t",
+        content="c",
+        category="c",
+        domain="ops",
+        entities=["alpha", "beta", "delta"],
+        status="approved",
+    )
+    repo.create(
+        id="diff", title="t", content="c", category="c", domain="ops", entities=["x", "y", "z"], status="approved"
+    )
+    repo.create(
+        id="wrong_domain",
+        title="t",
+        content="c",
+        category="c",
+        domain="finance",
+        entities=["alpha", "beta", "gamma"],
+        status="approved",
+    )
     candidates = repo.find_duplicate_candidates_by_entities(
-        "new", ["alpha", "beta", "gamma"], "ops", min_overlap=2,
+        "new",
+        ["alpha", "beta", "gamma"],
+        "ops",
+        min_overlap=2,
     )
     ids = {c["id"] for c in candidates}
     assert "match" in ids
@@ -337,12 +380,9 @@ def test_knowledge_count_by_tag_and_audience(k_engine):
     from src.repositories.knowledge_pg import KnowledgePgRepository
 
     repo = KnowledgePgRepository(k_engine)
-    repo.create(id="k1", title="t", content="c", category="c",
-                tags=["billing", "tax"], status="approved")
-    repo.create(id="k2", title="t", content="c", category="c",
-                tags=["billing"], status="approved")
-    repo.create(id="k3", title="t", content="c", category="c",
-                tags=[], status="approved")
+    repo.create(id="k1", title="t", content="c", category="c", tags=["billing", "tax"], status="approved")
+    repo.create(id="k2", title="t", content="c", category="c", tags=["billing"], status="approved")
+    repo.create(id="k3", title="t", content="c", category="c", tags=[], status="approved")
     by_tag = repo.count_by_tag()
     assert by_tag.get("billing") == 2
     assert by_tag.get("tax") == 1
@@ -352,10 +392,8 @@ def test_knowledge_bulk_update(k_engine):
     from src.repositories.knowledge_pg import KnowledgePgRepository
 
     repo = KnowledgePgRepository(k_engine)
-    repo.create(id="k1", title="t", content="c", category="c",
-                tags=["x"], status="pending")
-    repo.create(id="k2", title="t", content="c", category="c",
-                tags=["x"], status="pending")
+    repo.create(id="k1", title="t", content="c", category="c", tags=["x"], status="pending")
+    repo.create(id="k2", title="t", content="c", category="c", tags=["x"], status="pending")
     res = repo.bulk_update(
         ["k1", "k2", "nope"],
         {"status": "approved", "tags_add": ["y"]},

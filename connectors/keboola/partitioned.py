@@ -12,6 +12,7 @@ The orchestrator exposes the directory as a single DuckDB view via
 `read_parquet('<table>/*.parquet')` — to the analyst, a partitioned
 table reads identically to a single-file table.
 """
+
 from __future__ import annotations
 
 import logging
@@ -28,7 +29,6 @@ import pyarrow.parquet as pq
 from connectors.keboola.parquet_io import (
     apply_schema_to_table,
     convert_date_columns_to_date32,
-    csv_to_parquet,
     _convert_column,
 )
 from connectors.keboola.incremental import compute_changed_since
@@ -165,9 +165,7 @@ def process_csv_to_partitions(
     rows; admin sees them in the log).
     """
     if granularity not in SUPPORTED_GRANULARITIES:
-        raise InvalidPartitionConfigError(
-            f"granularity must be one of {sorted(SUPPORTED_GRANULARITIES)}"
-        )
+        raise InvalidPartitionConfigError(f"granularity must be one of {sorted(SUPPORTED_GRANULARITIES)}")
 
     df = pd.read_csv(csv_path, dtype=str)
     if df.empty:
@@ -175,8 +173,7 @@ def process_csv_to_partitions(
 
     if partition_by not in df.columns:
         raise InvalidPartitionConfigError(
-            f"partition_by column {partition_by!r} not present in CSV "
-            f"(columns: {list(df.columns)})"
+            f"partition_by column {partition_by!r} not present in CSV (columns: {list(df.columns)})"
         )
 
     if dtypes:
@@ -193,7 +190,8 @@ def process_csv_to_partitions(
     if invalid_count > 0:
         logger.warning(
             "partition: %d rows with unparseable %r values dropped from this delta",
-            invalid_count, partition_by,
+            invalid_count,
+            partition_by,
         )
     df = df.assign(_partition_dt=parsed)
     df = df.dropna(subset=["_partition_dt"])
@@ -201,9 +199,7 @@ def process_csv_to_partitions(
     if df.empty:
         return {}
 
-    df["_partition_key"] = df["_partition_dt"].apply(
-        lambda v: partition_key_for(v, granularity)
-    )
+    df["_partition_key"] = df["_partition_dt"].apply(lambda v: partition_key_for(v, granularity))
     df = df.drop(columns=["_partition_dt"])
 
     groups: Dict[str, pd.DataFrame] = {}
@@ -297,8 +293,12 @@ def extract_partitioned(
     # Mirror extract_incremental's table_id resolution — bucket + source_table
     # is the Keboola Storage API reference, NOT the agnes registry id (which
     # is the slugified view name).
+    from connectors.keboola.storage_api import normalize_source_table
+
     bucket = table_config.get("bucket", "")
-    source_table = table_config.get("source_table") or table_config.get("name")
+    # Strip a legacy bucket prefix (pre-fix Data-sources wizard rows stored the
+    # full KBC id in source_table) so the composition below can't double it.
+    source_table = normalize_source_table(bucket, table_config.get("source_table") or table_config.get("name"))
     if bucket and source_table:
         table_id = f"{bucket}.{source_table}"
     else:
@@ -373,7 +373,9 @@ def _first_sync_chunked(
     now: datetime,
 ) -> Dict[str, Any]:
     windows = compute_chunk_windows(
-        now=now, chunk_days=chunk_days, max_history_days=max_history_days,
+        now=now,
+        chunk_days=chunk_days,
+        max_history_days=max_history_days,
     )
 
     total_rows = 0
@@ -385,7 +387,10 @@ def _first_sync_chunked(
             csv_path = Path(tmp.name)
         try:
             export_info = client.export_table(
-                table_id, csv_path, changed_since=since, changed_until=until,
+                table_id,
+                csv_path,
+                changed_since=since,
+                changed_until=until,
             )
             chunks_run += 1
             rows_in_chunk = export_info.get("exported_rows", 0)
@@ -394,20 +399,25 @@ def _first_sync_chunked(
                 if max_history_days is None and consecutive_empty >= INITIAL_LOAD_EMPTY_CHUNKS_TO_STOP:
                     logger.info(
                         "Initial load: %d consecutive empty chunks, stopping (table_id=%s)",
-                        consecutive_empty, table_id,
+                        consecutive_empty,
+                        table_id,
                     )
                     break
                 continue
             consecutive_empty = 0
             groups = process_csv_to_partitions(
-                csv_path=csv_path, partition_by=partition_by,
-                granularity=granularity, dtypes=dtypes,
+                csv_path=csv_path,
+                partition_by=partition_by,
+                granularity=granularity,
+                dtypes=dtypes,
             )
             for partition_key, group_df in groups.items():
                 merge_partition(
                     partition_path=output_dir / f"{partition_key}.parquet",
-                    delta_df=group_df, primary_key=primary_key,
-                    pyarrow_schema=pyarrow_schema, date_columns=date_columns,
+                    delta_df=group_df,
+                    primary_key=primary_key,
+                    pyarrow_schema=pyarrow_schema,
+                    date_columns=date_columns,
                 )
                 total_rows += len(group_df)
         finally:
@@ -440,15 +450,19 @@ def _incremental_sync(
     now: datetime,
 ) -> Dict[str, Any]:
     changed_since = compute_changed_since(
-        last_sync=last_sync, window_days=window_days,
-        max_history_days=max_history_days, now=now,
+        last_sync=last_sync,
+        window_days=window_days,
+        max_history_days=max_history_days,
+        now=now,
     )
 
     with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as tmp:
         csv_path = Path(tmp.name)
     try:
         export_info = client.export_table(
-            table_id, csv_path, changed_since=changed_since,
+            table_id,
+            csv_path,
+            changed_since=changed_since,
         )
         delta_rows = export_info.get("exported_rows", 0)
         if delta_rows == 0:
@@ -459,14 +473,18 @@ def _incremental_sync(
                 "changed_since_used": changed_since,
             }
         groups = process_csv_to_partitions(
-            csv_path=csv_path, partition_by=partition_by,
-            granularity=granularity, dtypes=dtypes,
+            csv_path=csv_path,
+            partition_by=partition_by,
+            granularity=granularity,
+            dtypes=dtypes,
         )
         for partition_key, group_df in groups.items():
             merge_partition(
                 partition_path=output_dir / f"{partition_key}.parquet",
-                delta_df=group_df, primary_key=primary_key,
-                pyarrow_schema=pyarrow_schema, date_columns=date_columns,
+                delta_df=group_df,
+                primary_key=primary_key,
+                pyarrow_schema=pyarrow_schema,
+                date_columns=date_columns,
             )
         return {
             "rows": _count_total_rows(output_dir),

@@ -570,7 +570,7 @@
    contributes around the ladder (the plugin page's Cowork export, say), so
    a page never has to rebuild the ladder to add one entry beside it. #}
 {% macro store_menu(entity, is_owner=False, is_admin=False, edit_in_flight=False,
-                    before=None, after=None) %}
+                    own_private=False, before=None, after=None) %}
 {%- set items = (before or []) | list -%}
 {%- if items %}{% set _ = items.append({'sep': True}) %}{% endif -%}
 {%- if edit_in_flight -%}
@@ -582,7 +582,15 @@
       'title': 'Edit metadata or upload a new version.'}) -%}
 {%- endif -%}
 {%- set _ = items.append({'sep': True}) -%}
-{%- if entity.visibility_status == 'approved' -%}
+{# `own_private` unlocks Archive exactly as the legacy button ladder does: the
+   author's own Private row sits at 'hidden' — the same status quarantine
+   writes — and never promotes off it, so gating on 'approved' alone locked the
+   author out of deleting an entity nobody else can even see (#1177). It has to
+   be here and not only on the legacy templates, because this macro IS the
+   ladder the redesigned page draws; without it a paper-theme instance shows
+   the author a permanently greyed-out "Delete (locked — quarantined)". The API
+   gate uses the same predicate, so button and endpoint agree. #}
+{%- if entity.visibility_status == 'approved' or own_private -%}
   {%- set _ = items.append({'label': 'Archive', 'icon': 'trash', 'danger': True,
       'attrs': 'id="owner-archive-btn"',
       'title': 'Soft delete: hides from browse + blocks new installs. Existing installs continue serving the bundle.'}) -%}

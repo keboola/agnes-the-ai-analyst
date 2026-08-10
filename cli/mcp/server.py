@@ -27,8 +27,8 @@ Credentials are read from ~/.config/agnes/config.yaml (server URL) and
 
 from __future__ import annotations
 
-import os
 from typing import Literal
+
 from pathlib import Path
 
 import httpx
@@ -328,9 +328,21 @@ def query_local(sql: str, limit: int = 1000) -> dict:
 
     Returns ``{"columns": [...], "rows": [[...], ...]}`` or raises if
     the local DuckDB file does not exist (run ``pull()`` first).
-    """
 
-    workspace = Path(os.environ.get("AGNES_LOCAL_DIR", ".")).resolve()
+    The workspace is resolved from AGNES_LOCAL_DIR, else the current
+    directory when it is a workspace, else the workspace anchored by
+    ``agnes init`` — so this works regardless of where the MCP client
+    spawned the process.
+    """
+    from cli.lib.workspace_resolve import resolve_data_workspace
+
+    workspace = resolve_data_workspace()
+    if workspace is None:
+        raise FileNotFoundError(
+            "No Agnes workspace found (checked AGNES_LOCAL_DIR, the current "
+            "directory, and the anchored workspace_root). Run `agnes init` "
+            "on this machine first."
+        )
     db_path = workspace / "user" / "duckdb" / "analytics.duckdb"
     if not db_path.exists():
         raise FileNotFoundError(f"Local DuckDB not found at {db_path}. Run pull() first to sync data.")
@@ -440,6 +452,11 @@ def pull(skip_materialize: bool = False) -> dict:
 
     Run at the start of a session to make sure local data is fresh.
     Equivalent to ``agnes pull`` on the command line.
+
+    The workspace is resolved from AGNES_LOCAL_DIR, else the current
+    directory when it is a workspace, else the workspace anchored by
+    ``agnes init`` — so this works regardless of where the MCP client
+    spawned the process.
     """
     # Imported inside the function (not at module scope) so tests can patch
     # ``cli.lib.pull.run_pull`` and have the patch take effect at call time.
@@ -450,7 +467,15 @@ def pull(skip_materialize: bool = False) -> dict:
     if not token:
         raise ValueError("No Agnes token configured. Run setup.py from Terminal to authenticate.")
 
-    workspace = Path(os.environ.get("AGNES_LOCAL_DIR", ".")).resolve()
+    from cli.lib.workspace_resolve import resolve_data_workspace
+
+    workspace = resolve_data_workspace()
+    if workspace is None:
+        raise FileNotFoundError(
+            "No Agnes workspace found (checked AGNES_LOCAL_DIR, the current "
+            "directory, and the anchored workspace_root). Run `agnes init` "
+            "on this machine first."
+        )
     result = run_pull(
         server_url,
         token,

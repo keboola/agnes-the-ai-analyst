@@ -91,13 +91,26 @@ class TestFeatureFlagsRegistry:
             "chat_approvals",
             "data_apps",
             "library_show_unverified_trust",
+            "experience",
+            "stack_auto_membership",
             "mcp_query_param_token",
+            "mcp_source_url_strict",
+            "agent_profiles",
         }
 
     def test_every_entry_resolves(self, monkeypatch):
+        from app import switches as sw
+
         monkeypatch.setattr(ic, "get_value", lambda *keys, default=None: default)
         for flag in ic.FEATURE_FLAGS:
             monkeypatch.delenv(flag.env_var, raising=False)
+            if flag.kind != "bool":
+                # Non-boolean switches (the `experience` select) resolve
+                # through switch_value, not the boolean feature_enabled.
+                if flag.runtime_view:
+                    continue
+                assert sw.switch_value(flag.name) == flag.default
+                continue
             result = ic.feature_enabled(*flag.config_keys, env_var=flag.env_var, default=flag.default)
             assert isinstance(result, bool)
             assert result == flag.default
@@ -106,6 +119,7 @@ class TestFeatureFlagsRegistry:
         by_name = {f.name: f for f in ic.FEATURE_FLAGS}
         assert by_name["studio"].default is True
         assert by_name["guardrails"].default is True
+        assert by_name["agent_profiles"].default is True
 
     def test_new_flags_default_off(self):
         by_name = {f.name: f for f in ic.FEATURE_FLAGS}
@@ -159,6 +173,28 @@ class TestStudioEnabledBehaviorPreserved:
         assert ic.get_studio_enabled() is True
 
 
+class TestAgentProfilesEnabledBehaviorPreserved:
+    def test_default_true(self, monkeypatch):
+        monkeypatch.delenv("AGNES_AGENT_PROFILES_ENABLED", raising=False)
+        monkeypatch.setattr(ic, "get_value", lambda *keys, default=None: default)
+        assert ic.get_agent_profiles_enabled() is True
+
+    def test_yaml_false(self, monkeypatch):
+        monkeypatch.delenv("AGNES_AGENT_PROFILES_ENABLED", raising=False)
+        monkeypatch.setattr(ic, "get_value", lambda *keys, default=None: False)
+        assert ic.get_agent_profiles_enabled() is False
+
+    def test_env_overrides_yaml(self, monkeypatch):
+        monkeypatch.setenv("AGNES_AGENT_PROFILES_ENABLED", "0")
+        monkeypatch.setattr(ic, "get_value", lambda *keys, default=None: True)
+        assert ic.get_agent_profiles_enabled() is False
+
+    def test_env_true_string(self, monkeypatch):
+        monkeypatch.setenv("AGNES_AGENT_PROFILES_ENABLED", "1")
+        monkeypatch.setattr(ic, "get_value", lambda *keys, default=None: False)
+        assert ic.get_agent_profiles_enabled() is True
+
+
 class TestGuardrailsEnabledBehaviorPreserved:
     def test_default_true(self, monkeypatch):
         monkeypatch.delenv("AGNES_GUARDRAILS_ENABLED", raising=False)
@@ -191,18 +227,73 @@ class TestServerConfigFeatureFlagsInventory:
         assert isinstance(flags, list)
         names = {f["name"] for f in flags}
         assert names == {
+            "instance.experience",
             "studio",
             "guardrails",
             "chat",
             "chat_approvals",
             "data_apps",
             "library_show_unverified_trust",
+            "stack_auto_membership",
             "mcp_query_param_token",
+            "mcp_source_url_strict",
+            "agent_profiles",
         }
+        # The experience preset leads as a string-valued informational row.
+        assert flags[0]["name"] == "instance.experience"
+        assert flags[0]["value_label"] in ("classic", "redesign")
         for f in flags:
+            if f["name"] == "instance.experience":
+                assert set(f.keys()) >= {"name", "value_label", "source", "env_var", "description"}
+                assert f["source"] in ("env", "config", "default")
+                continue
             assert set(f.keys()) >= {"name", "effective", "source", "default", "env_var", "description"}
-            assert f["source"] in ("env", "config", "default")
+            assert f["source"] in ("env", "config", "default", "preset")
             assert isinstance(f["effective"], bool)
+
+    def test_preset_coupled_flag_resolves_and_labels_preset_source(self, seeded_app, monkeypatch):
+        """Under ``experience: redesign`` with no per-knob setting, the
+        coupled flags must report their RUNTIME value (on) with source
+        ``preset`` — never "off/default" while the running instance has them
+        on (spec 2026-08-07-default-chrome-ux-parity)."""
+        monkeypatch.setenv("AGNES_INSTANCE_EXPERIENCE", "redesign")
+        monkeypatch.delenv("AGNES_STACK_AUTO_MEMBERSHIP", raising=False)
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/api/admin/server-config", headers=_auth(token))
+        assert resp.status_code == 200, resp.text
+        flags = {f["name"]: f for f in resp.json()["feature_flags"]}
+        assert flags["instance.experience"]["value_label"] == "redesign"
+        assert flags["instance.experience"]["source"] == "env"
+        assert flags["stack_auto_membership"]["effective"] is True
+        assert flags["stack_auto_membership"]["source"] == "preset"
+        # Per-knob env still wins over the preset — and labels as env.
+        monkeypatch.setenv("AGNES_STACK_AUTO_MEMBERSHIP", "0")
+        flags = {f["name"]: f for f in c.get("/api/admin/server-config", headers=_auth(token)).json()["feature_flags"]}
+        assert flags["stack_auto_membership"]["effective"] is False
+        assert flags["stack_auto_membership"]["source"] == "env"
+
+    def test_known_fields_defaults_follow_the_preset(self, seeded_app, monkeypatch):
+        """The EDITABLE registry must render the preset-implied default for
+        unset preset-coupled fields — a static literal there means a redesign
+        instance sees the stack switch OFF / theme `blue` and a routine
+        "Save section" silently persists the classic values over the preset
+        (Devin Review on #1199)."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+
+        monkeypatch.delenv("AGNES_INSTANCE_EXPERIENCE", raising=False)
+        kf = c.get("/api/admin/server-config", headers=_auth(token)).json()["known_fields"]
+        assert kf["features"]["stack_auto_membership"]["default"] is False
+        assert kf["instance"]["theme"]["default"] == "blue"
+
+        monkeypatch.setenv("AGNES_INSTANCE_EXPERIENCE", "redesign")
+        kf = c.get("/api/admin/server-config", headers=_auth(token)).json()["known_fields"]
+        assert kf["features"]["stack_auto_membership"]["default"] is True
+        assert kf["instance"]["theme"]["default"] == "paper"
+        # The select must offer every value the resolver accepts — a lagging
+        # option list can only write values that erase a working choice.
+        assert set(kf["instance"]["theme"]["options"]) == {"blue", "navy", "dark", "auto", "paper"}
 
     def test_env_source_reflected(self, seeded_app, monkeypatch):
         monkeypatch.setenv("AGNES_STUDIO_ENABLED", "0")
@@ -311,6 +402,47 @@ def test_no_read_site_restates_the_library_trust_default_as_a_literal():
     assert len(blocks) == 3, f"expected 3 read sites, found {len(blocks)}: {blocks}"
     offenders = [b for b in blocks if b.strip() != "_LIBRARY_TRUST_DEFAULT"]
     assert not offenders, (
-        "these read sites restate the default as a literal instead of using "
-        f"_LIBRARY_TRUST_DEFAULT: {offenders}"
+        f"these read sites restate the default as a literal instead of using _LIBRARY_TRUST_DEFAULT: {offenders}"
     )
+
+
+class TestInventoryExposesSwitchMetadata:
+    """The panel cannot explain a refusal it is not told about."""
+
+    def test_every_row_carries_the_new_fields(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/api/admin/server-config", headers=_auth(token))
+        assert resp.status_code == 200
+        rows = resp.json()["feature_flags"]
+        assert rows, "inventory is empty"
+        for row in rows:
+            assert row["effect"] in ("live", "restart", "deploy")
+            assert isinstance(row["editable"], bool)
+            assert isinstance(row["lock_reason"], str)
+
+    def test_locked_row_carries_its_reason(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/api/admin/server-config", headers=_auth(token))
+        row = next(r for r in resp.json()["feature_flags"] if r["name"] == "data_apps")
+        assert row["editable"] is False
+        assert row["lock_reason"], "a locked switch must explain itself to the operator"
+
+    def test_editable_row_carries_no_reason(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/api/admin/server-config", headers=_auth(token))
+        row = next(r for r in resp.json()["feature_flags"] if r["name"] == "studio")
+        assert row["editable"] is True
+        assert row["lock_reason"] == ""
+
+    def test_existing_fields_are_untouched(self, seeded_app):
+        """PR3 rewrites the panel; until then the current renderer must keep
+        working against the same keys."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/api/admin/server-config", headers=_auth(token))
+        row = resp.json()["feature_flags"][0]
+        for key in ("name", "effective", "source", "default", "env_var", "description"):
+            assert key in row

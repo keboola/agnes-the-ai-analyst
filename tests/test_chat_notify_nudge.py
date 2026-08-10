@@ -292,6 +292,16 @@ def user_cookie(web_client):
 
 
 class TestProfileGate:
+    @pytest.fixture(autouse=True)
+    def _rail_profile(self, monkeypatch):
+        """The notification-channels panel lives on the REDESIGNED profile
+        (#896 moved it there off the retired rail dashboard); the default
+        chrome serves the frozen pre-redesign profile, where Telegram linking
+        stays on /dashboard exactly as before the redesign (spec 2026-08-07
+        wave 2). The deep-link source (chat_onboarding.js) is rail-gated, so
+        the anchor is only ever linked where it exists."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+
     def test_unconfigured_instance_offers_no_telegram_link(self, web_client, user_cookie, monkeypatch):
         monkeypatch.delenv("TELEGRAM_BOT_USERNAME", raising=False)
         resp = web_client.get("/me/profile", cookies=user_cookie)

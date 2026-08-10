@@ -171,10 +171,23 @@ class TestQueryPathBqSecretRefreshOnLongLivedConnection:
         # (offline runner).
         # Mirror production's install incantation (orchestrator rebuild path,
         # connectors/bigquery): bigquery is a *community* extension.
+        #
+        # `RuntimeError` belongs in the guard, not just `duckdb.Error`. This is
+        # a 55 MB download from the community repository, and on a cold
+        # `~/.duckdb` cache with eight parallel shards it can outrun pytest.ini's
+        # 60 s `--timeout`. pytest-timeout raises via SIGALRM, which lands
+        # INSIDE the DuckDB call, and DuckDB answers a tripped signal with
+        # `RuntimeError("Query interrupted")` — not a `duckdb.Error`. So the
+        # guard that exists precisely to tolerate "the extension isn't
+        # reachable" let that case through and the test failed hard instead.
+        # Same root cause as the orchestrator flake fixed in #1208; that one
+        # could stub the install away, but this test needs the extension really
+        # loaded — it exercises the secret-refresh branch that only runs after
+        # `LOAD bigquery` succeeds — so widening the guard is the fix here.
         try:
             conn.execute("INSTALL bigquery FROM community")
             conn.execute("LOAD bigquery")
-        except duckdb.Error as e:  # pragma: no cover - offline CI only
+        except (duckdb.Error, RuntimeError) as e:  # pragma: no cover - offline/slow CI only
             pytest.skip(f"bigquery DuckDB extension unavailable: {e}")
         # Simulate "already attached from an earlier call on this same
         # long-lived connection" without needing real BQ credentials —

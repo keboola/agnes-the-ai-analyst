@@ -580,6 +580,73 @@ def _require_safe_source_name(name: str) -> None:
         )
 
 
+async def _source_url_verdict(row: dict):
+    """The source-url verdict for a row, or ``None`` when the url is not live.
+
+    Split out of :func:`_check_source_url_or_400` so a caller can *report* the
+    verdict instead of refusing on it. The connectivity-test probe needs that:
+    its contract is HTTP 200 with a diagnostic, so answering a refused url with
+    a 400 would withhold the one answer the admin pressed the button for.
+
+    ``None`` for ``stdio``: there the secret goes into the subprocess
+    environment and ``url`` is never dialed — it is inert documentation, and
+    refusing a note nobody connects to would be theatre. Mirrors the same
+    transport test the credential purge uses, so the two agree about when a url
+    is live.
+
+    ``check_source_url`` does a BLOCKING ``getaddrinfo``; callers are ``async
+    def`` handlers, so it goes through ``asyncio.to_thread`` rather than
+    stalling the event loop for the resolver timeout — same hazard, and same
+    remedy, as ``set_oauth_client_config``.
+    """
+    if (row.get("transport") or "") not in ("http", "sse"):
+        return None
+    from app.instance_config import get_mcp_source_url_strict, get_ssrf_allowed_hosts
+    from src.net.mcp_source_url import check_source_url
+
+    strict = get_mcp_source_url_strict()
+    # The SAME allowlist every other admin-configured URL consults
+    # (`_validate_url_not_private` in app/api/admin.py). A host an operator has
+    # already declared trusted must not have to be declared twice.
+    return await asyncio.to_thread(
+        lambda: check_source_url(
+            row.get("url") or "",
+            strict=strict,
+            allowed_hosts=get_ssrf_allowed_hosts(),
+        )
+    )
+
+
+async def _check_source_url_or_400(row: dict) -> str:
+    """Gate a source row's ``url`` (#1154). Returns the warning to audit, if any.
+
+    No-op for ``stdio``: there the secret goes into the subprocess environment
+    and ``url`` is never dialed — it is inert documentation, and refusing a
+    note nobody connects to would be theatre. Mirrors the same transport test
+    the credential purge uses, so the two agree about when a url is live.
+
+    ``check_source_url`` does a BLOCKING ``getaddrinfo``; this is an ``async
+    def`` handler, so it goes through ``asyncio.to_thread`` rather than
+    stalling the event loop for the resolver timeout — same hazard, and same
+    remedy, as ``set_oauth_client_config``.
+    """
+    verdict = await _source_url_verdict(row)
+    if verdict is None:
+        return ""
+    from app.instance_config import get_mcp_source_url_strict
+
+    strict = get_mcp_source_url_strict()
+    if not verdict.ok:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"url failed validation: {verdict.reason}"
+                + ("" if strict else " (set mcp.source_url_strict to also require https to a public address)")
+            ),
+        )
+    return verdict.warning
+
+
 @router.post("/mcp-sources", status_code=201)
 async def create_mcp_source(
     payload: CreateMCPSourceRequest,
@@ -598,6 +665,11 @@ async def create_mcp_source(
     repo = mcp_sources_repo()
     if repo.get_by_name(name) is not None:
         raise HTTPException(status_code=409, detail="name_exists")
+    # #1154 — see the same call in update_mcp_source. Runs before the row is
+    # written so a refused url never reaches the registry at all.
+    url_warning = await _check_source_url_or_400(
+        {"transport": payload.transport, "url": payload.url},
+    )
     source_id = str(uuid.uuid4())
     try:
         repo.upsert(
@@ -625,7 +697,11 @@ async def create_mcp_source(
         user["id"],
         "mcp_source.create",
         f"mcp_source:{source_id}",
-        {"name": name, "transport": payload.transport},
+        {
+            "name": name,
+            "transport": payload.transport,
+            **({"url_warning": url_warning} if url_warning else {}),
+        },
     )
     return {"id": source_id}
 
@@ -729,6 +805,57 @@ async def update_mcp_source(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
+    # #1154: the source's own url is dialed with a credential attached on EVERY
+    # forward, so it earns the same configuration-time check the OAuth
+    # endpoints get — with a policy that does not outlaw internal MCP servers
+    # (see src/net/mcp_source_url.py for where the line falls and why).
+    #
+    # Placed here for the same reason `validate_source_fields` is: it must sit
+    # AFTER the merge (a patch that only flips transport can make a stored url
+    # live for the first time) and BEFORE the purge, so a request that is about
+    # to 400 cannot destroy credentials on its way out.
+    #
+    # Skipped when the result is DISABLED. The check exists to stop a rejected
+    # address becoming reachable, and enforcing it on a row being turned off
+    # instead traps the operator: a source registered before this guard (or
+    # before `mcp.source_url_strict` was turned on) would 400 on every update,
+    # including the update that turns it OFF — the one action that reduces the
+    # risk (Devin Review on #1204). Remediation is now coherent: disable, fix
+    # the url, re-enable — and re-enabling validates, so nothing reaches a live
+    # state unchecked.
+    #
+    # What `enabled=False` actually buys is the two RUNTIME forwards, which
+    # re-fetch the row and refuse (`mcp/tools_generator.py`,
+    # `mcp_passthrough.py`). It is NOT "never dialed": the admin probes do not
+    # consult `enabled`, so they carry their own copy of this check rather than
+    # leaning on the flag.
+    #
+    # Also skipped when this write does not touch what the check polices. The
+    # guard resolves DNS, so running it on EVERY update makes an unrelated
+    # edit — a rename, a `connect_hint` tweak — fail during a resolver blip;
+    # on a strict instance that is a hard 400 on a field the admin never
+    # touched. The module docstring rules that footgun out by design, and
+    # re-running the check on an unchanged url quietly reintroduced it (Devin
+    # on #1204).
+    #
+    # So the trigger is the same predicate the credential purge below uses —
+    # `url_repointed`, "this write puts a (new) address in front of the
+    # credentials": the url changed, or a stdio row went network and made a
+    # stored url live for the first time. Plus off→on, which does not repoint
+    # anything but does turn the forwards on. What is left over — an already
+    # live row whose url this write does not touch — is the legacy-row case,
+    # and re-validating it here would only ever fire on an edit that had
+    # nothing to do with it; closing that gap is a sweep's job (see the reply
+    # on the runtime-forwards thread), not this handler's.
+    now_network = (merged.get("transport") or "") in ("http", "sse")
+    was_network = (existing.get("transport") or "") in ("http", "sse")
+    url_repointed = now_network and ((existing.get("url") or "") != (merged.get("url") or "") or not was_network)
+    becoming_enabled = bool(merged.get("enabled")) and not bool(existing.get("enabled"))
+    if merged.get("enabled") and (url_repointed or becoming_enabled):
+        url_warning = await _check_source_url_or_400(merged)
+    else:
+        url_warning = ""
+
     was_oauth = (existing.get("auth_method") or "").strip().lower() == "oauth"
     still_oauth = (merged.get("auth_method") or "").strip().lower() == "oauth"
     # Repointing `url` sends every stored credential for this source to a
@@ -751,9 +878,11 @@ async def update_mcp_source(
     # stored url live for the first time, so a secret minted for a subprocess
     # starts being sent as an `Authorization` header to a host it was never
     # meant for. Same exposure, so the same purge.
-    now_network = (merged.get("transport") or "") in ("http", "sse")
-    was_network = (existing.get("transport") or "") in ("http", "sse")
-    url_repointed = now_network and ((existing.get("url") or "") != (merged.get("url") or "") or not was_network)
+    #
+    # `url_repointed` is computed above, next to the url check, because that
+    # check asks the same question this purge does — "does this write put a
+    # (new) address in front of credentials?" — and two copies of that
+    # predicate would be free to drift apart.
     # The purge runs BEFORE the row is repointed, deliberately. There is no
     # transaction spanning the sources row and the vault tables, so one of the
     # two orders has to lose on a mid-sequence failure — and they do not lose
@@ -823,7 +952,16 @@ async def update_mcp_source(
         # audit trail shows a url change and no trace of what it destroyed
         # (review finding on #1124). purged_kinds names WHICH, since the two
         # branches fire independently and cost the operator different things.
-        {"after": after, "credentials_purged": bool(purged), "purged_kinds": purged},
+        # url_warning: an accepted-but-notable url (a credentialed forward to an
+        # internal address). Recorded rather than merely logged so "does this
+        # instance talk to anything on the intranet" is answerable from the
+        # audit trail instead of from a grep over server logs (#1154).
+        {
+            "after": after,
+            "credentials_purged": bool(purged),
+            "purged_kinds": purged,
+            **({"url_warning": url_warning} if url_warning else {}),
+        },
         params_before={"before": before},
     )
     return (
@@ -1023,6 +1161,20 @@ async def register_oauth_client(
     clients_repo = mcp_source_oauth_clients_repo()
     existing = clients_repo.get(source_id)
 
+    # This is the fifth path that dials the source's own url, and it
+    # deliberately does NOT take `_check_source_url_or_400`. It does not need
+    # it: `build_oauth_http_client()` is https-only and SSRF-safe, which is a
+    # strictly tighter guard than the source-url policy — adding the policy on
+    # top could only ever loosen nothing and refuse more.
+    #
+    # The two do disagree, in the opposite direction from #1154: the SSRF-safe
+    # client refuses an intranet address that the source-url policy allows on
+    # purpose (see src/net/mcp_source_url.py on why an internal MCP server is
+    # an ordinary deployment). So an OAuth source on an internal address
+    # cannot complete RFC 9728 discovery, whatever `mcp.source_url_strict`
+    # says. That is intended: discovery negotiates with an authorization
+    # server, and relaxing the client to reach one on the intranet would give
+    # up the guard that makes every OAuth hop safe (Devin on #1204).
     try:
         async with build_oauth_http_client() as http_client:
             resource_meta = await discover_protected_resource_metadata(src["url"], client=http_client)
@@ -1367,6 +1519,13 @@ async def introspect_mcp_source(
     src = src_repo.get(source_id)
     if not src:
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
+    # A probe DIALS the source, with a credential attached, exactly as a
+    # forward does — so it takes the same configuration-time check. Without
+    # this the admin probes were the one path that could reach a url the
+    # guard refuses: the two runtime forwards re-fetch the row and stop on
+    # `enabled`, but these do not, so "a disabled source is never dialed"
+    # held for the forwards and not for here (Devin Review on #1204).
+    await _check_source_url_or_400(src)
     try:
         # introspect_source_async — async-safe; the sync variant calls
         # asyncio.run() which blows up inside FastAPI's running loop.
@@ -1395,6 +1554,13 @@ async def classify_mcp_source(
     src = src_repo.get(source_id)
     if not src:
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
+    # A probe DIALS the source, with a credential attached, exactly as a
+    # forward does — so it takes the same configuration-time check. Without
+    # this the admin probes were the one path that could reach a url the
+    # guard refuses: the two runtime forwards re-fetch the row and stop on
+    # `enabled`, but these do not, so "a disabled source is never dialed"
+    # held for the forwards and not for here (Devin Review on #1204).
+    await _check_source_url_or_400(src)
     try:
         from connectors.mcp.client import list_tools_async as _list_tools_async
 
@@ -1436,13 +1602,25 @@ async def test_mcp_source(
     src = src_repo.get(source_id)
     if not src:
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
-    try:
-        tools = await mcp_extractor.introspect_source_async(src, caller_user_id=_probe_caller_user_id(src, user))
-        result = {"ok": True, "tool_count": len(tools), "error": None}
-    except Exception as exc:
-        summary = _exc_summary(exc)
-        logger.warning("test connection failed for source %s: %s", source_id, summary)
-        result = {"ok": False, "tool_count": 0, "error": summary}
+    # This probe dials like the others, so it must not reach a refused url —
+    # but it REPORTS rather than refuses. The contract above ("HTTP 200 even on
+    # connect failure so the UI can render the diagnostic") is the whole point
+    # of the button: an admin presses it to find out what is wrong. Answering a
+    # refused url with a 400 would withhold the one answer they came for, which
+    # is worse than either the unguarded version or a plain refusal. So the
+    # verdict becomes the diagnostic, and nothing is dialed
+    # (Devin Review on #1204).
+    verdict = await _source_url_verdict(src)
+    if verdict is not None and not verdict.ok:
+        result = {"ok": False, "tool_count": 0, "error": f"url failed validation: {verdict.reason}"}
+    else:
+        try:
+            tools = await mcp_extractor.introspect_source_async(src, caller_user_id=_probe_caller_user_id(src, user))
+            result = {"ok": True, "tool_count": len(tools), "error": None}
+        except Exception as exc:
+            summary = _exc_summary(exc)
+            logger.warning("test connection failed for source %s: %s", source_id, summary)
+            result = {"ok": False, "tool_count": 0, "error": summary}
     _audit(
         conn,
         user["id"],
@@ -1469,6 +1647,19 @@ async def materialize_mcp_source(
     src = src_repo.get(source_id)
     if not src:
         raise HTTPException(status_code=404, detail="mcp_source_not_found")
+    # The FOURTH connector helper, and it dials with the source's real
+    # credential exactly as the other three do. The module header above names
+    # the group — "introspect/classify/test/materialize" — and the first three
+    # took this guard while this one did not, which is the whole failure mode:
+    # the reasoning was written against a remembered list rather than the code
+    # (/agnes-review rbac reviewer on #1204).
+    #
+    # `extract_source_async` refuses a DISABLED source on its own, so the
+    # disabled-row exemption in `update_mcp_source` is covered. What was not is
+    # an ENABLED legacy row carrying a url this policy refuses — registered
+    # before the guard existed, unreachable through introspect/classify/test,
+    # and still fully dialable here on every run.
+    await _check_source_url_or_400(src)
     only_tool_id = payload.tool_id if payload else None
     try:
         # extract_source_async — async-safe; the sync variant wraps

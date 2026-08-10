@@ -132,8 +132,14 @@ def _show_one_metric(metric_id: str, as_json: bool) -> None:
         typer.echo(f"Grain:        {m['grain']}")
     if m.get("table_name"):
         typer.echo(f"Table:        {m['table_name']}")
-    if m.get("description"):
-        typer.echo(f"Description:  {m['description']}")
+    # Prefer the server's plain-text projection: this column also holds
+    # descriptions imported verbatim from an external catalog, which are
+    # often rich HTML, and this is the surface CLAUDE.md's agent rails send
+    # agents to for the canonical business definition. Falls back to the raw
+    # column so an older server (no `description_text`) still prints something.
+    description = m.get("description_text") or m.get("description")
+    if description:
+        typer.echo(f"Description:  {description}")
     if m.get("sql"):
         typer.echo(f"SQL:\n  {m['sql']}")
     if m.get("synonyms"):

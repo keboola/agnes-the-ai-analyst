@@ -406,6 +406,60 @@ class TestSyncOrchestrator:
         assert "evil; DROP TABLE users--" not in result["keboola"]
 
 
+def _stub_bq_extension_sql(monkeypatch) -> list[str]:
+    """Capture the orchestrator's SQL and stub every BQ-extension call.
+
+    Returns the list the executed SQL accumulates in.
+
+    Both stubbing and capturing matter here. `INSTALL bigquery FROM community`
+    is a 55 MB download from the community-extension repository — in a unit
+    test that means the assertions downstream of it are hostage to the network.
+    That is not hypothetical: with a cold `~/.duckdb` cache and eight parallel
+    CI shards it outran the 60 s `--timeout` in pytest.ini, and pytest-timeout's
+    SIGALRM landed *inside* the DuckDB call. DuckDB answers a tripped signal by
+    throwing `RuntimeError("Query interrupted")`, which clobbers the pending
+    `Failed` — turning a hard timeout into an ordinary exception that
+    `_attach_remote_extensions`' `except Exception` logged and swallowed. The
+    test then ran to completion having never reached the branch it was written
+    to exercise.
+
+    DuckDB's PyConnection has read-only attributes, so patch `duckdb.connect`
+    to hand back a proxy rather than patching `.execute` on the connection.
+    Match on `TYPE bigquery` for SECRET/ATTACH rather than the substring
+    "bigquery", so this doesn't shadow the ATTACH of extract.duckdb files that
+    live under `/extracts/bigquery/`.
+    """
+    from unittest.mock import MagicMock
+
+    captured: list[str] = []
+
+    class _ConnProxy:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def execute(self, sql, *args, **kwargs):
+            captured.append(sql)
+            up = sql.upper()
+            if "INSTALL BIGQUERY" in up or "LOAD BIGQUERY" in up:
+                return MagicMock()
+            if "CREATE OR REPLACE SECRET" in up and "TYPE BIGQUERY" in up:
+                return MagicMock()
+            if up.startswith("ATTACH ") and "TYPE BIGQUERY" in up:
+                return MagicMock()
+            return self._inner.execute(sql, *args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    real_connect = duckdb.connect
+
+    def spy_connect(path, *a, **kw):
+        return _ConnProxy(real_connect(path, *a, **kw))
+
+    monkeypatch.setattr("src.orchestrator.duckdb.connect", spy_connect)
+    return captured
+
+
 class TestBQMetadataAuth:
     """Orchestrator fetches a fresh metadata token for BQ remote attach."""
 
@@ -413,7 +467,6 @@ class TestBQMetadataAuth:
         """When _remote_attach.extension='bigquery' with empty token_env, orchestrator
         calls get_metadata_token() and creates a DuckDB secret before ATTACH."""
         from src.orchestrator import SyncOrchestrator
-        from unittest.mock import MagicMock
 
         # Build extract.duckdb with bq _remote_attach row
         source_dir = setup_env["extracts_dir"] / "bigquery"
@@ -446,38 +499,7 @@ class TestBQMetadataAuth:
             fake_token,
         )
 
-        # Capture executed SQL on the master connection. DuckDB's PyConnection has
-        # read-only attributes, so wrap it in a proxy instead of patching `.execute`.
-        captured = []
-
-        class _ConnProxy:
-            def __init__(self, inner):
-                self._inner = inner
-
-            def execute(self, sql, *args, **kwargs):
-                captured.append(sql)
-                up = sql.upper()
-                # Skip BQ-extension-specific calls — they need real BQ network access
-                # that isn't available in unit tests. Match on `TYPE bigquery`
-                # rather than substring "bigquery" so we don't shadow ATTACH of
-                # extract.duckdb files that live under /extracts/bigquery/.
-                if "INSTALL BIGQUERY" in up or "LOAD BIGQUERY" in up:
-                    return MagicMock()
-                if "CREATE OR REPLACE SECRET" in up and "TYPE BIGQUERY" in up:
-                    return MagicMock()
-                if up.startswith("ATTACH ") and "TYPE BIGQUERY" in up:
-                    return MagicMock()
-                return self._inner.execute(sql, *args, **kwargs)
-
-            def __getattr__(self, name):
-                return getattr(self._inner, name)
-
-        real_connect = duckdb.connect
-
-        def spy_connect(path, *a, **kw):
-            return _ConnProxy(real_connect(path, *a, **kw))
-
-        monkeypatch.setattr("src.orchestrator.duckdb.connect", spy_connect)
+        captured = _stub_bq_extension_sql(monkeypatch)
 
         orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
         orch.rebuild()
@@ -517,10 +539,15 @@ class TestBQMetadataAuth:
         conn.execute("INSERT INTO _meta VALUES ('stub', '', 1, 0, current_timestamp, 'local')")
         conn.close()
 
+        calls: list[BQMetadataAuthError] = []
+
         def boom():
-            raise BQMetadataAuthError("metadata server unreachable: simulated")
+            err = BQMetadataAuthError("metadata server unreachable: simulated")
+            calls.append(err)
+            raise err
 
         monkeypatch.setattr("src.orchestrator.get_metadata_token", boom)
+        captured = _stub_bq_extension_sql(monkeypatch)
 
         with caplog.at_level(logging.ERROR, logger="src.orchestrator"):
             orch = SyncOrchestrator(analytics_db_path=setup_env["analytics_db"])
@@ -529,9 +556,39 @@ class TestBQMetadataAuth:
         # Local 'stub' view should still attach — failure of one source shouldn't break others
         assert "bigquery" in result
         assert "stub" in result["bigquery"]
-        assert any("metadata" in r.message.lower() and r.levelname == "ERROR" for r in caplog.records), (
-            f"expected ERROR-level log mentioning metadata; got: {[(r.levelname, r.message) for r in caplog.records]}"
+
+        # The metadata branch was actually reached. Without this, every
+        # assertion below is vacuously satisfiable by an error raised
+        # *before* the orchestrator ever calls get_metadata_token().
+        assert len(calls) == 1, f"get_metadata_token() was not reached (called {len(calls)}x)"
+
+        # Assert on the log record's format string and args, not on a substring
+        # of the rendered message: that pins the exact `logger.error` call site
+        # in _attach_remote_extensions' BQMetadataAuthError handler, and carries
+        # the caught exception object itself. A substring match on "metadata"
+        # would accept any other error that happens to use the word.
+        # `str(r.msg)` because caplog collects every propagating logger, not just
+        # src.orchestrator, and a record's msg is not guaranteed to be a string.
+        metadata_records = [r for r in caplog.records if str(r.msg).startswith("Failed to fetch BQ metadata token for")]
+        assert len(metadata_records) == 1, (
+            f"expected the BQMetadataAuthError handler to log once; got: {[(r.levelname, r.getMessage()) for r in caplog.records]}"
         )
+        record = metadata_records[0]
+        assert record.levelname == "ERROR"
+        assert record.args[0] == "bq"
+        assert record.args[1] is calls[0], "the log must carry the BQMetadataAuthError the orchestrator caught"
+
+        # ...and nothing else failed the attach. The generic handler firing means
+        # some unrelated error pre-empted the path under test, which is precisely
+        # how this test used to fail on CI while passing standalone.
+        generic = [r for r in caplog.records if str(r.msg).startswith("Failed to attach remote source")]
+        assert not generic, (
+            f"unrelated attach failure pre-empted the metadata path: {[r.getMessage() for r in generic]}"
+        )
+
+        # "skips" half of the contract: no secret created, no ATTACH issued.
+        assert not [s for s in captured if "CREATE OR REPLACE SECRET" in s.upper()]
+        assert not [s for s in captured if s.upper().startswith("ATTACH ") and "TYPE BIGQUERY" in s.upper()]
 
 
 # ---------------------------------------------------------------------------

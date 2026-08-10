@@ -183,13 +183,25 @@ class KnowledgeRepository:
                 is_required, created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
-                id, title, content, category, source_user,
-                json.dumps(tags) if tags else None, status,
+                id,
+                title,
+                content,
+                category,
+                source_user,
+                json.dumps(tags) if tags else None,
+                status,
                 confidence,
                 json.dumps(entities) if entities else None,
-                source_type, source_ref,
-                valid_from, valid_until, supersedes, sensitivity, is_personal,
-                is_required, now, now,
+                source_type,
+                source_ref,
+                valid_from,
+                valid_until,
+                supersedes,
+                sensitivity,
+                is_personal,
+                is_required,
+                now,
+                now,
             ],
         )
         if domain:
@@ -198,9 +210,7 @@ class KnowledgeRepository:
 
     # -- Domain junction helpers (v49) -------------------------------------
 
-    def _set_item_domain_by_slug(
-        self, item_id: str, slug: str, *, added_by: str
-    ) -> None:
+    def _set_item_domain_by_slug(self, item_id: str, slug: str, *, added_by: str) -> None:
         """Resolve ``slug`` to ``memory_domains.id`` and write one junction row.
 
         Single-domain helper used by the create/update path for back-compat
@@ -208,28 +218,35 @@ class KnowledgeRepository:
         membership should use ``MemoryDomainsRepository.replace_domains_for_item``
         directly.
         """
-        row = self.conn.execute(
-            "SELECT id FROM memory_domains WHERE slug = ?", [slug]
-        ).fetchone()
+        row = self.conn.execute("SELECT id FROM memory_domains WHERE slug = ?", [slug]).fetchone()
         if not row:
             raise ValueError(f"Unknown memory domain slug: {slug}")
         domain_id = row[0]
         # Replace semantics — match the pre-v49 scalar column.
+        self.conn.execute("DELETE FROM knowledge_item_domains WHERE item_id = ?", [item_id])
         self.conn.execute(
-            "DELETE FROM knowledge_item_domains WHERE item_id = ?", [item_id]
-        )
-        self.conn.execute(
-            "INSERT INTO knowledge_item_domains(item_id, domain_id, added_by) "
-            "VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+            "INSERT INTO knowledge_item_domains(item_id, domain_id, added_by) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
             [item_id, domain_id, added_by],
         )
 
     _UPDATABLE_FIELDS = {
-        "title", "content", "category", "tags", "entities",
-        "source_type", "source_ref", "source_user", "audience",
-        "confidence", "status", "sensitivity", "is_personal",
+        "title",
+        "content",
+        "category",
+        "tags",
+        "entities",
+        "source_type",
+        "source_ref",
+        "source_user",
+        "audience",
+        "confidence",
+        "status",
+        "sensitivity",
+        "is_personal",
         "is_required",
-        "valid_from", "valid_until", "supersedes",
+        "valid_from",
+        "valid_until",
+        "supersedes",
     }
 
     def update(self, item_id: str, **fields) -> None:
@@ -264,9 +281,7 @@ class KnowledgeRepository:
             if domain_value is not _UNSET:
                 if domain_value is None or domain_value == "":
                     # Clear all junction rows — caller asked to drop the domain.
-                    self.conn.execute(
-                        "DELETE FROM knowledge_item_domains WHERE item_id = ?", [item_id]
-                    )
+                    self.conn.execute("DELETE FROM knowledge_item_domains WHERE item_id = ?", [item_id])
                 else:
                     self._set_item_domain_by_slug(item_id, domain_value, added_by="system")
                 # Bump updated_at even if no scalar field changed.
@@ -365,10 +380,7 @@ class KnowledgeRepository:
             # (vote > 0). Replaces the old dead "My Rules" category sentinel
             # which never matched any row. Subquery rather than JOIN keeps
             # this orthogonal to the other filters (no row duplication).
-            query += (
-                " AND id IN (SELECT item_id FROM knowledge_votes "
-                "WHERE user_id = ? AND vote > 0)"
-            )
+            query += " AND id IN (SELECT item_id FROM knowledge_votes WHERE user_id = ? AND vote > 0)"
             params.append(upvoted_by_user)
         if domain:
             # v49: scalar column is gone — resolve slug → id and EXISTS-join.
@@ -415,7 +427,7 @@ class KnowledgeRepository:
                 " SELECT 1 FROM knowledge_item_user_dismissed d"
                 " WHERE d.item_id = knowledge_items.id"
                 "   AND d.user_id = ?"
-                "   AND knowledge_items.is_required = FALSE"
+                "   AND knowledge_items.is_required IS NOT TRUE"
                 ")"
             )
             params.append(dismissed_by_user)
@@ -425,9 +437,7 @@ class KnowledgeRepository:
 
     def _resolve_domain_slug(self, slug: str) -> Optional[str]:
         """slug → ``memory_domains.id`` (v49). Returns None for unknown slug."""
-        row = self.conn.execute(
-            "SELECT id FROM memory_domains WHERE slug = ?", [slug]
-        ).fetchone()
+        row = self.conn.execute("SELECT id FROM memory_domains WHERE slug = ?", [slug]).fetchone()
         return row[0] if row else None
 
     def search(
@@ -522,7 +532,7 @@ class KnowledgeRepository:
                     " SELECT 1 FROM knowledge_item_user_dismissed d"
                     " WHERE d.item_id = knowledge_items.id"
                     "   AND d.user_id = ?"
-                    "   AND knowledge_items.is_required = FALSE"
+                    "   AND knowledge_items.is_required IS NOT TRUE"
                     ")"
                 )
                 params.append(dismissed_by_user)
@@ -535,10 +545,7 @@ class KnowledgeRepository:
         # column set matches the FTS path: consumers can read the score
         # uniformly without having to know which tier produced the row).
         ilike_pattern = f"%{query}%"
-        ilike_sql = (
-            "SELECT *, NULL AS bm25_score FROM knowledge_items "
-            "WHERE (title ILIKE ? OR content ILIKE ?)"
-        )
+        ilike_sql = "SELECT *, NULL AS bm25_score FROM knowledge_items WHERE (title ILIKE ? OR content ILIKE ?)"
         ilike_params: List[Any] = [ilike_pattern, ilike_pattern]
         ilike_order = " ORDER BY updated_at DESC"
 
@@ -560,7 +567,8 @@ class KnowledgeRepository:
                 # drop-then-create window). Fall through to ILIKE rather
                 # than 500 the /api/memory?search= endpoint.
                 logger.warning(
-                    "FTS BM25 search failed (%s); falling back to ILIKE", e,
+                    "FTS BM25 search failed (%s); falling back to ILIKE",
+                    e,
                 )
                 results = _run(ilike_sql, ilike_params, ilike_order)
         else:
@@ -637,7 +645,7 @@ class KnowledgeRepository:
                     " SELECT 1 FROM knowledge_item_user_dismissed d"
                     " WHERE d.item_id = knowledge_items.id"
                     "   AND d.user_id = ?"
-                    "   AND knowledge_items.is_required = FALSE"
+                    "   AND knowledge_items.is_required IS NOT TRUE"
                     ")"
                 )
                 params.append(dismissed_by_user)
@@ -654,14 +662,14 @@ class KnowledgeRepository:
 
         if ensure_fts_loaded(self.conn):
             fts_sql = (
-                "SELECT COUNT(*) FROM knowledge_items "
-                "WHERE fts_main_knowledge_items.match_bm25(id, ?) IS NOT NULL"
+                "SELECT COUNT(*) FROM knowledge_items WHERE fts_main_knowledge_items.match_bm25(id, ?) IS NOT NULL"
             )
             try:
                 return _run(fts_sql, [search])
             except duckdb.Error as e:
                 logger.warning(
-                    "FTS BM25 count failed (%s); falling back to ILIKE", e,
+                    "FTS BM25 count failed (%s); falling back to ILIKE",
+                    e,
                 )
                 return _run(ilike_sql, ilike_params)
         return _run(ilike_sql, ilike_params)
@@ -747,12 +755,18 @@ class KnowledgeRepository:
 
     # --- Dismissals (v46 — per-user opt-out) ---
     #
-    # Mandatory items are never dismissible. The API layer rejects POSTs
-    # against mandatory items with a 400; the SQL filters in list_items /
-    # search / count_items and the bundle endpoint also exclude
-    # ``status = 'mandatory'`` from the dismissal subquery, so a stale row
-    # left over from before an item was mandated cannot accidentally hide
-    # a mandatory item.
+    # Required items are never dismissible. The API layer rejects POSTs
+    # against them with a 400; the SQL filters in list_items / search /
+    # count_items and the bundle endpoint also exclude ``is_required = TRUE``
+    # from the dismissal subquery, so a stale row left over from before an
+    # item was required cannot accidentally hide a required item.
+    #
+    # The column, NOT ``status = 'mandatory'``: v49 split that overload into
+    # the orthogonal ``is_required`` boolean and rewrote every legacy row to
+    # ``status='approved', is_required=TRUE``, so the old literal matches
+    # nothing and a guard written against it is dead — always true, protecting
+    # nothing. The Postgres sibling carried exactly that dead literal until
+    # #1204; a comment naming the retired spelling is how it stayed unnoticed.
 
     def dismiss(self, user_id: str, item_id: str) -> None:
         """Idempotent INSERT — re-dismissing is a no-op."""
@@ -1058,9 +1072,7 @@ class KnowledgeRepository:
             ORDER BY updated_at DESC
             LIMIT ?
         """
-        rows = self._rows_to_dicts(
-            self.conn.execute(sql, [domain_id, new_item_id, limit]).fetchall()
-        )
+        rows = self._rows_to_dicts(self.conn.execute(sql, [domain_id, new_item_id, limit]).fetchall())
         out: List[Dict[str, Any]] = []
         for row in rows:
             cand_entities = row.get("entities")
@@ -1101,10 +1113,7 @@ class KnowledgeRepository:
         if not item_ids:
             return results
 
-        plain_fields = {
-            k: v for k, v in updates.items()
-            if k in self._UPDATABLE_FIELDS and k != "tags"
-        }
+        plain_fields = {k: v for k, v in updates.items() if k in self._UPDATABLE_FIELDS and k != "tags"}
         # ``domain`` is routed through the v49 junction, NOT a scalar column —
         # it's not in _UPDATABLE_FIELDS but ``update()`` accepts it. Pass it
         # through explicitly so bulk_update preserves the same kwarg surface
@@ -1151,9 +1160,7 @@ class KnowledgeRepository:
 
                 # JSON-encode tags before passing to .update (mirrors create()).
                 if "tags" in per_item:
-                    per_item["tags"] = (
-                        json.dumps(per_item["tags"]) if per_item["tags"] else None
-                    )
+                    per_item["tags"] = json.dumps(per_item["tags"]) if per_item["tags"] else None
                 if "entities" in per_item and isinstance(per_item["entities"], list):
                     per_item["entities"] = json.dumps(per_item["entities"]) if per_item["entities"] else None
 
@@ -1291,29 +1298,33 @@ class KnowledgeRepository:
         where_sql = (" WHERE " + " AND ".join(where)) if where else ""
 
         by_status = {
-            r[0]: r[1] for r in self.conn.execute(
-                f"SELECT COALESCE(status, 'unknown') AS s, COUNT(*) "
-                f"FROM knowledge_items{where_sql} GROUP BY s", params,
+            r[0]: r[1]
+            for r in self.conn.execute(
+                f"SELECT COALESCE(status, 'unknown') AS s, COUNT(*) FROM knowledge_items{where_sql} GROUP BY s",
+                params,
             ).fetchall()
         }
         cat_rows = self.conn.execute(
             f"SELECT DISTINCT category FROM knowledge_items{where_sql} "
-            f"{'AND' if where_sql else 'WHERE'} category IS NOT NULL", params,
+            f"{'AND' if where_sql else 'WHERE'} category IS NOT NULL",
+            params,
         ).fetchall()
         categories = sorted(r[0] for r in cat_rows if r[0])
         by_domain = {
-            r[0]: r[1] for r in self.conn.execute(
+            r[0]: r[1]
+            for r in self.conn.execute(
                 "SELECT COALESCE(md.slug, 'unset') AS d, COUNT(*) "
                 "FROM knowledge_items "
                 "LEFT JOIN knowledge_item_domains kid ON kid.item_id = knowledge_items.id "
-                "LEFT JOIN memory_domains md ON md.id = kid.domain_id"
-                + (where_sql or "") + " GROUP BY d", params,
+                "LEFT JOIN memory_domains md ON md.id = kid.domain_id" + (where_sql or "") + " GROUP BY d",
+                params,
             ).fetchall()
         }
         by_source_type = {
-            r[0]: r[1] for r in self.conn.execute(
-                f"SELECT COALESCE(source_type, 'unknown') AS st, COUNT(*) "
-                f"FROM knowledge_items{where_sql} GROUP BY st", params,
+            r[0]: r[1]
+            for r in self.conn.execute(
+                f"SELECT COALESCE(source_type, 'unknown') AS st, COUNT(*) FROM knowledge_items{where_sql} GROUP BY st",
+                params,
             ).fetchall()
         }
         return {

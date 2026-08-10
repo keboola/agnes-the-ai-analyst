@@ -90,9 +90,7 @@ def _validated_where_fragment(req: "ScanRequest", schema: dict, row: dict, use_b
         return None
     parse_dialect = "bigquery" if (row.get("source_type") or "") == "bigquery" else "duckdb"
     render_dialect = "bigquery" if use_bq else "duckdb"
-    return safe_where_predicate(
-        req.where, req.table_id, schema, dialect=parse_dialect, render_dialect=render_dialect
-    )
+    return safe_where_predicate(req.where, req.table_id, schema, dialect=parse_dialect, render_dialect=render_dialect)
 
 
 def _bq_dry_run_bytes(bq: BqAccess, sql: str, *, user: dict | None = None, agent_name: str = "scan") -> int:
@@ -497,17 +495,21 @@ def run_scan(
             # necessarily the source_type (e.g. the bundled `demo` extract
             # registers tables as 'local' but lives under extracts/demo/), and
             # `source_type` may be NULL/empty for legacy rows.
-            # resolve_local_parquet handles both; for materialized BQ rows the
-            # source_type fast path hits extracts/bigquery/data/<id>.parquet.
-            from app.utils import resolve_local_parquet
+            # resolve_local_parquet_glob handles both; for materialized BQ rows
+            # the source_type fast path hits extracts/bigquery/data/<id>.parquet.
+            # `_glob` also covers the PARTITIONED layout — a directory of
+            # per-period parquets, for which the single-file lookup returned
+            # None and a healthy fully-synced table 404-ed here (Devin Review on
+            # #1189). DuckDB expands the `<dir>/*.parquet` glob it returns.
+            from app.utils import LOCAL_PARQUET_READ_EXPR, resolve_local_parquet_glob
 
-            parquet = resolve_local_parquet(req.table_id, source_type)
+            parquet = resolve_local_parquet_glob(req.table_id, source_type)
             if parquet is None:
                 raise FileNotFoundError(req.table_id)
             local = _open_duckdb(":memory:")
             try:
                 projection = ", ".join(quote_ident(c) for c in req.select) if req.select else "*"
-                sql = f"SELECT {projection} FROM read_parquet(?)"
+                sql = f"SELECT {projection} FROM {LOCAL_PARQUET_READ_EXPR}"
                 if safe_where:
                     sql += f" WHERE {safe_where}"
                 if req.order_by:
@@ -515,7 +517,7 @@ def run_scan(
                 if req.limit:
                     sql += f" LIMIT {int(req.limit)}"
                 try:
-                    table = local.execute(sql, [str(parquet)]).arrow()
+                    table = local.execute(sql, [parquet]).arrow()
                 except duckdb.InvalidInputException:
                     # Corrupt/unreadable parquet ("No magic bytes found…").
                     # duckdb files it under ProgrammingError, but it is an

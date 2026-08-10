@@ -1,21 +1,25 @@
-"""User stack API — subscribe / unsubscribe / list (auto-membership model).
+"""User stack API — subscribe / unsubscribe / list.
 
 Three user-facing endpoints under ``/api/stack``:
 
   - ``GET    /api/stack?type=data_package|memory_domain`` — user's effective
-    stack (auto: every grant on the caller's groups, required or available)
-  - ``POST   /api/stack/subscribe``                       — download a local
-    copy of an ``available`` resource already in the stack
-  - ``DELETE /api/stack/subscription/{type}/{id}``        — remove the local
-    copy (the resource stays in the stack, still queryable server-side)
+    stack
+  - ``POST   /api/stack/subscribe``                       — join / download
+  - ``DELETE /api/stack/subscription/{type}/{id}``        — leave / remove
 
-Stack resolution is delegated to ``app/services/stack_resolver.py``. Required
-grants are always both in-stack and materialized (downloaded); available
-grants are auto-in-stack but only materialized once subscribed. The resolver
+Stack resolution is delegated to ``app/services/stack_resolver.py``, whose
+semantics fork on ``features.stack_auto_membership`` (spec
+2026-08-07-default-chrome-ux-parity). Classic — the default: membership is
+the subscribe model (required ∪ subscribed-available); subscribing JOINS the
+stack, unsubscribing leaves it, and every member is materialized (downloaded
+by ``agnes pull``). Auto-membership — opt-in: every grant is a member
+(required ∪ available); subscribing only requests a LOCAL COPY of an
+available resource, flagged via ``materialized``. The endpoint contract
+(payload fields, status codes) is identical in both modes. The resolver
 raises HTTPException directly for the two business-rule errors
 (``already_required`` on subscribe, ``cannot_remove_required`` on
-unsubscribe) — required resources are always downloaded, so there's nothing
-to opt in/out of.
+unsubscribe) — required resources are always in the stack and downloaded, so
+there's nothing to opt in/out of.
 
 Server-side telemetry — ``stack.subscribe`` / ``stack.unsubscribe`` events
 land in ``usage_events`` via ``UsageRepository.emit_server_event``.
@@ -116,11 +120,13 @@ async def list_stack(
 ):
     """Return the user's effective stack for the given resource type.
 
-    Auto-membership: effective stack = required ∪ available — every grant on
-    the caller's groups, no subscription needed. Every item is
-    ``in_stack: true``; ``materialized`` additionally flags whether it's ALSO
-    kept as a local copy (`agnes pull` downloads it) — always true for
-    required, true for available only once subscribed.
+    Classic (the default): effective stack = required grants plus the
+    ``available`` grants the caller subscribed to; every member is
+    ``materialized`` (downloaded by `agnes pull`). Auto-membership (opt-in
+    via ``features.stack_auto_membership``): every grant on the caller's
+    groups is a member, no subscription needed — ``materialized`` then flags
+    which ones are also kept as a local copy (always true for required, true
+    for available only once subscribed).
     """
     _reject_co_session(user)
     rt = _validate_type(type)
@@ -148,12 +154,13 @@ async def browse_stack(
 ):
     """List every resource of ``type`` the caller could see (RBAC-granted).
 
-    Auto-membership means this is now equivalent in scope to ``GET
-    /api/stack`` (required + available, no separate opt-in tier) — it's kept
-    as a discovery surface so callers who want the full candidate set (issue
-    #621) don't have to reason about the difference. Each item carries
-    ``in_stack: true`` and a ``materialized`` flag so an analyst's Claude can
-    tell what is already downloaded locally vs. only server-side queryable.
+    The full candidate set (issue #621), independent of membership mode.
+    Classic (the default): ``in_stack`` marks the members (required or
+    subscribed) and the rest are addable via ``POST /api/stack/subscribe``.
+    Auto-membership (opt-in): every granted item is ``in_stack: true`` and
+    the scope equals ``GET /api/stack``; ``materialized`` then tells an
+    analyst's Claude what is already downloaded locally vs. only server-side
+    queryable.
 
     Scoped per-user by ``StackResolver.browse`` (group grants only), so the
     only authorization gate is authentication — no extra RBAC dependency.
@@ -182,8 +189,10 @@ async def subscribe(
     payload: SubscribeRequest,
     user: dict = Depends(get_current_user),
 ):
-    """Download a local copy of an ``available`` resource already in the
-    stack. Refuses to subscribe if the resource is required (it's always
+    """Subscribe to an ``available`` resource. Classic (the default): this
+    ADDS the resource to the caller's stack. Auto-membership (opt-in): the
+    resource is already in the stack, so this only requests a downloaded
+    local copy. Refuses if the resource is required (always in the stack and
     downloaded automatically — clients shouldn't bother)."""
     _reject_co_session(user)
     rt = _validate_type(payload.resource_type)
@@ -217,16 +226,16 @@ async def unsubscribe(
     resource_id: str,
     user: dict = Depends(get_current_user),
 ):
-    """Remove the local copy of an ``available`` resource — the resource
-    stays in the stack (still queryable server-side), only the download is
-    dropped. Returns 400 ``cannot_remove_required`` when the resource is
-    required for any of the user's groups (required is always downloaded,
-    no opt-out).
+    """Unsubscribe from an ``available`` resource. Classic (the default):
+    this REMOVES the resource from the caller's stack. Auto-membership
+    (opt-in): the resource stays in the stack (still queryable server-side),
+    only the downloaded local copy is dropped. Returns 400
+    ``cannot_remove_required`` when the resource is required for any of the
+    user's groups (required is always in the stack and downloaded, no
+    opt-out).
 
     Returns 204 No Content on success — DELETE idempotency convention
-    enforced by the API design rules test. Callers should treat 204 as
-    "local copy removed", 400 + ``cannot_remove_required`` as "still
-    downloaded because Required tier blocks opt-out".
+    enforced by the API design rules test.
     """
     _reject_co_session(user)
     rt = _validate_type(resource_type)

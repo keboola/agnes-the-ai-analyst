@@ -704,3 +704,45 @@ def revoke_table_via_package(conn, table_id: str) -> None:
             [r[0]],
         )
         conn.execute("DELETE FROM data_packages WHERE id = ?", [r[0]])
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_mcp_url_resolver(monkeypatch):
+    """No test may depend on this machine's DNS.
+
+    The MCP source-url guard (#1154) resolves a hostname on every source
+    create/repoint, so a dozen API-level suites began making a real
+    `getaddrinfo` call per request. That is slow where the resolver is slow,
+    and WRONG where it hijacks NXDOMAIN: a resolver that answers reserved
+    names with a parking IP silently flips every "does not resolve"
+    assertion, and parks a default-executor thread while it does it
+    (Devin on #1204).
+
+    Reserved names (RFC 2606 / 6761 — `.example`, `.invalid`, `.test`, and
+    the `example.com|net|org` subdomains) raise, which is what a conforming
+    resolver does; `localhost` is loopback; anything else is public. Suites
+    that need a particular answer keep passing `_resolver=` straight to
+    `check_source_url`, which this fixture does not touch.
+    """
+    import socket as _socket
+
+    import src.net.mcp_source_url as _m
+
+    _RESERVED_SUFFIXES = (
+        ".example",
+        ".invalid",
+        ".test",
+        ".example.com",
+        ".example.net",
+        ".example.org",
+    )
+
+    def _resolver(host: str):
+        h = (host or "").lower().rstrip(".")
+        if h == "localhost" or h.endswith(".localhost"):
+            return ["127.0.0.1"]
+        if h.endswith(_RESERVED_SUFFIXES):
+            raise _socket.gaierror(f"Name or service not known: {host}")
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr(_m, "_default_resolver", _resolver)

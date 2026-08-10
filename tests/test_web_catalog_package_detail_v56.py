@@ -119,7 +119,7 @@ class TestBadges:
             headers=_auth(seeded_app["analyst_token"]),
         )
         body = r.text
-        assert 'class="ds-trust ds-trust--org ds-trust--label"' in body   # icon + word
+        assert 'class="ds-trust ds-trust--org ds-trust--label"' in body  # icon + word
         assert 'data-tip="Published by your organization."' in body
         assert 'aria-label="Published by your organization."' in body
         # The retired derived badge must not come back. Matched as the rendered
@@ -129,19 +129,52 @@ class TestBadges:
         assert ">Curated<" not in body
 
     def test_default_theme_hero_keeps_its_amber_curated_badge(self, seeded_app, monkeypatch):
-        """The DEFAULT hero is unchanged. `.ds-trust` is paper-only, so blue keeps
-        the amber badge it has always shown — now driven by the stored
-        publisher_kind rather than the creator's live Admin-group membership, so
-        it no longer disappears when an admin leaves the group."""
+        """The DEFAULT hero is unchanged — literally: a default instance renders
+        the frozen pre-redesign page (catalog_package_detail_legacy.html via
+        `_detail_template`, see TestDetailPageParity), whose amber
+        `pkg-badge--curated` is the badge it has always shown — now driven by
+        the stored publisher_kind (the shared handler computes `badges`) rather
+        than the creator's live Admin-group membership, so it no longer
+        disappears when an admin leaves the group."""
         monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
         pid, slug = _seed_pkg(created_by="admin1", publisher_kind="organization")
         _grant_everyone(pid)
-        body = seeded_app["client"].get(
-            f"/catalog/p/{slug}",
-            headers=_auth(seeded_app["analyst_token"]),
-        ).text
-        assert 'class="detail-badge detail-badge--curated"' in body
+        body = (
+            seeded_app["client"]
+            .get(
+                f"/catalog/p/{slug}",
+                headers=_auth(seeded_app["analyst_token"]),
+            )
+            .text
+        )
+        assert 'class="pkg-badge pkg-badge--curated"' in body
+        assert ">Curated<" in body
         assert 'class="ds-trust' not in body
+        assert "detail-badge" not in body, "redesigned badge markup must not reach default instances"
+
+    def test_default_theme_hero_keeps_the_original_badge_order(self, seeded_app, monkeypatch):
+        """ "Curated New", not "New Curated".
+
+        The template renders `badges` in list order, and the page a default
+        instance now serves is the FROZEN pre-redesign one — whose router
+        appended `curated` before `new` (64cf788). Recomputing the list in the
+        other order would flip the chips on a page this change set promises to
+        leave identical (Devin Review on #1195). A freshly seeded package is
+        inside the 30-day window, so both chips render and the order is
+        observable.
+        """
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        pid, slug = _seed_pkg(created_by="admin1", publisher_kind="organization")
+        _grant_everyone(pid)
+        body = seeded_app["client"].get(f"/catalog/p/{slug}", headers=_auth(seeded_app["analyst_token"])).text
+        assert 'data-badge="curated"' in body and 'data-badge="new"' in body, (
+            "premise: a fresh org package renders both chips"
+        )
+        assert body.index('data-badge="curated"') < body.index('data-badge="new"'), (
+            "badge order flipped — the frozen page rendered Curated before New"
+        )
 
     def test_user_published_package_shows_no_trust_marker(self, seeded_app):
         """A package has no verification workflow — there is no reviewer for one to
@@ -188,7 +221,13 @@ class TestBadges:
     def test_omits_new_badge_for_old_package(self, seeded_app):
         from datetime import datetime, timedelta, timezone
 
-        pid, slug = _seed_pkg(created_by="admin1")
+        # publisher_kind explicitly: the badge is driven by the STORED value
+        # now, not by the creator's live Admin-group membership, and the repo
+        # default is 'user'. The old version seeded the default and asserted
+        # `"Curated" in body`, which passed on the admin nav's "Curated
+        # Marketplaces" menu label rather than on any badge — so it asserted
+        # nothing about the thing it names (Devin Review on #1195).
+        pid, slug = _seed_pkg(created_by="admin1", publisher_kind="organization")
         _grant_everyone(pid)
         conn = get_system_db()
         conn.execute(
@@ -200,9 +239,9 @@ class TestBadges:
             f"/catalog/p/{slug}",
             headers=_auth(seeded_app["analyst_token"]),
         )
-        # Curated badge still present (admin1 is in Admin group), New is gone.
+        # Curated badge still present, New is gone.
         body = r.text
-        assert "Curated" in body
+        assert 'data-badge="curated"' in body
         # Use a class hook so we don't match the literal word "New" in
         # other UI copy (e.g. "New Recipe").
         assert 'data-badge="new"' not in body

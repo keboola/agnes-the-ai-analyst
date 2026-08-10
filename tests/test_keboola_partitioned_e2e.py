@@ -184,3 +184,51 @@ def test_missing_partition_by_raises(tmp_path):
             keboola_url="https://kbc.example", keboola_token="tok",
             now=datetime(2026, 5, 7, tzinfo=timezone.utc),
         )
+
+
+def test_legacy_bucket_prefixed_source_table_is_not_doubled(tmp_path, monkeypatch):
+    """Partitioned sibling of the incremental case: a pre-fix wizard row must
+    not compose `in.c-sales.in.c-sales.orders` for the Storage API export."""
+    from connectors.keboola.partitioned import extract_partitioned
+    from connectors.keboola.client import KeboolaClient
+
+    seen_ids = []
+    chunk_payloads = iter([
+        "id,date\n1,2026-05-01\n",
+        "id,date\n",  # empty 1
+        "id,date\n",  # empty 2 — stop
+    ])
+
+    def fake_export(self, table_id, output_path, changed_since=None, changed_until=None, **kw):
+        seen_ids.append(table_id)
+        body = next(chunk_payloads)
+        Path(output_path).write_text(body)
+        return {"exported_rows": max(0, len(body.strip().split("\n")) - 1)}
+
+    fake_schema = pa.schema([pa.field("id", pa.int64()), pa.field("date", pa.date32())])
+
+    monkeypatch.setattr(KeboolaClient, "__init__", lambda self, **kw: None)
+    monkeypatch.setattr(KeboolaClient, "export_table", fake_export)
+    monkeypatch.setattr(KeboolaClient, "get_pyarrow_schema", lambda self, tid: fake_schema)
+    monkeypatch.setattr(KeboolaClient, "get_pandas_dtypes", lambda self, tid: {"id": "Int64"})
+    monkeypatch.setattr(KeboolaClient, "get_date_columns", lambda self, tid: ["date"])
+
+    extract_partitioned(
+        table_config={
+            "id": "in.c-sales.orders", "name": "orders",
+            "bucket": "in.c-sales",
+            "source_table": "in.c-sales.orders",  # legacy wizard shape
+            "primary_key": ["id"], "partition_by": "date",
+            "partition_granularity": "month",
+            "incremental_window_days": 1,
+            "max_history_days": None,
+            "initial_load_chunk_days": 30,
+        },
+        output_dir=tmp_path / "data" / "sales",
+        last_sync=None,
+        keboola_url="https://kbc.example", keboola_token="tok",
+        now=datetime(2026, 5, 7, tzinfo=timezone.utc),
+    )
+
+    assert seen_ids, "export was never called"
+    assert set(seen_ids) == {"in.c-sales.orders"}, seen_ids

@@ -28,8 +28,12 @@ Resolution algorithm:
     grants          := resource_grants WHERE group_id IN groups AND resource_type = T
     required_ids    := {g.resource_id | g in grants if g.requirement = 'required'}
     available_ids   := {g.resource_id | g in grants if g.requirement = 'available'}
+    # auto-membership mode (features.stack_auto_membership, opt-in):
     effective_ids   := required_ids ∪ available_ids                # stack() / in_stack
     materialized_ids := required_ids ∪ (subscribed_ids ∩ available_ids)  # local download
+    # classic mode (the default — the pre-redesign subscribe model):
+    effective_ids   := required_ids ∪ (subscribed_ids ∩ available_ids)   # membership
+    materialized_ids := effective_ids                                    # members are local
     return fetch_entries(T, effective_ids)  # each entry.materialized = id in materialized_ids
 
 Required precedence: any ``required`` grant beats every ``available`` grant
@@ -273,10 +277,20 @@ class StackResolver:
 
         admin_bypass = is_user_admin(user_id, self.conn)
         materialized_ids = raw_subscribed if admin_bypass else (raw_subscribed & available_ids)
-        # Auto-membership: every granted id is in the stack regardless of
-        # materialization. Admin god-mode additionally surfaces raw
-        # subscriptions that have no backing grant (self-serve local copy).
-        effective_ids = required_ids | available_ids | materialized_ids
+        from app.instance_config import get_stack_auto_membership
+
+        if get_stack_auto_membership():
+            # Auto-membership: every granted id is in the stack regardless of
+            # materialization. Admin god-mode additionally surfaces raw
+            # subscriptions that have no backing grant (self-serve local copy).
+            effective_ids = required_ids | available_ids | materialized_ids
+        else:
+            # Classic subscribe model (spec 2026-08-07-default-chrome-ux-parity,
+            # the default): membership is required ∪ (subscribed ∩ available) —
+            # the pre-redesign formula verbatim. Admin god-mode still surfaces
+            # raw self-served subscriptions via materialized_ids above. Every
+            # member is local, so the materialized flag below stays truthful.
+            effective_ids = required_ids | materialized_ids
         entries = self._fetch_entries(resource_type, effective_ids, required_ids)
         for e in entries:
             # In stack() every entry is by definition in_stack=True.
@@ -296,10 +310,16 @@ class StackResolver:
         all_ids = required_ids | available_ids
         subscribed_ids = self._subscribed_ids(user_id, resource_type)
         entries = self._fetch_entries(resource_type, all_ids, required_ids)
+        from app.instance_config import get_stack_auto_membership
+
+        auto = get_stack_auto_membership()
         for e in entries:
-            e.in_stack = True
-            # required → always materialized; available → only when subscribed.
+            # Auto-membership: every grant IS a membership; `materialized`
+            # drives the Download/Remove-local-copy affordance. Classic (the
+            # default): an unsubscribed available grant reads as ADDABLE
+            # (in_stack=False) — the pre-redesign add-to-stack affordance.
             e.materialized = e.id in required_ids or e.id in subscribed_ids
+            e.in_stack = True if auto else e.materialized
         return entries
 
     def browse_admin(self, user_id: str, resource_type: ResourceType) -> List[ResourceEntry]:
@@ -310,11 +330,12 @@ class StackResolver:
         packages are still rendered with the disabled "In stack
         (required)" footer button so the admin sees what regular users
         in those groups see, and the macro doesn't render an actionable
-        Remove button that the API would 400 on. ``in_stack`` reflects
-        auto-membership on the admin's OWN grants (required or available)
-        plus any raw subscription (self-serve, no grant needed — mirrors
-        :meth:`stack`'s admin god-mode). ``materialized`` reflects only
-        required-or-subscribed, same as :meth:`browse`.
+        Remove button that the API would 400 on. ``in_stack`` is
+        mode-dependent like :meth:`browse`: classic (default) is the
+        pre-redesign formula — required or subscribed; auto-membership
+        additionally counts the admin's own ``available`` grants (plus
+        raw subscriptions — mirrors :meth:`stack`'s admin god-mode),
+        with ``materialized`` reflecting only required-or-subscribed.
         """
         # Soft-deleted entries (``deleted_at IS NOT NULL``) are excluded
         # from admin Browse — they're still in the DB for the Undo
@@ -329,9 +350,18 @@ class StackResolver:
         required_ids, available_ids = self._grants(groups, resource_type)
         subscribed_ids = self._subscribed_ids(user_id, resource_type)
         entries = self._fetch_entries(resource_type, all_ids, required_ids)
+        from app.instance_config import get_stack_auto_membership
+
+        auto = get_stack_auto_membership()
         for e in entries:
-            e.in_stack = e.id in required_ids or e.id in available_ids or e.id in subscribed_ids
-            e.materialized = e.id in required_ids or e.id in subscribed_ids
+            if auto:
+                e.in_stack = e.id in required_ids or e.id in available_ids or e.id in subscribed_ids
+                e.materialized = e.id in required_ids or e.id in subscribed_ids
+            else:
+                # Classic subscribe model — pre-redesign formula verbatim
+                # (spec 2026-08-07-default-chrome-ux-parity).
+                e.in_stack = e.id in required_ids or e.id in subscribed_ids
+                e.materialized = e.in_stack
         return entries
 
     def is_required(
@@ -510,4 +540,3 @@ class StackResolver:
             )
         # The repos return name-ordered rows already; keep that order.
         return entries
-

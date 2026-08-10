@@ -448,6 +448,11 @@ _NON_SQL_QUOTED_FAMILIES: list[tuple[str, str]] = [
     (r"header_line", "CSV header row, not SQL"),
     (r'project = "\{jira_project\}"', "JQL string literal, not a SQL identifier"),
     (r'database "\{dbname\}" does not exist', "substring match against a Postgres error message"),
+    (
+        r'No MCP server named "\{',
+        "substring match against the `claude mcp get` not-found message — the quotes are that "
+        "CLI's output format, and the value interpolated is our own module constant",
+    ),
     (r"^src/sql_ident\.py:", "the module's own docstrings, which quote the shape they forbid"),
     (r'server_default="\{\}"', "Alembic/SQLAlchemy column default of an empty JSON object"),
     (r'env: str = "\{\}"', "repository signature default of an empty JSON object"),

@@ -267,8 +267,26 @@ def refresh_marketplace(
             "a different host than the API."
         ),
     ),
+    target: str = typer.Option(
+        "project",
+        "--target",
+        help=(
+            "Claude Code install target for stack plugins: 'project' (this "
+            "workspace — the default, unchanged) or 'user' (all repositories; "
+            "used by `agnes global`). Not to be confused with --scope on read "
+            "commands, which selects data locality."
+        ),
+    ),
 ):
     """Sync the marketplace clone, re-register with Claude, install/update plugins."""
+    if not isinstance(target, str):
+        # Direct in-process invocation (`agnes update`'s `_invoke` calls this
+        # function without `target`) receives the typer.OptionInfo sentinel,
+        # not the CLI default — normalize to the historical project target.
+        target = "project"
+    if target not in ("project", "user"):
+        typer.echo("error: --target must be 'project' or 'user'.", err=True)
+        raise typer.Exit(2)
     if check and bootstrap:
         typer.echo(
             "error: --check and --bootstrap are mutually exclusive.",
@@ -378,11 +396,11 @@ def refresh_marketplace(
     # an after-snapshot would always match the manifest on real version-bump
     # scenarios — `events["updated"]` would stay empty and no notification
     # would fire despite the plugin having actually changed.
-    installed_pre = _list_installed_agnes_plugins_in_cwd()
+    installed_pre = _list_installed_agnes_plugins(target)
 
     _claude_marketplace_update()
 
-    _reconcile_with_manifest(events=events, installed_pre=installed_pre)
+    _reconcile_with_manifest(events=events, installed_pre=installed_pre, target=target)
 
     if events["installed"] or events["updated"] or events["enabled"] or events["removed"]:
         typer.echo(
@@ -831,13 +849,22 @@ def _reconcile_with_manifest(
     *,
     events: dict[str, list[str]],
     installed_pre: Optional[dict[str, str]] = None,
+    target: str = "project",
 ) -> None:
     """Make installed plugins match the served manifest.
 
-    Missing → `claude plugin install <name>@agnes --scope project`.
-    Version differs → `claude plugin update <name>@agnes`.
+    Missing → `claude plugin install <name>@agnes --scope <target>`.
+    Version differs → `claude plugin update <name>@agnes --scope <target>`.
     Installed but absent from the manifest → `claude plugin uninstall`.
     Match → skip.
+
+    ``target`` selects the Claude Code install scope: ``"project"`` (the
+    workspace flow, default — unchanged) or ``"user"`` (all repositories;
+    used by `agnes global`). In ``user`` mode the cwd-based
+    ``enabledPlugins`` writer is skipped entirely — `claude plugin install
+    --scope user` records enablement itself (verified live, spec §7.1), and
+    running from an arbitrary cwd must never write into that directory
+    (spec §8 foreign-repo guard).
 
     `installed_pre` is the snapshot taken before `claude plugin marketplace
     update` ran; we diff against it (not a fresh read) so version bumps
@@ -865,7 +892,7 @@ def _reconcile_with_manifest(
     if not manifest:
         return
 
-    installed = installed_pre if installed_pre is not None else _list_installed_agnes_plugins_in_cwd()
+    installed = installed_pre if installed_pre is not None else _list_installed_agnes_plugins(target)
     if installed is None:
         typer.echo("warn: could not enumerate installed plugins; skipping reconcile.", err=True)
         return
@@ -893,9 +920,9 @@ def _reconcile_with_manifest(
         typer.echo(f"Removing {len(to_remove)} plugin(s) no longer in your stack: " + ", ".join(to_remove))
 
     for name in to_install:
-        target = f"{name}@{MARKETPLACE_NAME}"
+        plugin_ref = f"{name}@{MARKETPLACE_NAME}"
         result = subprocess.run(
-            [*base, "plugin", "install", target, "--scope", "project"],
+            [*base, "plugin", "install", plugin_ref, "--scope", target],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -904,7 +931,7 @@ def _reconcile_with_manifest(
         )
         if result.returncode != 0:
             typer.echo(
-                f"warn: `claude plugin install {target} --scope project` exited {result.returncode}.",
+                f"warn: `claude plugin install {plugin_ref} --scope {target}` exited {result.returncode}.",
                 err=True,
             )
             if result.stderr:
@@ -915,9 +942,9 @@ def _reconcile_with_manifest(
             typer.echo(result.stdout.rstrip())
 
     for name in to_update:
-        target = f"{name}@{MARKETPLACE_NAME}"
+        plugin_ref = f"{name}@{MARKETPLACE_NAME}"
         result = subprocess.run(
-            [*base, "plugin", "update", target, "--scope", "project"],
+            [*base, "plugin", "update", plugin_ref, "--scope", target],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -926,7 +953,7 @@ def _reconcile_with_manifest(
         )
         if result.returncode != 0:
             typer.echo(
-                f"warn: `claude plugin update {target}` exited {result.returncode}.",
+                f"warn: `claude plugin update {plugin_ref} --scope {target}` exited {result.returncode}.",
                 err=True,
             )
             if result.stderr:
@@ -937,9 +964,9 @@ def _reconcile_with_manifest(
             typer.echo(result.stdout.rstrip())
 
     for name in to_remove:
-        target = f"{name}@{MARKETPLACE_NAME}"
+        plugin_ref = f"{name}@{MARKETPLACE_NAME}"
         result = subprocess.run(
-            [*base, "plugin", "uninstall", target, "--scope", "project"],
+            [*base, "plugin", "uninstall", plugin_ref, "--scope", target],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -948,7 +975,7 @@ def _reconcile_with_manifest(
         )
         if result.returncode != 0:
             typer.echo(
-                f"warn: `claude plugin uninstall {target}` exited {result.returncode}.",
+                f"warn: `claude plugin uninstall {plugin_ref}` exited {result.returncode}.",
                 err=True,
             )
             if result.stderr:
@@ -966,7 +993,11 @@ def _reconcile_with_manifest(
     # Symmetrically, stale `@agnes` entries whose plugin left the manifest
     # are dropped so a pruned (or out-of-band-uninstalled) plugin doesn't
     # linger enabled in settings.json.
-    _enable_plugins_in_workspace_settings(manifest, events=events)
+    # user-target: `claude plugin install --scope user` records enablement
+    # itself (verified live, spec §7.1); the cwd-based writer MUST NOT run
+    # here — §8 foreign-repo guard.
+    if target == "project":
+        _enable_plugins_in_workspace_settings(manifest, events=events)
 
     # `settings_pruned` counts too: an out-of-band uninstall leaves a stale
     # enabledPlugins key that the cleanup above just dropped — announcing
@@ -1031,12 +1062,15 @@ def _read_marketplace_plugin_versions() -> Optional[dict[str, str]]:
     return versions
 
 
-def _list_installed_agnes_plugins_in_cwd() -> Optional[dict[str, str]]:
-    """Map `plugin name → installed version` for agnes plugins in this workspace.
+def _list_installed_agnes_plugins(target: str = "project") -> Optional[dict[str, str]]:
+    """Map `plugin name → installed version` for agnes plugins in ``target``.
 
-    Filters `claude plugin list --json` by `id` ending in `@agnes` AND
-    `projectPath == cwd` so plugins from sibling workspaces don't get
-    counted. None on any structured-answer failure.
+    ``project``: filters `claude plugin list --json` by `id` ending in
+    `@agnes` AND `projectPath == cwd` so plugins from sibling workspaces
+    don't get counted. ``user``: filters by the per-entry `scope` field
+    (`"user"`); older `claude` CLIs emit no `scope` key, where user-scope
+    rows are the ones with a null/absent `projectPath` (spec §7.1 defensive
+    filter). None on any structured-answer failure.
     """
     base = _claude_base_cmd()
     if base is None:
@@ -1070,14 +1104,24 @@ def _list_installed_agnes_plugins_in_cwd() -> Optional[dict[str, str]]:
         plugin_id = entry.get("id", "")
         if not isinstance(plugin_id, str) or not plugin_id.endswith(suffix):
             continue
-        project_path = entry.get("projectPath")
-        if not isinstance(project_path, str):
-            continue
-        try:
-            if Path(project_path).resolve() != cwd:
+        if target == "user":
+            scope = entry.get("scope")
+            project_path = entry.get("projectPath")
+            if scope is not None:
+                if scope != "user":
+                    continue
+            elif project_path not in (None, ""):
+                # Older CLIs: no `scope` field — user rows have null projectPath.
                 continue
-        except OSError:
-            continue
+        else:
+            project_path = entry.get("projectPath")
+            if not isinstance(project_path, str):
+                continue
+            try:
+                if Path(project_path).resolve() != cwd:
+                    continue
+            except OSError:
+                continue
         version = entry.get("version")
         if not isinstance(version, str) or not version:
             continue
@@ -1085,6 +1129,23 @@ def _list_installed_agnes_plugins_in_cwd() -> Optional[dict[str, str]]:
         if name:
             versions[name] = version
     return versions
+
+
+def run_user_scope_reconcile(*, quiet: bool = False) -> dict[str, list[str]]:
+    """Reconcile the USER scope against the existing clone's manifest.
+
+    No git fetch / marketplace update here — clone freshness rides the
+    workspace marketplace step (`agnes update`) or `--bootstrap`. Safe to
+    call from any cwd: the user target performs no cwd writes (spec §7.1).
+    """
+    import contextlib
+    import io
+
+    events: dict[str, list[str]] = {"installed": [], "updated": [], "enabled": [], "removed": []}
+    sink = contextlib.redirect_stdout(io.StringIO()) if quiet else contextlib.nullcontext()
+    with sink:
+        _reconcile_with_manifest(events=events, target="user")
+    return events
 
 
 def _enable_plugins_in_workspace_settings(

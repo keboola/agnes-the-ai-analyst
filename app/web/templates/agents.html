@@ -422,7 +422,8 @@
           return '<button type="button" class="ag-chip' + (a.tone === t[0] ? ' on' : '') + '" data-ag-tone="' + t[0] + '">' + t[1] + '</button>';
         }).join('') + '</div></div>' +
       '<label class="ag-field"><span>Greeting</span>' +
-        '<textarea rows="2" data-ag-field="greeting" placeholder="Hi, I&#39;m …">' + esc(a.greeting) + '</textarea></label>';
+        '<textarea rows="2" data-ag-field="greeting" placeholder="Hi, I&#39;m …">' + esc(a.greeting) + '</textarea></label>' +
+      '<div class="ag-note">Instructions replace the default analyst prompt. Agnes still appends its data-access rails (<code>agnes catalog</code> → <code>schema</code> → <code>query</code>), so you don’t need to restate them — write the persona and its task.</div>';
   }
 
   /* A searchable ingredient list = toolbar (search + live count) + a rows

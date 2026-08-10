@@ -28,8 +28,18 @@
    entity itself is non-approved OR the latest submission carries
    a *failure* verdict the owner needs to see. Pending edits keep
    the original behavior — Edit button locks instead, no banner. #}
+{# `own_private` is the fourth surface that had to stop reading `hidden` as
+   quarantine (#1177). For the author's own deliberately-Private row this banner
+   was not merely redundant, it was FALSE: it fell to the "Hidden" fallback,
+   which says "nobody can install it" — and since #1178 the author can, so the
+   sentence sat directly above an enabled "+ Add to my stack" contradicting it.
+   The page already states the entity is Private through its sharing badge, so
+   the banner simply stands down. A genuine failure verdict still shows: the
+   second clause is independent, and `is_own_unflagged_private` is false for any
+   row whose submission was rejected. Undefined (any route that does not pass it)
+   is falsy, so every other caller keeps the previous behaviour. #}
 {% if (is_owner or is_admin) and (
-        entity.visibility_status != 'approved'
+        (entity.visibility_status != 'approved' and not own_private)
         or (quarantine_sub and quarantine_sub.status in [
             'blocked_inline', 'blocked_llm', 'review_error',
         ])

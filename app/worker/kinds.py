@@ -541,6 +541,12 @@ def _run_distribution_mirror(payload: dict) -> None:
     is sourced from ``_meta.table_name``, which equals registry ``name``,
     not ``id``).
 
+    **Single-file tables only.** A partitioned table (``sync_state.parts`` set)
+    is a directory of per-period parquets and has no single object to mirror or
+    presign; ``agnes pull`` fetches its parts over the app-served
+    ``/api/data/<id>/download?part=`` route, which never consults the mirror.
+    See the skip below.
+
     The md5 compared/stamped is ``sync_state.hash`` — the SAME hash the
     manifest exposes to ``agnes pull`` (computed once, in
     ``src.orchestrator._update_sync_state`` / the materialized-pass
@@ -584,6 +590,25 @@ def _run_distribution_mirror(payload: dict) -> None:
         current_md5 = state.get("hash") or ""
         if not current_md5:
             # Never successfully synced yet — nothing on disk to mirror.
+            continue
+        if state.get("parts") is not None:
+            # Partitioned table — its data is a DIRECTORY of per-period parquets,
+            # while this mirror addresses exactly ONE `<table_id>.parquet` object
+            # per table (and `_maybe_attach_signed_url` hands the client exactly
+            # one presigned URL for it). Analysts still get the table: `agnes
+            # pull` syncs it part-by-part over the app-served
+            # `/api/data/<id>/download?part=` route, which never consults the
+            # mirror. So this is a presign-acceleration gap, not a distribution
+            # gap — mirroring per-part objects would have to change the manifest
+            # and the CLI together, so it stays out of the read-surface fix.
+            #
+            # Skipped EXPLICITLY rather than by falling into the single-file
+            # lookup below, whose "no on-disk parquet found" warning told
+            # operators a healthy table's sync was broken.
+            logger.debug(
+                "distribution mirror: %s is partitioned, distributed via the app-served part route",
+                table_id,
+            )
             continue
         parquet_path = resolve_local_parquet(table_id, reg.get("source_type"))
         if parquet_path is None:

@@ -203,7 +203,16 @@ async def test_my_secret(source_id: str, user: dict = Depends(get_current_user))
     non-per_user (shared) source → 400 (its introspection would run under the
     operator's shared credential — nothing personal to test); no grant on the
     source → 403; over the rate limit → 429; no personal credential → 403 with
-    the connect remedy. Only then does it introspect under the caller's token.
+    the connect remedy; a disabled source → 409; a url the #1154 policy refuses
+    → 400. Only then does it introspect under the caller's token.
+
+    The order is the contract, not an accident, and the last two sit at the end
+    deliberately: they read state the caller may not be entitled to, so ahead of
+    the grant and rate-limit gates they would let any signed-in user learn
+    whether an arbitrary source is switched off and force an unthrottled
+    ``getaddrinfo`` per attempt. Keep this list in step with the code — an
+    out-of-date one is how a later edit reorders them without anyone noticing
+    the contract changed (/agnes-review rbac reviewer on #1204).
     """
     from app.api.mcp_policy import (
         PerUserCredentialMissing,
@@ -232,6 +241,52 @@ async def test_my_secret(source_id: str, user: dict = Depends(get_current_user))
         enforce_per_user_credential(source, user["id"])
     except PerUserCredentialMissing as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    # This dials the upstream with the CALLER'S OWN credential, so it takes the
+    # same two gates the runtime forwards and the admin probes take: a disabled
+    # source is not dialed, and a url the #1154 policy refuses is not dialed.
+    # Neither was checked here, which made this the one analyst-facing path that
+    # could still reach a refused address — an admin can land one on a row by
+    # patching `{url: <refused>, enabled: false}` (the disabled-row exemption in
+    # admin_mcp allows that deliberately), and an analyst who reconnects
+    # afterwards could then be induced to press Test (Devin Review on #1204).
+    #
+    # LAST, not first: the docstring's ordering contract is "all gates before
+    # any upstream call", and these two are the only ones that read state the
+    # caller may not be entitled to. Ahead of the grant check they let any
+    # signed-in user learn whether an arbitrary source is switched off and read
+    # its address out of the error, and forced an unthrottled getaddrinfo per
+    # attempt — ahead of the rate limit, at that.
+    # The verdict is NOT echoed to this caller. `verdict.reason` embeds the
+    # literal address (`address_in_blocked_range: 169.254.169.254`,
+    # `strict_mode_requires_public_address: mcp.internal.example`), and an
+    # analyst is not an admin: every other failure branch in this handler
+    # already returns a friendly sentence and keeps the cause in the log, and
+    # `/me/connections` deliberately surfaces name/transport/hint but never
+    # `url`. Echoing it here would have made this the first place a non-admin
+    # learns a source's network address (/agnes-review rbac reviewer on #1204).
+    from app.api.admin_mcp import _source_url_verdict
+
+    if not source.get("enabled", True):
+        # Human copy, not a machine slug: `me_connections.html` renders
+        # `body.detail` straight into the card's status line, so a bare
+        # `mcp_source_disabled` would reach the analyst as literal snake_case.
+        # Same shape as the url-policy 400 below (Devin on #1204).
+        raise HTTPException(
+            status_code=409,
+            detail=(f"{source.get('name') or source_id} is currently turned off by an admin, so it cannot be tested."),
+        )
+    verdict = await _source_url_verdict(source)
+    if verdict is not None and not verdict.ok:
+        logger.warning(
+            "my-secret/test refused for source %s: url failed validation (%s)",
+            source_id,
+            verdict.reason,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=f"{source.get('name') or source_id} is not configured correctly. Ask an admin to check it.",
+        )
 
     if (source.get("auth_method") or "").lower() == "oauth":
         # OAuth sources have no ``mcp_user_secrets`` row at all — the value

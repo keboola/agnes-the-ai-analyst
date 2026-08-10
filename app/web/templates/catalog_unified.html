@@ -48,12 +48,22 @@
 <div class="uc-head">
   <div>
     <h1>Marketplace</h1>
-    {# Data Packages / Memory Domains you've been granted are already in
-       your stack the moment they're granted (auto-membership) — see
-       <a href="/stack">My Stack</a>. This page is for discovering and
-       adding things you DON'T already have: skills, plugins, and other
-       shared resources your colleagues published. #}
+    {# The lede has to match what the Data/Memory tabs actually hold, which
+       depends on the membership mode.
+
+       auto-membership: a grant IS stack membership, so those tabs only ever
+       show what you do NOT have — "granted data lives in My Stack, not here"
+       is literally true.
+
+       classic (the default): a grant is an invitation you have not accepted
+       yet, so the tabs list granted-but-unsubscribed data and memory. The
+       auto-membership sentence would then contradict the grid immediately
+       below it. #}
+    {% if auto_membership %}
     <p class="lede">Discover and add skills, plugins, and shared resources your colleagues published. Data and memory you've already been granted live in <a href="/stack">My Stack</a>, not here.</p>
+    {% else %}
+    <p class="lede">Discover and add skills, plugins, and shared resources your colleagues published — plus the data and memory you've been granted but not yet added. What you've already added lives in <a href="/stack">My Stack</a>.</p>
+    {% endif %}
   </div>
   <a class="cc-btn" href="/store/new" id="browse-submit-btn" style="flex-shrink:0">+ Submit a skill or plugin</a>
 </div>

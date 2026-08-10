@@ -38,7 +38,14 @@ def fetch(req: MetadataRequest) -> TableMetadata | None:
     if not url or not token:
         return None  # not configured — same posture as BQ sentinel
 
-    table_id = f"{req.bucket}.{req.source_table}"
+    # Same composition the export paths use, so it needs the same prefix strip:
+    # a caller passing the full `<bucket>.<table>` (what the pre-fix wizard sent)
+    # would otherwise compose `in.c-main.in.c-main.orders` and the info fetch
+    # would fail, leaving the registered table silently without row counts or
+    # column metadata (Devin Review on #1189).
+    from connectors.keboola.storage_api import normalize_source_table
+
+    table_id = f"{req.bucket}.{normalize_source_table(req.bucket, req.source_table)}"
     try:
         storage = KeboolaStorageClient(url=url, token=token)
         info = storage.get_table_info(table_id)

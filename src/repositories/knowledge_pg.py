@@ -298,7 +298,7 @@ class KnowledgePgRepository:
                 " SELECT 1 FROM knowledge_item_user_dismissed d"
                 " WHERE d.item_id = knowledge_items.id"
                 "   AND d.user_id = :dbu"
-                "   AND knowledge_items.status != 'mandatory'"
+                "   AND knowledge_items.is_required IS NOT TRUE"
                 ")"
             )
             params["dbu"] = dismissed_by_user
@@ -491,7 +491,7 @@ class KnowledgePgRepository:
                 " SELECT 1 FROM knowledge_item_user_dismissed d"
                 " WHERE d.item_id = knowledge_items.id"
                 "   AND d.user_id = :dbu"
-                "   AND knowledge_items.status != 'mandatory'"
+                "   AND knowledge_items.is_required IS NOT TRUE"
                 ")"
             )
             params["dbu"] = dismissed_by_user
@@ -879,7 +879,7 @@ class KnowledgePgRepository:
                 conn.execute(
                     sa.text(
                         """SELECT * FROM knowledge_items
-                       WHERE status IN ('approved', 'mandatory', 'pending')
+                       WHERE status IN ('approved', 'pending')
                          AND (is_personal = FALSE OR is_personal IS NULL)
                          AND domain = :d
                          AND id != :id
@@ -1132,7 +1132,7 @@ class KnowledgePgRepository:
     ) -> List[Dict[str, Any]]:
         sql_parts = [
             """SELECT * FROM knowledge_items
-               WHERE status IN ('approved', 'mandatory', 'pending')
+               WHERE status IN ('approved', 'pending')
                  AND (is_personal = FALSE OR is_personal IS NULL)
                  AND id != :id"""
         ]

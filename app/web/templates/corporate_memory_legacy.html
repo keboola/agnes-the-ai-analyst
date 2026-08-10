@@ -1,0 +1,587 @@
+{% extends "base_ds.html" %}
+{% from "macros/_stack_card.html" import card %}
+
+{% block title %}Memory — {{ config.INSTANCE_NAME or 'AI Harness' }}{% endblock %}
+
+{% block content %}
+{# Design-system component macros — Manage-domains link, Suggest-domain
+   CTA, and Suggest-domain modal Cancel/Submit render via `ds.button`.
+   Bespoke `.stack-hero__search-btn`, `.stack-tabs` with rich body,
+   `.pill` filter chips, JS-generated `.stack-card` install buttons
+   stay page-local. #}
+{# Hero — gradient banner mirroring marketplace.html .mp-hero so /memory
+   and /marketplace read as one product. #}
+<div class="stack-hero">
+  <div class="eyebrow">Knowledge</div>
+  <h1>What does your team already know?</h1>
+  <p class="sub">Browse curated knowledge domains your admin has approved. Add the ones your team relies on to your stack — required domains are added automatically.</p>
+
+  <div class="stack-hero__search-row">
+    <div class="stack-hero__search-wrap">
+      <svg class="stack-hero__search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>
+      </svg>
+      <input id="memory-hero-search" type="search"
+             placeholder="Search Memory by name or description…">
+    </div>
+    <button class="stack-hero__search-btn" id="memory-search-btn" type="button">Search</button>
+  </div>
+
+  {# v51 lifecycle filter — same pattern as /catalog. Default opt-in to
+     Prod + POC. #}
+  <div class="stack-hero__status-row" id="memory-status-filter">
+    <span class="stack-hero__status-label">Show:</span>
+    <label><input type="checkbox" value="prod" checked> Prod-ready</label>
+    <label><input type="checkbox" value="poc" checked> POC</label>
+    <label><input type="checkbox" value="coming-soon"> Coming soon</label>
+    {% if user.is_admin %}
+    <label title="Visible only to admins — analysts won't see this filter."><input type="checkbox" value="draft"> Draft <span class="admin-only-hint" title="Visible only to admins — analysts won't see this filter.">admin-only</span></label>
+    {% endif %}
+  </div>
+</div>
+
+{# Pending-review banner is admin-only. The backend (router.py) already
+   zeroes ``pending_review_count`` for non-admin viewers so the banner
+   wouldn't render — but the explicit guard makes the gating intentional
+   instead of accidental, and stops the /admin/corporate-memory link
+   from ever leaking into a non-admin DOM if a future router change
+   surfaces the count. #}
+{% if user.is_admin and pending_review_count and pending_review_count > 0 %}
+<div style="background:#fef3c7; border:1px solid #fde68a; border-radius:8px;
+            padding:12px 16px; margin-bottom:16px; color:#92400e; font-size:13px;">
+  <strong>{{ pending_review_count }}</strong> pending item{{ 's' if pending_review_count != 1 else '' }} awaiting review.
+  <a href="/admin/corporate-memory" style="color:#92400e; font-weight:600; margin-left:6px;">Open review queue →</a>
+</div>
+{% endif %}
+
+<div class="stack-page" id="memory-page"
+     data-resource-type="memory_domain"
+     data-stack-endpoint="/api/stack"
+     data-subscribe-endpoint="/api/stack/subscribe">
+
+  {# Section order locked to match /marketplace + /catalog:
+     hero → conditional banner → tabs-row (+ admin actions) →
+     curator-block → filter pills → grid → empty state. #}
+  <div class="stack-tabs-row">
+    <div class="stack-tabs" role="tablist">
+      <button class="is-active" data-tab="browse" role="tab" aria-selected="true">
+        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3" y="3" width="7" height="7" rx="1"/>
+          <rect x="14" y="3" width="7" height="7" rx="1"/>
+          <rect x="3" y="14" width="7" height="7" rx="1"/>
+          <rect x="14" y="14" width="7" height="7" rx="1"/>
+        </svg>
+        Browse <span class="count" data-count="browse">{{ entries|length }}</span>
+      </button>
+      <button data-tab="my" role="tab" aria-selected="false">
+        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M6.429 9.75 2.25 12l4.179 2.25m0-4.5 5.571 3 5.571-3m-11.142 0L2.25 7.5 12 2.25l9.75 5.25-4.179 2.25m0 0L21.75 12l-4.179 2.25m0 0 4.179 2.25L12 21.75 2.25 16.5l4.179-2.25m11.142 0-5.571 3-5.571-3"/>
+        </svg>
+        My Stack <span class="count" data-count="my">{{ stack_entries|length }}</span>
+      </button>
+    </div>
+    {# Admin-only right-of-tabs action — parallels /catalog's
+       + New Data Package and marketplace's "Submit a skill or plugin"
+       on the right edge of the tabs row. Links straight to the admin
+       moderation page where domains are created + managed. #}
+    {% if user.is_admin %}
+    <div class="stack-tabs-row__actions">
+      {# Admin-only — the yellow ``admin-only`` chip is a visibility
+         hint for the admin (analysts never see this affordance, the
+         outer {% if user.is_admin %} gates it). #}
+      {% call ds.button(variant='secondary',
+                        href='/admin/corporate-memory#domains',
+                        attrs='title="Visible only to admins — analysts won\'t see this button."') %}
+        Manage domains <span class="admin-only-hint">admin-only</span> →
+      {% endcall %}
+    </div>
+    {% endif %}
+  </div>
+
+  {# Curator-style info block — mirrors marketplace .mp-curator-block;
+     sits BELOW the tab strip per the unified section order. #}
+  <div class="stack-curator-block">
+    <div class="stack-curator-block__title">Each Memory domain is curated by your admin.</div>
+    <div class="stack-curator-block__body">
+      Domains bundle related knowledge items (rules, playbooks, decisions) so
+      analysts can opt-in to a coherent body of context. Required domains are
+      added to your stack automatically.
+    </div>
+  </div>
+
+  <div class="stack-filter-row" id="memory-filters">
+    <button class="pill is-active" data-filter="all">All</button>
+    <button class="pill" data-filter="required">Required</button>
+    <button class="pill" data-filter="available">Available</button>
+    {# Label matches the cards: the filter keys off local-copy state, which is
+       what `in_stack` means after the auto-membership reshape (#1206). The
+       data-filter VALUE stays `in_stack` — JS and card markup key on it. #}
+    <button class="pill" data-filter="in_stack">Downloaded</button>
+  </div>
+
+  <div data-view="browse">
+    {% if entries %}
+    <div class="stack-grid" id="memory-grid-browse">
+      {% for entry in entries %}
+        {{ card(entry) }}
+      {% endfor %}
+    </div>
+    {% else %}
+    {# Empty state — friendly + actionable, same shape as /catalog. #}
+    <div class="stack-empty">
+      <span class="icon">🧠</span>
+      <h3>No Memory Domains yet</h3>
+      {% if user.is_admin %}
+      <p>Memory Domains bundle related knowledge items (playbooks, runbooks,
+         shared context) so analysts can opt-in to a coherent body of
+         knowledge — instead of cherry-picking individual notes.</p>
+      <p>Create your first domain from the admin moderation queue.</p>
+      <div class="cta">
+        <a href="/admin/corporate-memory">Open /admin/corporate-memory →</a>
+      </div>
+      {% else %}
+      <p>Your domains will appear here once your admin adds memory items
+         and grants your group access. Refresh when you've been told a
+         new domain is ready — or suggest one yourself if there's a body
+         of knowledge you'd like to see bundled.</p>
+      <div class="cta">
+        {{ ds.button('Suggest a domain', variant='primary',
+                     type='button',
+                     attrs='onclick="openSuggestDomainModal()"') }}
+      </div>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+
+  {# Both grid and empty-state are always rendered; JS toggles
+     visibility on add/remove so the tab never goes completely blank
+     after the last card is removed (the "musím refreshnout" bug). #}
+  <div data-view="my" hidden>
+    <div class="stack-grid" id="memory-grid-my"{% if not stack_entries %} hidden{% endif %}>
+      {% for entry in stack_entries %}
+        {{ card(entry) }}
+      {% endfor %}
+    </div>
+    <div class="stack-empty"{% if stack_entries %} hidden{% endif %}>
+      <span class="icon">🗂️</span>
+      <h3>Your stack is empty</h3>
+      {% if entries %}
+      <p>Browse the {{ entries|length }} available domain{{ '' if entries|length == 1 else 's' }}
+         and click <strong>Download locally</strong>. Required domains will
+         appear here automatically.</p>
+      {% else %}
+      <p>You don't have access to any domains yet. They'll show up here
+         once your admin grants your group access — refresh when you've
+         been told something new is ready.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <div id="memory-toast" role="status" aria-live="polite" hidden
+       style="position:fixed; bottom:24px; right:24px; padding:12px 18px;
+              background:#202124; color:#fff; border-radius:8px;
+              box-shadow:0 6px 20px rgba(0,0,0,.2); font-size:13px; z-index:1000;"></div>
+
+  {# v55 Suggest-a-domain modal — non-admin affordance from the
+     empty-state CTA. Posts to /api/memory-domain-suggestions; admin
+     queue surfaces it for approve/reject. #}
+  <div id="suggestDomainModal"
+       style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.4); z-index:2050;">
+    <div style="background:var(--surface); max-width:520px; margin:60px auto;
+                padding:20px 24px; border-radius:12px; border:1px solid var(--border);
+                max-height:85vh; overflow-y:auto;">
+      <h3 style="margin:0 0 8px;">Suggest a memory domain</h3>
+      <p style="margin:0 0 16px; color:var(--text-secondary); font-size:13px;">
+        Tell your admin what knowledge area you'd find useful. They'll see
+        your suggestion in their moderation queue and can approve it
+        directly (creating the real domain) or reply with a reason.
+      </p>
+      <div style="display:flex; flex-direction:column; gap:12px;">
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">Proposed name</span>
+          <input id="sg-domain-name" type="text"
+                 placeholder="e.g. Sales coaching, Incident playbooks…"
+                 maxlength="100"
+                 style="padding:8px; border:1px solid var(--border); border-radius:6px;">
+        </label>
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">What kinds of items would live there? (optional)</span>
+          <textarea id="sg-domain-desc" rows="2"
+                    placeholder="Playbooks, runbooks, shared context, decisions…"
+                    style="padding:8px; border:1px solid var(--border); border-radius:6px;
+                           font-family:inherit; resize:vertical;"></textarea>
+        </label>
+        <label style="display:flex; flex-direction:column; gap:4px;">
+          <span style="font-size:12px; color:var(--text-muted);">Why it matters (optional)</span>
+          <textarea id="sg-domain-rationale" rows="2"
+                    placeholder="What problem would this domain unblock?"
+                    style="padding:8px; border:1px solid var(--border); border-radius:6px;
+                           font-family:inherit; resize:vertical;"></textarea>
+        </label>
+      </div>
+      <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:18px;">
+        {{ ds.button('Cancel', variant='secondary', type='button',
+                     attrs='onclick="closeSuggestDomainModal()"') }}
+        {{ ds.button('Send suggestion', variant='primary', type='button',
+                     id='sg-domain-submit-btn',
+                     attrs='onclick="submitSuggestDomain()"') }}
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+// Same interaction model as catalog.html — duplicated rather than extracted
+// because the page-level state (active tab/filter/search) is intentionally
+// per-route (My Stack lives inside Browse, not globally — Section 3 D3).
+(function() {
+  const root = document.getElementById('memory-page');
+  if (!root) return;
+  const resourceType = root.dataset.resourceType;
+  const toast = document.getElementById('memory-toast');
+  // FIFO queue (max 3) — see catalog.html for full rationale.
+  const _toastQueue = [];
+  let _toastShowing = false;
+  function _showNextToast() {
+    if (_toastShowing) return;
+    const next = _toastQueue.shift();
+    if (!next) return;
+    _toastShowing = true;
+    toast.textContent = next.msg;
+    toast.hidden = false;
+    toast.style.background = next.isError ? '#b91c1c' : '#10b77f';
+    const dwell = next.isError ? 4000 : 2500;
+    setTimeout(() => {
+      toast.hidden = true;
+      _toastShowing = false;
+      _showNextToast();
+    }, dwell);
+  }
+  function showToast(msg, isError) {
+    if (_toastQueue.length >= 3) _toastQueue.shift();
+    _toastQueue.push({ msg, isError });
+    _showNextToast();
+  }
+
+  document.querySelectorAll('.stack-card').forEach(card => {
+    const drilldown = card.querySelector('.stack-card__drilldown');
+    if (!drilldown) return;
+    // v54: same mod-click / middle-click handling as catalog.html so
+    // Cmd-click and middle-click open drilldown in a new tab instead
+    // of getting swallowed by the card-wide click intercept.
+    card.addEventListener('click', (e) => {
+      if (e.target.closest('button')) return;
+      if (e.target === drilldown) return;
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1) {
+        e.preventDefault();
+        window.open(drilldown.href, '_blank', 'noopener');
+        return;
+      }
+      window.location.href = drilldown.href;
+    });
+    card.addEventListener('auxclick', (e) => {
+      if (e.button !== 1) return;
+      if (e.target.closest('button')) return;
+      e.preventDefault();
+      window.open(drilldown.href, '_blank', 'noopener');
+    });
+  });
+
+  async function doSubscribe(id) {
+    return fetch('/api/stack/subscribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ resource_type: resourceType, resource_id: id }),
+    });
+  }
+  async function doUnsubscribe(id) {
+    return fetch('/api/stack/subscription/' + encodeURIComponent(resourceType) +
+                 '/' + encodeURIComponent(id),
+      { method: 'DELETE', credentials: 'same-origin' });
+  }
+  // In-place stack state update — mirrors catalog.html. See that file
+  // for the full rationale (avoid full-page reload + scroll loss).
+  function _applyStackChange(card, becameInStack) {
+    // Does `in_stack` on these cards mean "a local copy exists" or "member of
+    // the stack"? The macro stamps the answer on every card (#1206), and it
+    // decides what a REMOVAL means here. Under local-copy semantics the
+    // resource stays in the caller's stack after the local copy goes — the
+    // server's My Stack grid is built from `resolver.stack()`, whose
+    // effective set is `required ∪ available ∪ materialized`, so it renders
+    // the item again on the next load. Deleting the card and decrementing the
+    // tab would make it vanish and the count drop, then both come back on
+    // refresh: the same contradictory-count confusion this change set out to
+    // remove, just moved into the optimistic path.
+    if (!card) return;
+    const inStackIsLocal = card.dataset.inStackIsLocal === '1';
+    card.dataset.inStack = becameInStack ? '1' : '0';
+    const id = card.dataset.id;
+    if (!id) return;
+    document.querySelectorAll('.stack-card[data-id="' + CSS.escape(id) + '"]')
+      .forEach(c => {
+        c.dataset.inStack = becameInStack ? '1' : '0';
+        // Toggle is-in-stack class + top-right "In stack" badge so the
+        // whole card chrome matches the server-side render — not just
+        // the footer button (see catalog.html for full rationale).
+        c.classList.toggle('is-in-stack', becameInStack);
+        const isRequired = c.dataset.requirement === 'required';
+        let inStackBadge = c.querySelector('.stack-card__req-badge--instack');
+        if (becameInStack && !isRequired) {
+          if (!inStackBadge) {
+            inStackBadge = document.createElement('div');
+            inStackBadge.className = 'stack-card__req-badge stack-card__req-badge--instack';
+            // Wording tracks the macro's `in_stack_is_local` switch (#1206);
+            // this page's projection sets the flag, so every card here
+            // carries the local-download semantics.
+            inStackBadge.title = 'A local copy is downloaded';
+            inStackBadge.textContent = 'Downloaded';
+            c.insertBefore(inStackBadge, c.firstChild);
+          }
+        } else if (inStackBadge && !isRequired) {
+          inStackBadge.remove();
+        }
+        const actionBtn = c.querySelector('[data-action]');
+        if (actionBtn) {
+          actionBtn.dataset.action = becameInStack ? 'remove' : 'add';
+          // Mirror the macro's footer text under `in_stack_is_local` (#1206).
+          actionBtn.textContent = becameInStack ? 'Remove local copy' : 'Download locally';
+          actionBtn.classList.toggle('stack-card__btn--add', !becameInStack);
+          actionBtn.classList.toggle('stack-card__btn--remove', becameInStack);
+          actionBtn.disabled = false;
+        }
+      });
+
+    // Sync the My Stack grid (clone on add, remove on un-add). Same
+    // pattern as catalog.html — without this the grid was stale until
+    // full reload.
+    const myGrid = document.getElementById('memory-grid-my');
+    const browseGrid = document.getElementById('memory-grid-browse');
+    if (myGrid) {
+      const existingInMy = myGrid.querySelector(
+        '.stack-card[data-id="' + CSS.escape(id) + '"]'
+      );
+      if (becameInStack && !existingInMy) {
+        const sourceCard = browseGrid
+          ? browseGrid.querySelector('.stack-card[data-id="' + CSS.escape(id) + '"]')
+          : card;
+        if (sourceCard) {
+          const clone = sourceCard.cloneNode(true);
+          clone.dataset.inStack = '1';
+          clone.classList.add('is-in-stack');
+          const cloneBtn = clone.querySelector('[data-action]');
+          if (cloneBtn) {
+            cloneBtn.dataset.action = 'remove';
+            // Same string the re-label loop above writes, and the same one the
+            // macro renders under `in_stack_is_local` (#1206) — the clone sits
+            // beside its Browse twin, so a divergent label contradicts it.
+            cloneBtn.textContent = 'Remove local copy';
+            cloneBtn.classList.remove('stack-card__btn--add');
+            cloneBtn.classList.add('stack-card__btn--remove');
+            cloneBtn.disabled = false;
+          }
+          myGrid.appendChild(clone);
+          myGrid.hidden = false;
+        }
+        const emptyEl = document.querySelector('[data-view="my"] .stack-empty');
+        if (emptyEl) emptyEl.hidden = true;
+      } else if (!becameInStack && existingInMy) {
+        if (inStackIsLocal) {
+          // Local copy dropped, membership untouched: keep the card
+          // where it is. The re-label loop above already switched it
+          // to 'Download locally', which is exactly what a reload
+          // would render.
+        } else {
+          existingInMy.remove();
+          if (!myGrid.children.length) {
+            // Both grid + empty-state are server-rendered (one hidden);
+            // swap visibility instead of injecting DOM. Removing the
+            // last card without this left the My Stack tab blank — users
+            // read that as "Remove didn't work, let me refresh".
+            myGrid.hidden = true;
+            const emptyEl = document.querySelector('[data-view="my"] .stack-empty');
+            if (emptyEl) emptyEl.hidden = false;
+          }
+        }
+      }
+    }
+
+    const myEl = document.querySelector('.stack-tabs .count[data-count="my"]');
+    // Membership is what this badge counts. Under local-copy semantics
+    // neither add nor remove changes it, so the number must not move.
+    if (myEl && !inStackIsLocal) {
+      const cur = parseInt(myEl.textContent, 10) || 0;
+      myEl.textContent = String(cur + (becameInStack ? 1 : -1));
+    }
+
+    // Re-apply the active filter — see catalog_legacy.html for the rationale.
+    applyFilters();
+  }
+
+  document.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn || !root.contains(btn)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const action = btn.dataset.action;
+    const id = btn.dataset.id;
+    const card = btn.closest('.stack-card');
+    btn.disabled = true;
+    try {
+      const resp = action === 'add' ? await doSubscribe(id) : await doUnsubscribe(id);
+      if (!resp.ok) {
+        const detail = await resp.json().catch(() => ({}));
+        showToast('Failed: ' + (detail.detail || resp.statusText), true);
+        btn.disabled = false;
+        return;
+      }
+      // Follows the same flag as everything else on the card. Under the
+      // local-copy meaning the resource does NOT leave the stack — it stays
+      // listed under My Stack with the count unchanged — so "Removed from
+      // stack" would contradict what the user sees the moment the toast
+      // fades. "queued" rather than "downloaded" because the request that
+      // just succeeded is a subscribe; the bytes arrive with the next
+      // `agnes pull`. Where the key still means membership, added/removed
+      // from the stack is exactly what happened.
+      const _local = card && card.dataset.inStackIsLocal === '1';
+      showToast(
+        _local
+          ? (action === 'add' ? 'Local copy queued' : 'Local copy removed')
+          : (action === 'add' ? 'Added to stack' : 'Removed from stack')
+      );
+      _applyStackChange(card, action === 'add');
+    } catch (err) {
+      showToast('Network error: ' + err.message, true);
+      btn.disabled = false;
+    }
+  });
+
+  document.querySelectorAll('.stack-tabs button').forEach(b => {
+    b.addEventListener('click', () => {
+      const tab = b.dataset.tab;
+      document.querySelectorAll('.stack-tabs button').forEach(x => {
+        x.classList.toggle('is-active', x === b);
+        x.setAttribute('aria-selected', x === b ? 'true' : 'false');
+      });
+      document.querySelectorAll('[data-view]').forEach(v => {
+        v.hidden = v.dataset.view !== tab;
+      });
+    });
+  });
+
+  let activeFilter = 'all';
+  // v51 — set of currently-checked status values.
+  function _activeStatuses() {
+    const out = new Set();
+    document.querySelectorAll('#memory-status-filter input[type="checkbox"]:checked')
+      .forEach((el) => out.add(el.value));
+    return out;
+  }
+  function applyFilters() {
+    // Single source of truth — the hero search input.
+    const heroEl = document.getElementById('memory-hero-search');
+    const q = (heroEl && heroEl.value || '').toLowerCase();
+    const statuses = _activeStatuses();
+    document.querySelectorAll('.stack-card').forEach(card => {
+      const req = card.dataset.requirement;
+      const inStack = card.dataset.inStack === '1';
+      const status = card.dataset.status || 'prod';
+      const title = (card.querySelector('.stack-card__title')?.textContent || '').toLowerCase();
+      const desc  = (card.querySelector('.stack-card__desc')?.textContent || '').toLowerCase();
+      let show = true;
+      if (activeFilter === 'required' && req !== 'required') show = false;
+      if (activeFilter === 'available' && req !== 'available') show = false;
+      if (activeFilter === 'in_stack' && !inStack) show = false;
+      if (statuses.size && !statuses.has(status)) show = false;
+      if (q && !title.includes(q) && !desc.includes(q)) show = false;
+      card.hidden = !show;
+    });
+  }
+  document.querySelectorAll('[data-filter]').forEach(b => {
+    b.addEventListener('click', () => {
+      document.querySelectorAll('[data-filter]').forEach(x => x.classList.toggle('is-active', x === b));
+      activeFilter = b.dataset.filter;
+      applyFilters();
+    });
+  });
+  document.querySelectorAll('#memory-status-filter input[type="checkbox"]').forEach((el) => {
+    el.addEventListener('change', applyFilters);
+  });
+  // Single hero search input drives the filter pipeline directly.
+  var heroSearch = document.getElementById('memory-hero-search');
+  if (heroSearch) {
+    heroSearch.addEventListener('input', applyFilters);
+  }
+  // Explicit Search button — visual parity with /marketplace and
+  // /catalog. The input already filters live; the button just
+  // re-applies and returns focus to the input.
+  var heroSearchBtn = document.getElementById('memory-search-btn');
+  if (heroSearchBtn && heroSearch) {
+    heroSearchBtn.addEventListener('click', function () {
+      applyFilters();
+      heroSearch.focus();
+    });
+  }
+})();
+
+// v55 Suggest-a-domain — exposed on window so the empty-state CTA
+// reaches it. Single POST to /api/memory-domain-suggestions; admin
+// queue picks it up. Outside the IIFE because the CTA renders only
+// when the IIFE's #memory-page root is empty and the page may not
+// have hydrated when the user clicks.
+window.openSuggestDomainModal = function () {
+  const el = document.getElementById('suggestDomainModal');
+  if (!el) return;
+  ['sg-domain-name','sg-domain-desc','sg-domain-rationale'].forEach((id) => {
+    const i = document.getElementById(id);
+    if (i) i.value = '';
+  });
+  el.style.display = 'block';
+  const nameInput = document.getElementById('sg-domain-name');
+  if (nameInput) nameInput.focus();
+};
+window.closeSuggestDomainModal = function () {
+  const el = document.getElementById('suggestDomainModal');
+  if (el) el.style.display = 'none';
+};
+window.submitSuggestDomain = async function () {
+  const btn = document.getElementById('sg-domain-submit-btn');
+  const name = (document.getElementById('sg-domain-name').value || '').trim();
+  if (!name) { await alertModal('Please enter a name for the domain.'); return; }
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/memory-domain-suggestions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({
+        name: name,
+        description: (document.getElementById('sg-domain-desc').value || '').trim() || null,
+        rationale: (document.getElementById('sg-domain-rationale').value || '').trim() || null,
+      }),
+    });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      await alertModal('Failed to send: ' + (d.detail || r.statusText));
+      return;
+    }
+    window.closeSuggestDomainModal();
+    const toast = document.getElementById('memory-toast');
+    if (toast) {
+      toast.textContent = 'Suggestion sent — your admin will review it.';
+      toast.hidden = false;
+      setTimeout(() => { toast.hidden = true; }, 4000);
+    }
+  } catch (e) {
+    await alertModal('Network error: ' + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+};
+</script>
+{% endblock %}

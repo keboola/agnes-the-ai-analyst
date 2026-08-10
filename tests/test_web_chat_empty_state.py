@@ -99,8 +99,15 @@ def _grant(
 def _enable_rail_chat(seeded_app, monkeypatch) -> None:
     """Make ``/chat`` render its rail empty-state hero: rail chrome + an
     enabled chat backend. Callers still need CHAT *access* — admin via
-    god-mode, or a ``_grant(..., "chat", "chat", ...)`` for a normal user."""
+    god-mode, or a ``_grant(..., "chat", "chat", ...)`` for a normal user.
+
+    Auto-membership rides along: the Dashboard is a redesign surface and
+    these tests pin the redesign experience, where the stack mode is enabled
+    together with the chrome (spec 2026-08-07-default-chrome-ux-parity) —
+    the seeded ``available`` grants below only count into the context line
+    under that mode."""
     monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+    monkeypatch.setenv("AGNES_STACK_AUTO_MEMBERSHIP", "1")
     seeded_app["client"].app.state.chat_config = SimpleNamespace(enabled=True)
 
 

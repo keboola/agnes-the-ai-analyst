@@ -2,10 +2,8 @@
 
 import hashlib
 import json
-import os
 import re
 import sys
-from pathlib import Path
 from typing import Optional
 
 import typer
@@ -151,7 +149,11 @@ def _run_local(sql: str, fmt: str, limit: int):
     """
     from src.duckdb_conn import _open_duckdb
 
-    local_dir = Path(os.environ.get("AGNES_LOCAL_DIR", "."))
+    from cli.lib.workspace_resolve import resolve_data_workspace
+
+    local_dir = resolve_data_workspace()
+    if local_dir is None:
+        raise _LocalDbMissing()
     db_path = local_dir / "user" / "duckdb" / "analytics.duckdb"
     if not db_path.exists():
         raise _LocalDbMissing()

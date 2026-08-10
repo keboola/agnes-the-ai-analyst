@@ -14,6 +14,15 @@ import pytest
 from src.db import get_system_db
 
 
+@pytest.fixture(autouse=True)
+def _auto_membership_mode(monkeypatch):
+    """This suite pins the AUTO-membership semantics, which are opt-in since
+    the classic subscribe model became the default again (spec
+    2026-08-07-default-chrome-ux-parity). Classic-mode contracts live in
+    tests/test_stack_membership_modes.py."""
+    monkeypatch.setenv("AGNES_STACK_AUTO_MEMBERSHIP", "1")
+
+
 def _auth(token):
     return {"Authorization": f"Bearer {token}"}
 

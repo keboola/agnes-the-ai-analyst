@@ -185,3 +185,35 @@ class TestDataSourcesPageSemanticLayerSummary:
         assert "Semantic layer" in body
         assert "OK" in body
         assert "/admin/semantic-layer" in body
+
+
+class TestWizardRegisterPayloadContract:
+    """The wizard's register payload must send the BARE in-bucket name.
+
+    The pre-fix wizard sent the full Keboola table id (`bucket.table`) as
+    `source_table`; combined with the separate `bucket` field, the sync path
+    re-composed `bucket.bucket.table` — every wizard-registered table then
+    failed to materialize (doubled prefix → nonexistent table id upstream)
+    and the catalog preview showed "not found". Text-assertion contract on
+    the template so a future edit can't silently regress the payload.
+    """
+
+    @staticmethod
+    def _template_text():
+        from pathlib import Path
+
+        tpl = Path(__file__).resolve().parents[1] / "app" / "web" / "templates" / "admin_data_sources.html"
+        return tpl.read_text(encoding="utf-8")
+
+    def test_register_payload_uses_bare_table_name(self):
+        tpl = self._template_text()
+        assert 'data-table-bare="${_esc(bare)}"' in tpl
+        assert "cb.dataset.tableBare || cb.dataset.tableName" in tpl
+        # The regression: full table id sent as source_table.
+        assert "source_table: cb.dataset.tableId" not in tpl
+
+    def test_scoped_token_note_wired(self):
+        """Bucket-scoped tokens get a partial listing — the picker must say so."""
+        tpl = self._template_text()
+        assert 'data.scope === "token_buckets"' in tpl
+        assert "ds-scope-note" in tpl

@@ -614,7 +614,9 @@ def _maybe_backfill_workspace_root() -> None:
 
         if get_workspace_root():
             return
-        workspace = Path(os.environ.get("AGNES_LOCAL_DIR", ".")).resolve()
+        from cli.lib.workspace_resolve import resolve_data_workspace
+
+        workspace = resolve_data_workspace() or Path.cwd().resolve()
         if (workspace / ".claude" / "init-complete").exists():
             set_workspace_root(str(workspace))
     except Exception:
@@ -624,10 +626,12 @@ def _maybe_backfill_workspace_root() -> None:
 def _try_refresh_hooks(*, quiet: bool) -> None:
     """Best-effort idempotent refresh of the workspace's Claude Code hooks.
 
-    Resolves the workspace via ``AGNES_LOCAL_DIR`` (set by Claude Code's
-    hook subprocess to the workspace root) or the current working directory.
-    Delegates the actual decision to :func:`maybe_refresh_claude_hooks`,
-    which guards against writing into non-Agnes directories.
+    Resolves the workspace via
+    ``cli.lib.workspace_resolve.resolve_data_workspace()`` (env override →
+    shaped cwd → anchored workspace_root), falling back to the current
+    working directory. Delegates the actual decision to
+    :func:`maybe_refresh_claude_hooks`, which guards against writing into
+    non-Agnes directories.
 
     Swallows any exception — a partially-broken settings.json or a
     permissions issue must not flip the exit code of a successful
@@ -635,7 +639,9 @@ def _try_refresh_hooks(*, quiet: bool) -> None:
     so an operator running ``agnes self-upgrade`` interactively still sees
     it; under ``--quiet`` (the SessionStart case) it stays silent.
     """
-    workspace = Path(os.environ.get("AGNES_LOCAL_DIR", ".")).resolve()
+    from cli.lib.workspace_resolve import resolve_data_workspace
+
+    workspace = resolve_data_workspace() or Path.cwd().resolve()
     try:
         maybe_refresh_claude_hooks(workspace)
     except Exception as exc:  # pragma: no cover — defensive

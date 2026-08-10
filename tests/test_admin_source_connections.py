@@ -22,6 +22,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import requests
 from cryptography.fernet import Fernet
 
 from app.secrets_vault import _reset_ephemeral_key_for_tests
@@ -432,6 +433,87 @@ class TestSourceConnectionsTest:
         assert resp.status_code == 400
         assert "allowlist" in resp.json()["detail"].lower()
 
+    def test_test_endpoint_logs_result(self, seeded_app, caplog):
+        # /test was previously fully silent server-side; every outcome now
+        # leaves one INFO line so repeated failures are visible in logs.
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            BASE,
+            json={
+                "name": "test-keboola-testconn-log",
+                "source_type": "keboola",
+                "config": {"stack_url": "https://connection.example.com"},
+                "token_env": "KEBOOLA_STORAGE_TOKEN",
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 201
+        conn_id = resp.json()["id"]
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"id": "123", "name": "Test Project"}
+
+        mock_client = MagicMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.get = AsyncMock(return_value=mock_response)
+
+        with (
+            patch("app.api.admin_source_connections.httpx.AsyncClient", return_value=mock_client),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+            patch.dict("os.environ", {"KEBOOLA_STORAGE_TOKEN": "fake-token"}),
+            caplog.at_level("INFO", logger="app.api.admin_source_connections"),
+        ):
+            resp2 = c.post(f"{BASE}/{conn_id}/test", headers=_auth(token))
+
+        assert resp2.status_code == 200
+        assert resp2.json()["ok"] is True
+        assert f"connection test for {conn_id}" in caplog.text
+        assert ": ok" in caplog.text
+        # Response-body content must never land in server logs — a fronting
+        # proxy that echoes the token into the body would otherwise leak it.
+        assert "Test Project" not in caplog.text
+
+    def test_test_endpoint_exception_log_redacts_token(self, seeded_app, caplog):
+        # The generic-exception outcome line must scrub the resolved token —
+        # httpx exception reprs don't include headers today, but the log line
+        # must not depend on that staying true.
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            BASE,
+            json={
+                "name": "test-keboola-testconn-exc-log",
+                "source_type": "keboola",
+                "config": {"stack_url": "https://connection.example.com"},
+                "token_env": "KEBOOLA_STORAGE_TOKEN",
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 201
+        conn_id = resp.json()["id"]
+
+        mock_client = MagicMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.get = AsyncMock(side_effect=Exception("connect failed; X-StorageApi-Token: fake-token"))
+
+        with (
+            patch("app.api.admin_source_connections.httpx.AsyncClient", return_value=mock_client),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+            patch.dict("os.environ", {"KEBOOLA_STORAGE_TOKEN": "fake-token"}),
+            caplog.at_level("INFO", logger="app.api.admin_source_connections"),
+        ):
+            resp2 = c.post(f"{BASE}/{conn_id}/test", headers=_auth(token))
+
+        assert resp2.status_code == 200
+        assert resp2.json()["ok"] is False
+        assert f"connection test for {conn_id}" in caplog.text
+        assert "fake-token" not in caplog.text
+        assert "<redacted-storage-token>" in caplog.text
+
     def test_test_endpoint_missing_connection_returns_404(self, seeded_app):
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
@@ -487,6 +569,7 @@ class TestSourceConnectionsTables:
 
         assert resp.status_code == 200
         data = resp.json()
+        assert data["scope"] == "project"
         assert len(data["buckets"]) == 1
         bucket = data["buckets"][0]
         assert bucket["id"] == "in.c-main"
@@ -543,6 +626,336 @@ class TestSourceConnectionsTables:
             resp = c.get(f"{BASE}/{conn_id}/tables", headers=_auth(token))
 
         assert resp.status_code == 502
+
+    def test_an_empty_200_listing_also_falls_back_to_bucket_permissions(self, seeded_app):
+        """Some token shapes get a 200 with an empty array, not a 403.
+
+        That was indistinguishable from an empty project, so the picker reported
+        "no buckets visible to this token" and the fallback never ran — the exact
+        scenario the fallback exists for (Devin Review on #1189).
+        """
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create(c, token, name="test-kbc-empty200")
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.list_buckets",
+                return_value=[],
+            ),
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                return_value={"bucketPermissions": {"in.c-main": "read"}},
+            ),
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.list_tables",
+                return_value=[
+                    {"id": "in.c-main.orders", "name": "orders", "rowsCount": 7, "dataSizeBytes": 64},
+                ],
+            ),
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.get_bucket",
+                return_value={"id": "in.c-main", "name": "main", "stage": "in", "description": ""},
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+            patch.dict("os.environ", {"KEBOOLA_STORAGE_TOKEN": "fake-token"}),
+        ):
+            resp = c.get(f"{BASE}/{conn_id}/tables", headers=_auth(token))
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["scope"] == "token_buckets"
+        assert [b["id"] for b in data["buckets"]] == ["in.c-main"]
+
+    def test_a_genuinely_empty_project_stays_empty_and_does_not_error(self, seeded_app):
+        """The same empty-listing retry must not turn a real empty project into a
+        502: with no bucketPermissions there is nothing to enumerate, so the
+        empty project-wide answer stands."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create(c, token, name="test-kbc-trulyempty")
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.list_buckets",
+                return_value=[],
+            ),
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.list_tables",
+                return_value=[],
+            ),
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                return_value={"bucketPermissions": {}},
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+            patch.dict("os.environ", {"KEBOOLA_STORAGE_TOKEN": "fake-token"}),
+        ):
+            resp = c.get(f"{BASE}/{conn_id}/tables", headers=_auth(token))
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["buckets"] == []
+        assert data["scope"] == "project"
+
+    def test_a_transient_failure_does_not_trigger_the_per_bucket_loop(self, seeded_app):
+        """Only a refusal justifies the fallback, not any failure.
+
+        `_scoped_listing` makes two upstream calls per bucket the token can see,
+        so a brief blip on a full-access token would otherwise stall "Browse &
+        register tables" for minutes on a large project and then label the token
+        as bucket-scoped. A 5xx and a connection error must surface as themselves
+        (Devin Review on #1189).
+        """
+        import requests as _requests
+
+        from connectors.keboola.storage_api import StorageApiError
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create(c, token, name="test-kbc-transient")
+
+        for boom in (
+            StorageApiError("upstream exploded", status=500),
+            _requests.ConnectionError("connection reset"),
+            # No status at all: the gate must fail CLOSED. An earlier version
+            # read `status is not None and status not in (401, 403)`, so this
+            # case fell through into the fallback (Devin Review on #1189).
+            StorageApiError("no status stamped"),
+        ):
+            called = []
+            with (
+                patch(
+                    "app.api.admin_source_connections.KeboolaStorageClient.list_buckets",
+                    side_effect=boom,
+                ),
+                patch(
+                    "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                    side_effect=lambda: called.append("verify") or {"bucketPermissions": {"in.c-main": "read"}},
+                ),
+                patch("app.api.admin._validate_url_not_private", return_value=None),
+                patch.dict("os.environ", {"KEBOOLA_STORAGE_TOKEN": "fake-token"}),
+            ):
+                resp = c.get(f"{BASE}/{conn_id}/tables", headers=_auth(token))
+
+            assert resp.status_code == 502, (boom, resp.text)
+            assert called == [], f"per-bucket fallback was entered for {boom!r}"
+
+    def test_tables_endpoint_scoped_token_falls_back_to_bucket_permissions(self, seeded_app):
+        """Bucket-scoped (custom access) token: the project-wide listing is
+        refused, but /tokens/verify names the permitted buckets — the
+        endpoint must list per-bucket and mark the response scope."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create(c, token, name="test-kbc-tables-scoped")
+
+        from connectors.keboola.storage_api import StorageApiError
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.list_buckets",
+                side_effect=StorageApiError("accessDenied", status=403),
+            ),
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                return_value={"bucketPermissions": {"in.c-main": "read"}},
+            ),
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.list_tables",
+                return_value=[
+                    {"id": "in.c-main.orders", "name": "orders", "rowsCount": 42, "dataSizeBytes": 1024},
+                ],
+            ),
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.get_bucket",
+                return_value={"id": "in.c-main", "name": "main", "stage": "in", "description": ""},
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+            patch.dict("os.environ", {"KEBOOLA_STORAGE_TOKEN": "fake-token"}),
+        ):
+            resp = c.get(f"{BASE}/{conn_id}/tables", headers=_auth(token))
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["scope"] == "token_buckets"
+        assert len(data["buckets"]) == 1
+        bucket = data["buckets"][0]
+        assert bucket["id"] == "in.c-main"
+        assert bucket["name"] == "main"
+        assert bucket["tables"] == [{"id": "in.c-main.orders", "name": "orders", "rows": 42, "size_bytes": 1024}]
+
+    def test_tables_endpoint_scoped_fallback_survives_bucket_detail_failure(self, seeded_app):
+        """get_bucket failing must not drop the bucket's tables — the bucket
+        renders from its id instead."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create(c, token, name="test-kbc-tables-scoped-nodetail")
+
+        from connectors.keboola.storage_api import StorageApiError
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.list_buckets",
+                side_effect=StorageApiError("accessDenied", status=403),
+            ),
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                return_value={"bucketPermissions": {"in.c-main": "read"}},
+            ),
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.list_tables",
+                return_value=[{"id": "in.c-main.orders", "name": "orders", "rowsCount": 1, "dataSizeBytes": 10}],
+            ),
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.get_bucket",
+                side_effect=StorageApiError("accessDenied", status=403),
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+            patch.dict("os.environ", {"KEBOOLA_STORAGE_TOKEN": "fake-token"}),
+        ):
+            resp = c.get(f"{BASE}/{conn_id}/tables", headers=_auth(token))
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["scope"] == "token_buckets"
+        assert data["buckets"][0]["id"] == "in.c-main"
+        assert data["buckets"][0]["name"] == "c-main"  # synthesized from the id
+        assert len(data["buckets"][0]["tables"]) == 1
+
+    def test_tables_endpoint_no_bucket_permissions_surfaces_original_error(self, seeded_app):
+        """Token with no bucketPermissions (e.g. component token): nothing to
+        fall back to — the original project-wide failure is the story."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create(c, token, name="test-kbc-tables-noperms")
+
+        from connectors.keboola.storage_api import StorageApiError
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.list_buckets",
+                side_effect=StorageApiError("accessDenied original", status=403),
+            ),
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                return_value={"bucketPermissions": {}},
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+            patch.dict("os.environ", {"KEBOOLA_STORAGE_TOKEN": "fake-token"}),
+        ):
+            resp = c.get(f"{BASE}/{conn_id}/tables", headers=_auth(token))
+
+        assert resp.status_code == 502
+        assert "accessDenied original" in resp.json()["detail"]
+
+    def test_tables_endpoint_network_error_maps_to_502(self, seeded_app):
+        """requests-level failures (DNS, refused, TLS) must surface as the
+        same clean 502 detail as Storage API errors — previously they fell
+        through to the generic 500 handler."""
+        import requests as _requests
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create(c, token, name="test-kbc-tables-network")
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.list_buckets",
+                side_effect=_requests.ConnectionError("connection refused"),
+            ),
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                side_effect=_requests.ConnectionError("connection refused"),
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+            patch.dict("os.environ", {"KEBOOLA_STORAGE_TOKEN": "fake-token"}),
+        ):
+            resp = c.get(f"{BASE}/{conn_id}/tables", headers=_auth(token))
+
+        assert resp.status_code == 502
+        assert resp.json()["detail"].startswith("keboola_storage_api_error:")
+
+    def test_tables_endpoint_every_scoped_bucket_failing_returns_502(self, seeded_app):
+        """Permissions exist but every per-bucket listing fails → a real 502,
+        not a silently empty picker."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create(c, token, name="test-kbc-tables-allfail")
+
+        from connectors.keboola.storage_api import StorageApiError
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.list_buckets",
+                side_effect=StorageApiError("accessDenied", status=403),
+            ),
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                return_value={"bucketPermissions": {"in.c-main": "read"}},
+            ),
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.list_tables",
+                side_effect=StorageApiError("bucket listing broke", status=500),
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+            patch.dict("os.environ", {"KEBOOLA_STORAGE_TOKEN": "fake-token"}),
+        ):
+            resp = c.get(f"{BASE}/{conn_id}/tables", headers=_auth(token))
+
+        assert resp.status_code == 502
+        assert "bucket listing broke" in resp.json()["detail"]
+
+    def test_tables_endpoint_success_logs_counts(self, seeded_app, caplog):
+        # Operator-facing trail of what the wizard loads: one INFO line with
+        # bucket/table counts (+ duration), so "wizard is empty/slow" is
+        # diagnosable from server logs.
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create(c, token, name="test-kbc-tables-log-success")
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.list_buckets",
+                return_value=[{"id": "in.c-main", "name": "main", "stage": "in", "description": ""}],
+            ),
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.list_tables",
+                return_value=[
+                    {"id": "in.c-main.orders", "name": "orders", "bucket": {"id": "in.c-main"}},
+                ],
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+            patch.dict("os.environ", {"KEBOOLA_STORAGE_TOKEN": "fake-token"}),
+            caplog.at_level("INFO", logger="app.api.admin_source_connections"),
+        ):
+            resp = c.get(f"{BASE}/{conn_id}/tables", headers=_auth(token))
+
+        assert resp.status_code == 200
+        assert f"tables listing for connection {conn_id}" in caplog.text
+        assert "1 buckets, 1 tables" in caplog.text
+
+    def test_tables_endpoint_transport_error_logs_redacted_warning(self, seeded_app, caplog):
+        # The 502 path must leave a server-side WARNING (the catch-all 500 it
+        # replaced logged a full traceback) — with the token redacted.
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create(c, token, name="test-kbc-tables-log-warning")
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.list_buckets",
+                side_effect=requests.exceptions.ReadTimeout("read timed out; X-StorageApi-Token: fake-token"),
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+            patch.dict("os.environ", {"KEBOOLA_STORAGE_TOKEN": "fake-token"}),
+            caplog.at_level("WARNING", logger="app.api.admin_source_connections"),
+        ):
+            resp = c.get(f"{BASE}/{conn_id}/tables", headers=_auth(token))
+
+        assert resp.status_code == 502
+        assert f"tables listing failed for connection {conn_id}" in caplog.text
+        assert "<redacted-storage-token>" in caplog.text
+        assert "fake-token" not in caplog.text
 
     def test_tables_endpoint_requires_admin(self, seeded_app):
         c = seeded_app["client"]
@@ -681,6 +1094,33 @@ class TestSourceConnectionsMasterSecret:
             )
         assert resp.status_code == 502
         assert "super-secret-master-token" not in resp.text
+
+    def test_master_secret_storage_api_outage_logs_redacted_warning(self, seeded_app, caplog):
+        # The preflight 502 must leave a server-side WARNING with the
+        # candidate token redacted — same trail as the /tables listing.
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="test-master-outage-log")
+
+        from connectors.keboola.storage_api import StorageApiError
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                side_effect=StorageApiError("boom: token=super-secret-master-token"),
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+            caplog.at_level("WARNING", logger="app.api.admin_source_connections"),
+        ):
+            resp = c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "super-secret-master-token", "kind": "master"},
+                headers=_auth(token),
+            )
+        assert resp.status_code == 502
+        assert f"master-token preflight failed for connection {conn_id}" in caplog.text
+        assert "<redacted-storage-token>" in caplog.text
+        assert "super-secret-master-token" not in caplog.text
 
     def test_connection_delete_clears_master_secret(self, seeded_app):
         c = seeded_app["client"]

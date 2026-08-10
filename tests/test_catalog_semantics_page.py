@@ -279,6 +279,61 @@ class TestCatalogSemanticsLinkFromCatalog:
         assert "/catalog/semantics" in resp.text
 
 
+class TestCatalogSemanticsWayOut:
+    """The page is link-only — reached from the Library's Definitions block,
+    the Catalog's Semantic layer card, a chat citation or global search — and
+    is a nav destination in neither chrome. Without a back link the browser's
+    Back button was the only way out, and under the rail no nav item lit up
+    either, so the chrome read as "nowhere"."""
+
+    def _body(self, seeded_app) -> str:
+        c = seeded_app["client"]
+        token = seeded_app["analyst_token"]
+        resp = c.get("/catalog/semantics", headers=_auth(token))
+        assert resp.status_code == 200
+        return resp.text
+
+    def test_topnav_back_link_returns_to_the_catalog(self, seeded_app):
+        # Topnav's own nav highlights Data Packages for any /catalog/* path,
+        # and the legacy Catalog page carries the card that links here.
+        body = self._body(seeded_app)
+        assert '<a class="sl-back" href="/catalog">' in body
+        assert "Data Packages" in body
+
+    def test_rail_back_link_returns_to_the_definitions_block(self, seeded_app, monkeypatch):
+        # /library is the rail's one browse surface and carries the block the
+        # reader clicked; /catalog is not in the rail nav at all. The ANCHOR is
+        # the point: the Definitions block closes /library below the whole
+        # inventory, so a bare /library returns them to the top of the page
+        # with everything they own between them and where they were.
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        body = self._body(seeded_app)
+        assert '<a class="sl-back" href="/library#lib-defs">' in body
+        assert '<a class="sl-back" href="/catalog">' not in body
+
+    def test_the_anchor_the_back_link_targets_exists_on_the_library(self, seeded_app, monkeypatch):
+        # A back link into an id no page emits is a link to the top of that
+        # page — indistinguishable from the bare /library it replaced, and
+        # silently so. Pin the two ends together.
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        # The block renders under `if definitions_footer` — set only when the
+        # caller can see at least one metric or term, which is also the only
+        # state in which they could have clicked through from it.
+        _make_metric()
+        c = seeded_app["client"]
+        token = seeded_app["analyst_token"]
+        lib = c.get("/library", headers=_auth(token))
+        assert lib.status_code == 200
+        assert 'id="lib-defs"' in lib.text
+
+    def test_rail_highlights_library_while_on_this_page(self, seeded_app, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        body = self._body(seeded_app)
+        # The Library rail item carries `on` — the same active class the rail
+        # gives /library itself.
+        assert 'class="rail-i on" href="/library" id="nav-artefacts"' in body
+
+
 class TestCatalogSemanticsDetailRendering:
     """The expanded detail renders the full definition (description as
     sanitized markdown, a type/unit/grain meta line, and dimensions), and
@@ -326,6 +381,47 @@ class TestCatalogSemanticsDetailRendering:
         assert 'href="javascript:' not in body
         assert "<script>alert(2)</script>" not in body
 
+    def test_html_blob_description_does_not_leak_tags_into_the_preview(self, seeded_app):
+        """A metric imported from OpenMetadata stores rich HTML in the same
+        column a hand-authored one uses for markdown. Rendered as pure
+        markdown, the blob was escaped into entities — leaving the tag-strip
+        nothing to remove — and then unescaped back, so the analyst read the
+        characters `<p><strong>` in the preview."""
+        import re
+
+        _make_metric(
+            description="<p><strong>Live Deals</strong> - deals currently live.</p>",
+            source="keboola_semantic_layer",
+        )
+        body = self._page(seeded_app)
+        m = re.search(r'<div class="sl-row__desc">([^<]*)</div>', body)
+        assert m, "plain-text preview div missing"
+        preview = m.group(1)
+        assert "Live Deals - deals currently live." in preview
+        assert "&lt;" not in preview and "&gt;" not in preview
+
+    def test_html_blob_description_renders_as_markup_in_the_detail(self, seeded_app):
+        """Same input, other projection: the detail shows bold text rather
+        than the literal characters of the tag."""
+        _make_metric(
+            description="<p><strong>Live Deals</strong> - deals currently live.</p>",
+            source="keboola_semantic_layer",
+        )
+        body = self._page(seeded_app)
+        assert "<strong>Live Deals</strong>" in body
+        assert "&lt;strong&gt;" not in body
+
+    def test_html_blob_description_is_still_sanitized(self, seeded_app):
+        """Accepting HTML from the source widens what is displayed, never
+        what is allowed — the nh3 allowlist is the same one."""
+        _make_metric(
+            description='<p onclick="steal()">hi</p><script>alert(3)</script>',
+            source="keboola_semantic_layer",
+        )
+        body = self._page(seeded_app)
+        assert "onclick" not in body
+        assert "alert(3)" not in body
+
     def test_meta_line_shows_type_unit_grain_and_dimensions(self, seeded_app):
         _make_metric(
             type="ratio",
@@ -351,3 +447,103 @@ class TestCatalogSemanticsDetailRendering:
         idx = m.group(1)
         assert "average order value" in idx
         assert "aov" in idx
+
+
+class TestCatalogSemanticsSidebarLayout:
+    """#1207: a bare `nav { display: flex; … }` in style-custom.css was
+    written for the header's primary nav but applied to every `<nav>` in the
+    app, including `.sl-cat-nav` here — turning the category list into a
+    horizontal row that got clipped by `.sl-sidebar-body`'s `overflow:
+    hidden`, so a populated semantic layer's sidebar rendered blank. Static
+    CSS check (no `seeded_app`) so it stays independent of the page's actual
+    render."""
+
+    def test_sl_cat_nav_declares_block_layout(self):
+        import re
+        from pathlib import Path
+
+        css = (Path("app/web/templates/catalog_semantics.html")).read_text(encoding="utf-8")
+        m = re.search(r"\.sl-cat-nav\s*\{([^}]*)\}", css)
+        assert m, ".sl-cat-nav rule not found in catalog_semantics.html"
+        body = m.group(1)
+        assert re.search(r"display\s*:\s*block\b", body), (
+            ".sl-cat-nav must declare `display: block` so its category buttons "
+            "stack vertically instead of inheriting the global `nav` flex-row layout"
+        )
+
+
+def test_every_heading_the_allowlist_admits_is_styled_in_the_detail():
+    """A preserved tag with no rule falls back to the browser default.
+
+    The `html_source` allowlist keeps `h1`/`h5`/`h6` because dropping them
+    fused the sections they separated. But `.sl-detail__desc` styled only
+    `h2, h3`, so an imported `<h1>` rendered at ~2em with large margins inside
+    a compact metric row — and out-shouted the page's own `<h1>Semantic
+    layer</h1>` in the document outline. Preserving structure and sizing it
+    are two halves of the same change.
+    """
+    from pathlib import Path
+
+    import app.markdown_render as mr
+
+    tpl = Path("app/web/templates/catalog_semantics.html").read_text(encoding="utf-8")
+    admitted = {
+        t for t in (mr._ALLOWED_TAGS | mr._HTML_SOURCE_EXTRA_TAGS) if len(t) == 2 and t[0] == "h" and t[1].isdigit()
+    }
+    assert admitted, "expected the allowlists to admit heading tags"
+    missing = [h for h in sorted(admitted) if f".sl-detail__desc {h}" not in tpl]
+    assert not missing, (
+        f"headings admitted by the allowlist but unstyled in .sl-detail__desc: {missing} — "
+        "they will render at browser-default size inside a compact metric row"
+    )
+
+
+class TestCatalogSemanticsDetailCompleteness:
+    """Every stored field of a metric definition reaches the detail.
+
+    The four below were carried by `metric_definitions` and by the importer but
+    never rendered, so the page showed a metric's *generated* SQL while hiding
+    the upstream `expression` it was composed from — the field an analyst opens
+    the detail to read.
+    """
+
+    def _page(self, seeded_app) -> str:
+        c = seeded_app["client"]
+        resp = c.get("/catalog/semantics", headers=_auth(seeded_app["analyst_token"]))
+        assert resp.status_code == 200
+        return resp.text
+
+    def test_expression_is_shown(self, seeded_app):
+        """The Keboola semantic-layer import stores it on every metric it
+        writes (connectors/keboola/semantic_layer.py), and eleven of the
+        bundled YAML metrics carry one."""
+        _make_metric(expression="SUM(mrr_amount) / COUNT(DISTINCT account_id)")
+        body = self._page(seeded_app)
+        assert "SUM(mrr_amount) / COUNT(DISTINCT account_id)" in body
+
+    def test_time_column_is_shown(self, seeded_app):
+        _make_metric(time_column="billing_date")
+        assert "billing_date" in self._page(seeded_app)
+
+    def test_filters_are_shown(self, seeded_app):
+        _make_metric(filters=["status = 'active'", "region IS NOT NULL"])
+        body = self._page(seeded_app)
+        assert "status = &#39;active&#39;" in body
+        assert "region IS NOT NULL" in body
+
+    def test_sql_variants_are_shown(self, seeded_app):
+        """Stored as a dict of variant name -> SQL; each needs its own labelled
+        block, not a dumped repr."""
+        _make_metric(sql_variants={"quarter": "SELECT 1 AS quarterly", "region": "SELECT 2 AS by_region"})
+        body = self._page(seeded_app)
+        assert "quarter" in body and "SELECT 1 AS quarterly" in body
+        assert "region" in body and "SELECT 2 AS by_region" in body
+        assert "{&#39;quarter&#39;:" not in body, "rendered as a python repr rather than per-variant blocks"
+
+    def test_a_metric_without_them_renders_no_empty_labels(self, seeded_app):
+        """Every one is optional — absent fields must not leave dangling
+        headings behind."""
+        _make_metric()
+        body = self._page(seeded_app)
+        for label in ("Expression", "Time column", "Filters", "Variants"):
+            assert f"<strong>{label}</strong>" not in body

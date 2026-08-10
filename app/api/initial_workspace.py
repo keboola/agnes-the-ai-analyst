@@ -190,6 +190,15 @@ def _write_section(patch: dict) -> dict:
 
         tmp_path = config_path.with_suffix(config_path.suffix + ".tmp")
         tmp_path.write_text(yaml.dump(overlay_payload, default_flow_style=False, sort_keys=False))
+        # 0600 on the TEMP file, before the rename — see the server-config
+        # editor in app/api/admin.py. `write_text` creates the temp at the
+        # process umask and `os.replace` carries that mode onto the
+        # destination, so without this a save here would hand the whole
+        # overlay — database url with its password inline, connector
+        # credentials — back to every uid on the shared data volume, undoing
+        # the lockdown for the file's entire lifetime rather than for an
+        # instant.
+        os.chmod(tmp_path, 0o600)
         os.replace(tmp_path, config_path)
         logger.info(
             "initial-workspace: wrote `initial_workspace:` section to %s",
@@ -235,6 +244,10 @@ def _drop_section() -> bool:
         overlay_payload.pop("initial_workspace", None)
         tmp_path = config_path.with_suffix(config_path.suffix + ".tmp")
         tmp_path.write_text(yaml.dump(overlay_payload, default_flow_style=False, sort_keys=False))
+        # 0600 before the rename — see `_write_section` above. Clearing the
+        # section rewrites the whole overlay, so this path relaxes the mode
+        # just as thoroughly as saving one.
+        os.chmod(tmp_path, 0o600)
         os.replace(tmp_path, config_path)
         reset_cache()
         return True
@@ -685,17 +698,12 @@ def _compute_render_dry_run() -> dict:
                     "by the install guide and read via `agnes init "
                     "--token-file`)"
                 )
-                if (
-                    source == "iwt"
-                    and bound_git_path == _CANONICAL_INSTALL_TEMPLATE
-                ):
+                if source == "iwt" and bound_git_path == _CANONICAL_INSTALL_TEMPLATE:
                     summary["errors"].append(msg)
                     summary["ok"] = False
                 else:
                     summary["warnings"].append(
-                        msg
-                        + " (warning only: the install prompt does not "
-                        "currently render this file)"
+                        msg + " (warning only: the install prompt does not currently render this file)"
                     )
         elif is_configured():
             # IWT configured but neither tier has the file — that's the
@@ -713,10 +721,7 @@ def _compute_render_dry_run() -> dict:
         # scan above never inspects such a file even though it is the one
         # analysts actually get. Scan the bound file too, same escalation
         # rule: hard error only for operator-synced (IWT) content.
-        if (
-            bound_git_path is not None
-            and bound_git_path != _CANONICAL_INSTALL_TEMPLATE
-        ):
+        if bound_git_path is not None and bound_git_path != _CANONICAL_INSTALL_TEMPLATE:
             bound_file = resolve_seed_file(bound_git_path)
             if bound_file is not None and "{token}" in bound_file[0]:
                 msg = (
@@ -731,9 +736,7 @@ def _compute_render_dry_run() -> dict:
                     summary["ok"] = False
                 else:
                     summary["warnings"].append(
-                        msg
-                        + " (warning only: resolved from the bundled seed, "
-                        "not the operator's synced clone)"
+                        msg + " (warning only: resolved from the bundled seed, not the operator's synced clone)"
                     )
 
         # Manifest tier — same resolution, scoped to connector-*/SKILL.md.

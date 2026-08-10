@@ -41,14 +41,21 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from app.auth.access import is_user_admin
+from app.auth.access import is_user_admin, require_agent_profiles_enabled
 from app.auth.dependencies import get_current_user
 from app.resource_types import ResourceType
 from src.repositories import agents_repo, resource_grants_repo
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/agents", tags=["agents"])
+router = APIRouter(
+    prefix="/api/agents",
+    tags=["agents"],
+    # Same instance-level kill switch as the five /api/v1 agent routers —
+    # this builder CRUD API works the same `agents` table, so leaving it
+    # open would let a disabled instance keep managing agent profiles.
+    dependencies=[Depends(require_agent_profiles_enabled)],
+)
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _RT = ResourceType.AGENT.value

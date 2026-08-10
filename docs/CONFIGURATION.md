@@ -73,12 +73,15 @@ Set the env var in `.env`/Terraform, or the YAML path in `instance.yaml`.
 | Product brand string (hero copy, CTAs, setup script) | `AGNES_INSTANCE_BRAND` | `instance.brand` | `Agnes` | `get_instance_brand()` |
 | Short brand for mid-sentence body copy; when it differs from the full brand, the `/home` hero appends "Call me {short}." | `AGNES_INSTANCE_BRAND_SHORT` | `instance.brand_short` | derived (= `instance.brand`) | `get_instance_brand_short()` |
 | Inline `<svg>` logo for the header brand slot | `AGNES_INSTANCE_LOGO_SVG` | `instance.logo_svg` | `""` (text brand) | `get_instance_logo_svg()` |
-| UI theme/palette (`blue`/`navy`/`dark`/`auto`/`paper`) | `AGNES_INSTANCE_THEME` | `instance.theme` | `blue` | `get_instance_theme()` |
-| Chrome layout (`topnav` = horizontal header, `rail` = fixed left sidebar) | `AGNES_UI_LAYOUT` | `instance.ui_layout` | `topnav` | `get_ui_layout()` |
+| Experience preset (`classic`/`redesign`) — flips the DEFAULTS of `instance.ui_layout`, `instance.theme` and `features.stack_auto_membership`; per-knob settings win | `AGNES_INSTANCE_EXPERIENCE` | `instance.experience` | `classic` | `get_experience()` |
+| UI theme/palette (`blue`/`navy`/`dark`/`auto`/`paper`) | `AGNES_INSTANCE_THEME` | `instance.theme` | `blue` (`paper` under `experience: redesign`) | `get_instance_theme()` |
+| Chrome layout (`topnav` = horizontal header, `rail` = fixed left sidebar) | `AGNES_UI_LAYOUT` | `instance.ui_layout` | `topnav` (`rail` under `experience: redesign`) | `get_ui_layout()` |
+| Stack membership mode (off = classic subscribe model, on = auto-membership) | `AGNES_STACK_AUTO_MEMBERSHIP` | `features.stack_auto_membership` | `false` (`true` under `experience: redesign`) | `get_stack_auto_membership()` |
 | Analyst workspace folder name (`~/<name>`) | `AGNES_WORKSPACE_DIR_NAME` | `instance.workspace_dir` | derived from brand (non-alphanumerics stripped) | `get_workspace_dir_name()` |
 | Operator-injected HTML/JS blocks (analytics, widgets) | — | `instance.custom_scripts` | `[]` | `get_custom_scripts()` |
 | Hide individual `/login` feature cards (keys: `data`, `marketplace`, `mcp`, `memory`, `anywhere`; list or comma-string) | `AGNES_INSTANCE_HIDE_LOGIN_FEATURES` | `instance.hide_login_features` | `""` (nothing hidden) | `get_hidden_login_features()` |
 | Expose the authoring Studio (`/admin/studio*` incl. the admin moderation queue, plus the public suggestion API). `false` hides the nav/palette entries, redirects the routes home, and 403s the suggestion API | `AGNES_STUDIO_ENABLED` | `studio.enabled` | `true` | `get_studio_enabled()` |
+| Expose agent profiles (`/agents` builder, `/api/v1/agents*` management + runtime API, `agnes agent`/`agnes chat` CLI). `false` hides the nav/palette entries, redirects `/agents` home, and 403s the API with `agent_profiles_disabled`; internal mechanisms (default-agent seeding, chat attribution, broker agent policy) keep running and data survives re-enabling. Deliberately not writable via the `/admin/server-config` editor — set the env var (or hand-edit the static `instance.yaml`) and restart | `AGNES_AGENT_PROFILES_ENABLED` | `agent_profiles.enabled` | `true` | `get_agent_profiles_enabled()` |
 | Legacy theme block (colors/fonts) | — | `theme` | `{}` | `get_theme()` |
 
 ### Onboarding & `/home`
@@ -87,6 +90,7 @@ Set the env var in `.env`/Terraform, or the YAML path in `instance.yaml`.
 |------|--------------|----------------------|---------|----------|
 | Landing route after auth (`/home` vs `/dashboard`) | `AGNES_HOME_ROUTE` | `instance.home_route` | `/dashboard` | `get_home_route()` |
 | Offer the org-verification axis on the store/marketplace (Verify / Request changes / Request verification + the Verified marker). Off means the whole vocabulary is hidden — publisher attribution still carries accountability — and every user-authored item stays at Community with no admin action able to move it. | `AGNES_STORE_VERIFICATION_ENABLED` | `store.verification_enabled` | `true` | `get_store_verification_enabled()` |
+| Require an MCP source's `url` to be https to a public, resolvable address. Off by default, which is **not** unguarded: link-local/metadata, multicast and reserved addresses, and cleartext http to a public address, are refused either way. What the default permits is a source on an internal address — an organization's own tool server, a developer's localhost — because those are ordinary deployments. Turn on for instances that only ever talk to third-party MCP services; it makes an intranet source unconfigurable. | `AGNES_MCP_SOURCE_URL_STRICT` | `mcp.source_url_strict` | `false` | `get_mcp_source_url_strict()` |
 | Show the "turn on auto-accept mode" install block | `AGNES_HOME_SHOW_AUTOMODE` | `instance.home.show_automode` | `true` | `get_home_automode_visibility()` |
 | Show the homepage status frame (sync/sessions/tokens) | `AGNES_HOME_SHOW_STATUS_FRAME` | `instance.home.show_status_frame` | `true` | `get_home_status_frame_visibility()` |
 | Operator-authored Overview HTML on `/home` | `AGNES_INSTANCE_OVERVIEW` | `instance.overview` | `""` (hidden) | `get_instance_overview()` |

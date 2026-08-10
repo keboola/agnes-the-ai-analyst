@@ -69,11 +69,23 @@
      data-id="{{ entry.id }}"
      data-requirement="{{ entry.requirement|default('available') }}"
      data-status="{{ _status }}"
-     data-in-stack="{{ '1' if entry.in_stack else '0' }}">
+     data-in-stack="{{ '1' if entry.in_stack else '0' }}"
+     {# Exposed to JS, not only to this template: the flag decides what a
+        REMOVAL means. Where `in_stack` is the local-copy state, removing
+        drops the download and the resource stays in the stack — so the
+        card must stay in the My Stack grid and be re-labelled, not
+        deleted. Where the key still means membership, removing takes it
+        out of the stack and deleting the card is right. #}
+     data-in-stack-is-local="{{ '1' if entry.in_stack_is_local else '0' }}">
   {% if entry.requirement == 'required' %}
     <div class="stack-card__req-badge" title="Required by your organization">Required</div>
   {% elif entry.in_stack %}
-    <div class="stack-card__req-badge stack-card__req-badge--instack" title="In your stack">In stack</div>
+    {# #1206: `in_stack` carries the local-download state on any projection that
+       sets `in_stack_is_local` (see _data_package_entry_dict). Same key, two
+       meanings — so the wording follows the flag rather than the key name.
+       Projections that never re-pointed it omit the flag and read as before. #}
+    <div class="stack-card__req-badge stack-card__req-badge--instack"
+         title="{{ 'A local copy is downloaded' if entry.in_stack_is_local else 'In your stack' }}">{{ 'Downloaded' if entry.in_stack_is_local else 'In stack' }}</div>
   {% endif %}
 
   {# v113: the STORED trust claim, in icon form, beside the derived badges.
@@ -205,14 +217,14 @@
     {% if entry.requirement == 'required' %}
       <button class="stack-card__btn stack-card__btn--required" disabled
               title="Required by your organization — managed by admin">
-        In stack (required)
+        {{ 'Downloaded (required)' if entry.in_stack_is_local else 'In stack (required)' }}
       </button>
     {% elif entry.in_stack %}
       <button class="stack-card__btn stack-card__btn--remove"
-              data-action="remove" data-id="{{ entry.id }}">Remove</button>
+              data-action="remove" data-id="{{ entry.id }}">{{ 'Remove local copy' if entry.in_stack_is_local else 'Remove' }}</button>
     {% else %}
       <button class="stack-card__btn stack-card__btn--add"
-              data-action="add" data-id="{{ entry.id }}">+ Add to stack</button>
+              data-action="add" data-id="{{ entry.id }}">{{ 'Download locally' if entry.in_stack_is_local else '+ Add to stack' }}</button>
     {% endif %}
   </div>
 </div>

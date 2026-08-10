@@ -61,9 +61,34 @@ def test_build_profile_returns_chat_profile_with_matching_claude_md():
     row = _agent_row(system_prompt="You are a sales qualification assistant.\nAlways ask for budget.")
     profile = agent_profile.build_profile(row)
     assert isinstance(profile, ChatProfile)
-    assert profile.claude_md == row["system_prompt"]
+    # The persona leads — verbatim, and first, so nothing dilutes the
+    # authored framing ("You are ...").
+    assert profile.claude_md.startswith(row["system_prompt"])
     assert profile.slug == "agent-sales-helper"
     assert profile.skill_name == "agnes-agent-context"
+
+
+def test_build_profile_appends_data_access_rails():
+    """A persona replaces the workspace CLAUDE.md, so without this the
+    agent loses every pointer to `agnes catalog` and goes hunting for the
+    org's data in whatever other MCP servers its scope exposes."""
+    row = _agent_row(system_prompt="You write poems.")
+    profile = agent_profile.build_profile(row)
+    md = profile.claude_md
+    assert agent_profile.DATA_ACCESS_RAILS in md
+    # The discovery chain an agent needs to answer any data question.
+    for cmd in ("agnes catalog", "agnes schema", "agnes describe", "agnes query"):
+        assert cmd in md
+    # Metric definitions are canonical, never invented.
+    assert "agnes catalog --metrics" in md
+    # Depth is one command away rather than inlined.
+    assert "agnes skills show agnes-data-querying" in md
+
+
+def test_build_profile_rails_are_not_added_without_a_persona():
+    """No persona -> no materialized CLAUDE.md at all; the workspace rails
+    stay symlinked in. The floor must not resurrect a profile here."""
+    assert agent_profile.build_profile(_agent_row(system_prompt="")) is None
 
 
 def test_build_profile_skill_body_is_valid_skill_md():
@@ -372,7 +397,10 @@ def test_spawn_live_uses_dynamic_profile_when_agent_has_prompt(spawn_env):
         live = await mgr._spawn_live(s)
         try:
             claude_md = (live.session_dir / "CLAUDE.md").read_text(encoding="utf-8")
-            assert claude_md == "# Persona\nYou are a specialized persona."
+            assert claude_md.startswith("# Persona\nYou are a specialized persona.")
+            # The persona replaced the workspace rails — the data-access
+            # floor must have ridden along into the sandbox with it.
+            assert "agnes catalog" in claude_md
             skill_path = live.session_dir / ".claude" / "skills" / "agnes-agent-context" / "SKILL.md"
             assert skill_path.exists()
             assert "Persona Agent" in skill_path.read_text(encoding="utf-8")

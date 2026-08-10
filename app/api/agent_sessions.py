@@ -60,7 +60,7 @@ from pydantic import BaseModel, field_validator
 
 from app.api.agent_runtime import AgentRuntimePrincipal, require_agent_runtime_principal
 from app.api.agent_sse import SSE_TERMINAL_TYPES, frame_to_agui, sse_bytes
-from app.auth.access import can_access
+from app.auth.access import can_access, require_agent_profiles_enabled
 from app.auth.dependencies import _get_db, get_current_user
 from app.auth.pat_resolver import agent_id_from_request
 from app.auth.session_principal import PRINCIPAL_TYPES
@@ -77,7 +77,11 @@ from src.repositories import agent_artifacts_repo, agents_repo, chat_message_rep
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1", tags=["agent-sessions"])
+router = APIRouter(
+    prefix="/api/v1",
+    tags=["agent-sessions"],
+    dependencies=[Depends(require_agent_profiles_enabled)],
+)
 
 #: Per-session in-flight-turn lease. TTL is a ceiling only — the lease is
 #: released explicitly in the streaming generator's `finally` on every exit

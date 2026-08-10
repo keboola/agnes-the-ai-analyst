@@ -232,3 +232,66 @@ def test_run_sync_runs_materialized_pass_on_keboola_only_instance(
         "the bq_project gate in _run_sync would have skipped this entirely."
     )
     assert "kb_aggregated" in summary["materialized"]
+
+
+def test_sync_pass_heals_wizard_registered_row_with_doubled_bucket(
+    system_db, stub_bq, tmp_path, monkeypatch
+):
+    """Full chain on a row shaped exactly as the pre-fix Data-sources wizard
+    wrote it: source_table carries the FULL Keboola id alongside `bucket`.
+
+    Composing `{bucket}.{source_table}` then produced
+    `in.c-sales.in.c-sales.orders` — a nonexistent upstream id, so every
+    export 404'd and the table never materialized. Unlike the sibling
+    dispatch tests, this one runs the REAL materialize_query and only stubs
+    the Storage API client, so the assertion is on the export id that would
+    actually go on the wire.
+    """
+    repo = TableRegistryRepository(system_db)
+    repo.register(
+        id="orders", name="orders",
+        source_type="keboola", query_mode="materialized",
+        bucket="in.c-sales",
+        source_table="in.c-sales.orders",  # legacy wizard shape
+        sync_schedule="every 1m",  # always due
+    )
+
+    monkeypatch.setenv("KEBOOLA_STORAGE_TOKEN", "fake-token")
+    from app.api import sync as sync_mod
+
+    def _fake_get_value(*keys, default=None):
+        if keys == ("data_source", "keboola", "stack_url"):
+            return "https://connection.example.com/"
+        if keys == ("data_source", "keboola", "token_env"):
+            return "KEBOOLA_STORAGE_TOKEN"
+        return default
+
+    def _write_parquet(dest: Path) -> None:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        safe = str(dest).replace("'", "''")
+        c = duckdb.connect()
+        try:
+            c.execute(f"COPY (SELECT 1 AS id) TO '{safe}' (FORMAT PARQUET)")
+        finally:
+            c.close()
+
+    fake_client = MagicMock()
+    fake_client.prepare_export.side_effect = lambda table_id, **kw: {
+        "job_id": 1, "file_id": 2, "rows": 1,
+        "file_info": {"id": 2, "url": "https://fake/x", "isSliced": False},
+        "file_type": "parquet",
+    }
+    fake_client.download_file.side_effect = lambda file_info, dest_path: (
+        _write_parquet(Path(dest_path)) or Path(dest_path)
+    )
+
+    with patch("app.instance_config.get_value", _fake_get_value), \
+         patch("connectors.keboola.storage_api.KeboolaStorageClient", return_value=fake_client):
+        summary = sync_mod._run_materialized_pass(system_db, stub_bq)
+
+    assert summary["errors"] == []
+    assert "orders" in summary["materialized"]
+    export_id = fake_client.prepare_export.call_args.args[0]
+    assert export_id == "in.c-sales.orders", (
+        f"export id was {export_id!r} — the bucket prefix must not be doubled"
+    )

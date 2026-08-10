@@ -341,6 +341,22 @@ class StorageApiError(RuntimeError):
         self.body = body
 
 
+def normalize_source_table(bucket: str, source_table: str) -> str:
+    """Return the bare in-bucket table name for ``source_table``.
+
+    The registry contract stores the bucket id and the bare table name in
+    separate columns; export paths compose ``f"{bucket}.{source_table}"``.
+    Rows registered by the pre-fix Data-sources wizard (#755 era) stored the
+    FULL Keboola table id (``<bucket>.<table>``) in ``source_table``, so the
+    composition doubled the bucket prefix and every export targeted a
+    nonexistent table id. Stripping a leading ``<bucket>.`` heals those rows
+    at use — unambiguous because Keboola table names cannot contain dots.
+    """
+    if bucket and source_table and source_table.startswith(bucket + "."):
+        return source_table[len(bucket) + 1 :]
+    return source_table
+
+
 class KeboolaStorageClient:
     """Thread-safe Storage API client for table export.
 
@@ -433,8 +449,18 @@ class KeboolaStorageClient:
         `isMasterToken`, `bucketPermissions`, `owner`. Used by the
         semantic-layer importer's master-token preflight check (the
         Metastore API requires a master token; see
-        connectors/keboola/semantic_layer.py:require_master_token)."""
+        connectors/keboola/semantic_layer.py:require_master_token) and by
+        the admin table-picker's bucket-scoped-token fallback listing."""
         return self._get("/tokens/verify")
+
+    def get_bucket(self, bucket_id: str) -> dict:
+        """GET /v2/storage/buckets/{bucket_id} — single bucket metadata.
+
+        Works with bucket-scoped (custom access) tokens for the buckets they
+        can read; the admin table-picker's fallback listing uses it to render
+        bucket name/stage when the project-wide ``/buckets`` listing is not
+        available to the token."""
+        return self._get(f"/buckets/{bucket_id}")
 
     # ---- discovery: buckets + tables ---------------------------------------
     #

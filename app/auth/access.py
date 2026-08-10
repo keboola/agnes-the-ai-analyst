@@ -496,6 +496,36 @@ def require_admin(
     return user
 
 
+def require_agent_profiles_enabled() -> None:
+    """Dependency: 403 the whole request when the instance-level Agent
+    profiles toggle is off.
+
+    Mounted as a router-level ``dependencies=[...]`` entry (not per-endpoint)
+    on all five agent routers (``agents_admin``, ``agent_runtime``,
+    ``agent_sessions``, ``agent_webhooks``, ``agent_memory``) — the entire
+    ``/api/v1/agents*`` + ``/api/v1/sessions*`` HTTP surface closes at once,
+    same "close the whole surface" posture as Studio's
+    ``get_studio_enabled()`` guard. Covers the CLI for free: `agnes agent`
+    and `agnes chat` are pure clients of this API.
+
+    Does NOT gate the in-process mechanisms a disabled instance must keep
+    running — default-agent seeding, chat attribution to the default agent,
+    the broker's agent policy — none of those call through these routers.
+    One broker-replayed call DOES land here: the in-sandbox "remember" tool
+    (``POST /api/v1/sessions/{id}/memories`` on ``agent_memory``). That is
+    intended — memory notebooks are agent-profile surface — and the sandbox
+    prompt stops advertising the tool when the flag is off
+    (``app.chat.agent_profile``), so a well-behaved agent never hits the 403.
+    """
+    from app.instance_config import get_agent_profiles_enabled
+
+    if not get_agent_profiles_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"kind": "agent_profiles_disabled"},
+        )
+
+
 def require_resource_access(
     resource_type: ResourceType,
     path_template: str,
@@ -645,10 +675,16 @@ def mint_session_jwt(user_email: str, chat_id: str, *, ttl_seconds: int = 3600) 
     dependency (app/auth/pat_resolver.py calls UserRepository.get_by_id on
     the ``sub`` claim), so ``sub`` MUST be the user's UUID — not the email.
 
-    Secret is read from the ``JWT_SECRET_KEY`` environment variable —
-    the same key used by the rest of the auth layer (see app/auth/jwt.py).
+    Encoded with the canonical auth secret (app/auth/jwt) so verify_token
+    decodes it in every env — same contract as ``mint_co_session_jwt``. Not a
+    bare ``JWT_SECRET_KEY`` env read: that skips the fail-closed resolver,
+    signs with the committed dev constant when the var is unset, and under
+    local dev misses the auto-generated key (never exported to the env) that
+    the verifier actually holds.
     """
     import jwt  # PyJWT — already a project dependency
+
+    from app.auth.jwt import ALGORITHM, get_signing_secret
     from src.repositories import users_repo
 
     # Factory-routed: honors use_pg() so a Postgres instance reads the live
@@ -667,11 +703,7 @@ def mint_session_jwt(user_email: str, chat_id: str, *, ttl_seconds: int = 3600) 
         "chat_session_id": chat_id,
         "email": user_email,
     }
-    secret = os.environ.get(
-        "JWT_SECRET_KEY",
-        "test-jwt-secret-key-minimum-32-chars!!",
-    )
-    return jwt.encode(payload, secret, algorithm="HS256")
+    return jwt.encode(payload, get_signing_secret(), algorithm=ALGORITHM)
 
 
 def mint_co_session_jwt(session_id: str, *, ttl: int = 3600) -> str:

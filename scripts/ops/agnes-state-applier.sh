@@ -150,8 +150,12 @@ for f in os.listdir(d):
         tmp = p + ".tmp"
         with open(tmp, "w") as fh:
             json.dump(data, fh, indent=2)
+        # H2-NEW: the tmp inherits umask 0644, so it needs 0600 — applied
+        # HERE rather than to `p` after the rename, which would leave the
+        # job file (its error messages can quote a database url) observable
+        # at the umask default for the window between the two calls.
+        os.chmod(tmp, 0o600)
         os.replace(tmp, p)
-        os.chmod(p, 0o600)  # H2-NEW: tmp inherited umask 0644; restore 0600.
         continue
     candidates.append((os.path.getmtime(p), p))
 candidates.sort()
@@ -164,22 +168,37 @@ fi
 update_job() {
     # Set status + optional error.message on a job file. Atomic via
     # tmp+rename so the API endpoint never reads half-written JSON.
-    local file=$1 status=$2 error=${3:-}
-    python3 - <<PY "$file" "$status" "$error"
+    #
+    # A 4th argument of "append" keeps whatever message is already on the
+    # job and adds this one after it. The default REPLACES, which is right
+    # for the first terminal write but destroys evidence on a second: a
+    # migration that failed and whose rollback then also failed would end up
+    # recording only the rollback, and the operator would have to go to
+    # journalctl to find out why the migration failed at all.
+    local file=$1 status=$2 error=${3:-} mode=${4:-replace}
+    python3 - <<PY "$file" "$status" "$error" "$mode"
 import json, os, sys
-p, status, err = sys.argv[1], sys.argv[2], sys.argv[3]
+p, status, err, mode = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 with open(p) as fh:
     data = json.load(fh)
 data["status"] = status
 if err:
     data.setdefault("error", {})
-    data["error"]["message"] = err
+    prev = data["error"].get("message") or ""
+    if mode == "append" and prev and err not in prev:
+        data["error"]["message"] = f"{prev} | {err}"
+    else:
+        data["error"]["message"] = err
     data["error"].setdefault("step", data.get("current_step", "unknown"))
 tmp = p + ".tmp"
 with open(tmp, "w") as fh:
     json.dump(data, fh, indent=2)
+# H2-NEW: the tmp inherits umask 0644, so it needs 0600 — applied
+# HERE rather than to `p` after the rename, which would leave the
+# job file (its error messages can quote a database url) observable
+# at the umask default for the window between the two calls.
+os.chmod(tmp, 0o600)
 os.replace(tmp, p)
-os.chmod(p, 0o600)  # H2-NEW: tmp inherited umask 0644; restore 0600.
 PY
 }
 
@@ -203,9 +222,32 @@ import os, sys, yaml
 path, backend, url = sys.argv[1], sys.argv[2], sys.argv[3]
 existing = {}
 if os.path.exists(path):
+    # A read that fails must NOT fall through to `existing = {}`: the whole
+    # point of this branch is to carry the operator's non-database sections
+    # (logging, auth providers, feature flags) across a backend switch, and
+    # an empty `existing` rewrites the file with only `database:` — the exact
+    # destruction the heredoc approach was replaced for. A malformed file is
+    # still recoverable that way, so YAMLError keeps the old behaviour; a
+    # file we are not allowed to READ is not, and became possible only once
+    # instance.yaml went 0600, so it aborts and leaves the file alone.
     try:
         existing = yaml.safe_load(open(path).read()) or {}
-    except Exception:
+    except OSError as exc:
+        sys.exit(
+            f"refusing to rewrite {path}: cannot read it ({exc}). "
+            "The file is 0600; check that this process runs as its owner. "
+            "Rewriting from an empty base would drop every operator-set "
+            "section."
+        )
+    except (yaml.YAMLError, UnicodeDecodeError):
+        # UnicodeDecodeError is a ValueError, so it reaches neither the OSError
+        # arm above nor this one unless it is named — and it is the shape a
+        # partial write actually produces. Left to propagate it exits non-zero,
+        # which the caller now reads as a refused rollback and answers by
+        # leaving app+scheduler down with nothing to bring them back. Garbled
+        # bytes are a malformed file, same as unparseable YAML: recoverable by
+        # rewriting, so they take the lenient path. Mirrors the split in
+        # app/instance_config.py.
         existing = {}
 db = dict(existing.get("database") or {})
 db["backend"] = backend
@@ -217,11 +259,25 @@ existing["database"] = db
 tmp = path + ".tmp"
 with open(tmp, "w") as f:
     yaml.safe_dump(existing, f, default_flow_style=False, sort_keys=True)
+# 0600 on the TEMP file, before the rename — os.replace is atomic and
+# carries the temp's mode, so the real path is never observable at the
+# umask default. Chmodding the destination afterwards leaves a window on
+# a file that holds the database url with its password inline.
+os.chmod(tmp, 0o600)
 os.replace(tmp, path)
-os.chmod(path, 0o600)
 PY
+        # Propagate the writer's exit status instead of `return` (which would
+        # discard it). The abort above only protects the file if the caller
+        # can tell the write did not happen — otherwise the state machine logs
+        # a backend flip that never reached disk. Callers that already tolerate
+        # a failed write keep their `|| true`.
+        local rc=$?
+        if [ "$rc" -ne 0 ]; then
+            logger -t agnes-state-applier "write_instance_yaml: refused to rewrite $path (rc=$rc) — see stderr"
+            return "$rc"
+        fi
         chown agnes-applier:agnes-applier "$path" 2>/dev/null || true
-        return
+        return 0
     fi
     # Pure-bash fallback. H4-NEW — preserves the database section only;
     # any non-database top-level keys are LOST. Provisioning should
@@ -290,13 +346,36 @@ _recover_stuck_jobs() {
         # Empty source_url is correct for duckdb sources — write_instance_yaml
         # handles that by dropping the url key.
         if [ -n "$source_backend" ]; then
-            write_instance_yaml "$source_backend" "$source_url" || true
+            # The `|| true` is kept so one unrecoverable job cannot abort the
+            # sweep over the others — but the failure is no longer discarded.
+            # instance.yaml still names the transient `*_in_progress` here, and
+            # `use_pg()` counts both transients as Postgres, so restarting a
+            # duckdb-source instance on it points the app at the database the
+            # crashed migration never finished filling. An empty database that
+            # accepts writes is indistinguishable from a healthy one, so the
+            # restart below is withheld instead.
+            if write_instance_yaml "$source_backend" "$source_url"; then
+                :
+            else
+                # Its OWN flag, not the one step 4 reads. Shell variables have
+                # no function scope here, so setting the shared one leaked this
+                # decision into the rest of the tick: a pending job could then
+                # migrate successfully — the migrator writes the target backend
+                # itself, from its own container, before `mark_success` — and
+                # step 4 would still refuse to restart on a stale marker,
+                # leaving a perfectly completed migration with the app down.
+                # The two gates answer different questions about different
+                # writes and must not share state.
+                RECOVERY_SKIP_RESTART=1
+                update_job "$job_path" "failed" "instance.yaml rollback was ALSO refused — backend left at the in-progress value; app+scheduler deliberately NOT restarted" append
+                logger -t agnes-state-applier "Stuck-job recovery for $job_path could not rewrite instance.yaml — backend still reads *_in_progress; app+scheduler left DOWN rather than started against a database the migration never filled. Repair instance.yaml (set database.backend to $source_backend) and start them by hand."
+            fi
         fi
         rm -f "$alive_path"
         recovered_any=1
     done
 
-    if [ "$recovered_any" -eq 1 ]; then
+    if [ "$recovered_any" -eq 1 ] && [ "${RECOVERY_SKIP_RESTART:-0}" != "1" ]; then
         # B3-NEW: After reverting instance.yaml to source state, restart
         # app + scheduler. The applier had stopped them before running
         # the migrator (line ~413 of this script). A SIGKILL/OOM/host-
@@ -310,6 +389,8 @@ _recover_stuck_jobs() {
         dc up -d --no-deps --force-recreate app scheduler 2>&1 \
             | logger -t agnes-state-applier || true
         set -e
+    elif [ "$recovered_any" -eq 1 ]; then
+        logger -t agnes-state-applier "Recovery restart WITHHELD — instance.yaml still names an in-progress backend; see the failure logged above"
     fi
 }
 
@@ -541,8 +622,31 @@ if [ "$FINAL_STATUS" = "pending" ] || [ -z "$FINAL_STATUS" ]; then
 fi
 
 if [ "$FINAL_STATUS" = "success" ]; then
-    write_instance_yaml "$TARGET_BACKEND" "$TARGET_URL"
-    logger -t agnes-state-applier "Migration job $JOB_ID succeeded — flipped instance.yaml backend to $TARGET_BACKEND"
+    # Only claim the flip if it reached disk. write_instance_yaml now refuses
+    # to rewrite a file it cannot read rather than rebuilding it from an empty
+    # base, so a failure here means the backend on disk is still the source —
+    # logging "flipped" would send an operator looking in the wrong place.
+    if write_instance_yaml "$TARGET_BACKEND" "$TARGET_URL"; then
+        logger -t agnes-state-applier "Migration job $JOB_ID succeeded — flipped instance.yaml backend to $TARGET_BACKEND"
+    else
+        # NOT marked failed, and the job status is deliberately left alone.
+        # This write is not the flip: the migrator itself calls
+        # `write_backend_state(target_state, url=target_url)` immediately
+        # before `mark_success` (scripts/db_state_migrator.py), so by the time
+        # FINAL_STATUS reads "success" instance.yaml ALREADY names the target
+        # — and it must, since that write goes to the same directory, so a
+        # migrator that could not write it would not have succeeded. What runs
+        # here is a normalization of `database.url` from the migrator's
+        # pinned-IP form back to the canonical hostname. Losing it leaves the
+        # instance on the right backend with a less friendly url, which is a
+        # working state; stamping the job "failed" over the migrator's own
+        # terminal status would report a completed migration as a failure and
+        # send the operator looking for data that moved perfectly well.
+        #
+        # $FLAG likewise stays at the TARGET lifecycle — the data is there and
+        # the side-car must keep running.
+        logger -t agnes-state-applier "Migration job $JOB_ID succeeded; instance.yaml url normalization FAILED — backend is $TARGET_BACKEND as the migrator left it, but database.url still carries the migrator's form rather than the canonical one. Job status left as success; repair the url by hand if it matters."
+    fi
 else
     logger -t agnes-state-applier "Migration job $JOB_ID failed — leaving backend on $SOURCE_BACKEND"
     # Roll the state machine back so the next /api/admin/db/state read
@@ -550,24 +654,66 @@ else
     # H8-NEW: also pass SOURCE_URL on the failed-migration path
     # so cloud-source rollbacks don't wipe the url. Same B4-class
     # outage class as the __rollback site.
-    write_instance_yaml "$SOURCE_BACKEND" "${SOURCE_URL:-}"
-    # Clear the lifecycle flag if the rollback lands on a non-PG state —
-    # otherwise the next applier tick would re-trigger the postgres
-    # lifecycle ("side-car-enabled" / "cloud-only") and leave an orphan
-    # agnes-postgres-1 container running with no data.
-    #
-    # B.3 — Both duckdb and cloud sources lack a side-car lifecycle
-    # need, so both must clear the flag on rollback. The asymmetric
-    # original (duckdb only) silently broke cloud→side_car DR rollback:
-    # instance.yaml said "cloud" but the flag still said
-    # "side-car-enabled", and the next tick re-enabled the postgres
-    # container. For source=side_car we keep the flag as-is because
-    # "side-car-enabled" is still the correct lifecycle.
-    case "$SOURCE_BACKEND" in
-        duckdb|cloud)
-            rm -f "$FLAG"
-            ;;
-    esac
+    # Guarded, not bare. This runs under `set -euo pipefail` with
+    # `trap '__rollback' ERR`, and write_instance_yaml can now exit
+    # non-zero, so a bare call would abort the script right here — before
+    # the flag handling below and before step 4 brings app+scheduler back
+    # up. A failed migration would then take the instance offline and stay
+    # there: `_recover_stuck_jobs` only repairs jobs still in status
+    # `running`, and this one is already `failed`. That is the exact
+    # outage class the comment above names, so the rollback path must be
+    # able to fail without stopping the recovery it exists to perform.
+    # One failure class must NOT be rolled back: the migrator raises
+    # BackendFlipNotVerified only AFTER the rows are on the target, and it
+    # deliberately leaves instance.yaml alone for exactly that reason. Writing
+    # the source back here would undo that decision one layer up and point the
+    # app at the old store while every row lives in the new one — recent data
+    # appearing to vanish, new writes landing in the stale database. Read the
+    # class the migrator recorded and honour it.
+    FAIL_CLASS=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print((d.get('error') or {}).get('class','') or '')" "$PENDING_JOB" 2>/dev/null || echo "")
+    if [ "$FAIL_CLASS" = "BackendFlipNotVerified" ]; then
+        SKIP_APP_RESTART=1
+        logger -t agnes-state-applier "Migration job $JOB_ID failed as BackendFlipNotVerified — the data IS on $TARGET_BACKEND and the migrator deliberately did not revert instance.yaml. Not reverting it here either, and not restarting app+scheduler: repair the overlay by hand, then start them."
+    elif write_instance_yaml "$SOURCE_BACKEND" "${SOURCE_URL:-}"; then
+        # Clear the lifecycle flag if the rollback lands on a non-PG state —
+        # otherwise the next applier tick would re-trigger the postgres
+        # lifecycle ("side-car-enabled" / "cloud-only") and leave an orphan
+        # agnes-postgres-1 container running with no data.
+        #
+        # B.3 — Both duckdb and cloud sources lack a side-car lifecycle
+        # need, so both must clear the flag on rollback. The asymmetric
+        # original (duckdb only) silently broke cloud→side_car DR rollback:
+        # instance.yaml said "cloud" but the flag still said
+        # "side-car-enabled", and the next tick re-enabled the postgres
+        # container. For source=side_car we keep the flag as-is because
+        # "side-car-enabled" is still the correct lifecycle.
+        case "$SOURCE_BACKEND" in
+            duckdb|cloud)
+                rm -f "$FLAG"
+                ;;
+        esac
+    else
+        # The rollback did not reach disk, so instance.yaml still names the
+        # transient `*_in_progress` backend. Leave the flag alone: clearing
+        # it would assert a lifecycle the file does not agree with, and the
+        # pair being consistent is what the next tick reads.
+        #
+        # And step 4 is SKIPPED here, which corrects an earlier reading of
+        # this branch. `use_pg()` counts SIDE_CAR_IN_PROGRESS and
+        # CLOUD_IN_PROGRESS as Postgres (src/repositories/__init__.py), so an
+        # overlay still naming the transient does not mean "the backend it
+        # was already using" — with a duckdb source it points the app at a
+        # Postgres that the failed migration never filled. Restarting into
+        # that is worse than staying down: an empty database that accepts
+        # writes is not a state anyone can tell apart from a healthy one.
+        # Everything the earlier fix was actually for still happens — the
+        # script does not abort mid-run, the flag handling ran, the job
+        # records both failures and the log says what to do. Only the restart
+        # is withheld, deliberately and out loud.
+        SKIP_APP_RESTART=1
+        update_job "$PENDING_JOB" "failed" "instance.yaml rollback was ALSO refused — backend left at the in-progress value; app+scheduler deliberately NOT restarted" append
+        logger -t agnes-state-applier "Migration job $JOB_ID failed and the instance.yaml rollback FAILED — backend still reads *_in_progress, which resolves to Postgres; app+scheduler left DOWN rather than started against the wrong store. Repair instance.yaml (set database.backend to $SOURCE_BACKEND) and start them by hand."
+    fi
 fi
 
 # 4. Bring the app back up. After-state app reads instance.yaml and
@@ -582,6 +728,10 @@ fi
 # machine already ran the migration on the HOST via `docker run` —
 # the in-compose migrate/data-migrate services are vestigial here and
 # must not be touched on each cycle.
+if [ "${SKIP_APP_RESTART:-0}" = "1" ]; then
+    logger -t agnes-state-applier "Skipping the app+scheduler restart — see the failure logged above; instance.yaml must be repaired first"
+    exit 1
+fi
 set +e
 RESTART_LOG=$(dc up -d --no-deps --force-recreate app scheduler 2>&1)
 RESTART_RC=$?

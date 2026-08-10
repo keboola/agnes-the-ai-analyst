@@ -247,7 +247,12 @@ def _derive_table(table: Dict[str, Any], package: Dict[str, Any]) -> Dict[str, A
     # fqn: explicit BigQuery fqn, else construct from bucket + source_table.
     fqn = table.get("bq_fqn")
     if not _clean(fqn) and _clean(table.get("bucket")) and _clean(table.get("source_table")):
-        fqn = f"{table['bucket']}.{table['source_table']}"
+        from connectors.keboola.storage_api import normalize_source_table
+
+        # Same prefix strip as every other composition of these two columns:
+        # a legacy row would otherwise scaffold `fqn: in.c-main.in.c-main.orders`.
+        _bare = normalize_source_table(table["bucket"], table["source_table"])
+        fqn = f"{table['bucket']}.{_bare}"
 
     # partition: bq cache is freshest; fall back to the registry columns.
     partition = bq.get("partition_by") or table.get("partition_col") or table.get("partition_by")

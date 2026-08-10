@@ -450,3 +450,18 @@ def test_context_skill_omits_remember_tool_when_mode_off():
     assert "Remember" not in body
     assert "$AGNES_SERVER" not in body
     assert "/api/v1/sessions/{session_id}/memories" not in body
+
+
+def test_context_skill_omits_remember_tool_when_agent_profiles_disabled(monkeypatch):
+    """The remember endpoint sits on the flag-guarded agent_memory router, so
+    with agent profiles disabled every call would 403 — the skill must not
+    advertise it, same posture as memory_write_mode='off'."""
+    import app.instance_config as ic
+
+    from app.chat.agent_profile import _context_skill
+
+    monkeypatch.setattr(ic, "get_agent_profiles_enabled", lambda: False)
+    row = {"id": "a1", "slug": "s", "name": "S", "memory_write_mode": "auto"}
+    body = _context_skill(row)
+    assert "Remember" not in body
+    assert "/api/v1/sessions/{session_id}/memories" not in body

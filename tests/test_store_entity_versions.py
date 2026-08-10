@@ -2875,6 +2875,14 @@ class TestItemDetailHeroPlaceholder:
     bespoke macOS-"window" hero + hardcoded initials placeholder.
     """
 
+    @pytest.fixture(autouse=True)
+    def _redesign_opt_in(self, monkeypatch):
+        """This class pins the REDESIGNED detail anatomy (#896's shared
+        scaffold), which a default instance no longer renders — topnav/blue
+        serves the frozen pre-redesign page via `_detail_template`
+        (tests/test_ui_layout_theme.py::TestDetailPageParity)."""
+        monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
+
     def test_flea_skill_hero_uses_shared_kind_scaffold(self, web_client):
         _, owner_cookies = _create_user(web_client, "heroinit@x.com")
         eid = _upload_clean(web_client, owner_cookies, name="sales-dashboard")
@@ -2895,15 +2903,25 @@ class TestDetailBackLink:
     """The detail-page back link is pinned to the top (above the review banner
     + versions card, not mid-page) and honors ?from=skills → Skill builder."""
 
+    @pytest.fixture(autouse=True)
+    def _redesign_opt_in(self, monkeypatch):
+        """This class pins the REDESIGNED detail anatomy (#896's shared
+        scaffold), which a default instance no longer renders — topnav/blue
+        serves the frozen pre-redesign page via `_detail_template`
+        (tests/test_ui_layout_theme.py::TestDetailPageParity)."""
+        monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
+
     def test_back_link_renders_above_versions_card(self, web_client):
         _, owner_cookies = _create_user(web_client, "backpos@x.com")
         eid = _upload_clean(web_client, owner_cookies, name="backpos")
         r = web_client.get(f"/marketplace/flea/{eid}", cookies=owner_cookies)
         assert r.status_code == 200
-        # Owner sees the versions card; the back link must render BEFORE it
-        # (top of page) rather than after it (the mid-page regression).
-        assert "detail-back" in r.text and "versions-card" in r.text
-        assert r.text.index("detail-back") < r.text.index("versions-card")
+        # Owner sees the version history (the shared side timeline under the
+        # scaffold anatomy — the blue-era `versions-card` include renders on
+        # no surface any more); the back link must render BEFORE it (top of
+        # page) rather than after it (the mid-page regression).
+        assert 'class="detail-back"' in r.text and ">Versions<" in r.text
+        assert r.text.index('class="detail-back"') < r.text.index(">Versions<")
 
     def test_from_skills_returns_to_skill_builder(self, web_client):
         _, owner_cookies = _create_user(web_client, "backfrom@x.com")
@@ -3061,17 +3079,30 @@ class TestDetailHeroOrdering:
     strip rendered above the hero, pushing the header of a freshly published
     skill below three other cards."""
 
+    @pytest.fixture(autouse=True)
+    def _redesign_opt_in(self, monkeypatch):
+        """This class pins the REDESIGNED detail anatomy (#896's shared
+        scaffold), which a default instance no longer renders — topnav/blue
+        serves the frozen pre-redesign page via `_detail_template`
+        (tests/test_ui_layout_theme.py::TestDetailPageParity)."""
+        monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
+
     @staticmethod
     def _assert_order(body: str) -> None:
         # Anchor on the markup, not the class name — the same names also
-        # appear in the page's <style> blocks.
+        # appear in the page's <style> blocks. The blue-era anchors
+        # (`detail-hero--paneled`, `owner-actions`, `versions-card`) belonged
+        # to the redesigned template's default-instance branch, which no
+        # surface renders any more (default serves the frozen pre-redesign
+        # page; see TestDetailPageParity) — the ordering contract lives on in
+        # the scaffold anatomy: back link, then the hero, then the owner's
+        # version history in the side rail.
         back = '<a class="detail-back"'
-        hero = '<div class="detail-hero detail-hero--paneled">'
-        strip = '<div class="owner-actions">'
-        versions = '<div class="versions-card">'
-        for marker in (back, hero, strip, versions):
+        hero = '<div class="detail-hero'
+        versions = ">Versions<"
+        for marker in (back, hero, versions):
             assert marker in body, marker
-        assert body.index(back) < body.index(hero) < body.index(strip) < body.index(versions)
+        assert body.index(back) < body.index(hero) < body.index(versions)
 
     def test_hero_renders_above_owner_strip(self, web_client):
         _, owner_cookies = _create_user(web_client, "heropos@x.com")

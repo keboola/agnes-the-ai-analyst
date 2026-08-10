@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
 
 from src.db import get_system_db
 
@@ -307,6 +308,14 @@ class TestNoGrantSubscribeBlocked:
 
 
 class TestSoftDowngradePreservesUserStack:
+    @pytest.fixture(autouse=True)
+    def _auto_membership_mode(self, monkeypatch):
+        """The no-fan-out contract below is AUTO-membership behavior, opt-in
+        since the classic subscribe model became the default again (spec
+        2026-08-07-default-chrome-ux-parity). The classic fan-out sibling is
+        TestSoftDowngradeClassicFanOut."""
+        monkeypatch.setenv("AGNES_STACK_AUTO_MEMBERSHIP", "1")
+
     def test_required_to_available_keeps_user_stack(self, seeded_app):
         conn = get_system_db()
         gid = _seed_group_with(
@@ -369,3 +378,65 @@ class TestSoftDowngradePreservesUserStack:
         }
         conn.close()
         assert sub_users == set()
+
+
+class TestSoftDowngradeClassicFanOut:
+    """Classic (default) sibling of the class above: membership is the
+    subscribe model, so the ``required → available`` downgrade MUST eagerly
+    fan out subscription rows to the group's members — the pre-redesign v49
+    behavior (spec 2026-08-07-default-chrome-ux-parity) — or they silently
+    lose the resource from their stack."""
+
+    def test_required_to_available_fans_out_subscriptions(self, seeded_app, monkeypatch):
+        monkeypatch.delenv("AGNES_STACK_AUTO_MEMBERSHIP", raising=False)
+
+        conn = get_system_db()
+        gid = _seed_group_with(
+            conn,
+            name="classic_downgrade_grp",
+            user_ids=["analyst1", "viewer1", "km_admin1"],
+        )
+        pkg_id = _seed_pkg(conn, "classic-downgrade-pkg")
+        grant_id = _seed_grant(
+            conn,
+            group_id=gid,
+            resource_type="data_package",
+            resource_id=pkg_id,
+            requirement="required",
+        )
+        conn.close()
+
+        c = seeded_app["client"]
+
+        # Admin downgrades required → available.
+        r = c.put(
+            f"/api/admin/grants/{grant_id}",
+            json={"requirement": "available"},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert r.status_code == 200
+
+        # The eager fan-out wrote one subscription row per group member
+        # (direct DB assert keeps the endpoint honest).
+        conn = get_system_db()
+        sub_users = {
+            r[0]
+            for r in conn.execute(
+                "SELECT user_id FROM user_stack_subscriptions WHERE resource_type='data_package' AND resource_id=?",
+                [pkg_id],
+            ).fetchall()
+        }
+        conn.close()
+        assert sub_users == {"analyst1", "viewer1", "km_admin1"}
+
+        # …so every member still sees the package in their stack, now as
+        # ``available`` (classic membership = required ∪ subscribed).
+        for token_key in ("analyst_token", "viewer_token", "km_admin_token"):
+            r = c.get(
+                "/api/stack?type=data_package",
+                headers=_auth(seeded_app[token_key]),
+            )
+            match = next((it for it in r.json()["items"] if it["id"] == pkg_id), None)
+            assert match is not None, f"{token_key} lost the package after classic soft downgrade"
+            assert match["requirement"] == "available"
+            assert match["in_stack"] is True

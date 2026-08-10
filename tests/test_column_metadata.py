@@ -142,3 +142,40 @@ class TestColumnMetadataProposal:
 
         result = repo.get("orders", "id")
         assert result["source"] == "ai_enrichment"
+
+
+class TestPushAddressesTheFullKeboolaTableId:
+    """The Storage API addresses a table by `<bucket>.<table>`.
+
+    The registry keeps the bucket in its own column, so `source_table` alone is a
+    valid tableId only for a legacy wizard row that still carries the prefix. For
+    a correctly registered row the push URL came out as
+    `/v2/storage/tables/orders/columns/...` — no bucket — so it only ever worked
+    on the rows that were themselves wrong. The exact inverse of the doubled-prefix
+    bug this PR fixes (Devin Review on #1189).
+    """
+
+    def test_composition_includes_the_bucket(self):
+        """Unit-level: the id handed to the Storage API must be `<bucket>.<table>`
+        for a correctly registered row, and must not double for a legacy one."""
+        from connectors.keboola.storage_api import normalize_source_table
+
+        def compose(bucket, source_table):
+            bare = normalize_source_table(bucket, source_table)
+            return f"{bucket}.{bare}" if bucket else bare
+
+        assert compose("in.c-main", "orders") == "in.c-main.orders"
+        assert compose("in.c-main", "in.c-main.orders") == "in.c-main.orders"
+        assert compose("", "orders") == "orders"
+
+    def test_the_endpoint_source_uses_that_composition(self):
+        """Guards against the composition drifting back to `source_table` alone —
+        asserted on the source, since the endpoint builds the URL inline."""
+        from pathlib import Path
+
+        src = (Path(__file__).resolve().parent.parent / "app" / "api" / "metadata.py").read_text()
+        assert 'source_table = f"{_bucket}.{_bare}" if _bucket else _bare' in src
+        assert 'source_table = table.get("source_table") or table_id' not in src, (
+            "the bucket-less form addresses a tableId that does not exist for a "
+            "correctly registered row"
+        )

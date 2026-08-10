@@ -1,4 +1,4 @@
-> New: [docs/PLATFORM_SETUP.md](./PLATFORM_SETUP.md) is the consolidated operator playbook. This doc covers a focused subset; check the playbook first.
+> Companion: [docs/PLATFORM_SETUP.md](./PLATFORM_SETUP.md) is the day-2 operator playbook — marketplaces, scheduler cadence, telemetry, privacy posture, daily routine. It complements this doc rather than replacing it.
 
 # Quick Start Guide
 
@@ -36,8 +36,8 @@
 
 5. Register your tables via the admin API or CLI:
    ```bash
-   # Via CLI
-   agnes admin register-table --source-type keboola --bucket "in.c-crm" --table "company" --query-mode local
+   # Via CLI — the first argument is the catalog name the table gets locally
+   agnes admin register-table company --source-type keboola --bucket "in.c-crm" --source-table "company" --query-mode local
 
    # Or start the server and use the web UI at /admin/tables
    ```

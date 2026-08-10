@@ -585,24 +585,17 @@ class TestDocumentedServerConfigKeysAreWritable:
     (Devin Review on #1183).
     """
 
-    # Sections the deployment guide documents as `instance.yaml` / env-var edits
-    # rather than `/admin/server-config` edits, with the reason each one is not
-    # expected to be live-writable. A NEW documented section that is neither
-    # editable nor listed here fails the test below — that is the ratchet.
-    #
-    # The first version of this test filtered `documented` down to `{"mcp"}`
-    # before diffing, which meant it could only ever fail for the one flag it was
-    # written for while its docstring claimed a general rule. An exemption list
-    # with reasons is the honest form of the same intent (Devin Review on #1183).
-    _NOT_LIVE_WRITABLE = {
-        "analytics": "backend choice is governed by the state machine + a data migration, not a live patch",
-        "coordination": "process topology; takes effect on restart, and the guide pairs it with a compose change",
-        "chat": "needs the sandbox sidecar / compose profile to match, so a live flip would not take effect",
-        "data_apps": "gated on the `apps` compose profile, same reason",
-        "distribution": "documented as an `instance.yaml` + `AGNES_DISTRIBUTION_*` pair, object-store credentials included",
-    }
-
     def _documented_keys(self):
+        """`section.key:` pairs the deployment guide writes in backticks.
+
+        Deliberately NARROW, and deliberately one file. Widening this to
+        `CONFIGURATION.md` + `feature-flags.md` and to the bare `` `a.b` `` form
+        was tried and reverted: it matched ordinary prose (`architecture.md`,
+        `redis.…`, `uvicorn.…`) and turned a precise ratchet into a list of
+        twelve false positives. Prose is the wrong source of truth for a
+        machine-checkable rule — `_registry_sections` is the right one, and it is
+        what actually caught the case this scrape missed.
+        """
         import re
         from pathlib import Path
 
@@ -613,28 +606,235 @@ class TestDocumentedServerConfigKeysAreWritable:
         # `section.key: value` inside backticks, as the guide writes them.
         return set(re.findall(r"`([a-z_]+)\.([a-z_]+):", doc))
 
+    def _registry_sections(self):
+        """Sections owned by the switch registry."""
+        from app.switches import SWITCHES
+
+        return {s.config_keys[0] for s in SWITCHES if s.config_keys}
+
+    #: Sections the deployment guide documents that own no registry switch YET.
+    #:
+    #: NOT a revival of `_NOT_LIVE_WRITABLE`. That dict answered "why is this
+    #: registered flag not writable?", and the registry now answers it itself via
+    #: `Switch.lock_reason`. What is left is a different and strictly smaller
+    #: question: DEPLOYMENT.md documents these three, but no switch owns them, so
+    #: neither derived set can speak for them.
+    #:
+    #: Temporary by construction. PR2 of this effort registers switches for
+    #: `analytics.backend`, `coordination.backend` and `distribution.signed_urls`;
+    #: `test_no_switch_backed_section_is_still_listed_as_undeclared` below fails
+    #: the moment one of them lands, forcing its removal from here.
+    _DOCUMENTED_BUT_NOT_SWITCH_BACKED = {
+        "analytics": "backend choice is governed by the state machine + a data migration, not a live patch",
+        "coordination": "process topology; takes effect on restart, and the guide pairs it with a compose change",
+        "distribution": "documented as an `instance.yaml` + `AGNES_DISTRIBUTION_*` pair, object-store credentials included",
+    }
+
+    def _locked_sections(self):
+        """Sections whose only switches are locked, each WITH a stated reason.
+
+        Replaces the old `_NOT_LIVE_WRITABLE` dict: the reason now lives on
+        the entry, where the product can show it, instead of in this file
+        where only a test reader ever saw it. A locked switch with an empty
+        `lock_reason` does NOT count as accounted for here — that is what
+        makes `test_every_registry_section_is_editable_or_locked_with_a_reason`
+        below a real check on the reason rather than just on `editable`.
+        """
+        from app.switches import SWITCHES
+
+        editable = {s.config_keys[0] for s in SWITCHES if s.editable and s.config_keys}
+        locked = {s.config_keys[0] for s in SWITCHES if not s.editable and s.config_keys and s.lock_reason.strip()}
+        return locked - editable
+
     def test_the_documented_key_scrape_finds_something(self):
         """Guards the guard: a doc rewrite that changes the backtick convention
         would silently empty `documented` and make the ratchet below pass on an
         empty set."""
         assert len(self._documented_keys()) >= 5
+        assert len(self._registry_sections()) >= 4
+
+    def test_every_registry_section_is_editable_or_locked_with_a_reason(self):
+        from app.api.admin import _EDITABLE_SECTIONS
+
+        unaccounted = self._registry_sections() - set(_EDITABLE_SECTIONS) - self._locked_sections()
+        assert not unaccounted, (
+            "switch section neither writable via /admin/server-config nor backed by a locked "
+            f"switch carrying a lock_reason: {sorted(unaccounted)}. The panel displays it, so "
+            "a save that 400s is the operator's only signal."
+        )
+
+    def test_no_locked_section_is_also_editable(self):
+        """Shrinks-only, in its new form: a switch that became editable must
+        clear `lock_reason`, and its section must not appear in both sets."""
+        from app.api.admin import _EDITABLE_SECTIONS
+
+        stale = self._locked_sections() & set(_EDITABLE_SECTIONS)
+        assert not stale, f"now editable — clear lock_reason on: {sorted(stale)}"
+
+    def test_editable_switch_section_derivation_is_pinned(self):
+        """NOT a regression guard: `_EDITABLE_SECTIONS` is defined as
+        `_STATIC_EDITABLE_SECTIONS | {section of every editable switch}`, so
+        this predicate holds by construction for any registry content — it
+        cannot fail no matter what `SWITCHES` contains. It exists to pin the
+        derivation in prose next to the definition it restates, and to make a
+        future rewrite of `_EDITABLE_SECTIONS` that breaks the union show up
+        here. The bug shape this derivation actually prevents (an editable
+        switch shipping section-less, as `mcp.allow_query_param_token` did) is
+        guarded by `test_every_registry_section_is_editable_or_locked_with_a_reason`
+        above, which checks the *registry* against `_EDITABLE_SECTIONS` rather
+        than checking `_EDITABLE_SECTIONS` against itself."""
+        from app.api.admin import _EDITABLE_SECTIONS
+        from app.switches import SWITCHES
+
+        for s in SWITCHES:
+            if s.editable and s.config_keys:
+                assert s.config_keys[0] in _EDITABLE_SECTIONS, (
+                    f"{s.name} is editable but section {s.config_keys[0]!r} is not writable"
+                )
 
     def test_every_documented_section_is_editable_or_explicitly_exempt(self):
         from app.api.admin import _EDITABLE_SECTIONS
 
         documented = {sec for sec, _ in self._documented_keys()}
-        unaccounted = documented - set(_EDITABLE_SECTIONS) - set(self._NOT_LIVE_WRITABLE)
+        unaccounted = (
+            documented - set(_EDITABLE_SECTIONS) - self._locked_sections() - set(self._DOCUMENTED_BUT_NOT_SWITCH_BACKED)
+        )
         assert not unaccounted, (
-            "documented in DEPLOYMENT.md but neither writable via /admin/server-config "
-            f"nor listed in _NOT_LIVE_WRITABLE with a reason: {sorted(unaccounted)}"
+            "documented in DEPLOYMENT.md but neither writable via /admin/server-config, "
+            "nor backed by a locked switch carrying a lock_reason, nor listed in "
+            f"_DOCUMENTED_BUT_NOT_SWITCH_BACKED with a reason: {sorted(unaccounted)}"
         )
 
-    def test_no_stale_exemption(self):
-        """Shrinks-only: a section that became editable must leave the list."""
-        from app.api.admin import _EDITABLE_SECTIONS
+    def test_no_switch_backed_section_is_still_listed_as_undeclared(self):
+        """Shrinks-only. A section that gains a switch must leave the dict —
+        otherwise a stale entry would keep excusing a section the registry can
+        now speak for, which is how the exemption this replaced grew stale."""
+        from app.switches import SWITCHES
 
-        stale = set(self._NOT_LIVE_WRITABLE) & set(_EDITABLE_SECTIONS)
-        assert not stale, f"now editable — drop from _NOT_LIVE_WRITABLE: {sorted(stale)}"
+        owned = {s.config_keys[0] for s in SWITCHES if s.config_keys}
+        stale = owned & set(self._DOCUMENTED_BUT_NOT_SWITCH_BACKED)
+        assert not stale, f"now switch-backed — drop from _DOCUMENTED_BUT_NOT_SWITCH_BACKED: {sorted(stale)}"
+
+    def test_every_editable_section_declares_its_fields(self):
+        """Editable ⇒ declared. True for all 19 sections today, so it is a real
+        invariant rather than an aspiration.
+
+        Adding a section to `_EDITABLE_SECTIONS` without a `_KNOWN_FIELDS` entry
+        is a quiet half-job: the API accepts the patch, but the panel has no
+        `kind` to render from, and an undeclared boolean is not covered by
+        `_declared_boolean_fields()` — which is what makes `_mask(False)` turn an
+        OFF switch into an ON one. Both halves of that bug were live at once for
+        `mcp` (#1183); this pins the coupling so the next section cannot repeat
+        it.
+        """
+        from app.api.admin import _EDITABLE_SECTIONS, _KNOWN_FIELDS
+
+        undeclared = [s for s in _EDITABLE_SECTIONS if s not in _KNOWN_FIELDS]
+        assert not undeclared, (
+            "editable via /admin/server-config but no _KNOWN_FIELDS entry, so the panel "
+            f"cannot render it and its booleans escape the mask carve-out: {undeclared}"
+        )
+
+    def test_the_chat_and_studio_flags_render_as_booleans(self):
+        """The two sections this change made writable, pinned the same way the
+        `mcp` switch is below — a regression to free-text or to a masked boolean
+        is the failure mode, not a missing section."""
+        from app.api.admin import _EDITABLE_SECTIONS, _KNOWN_FIELDS, _is_secret_key
+
+        # Defaults come from FEATURE_FLAGS, so they are asserted against the
+        # registry rather than re-typed here — an earlier version of this test
+        # hard-coded approvals_enabled=False and thereby pinned the very drift
+        # the registry-derived declaration removed (Devin Review on #1190).
+        for section, field in (
+            ("chat", "enabled"),
+            ("chat", "approvals_enabled"),
+            ("studio", "enabled"),
+        ):
+            default = next(
+                f.default
+                for f in __import__("app.instance_config", fromlist=["x"]).FEATURE_FLAGS
+                if f.config_keys and f.config_keys[0] == section and f.config_keys[-1] == field
+            )
+            assert section in _EDITABLE_SECTIONS, section
+            spec = _KNOWN_FIELDS[section][field]
+            assert spec["kind"] == "bool", (section, field)
+            assert spec["default"] is default, (section, field)
+            assert _is_secret_key(field) is False, f"{field} must not be masked"
+
+    def test_declared_defaults_match_the_registry(self):
+        """No second copy of a flag's default.
+
+        `chat.approvals_enabled` was hand-declared as off while `FEATURE_FLAGS`
+        (and the runtime) had it on, so the panel described the opposite of what
+        the system does — and the unset-boolean renderer then wrote that wrong
+        default back on the next save. The declarations derive from the registry
+        now; this fails if anyone re-introduces a literal (Devin Review on #1190).
+        """
+        from app.api.admin import _KNOWN_FIELDS
+        from app.instance_config import FEATURE_FLAGS
+
+        mismatched = []
+        for flag in FEATURE_FLAGS:
+            if not flag.config_keys:
+                continue
+            section, key = flag.config_keys[0], flag.config_keys[-1]
+            spec = _KNOWN_FIELDS.get(section, {}).get(key)
+            if spec is not None and spec.get("default") != flag.default:
+                mismatched.append(f"{section}.{key}: registry={flag.default} declared={spec.get('default')}")
+        assert not mismatched, "declared default contradicts FEATURE_FLAGS:\n" + "\n".join(mismatched)
+
+    def test_the_bool_renderer_falls_back_to_the_declared_default(self):
+        """An unset boolean must render from its default, not from `!!undefined`.
+
+        The admin panel coerces with `!!value`, so a never-configured switch whose
+        real default is ON rendered as OFF and "Save section" wrote that false
+        back — enabling chat silently disabled tool-call approvals, and saving the
+        Studio section disabled Studio. The text branch already used the registry
+        default when unset; the bool branch now does too. Asserted against the
+        template source because that is where the coercion lives
+        (Devin Review on #1190).
+        """
+        from pathlib import Path
+
+        tpl = (
+            Path(__file__).resolve().parent.parent / "app" / "web" / "templates" / "admin_server_config.html"
+        ).read_text(encoding="utf-8")
+        assert "const v = isUnset ? dflt : !!value;" in tpl, (
+            "the bool branch must fall back to the declared default when unset"
+        )
+        assert "const v = !!value;" not in tpl, (
+            "the bare `!!value` coercion is the bug: `!!undefined` is false, so an "
+            "on-by-default switch renders OFF and the next save persists it"
+        )
+
+    def test_a_nested_secret_under_chat_is_masked_and_not_written_back(self):
+        """Making `chat` editable exposes the whole block, nested keys included.
+
+        A real deployment can carry `chat.slack.*`, so the question is whether the
+        existing redaction reaches a nested level or only the top one. It reaches:
+        `_redact` recurses into dicts and masks any leaf whose key looks like a
+        credential, and the write path drops a value that is still the redaction
+        sentinel so a save cannot persist `"***"` over a live secret. Asserted
+        rather than manually spot-checked (Devin Review on #1190).
+        """
+        from app.api.admin import _REDACTED_SENTINELS, _is_secret_key, _redact
+
+        block = {
+            "enabled": True,
+            "slack": {"transport": "http", "bot_token": "xoxb-REAL", "signing_secret": "sig-REAL"},
+        }
+        shown = _redact(block, "chat")
+
+        assert shown["slack"]["bot_token"] not in ("xoxb-REAL",)
+        assert shown["slack"]["signing_secret"] not in ("sig-REAL",)
+        assert shown["slack"]["transport"] == "http", "a non-secret leaf must stay readable"
+        assert shown["enabled"] is True
+
+        # ...and what the panel shows back is a sentinel the write path refuses,
+        # which is what stops a save from overwriting the real value with stars.
+        assert shown["slack"]["bot_token"] in _REDACTED_SENTINELS
+        assert _is_secret_key("bot_token") and _is_secret_key("signing_secret")
+        assert not _is_secret_key("transport")
 
     def test_the_mcp_token_flag_renders_as_a_boolean(self):
         from app.api.admin import _EDITABLE_SECTIONS, _KNOWN_FIELDS

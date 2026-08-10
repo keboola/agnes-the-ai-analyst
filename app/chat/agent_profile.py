@@ -92,6 +92,62 @@ logger = logging.getLogger(__name__)
 # "Precedence note" for what happens when the active set exceeds this.
 _MEMORY_BUDGET_CHARS = 6000 * 4
 
+#: Platform data-access floor appended to every persona.
+#:
+#: A persona REPLACES the workspace ``CLAUDE.md`` in the session workdir
+#: (``WorkdirManager._materialize_profile`` writes it as a real file instead
+#: of symlinking the workspace one) — that replacement is what makes an
+#: agent an agent rather than a themed analyst, and it stays. What nobody
+#: authoring a persona expects is that the analyst *data rails* go with it:
+#: the sandbox still has the ``agnes`` CLI on PATH, the Agnes MCP server,
+#: and every passthrough tool the agent's scope exposes, but nothing left
+#: tells it that the organization's data lives behind ``agnes catalog``.
+#: The observed failure is an agent that goes hunting through whatever other
+#: MCP servers it can see and has to be told "use Agnes" by hand — on every
+#: surface that spawns a sandbox (web chat, Slack, ``agnes chat``, and the
+#: one-shot agent API, where there is no human in the loop to say it).
+#:
+#: So a persona overrides the rails' *tone and task*, never their existence.
+#: Deliberately short: a pointer to the discovery commands, not a copy of
+#: the analyst prompt (``config/claude_md_template.txt``), which would
+#: drown the persona it is appended to. Depth stays one command away.
+#:
+#: Appended, not prepended, so the authored opening ("You are ...") keeps
+#: the first word on the agent's identity.
+DATA_ACCESS_RAILS = """
+
+---
+
+## Data access (Agnes platform)
+
+Agnes adds this section to every agent; it holds regardless of the persona
+above.
+
+Your organization's data lives in Agnes and is reachable **only** through
+the `agnes` CLI and the equivalent Agnes MCP tools. Do not look for it in
+other MCP servers, in local files, or in your training data.
+
+Before answering anything that depends on that data:
+
+```
+agnes catalog                 # which tables exist — the source of truth
+agnes schema <table>          # columns + types, in the right SQL dialect
+agnes describe <table> -n 5   # sample rows (local + materialized tables)
+agnes query "SELECT ..."      # run the query
+```
+
+- Never enumerate tables, columns, or metrics from memory. The catalog
+  changes as admins register, migrate, and drop entries, and it is filtered
+  to what *you* are allowed to see.
+- Before computing a business metric, read its canonical definition:
+  `agnes catalog --metrics`, then
+  `agnes catalog --metrics --show <category>/<name>`. Never invent one.
+- An empty catalog means you hold no data grants — say so plainly instead
+  of substituting another source.
+- Full querying protocol (remote tables, snapshots, scan-cost limits):
+  `agnes skills show agnes-data-querying`.
+"""
+
 # agents.<field>_mode -> (scope key, agent_scope.item_type)
 _MODE_FIELD_TO_SCOPE = {
     "plugins_mode": ("plugins", "plugin"),
@@ -145,8 +201,14 @@ def _context_skill(agent_row: dict) -> str:
         "memory domains it may use) is scoped by its owner's configuration "
         "in Agnes, not by this file.\n",
     ]
+    # The remember endpoint lives on the flag-guarded agent_memory router, so
+    # with agent profiles disabled every call would 403 — treat flag-off the
+    # same as memory_write_mode='off': don't advertise a tool the sandbox
+    # cannot use (the router guard still enforces regardless of this text).
+    from app.instance_config import get_agent_profiles_enabled
+
     memory_write_mode = agent_row.get("memory_write_mode") or "propose"
-    if memory_write_mode != "off":
+    if memory_write_mode != "off" and get_agent_profiles_enabled():
         lines.append(
             "\n## Remember\n\n"
             "You can save a durable note to your own memory notebook by "
@@ -178,6 +240,13 @@ def build_profile(agent_row: dict) -> Optional[ChatProfile]:
     case (no profile / the static ``self._session_profiles`` lookup, if
     any), so the default agent (always an empty prompt) never changes web
     chat's generic rails.
+
+    The returned ``claude_md`` is the authored persona followed by
+    :data:`DATA_ACCESS_RAILS` — see that constant for why a persona must
+    never be able to silently drop the platform's data-access floor. The
+    early return above means this only ever applies where a persona
+    actually replaces the workspace prompt; an agent with no persona keeps
+    the full symlinked rails and is untouched.
     """
     system_prompt = (agent_row.get("system_prompt") or "").strip()
     if not system_prompt:
@@ -185,7 +254,7 @@ def build_profile(agent_row: dict) -> Optional[ChatProfile]:
     slug = agent_row.get("slug") or agent_row.get("id") or "agent"
     return ChatProfile(
         slug=f"agent-{slug}",
-        claude_md=system_prompt,
+        claude_md=system_prompt + DATA_ACCESS_RAILS,
         skill_name="agnes-agent-context",
         skill_body=_context_skill(agent_row),
     )

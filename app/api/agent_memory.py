@@ -47,12 +47,17 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, field_validator
 
 from app.api.agent_sessions import SessionRuntimePrincipal, require_session_principal
+from app.auth.access import require_agent_profiles_enabled
 from app.chat.config import ChatConfig
 from src.repositories import agent_memories_repo, audit_repo
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1", tags=["agent-memory"])
+router = APIRouter(
+    prefix="/api/v1",
+    tags=["agent-memory"],
+    dependencies=[Depends(require_agent_profiles_enabled)],
+)
 
 #: Fallback defaults when `request.app.state.chat_config` is unavailable
 #: (mirrors the `cfg is not None else _DEFAULT_...` pattern in

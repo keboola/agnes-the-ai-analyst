@@ -131,16 +131,23 @@ def _materialized_parquet_size_bucket(
     is not necessarily the ``source_type`` (e.g. the bundled `demo` extract
     registers tables as 'local' but lives under ``extracts/demo/``), so keying
     the path off ``source_type`` silently lost the size hint for such rows.
+
+    A PARTITIONED table is a directory of per-period parquets, so there is no
+    single file to ``stat()`` — its size is the sum over the parts
+    (``local_parquet_size_bytes``), which is what the extractor and the sync
+    state already record for it. Before that it had no hint at all, and an
+    analyst-facing agent reading the catalog saw a fully-synced table as
+    sizeless (Devin Review on #1189).
     """
     if not source_type:
         return None
     try:
-        from app.utils import resolve_local_parquet
+        from app.utils import local_parquet_size_bytes
 
-        path = resolve_local_parquet(table_id, source_type)
-        if path is None:
+        size = local_parquet_size_bytes(table_id, source_type)
+        if size is None:
             return None
-        return _bucket_size(path.stat().st_size)
+        return _bucket_size(size)
     except Exception:
         # Filesystem stat() race / permissions / weird DATA_DIR — fall back
         # to null rather than crash the whole catalog response.

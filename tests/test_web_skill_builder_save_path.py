@@ -239,3 +239,101 @@ def test_unstructured_error_still_produces_one_row():
     assert len(rows) == 1
     assert rows[0]["field"] is None
     assert "Service unavailable." in rows[0]["text"]
+
+
+# ──────────────────── 3. the check path's preview response ───────────────────
+#
+# `doCheck()`'s bundle branch used to keep `.components` and throw the rest of
+# the preview response away — which is how the manifest pre-fill (#1175) and
+# the metadata verdict (#1176) both went missing despite the server sending
+# them. The contract tests below are the fence around what it keeps.
+
+
+def test_check_keeps_the_whole_preview_response(seeded_app):
+    """`.components` alone was the bug; name/description and field_issues are
+    part of the same response and part of the same answer."""
+    html = seeded_app["client"].get("/skills", headers=_auth(seeded_app["admin_token"])).text
+    assert "applyPreviewMeta(res)" in html, "manifest pre-fill dropped from the check path"
+    assert "res.field_issues" in html, "metadata verdict dropped from the check path"
+
+
+def test_check_posts_the_metadata_it_asks_to_be_checked(seeded_app):
+    """The builder must keep sending the fields the preview endpoint now
+    validates — a check over a payload the server never receives is the
+    original defect, in the other direction."""
+    html = seeded_app["client"].get("/skills", headers=_auth(seeded_app["admin_token"])).text
+    for field in ("name", "description", "category"):
+        assert "fd.append('%s'" % field in html, f"bundleForm() no longer sends {field}"
+
+
+def test_category_is_a_markable_field(seeded_app):
+    """A verdict attributed to `category` needs somewhere to land: the field
+    list, a label, an error slot, and a `dropProblem` on edit."""
+    html = seeded_app["client"].get("/skills", headers=_auth(seeded_app["admin_token"])).text
+    assert "var PROBLEM_FIELDS = ['name', 'description', 'category', 'body', 'bundle'];" in html
+    assert "fieldErrHtml('category')" in html
+    assert "dropProblem('category')" in html
+
+
+def _run_apply_preview_meta(draft: dict, res: dict) -> dict:
+    """Execute `applyPreviewMeta` against a draft, returning draft + filled."""
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available — the pre-fill test needs a runtime")
+    # NAME_RE is a regex literal whose `{0,63}` quantifier confuses the
+    # brace-matched extractor, so lift the literal itself — still read from the
+    # template, so the two cannot drift.
+    src = _TEMPLATE.read_text(encoding="utf-8")
+    name_re = re.search(r"^\s*var NAME_RE = (/.*/);\s*$", src, re.M)
+    assert name_re, "NAME_RE declaration not found"
+    script = (
+        "var draft = %s;\n" % json.dumps(draft)
+        + "var NAME_RE = %s;\n" % name_re.group(1)
+        + _extract("applyPreviewMeta")
+        + "\nvar filled = applyPreviewMeta(%s);\n" % json.dumps(res)
+        + "process.stdout.write(JSON.stringify({draft: draft, filled: filled}));\n"
+    )
+    out = subprocess.run([node, "-e", script], capture_output=True, text=True)
+    assert out.returncode == 0, "node failed:\n%s" % out.stderr
+    return json.loads(out.stdout)
+
+
+def test_preview_meta_fills_blank_fields():
+    """The reported bug: the server returned the manifest's description and the
+    Description field stayed empty."""
+    got = _run_apply_preview_meta(
+        {"name": "", "description": ""},
+        {"name": "from-manifest", "description": "What the manifest says."},
+    )
+    assert got["draft"]["description"] == "What the manifest says."
+    assert got["draft"]["name"] == "from-manifest"
+    assert sorted(got["filled"]) == ["description", "name"]
+
+
+def test_preview_meta_never_overwrites_what_the_author_typed():
+    """Same contract as applyFrontmatter(): an attachment fills blanks, and an
+    attachment that rewrote an identity already typed would be worse than the
+    bug it fixes."""
+    got = _run_apply_preview_meta(
+        {"name": "my-own-name", "description": "My own words."},
+        {"name": "from-manifest", "description": "What the manifest says."},
+    )
+    assert got["draft"]["name"] == "my-own-name"
+    assert got["draft"]["description"] == "My own words."
+    assert got["filled"] == []
+
+
+def test_preview_meta_refuses_a_manifest_name_that_is_not_a_slug():
+    """The name field is slug-shaped; a manifest may not be. Filling it with
+    something the save would refuse trades one dead end for another."""
+    got = _run_apply_preview_meta(
+        {"name": "", "description": ""},
+        {"name": "Not A Slug", "description": "Fine description."},
+    )
+    assert got["draft"]["name"] == ""
+    assert got["filled"] == ["description"]
+
+
+def test_preview_meta_tolerates_an_empty_response():
+    """A preview that returned no metadata must be a no-op, not a throw."""
+    assert _run_apply_preview_meta({"name": "", "description": ""}, {})["filled"] == []

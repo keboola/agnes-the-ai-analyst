@@ -18,6 +18,7 @@ import duckdb
 
 from app.auth.access import require_admin
 from app.auth.dependencies import _get_db
+from app.switches import SWITCHES
 from src.identifier_validation import (
     is_safe_identifier as _is_safe_identifier,
     is_safe_quoted_identifier as _is_safe_quoted_identifier,
@@ -287,10 +288,17 @@ def _validate_materialize_section(sections: Dict[str, Dict[str, Any]]) -> None:
 # Hot-reload is OUT OF SCOPE for #91 — the response carries
 # `restart_required=True` so the UI can show the banner.
 
-# Sections an admin can mutate. Keep the list explicit so a typo'd section
-# in the request body is rejected loudly instead of being silently merged
-# into the YAML root and confusing future loads.
-_EDITABLE_SECTIONS: tuple[str, ...] = (
+# Sections an admin can mutate.
+#
+# Two halves. `_STATIC_EDITABLE_SECTIONS` are the sections that carry ordinary
+# configuration — hosts, credentials, limits — and own no switch. The rest is
+# DERIVED from the switch registry, so adding an editable switch cannot leave
+# its section unwritable; that omission shipped twice before this was
+# mechanical (`mcp`, then `chat`).
+#
+# A typo'd section in the request body is still rejected loudly rather than
+# being merged into the YAML root.
+_STATIC_EDITABLE_SECTIONS: tuple[str, ...] = (
     "instance",
     "data_source",
     "email",
@@ -304,16 +312,12 @@ _EDITABLE_SECTIONS: tuple[str, ...] = (
     "desktop",
     "corporate_memory",
     "materialize",
-    "guardrails",
-    "library",
     "marketplace",
     "connectors",
-    # The token-in-URL fallback switch is an operator decision, and
-    # docs/DEPLOYMENT.md tells operators to make it here — but this tuple is
-    # what POST /api/admin/server-config validates against, so without the
-    # section the documented remediation 400s and only the env var works
-    # (Devin Review on #1183).
-    "mcp",
+)
+
+_EDITABLE_SECTIONS: tuple[str, ...] = tuple(
+    sorted(set(_STATIC_EDITABLE_SECTIONS) | {s.config_keys[0] for s in SWITCHES if s.editable and s.config_keys})
 )
 
 # "Danger-zone" sections — flipping these can lock operators out (auth.*) or
@@ -322,6 +326,7 @@ _EDITABLE_SECTIONS: tuple[str, ...] = (
 # the audit entry can flag the change as high-risk and the UI can surface
 # the right warning copy.
 _DANGER_SECTIONS: tuple[str, ...] = ("auth", "server")
+
 
 # Known-but-optional config fields per section. The /admin/server-config UI
 # uses this registry alongside the YAML payload to render fields the operator
@@ -345,11 +350,78 @@ _DANGER_SECTIONS: tuple[str, ...] = ("auth", "server")
 # (data_source.bigquery.billing_project) proves the renderer wiring works
 # end-to-end so subagents 2-4 only have to add registry entries — they
 # don't need to touch admin_server_config.html.
+def _flag_default(section: str, key: str, fallback: bool) -> bool:
+    """The default the switch registry declares for a flag-backed field.
+
+    Hand-copying it here is how `chat.approvals_enabled` ended up documented
+    as off-by-default while the registry and the runtime had it on. `fallback`
+    covers a declared field with no registry entry — a plain config boolean
+    rather than a switch.
+    """
+    for s in SWITCHES:
+        if s.config_keys == (section, key):
+            return bool(s.default)
+    return fallback
+
+
 _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
+    # Both sections became editable alongside `mcp`; declaring their booleans
+    # here is what makes the panel render a switch instead of a free-text field,
+    # and what keeps them out of the secret redactor via
+    # `_declared_boolean_fields()`.
+    "chat": {
+        "enabled": {
+            "kind": "bool",
+            "default": _flag_default("chat", "enabled", False),
+            "hint": (
+                "Expose the cloud chat surface. app/main.py boots chat from the "
+                "writable server-config overlay alone, so this editor (or "
+                "AGNES_CHAT_ENABLED) is the effective way to turn it on — a value "
+                "set only in the static config/instance.yaml never reaches the "
+                "chat runtime."
+            ),
+        },
+        "approvals_enabled": {
+            "kind": "bool",
+            "default": _flag_default("chat", "approvals_enabled", True),
+            "hint": (
+                "ON by default: a tool call the agent asks about is routed to an "
+                "approval card. Turning it OFF auto-allows those calls instead. "
+                "Resolved from the same overlay-only source as chat.enabled."
+            ),
+        },
+    },
+    "studio": {
+        "enabled": {
+            "kind": "bool",
+            "default": _flag_default("studio", "enabled", True),
+            "hint": (
+                "Expose the authoring Studio (/admin/studio* including the "
+                "moderation queue, plus the public suggestion API). Read per "
+                "request, so turning it off hides the nav entries, redirects the "
+                "routes home and 403s the suggestion API immediately."
+            ),
+        },
+    },
+    "features": {
+        "stack_auto_membership": {
+            "kind": "bool",
+            "default": _flag_default("features", "stack_auto_membership", False),
+            "hint": (
+                "Stack membership mode. OFF (classic, the default): membership "
+                "is the subscribe model — required plus subscribed grants, all "
+                "downloaded by agnes pull. ON: auto-membership — every granted "
+                "resource is in the stack immediately; subscribe/unsubscribe "
+                "only control the local copy. Read per request; flips instantly, "
+                "subscriptions are interpreted, never rewritten. The "
+                "instance.experience: redesign preset defaults this ON."
+            ),
+        },
+    },
     "mcp": {
         "allow_query_param_token": {
             "kind": "bool",
-            "default": True,
+            "default": _flag_default("mcp", "allow_query_param_token", True),
             "hint": (
                 "Accept an MCP access token in the `?token=` query string as "
                 "well as the Authorization header. Convenient for clients that "
@@ -358,21 +430,59 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                 "client you use sends the header."
             ),
         },
+        "source_url_strict": {
+            "kind": "bool",
+            "default": _flag_default("mcp", "source_url_strict", False),
+            "hint": (
+                "Require a registered MCP source's own address to be https to a "
+                "public host, the same bar its OAuth endpoints already meet. Off "
+                "by default, which is not unguarded: link-local, metadata, "
+                "multicast and reserved addresses are always refused, as is "
+                "cleartext http to a public one. Leaving it off is what allows a "
+                "source on your own intranet. Turn it on if every MCP service you "
+                "use is third-party — it makes an internal source unconfigurable."
+            ),
+        },
     },
     "instance": {
+        # Experience preset — registry-backed (app/switches.py `experience`,
+        # kind select); declared here so the panel renders a select rather
+        # than a free-text field. Resolved by
+        # `app/instance_config.py::get_experience()` via `switch_value`.
+        "experience": {
+            "kind": "select",
+            "options": ["classic", "redesign"],
+            "default": "classic",
+            "hint": (
+                "One-line redesign adoption preset. `redesign` changes the "
+                "DEFAULTS of the coupled knobs — ui_layout → rail, theme → "
+                "paper, features.stack_auto_membership → on; any per-knob "
+                "setting still wins. `classic` (the default) is byte-for-byte "
+                "the pre-redesign experience."
+            ),
+        },
         # UI theme — flips `<html data-theme="...">` so the
         # design-system tokens (`--ds-*`) switch palettes via CSS
         # without any markup change. Resolved by
         # `app/instance_config.py::get_instance_theme()`.
         "theme": {
             "kind": "select",
-            "options": ["blue", "navy"],
+            # Full valid set per get_instance_theme() — a select whose
+            # options lag the resolver can only write values that erase an
+            # operator's working choice.
+            "options": ["blue", "navy", "dark", "auto", "paper"],
+            # Static registry default; `_known_fields_resolved()` patches it
+            # per request to the preset-implied default so the panel never
+            # renders (and a save never persists) a value the runtime
+            # doesn't use (Devin Review on #1199).
             "default": "blue",
             "hint": (
-                "Page-hero colour scheme. `blue` (default) uses the "
-                "brand-blue hero + blue CTAs. `navy` opts into the "
-                "darker palette with the dark navy hero gradient + "
-                "mint-green CTAs and eyebrow accents."
+                "UI palette. `blue` (default) uses the brand-blue hero + "
+                "blue CTAs; `navy` the darker palette with mint-green CTAs; "
+                "`dark` the dark scheme; `auto` follows the OS; `paper` the "
+                "prototype-derived light look (redesign). The "
+                "`instance.experience: redesign` preset defaults this to "
+                "`paper`."
             ),
         },
         # Operator-injected HTML/JS blocks rendered into base.html.
@@ -1016,10 +1126,7 @@ def _declared_boolean_fields() -> frozenset[str]:
     covered without anyone remembering this failure mode.
     """
     return frozenset(
-        name
-        for section in _KNOWN_FIELDS.values()
-        for name, spec in section.items()
-        if spec.get("kind") == "bool"
+        name for section in _KNOWN_FIELDS.values() for name, spec in section.items() if spec.get("kind") == "bool"
     )
 
 
@@ -1270,6 +1377,38 @@ def _ensure_bq_optional_fields(sections: Dict[str, Any]) -> None:
 _UNSET = object()
 
 
+def _known_fields_resolved() -> dict:
+    """Per-request view of ``_KNOWN_FIELDS`` with preset-aware defaults.
+
+    The registry's ``default`` literals are what the panel renders for an
+    UNSET field — and what "Save section" then persists verbatim
+    (``collectSection`` posts every rendered leaf). For the preset-coupled
+    knobs a static literal is therefore a footgun: on an
+    ``instance.experience: redesign`` instance the switch would render OFF
+    (runtime: ON) and a routine section save would silently flip the whole
+    instance back to the classic model / blue theme (Devin Review on
+    #1199 — the same failure mode the #1190 unset-boolean fix addressed).
+    Patch the coupled leaves at request time from the same preset helpers
+    the runtime getters resolve through.
+    """
+    import copy
+
+    from app.instance_config import get_experience, preset_flag_default, preset_knob_default
+
+    fields = copy.deepcopy(_KNOWN_FIELDS)
+    fields["features"]["stack_auto_membership"]["default"] = preset_flag_default("stack_auto_membership")
+    fields["instance"]["theme"]["default"] = preset_knob_default("theme")
+    # The preset ITSELF, not just the leaves it couples. On an instance that
+    # sets it by env (`AGNES_INSTANCE_EXPERIENCE=redesign`) the panel rendered
+    # the static `classic` for the unset key, so a routine section save wrote
+    # `instance.experience: classic` into the overlay — invisible while the
+    # env var is present, and a silent revert of the whole preset the day the
+    # operator drops it. Same failure mode as the coupled leaves above, one
+    # tier up (Devin on #1199).
+    fields["instance"]["experience"]["default"] = get_experience()
+    return fields
+
+
 def _feature_flags_inventory() -> List[Dict[str, Any]]:
     """Read-only snapshot of every registered feature flag (#1022).
 
@@ -1291,19 +1430,73 @@ def _feature_flags_inventory() -> List[Dict[str, Any]]:
     "on" here while the running app has chat off), the chat row resolves
     from the same overlay-only source the runtime uses.
     """
-    from app.instance_config import FEATURE_FLAGS, feature_enabled, get_value
+    from app.instance_config import (
+        FEATURE_FLAGS,
+        PRESET_COUPLED_FLAGS,
+        feature_enabled,
+        get_experience,
+        get_value,
+        preset_flag_default,
+    )
 
-    out = []
+    # The experience preset leads the inventory as its own (string-valued)
+    # row — it is the one-line adoption switch whose value explains why the
+    # preset-coupled rows below may resolve away from their static defaults
+    # (spec 2026-08-07-default-chrome-ux-parity).
+    if os.environ.get("AGNES_INSTANCE_EXPERIENCE") is not None:
+        exp_source = "env"
+    else:
+        exp_probe = get_value("instance", "experience", default=_UNSET)
+        exp_source = "default" if exp_probe is _UNSET else "config"
+    out: List[Dict[str, Any]] = [
+        {
+            "name": "instance.experience",
+            # String-valued row: value_label carries the resolved preset for
+            # display; effective mirrors it as "is the redesign preset on"
+            # so the row satisfies the same schema every switch row carries
+            # (tests/test_feature_flags.py::TestInventoryExposesSwitchMetadata).
+            "value_label": get_experience(),
+            "effective": get_experience() == "redesign",
+            "source": exp_source,
+            "default": "classic",
+            "env_var": "AGNES_INSTANCE_EXPERIENCE",
+            "description": (
+                "Experience preset (classic|redesign). Changes only the DEFAULTS "
+                "of the coupled knobs — instance.ui_layout, instance.theme, "
+                "features.stack_auto_membership — any per-knob env/yaml setting "
+                "still wins."
+            ),
+            "effect": "live",
+            "editable": True,
+            "lock_reason": "",
+        }
+    ]
     for flag in FEATURE_FLAGS:
+        if flag.name == "experience":
+            # The preset's registry entry is kind="select" — the leading
+            # string-valued row above already renders it (value_label +
+            # effective-as-redesign); running it through the boolean
+            # ``feature_enabled`` below would coerce "classic" to True.
+            continue
         if flag.name in _CHAT_RUNTIME_FLAGS:
             effective, source = _chat_flag_runtime_view(flag)
         else:
-            effective = feature_enabled(*flag.config_keys, env_var=flag.env_var, default=flag.default)
+            # Preset-coupled flags resolve against the preset-implied default
+            # (what the runtime getters actually use), so this panel never
+            # reports "off/default" while the running instance has the flag
+            # on via ``experience: redesign``.
+            default_val = preset_flag_default(flag.name) if flag.name in PRESET_COUPLED_FLAGS else flag.default
+            effective = feature_enabled(*flag.config_keys, env_var=flag.env_var, default=default_val)
             if os.environ.get(flag.env_var) is not None:
                 source = "env"
             else:
                 probe = get_value(*flag.config_keys, default=_UNSET)
-                source = "default" if probe is _UNSET else "config"
+                if probe is not _UNSET:
+                    source = "config"
+                elif flag.name in PRESET_COUPLED_FLAGS and default_val != flag.default:
+                    source = "preset"
+                else:
+                    source = "default"
         out.append(
             {
                 "name": flag.name,
@@ -1312,18 +1505,33 @@ def _feature_flags_inventory() -> List[Dict[str, Any]]:
                 "default": flag.default,
                 "env_var": flag.env_var,
                 "description": flag.description,
+                "effect": flag.effect,
+                "editable": flag.editable,
+                "lock_reason": flag.lock_reason,
             }
         )
     return out
 
 
-#: Registry flags whose runtime value comes from ``load_chat_config`` rather
-#: than ``feature_enabled``, mapped to the ChatConfig attribute holding it.
-#: They need their own view because the two read DIFFERENT sources — the chat
-#: config parses the writable overlay only, ``feature_enabled`` the merged
-#: static+overlay — so resolving them the ordinary way lets the panel report a
-#: value the running chat gate does not use (Devin Review on #1146/#1157).
-_CHAT_RUNTIME_FLAGS = {"chat": "enabled", "chat_approvals": "approvals_enabled"}
+#: Registry switches whose runtime value comes from `load_chat_config` rather
+#: than the merged config, mapped to the ChatConfig attribute holding it.
+#: Derived from `runtime_view` so a third chat-resolved switch cannot be added
+#: without the panel following — the previous hand-written dict was the reason
+#: this needed a Devin Review note on #1146/#1157.
+#:
+#: Restricted to `config_keys[0] == "chat"`: `_chat_flag_runtime_view` below
+#: reads `raw.get("chat")` and calls `load_chat_config`, so a switch outside
+#: the chat section declaring `runtime_view` would silently resolve against
+#: the wrong section rather than fail. The assertion turns that into a loud
+#: import-time error instead — a non-chat `runtime_view` needs its own
+#: resolver, not a bigger map here.
+_CHAT_RUNTIME_FLAGS = {
+    s.name: s.runtime_view for s in SWITCHES if s.runtime_view and s.config_keys and s.config_keys[0] == "chat"
+}
+assert len(_CHAT_RUNTIME_FLAGS) == sum(1 for s in SWITCHES if s.runtime_view), (
+    "a switch declares runtime_view outside the chat section; _chat_flag_runtime_view "
+    "only knows how to resolve chat.* — give it a dedicated resolver instead of widening this map"
+)
 
 
 def _chat_flag_runtime_view(flag) -> tuple:
@@ -1382,7 +1590,7 @@ async def get_server_config(
         # Subagents 2-4 populate the bodies; the renderer ships now so the
         # mechanism is wired end-to-end and adding entries is purely a
         # data-edit in `_KNOWN_FIELDS` above.
-        "known_fields": _KNOWN_FIELDS,
+        "known_fields": _known_fields_resolved(),
         # Read-only feature-flag inventory (#1022 canonicalization) — every
         # flag registered in app.instance_config.FEATURE_FLAGS, its effective
         # value, and where it resolved from. Toggling still happens through
@@ -1530,6 +1738,16 @@ async def update_server_config(
         # auth.* is editable here — half-written file → operator lockout).
         tmp_path = config_path.with_suffix(config_path.suffix + ".tmp")
         tmp_path.write_text(yaml.dump(overlay_payload, default_flow_style=False, sort_keys=False))
+        # 0600 BEFORE the rename, not after: os.replace is atomic, so the
+        # file is never observable at the umask default this way. instance.yaml
+        # holds the Postgres URL (password inline) and any operator-set
+        # connector credentials, yet it was landing world-readable on the data
+        # volume — which several non-root containers mount — while the
+        # equivalent /opt/agnes/.env is 0600. The app and the state applier
+        # both run as uid 999, the file's owner, so nothing legitimate loses
+        # access. Mirrors src/db_state_machine.py::write_backend_state and
+        # scripts/ops/agnes-state-applier.sh, which already do this.
+        os.chmod(tmp_path, 0o600)
         os.replace(tmp_path, config_path)
         logger.info("server-config: wrote %d section(s) to %s", len(request.sections), config_path)
 
@@ -3900,6 +4118,8 @@ async def configure_instance(
         config_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = config_path.with_suffix(config_path.suffix + ".tmp")
         tmp_path.write_text(yaml.dump(overlay, default_flow_style=False, sort_keys=False))
+        # 0600 before the rename — see the server-config editor above.
+        os.chmod(tmp_path, 0o600)
         os.replace(tmp_path, config_path)
         logger.info("Wrote instance config to %s", config_path)
 

@@ -182,6 +182,15 @@ def register_table(
         "--initial-load-chunk-days",
         help="Chunk size for partitioned first-sync chunked initial load (default 30)",
     ),
+    server_only: bool = typer.Option(
+        False,
+        "--server-only",
+        help=(
+            "Keep the table server-side: queryable via `agnes query --remote`, "
+            "listed in the catalog, but its parquet is never downloaded by "
+            "`agnes pull`. Only valid with --query-mode local|materialized."
+        ),
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
@@ -249,6 +258,20 @@ def register_table(
         )
         raise typer.Exit(2)
 
+    # --server-only suppresses *distribution* of a server-stored parquet. A
+    # remote row has none (every query goes live upstream), so the pairing is
+    # incoherent — the same check the server-side validator makes
+    # (RegisterTableRequest._check_server_only_query_mode). Fail before the
+    # round-trip so the operator sees the conflict immediately.
+    if server_only and query_mode == "remote":
+        typer.echo(
+            "Error: --server-only is only valid with --query-mode local or "
+            "materialized (a 'remote' table has no server-stored parquet to "
+            "suppress from agnes pull).",
+            err=True,
+        )
+        raise typer.Exit(2)
+
     payload = {
         "name": name,
         "source_type": source_type,
@@ -281,6 +304,10 @@ def register_table(
         payload["partition_granularity"] = partition_granularity
     if initial_load_chunk_days is not None:
         payload["initial_load_chunk_days"] = initial_load_chunk_days
+    # Omit when false — the server defaults to false, so an unflagged
+    # registration sends the same body it sent before this flag existed.
+    if server_only:
+        payload["server_only"] = True
     if where_filters_json:
         # Inline JSON or @path/to.json
         if where_filters_json.startswith("@"):

@@ -2,12 +2,35 @@
 
 import logging
 import os
-from dataclasses import dataclass
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
+
+class InstanceConfigUnreadable(RuntimeError):
+    """The overlay exists but cannot be read.
+
+    A distinct type rather than a bare ``RuntimeError`` because the boot path
+    has to be able to tell it apart. ``app/main.py`` deliberately wraps its
+    startup config load in ``except Exception`` so that a *soft* config
+    problem does not stop an instance from serving — which would have
+    swallowed this one too, leaving the process up and 500ing every
+    ``get_value()`` consumer instead of refusing to start. That is the worse
+    of the two failure modes: it looks healthy from the outside. So the boot
+    path re-raises this type specifically and keeps logging everything else.
+    """
+
+
 _instance_config: Optional[dict] = None
+# True once this process has successfully built a config. Gates the
+# unreadable-overlay refusal to startup — see `load_instance_config`.
+_loaded_once: bool = False
+# The last config this process built successfully. Survives `reset_cache()`
+# on purpose: it is what a live instance falls back to when the overlay
+# stops being readable, and it is the only thing that HAS the operator's
+# sections at that point — `_instance_config` is None by then, since
+# `load_instance_config` returns early whenever it is not.
+_last_good_config: Optional[dict] = None
 
 
 def reset_cache() -> None:
@@ -24,6 +47,11 @@ def reset_cache() -> None:
     tests of instance_config in isolation)."""
     global _instance_config
     _instance_config = None
+    # `_loaded_once` is deliberately NOT reset: it records that this process
+    # got a good config at least once, which is what separates "refuse to
+    # start" from "do not 500 every live request". This function runs on a
+    # live instance after an admin save, and that must not re-arm a
+    # boot-time guard.
     try:
         from connectors.bigquery.access import get_bq_access
 
@@ -79,7 +107,7 @@ def _deep_merge(base: dict, patch: dict) -> dict:
     return out
 
 
-def load_instance_config() -> dict:
+def load_instance_config(*, strict: bool = False) -> dict:
     """Load instance.yaml as a deep-merge of the static file and the
     writable overlay.
 
@@ -100,7 +128,7 @@ def load_instance_config() -> dict:
     consumer of static-only sections (corporate memory page, dataset
     list, OpenMetadata client) saw empty defaults. See PR #107.
     """
-    global _instance_config
+    global _instance_config, _loaded_once, _last_good_config
     if _instance_config is not None:
         return _instance_config
 
@@ -142,7 +170,100 @@ def load_instance_config() -> dict:
     overlay_path = _state_dir() / "instance.yaml"
     if overlay_path.exists():
         try:
-            overlay = yaml.safe_load(overlay_path.read_text()) or {}
+            raw = overlay_path.read_text()
+        except OSError as exc:
+            # The file is THERE and we cannot read it, which since 0600 is
+            # reachable through a plain uid mismatch rather than only through
+            # disk failure.
+            #
+            # What this refusal is FOR, stated precisely — an earlier version
+            # of this comment claimed it stops an instance whose data is on
+            # Postgres from coming up on the DuckDB default, and that is not
+            # the mechanism. The backend is not resolved through here: it
+            # comes from `src.db_state_machine.read_backend_state`, which
+            # reads the overlay directly and catches only `yaml.YAMLError`, so
+            # a PermissionError propagates out of `use_pg()` rather than
+            # quietly answering DuckDB. Do not relax that handler on the
+            # belief that this function guards it.
+            #
+            # The value here is narrower and still worth having: everything
+            # ELSE the overlay carries (auth providers, feature flags, theme,
+            # `initial_workspace`) would silently revert to its static value,
+            # and the failure would otherwise surface as a raw OSError from
+            # deep inside a repository factory on some unrelated request. This
+            # names the cause at the one moment an operator is watching.
+            #
+            # A malformed file keeps the lenient path below: that one is
+            # visible to the operator and repairable through the editor.
+            #
+            # Boot only. `load_instance_config` is reached from `get_value()`,
+            # i.e. from essentially every request path, and `reset_cache()`
+            # re-runs it on a live instance after an admin save. If the file
+            # became unreadable AFTER a good boot — an operator chown, a
+            # half-finished manual repair — raising here would turn every
+            # subsequent request into a 500 where it used to degrade. That is
+            # not the trade being made: the danger this guards against is
+            # *starting* against the wrong `database.backend`, and a process
+            # that already loaded a good config is not about to do that. So it
+            # refuses only when nothing good has ever been loaded, and
+            # otherwise keeps serving on the config it has, loudly.
+            if not strict and _last_good_config is not None:
+                # `_last_good_config`, NOT `_instance_config` — the latter is
+                # guaranteed None here, because the function returns early
+                # whenever it is set, so `reset_cache()` (which every admin
+                # save calls) is exactly the path that reaches this branch.
+                # Returning the static base instead would drop every
+                # operator-set section while the log claimed they were kept:
+                # the silent-wrong-config outcome the refusal exists to
+                # prevent, just after boot instead of at it.
+                #
+                # `strict` is the CALLER's declaration, not a guess from
+                # process history. It used to be `_loaded_once`, a module flag
+                # meant to mean "we are past startup" — and importing
+                # `app.main` sets it, so by the time the startup block ran the
+                # refusal was already permanently defused. A guard whose arming
+                # depends on nothing else having imported first is not a guard.
+                #
+                # Cached into `_instance_config` so the next request short-
+                # circuits. Without that, every `get_value()` re-reads and
+                # re-parses the static YAML and emits another ERROR line — a
+                # log storm on top of a config problem.
+                logger.error(
+                    "instance.yaml overlay at %s became unreadable after startup (%s) — "
+                    "serving the last good config; saves through the editor will refuse "
+                    "until the file is readable again",
+                    overlay_path,
+                    exc,
+                )
+                _instance_config = _last_good_config
+                return _instance_config
+            raise InstanceConfigUnreadable(
+                f"cannot read the instance.yaml overlay at {overlay_path}: {exc}. "
+                "The file exists but is not readable by this process — it is mode 0600, "
+                "so check that the app runs as its owner. Refusing to start on the static "
+                "base config, which would silently use a different `database.backend` than "
+                "the one this instance's data is on."
+            ) from exc
+        except Exception:
+            # NOT unreadable — undecodable. `Path.read_text()` raises
+            # UnicodeDecodeError (a ValueError) for bytes that are not valid
+            # UTF-8, which is the partial-write / disk-corruption shape the
+            # lenient path was written for in the first place. Leaving it to
+            # propagate would recreate the very failure this split exists to
+            # prevent, one exception type over: the process starts, the boot
+            # path's broad `except` logs it, `_instance_config` is never
+            # assigned, and every later `get_value()` re-raises — an instance
+            # that looks healthy and 500s on everything. So it degrades to the
+            # base config like any other malformed file.
+            logger.exception(
+                "instance.yaml overlay at %s could not be decoded — falling back to "
+                "static base config; saves through the editor will refuse until the "
+                "file is repaired",
+                overlay_path,
+            )
+            raw = None
+        try:
+            overlay = yaml.safe_load(raw or "") or {}
             from config.loader import _resolve_env_refs
 
             overlay = _resolve_env_refs(overlay)
@@ -157,6 +278,8 @@ def load_instance_config() -> dict:
             )
 
     _instance_config = base
+    _last_good_config = base
+    _loaded_once = True
     return _instance_config
 
 
@@ -216,82 +339,13 @@ def feature_enabled(*keys: str, env_var: Optional[str] = None, default: bool = F
     return coerce_flag_value(get_value(*keys, default=default), default)
 
 
-@dataclass(frozen=True)
-class FeatureFlag:
-    """One entry in the :data:`FEATURE_FLAGS` registry — everything the
-    `/admin/server-config` inventory panel needs to display a flag without
-    hardcoding its resolution elsewhere."""
-
-    name: str
-    config_keys: tuple[str, ...]
-    env_var: str
-    default: bool
-    description: str
-
-
-# Registry of every flag resolved via :func:`feature_enabled`. Adding a new
-# flag: call `feature_enabled` at the read site, append an entry here, and
-# add a row to `docs/feature-flags.md` (see that doc's "How to add a flag"
-# section, and CONTRIBUTING.md's sync-map).
-FEATURE_FLAGS: tuple[FeatureFlag, ...] = (
-    FeatureFlag(
-        name="studio",
-        config_keys=("studio", "enabled"),
-        env_var="AGNES_STUDIO_ENABLED",
-        default=True,
-        description="Authoring Studio surface (/admin/studio*). Grandfathered on by default.",
-    ),
-    FeatureFlag(
-        name="guardrails",
-        config_keys=("guardrails", "enabled"),
-        env_var="AGNES_GUARDRAILS_ENABLED",
-        default=True,
-        description="Flea-market upload LLM security-review pipeline. Grandfathered on by default.",
-    ),
-    FeatureFlag(
-        name="chat_approvals",
-        config_keys=("chat", "approvals_enabled"),
-        env_var="AGNES_CHAT_APPROVALS_ENABLED",
-        default=True,
-        description=(
-            "Interactive approval prompts for ask-flagged chat tool calls. Off makes the "
-            "sandbox gate deny instantly instead of waiting for a human."
-        ),
-    ),
-    FeatureFlag(
-        name="chat",
-        config_keys=("chat", "enabled"),
-        env_var="AGNES_CHAT_ENABLED",
-        default=False,
-        description="Cloud-hosted chat (E2B sandbox agent sessions). New feature — off by default.",
-    ),
-    FeatureFlag(
-        name="data_apps",
-        config_keys=("data_apps", "enabled"),
-        env_var="AGNES_DATA_APPS_ENABLED",
-        default=False,
-        description="Hosted user web apps (data apps). New feature — off by default.",
-    ),
-    FeatureFlag(
-        name="library_show_unverified_trust",
-        config_keys=("library", "show_unverified_trust"),
-        env_var="AGNES_LIBRARY_SHOW_UNVERIFIED_TRUST",
-        default=True,
-        description="Show the 'Community' trust marker for unverified Store items in the Library, so all three provenance levels (Organization / Verified / Community) are stated positively and no row is left silently unlabelled. On by default: the whole trust vocabulary is already gated to the paper theme (every `mark()` callsite passes `paper=is_paper()`), so upgrade parity for a default blue instance comes from that gate, not from this flag — leaving it off only suppressed the third level on the opt-in look that exists to state all three. Set false for the older silent reading, where an unverified item is marked by the ABSENCE of a marker.",
-    ),
-    FeatureFlag(
-        name="mcp_query_param_token",
-        config_keys=("mcp", "allow_query_param_token"),
-        env_var="AGNES_MCP_ALLOW_QUERY_PARAM_TOKEN",
-        default=True,
-        description=(
-            "Accept the MCP bearer token as a ?token= query param on SSE GET, for clients "
-            "that cannot set headers. On by default (grandfathered). The token lands in every "
-            "request log when used (CWE-598) — turn this off if all your MCP clients send the "
-            "Authorization header."
-        ),
-    ),
-)
+# The switch registry moved to `app/switches.py` so that a switch's type,
+# effect class, editability and the reason for it live in one declaration.
+# Re-exported under the old name because `app/web/router.py` and
+# `app/api/admin.py` import it from here. `Switch` is a superset of the old
+# `FeatureFlag`, so every attribute those callers read still resolves.
+from app.switches import SWITCHES as FEATURE_FLAGS  # noqa: E402,F401
+from app.switches import Switch as FeatureFlag  # noqa: E402,F401
 
 
 def get_data_source_type() -> str:
@@ -429,6 +483,85 @@ def get_gws_oauth_credentials() -> dict:
     }
 
 
+def get_experience() -> str:
+    """One-line adoption preset (spec 2026-08-07-default-chrome-ux-parity):
+    ``classic`` | ``redesign``.
+
+    Changes only the DEFAULTS the experience-coupled knobs fall back to
+    (chrome layout, theme, stack membership mode, trust markers); any
+    per-knob env/yaml setting still wins, and each knob's own resolution
+    order is unchanged. ``classic`` — or an absent/unrecognised value — is
+    byte-for-byte the pre-redesign experience, so a routine upgrade changes
+    nothing an operator did not opt into.
+
+    Resolution: ``AGNES_INSTANCE_EXPERIENCE`` env > ``instance.experience``
+    in instance.yaml > ``"classic"`` — delegated to the ``experience`` entry
+    in :data:`app.switches.SWITCHES` (kind ``select``,
+    ``on_invalid="default"``), so the preset rides the same registry every
+    operator switch is derived from instead of a hand-rolled lookup pair.
+    """
+    from app.switches import switch_value
+
+    return switch_value("experience")
+
+
+#: Feature flags whose DEFAULT follows the ``instance.experience`` preset.
+#: The admin flag inventory uses this to resolve honestly (and label the
+#: source ``preset``); keep in step with ``preset_flag_default`` below.
+PRESET_COUPLED_FLAGS: frozenset[str] = frozenset({"stack_auto_membership"})
+
+
+def preset_knob_default(name: str) -> str:
+    """Preset-implied default for the experience-coupled STRING knobs
+    (``theme`` / ``ui_layout``) — the single source of the preset mapping,
+    shared by the runtime getters and the ``/admin/server-config``
+    known-fields resolver (so the editable panel can never render a default
+    the runtime doesn't use — Devin Review on #1199)."""
+    redesign = get_experience() == "redesign"
+    return {
+        "theme": "paper" if redesign else "blue",
+        "ui_layout": "rail" if redesign else "topnav",
+    }[name]
+
+
+def preset_flag_default(name: str) -> bool:
+    """Preset-implied default for the experience-coupled feature flags.
+
+    Callsites pass this as ``feature_enabled``'s ``default`` so the knob's
+    own env/yaml still wins; the ``FEATURE_FLAGS`` registry keeps a static
+    ``default`` for display, with the description naming the preset.
+
+    Deliberately NOT preset-coupled: ``store.verification_enabled`` (needs a
+    reviewer, not a theme) and ``library_show_unverified_trust`` (the whole
+    trust vocabulary is already gated to the paper theme at every ``mark()``
+    callsite, so default-chrome parity comes from the theme gate itself —
+    coupling the flag would only make the inventory disagree with the
+    runtime's registry-sourced default).
+    """
+    redesign = get_experience() == "redesign"
+    return {
+        "stack_auto_membership": redesign,
+    }.get(name, False)
+
+
+def get_stack_auto_membership() -> bool:
+    """Stack membership mode (spec 2026-08-07-default-chrome-ux-parity).
+
+    ``False`` (the classic default): membership is the subscribe model —
+    ``required ∪ (subscribed ∩ available)`` — exactly the pre-redesign
+    behavior, including the grant-downgrade subscription fan-out.
+    ``True``: auto-membership — every granted resource is in the stack the
+    moment it's granted; subscribe/unsubscribe only control the local copy.
+    The ``redesign`` experience preset flips the default to ``True``.
+    """
+    return feature_enabled(
+        "features",
+        "stack_auto_membership",
+        env_var="AGNES_STACK_AUTO_MEMBERSHIP",
+        default=preset_flag_default("stack_auto_membership"),
+    )
+
+
 def get_instance_theme() -> str:
     """Active UI theme for this instance — drives the `data-theme`
     attribute on `<html>` so the design-system token set
@@ -458,14 +591,17 @@ def get_instance_theme() -> str:
     default ``"blue"``. Unrecognised values fall back to ``"blue"``
     so a typo doesn't silently break every page.
     """
+    # Preset-implied default (spec 2026-08-07): the `redesign` experience
+    # defaults to paper; explicit env/yaml always wins.
+    preset_default = preset_knob_default("theme")
     raw = os.environ.get("AGNES_INSTANCE_THEME")
     if raw is None:
-        raw = get_value("instance", "theme", default="blue")
+        raw = get_value("instance", "theme", default=preset_default)
     if not isinstance(raw, str):
-        return "blue"
+        return preset_default
     value = raw.strip().lower()
     if value not in ("navy", "blue", "dark", "auto", "paper"):
-        return "blue"
+        return preset_default
     return value
 
 
@@ -487,14 +623,17 @@ def get_ui_layout() -> str:
     in instance.yaml > default ``"topnav"``. Unrecognised values fall
     back to ``"topnav"`` so a typo doesn't strip the navigation.
     """
+    # Preset-implied default (spec 2026-08-07): the `redesign` experience
+    # defaults to rail; explicit env/yaml always wins.
+    preset_default = preset_knob_default("ui_layout")
     raw = os.environ.get("AGNES_UI_LAYOUT")
     if raw is None:
-        raw = get_value("instance", "ui_layout", default="topnav")
+        raw = get_value("instance", "ui_layout", default=preset_default)
     if not isinstance(raw, str):
-        return "topnav"
+        return preset_default
     value = raw.strip().lower()
     if value not in ("topnav", "rail"):
-        return "topnav"
+        return preset_default
     return value
 
 
@@ -564,6 +703,31 @@ def get_studio_enabled() -> bool:
     ``/admin/server-config`` inventory panel.
     """
     return feature_enabled("studio", "enabled", env_var="AGNES_STUDIO_ENABLED", default=True)
+
+
+def get_agent_profiles_enabled() -> bool:
+    """Whether the Agent profiles surface (``/agents`` builder, the
+    ``/api/v1/agents*`` management + runtime API, and the ``agnes agent`` /
+    ``agnes chat`` CLI clients of that API) is exposed.
+
+    On by default — upstream behavior is unchanged; an instance opts out
+    per-deployment with ``AGNES_AGENT_PROFILES_ENABLED=0`` (the
+    infra/Terraform ``.env`` override) or ``agent_profiles.enabled: false``
+    in instance.yaml. Hides the "My agents" nav entry and redirects
+    ``/agents`` to home; the guarded REST routers 403 with
+    ``{"kind": "agent_profiles_disabled"}``.
+
+    Only gates the HTTP-facing surface. The internal mechanisms a disabled
+    instance must keep running regardless — default-agent seeding, chat
+    attribution to the default agent, and the broker's agent policy — call
+    the repositories directly and never go through this flag.
+
+    Resolution: env var > ``agent_profiles.enabled`` YAML > True — delegates
+    to :func:`feature_enabled` (the canonical resolver, #1022); see
+    :data:`FEATURE_FLAGS` for the registry entry backing the
+    ``/admin/server-config`` inventory panel.
+    """
+    return feature_enabled("agent_profiles", "enabled", env_var="AGNES_AGENT_PROFILES_ENABLED", default=True)
 
 
 def get_instance_name() -> str:
@@ -1081,6 +1245,25 @@ def get_guardrails_review_model() -> str:
 
     raw = get_value("guardrails", "review_model", default="haiku")
     return resolve_model_tier(raw)
+
+
+def get_mcp_source_url_strict() -> bool:
+    """Whether an MCP source's ``url`` must be https to a public address.
+
+    Reads ``mcp.source_url_strict`` (env ``AGNES_MCP_SOURCE_URL_STRICT``).
+    **Defaults to False**, which is not the same as unguarded: the baseline
+    always refuses link-local / metadata / multicast / reserved addresses and
+    cleartext http to a public one. What the default permits is an MCP source
+    on an INTERNAL address — an organization's own tool server, a developer's
+    localhost — because those are ordinary deployments, and a check that broke
+    them would be traded away rather than adopted.
+
+    Set True to hold a source's url to the same bar as its OAuth endpoints
+    (https, public address). Right for instances that only ever talk to
+    third-party MCP services; it makes an intranet source unconfigurable, so
+    it is opt-in. See ``src/net/mcp_source_url.py``.
+    """
+    return feature_enabled("mcp", "source_url_strict", env_var="AGNES_MCP_SOURCE_URL_STRICT", default=False)
 
 
 def get_guardrails_blocked_quota_per_day() -> int:

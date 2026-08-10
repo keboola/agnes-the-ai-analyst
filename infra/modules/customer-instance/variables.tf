@@ -57,6 +57,17 @@ variable "prod_instance" {
     # connector URLs keep resolving through a domain cutover instead of
     # failing the TLS handshake. Clear it once the old DNS record is retired.
     domain_alias = optional(string, "")
+    # Chrome the web UI renders in. Per-VM (not module-wide) for the same
+    # reason as dispatcher_enabled / data_apps_enabled below: the redesign is
+    # rolled out dev-first, previewed on a dev VM, and promoted to prod only
+    # once it looks right. Empty (the default) writes NO env line, so the
+    # instance keeps whatever `instance.ui_layout` / `instance.theme` says in
+    # instance.yaml — or the app's own default when that is unset too.
+    #   ui_layout: "" | "topnav" (app default) | "rail"
+    #   theme:     "" | "blue" (app default) | "navy" | "dark" | "auto" | "paper"
+    # Pair rail + paper for the full redesign look.
+    ui_layout = optional(string, "")
+    theme     = optional(string, "")
     # Container memory caps written to /opt/agnes/.env and read by
     # docker-compose.yml (mem_limit: $${AGNES_APP_MEM_LIMIT:-4g}). Defaults
     # match the compose defaults; raise on a larger VM together with the
@@ -90,6 +101,20 @@ variable "prod_instance" {
     condition     = var.prod_instance.domain_alias == "" || var.prod_instance.domain_alias != var.prod_instance.domain
     error_message = "prod_instance.domain_alias must differ from prod_instance.domain; two site blocks sharing one address stop Caddy from starting."
   }
+
+  # The app resolves an unrecognised layout/theme by SILENTLY falling back to
+  # its default (see get_ui_layout / get_instance_theme). So a typo here
+  # applies cleanly, reboots cleanly, and simply renders the old chrome with
+  # nothing anywhere saying why. Catch it at plan time instead.
+  validation {
+    condition     = contains(["", "topnav", "rail"], var.prod_instance.ui_layout)
+    error_message = "prod_instance.ui_layout must be \"\", \"topnav\" or \"rail\"."
+  }
+
+  validation {
+    condition     = contains(["", "blue", "navy", "dark", "auto", "paper"], var.prod_instance.theme)
+    error_message = "prod_instance.theme must be \"\", \"blue\", \"navy\", \"dark\", \"auto\" or \"paper\"."
+  }
 }
 
 variable "dev_instances" {
@@ -114,6 +139,11 @@ variable "dev_instances" {
     # this object type: Terraform silently drops attributes absent from the
     # type, so a bare entry in a caller's list would never reach the module.
     domain_alias = optional(string, "")
+    # Per-VM chrome — see prod_instance.ui_layout / .theme. Same "must be on
+    # the type" rule: Terraform silently drops attributes absent from the
+    # type, so a bare entry in a caller's list would never reach the module.
+    ui_layout = optional(string, "")
+    theme     = optional(string, "")
     # Role label used by per-VM OAuth secret naming
     # (var.oauth_secret_name_template `{role}` placeholder), VM tagging in
     # downstream cron/log filters, and dev_defaults selection. Defaults to
@@ -147,6 +177,21 @@ variable "dev_instances" {
       for i in var.dev_instances : i.domain_alias == "" || i.domain_alias != i.domain
     ])
     error_message = "each dev_instances[].domain_alias must differ from its domain; two site blocks sharing one address stop Caddy from starting."
+  }
+
+  # Same silent-fallback hazard as prod_instance.ui_layout / .theme above.
+  validation {
+    condition = alltrue([
+      for i in var.dev_instances : contains(["", "topnav", "rail"], i.ui_layout)
+    ])
+    error_message = "each dev_instances[].ui_layout must be \"\", \"topnav\" or \"rail\"."
+  }
+
+  validation {
+    condition = alltrue([
+      for i in var.dev_instances : contains(["", "blue", "navy", "dark", "auto", "paper"], i.theme)
+    ])
+    error_message = "each dev_instances[].theme must be \"\", \"blue\", \"navy\", \"dark\", \"auto\" or \"paper\"."
   }
 }
 

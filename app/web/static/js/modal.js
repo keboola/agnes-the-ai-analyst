@@ -61,6 +61,13 @@
 
     const card = document.createElement('div');
     card.className = 'modal-card';
+    // These three dialogs are the reason `white-space: pre-wrap` exists on
+    // modal copy: a caller passes a message with real `\n` in it (a bulleted
+    // error list, say) and expects the breaks to survive, the way the native
+    // alert() they replace did. Static modal copy in templates wants the
+    // opposite — its newlines are source formatting — so the rule is opt-in
+    // and this is the opt-in. See style-custom.css `[data-preserve-newlines]`.
+    card.dataset.preserveNewlines = '1';
 
     if (heading) {
       const h = document.createElement('h3');

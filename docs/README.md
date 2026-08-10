@@ -25,7 +25,7 @@ Using the platform to analyze data.
 
 Deploying, configuring, and running an Agnes instance.
 
-- [`PLATFORM_SETUP.md`](PLATFORM_SETUP.md) — **the consolidated operator playbook** (bootstrap, TLS, marketplaces, scheduler, telemetry)
+- [`PLATFORM_SETUP.md`](PLATFORM_SETUP.md) — **the day-2 operator playbook** (marketplaces, scheduler cadence, telemetry, privacy posture, daily routine)
 - [`ecosystem-map.md`](ecosystem-map.md) — bird's-eye view of all 5 tiers (OSS + infra + marketplace + initial-workspace + legacy)
 - [`ONBOARDING.md`](ONBOARDING.md) — end-to-end Terraform deployment into a new GCP project
 - [`DEPLOYMENT.md`](DEPLOYMENT.md) — picks between the Terraform and Docker Compose paths
@@ -36,7 +36,8 @@ Deploying, configuring, and running an Agnes instance.
 - [`RBAC.md`](RBAC.md) — access control: groups, members, resource grants
 - [`auth-google-oauth.md`](auth-google-oauth.md) — Google OAuth setup + operator gotchas
 - [`auth-groups.md`](auth-groups.md) — Google Workspace group sync
-- [`admin/query-modes.md`](admin/query-modes.md) — table registration query modes
+- [`admin/query-modes.md`](admin/query-modes.md) — table registration query modes, and `server_only` for queryable-but-never-distributed tables
+- [`admin/collections-vs-data-packages.md`](admin/collections-vs-data-packages.md) — uploading files vs. registering a live source
 - [`agent-setup-prompt.md`](agent-setup-prompt.md) — customize the `/setup` page banner
 - [`agent-workspace-prompt.md`](agent-workspace-prompt.md) — customize the generated analyst `CLAUDE.md`
 - [`initial-workspace-override.md`](initial-workspace-override.md) — per-instance analyst-workspace skeleton override
@@ -62,6 +63,7 @@ Working on the Agnes codebase.
 - [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md) — pre-merge checks for bootstrap-path changes
 - [`testing/`](testing/) — test plans (clean-analyst bootstrap, VM test)
 - [`marketplace.md`](marketplace.md) — Claude Code marketplace ingestion + re-serving internals
+- [`global-distribution.md`](global-distribution.md) — Agnes skills + data in every repository (user-scope layer, remote MCP, fleet managed settings)
 - [`superpowers/specs/2026-07-21-agent-profiles-and-agent-api-design.md`](superpowers/specs/2026-07-21-agent-profiles-and-agent-api-design.md) — design: agent profiles + agent-as-API (sessions, memory, webhooks, budgets)
 - [`superpowers/specs/2026-07-21-data-apps-design.md`](superpowers/specs/2026-07-21-data-apps-design.md) — design: hosted data apps (push-to-deploy, apps-runner sidecar)
 - [`STORE_GUARDRAILS.md`](STORE_GUARDRAILS.md) — flea-market upload guardrails (static checks + LLM review)
