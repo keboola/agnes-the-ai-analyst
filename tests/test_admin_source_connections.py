@@ -1229,3 +1229,209 @@ class TestSourceConnectionsMasterSecret:
         assert resp2.status_code == 204
 
         assert connection_secrets_repo().has(master_secret_key(conn_id)) is False
+
+
+class TestProjectIdentityBinding:
+    """A connection is ONE Keboola project, and which one must be knowable.
+
+    Reported from an instance running several Keboola projects: the connections
+    looked identical (same stack host, a "master token: SET" badge on each) and
+    nothing recorded which project any token actually opened. A master token
+    pasted onto the wrong connection stored happily, and the semantic layer then
+    synced that other project's metrics under this connection's name.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _stable_vault_key(self, monkeypatch):
+        monkeypatch.setenv("AGNES_VAULT_KEY", Fernet.generate_key().decode())
+        _reset_ephemeral_key_for_tests()
+        yield
+        _reset_ephemeral_key_for_tests()
+
+    def _create_keboola(self, c, token, *, name):
+        resp = c.post(
+            BASE,
+            json={
+                "name": name,
+                "source_type": "keboola",
+                "config": {"stack_url": "https://connection.example.com"},
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 201, resp.text
+        return resp.json()["id"]
+
+    def _verify(self, *, project_id, project_name="Acme Analytics", master=True):
+        return {"isMasterToken": master, "owner": {"id": project_id, "name": project_name}}
+
+    def test_storage_token_binds_the_connection_to_its_project(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="test-identity-bind")
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                return_value=self._verify(project_id=1234, master=False),
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+        ):
+            resp = c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "storage-token", "kind": "storage"},
+                headers=_auth(token),
+            )
+        assert resp.status_code == 204, resp.text
+
+        row = c.get(f"{BASE}/{conn_id}", headers=_auth(token)).json()
+        assert row["config"]["project_id"] == 1234
+        assert row["config"]["project_name"] == "Acme Analytics"
+
+    def test_master_token_from_another_project_is_refused(self, seeded_app):
+        """The core failure: it used to store fine and badge "SET"."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="test-identity-mismatch")
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                return_value=self._verify(project_id=1234, master=False),
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+        ):
+            c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "storage-token", "kind": "storage"},
+                headers=_auth(token),
+            )
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                return_value=self._verify(project_id=9999, project_name="Other Project"),
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+        ):
+            resp = c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "master-token-of-another-project", "kind": "master"},
+                headers=_auth(token),
+            )
+        assert resp.status_code == 400, resp.text
+        detail = resp.json()["detail"]
+        assert "project_mismatch" in detail
+        # Both sides named: which project the token opens, and which one the
+        # connection expects. Either alone leaves the admin guessing.
+        assert "9999" in detail and "1234" in detail
+        assert "Other Project" in detail and "Acme Analytics" in detail
+
+        # ...and nothing was stored, so the badge cannot claim otherwise.
+        row = c.get(f"{BASE}/{conn_id}", headers=_auth(token)).json()
+        assert row["has_master_secret"] is False
+
+    def test_master_token_from_the_bound_project_is_accepted(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="test-identity-match")
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                return_value=self._verify(project_id=1234, master=False),
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+        ):
+            c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "storage-token", "kind": "storage"},
+                headers=_auth(token),
+            )
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                return_value=self._verify(project_id=1234),
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+        ):
+            resp = c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "the-right-master-token", "kind": "master"},
+                headers=_auth(token),
+            )
+        assert resp.status_code == 204, resp.text
+        row = c.get(f"{BASE}/{conn_id}", headers=_auth(token)).json()
+        assert row["has_master_secret"] is True
+
+    def test_unbound_connection_records_identity_from_the_master_token(self, seeded_app):
+        """Connections that predate identity recording have nothing to
+        contradict — the first verified token binds them rather than being
+        rejected against a hole."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="test-identity-legacy")
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                return_value=self._verify(project_id=4242, project_name="Legacy Project"),
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+        ):
+            resp = c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "master-token", "kind": "master"},
+                headers=_auth(token),
+            )
+        assert resp.status_code == 204, resp.text
+        row = c.get(f"{BASE}/{conn_id}", headers=_auth(token)).json()
+        assert row["config"]["project_id"] == 4242
+
+    def test_missing_vault_key_is_reported_before_any_upstream_call(self, seeded_app, monkeypatch):
+        """Ordering, not just status: the storage-token preflight added here
+        would otherwise ask Keboola to validate a secret this instance cannot
+        store, then report a token error for what is really an unconfigured
+        vault."""
+        monkeypatch.delenv("AGNES_VAULT_KEY", raising=False)
+        monkeypatch.setenv("LOCAL_DEV_MODE", "0")
+        _reset_ephemeral_key_for_tests()
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="test-identity-novault")
+
+        with patch(
+            "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+        ) as verify:
+            resp = c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "storage-token", "kind": "storage"},
+                headers=_auth(token),
+            )
+        assert resp.status_code == 409, resp.text
+        verify.assert_not_called()
+
+    def test_owner_without_an_id_is_not_recorded_as_an_identity(self, seeded_app):
+        """An identity we cannot read must not be persisted as a known one —
+        otherwise the mismatch check compares against a hole and passes
+        anything."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="test-identity-noowner")
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                return_value={"isMasterToken": True, "owner": {}},
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+        ):
+            resp = c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "master-token", "kind": "master"},
+                headers=_auth(token),
+            )
+        assert resp.status_code == 204, resp.text
+        row = c.get(f"{BASE}/{conn_id}", headers=_auth(token)).json()
+        assert "project_id" not in (row["config"] or {})
