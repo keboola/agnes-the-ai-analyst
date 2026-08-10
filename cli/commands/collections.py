@@ -271,16 +271,22 @@ def cat_file(
         typer.echo(json_lib.dumps(out, indent=2, default=str))
         return
 
-    if out.get("kind") != "text":
+    # Key on the TEXT, not on `kind`. `kind` is the browser modal's switch
+    # (draw an image, embed a PDF, print text) — a PDF comes back
+    # `kind="pdf"` and still carries the ingested text a reader here wants.
+    # Gating on `kind == "text"` refused exactly the format this command
+    # exists for.
+    text = out.get("text")
+    if not text:
         # `reason` is the server's own sentence for "indexed yet?", "rejected",
         # "no extractable text" — relaying it beats inventing a summary.
         typer.echo(out.get("reason") or "No text preview is available for this file.", err=True)
         raise typer.Exit(1)
 
-    typer.echo(out.get("text") or "")
+    typer.echo(text)
     if out.get("truncated"):
         typer.echo(
-            f"\n[truncated] Showing the first {len(out.get('text') or '')} characters. "
+            f"\n[truncated] Showing the first {len(text)} characters. "
             f"Use `agnes collections search <term> --collection {collection_id}` to reach the rest.",
             err=True,
         )

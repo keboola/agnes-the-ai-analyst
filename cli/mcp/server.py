@@ -226,9 +226,11 @@ def collection_file_read(collection_id: str, file_id: str) -> dict:
     The server caps the text (~20k characters), so ``truncated: true`` means
     you are holding a PREFIX — do not summarise it as the whole document;
     fall back to ``collections_search`` with a distinctive term to reach the
-    rest. When there is no text yet (still ingesting, rejected, or a format
-    with no extractable text) ``kind`` is ``none`` and ``reason`` explains
-    which — relay that rather than reporting an access error.
+    rest. Read ``text`` regardless of ``kind``: ``kind`` describes how a
+    BROWSER would show the file (``text`` / ``pdf`` / ``image``), and a PDF
+    comes back ``kind="pdf"`` while still carrying its ingested text. When
+    ``text`` is empty, ``reason`` says why (still ingesting, rejected, or
+    nothing extractable) — relay that rather than reporting an access error.
 
     Do not loop this over a whole collection: reading many files to answer
     one question is what retrieval is for.
