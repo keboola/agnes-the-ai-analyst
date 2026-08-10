@@ -6273,11 +6273,22 @@ async def admin_semantic_layer_page(
             glossary_count += null_glossary_count
             null_absorbed = True
         stack_url = source["stack_url"]
+        # The stack host alone does not identify anything: several projects on
+        # one stack render as the same string, so a page listing two sources
+        # gave no way to tell which project each row's metrics came from. The
+        # project id is the only unambiguous handle Keboola offers.
+        host = urlsplit(stack_url).netloc or stack_url
+        project_id = source.get("project_id")
+        detail = host
+        if project_id is not None:
+            project_name = source.get("project_name") or "unnamed"
+            detail = f"{project_name} (project {project_id}) · {host}"
         sources.append(
             {
                 "connection_id": connection_id,
                 "label": source["name"],
-                "detail": urlsplit(stack_url).netloc or stack_url,
+                "detail": detail,
+                "project_id": project_id,
                 "metric_count": metric_count,
                 "glossary_count": glossary_count,
                 "last": last_by_ref.get(connection_id),
