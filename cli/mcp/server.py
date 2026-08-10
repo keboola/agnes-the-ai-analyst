@@ -214,6 +214,36 @@ def knowledge_search(query: str, k: int = 10) -> dict:
 
 
 @tool()
+def collection_file_read(collection_id: str, file_id: str) -> dict:
+    """Read one file's text straight, without guessing search terms.
+
+    Use this when you know WHICH file you want — "what is in this
+    document?", "summarise this upload". ``collections_search`` is for when
+    you do not: it needs words that appear in the body, and it cannot
+    enumerate a collection (see its own note).
+
+    Returns ``kind`` plus, for readable files, ``text`` and ``truncated``.
+    The server caps the text (~20k characters), so ``truncated: true`` means
+    you are holding a PREFIX — do not summarise it as the whole document;
+    fall back to ``collections_search`` with a distinctive term to reach the
+    rest. When there is no text yet (still ingesting, rejected, or a format
+    with no extractable text) ``kind`` is ``none`` and ``reason`` explains
+    which — relay that rather than reporting an access error.
+
+    Do not loop this over a whole collection: reading many files to answer
+    one question is what retrieval is for.
+
+    Args:
+        collection_id: Collection id from ``collections_list`` (``col_...``).
+        file_id: File id from ``collection_get`` (``cf_...``).
+    """
+    try:
+        return api_get_json(f"/api/collections/{collection_id}/files/{file_id}/preview")
+    except V2ClientError as exc:
+        raise ValueError(_mcp_error("collection_file_read", exc)) from exc
+
+
+@tool()
 def collections_reingest(collection_id: str, file_id: str) -> dict:
     """Re-run ingestion for one file in a Collection (requires access to the collection).
 
