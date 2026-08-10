@@ -262,9 +262,26 @@ function setThreadTitle(title) {
 // thread on the clipboard as markdown.
 //
 // Read back from the API rather than scraped off the DOM. The rendered bubbles
-// have already been through markdown → HTML, and the tool calls — which are
-// the provenance, the part that makes a report diagnosable — sit inside
-// collapsed <details>. The endpoint returns both, in order, as stored.
+// have already been through markdown → HTML, and the endpoint's `tool_calls`
+// is the only provenance beyond raw prose. NOT "in order, as stored" for every
+// row, though: on the live agent path nothing persists real tool calls at all
+// (the runner streams them as separate frames the manager never re-attaches
+// to the final message), so the only rows that ever carry `tool_calls` here
+// are the cancelled/interrupted markers manager.py writes — which have no
+// `tool`/`args` keys. formatToolCall() below skips those rather than
+// rendering `tool: undefined` with an empty fence.
+
+/** One tool_calls[] entry as `{label, argsJson}`, or `null` for a row with no
+ *  `tool` name — the shape of manager.py's cancelled/interrupted markers
+ *  (`{"cancelled": true}`, `{"interrupted": true, "reason": …}`), which are
+ *  the only `tool_calls` a persisted message ever actually carries today.
+ *  Without this guard `tc.tool` is `undefined`, `JSON.stringify(undefined, …)`
+ *  is also `undefined`, and both render as the literal string "undefined" /
+ *  an empty fence. */
+function formatToolCall(tc) {
+  if (!tc || typeof tc.tool !== "string") return null;
+  return { label: tc.tool, argsJson: JSON.stringify(tc.args ?? {}, null, 2) };
+}
 
 /** Markdown transcript of one conversation. Throws on a failed fetch so the
  *  caller can distinguish "couldn't read it" from "couldn't copy it". */
@@ -278,9 +295,11 @@ async function fetchTranscriptMarkdown(chatId) {
     const who = m.role === "user" ? "You" : m.role === "assistant" ? "Agnes" : m.role;
     out.push(`## ${who} · ${m.created_at}`, "", (m.content || "").trim(), "");
     for (const tc of m.tool_calls || []) {
+      const call = formatToolCall(tc);
+      if (!call) continue;
       // Fenced, not inline: an `agnes query` argument is multi-line SQL, and
       // the point of carrying tool calls at all is that they stay readable.
-      out.push(`<details><summary>tool: ${tc.tool}</summary>`, "", "```json", JSON.stringify(tc.args, null, 2), "```", "", "</details>", "");
+      out.push(`<details><summary>tool: ${call.label}</summary>`, "", "```json", call.argsJson, "```", "", "</details>", "");
     }
   }
   return out.join("\n");
@@ -291,9 +310,27 @@ function wireCopyTranscript() {
   if (!btn) return;
   btn.addEventListener("click", async () => {
     if (!currentChatId) return;
+    const chatId = currentChatId;
     btn.disabled = true;
     try {
-      const md = await fetchTranscriptMarkdown(currentChatId);
+      if (window.ClipboardItem && navigator.clipboard?.write && window.isSecureContext) {
+        // `navigator.clipboard.write` has to be *called* synchronously inside
+        // the click handler — an `await` before it (the fetch below is a real
+        // network round-trip) drops the transient user-activation WebKit
+        // requires, and the button reports "Couldn't copy to clipboard" even
+        // though everything else worked. ClipboardItem lets the *value*
+        // resolve later while the write call itself starts right here.
+        const md = fetchTranscriptMarkdown(chatId);
+        await navigator.clipboard.write([
+          new ClipboardItem({ "text/plain": md.then((text) => new Blob([text], { type: "text/plain" })) }),
+        ]);
+        showToast("Transcript copied", "ok");
+        return;
+      }
+      // ClipboardItem unavailable (older Firefox, non-secure context): fall
+      // back to the pre-fetch-then-copy path, which still works everywhere
+      // that got a real click but loses the gesture on stricter browsers.
+      const md = await fetchTranscriptMarkdown(chatId);
       const ok = await copyTextToClipboard(md);
       showToast(ok ? "Transcript copied" : "Couldn't copy to clipboard", ok ? "ok" : "error");
     } catch (_) {
@@ -1278,14 +1315,19 @@ function renderMessage(m) {
 
   if (m.tool_calls && m.tool_calls.length) {
     for (const tc of m.tool_calls) {
+      // A row can carry no `tool` name at all — the cancelled/interrupted
+      // markers manager.py stores in place of a real tool call. Rendering
+      // those unconditionally produced `tool: undefined` and an empty fence.
+      const call = formatToolCall(tc);
+      if (!call) continue;
       const det = document.createElement("details");
       // F3: build via textContent, not innerHTML — tc.tool / tc.args are
       // untrusted and were previously interpolated into innerHTML unescaped.
       const summary = document.createElement("summary");
-      summary.textContent = `tool: ${tc.tool}`;
+      summary.textContent = `tool: ${call.label}`;
       const pre = document.createElement("pre");
       const code = document.createElement("code");
-      code.textContent = JSON.stringify(tc.args, null, 2);
+      code.textContent = call.argsJson;
       pre.appendChild(code);
       det.appendChild(summary);
       det.appendChild(pre);

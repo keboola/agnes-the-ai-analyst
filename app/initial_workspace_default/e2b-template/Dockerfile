@@ -42,7 +42,7 @@ RUN npm install -g @anthropic-ai/claude-code
 #
 # `matplotlib` is the exception: the CLI never imports it either, but the AGENT
 # needs it and cannot obtain it. E2B's per-hostname egress allowlist (and
-# `chat.docker_egress_mode: closed` on the Docker sibling) means an in-sandbox
+# `chat.docker_egress_mode: none` on the Docker sibling) means an in-sandbox
 # `pip install matplotlib` does not reach PyPI, so the agent improvises — the
 # reported failure was an SVG written to `/tmp` and a user told to open a path
 # that does not exist on their machine. The workspace CLAUDE.md carries the

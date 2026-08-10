@@ -44,6 +44,7 @@ import pytest
 WORKSPACE_CLAUDE_MD = Path("app/initial_workspace_default/CLAUDE.md")
 DOCKER_SANDBOX = Path("app/initial_workspace_default/docker-sandbox/Dockerfile")
 E2B_TEMPLATE = Path("app/initial_workspace_default/e2b-template/Dockerfile")
+CLOUD_CHAT_DOC = Path("docs/cloud-chat.md")
 TOUR_JS = Path("app/web/static/js/tour.js")
 CHAT_JS = Path("app/web/static/js/chat.js")
 CHAT_CSS = Path("app/web/static/css/chat.css")
@@ -109,6 +110,26 @@ def test_both_sandbox_images_carry_matplotlib(dockerfile: Path):
     are siblings and drift between them is a per-provider bug."""
     body = _read(dockerfile)
     assert "matplotlib>=" in body, f"{dockerfile} must bake matplotlib in"
+
+
+def test_the_contract_label_matches_what_the_docs_tell_operators_to_expect():
+    """The operator note in docs/cloud-chat.md tells the reader to rebuild the
+    sandbox image after upgrading Agnes and confirm the new contract with
+    `docker inspect … agnes.chat-sandbox.contract`. That check is worthless if
+    the label never moves: this PR added `matplotlib` to the image's pip
+    install block (a real contract change — a pre-upgrade image cannot draw a
+    chart) without bumping `LABEL agnes.chat-sandbox.contract`, so a stale and
+    a current image reported the identical value — exactly the case the
+    paragraph exists to catch. Pins the two sides of that check to each other
+    so they can't drift apart silently again."""
+    label = re.search(r'LABEL agnes\.chat-sandbox\.contract="(\d+)"', _read(DOCKER_SANDBOX))
+    assert label, "the contract LABEL moved — re-point this guard"
+    doc = re.search(r"confirm the contract label reads `(\d+)`", _read(CLOUD_CHAT_DOC))
+    assert doc, "docs/cloud-chat.md no longer states the expected contract label value"
+    assert label.group(1) == doc.group(1), (
+        f"Dockerfile LABEL is {label.group(1)!r} but the docs tell the operator to expect "
+        f"{doc.group(1)!r} — bump whichever one is stale"
+    )
 
 
 def _dangerous_tags() -> set[str]:
@@ -189,7 +210,31 @@ def test_copy_transcript_is_wired():
     chat = _read(CHAT_JS)
     assert "wireCopyTranscript()" in chat, "the button must be wired at boot, not just declared"
     assert "/api/chat/sessions/${encodeURIComponent(chatId)}/messages" in chat
-    assert "tool: ${tc.tool}" in chat, "tool calls are the provenance — a transcript without them is undiagnosable"
+    assert "tool: ${call.label}" in chat, "tool calls are the provenance — a transcript without them is undiagnosable"
+
+
+def test_the_clipboard_write_is_issued_synchronously_from_the_click():
+    """`navigator.clipboard.writeText`/`.write` need an unbroken chain of
+    synchronous calls back to the user gesture on WebKit; an `await` before
+    the call — such as `await fetchTranscriptMarkdown(...)`, a real network
+    round-trip — drops that transient activation, and the button reports
+    "Couldn't copy to clipboard" even though the fetch and the write would
+    both have succeeded. A promise-based `ClipboardItem` is the fix: the
+    *value* can resolve after the fetch, but `navigator.clipboard.write(...)`
+    itself must be *called* with nothing awaited first."""
+    chat = _read(CHAT_JS)
+    fn = re.search(r"function wireCopyTranscript\(\) \{.*?\n\}\n", chat, re.DOTALL)
+    assert fn, "wireCopyTranscript moved — re-point this guard"
+    body = fn.group(0)
+    assert "ClipboardItem" in body, "the standards-track fix (a promise-based ClipboardItem) is gone"
+    before_write, _, after = body.partition("await navigator.clipboard.write(")
+    assert after, "navigator.clipboard.write(...) call not found in wireCopyTranscript"
+    assert "const md = fetchTranscriptMarkdown(chatId);" in before_write, (
+        "the transcript fetch must be a promise handed to ClipboardItem, not awaited first"
+    )
+    assert "await fetchTranscriptMarkdown" not in before_write, (
+        "an `await` before the clipboard write drops the click's user-activation on WebKit"
+    )
 
 
 # ── 2. Executable ───────────────────────────────────────────────────────────
@@ -260,3 +305,33 @@ def test_the_scheme_allowlist_rejects_a_data_uri_image():
     assert data_ok is False, "a data: image would render — the prompt rule could be relaxed"
     assert js_ok is False, "javascript: must stay refused"
     assert https_ok is True and relative_ok is True, "ordinary image sources must still work"
+
+
+def test_a_tool_call_row_with_no_tool_name_is_skipped_not_rendered_as_undefined():
+    """The only `tool_calls` a persisted message ever actually carries on the
+    live agent path are manager.py's cancelled/interrupted markers
+    (`{"cancelled": true}`, `{"interrupted": true, "reason": …}`) — real tool
+    calls are never re-attached to the stored assistant message. Before
+    `formatToolCall()` existed, both the transcript export and the live
+    renderer built `tool: ${tc.tool}` unconditionally: `tc.tool` is
+    `undefined` for a marker, and `JSON.stringify(undefined, …)` is also
+    `undefined`, so the row rendered as the literal text "tool: undefined"
+    with an empty ```json``` fence. Runs the real function out of chat.js."""
+    node = _node()
+    chat = _read(CHAT_JS)
+    decl = re.search(r"function formatToolCall\(tc\) \{.*?\n\}\n", chat, re.DOTALL)
+    assert decl, "formatToolCall moved — re-point this guard"
+    cases = [
+        {"tool": "agnes_query", "args": {"sql": "SELECT 1"}},
+        {"cancelled": True},
+        {"interrupted": True, "reason": "kicked"},
+        {},
+    ]
+    script = decl.group(0) + "\n" + f"process.stdout.write(JSON.stringify({json.dumps(cases)}.map(formatToolCall)));\n"
+    out = subprocess.run([node, "-e", script], capture_output=True, text=True)
+    assert out.returncode == 0, f"node failed:\n{out.stderr}"
+    real_call, cancelled, interrupted, empty = json.loads(out.stdout)
+    assert real_call == {"label": "agnes_query", "argsJson": json.dumps({"sql": "SELECT 1"}, indent=2)}
+    assert cancelled is None, "a cancelled marker has no `tool` name and must be skipped, not stringified"
+    assert interrupted is None, "an interrupted marker has no `tool` name and must be skipped, not stringified"
+    assert empty is None
