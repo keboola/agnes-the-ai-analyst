@@ -76,3 +76,31 @@ def test_every_gated_skill_is_actually_bundled():
         assert (bundled / skill_name).is_dir(), (
             f"{skill_name} is registered as feature-gated but is not a bundled skill — the gate would be a no-op"
         )
+
+
+def test_the_scaffold_path_is_absolute_and_says_where_it_is_not():
+    """Watched live: "sibling of this skill's session workspace" was read as a
+    path relative to the skill directory. The agent ran `ls` against
+    `.claude/skills/agnes-data-apps-extras/scaffolds/` three times, then `find`
+    (refused by the egress/enumeration hook) and `Read` (EISDIR), and never
+    tried `/work/scaffolds/` — where the scaffolds actually are, symlinked in
+    by WORKSPACE_LINK_ENTRIES. The run stalled there.
+
+    A relative path in a skill is read relative to whatever the reader thinks
+    "here" is. This one is absolute, and says out loud where it is NOT.
+    """
+    skill = Path("app/initial_workspace_default/.claude/skills/agnes-data-apps-extras/SKILL.md")
+    body = skill.read_text(encoding="utf-8")
+    assert "/work/scaffolds/nodejs-dashboard/" in body, "the scaffold path must be absolute"
+    assert "not** inside this skill" in body, "say where it is not — that is the misread that happened"
+    # And the thing it points at has to exist, or the absolute path is just a
+    # more confident way to be wrong.
+    assert Path("app/initial_workspace_default/scaffolds/nodejs-dashboard").is_dir()
+
+
+def test_scaffolds_are_linked_into_the_session_workspace():
+    """The absolute path above is only correct because `scaffolds` is one of
+    the workspace entries symlinked into each session dir."""
+    from app.chat.workdir import WORKSPACE_LINK_ENTRIES
+
+    assert "scaffolds" in WORKSPACE_LINK_ENTRIES
