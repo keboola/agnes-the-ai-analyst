@@ -113,3 +113,48 @@ def test_sharing_collection_grants_access(setup_db):
 
     assert can_access_table(_u("other1"), setup_db["table_id"], setup_db["conn"]) is True
     assert setup_db["table_id"] in get_accessible_tables(_u("other1"), setup_db["conn"])
+
+
+def test_data_package_membership_also_grants_access(setup_db):
+    """Adding the derived table to a granted Data Package must work.
+
+    Regression: the collection branch used to `return` unconditionally, so a
+    collection-derived table ignored data-package membership entirely. An
+    admin who followed the product's own 403 message ("ask an admin to add it
+    to a Data Package you have access to") saw nothing change, while
+    `/catalog` — which resolves through packages — showed the table as
+    in-stack and LOCAL. Catalog said yes, download said no.
+    """
+    from app.resource_types import ResourceType
+    from src.rbac import can_access_table, get_accessible_tables
+    from src.repositories import data_packages_repo
+    from src.repositories.resource_grants import ResourceGrantsRepository
+
+    conn = setup_db["conn"]
+    # Sanity: other1 has no collection share, so today they are denied.
+    assert can_access_table(_u("other1"), setup_db["table_id"], conn) is False
+
+    pkg_id = data_packages_repo().create(
+        name="Sales",
+        slug="sales",
+        description="Uploaded sales data",
+        icon=None,
+        color=None,
+        created_by="admin1",
+    )
+    data_packages_repo().add_table(
+        pkg_id, setup_db["table_id"], added_by="admin1"
+    )
+    ResourceGrantsRepository(conn).create(
+        group_id=setup_db["analysts_gid"],
+        resource_type=ResourceType.DATA_PACKAGE.value,
+        resource_id=pkg_id,
+        assigned_by="admin1",
+        # Required-tier: lands in every member's stack without a
+        # per-analyst subscribe step, which keeps this test about table
+        # access rather than about stack subscription mechanics.
+        requirement="required",
+    )
+
+    assert can_access_table(_u("other1"), setup_db["table_id"], conn) is True
+    assert setup_db["table_id"] in get_accessible_tables(_u("other1"), conn)
