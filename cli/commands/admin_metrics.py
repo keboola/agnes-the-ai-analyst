@@ -6,6 +6,7 @@ live in `agnes catalog --metrics`.
 """
 
 from pathlib import Path
+from typing import Optional
 
 import typer
 
@@ -14,14 +15,37 @@ from src.repositories import (
     table_registry_repo,
     use_pg,
 )
+
 admin_metrics_app = typer.Typer(help="Admin: metric definition management")
 
 
 @admin_metrics_app.command("import")
 def import_metrics(
     path: str = typer.Argument(..., help="Path to a YAML file or directory of YAML files"),
+    source_ref: Optional[str] = typer.Option(
+        None,
+        "--source-ref",
+        help="Label this export. Narrows --prune to metrics from the same label, so two exports can coexist.",
+    ),
+    prune: bool = typer.Option(
+        False,
+        "--prune",
+        help="Delete previously imported metrics the directory no longer contains (never touches other sources).",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Report what would be added, updated and deleted. Writes nothing.",
+    ),
 ):
-    """Import metric definitions from YAML into DuckDB (direct, no API)."""
+    """Import metric definitions from YAML into DuckDB (direct, no API).
+
+    Upsert-only by default, so the registry can grow but never shrink. Add
+    ``--prune`` to make it MATCH the directory — scoped to the rows this
+    importer wrote, so a metric authored in the UI or created by another
+    connector is out of reach by construction. Run ``--dry-run`` first: a
+    rename is indistinguishable from delete + create at the id level.
+    """
     from src.db import get_system_db
 
     import_path = Path(path)
@@ -34,11 +58,51 @@ def import_metrics(
     conn = None if use_pg() else get_system_db()
     try:
         repo = metric_repo()
-        count = repo.import_from_yaml(import_path)
-        typer.echo(f"Imported {count} metric(s) from {path}")
+        report = repo.reconcile_from_yaml(import_path, source_ref=source_ref, prune=prune, dry_run=dry_run)
+        _echo_report(report, path=path, dry_run=dry_run, prune=prune)
+        if report["deleted"] and not dry_run:
+            _audit_prune(report["deleted"], source_ref=source_ref)
     finally:
         if conn is not None:
             conn.close()
+
+
+def _echo_report(report: dict, *, path: str, dry_run: bool, prune: bool) -> None:
+    """Print the reconcile outcome, naming what was NOT done as well as what was.
+
+    A silent cap reads as "covered everything": without the closing hint, an
+    operator who forgot ``--prune`` sees a clean import and no sign that stale
+    metrics are still there.
+    """
+    prefix = "Would import" if dry_run else "Imported"
+    typer.echo(f"{prefix} {len(report['written'])} metric(s) from {path}")
+    typer.echo(f"  added   {len(report['added'])}")
+    typer.echo(f"  updated {len(report['updated'])}")
+    for metric_id in report["deleted"]:
+        typer.echo(f"  {'would delete' if dry_run else 'deleted'} {metric_id}")
+    if not prune:
+        typer.echo("  (--prune not set: metrics missing from this directory were left in place)")
+    elif not report["deleted"]:
+        typer.echo("  nothing to prune")
+
+
+def _audit_prune(deleted: list, *, source_ref: Optional[str]) -> None:
+    """One audit row per deletion — this is the only destructive metric path,
+    and it runs direct against the repo with no API request behind it."""
+    from src.repositories import audit_repo
+
+    for metric_id in deleted:
+        try:
+            audit_repo().log(
+                user_id=None,
+                action="metrics.prune",
+                resource=f"metric:{metric_id}"[:256],
+                params={"source_ref": source_ref},
+                result="success",
+                client_kind="cli",
+            )
+        except Exception:  # noqa: BLE001 - an audit outage must not abort the import
+            typer.echo(f"  (audit write failed for {metric_id})", err=True)
 
 
 @admin_metrics_app.command("export")
