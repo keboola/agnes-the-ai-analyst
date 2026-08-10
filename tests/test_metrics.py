@@ -705,3 +705,89 @@ class TestMetricReconcileRefusesEmptyParse:
         bad.mkdir(parents=True)
         (bad / "empty.yml").write_text("")
         assert repo.import_from_yaml(bad.parent) == 0
+
+
+class TestMetricReconcileReportsAdoption:
+    """An incoming id that already belongs to a DIFFERENT writer is neither
+    "added" nor a routine "update" — the import overwrites that row and
+    re-stamps its `source`, which moves it into prune scope. Reporting it as
+    "added" told the operator a new metric would appear while a hand-authored
+    one was about to be taken over.
+    """
+
+    def _repo(self, db_conn):
+        from src.repositories.metrics import MetricRepository
+
+        return MetricRepository(db_conn)
+
+    def _yaml(self, tmp_path, metric_id="revenue/total_revenue"):
+        category, name = metric_id.split("/")
+        d = tmp_path / "in" / category
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{name}.yml").write_text(f"name: {name}\ncategory: {category}\nsql: SELECT 999\n")
+        return tmp_path / "in"
+
+    def test_taking_over_a_hand_authored_metric_is_reported_as_adopted(self, db_conn, tmp_path):
+        repo = self._repo(db_conn)
+        repo.create(
+            id="revenue/total_revenue", name="total_revenue", display_name="Hand written",
+            category="revenue", sql="SELECT 1", source="manual",
+        )
+        report = repo.reconcile_from_yaml(self._yaml(tmp_path), dry_run=True)
+        assert report["adopted"] == ["revenue/total_revenue"]
+        assert report["added"] == [], "an existing row is not an addition"
+
+    def test_a_genuinely_new_metric_is_still_added(self, db_conn, tmp_path):
+        repo = self._repo(db_conn)
+        report = repo.reconcile_from_yaml(self._yaml(tmp_path), dry_run=True)
+        assert report["added"] == ["revenue/total_revenue"]
+        assert report["adopted"] == []
+
+    def test_reimporting_our_own_metric_is_an_update_not_an_adoption(self, db_conn, tmp_path):
+        repo = self._repo(db_conn)
+        src = self._yaml(tmp_path)
+        repo.reconcile_from_yaml(src)
+        report = repo.reconcile_from_yaml(src, dry_run=True)
+        assert report["updated"] == ["revenue/total_revenue"]
+        assert report["adopted"] == []
+
+    def test_a_metric_from_another_label_counts_as_adopted(self, db_conn, tmp_path):
+        repo = self._repo(db_conn)
+        src = self._yaml(tmp_path)
+        repo.reconcile_from_yaml(src, source_ref="finance")
+        report = repo.reconcile_from_yaml(src, source_ref="growth", dry_run=True)
+        assert report["adopted"] == ["revenue/total_revenue"]
+
+
+class TestMetricReconcileAuditsBeforeDeleting:
+    """The audit row must be written BEFORE the delete, not after it.
+
+    An interruption between the two otherwise leaves a metric deleted with no
+    record — on the only destructive path this repo has.
+    """
+
+    def test_the_callback_fires_before_the_row_is_gone(self, db_conn, metrics_dir):
+        from src.repositories.metrics import MetricRepository
+
+        repo = MetricRepository(db_conn)
+        repo.reconcile_from_yaml(metrics_dir)
+        (metrics_dir / "operations" / "resolution_time.yml").unlink()
+
+        seen = []
+        repo.reconcile_from_yaml(
+            metrics_dir,
+            prune=True,
+            on_delete=lambda mid: seen.append((mid, repo.get(mid) is not None)),
+        )
+        assert seen == [("operations/resolution_time", True)], "callback ran after the delete"
+
+    def test_no_callback_fires_on_a_dry_run(self, db_conn, metrics_dir):
+        from src.repositories.metrics import MetricRepository
+
+        repo = MetricRepository(db_conn)
+        repo.reconcile_from_yaml(metrics_dir)
+        (metrics_dir / "operations" / "resolution_time.yml").unlink()
+
+        seen = []
+        repo.reconcile_from_yaml(metrics_dir, prune=True, dry_run=True, on_delete=seen.append)
+        assert seen == []
