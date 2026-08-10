@@ -479,3 +479,54 @@ def test_every_heading_the_allowlist_admits_is_styled_in_the_detail():
         f"headings admitted by the allowlist but unstyled in .sl-detail__desc: {missing} — "
         "they will render at browser-default size inside a compact metric row"
     )
+
+
+class TestCatalogSemanticsDetailCompleteness:
+    """Every stored field of a metric definition reaches the detail.
+
+    The four below were carried by `metric_definitions` and by the importer but
+    never rendered, so the page showed a metric's *generated* SQL while hiding
+    the upstream `expression` it was composed from — the field an analyst opens
+    the detail to read.
+    """
+
+    def _page(self, seeded_app) -> str:
+        c = seeded_app["client"]
+        resp = c.get("/catalog/semantics", headers=_auth(seeded_app["analyst_token"]))
+        assert resp.status_code == 200
+        return resp.text
+
+    def test_expression_is_shown(self, seeded_app):
+        """The Keboola semantic-layer import stores it on every metric it
+        writes (connectors/keboola/semantic_layer.py), and eleven of the
+        bundled YAML metrics carry one."""
+        _make_metric(expression="SUM(mrr_amount) / COUNT(DISTINCT account_id)")
+        body = self._page(seeded_app)
+        assert "SUM(mrr_amount) / COUNT(DISTINCT account_id)" in body
+
+    def test_time_column_is_shown(self, seeded_app):
+        _make_metric(time_column="billing_date")
+        assert "billing_date" in self._page(seeded_app)
+
+    def test_filters_are_shown(self, seeded_app):
+        _make_metric(filters=["status = 'active'", "region IS NOT NULL"])
+        body = self._page(seeded_app)
+        assert "status = &#39;active&#39;" in body
+        assert "region IS NOT NULL" in body
+
+    def test_sql_variants_are_shown(self, seeded_app):
+        """Stored as a dict of variant name -> SQL; each needs its own labelled
+        block, not a dumped repr."""
+        _make_metric(sql_variants={"quarter": "SELECT 1 AS quarterly", "region": "SELECT 2 AS by_region"})
+        body = self._page(seeded_app)
+        assert "quarter" in body and "SELECT 1 AS quarterly" in body
+        assert "region" in body and "SELECT 2 AS by_region" in body
+        assert "{&#39;quarter&#39;:" not in body, "rendered as a python repr rather than per-variant blocks"
+
+    def test_a_metric_without_them_renders_no_empty_labels(self, seeded_app):
+        """Every one is optional — absent fields must not leave dangling
+        headings behind."""
+        _make_metric()
+        body = self._page(seeded_app)
+        for label in ("Expression", "Time column", "Filters", "Variants"):
+            assert f"<strong>{label}</strong>" not in body
