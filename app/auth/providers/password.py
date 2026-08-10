@@ -424,6 +424,20 @@ async def reset_request(
     )
 
 
+def _forced_rotation_reason(email: str) -> str:
+    """Re-derive the reset form's ``reason`` from the account itself.
+
+    The form only posts back ``email``/``token``/``password``/``confirm_password``
+    — no ``reason`` — so an error re-render can't just thread the query param
+    through like the initial GET does. Looking the account up again and
+    reading its own ``must_change_password`` flag is the source of truth for
+    which copy belongs on the page, and unlike a hidden form field it can't be
+    forged by editing the POST body to swap one explanation for the other.
+    """
+    user = users_repo().get_by_email(email)
+    return "must_change" if user and user.get("must_change_password") else ""
+
+
 @router.post("/reset/confirm")
 @_rate_limiter.limit("10/minute")
 async def reset_confirm(
@@ -440,14 +454,21 @@ async def reset_confirm(
     referer leaks have surfaced partial tokens before, and there's no
     reason to allow unbounded attempts.
     """
+    # Computed once up front and reused on every error re-render below (see
+    # `_forced_rotation_reason`) — a mistyped confirmation or a too-short
+    # password used to fall back to the generic "Reset Your Password" copy
+    # because the reason never survives the POST, leaving a forced-rotation
+    # user thinking their correct password was rejected.
+    reason = _forced_rotation_reason(email)
     if password != confirm_password:
-        return _render_reset_form(request, email=email, token=token, error="Passwords do not match.")
+        return _render_reset_form(request, email=email, token=token, error="Passwords do not match.", reason=reason)
     if len(password) < MIN_PASSWORD_LEN:
         return _render_reset_form(
             request,
             email=email,
             token=token,
             error=f"Password must be at least {MIN_PASSWORD_LEN} characters.",
+            reason=reason,
         )
 
     # Atomic compare-and-swap to consume the reset token. Mirrors the
@@ -468,17 +489,23 @@ async def reset_confirm(
     except Exception as exc:
         err = str(exc).lower()
         if "conflict" in err or "transaction" in err:
-            return _render_reset_form(request, email=email, token=token, error="Invalid or expired reset link.")
+            return _render_reset_form(
+                request, email=email, token=token, error="Invalid or expired reset link.", reason=reason
+            )
         raise
     if not won:
         # Token never matched, expired, account deactivated, or the race was
         # lost. Single error keeps the UX simple and avoids leaking which.
-        return _render_reset_form(request, email=email, token=token, error="Invalid or expired reset link.")
+        return _render_reset_form(
+            request, email=email, token=token, error="Invalid or expired reset link.", reason=reason
+        )
 
     # Won the race — fetch the user and apply the password change.
     user = repo.get_by_email(email)
     if not user:
-        return _render_reset_form(request, email=email, token=token, error="Invalid or expired reset link.")
+        return _render_reset_form(
+            request, email=email, token=token, error="Invalid or expired reset link.", reason=reason
+        )
 
     ph = PasswordHasher()
     repo.update(

@@ -537,6 +537,63 @@ class TestFlagClearedOnReset:
         assert "access_token" in resp.json()
 
 
+class TestForcedRotationSurvivesFormErrors:
+    """The reset form only posts back email/token/password/confirm_password —
+    no `reason` — so an error re-render used to always fall back to the
+    generic "Reset Your Password" copy, even for a forced-rotation user. The
+    account's own `must_change_password` flag must be re-derived on every
+    error path in `reset_confirm`, not just the happy path."""
+
+    def test_mismatched_confirmation_keeps_forced_rotation_copy(self, app_client, fresh_db):
+        _seed_user(
+            "typo@test.com",
+            password_hash=_ph().hash("seeded-pass"),
+            must_change_password=True,
+            reset_token="tok-typo",
+            reset_token_created=datetime.now(timezone.utc),
+        )
+        resp = app_client.post(
+            "/auth/password/reset/confirm",
+            data={
+                "email": "typo@test.com",
+                "token": "tok-typo",
+                "password": "new-pass-123",
+                "confirm_password": "new-pass-124",  # typo — does not match
+            },
+        )
+        assert resp.status_code == 200
+        assert "one-time password" in resp.text
+        assert "Passwords do not match." in resp.text
+        # The account must still be flagged — the mismatched attempt never
+        # touched the database.
+        user = _get_user("typo@test.com")
+        assert user["must_change_password"] is True
+
+    def test_invalid_token_keeps_forced_rotation_copy_when_account_resolves(self, app_client, fresh_db):
+        """A stale/invalid token still fails the CAS, but the email in the
+        form resolves to a real, still-flagged account — the forced-rotation
+        copy is the true state of that account regardless of the token."""
+        _seed_user(
+            "staletoken@test.com",
+            password_hash=_ph().hash("seeded-pass"),
+            must_change_password=True,
+            reset_token="tok-real",
+            reset_token_created=datetime.now(timezone.utc),
+        )
+        resp = app_client.post(
+            "/auth/password/reset/confirm",
+            data={
+                "email": "staletoken@test.com",
+                "token": "tok-wrong",  # does not match the seeded token
+                "password": "new-pass-123",
+                "confirm_password": "new-pass-123",
+            },
+        )
+        assert resp.status_code == 200
+        assert "one-time password" in resp.text
+        assert "Invalid or expired reset link." in resp.text
+
+
 # ---------------------------------------------------------------------------
 # 7. Admin set-password sets must_change_password=True
 # ---------------------------------------------------------------------------
