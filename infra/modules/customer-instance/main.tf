@@ -410,6 +410,7 @@ resource "google_compute_instance" "vm" {
     domain_alias                    = each.value.domain_alias
     ui_layout                       = each.value.ui_layout
     theme                           = each.value.theme
+    experience                      = each.value.experience
     acme_email                      = var.acme_email != "" ? var.acme_email : var.seed_admin_email
     data_source                     = var.data_source
     keboola_stack_url               = var.keboola_stack_url
