@@ -1,5 +1,6 @@
 """Tests for MetricRepository (metric_definitions table)."""
 
+import pathlib
 import pytest
 
 
@@ -467,3 +468,463 @@ class TestMetricRepositoryExport:
         # Verify sql_variants are expanded back to sql_by_* keys
         assert "sql_by_channel" in data
         assert "sql_variants" not in data
+
+
+class TestMetricRepositoryReconcile:
+    """`reconcile_from_yaml` — the import that can also SHRINK the registry.
+
+    `import_from_yaml` is upsert-only, so a metric deleted upstream stays
+    forever and a rename leaves both ids behind, indistinguishable from a
+    hand-authored metric (#1219). Reconcile adds the missing direction, keyed
+    on the writer recorded in `source` (+ optional `source_ref`) so it can
+    never reach a metric a human wrote in the UI.
+    """
+
+    def _repo(self, db_conn):
+        from src.repositories.metrics import MetricRepository
+
+        return MetricRepository(db_conn)
+
+    def test_dry_run_reports_without_writing(self, db_conn, metrics_dir):
+        repo = self._repo(db_conn)
+        report = repo.reconcile_from_yaml(metrics_dir, dry_run=True)
+        assert set(report["added"]) == {"revenue/total_revenue", "operations/resolution_time"}
+        assert report["updated"] == [] and report["deleted"] == []
+        assert repo.list() == [], "dry run must not write"
+
+    def test_second_run_reports_updates_not_adds(self, db_conn, metrics_dir):
+        repo = self._repo(db_conn)
+        repo.reconcile_from_yaml(metrics_dir)
+        report = repo.reconcile_from_yaml(metrics_dir, dry_run=True)
+        assert report["added"] == []
+        assert set(report["updated"]) == {"revenue/total_revenue", "operations/resolution_time"}
+
+    def test_prune_removes_a_metric_the_source_dropped(self, db_conn, metrics_dir):
+        repo = self._repo(db_conn)
+        repo.reconcile_from_yaml(metrics_dir)
+        (metrics_dir / "operations" / "resolution_time.yml").unlink()
+
+        report = repo.reconcile_from_yaml(metrics_dir, prune=True)
+        assert report["deleted"] == ["operations/resolution_time"]
+        assert {m["id"] for m in repo.list()} == {"revenue/total_revenue"}
+
+    def test_without_prune_the_dropped_metric_survives(self, db_conn, metrics_dir):
+        """The default stays upsert-only — shrinking is opt-in."""
+        repo = self._repo(db_conn)
+        repo.reconcile_from_yaml(metrics_dir)
+        (metrics_dir / "operations" / "resolution_time.yml").unlink()
+
+        report = repo.reconcile_from_yaml(metrics_dir)
+        assert report["deleted"] == []
+        assert len(repo.list()) == 2
+
+    def test_prune_never_touches_a_hand_authored_metric(self, db_conn, metrics_dir):
+        """The whole reason the scope is keyed on the writer: a metric an
+        admin wrote in the UI is not in any directory, and must not be read
+        as 'deleted upstream'."""
+        repo = self._repo(db_conn)
+        repo.create(id="manual/nps", name="nps", display_name="NPS", category="manual", sql="SELECT 1", source="manual")
+        repo.reconcile_from_yaml(metrics_dir, prune=True)
+        assert repo.get("manual/nps") is not None
+
+    def test_prune_never_touches_another_importers_metric(self, db_conn, metrics_dir):
+        repo = self._repo(db_conn)
+        repo.create(
+            id="keboola/live_deals", name="live_deals", display_name="Live Deals",
+            category="keboola", sql="SELECT 1", source="keboola_semantic_layer",
+        )
+        repo.reconcile_from_yaml(metrics_dir, prune=True)
+        assert repo.get("keboola/live_deals") is not None
+
+    def test_source_ref_narrows_the_scope_to_one_export(self, db_conn, metrics_dir, tmp_path):
+        """Two YAML exports into one instance both carry source='yaml_import',
+        so without a narrower key the second import would delete the first's
+        metrics. `--source-ref` is that key."""
+        repo = self._repo(db_conn)
+        repo.reconcile_from_yaml(metrics_dir, source_ref="finance")
+
+        other = tmp_path / "other" / "growth"
+        other.mkdir(parents=True)
+        (other / "signups.yml").write_text("name: signups\nsql: SELECT 1\n")
+        repo.reconcile_from_yaml(other.parent, source_ref="growth", prune=True)
+
+        ids = {m["id"] for m in repo.list()}
+        assert "growth/signups" in ids
+        assert "revenue/total_revenue" in ids, "pruning the 'growth' export deleted the 'finance' one"
+
+    def test_source_ref_is_stamped_on_the_rows(self, db_conn, metrics_dir):
+        repo = self._repo(db_conn)
+        repo.reconcile_from_yaml(metrics_dir, source_ref="finance")
+        assert repo.get("revenue/total_revenue")["source_ref"] == "finance"
+
+    def test_import_from_yaml_still_returns_a_count(self, db_conn, metrics_dir):
+        """The old entry point keeps its signature — eleven callers rely on it."""
+        repo = self._repo(db_conn)
+        assert repo.import_from_yaml(metrics_dir) == 2
+
+
+class TestMetricReconcileRefusesToWipe:
+    """`--prune` deletes everything in scope that the input does not mention,
+    so an input that mentions almost nothing is indistinguishable from "the
+    source dropped almost everything". These are the two shapes where that
+    reading is nearly always wrong, and the cost of being wrong is data loss.
+    """
+
+    def _repo(self, db_conn):
+        from src.repositories.metrics import MetricRepository
+
+        return MetricRepository(db_conn)
+
+    def test_prune_against_a_single_file_is_refused(self, db_conn, metrics_dir):
+        """A file describes some metrics; it cannot be the source of truth for
+        a whole scope. Before this guard, pointing prune at one file deleted
+        every other imported metric."""
+        repo = self._repo(db_conn)
+        repo.reconcile_from_yaml(metrics_dir)
+        with pytest.raises(ValueError, match="single file"):
+            repo.reconcile_from_yaml(metrics_dir / "revenue" / "total_revenue.yml", prune=True)
+        assert len(repo.list()) == 2, "refused prune must not have deleted anything"
+
+    def test_prune_against_a_directory_that_yields_nothing_is_refused(self, db_conn, metrics_dir, tmp_path):
+        """The worst shape: the layout is `<dir>/<category>/<name>.yml`, so a
+        directory whose files sit one level too high globs to zero files — and
+        an empty input told prune to delete the entire scope."""
+        repo = self._repo(db_conn)
+        repo.reconcile_from_yaml(metrics_dir)
+        flat = tmp_path / "flat"
+        flat.mkdir()
+        (flat / "mrr.yml").write_text("name: mrr\ncategory: revenue\nsql: SELECT 1\n")
+
+        with pytest.raises(ValueError, match="no metrics"):
+            repo.reconcile_from_yaml(flat, prune=True)
+        assert len(repo.list()) == 2
+
+    def test_those_inputs_are_still_fine_without_prune(self, db_conn, metrics_dir):
+        """The guard is on the destructive combination only — importing a
+        single file has always been legitimate."""
+        repo = self._repo(db_conn)
+        n = repo.import_from_yaml(metrics_dir / "revenue" / "total_revenue.yml")
+        assert n == 1
+
+    def test_dry_run_is_refused_too(self, db_conn, metrics_dir):
+        """A dry run that reports 'would delete everything' would teach the
+        operator the wrong thing about a path that must never be pruned."""
+        repo = self._repo(db_conn)
+        repo.reconcile_from_yaml(metrics_dir)
+        with pytest.raises(ValueError):
+            repo.reconcile_from_yaml(metrics_dir / "revenue" / "total_revenue.yml", prune=True, dry_run=True)
+
+
+class TestMetricReconcileLabelPartitions:
+    """Each `--source-ref` owns its own partition, and the unlabeled import
+    owns the unlabeled one. Without this, an unlabeled prune deleted labeled
+    exports' metrics — the exact coexistence the flag promises."""
+
+    def _repo(self, db_conn):
+        from src.repositories.metrics import MetricRepository
+
+        return MetricRepository(db_conn)
+
+    def test_unlabeled_prune_spares_a_labeled_export(self, db_conn, metrics_dir, tmp_path):
+        repo = self._repo(db_conn)
+        repo.reconcile_from_yaml(metrics_dir, source_ref="finance")
+
+        other = tmp_path / "other" / "growth"
+        other.mkdir(parents=True)
+        (other / "signups.yml").write_text("name: signups\ncategory: growth\nsql: SELECT 1\n")
+        report = repo.reconcile_from_yaml(other.parent, prune=True)
+
+        assert report["deleted"] == []
+        ids = {m["id"] for m in repo.list()}
+        assert "revenue/total_revenue" in ids, "unlabeled prune deleted a labeled export's metrics"
+
+    def test_labeled_prune_spares_the_unlabeled_rows(self, db_conn, metrics_dir, tmp_path):
+        repo = self._repo(db_conn)
+        repo.reconcile_from_yaml(metrics_dir)  # unlabeled
+
+        other = tmp_path / "other" / "growth"
+        other.mkdir(parents=True)
+        (other / "signups.yml").write_text("name: signups\ncategory: growth\nsql: SELECT 1\n")
+        report = repo.reconcile_from_yaml(other.parent, source_ref="growth", prune=True)
+
+        assert report["deleted"] == []
+        assert len(repo.list()) == 3
+
+
+class TestMetricReconcileScopeExcludesWebUploads:
+    """A metric uploaded through the admin page is a different writer.
+
+    Before this, `POST /api/admin/metrics/import` stamped the same
+    `source='yaml_import'` the CLI import uses, so a prune against some
+    directory deleted metrics an admin had uploaded by hand — the exact
+    outcome the "keyed on the writer" scope exists to prevent.
+    """
+
+    def test_prune_spares_a_web_uploaded_metric(self, db_conn, metrics_dir):
+        from src.repositories.metrics import MetricRepository
+
+        repo = MetricRepository(db_conn)
+        repo.reconcile_from_yaml(metrics_dir)
+        repo.create(
+            id="ops/uploaded", name="uploaded", display_name="Uploaded", category="ops",
+            sql="SELECT 1", source="web_upload",
+        )
+        (metrics_dir / "operations" / "resolution_time.yml").unlink()
+
+        report = repo.reconcile_from_yaml(metrics_dir, prune=True)
+        assert report["deleted"] == ["operations/resolution_time"]
+        assert repo.get("ops/uploaded") is not None
+
+
+class TestMetricReconcileRefusesEmptyParse:
+    """`files` existing is not the same as metrics parsing out of them.
+
+    A truncated or half-written export directory has files that yield nothing,
+    and an empty parse is how you tell prune "delete the whole scope".
+    """
+
+    def test_prune_against_unparseable_files_is_refused(self, db_conn, metrics_dir, tmp_path):
+        from src.repositories.metrics import MetricRepository
+
+        repo = MetricRepository(db_conn)
+        repo.reconcile_from_yaml(metrics_dir)
+
+        bad = tmp_path / "bad" / "revenue"
+        bad.mkdir(parents=True)
+        (bad / "empty.yml").write_text("")
+        (bad / "junk.yml").write_text("just a string\n")
+
+        # Caught by the per-file guard, which fires first and names the files;
+        # the empty-parse guard behind it covers a directory with no files at all.
+        with pytest.raises(ValueError, match="could not be read"):
+            repo.reconcile_from_yaml(bad.parent, prune=True)
+        assert len(repo.list()) == 2, "refused prune must not have deleted anything"
+
+    def test_importing_unparseable_files_without_prune_is_still_a_no_op(self, db_conn, tmp_path):
+        from src.repositories.metrics import MetricRepository
+
+        repo = MetricRepository(db_conn)
+        bad = tmp_path / "bad" / "revenue"
+        bad.mkdir(parents=True)
+        (bad / "empty.yml").write_text("")
+        assert repo.import_from_yaml(bad.parent) == 0
+
+
+class TestMetricReconcileReportsAdoption:
+    """An incoming id that already belongs to a DIFFERENT writer is neither
+    "added" nor a routine "update" — the import overwrites that row and
+    re-stamps its `source`, which moves it into prune scope. Reporting it as
+    "added" told the operator a new metric would appear while a hand-authored
+    one was about to be taken over.
+    """
+
+    def _repo(self, db_conn):
+        from src.repositories.metrics import MetricRepository
+
+        return MetricRepository(db_conn)
+
+    def _yaml(self, tmp_path, metric_id="revenue/total_revenue"):
+        category, name = metric_id.split("/")
+        d = tmp_path / "in" / category
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{name}.yml").write_text(f"name: {name}\ncategory: {category}\nsql: SELECT 999\n")
+        return tmp_path / "in"
+
+    def test_taking_over_a_hand_authored_metric_is_reported_as_adopted(self, db_conn, tmp_path):
+        repo = self._repo(db_conn)
+        repo.create(
+            id="revenue/total_revenue", name="total_revenue", display_name="Hand written",
+            category="revenue", sql="SELECT 1", source="manual",
+        )
+        report = repo.reconcile_from_yaml(self._yaml(tmp_path), dry_run=True)
+        assert report["adopted"] == ["revenue/total_revenue"]
+        assert report["added"] == [], "an existing row is not an addition"
+
+    def test_a_genuinely_new_metric_is_still_added(self, db_conn, tmp_path):
+        repo = self._repo(db_conn)
+        report = repo.reconcile_from_yaml(self._yaml(tmp_path), dry_run=True)
+        assert report["added"] == ["revenue/total_revenue"]
+        assert report["adopted"] == []
+
+    def test_reimporting_our_own_metric_is_an_update_not_an_adoption(self, db_conn, tmp_path):
+        repo = self._repo(db_conn)
+        src = self._yaml(tmp_path)
+        repo.reconcile_from_yaml(src)
+        report = repo.reconcile_from_yaml(src, dry_run=True)
+        assert report["updated"] == ["revenue/total_revenue"]
+        assert report["adopted"] == []
+
+    def test_a_metric_from_another_label_counts_as_adopted(self, db_conn, tmp_path):
+        repo = self._repo(db_conn)
+        src = self._yaml(tmp_path)
+        repo.reconcile_from_yaml(src, source_ref="finance")
+        report = repo.reconcile_from_yaml(src, source_ref="growth", dry_run=True)
+        assert report["adopted"] == ["revenue/total_revenue"]
+
+
+class TestMetricReconcileAuditsBeforeDeleting:
+    """The audit row must be written BEFORE the delete, not after it.
+
+    An interruption between the two otherwise leaves a metric deleted with no
+    record — on the only destructive path this repo has.
+    """
+
+    def test_the_callback_fires_before_the_row_is_gone(self, db_conn, metrics_dir):
+        from src.repositories.metrics import MetricRepository
+
+        repo = MetricRepository(db_conn)
+        repo.reconcile_from_yaml(metrics_dir)
+        (metrics_dir / "operations" / "resolution_time.yml").unlink()
+
+        seen = []
+        repo.reconcile_from_yaml(
+            metrics_dir,
+            prune=True,
+            on_delete=lambda mid: seen.append((mid, repo.get(mid) is not None)),
+        )
+        assert seen == [("operations/resolution_time", True)], "callback ran after the delete"
+
+    def test_no_callback_fires_on_a_dry_run(self, db_conn, metrics_dir):
+        from src.repositories.metrics import MetricRepository
+
+        repo = MetricRepository(db_conn)
+        repo.reconcile_from_yaml(metrics_dir)
+        (metrics_dir / "operations" / "resolution_time.yml").unlink()
+
+        seen = []
+        repo.reconcile_from_yaml(metrics_dir, prune=True, dry_run=True, on_delete=seen.append)
+        assert seen == []
+
+
+class TestMetricReconcileRefusesPartialParse:
+    """A half-written export is the dangerous middle case.
+
+    All-or-nothing shapes were already refused, but a directory where *some*
+    files are truncated still pruned: those metrics silently failed to parse,
+    and prune cannot tell "the file is broken" from "the source dropped it".
+    """
+
+    def _repo(self, db_conn):
+        from src.repositories.metrics import MetricRepository
+
+        return MetricRepository(db_conn)
+
+    def test_prune_is_refused_when_a_file_yields_no_metric(self, db_conn, metrics_dir):
+        repo = self._repo(db_conn)
+        repo.reconcile_from_yaml(metrics_dir)
+        # one good file survives, one is truncated mid-write
+        (metrics_dir / "operations" / "resolution_time.yml").write_text("just a truncated string\n")
+
+        with pytest.raises(ValueError, match="could not be read"):
+            repo.reconcile_from_yaml(metrics_dir, prune=True)
+        assert len(repo.list()) == 2, "refused prune must not have deleted anything"
+
+    def test_the_error_names_the_offending_file(self, db_conn, metrics_dir):
+        repo = self._repo(db_conn)
+        (metrics_dir / "operations" / "resolution_time.yml").write_text("name:\n")  # no usable name
+        with pytest.raises(ValueError, match="resolution_time.yml"):
+            repo.reconcile_from_yaml(metrics_dir, prune=True)
+
+    def test_a_broken_file_without_prune_is_skipped_as_before(self, db_conn, metrics_dir):
+        """Unchanged for the non-destructive path — import has always skipped
+        what it cannot read."""
+        repo = self._repo(db_conn)
+        (metrics_dir / "operations" / "resolution_time.yml").write_text("just a string\n")
+        assert repo.import_from_yaml(metrics_dir) == 1
+
+
+class TestMetricReconcileRefusalIsAtomic:
+    """A refused run must leave the registry exactly as it found it.
+
+    The guards fire on the *shape of the input*, which is knowable before a
+    single row is written — so a run that ends in "fix these files first" has
+    no business having already applied the readable half.
+    """
+
+    def test_a_refused_prune_writes_nothing_at_all(self, db_conn, metrics_dir):
+        from src.repositories.metrics import MetricRepository
+
+        repo = MetricRepository(db_conn)
+        # one good file, one truncated: the good one must NOT land
+        (metrics_dir / "operations" / "resolution_time.yml").write_text("truncated\n")
+
+        with pytest.raises(ValueError):
+            repo.reconcile_from_yaml(metrics_dir, prune=True)
+        assert repo.list() == [], "a refused run half-applied the import"
+
+    def test_a_refused_prune_does_not_update_existing_rows(self, db_conn, metrics_dir):
+        from src.repositories.metrics import MetricRepository
+
+        repo = MetricRepository(db_conn)
+        repo.reconcile_from_yaml(metrics_dir)
+        before = repo.get("revenue/total_revenue")["sql"]
+
+        (metrics_dir / "revenue" / "total_revenue.yml").write_text(
+            "name: total_revenue\ncategory: revenue\nsql: SELECT 'CHANGED'\n"
+        )
+        (metrics_dir / "operations" / "resolution_time.yml").write_text("truncated\n")
+
+        with pytest.raises(ValueError):
+            repo.reconcile_from_yaml(metrics_dir, prune=True)
+        assert repo.get("revenue/total_revenue")["sql"] == before
+
+
+class TestMetricReconcileHandlesBrokenYaml:
+    """A file with broken *syntax* is the same problem as one that parses to
+    nothing, and likelier in a half-written export — it must not abort the
+    import on a parser traceback partway through the directory."""
+
+    def test_broken_syntax_does_not_crash_the_import(self, db_conn, tmp_path):
+        from src.repositories.metrics import MetricRepository
+
+        repo = MetricRepository(db_conn)
+        d = tmp_path / "in" / "revenue"
+        d.mkdir(parents=True)
+        (d / "ok.yml").write_text("name: ok\ncategory: revenue\nsql: SELECT 1\n")
+        (d / "broken.yml").write_text("name: [unclosed\n")
+
+        assert repo.import_from_yaml(tmp_path / "in") == 1
+        assert {m["id"] for m in repo.list()} == {"revenue/ok"}
+
+    def test_broken_syntax_blocks_prune_and_names_the_file(self, db_conn, tmp_path):
+        from src.repositories.metrics import MetricRepository
+
+        repo = MetricRepository(db_conn)
+        d = tmp_path / "in" / "revenue"
+        d.mkdir(parents=True)
+        (d / "ok.yml").write_text("name: ok\ncategory: revenue\nsql: SELECT 1\n")
+        repo.reconcile_from_yaml(tmp_path / "in")
+
+        (d / "broken.yml").write_text("name: [unclosed\n")
+        with pytest.raises(ValueError, match="broken.yml"):
+            repo.reconcile_from_yaml(tmp_path / "in", prune=True)
+
+
+def test_reconcile_reads_yaml_and_yml_alike(db_conn, tmp_path):
+    """A `.yaml` file was invisible to the import — merely incomplete before,
+    destructive once prune reads "not in the directory" as "deleted upstream"."""
+    from src.repositories.metrics import MetricRepository
+
+    repo = MetricRepository(db_conn)
+    d = tmp_path / "in" / "revenue"
+    d.mkdir(parents=True)
+    (d / "a.yml").write_text("name: a\ncategory: revenue\nsql: SELECT 1\n")
+    (d / "b.yaml").write_text("name: b\ncategory: revenue\nsql: SELECT 2\n")
+
+    report = repo.reconcile_from_yaml(tmp_path / "in", prune=True)
+    assert set(report["written"]) == {"revenue/a", "revenue/b"}
+    assert report["deleted"] == []
+
+
+def test_reconcile_reports_unreadable_files(db_conn, tmp_path):
+    from src.repositories.metrics import MetricRepository
+
+    repo = MetricRepository(db_conn)
+    d = tmp_path / "in" / "revenue"
+    d.mkdir(parents=True)
+    (d / "ok.yml").write_text("name: ok\ncategory: revenue\nsql: SELECT 1\n")
+    (d / "broken.yml").write_text("name: [unclosed\n")
+
+    report = repo.reconcile_from_yaml(tmp_path / "in")
+    assert report["written"] == ["revenue/ok"]
+    assert [pathlib.Path(x).name for x in report["unreadable"]] == ["broken.yml"]
