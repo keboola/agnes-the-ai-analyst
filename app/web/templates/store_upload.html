@@ -383,8 +383,11 @@
            step cannot run, so anything published here parks at
            `pending_llm` — hidden from everyone — until an admin retries it.
            The server logs this at boot; the person about to publish had no
-           way to know, and the surrounding copy promises "a few seconds". #}
-        {% if not guardrails_llm_ready %}
+           way to know, and the surrounding copy promises "a few seconds".
+           Guardrails off entirely is a DIFFERENT state: publication runs on
+           the inline tier alone and nothing is parked, so this warning
+           would be false there — gate on both. #}
+        {% if guardrails_enabled and not guardrails_llm_ready %}
         <div class="no-review-banner" role="alert" id="no-llm-review-warning">
           <strong>Automated review is not available on this instance.</strong>
           You can publish, but your submission stays hidden from everyone

@@ -117,6 +117,31 @@ def test_llm_verdict_is_escaped_before_it_reaches_innerhtml(seeded_app):
     assert "esc(state.hint)" in html
 
 
+def test_no_review_banner_absent_when_guardrails_off(seeded_app, monkeypatch):
+    """Guardrails OFF: publication runs on the inline tier alone and nothing
+    is parked, so the "stays hidden until an admin reviews it" warning would
+    be a lie here. It must not render.
+    """
+    monkeypatch.setattr("app.instance_config.get_guardrails_enabled", lambda: False)
+    html = seeded_app["client"].get("/skills", headers=_auth(seeded_app["admin_token"])).text
+    # `.sk-no-review` also names the CSS rule in `<style>`, present regardless
+    # of the banner's render state — assert on the div itself, not the class.
+    assert '<div class="sk-no-review"' not in html
+    assert "Automated review is not available on this instance." not in html
+
+
+def test_no_review_banner_present_when_guardrails_on_but_llm_not_ready(seeded_app, monkeypatch):
+    """Guardrails ON, no LLM provider configured: the real create path
+    fail-closes at `pending_llm` with no review scheduled, so the warning
+    is accurate and must render.
+    """
+    monkeypatch.setattr("app.instance_config.get_guardrails_enabled", lambda: True)
+    monkeypatch.setattr("app.instance_config.get_guardrails_llm_provider_ready", lambda: False)
+    html = seeded_app["client"].get("/skills", headers=_auth(seeded_app["admin_token"])).text
+    assert '<div class="sk-no-review"' in html
+    assert "Automated review is not available on this instance." in html
+
+
 # ───────────────────────────── 2. executable ─────────────────────────────────
 
 
