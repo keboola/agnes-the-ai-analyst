@@ -300,14 +300,31 @@ class TestCatalogSemanticsWayOut:
         assert '<a class="sl-back" href="/catalog">' in body
         assert "Data Packages" in body
 
-    def test_rail_back_link_returns_to_the_library(self, seeded_app, monkeypatch):
-        # `detail_back` has no rail key for this kind, so it falls through to
-        # /library — the rail's one browse surface, and the block the reader
-        # clicked to get here. /catalog is not in the rail nav at all.
+    def test_rail_back_link_returns_to_the_definitions_block(self, seeded_app, monkeypatch):
+        # /library is the rail's one browse surface and carries the block the
+        # reader clicked; /catalog is not in the rail nav at all. The ANCHOR is
+        # the point: the Definitions block closes /library below the whole
+        # inventory, so a bare /library returns them to the top of the page
+        # with everything they own between them and where they were.
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         body = self._body(seeded_app)
-        assert '<a class="sl-back" href="/library">' in body
+        assert '<a class="sl-back" href="/library#lib-defs">' in body
         assert '<a class="sl-back" href="/catalog">' not in body
+
+    def test_the_anchor_the_back_link_targets_exists_on_the_library(self, seeded_app, monkeypatch):
+        # A back link into an id no page emits is a link to the top of that
+        # page — indistinguishable from the bare /library it replaced, and
+        # silently so. Pin the two ends together.
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        # The block renders under `if definitions_footer` — set only when the
+        # caller can see at least one metric or term, which is also the only
+        # state in which they could have clicked through from it.
+        _make_metric()
+        c = seeded_app["client"]
+        token = seeded_app["analyst_token"]
+        lib = c.get("/library", headers=_auth(token))
+        assert lib.status_code == 200
+        assert 'id="lib-defs"' in lib.text
 
     def test_rail_highlights_library_while_on_this_page(self, seeded_app, monkeypatch):
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
