@@ -23,9 +23,30 @@ const $ = (id) => document.getElementById(id);
 // only then returns HTML for insertion. Never assign marked.parse() output to
 // innerHTML directly again.
 const _SAFE_URL_SCHEME_RE = /^(?:https?:|mailto:|tel:|#|\/|\.\/|\.\.\/|[^:]*$)/i;
+// SMIL animation elements defeat the two checks below by deferring them to
+// runtime: both operate on the attributes an element HAS, and SMIL sets an
+// attribute it does not have. Measured against this sanitizer, all three of
+// these survive it completely intact:
+//   <a href="#x"><animate attributeName="href" values="javascript:…"></a>
+//   <a><animate attributeName="xlink:href" to="javascript:…"></a>
+//   <set attributeName="onload" to="…">
+// The scheme allowlist never sees the first two — `values`/`to` are not
+// URL-bearing attribute NAMES — and the `on*` strip never sees the third,
+// because there the handler name is an attribute VALUE. `foreignObject` is
+// HTML-in-SVG; its `<script>` and `on*` payloads are removed today, but it is
+// the standard container in these chains and has no legitimate use in a chat
+// message. None of this is reachable by an honest chart: measured on real
+// matplotlib output, a figure contains zero SMIL elements and no
+// foreignObject, so blocking them costs the chart channel nothing.
+//
+// This predates the chart work — <svg> was always allowed through — but that
+// work makes inline SVG a routine, actively-instructed output shape, and the
+// threat model is not matplotlib: a co-presence peer's message renders through
+// this same path (see the header note above), and no prompt rule binds them.
 const _DANGEROUS_TAGS = new Set([
   "script", "iframe", "object", "embed", "link", "meta",
   "style", "base", "form", "frame", "frameset", "template",
+  "animate", "animatetransform", "animatemotion", "set", "foreignobject",
 ]);
 
 function _sanitizeFragment(root) {
