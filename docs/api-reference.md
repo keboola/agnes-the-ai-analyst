@@ -955,6 +955,29 @@ Admin-only, write-only vault for datasource secrets (`KEBOOLA_STORAGE_TOKEN`, `B
 - /api/admin/store/submissions/{submission_id}/rescan
 - /api/admin/store/submissions/{submission_id}/retry
 
+### `/api/admin/semantic-layer` — Keboola semantic-layer import status
+
+- /api/admin/semantic-layer/coverage
+
+`GET /api/admin/semantic-layer/coverage` (admin) reports, per Keboola
+connection holding a master token, how much of that project's semantic layer
+actually reaches `metric_definitions`: `metrics.upstream` vs
+`metrics.importable`, the glossary count, metrics `blocked` by their own
+definition (with the skip reason), and the datasets that have no registered
+table. Computed live against the Metastore and `table_registry` — it reads no
+stored sync counters, so it is accurate immediately after a restart.
+
+`warnings[]` carries the two conditions worth acting on:
+`token_project_mismatch` (the connection's storage and master tokens resolve to
+different projects, so tables sync from one project while the semantic layer is
+read from another — no metric can bind) and `no_metrics_bound` (the project
+publishes metrics but none bind to a registered table). Datasets with no
+registered table are reported as a plain count, never as pending work — a
+semantic layer routinely describes more of a project than an instance registers.
+
+CLI: `agnes admin semantic-layer coverage [--json]`. MCP:
+`admin_semantic_layer_coverage`.
+
 ### `/api/admin/run-*` — Background job triggers
 
 - /api/admin/run-blocked-purge

@@ -23694,6 +23694,57 @@
         ]
       }
     },
+    "/api/admin/semantic-layer/coverage": {
+      "get": {
+        "description": "How much of each connected Keboola project's semantic layer actually\nreaches Agnes, recomputed live (see\n``connectors.keboola.semantic_layer.compute_semantic_coverage``).\n\nRead-only and stateless \u2014 it does not touch metric_definitions and does not\nread the last sync's counters, which live in a process-local dict that\nempties on restart. Two conditions are worth acting on and are surfaced as\n``warnings[]``: a connection whose storage and master tokens point at\ndifferent projects, and a project none of whose metrics can bind to a\nregistered table. Tables the instance simply does not register are reported\nas a plain count, never as pending work.\n\nUpstream calls run off the event loop \u2014 one project's Metastore being slow\nmust not stall every other request in the process.",
+        "operationId": "get_semantic_layer_coverage_api_admin_semantic_layer_coverage_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Semantic Layer Coverage"
+      }
+    },
     "/api/admin/server-config": {
       "get": {
         "description": "Return the current instance.yaml with secrets redacted.\n\nUsed by the /admin/server-config UI to prefill its form. The redacted\npayload mirrors the actual file shape, so the UI doesn't need to know\nthe schema \u2014 it iterates over the editable sections and renders the\nfields it finds. Empty sections still show in the response so the form\nknows to render their headers.",

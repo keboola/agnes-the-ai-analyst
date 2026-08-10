@@ -140,7 +140,9 @@ class TestSemanticLayerPageSources:
 
         assert "Production Project" in body
         # 2 conn-a metrics + 1 NULL-ref legacy metric folded into the default row.
-        assert '<td class="num">3</td>' in body
+        # The stored count is server-rendered; the `sl-cov` span after it is the
+        # slot the live coverage fetch fills with " / N upstream".
+        assert '<td class="num">3<span class="sl-cov"' in body
         assert '<td class="num">1</td>' in body
 
     def test_semantic_layer_page_renders_skipped_source_neutrally(self, seeded_app, vault_key):
