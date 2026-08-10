@@ -1856,6 +1856,9 @@ KNOWN_UNTESTED = {
     # tests in test_keboola_semantic_layer_refresh_endpoint.py. A parameter-free
     # smoke hit here would reach a live Keboola stack.
     "GET /api/admin/semantic-layer/coverage",
+    # Derived Keboola chat-tools MCP source — tested in test_keboola_chat_tools.py
+    "POST /api/admin/source-connections/{connection_id}/chat-tools",
+    "DELETE /api/admin/source-connections/{connection_id}/chat-tools",
     # Admin datasource credentials — vault-backed GWS/BQ instance secrets (web UI only)
     "GET /api/admin/datasource-secrets",
     "GET /admin/datasource-credentials",
