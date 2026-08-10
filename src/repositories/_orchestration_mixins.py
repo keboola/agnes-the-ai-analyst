@@ -124,8 +124,16 @@ class MetricYamlMixin:
             # Infer category from parent directory name
             category_from_dir = file_path.parent.name
 
-            with open(file_path, "r") as f:
-                raw = yaml.safe_load(f)
+            try:
+                with open(file_path, "r") as f:
+                    raw = yaml.safe_load(f)
+            except yaml.YAMLError:
+                # Broken syntax is the same thing as a file that yields no
+                # metric — and far likelier in a half-written export. Recording
+                # it lets the prune guard name the file, instead of the import
+                # dying on a parser traceback partway through the directory.
+                unreadable.append(str(file_path))
+                continue
 
             # Support both list-wrapped [{...}] and plain {...} formats
             if isinstance(raw, list):
