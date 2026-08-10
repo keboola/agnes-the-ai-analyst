@@ -614,8 +614,16 @@
      {%- if target %} data-ds-dropdown-target="{{ target }}"{% endif -%}
      {%- if attrs %} {{ attrs | safe }}{% endif %}>
     <button type="button" class="ds-dropdown-btn" id="{{ id }}-btn"
-            aria-haspopup="menu" aria-expanded="false" aria-controls="{{ id }}-menu">
-        <span class="ds-dropdown-btn-label">{{ selected_label }}</span>
+            aria-haspopup="menu" aria-expanded="false" aria-controls="{{ id }}-menu"
+            {%- if aria_label %} aria-labelledby="{{ id }}-name {{ id }}-btn-label"{% endif %}>
+        {%- if aria_label %}
+        {#- Visually hidden — the button's accessible name otherwise comes
+           only from the currently-selected-value span below, so a screen
+           reader hears e.g. "none" with no indication which field that is.
+           aria-labelledby concatenates both: field name, then value. -#}
+        <span class="ds-dropdown-name" id="{{ id }}-name">{{ aria_label }}</span>
+        {%- endif %}
+        <span class="ds-dropdown-btn-label" id="{{ id }}-btn-label">{{ selected_label }}</span>
         <svg class="ds-dropdown-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
     </button>
     <ul class="ds-dropdown-menu" id="{{ id }}-menu" role="menu"
