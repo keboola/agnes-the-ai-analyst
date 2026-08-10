@@ -1998,6 +1998,31 @@ class TestWebPages:
         assert r.status_code == 200
         assert "Upload" in r.text
 
+    def test_upload_banner_absent_when_guardrails_off(self, web_client, monkeypatch):
+        """Guardrails OFF: publication runs on the inline tier alone and
+        nothing is parked, so the "stays hidden until an admin reviews it"
+        warning would be a lie here. It must not render.
+        """
+        monkeypatch.setattr("app.instance_config.get_guardrails_enabled", lambda: False)
+        _, cookies = _create_user(web_client, "page-noreview-off@x.com")
+        r = web_client.get("/store/new", cookies=cookies)
+        assert r.status_code == 200
+        assert "no-llm-review-warning" not in r.text
+        assert "Automated review is not available on this instance." not in r.text
+
+    def test_upload_banner_present_when_guardrails_on_but_llm_not_ready(self, web_client, monkeypatch):
+        """Guardrails ON, no LLM provider configured: the real create path
+        fail-closes at `pending_llm` with no review scheduled, so the
+        warning is accurate and must render.
+        """
+        monkeypatch.setattr("app.instance_config.get_guardrails_enabled", lambda: True)
+        monkeypatch.setattr("app.instance_config.get_guardrails_llm_provider_ready", lambda: False)
+        _, cookies = _create_user(web_client, "page-noreview-on@x.com")
+        r = web_client.get("/store/new", cookies=cookies)
+        assert r.status_code == 200
+        assert "no-llm-review-warning" in r.text
+        assert "Automated review is not available on this instance." in r.text
+
     def test_marketplace_flea_detail_page_renders(self, web_client):
         """v32+: /store/{id} was deleted; /marketplace/flea/{id} is the
         canonical detail surface.
