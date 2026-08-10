@@ -86,3 +86,21 @@ def test_source_ref_reaches_the_repo(monkeypatch, tmp_path):
     report = {"added": [], "updated": [], "written": [], "deleted": []}
     _, repo = _run(monkeypatch, tmp_path, report, ["--source-ref", "finance", "--prune"])
     assert repo.calls[0][1]["source_ref"] == "finance"
+
+
+def test_refused_prune_exits_with_the_reason_not_a_traceback(monkeypatch, tmp_path):
+    """The repo refuses prune shapes that would empty the scope; the operator
+    should read why, and the command should fail rather than look successful."""
+    import cli.commands.admin_metrics as mod
+
+    class _Refusing:
+        def reconcile_from_yaml(self, path, **kwargs):
+            raise ValueError("refusing to prune against a single file: …")
+
+    monkeypatch.setattr(mod, "metric_repo", lambda: _Refusing())
+    monkeypatch.setattr(mod, "use_pg", lambda: True)
+    (tmp_path / "m").mkdir()
+    result = CliRunner().invoke(admin_app, ["metrics", "import", str(tmp_path / "m"), "--prune"])
+    assert result.exit_code == 1
+    assert "refusing to prune" in _clean(result.output)
+    assert "Traceback" not in _clean(result.output)
