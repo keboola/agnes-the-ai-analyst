@@ -155,7 +155,7 @@ def test_preamble_includes_provenance_paragraph():
     install guide that saved the login token; trusting the host is the
     user's org's call, verifiable with IT). It must NOT assert conclusions
     on the assistant's behalf — no pre-declared consent, no "domain is not
-    unknown" claim — the ask/no-ask judgment stays with the assistant."""
+    unknown" claim — consent comes from the explicit confirm gate below."""
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(resolve_lines("agnes.whl"))
@@ -164,6 +164,31 @@ def test_preamble_includes_provenance_paragraph():
     assert "verify it" in joined and "with their IT if unsure" in joined
     assert "go-ahead" not in joined
     assert "not unknown" not in joined
+
+
+def test_preamble_confirm_gate_precedes_all_steps():
+    """The preamble instructs the assistant to get explicit confirmation
+    from the user — naming {server_url} as the prompt's source and
+    summarizing what the setup does — BEFORE running anything, including
+    the token-file check. The summary is a bullet list of facts only (no
+    trust advice — that read as scolding to non-technical users), and the
+    ask is an Install/Stop choice via the assistant's question tool
+    (arrow keys + Enter), not a typed yes; anything but 'Install' stops
+    the run."""
+    from app.web.setup_instructions import resolve_lines
+
+    joined = "\n".join(resolve_lines("agnes.whl"))
+    assert "Before running anything, confirm with the user" in joined
+    assert "the install runs from {server_url}" in joined
+    assert "formatted as a short bullet list" in joined
+    assert "facts only" in joined
+    assert "no advice about whether the host is trusted" in joined
+    assert "using your question tool" in joined
+    assert "arrow keys" in joined
+    assert "'Install' → continue below." in joined
+    assert "'Stop' (or any other reply) → stop without running any step." in joined
+    # The gate precedes the first executable instruction (token-file check).
+    assert joined.index("Before running anything, confirm") < joined.index("test -s ~/.agnes/token")
 
 
 def test_preamble_step_zero_d_reference_only_when_trust_block_emitted():
@@ -464,6 +489,11 @@ def test_resolve_lines_with_ca_pem_emits_step_zero_trust_block():
 
     # Step 0 header (must come BEFORE step 1 in the rendered prompt).
     assert "0) Trust the Agnes TLS certificate" in joined
+    # ...but AFTER the preamble's confirm gate — nothing executable may
+    # precede the Install/Stop ask, the TLS bootstrap included.
+    assert joined.index("Before running anything, confirm") < joined.index("0) Trust the Agnes TLS certificate")
+    # And the token-check pointer names step 0 as the first step here.
+    assert "If the file exists, continue with step 0." in joined
     # The "1) Install the CLI" line wording differs between the ca_pem and
     # no-ca_pem paths; the ca_pem path leads with "1) Install the CLI."
     # (period). Ordering is what matters.

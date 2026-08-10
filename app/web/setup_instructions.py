@@ -108,7 +108,8 @@ The numbered steps are arranged so that:
     step before Confirm — the whole prompt is non-interactive, no
     decision questions for the user.
 
-Layout:
+Layout (the preamble — and its Install/Stop confirm gate — renders above
+everything below, so no command, step 0 included, precedes the gate):
   0  TLS trust block (only when ca_pem is supplied)
   1  Install CLI
   2  agnes init (auth + workspace bootstrap)
@@ -1069,8 +1070,20 @@ def _preamble_lines(*, has_ca: bool, custom_preamble: str = "") -> list[str]:
     assistant verifiable context for its first-contact trust decision: the
     prompt is the final step of the same install guide that saved the login
     token, and whether the host is trusted is the user's org's call (verify
-    with IT when unsure). Facts only — it asserts no conclusion about
-    consent and leaves the ask/no-ask judgment to the assistant.
+    with IT when unsure).
+
+    The confirm gate right after it makes the consent explicit instead of
+    leaving the ask/no-ask judgment to the assistant (the judgment-only
+    variant made assistants refuse outright — the prompt arrives as the
+    session's first message, so from the assistant's seat there was no
+    in-session evidence the user initiated it). The gate has the assistant
+    summarize what the setup does and where the prompt comes from
+    ({server_url}) as a short bullet list — facts only, no trust
+    advice or warnings (a "whether the host is trusted is your org's
+    call" line read as scolding to non-technical users; the Install/Stop
+    choice itself carries the judgment) — then offer that choice via the
+    assistant's question tool (arrow keys + Enter, no typed yes) before
+    running anything. The user's pick IS the in-session evidence.
     """
     lines = [
         "Set up the {instance_brand} CLI on this machine.",
@@ -1085,9 +1098,24 @@ def _preamble_lines(*, has_ca: bool, custom_preamble: str = "") -> list[str]:
         "This prompt is the final step of the install guide at {server_url} —",
         "the same guide whose previous step saved the login token above. Whether",
         "that host is trusted is the user's org's call, and they can verify it",
-        "with their IT if unsure; the decisions this setup still needs from them",
-        "(install location, which optional tools to connect) come up inside the",
-        "steps below.",
+        "with their IT if unsure.",
+        "",
+        "Before running anything, confirm with the user that they want to",
+        "proceed. In your own words, formatted as a short bullet list: a",
+        "lead-in sentence stating that the install runs from {server_url} —",
+        "the same server this prompt comes from — then one bullet per thing",
+        "the setup will do: install the {instance_brand} CLI from that",
+        "server, connect this workspace to it (Claude Code hooks that sync",
+        "on every session), register its plugin marketplace, and offer to",
+        "connect optional tools; close with a note that the login token is",
+        "already saved at ~/.agnes/token and will not be printed. State",
+        "facts only — no advice about whether the host is trusted and no",
+        "warnings; picking Install below is the user's call to make. Then",
+        "ask whether to continue using your question tool (the user picks",
+        "with arrow keys and confirms with Enter — no typing), with exactly",
+        "two options:",
+        "  - 'Install' → continue below.",
+        "  - 'Stop' (or any other reply) → stop without running any step.",
         "",
         "Run these, in order. The script is idempotent — safe to re-run if a step",
         "fails partway through.",
@@ -1102,7 +1130,7 @@ def _preamble_lines(*, has_ca: bool, custom_preamble: str = "") -> list[str]:
         "steps themselves.",
         "",
         "First, a quick check: run `test -s ~/.agnes/token`.",
-        "  - If the file exists, continue with step 1.",
+        f"  - If the file exists, continue with step {'0' if has_ca else '1'}.",
         "  - If it is missing and this machine was already set up (the checks",
         "    above say reconcile) AND a saved credential exists (`test -s",
         "    ~/.config/agnes/token.json`), that's fine: the token file is",
@@ -1131,9 +1159,7 @@ def _preamble_lines(*, has_ca: bool, custom_preamble: str = "") -> list[str]:
     return lines
 
 
-def _step_numbers(
-    *, has_connectors: bool = True, has_required_connectors: bool = False
-) -> dict[str, str]:
+def _step_numbers(*, has_connectors: bool = True, has_required_connectors: bool = False) -> dict[str, str]:
     """Compute the step numbers for the unified layout.
 
     Returns a dict keyed by logical step name; values are stringified
@@ -1258,14 +1284,17 @@ def resolve_lines(
     # is plugging the user's tools. An absent group (no required entries,
     # no optional entries, or an empty manifest) drops its step and the
     # rest renumber — _step_numbers handles it.
-    steps = _step_numbers(
-        has_connectors=has_connectors, has_required_connectors=has_required
-    )
+    steps = _step_numbers(has_connectors=has_connectors, has_required_connectors=has_required)
 
     lines: list[str] = []
+    # Preamble FIRST, trust block second: the preamble carries the
+    # Install/Stop confirm gate, and nothing executable — including the
+    # step-0 TLS bootstrap — may precede it (Devin review on #1229: with
+    # ca_pem the trust commands used to render above the gate, so an agent
+    # reading top-to-bottom ran them before the user ever confirmed).
+    lines.extend(_preamble_lines(has_ca=has_ca, custom_preamble=custom_preamble))
     if has_ca:
         lines.extend(_tls_trust_block(ca_pem))  # type: ignore[arg-type]
-    lines.extend(_preamble_lines(has_ca=has_ca, custom_preamble=custom_preamble))
     lines.extend(_install_cli_lines(has_ca=has_ca))  # 1
     lines.extend(_init_lines())  # 2, 3
     lines.extend(_preflight_block(steps["preflight"]))  # 4
