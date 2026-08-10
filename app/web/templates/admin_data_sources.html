@@ -518,6 +518,7 @@ function _connectionCardHtml(row) {
       ${_secretBadgeHtml(row)}
     </div>
   </div>
+  ${_chatToolsRowHtml(row)}
   <div class="ds-conn-actions">
     <button type="button" class="btn btn-secondary" data-role="test" onclick="testConn('${id}')">Test</button>
     <button type="button" class="btn btn-secondary" onclick="toggleBrowse('${id}')">Browse &amp; register tables</button>
@@ -631,7 +632,7 @@ async function setDefaultConn(id) {
       await loadConnections();
     } else {
       const body = await r.json().catch(() => ({}));
-      showToast("Failed: " + (body.detail || "unknown error"), false);
+      showToast("Failed: " + detailMessage(body, "unknown error"), false);
     }
   } catch (_) {
     showToast("Request failed.", false);
@@ -725,7 +726,7 @@ async function removeMasterToken(id) {
       await loadConnections();
     } else {
       const body = await r.json().catch(() => ({}));
-      showToast("Failed: " + (body.detail || "unknown error"), false);
+      showToast("Failed: " + detailMessage(body, "unknown error"), false);
     }
   } catch (_) {
     showToast("Request failed.", false);
@@ -753,7 +754,77 @@ async function unbindProject(id) {
       await loadConnections();
     } else {
       const body = await r.json().catch(() => ({}));
-      showToast("Failed: " + (body.detail?.message || body.detail || `HTTP ${r.status}`), false);
+      showToast("Failed: " + detailMessage(body, `HTTP ${r.status}`), false);
+    }
+  } catch (_) {
+    showToast("Request failed.", false);
+  }
+}
+
+/* A FastAPI `detail` is a string on some paths and a structured object on
+   others (`{error, message, …}` plus a path-specific list: `tables` for a
+   connection still in use, `still_present` for a partial chat-tools
+   teardown). Pasting it into a template literal renders "[object Object]"
+   and throws away the one thing the admin needs — which is what the chat-
+   tools toast did. One reader for every caller. (Devin Review.) */
+function detailMessage(body, fallback) {
+  const detail = body && body.detail;
+  if (detail && typeof detail === "object") {
+    let msg = detail.message || detail.error || fallback;
+    for (const key of ["tables", "still_present"]) {
+      const list = detail[key];
+      if (Array.isArray(list) && list.length) msg += " (" + list.join(", ") + ")";
+    }
+    return msg;
+  }
+  return detail || fallback;
+}
+
+function _chatToolsRowHtml(row) {
+  // Exposes this Keboola project's own MCP tools (query_data, buckets, search,
+  // semantic layer, …) to the chat agent by deriving an MCP source from this
+  // connection. Keboola-only; needs a stored storage token to be useful.
+  if (row.source_type !== "keboola") return "";
+  const id = row.id;
+  const on = row.has_chat_tools === true;
+  const badgeClass = on ? "badge-vault" : "badge-unset";
+  const badgeLabel = on ? "on" : "off";
+  const hint = on
+    // Enabling registers the SOURCE, not its tools: the tool_registry rows the
+    // Access screen grants from are created by Introspect on the source detail
+    // page. The old wording ("Tools are registered. Grant them…") sent the
+    // admin straight to a grant screen with nothing on it. (Devin Review.)
+    ? "Connected. Open it under Admin -> MCP sources and run Introspect to list its tools, then grant them to a group under Access."
+    : "Give the chat agent this project's own Keboola tools.";
+  return `
+  <div class="ds-master-row">
+    <span class="ds-master-label" title="${_esc(hint)}">Chat tools (Keboola MCP)</span>
+    <span class="ds-badge ${badgeClass}">${badgeLabel}</span>
+    <button type="button" class="btn btn-secondary" onclick="toggleChatTools('${id}', ${on ? "true" : "false"})">${on ? "Turn off" : "Turn on"}</button>
+    ${on ? `<button type="button" class="btn btn-secondary" onclick="toggleChatTools('${id}', false, true)">Re-sync token</button>` : ""}
+  </div>`;
+}
+
+async function toggleChatTools(id, isOn, resync) {
+  // `resync` re-runs enable on an already-enabled source: the derived source
+  // holds its own copy of the token, so a rotated connection token does not
+  // reach it until enable runs again.
+  const turningOff = isOn && !resync;
+  if (turningOff && !confirm("Turn off chat tools for this project? The agent loses its Keboola tools and the stored copy of the token is deleted.")) return;
+  try {
+    const r = await fetch(`${API_CONNECTIONS}/${id}/chat-tools`, {
+      method: turningOff ? "DELETE" : "POST",
+      credentials: "include",
+    });
+    if (r.ok || r.status === 204) {
+      showToast(
+        turningOff ? "Chat tools turned off." : (resync ? "Token re-synced." : "Chat tools on — now grant them to a group under Access."),
+        true,
+      );
+      await loadConnections();
+    } else {
+      const body = await r.json().catch(() => ({}));
+      showToast("Failed: " + detailMessage(body, `HTTP ${r.status}`), false);
     }
   } catch (_) {
     showToast("Request failed.", false);

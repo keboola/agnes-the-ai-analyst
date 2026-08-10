@@ -141,6 +141,34 @@ def set_secret(
     typer.echo(f"Stored {kind} secret for {connection_id}")
 
 
+@admin_connection_app.command("chat-tools")
+def chat_tools(
+    connection_id: str = typer.Argument(..., help="Connection id"),
+    disable: bool = typer.Option(False, "--disable", help="Remove the derived MCP source instead"),
+):
+    """Expose a Keboola project's own MCP tools to the chat agent.
+
+    Derives an MCP source from the connection and copies its storage token
+    into the MCP vault. Re-run after rotating that token — the copy does not
+    follow the connection automatically.
+
+    The derived source lands with no tool grants: run
+    ``agnes admin grant`` before analysts see anything.
+    """
+    if disable:
+        resp = api_delete(f"/api/admin/source-connections/{connection_id}/chat-tools")
+        if resp.status_code not in (200, 204):
+            _fail(resp)
+        typer.echo(f"Chat tools disabled for {connection_id}")
+        return
+    resp = api_post(f"/api/admin/source-connections/{connection_id}/chat-tools", json={})
+    if resp.status_code not in (200, 201):
+        _fail(resp)
+    body = resp.json() if resp.content else {}
+    typer.echo(f"Chat tools enabled for {connection_id} (MCP source {body.get('source_id', '?')})")
+    typer.echo("Next: grant the tools to a group — agnes admin grant --help")
+
+
 @admin_connection_app.command("test")
 def test_connection(
     connection_id: str = typer.Argument(..., help="Connection id"),

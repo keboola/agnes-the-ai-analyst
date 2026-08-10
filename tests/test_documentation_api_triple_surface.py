@@ -612,6 +612,14 @@ _EXEMPT: dict[str, str] = {
     "/api/admin/source-connections/{connection_id}": _SOURCE_CONNECTIONS_CRUD_REASON,
     "/api/admin/source-connections/{connection_id}/secret": _SOURCE_CONNECTIONS_CRUD_REASON,
     "/api/admin/source-connections/{connection_id}/test": _SOURCE_CONNECTIONS_CRUD_REASON,
+    "/api/admin/source-connections/{connection_id}/chat-tools": (
+        "derives a Keboola MCP source from a connection and copies that "
+        "connection's storage token into the MCP vault — a credential-"
+        "provisioning write under the standing exemption in CONTRIBUTING.md "
+        "(an agent-invokable tool that can re-point which upstream a "
+        "credential authenticates against is a privilege-escalation seam). "
+        "Reachable via `agnes admin connection chat-tools`; never MCP-exposed"
+    ),
     "/api/admin/source-connections/{connection_id}/tables": (
         "admin-only bucket/table discovery for the 'Add data source' wizard (#755) — "
         "keboola-only browse-and-register primitive with no analyst CLI/MCP analogue; "
