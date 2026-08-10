@@ -17,18 +17,27 @@ builder's PATCH. The create route now sets ``status='ready'`` going
 forward; this migration closes the gap for every agent created before that
 fix shipped.
 
-The discriminator is sound ONLY for rows that predate this release: prior
-to this PR ``update_agent`` never wrote ``slug`` at all, so a ``draft``
-row's slug is exactly what ``create()`` put there. The builder's placeholder
-lineage is the literal ``agent`` or a suffixed ``agent-N``
-(``app/api/agents.py::_auto_slug``'s fallback for an unnamed agent) — a
-``draft`` row on that slug is a builder-created agent never given a real
-address, and must keep re-deriving its slug on the next rename. Anything
-else on a ``draft`` row can only have arrived through an explicit,
-caller-chosen slug at create time. The seeded default agent (``is_default``)
-is excluded regardless of its slug: it is seeded with no status (COALESCEd
-to ``'draft'``) and is a PERMANENT draft by design, so promoting it here
-would freeze an address that must keep renaming freely.
+The discriminator is the row's ``id`` PREFIX, not its slug. Every
+builder-created row — ``POST /api/agents`` (``app/api/agents.py``,
+~line 346) — carries an ``agt_`` prefix regardless of whether the agent was
+ever named, because that route mints ``"agt_" + uuid4().hex`` before the
+caller supplies (or omits) a ``name``. A row created through the governance
+API (``POST /api/v1/agents``, ``app/api/agents_admin.py::create_agent``) or
+the seeded default (``AgentsRepository.get_or_create_default``) always gets
+a bare ``uuid4()`` — neither path ever applies the prefix. A slug-based
+check (matching only the unnamed placeholder lineage ``agent`` / ``agent-N``)
+was tried first and is WRONG: a builder draft that the user already named —
+e.g. ``finance-bot`` — is not yet published (``_draft_slug_rename`` only
+freezes its slug once ``status`` reaches ``'ready'``), but its slug no
+longer matches the placeholder pattern, so the slug check promoted it
+anyway and permanently froze an address for an agent that was never marked
+ready. ``NOT (id LIKE 'agt\\_%' ESCAPE '\\')`` has no such gap: it is true
+for every governance/default row and false for every builder row, named or
+not, so it selects exactly the intended cohort regardless of naming state.
+The seeded default agent (``is_default``) is excluded on top of that,
+redundantly but explicitly: it is seeded with no status (COALESCEd to
+``'draft'``) and is a PERMANENT draft by design, so promoting it here would
+freeze an address that must keep renaming freely.
 
 ``downgrade()`` is deliberately a no-op: this migration carries no marker
 distinguishing a row it flipped from one made ``'ready'`` afterward through
@@ -63,12 +72,12 @@ def upgrade() -> None:
     if "agents" not in set(insp.get_table_names()):
         return
     op.execute(
-        """
+        r"""
         UPDATE agents
            SET status = 'ready', updated_at = now()
          WHERE COALESCE(status, 'draft') = 'draft'
            AND NOT COALESCE(is_default, FALSE)
-           AND NOT (slug = 'agent' OR slug ~ '^agent-[0-9]+$')
+           AND NOT (id LIKE 'agt\_%' ESCAPE '\')
         """
     )
 
