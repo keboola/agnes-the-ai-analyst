@@ -375,12 +375,22 @@ class TestSourceConnectionsTest:
         assert resp.status_code == 201
         conn_id = resp.json()["id"]
 
-        # Mock httpx to return fake project info. The endpoint uses an async
-        # client (`async with httpx.AsyncClient(...)` + `await client.get`), so
-        # the mock must honor the async context-manager + awaitable-get protocol.
+        # Mock httpx to return a real `GET /v2/storage/tokens/verify` body —
+        # project name and id live under `owner`. The previous fixture here
+        # was `{"id": "123", "name": "Test Project"}`, a shape the Storage API
+        # does not return from the endpoint this handler called: measured on a
+        # live stack, `/v2/storage?exclude=components` is the unauthenticated
+        # index (200 with NO token, no `owner` block at all), so the probe
+        # validated nothing and `project_name` was always "".
+        # The endpoint uses an async client (`async with httpx.AsyncClient(...)`
+        # + `await client.get`), so the mock must honor the async
+        # context-manager + awaitable-get protocol.
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.json.return_value = {"id": "123", "name": "Test Project"}
+        mock_response.json.return_value = {
+            "isMasterToken": True,
+            "owner": {"id": 123, "name": "Test Project"},
+        }
 
         mock_client = MagicMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
@@ -400,6 +410,14 @@ class TestSourceConnectionsTest:
         data = resp2.json()
         assert data["ok"] is True
         assert data["project_name"] == "Test Project"
+        # Pin the endpoint actually verifying the token, not pinging an index
+        # that answers 200 for anyone.
+        called_url = mock_client.get.call_args[0][0]
+        assert called_url.endswith("/v2/storage/tokens/verify"), called_url
+        # ...and that a successful test binds the connection to its project.
+        row = c.get(f"{BASE}/{conn_id}", headers=_auth(token)).json()
+        assert row["config"]["project_id"] == 123
+        assert row["config"]["project_name"] == "Test Project"
 
     def test_test_endpoint_rejects_private_stack_url(self, seeded_app):
         # SSRF guard: a stack_url pointing at the cloud metadata endpoint (or any
@@ -1465,6 +1483,64 @@ class TestProjectIdentityBinding:
         # The binding is untouched — this is the whole point.
         row = c.get(f"{BASE}/{conn_id}", headers=_auth(token)).json()
         assert row["config"]["project_id"] == 1234
+
+    def test_storage_token_still_saves_before_a_stack_url_exists(self, seeded_app):
+        """The wizard creates the row before the config is complete, so
+        requiring a stack_url to store the token broke half-built connections.
+        Devin Review on #1242."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            BASE,
+            json={"name": "test-identity-nostack", "source_type": "keboola", "config": {}},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 201, resp.text
+        conn_id = resp.json()["id"]
+
+        with patch("app.api.admin_source_connections.KeboolaStorageClient.verify_token") as verify:
+            r = c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "storage-token", "kind": "storage"},
+                headers=_auth(token),
+            )
+        assert r.status_code == 204, r.text
+        # Nothing to preflight against, so nothing was asked and nothing bound.
+        verify.assert_not_called()
+        row = c.get(f"{BASE}/{conn_id}", headers=_auth(token)).json()
+        assert "project_id" not in (row["config"] or {})
+
+    def test_moving_to_another_stack_clears_the_binding(self, seeded_app):
+        """The escape hatch: a project id is only meaningful on its own stack,
+        and without this a re-pointed connection would fail project_mismatch
+        forever with no way to clear it. Devin Review on #1242."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="test-identity-restack")
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                return_value=self._verify(project_id=1234, master=False),
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+        ):
+            c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "storage-token", "kind": "storage"},
+                headers=_auth(token),
+            )
+        assert c.get(f"{BASE}/{conn_id}", headers=_auth(token)).json()["config"]["project_id"] == 1234
+
+        r = c.put(
+            f"{BASE}/{conn_id}",
+            json={"config": {"stack_url": "https://connection.other-stack.example.com"}},
+            headers=_auth(token),
+        )
+        assert r.status_code == 200, r.text
+        config = c.get(f"{BASE}/{conn_id}", headers=_auth(token)).json()["config"]
+        assert "project_id" not in config
+        assert config["stack_url"] == "https://connection.other-stack.example.com"
 
     def test_owner_without_an_id_is_not_recorded_as_an_identity(self, seeded_app):
         """An identity we cannot read must not be persisted as a known one —
