@@ -349,7 +349,15 @@ def run(dry_run: bool = False, verbose: bool = False) -> dict:
             from app.job_correlation import stamp_request_id
             from src.repositories import jobs_repo
 
-            jobs_repo().enqueue("jira-refresh", stamp_request_id({}), idempotency_key="jira-refresh")
+            result = jobs_repo().enqueue("jira-refresh", stamp_request_id({}), idempotency_key="jira-refresh")
+            # Same invariant the webhook path states in `connectors/jira/service.py`:
+            # the dedup matches `status IN ('queued', 'running')`, so collapsing onto
+            # an already-RUNNING refresh is not enough — that job may have read the
+            # parquet before this run's writes landed. Enqueue a coalescing follow-up
+            # under a distinct key to guarantee a rebuild strictly after them. Nothing
+            # else recovers it: the next poll only enqueues if it writes again.
+            if result.get("status") == "running":
+                jobs_repo().enqueue("jira-refresh", stamp_request_id({}), idempotency_key="jira-refresh-followup")
         except Exception as enqueue_err:
             # Non-fatal by design: this module also runs as a standalone script
             # where the job queue need not be reachable, and the poll's own work

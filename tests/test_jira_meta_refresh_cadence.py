@@ -113,16 +113,18 @@ class TestSlaPollEnqueuesTheRefresh:
     """
 
     @staticmethod
-    def _drive(monkeypatch, results):
-        """Run poll_sla.run() over `results`, returning the enqueued job kinds."""
+    def _drive(monkeypatch, results, enqueue_status="queued"):
+        """Run poll_sla.run() over `results`, returning the idempotency keys enqueued."""
         from connectors.jira.scripts import poll_sla
 
         enqueued: list = []
 
         class _FakeJobs:
             def enqueue(self, kind, payload, idempotency_key=None):
-                enqueued.append(kind)
-                return {"status": "queued"}
+                enqueued.append(idempotency_key)
+                # Only the FIRST enqueue reports the caller's status; the follow-up
+                # carries a distinct key and so never dedups onto anything.
+                return {"status": enqueue_status if len(enqueued) == 1 else "queued"}
 
         keys = [f"PROJ-{i}" for i in range(1, len(results) + 1)]
         monkeypatch.setattr(
@@ -173,3 +175,20 @@ class TestSlaPollEnqueuesTheRefresh:
         stats = poll_sla.run()
 
         assert stats["updated"] == 1
+
+    def test_dedup_onto_a_running_refresh_gets_a_follow_up(self, monkeypatch) -> None:
+        """A RUNNING job may have read the parquet before this run's writes landed.
+
+        The webhook path states this invariant in `connectors/jira/service.py`; the
+        poller owes the same guarantee, and nothing else recovers a lost write —
+        the next poll only enqueues if it writes again.
+        """
+        enqueued, _ = self._drive(monkeypatch, ["updated"], enqueue_status="running")
+
+        assert enqueued == ["jira-refresh", "jira-refresh-followup"]
+
+    def test_dedup_onto_a_queued_refresh_needs_no_follow_up(self, monkeypatch) -> None:
+        """A queued job has not read anything yet — one row is enough."""
+        enqueued, _ = self._drive(monkeypatch, ["updated"], enqueue_status="queued")
+
+        assert enqueued == ["jira-refresh"]
