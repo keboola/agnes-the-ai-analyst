@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **`/catalog/semantics` was a dead end — the browser's Back button was the only way out.** The page is reached by link only (the Library's Definitions block, the Catalog's Semantic layer card, a chat citation, a global-search hit) and is a nav destination in neither chrome, so clicking "45 metrics" on `/library` dropped the reader on a page with no way back to where they came from. It now carries a back link resolved per layout by `detail_back`, exactly as the resource detail pages do: topnav returns to `/catalog` — the entry that links here, and the nav item its own `/catalog/*` path already highlights — while the rail, which has no key for this kind, falls through to `/library`, both the rail's one browse surface and the block the reader clicked. Under the rail the chrome was silent about it too: `/catalog/semantics` matched no rail entry, so nothing lit up and the whole nav read as "nowhere" — the same strand the rail already avoids for the surfaces it retired. The Library item now reads active while this page is open, since under the rail the Definitions block is the only way in.
+
 ## [0.83.2] - 2026-08-10
 
 ### Fixed
