@@ -82,9 +82,12 @@
   {% endcall %}
 
   {% if is_admin %}
+  {# `id` is the anchor the 403 page links to (error.html). This is the
+     DEFAULT chrome's profile page, so without it the deep link is dead for
+     most instances — the redesigned twin carries the same id. #}
   {% call ds.panel(title='Admin mode', tag='section',
                    klass='section-card',
-                   attrs='aria-label="Admin mode"') %}
+                   attrs='id="admin-mode" aria-label="Admin mode"') %}
     {% if elevation_paused %}
       <p>Admin elevation is <strong>paused</strong> for this browser — admin
       pages refuse, and entity access checks fall back to your explicit group
