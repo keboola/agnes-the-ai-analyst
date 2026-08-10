@@ -36,6 +36,10 @@ NON_KNOB_RESOLVERS = {
     # secrets), not an operator config knob — those secrets are documented in
     # the ".env infrastructure variables" section.
     "get_guardrails_llm_provider_ready",
+    # Diagnostic: why the static instance.yaml failed to load, if it did. It
+    # reports on the config surface rather than being part of it — there is
+    # nothing for an operator to set.
+    "get_static_config_error",
 }
 
 
