@@ -63,6 +63,21 @@ logger = logging.getLogger(__name__)
 # real plugin name.
 MAX_MANIFEST_NAME_LEN = 64
 
+# Bump whenever the BYTES WE SERVE change for an unchanged set of source files.
+#
+# `compute_etag` is content-addressed over the plugin files on disk, which is
+# what makes a stale 304 impossible when a curator edits a plugin — but it also
+# means a change to how we *package* those files is invisible to it. Both
+# caches key off this ETag (the ZIP channel answers `If-None-Match` with it;
+# the git channel names its bare repo `<etag>.v<N>.git`), so without this
+# constant a packaging fix reaches only users whose plugins happen to change
+# afterwards, and everyone else keeps the old bytes indefinitely.
+#
+# v2: the served `plugin.json` `name` is forced to the resolved manifest name
+#     (`_sanitize_served_plugin_json`), so a plugin whose declared name was
+#     rejected no longer ships an identity its catalog entry disagrees with.
+SERVED_FORMAT_VERSION = 2
+
 
 def _contained_plugin_dir(root: Path, slug: str, name: str) -> Optional[Path]:
     """``root/slug/plugins/name``, or None when that escapes ``root``.
@@ -749,6 +764,12 @@ def compute_etag(plugins: Iterable[dict]) -> str:
     share the same bare-repo cache entry. When the source files change, the
     hash changes, so a stale 304 can never leak.
 
+    ``SERVED_FORMAT_VERSION`` is folded in because content-addressing alone
+    cannot see a change in how those files are packaged: a packaging fix
+    leaves every hashed byte identical, so both caches would keep answering
+    with the pre-fix bytes. Bumping the constant is what makes such a fix
+    reach clients that already hold a copy.
+
     For bundle entries (``bundle_dirs`` set, ``plugin_dir`` is None) we hash
     every file under each source dir except the per-entity ``.claude-plugin/``
     content; the bundle ships one synth plugin.json so the per-entity ones
@@ -770,5 +791,9 @@ def compute_etag(plugins: Iterable[dict]) -> str:
                     rel = f.relative_to(plugin_dir).as_posix()
                     files.append([rel, _sha256_file(f)])
         tokens.append([plugin["prefixed_name"], plugin.get("version") or "", files])
-    payload = json.dumps({"plugins": tokens}, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    payload = json.dumps(
+        {"format": SERVED_FORMAT_VERSION, "plugins": tokens},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()[:16]

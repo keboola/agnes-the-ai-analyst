@@ -143,3 +143,26 @@ def test_a_rejected_name_is_not_what_gets_served(tmp_path):
     served = json.loads(files["plugins/test-vendor-plugin/.claude-plugin/plugin.json"])
     assert served["name"] == "vendor-plugin"
     assert served["skills"] == "./skills", "unrelated keys still pass through"
+
+
+def test_packaging_changes_reach_clients_that_already_hold_a_copy(tmp_path, monkeypatch):
+    """A packaging fix must move the ETag, or no existing client ever sees it.
+
+    `compute_etag` is content-addressed over the plugin files on disk, so a
+    change to how those files are *packaged* leaves every hashed byte
+    identical. Both delivery caches key off this value — the ZIP channel
+    answers `If-None-Match` with it, the git channel names its bare repo
+    `<etag>.v<N>.git` — so without `SERVED_FORMAT_VERSION` folded in, the
+    name rewrite above would reach only users whose plugins happen to change
+    afterwards. Everyone else would keep serving the identity their catalog
+    entry disagrees with, indefinitely.
+    """
+    from src import marketplace_filter
+
+    plugin = _curated_plugin(tmp_path, "vendor-plugin")
+    before = marketplace_filter.compute_etag([plugin])
+
+    monkeypatch.setattr(marketplace_filter, "SERVED_FORMAT_VERSION", marketplace_filter.SERVED_FORMAT_VERSION + 1)
+    after = marketplace_filter.compute_etag([plugin])
+
+    assert before != after, "packaging version does not reach the ETag — cached clients would keep the old bytes"
