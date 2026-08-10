@@ -452,6 +452,55 @@ def _mint_service_token(slug: str, owner: dict) -> tuple[str, str]:
     return token_id, jwt_token
 
 
+def _mint_container_git_token(repo_slug: str, owner: dict) -> tuple[str, str]:
+    """Mint the credential the CONTAINER clones its repo with.
+
+    This has to exist separately from `_mint_service_token`, and the deploy
+    path used to reuse that one — which could never work. The git surface
+    (`app/api/data_apps_git.py`) is the only caller of `resolve_token_to_user`
+    that passes `allow_data_app_git_scope=True`, and it admits exactly the
+    `data-app-git:<slug>` scope; a `data-app:<slug>` service token is rejected
+    there like anywhere else. So every hosted app's entrypoint got
+    ``remote: authentication required`` on its first clone and crash-looped
+    forever. Watched end to end on a live instance before this fix: the
+    container restarting every few seconds, `git clone` failing, the app row
+    stuck in `error`, and nothing in the Agnes log to say why — the rejection
+    happens inside the git surface, which does not log a denial.
+
+    Two properties matter and they pull in different directions from
+    `_mint_git_credential`, which is the *analyst's* 24-hour authoring
+    credential:
+
+    - **Scope follows the REPO, not the app.** A draft shares its parent's
+      repository, and the git surface pins `scope`'s slug to the repo being
+      requested — a token minted for the draft's own slug is refused against
+      the parent's repo. Callers pass `repo_slug`, already resolved.
+    - **No expiry.** The container re-clones whenever it is recreated, which
+      includes waking from `sleep_mode: recreate` long after the deploy. A
+      24-hour token would leave an app that deployed fine on Monday unable to
+      wake on Wednesday — a failure that looks like a hosting bug and is not
+      one. This matches `_mint_service_token`, which is unbounded for the same
+      reason, and carries the same documented trade-off.
+    """
+    token_id = str(uuid.uuid4())
+    jwt_token = create_access_token(
+        user_id=owner["id"],
+        email=owner["email"],
+        token_id=token_id,
+        typ="pat",
+        extra_claims={"scope": f"data-app-git:{repo_slug}"},
+    )
+    access_token_repo().create(
+        id=token_id,
+        user_id=owner["id"],
+        name=f"data-app-git:{repo_slug} (container)",
+        token_hash=hashlib.sha256(jwt_token.encode()).hexdigest(),
+        prefix=token_id.replace("-", "")[:8],
+        expires_at=None,
+    )
+    return token_id, jwt_token
+
+
 _GIT_CREDENTIAL_TTL = timedelta(hours=24)
 
 
@@ -618,6 +667,19 @@ class DraftParentMissingError(Exception):
     succeed. ``deploy_data_app`` maps this to HTTP 409 ``parent_not_found``."""
 
 
+def _revoke_quietly(token_id: str) -> None:
+    """Best-effort revoke of a token no container ever received.
+
+    Never raises: this runs on the failure path of a deploy that is already
+    reporting an error, and a bookkeeping problem must not replace the real
+    one in the caller's traceback.
+    """
+    try:
+        access_token_repo().revoke(token_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("could not revoke unused container git token %s", token_id, exc_info=True)
+
+
 def _rollback_new_service_token(repo, app_id: str, new_token_id: str, previous_token_id: str) -> None:
     """Undo a tentatively-minted+stored service token after a deploy step
     following the mint fails (spec build or runner `up`).
@@ -704,17 +766,29 @@ def redeploy_current(row: dict) -> None:
             repo_slug = parent["slug"]
     clone_url = f"{AGNES_INTERNAL_URL}/data-apps.git/{repo_slug}"
 
+    # NOT `jwt_token` (the service token). The git surface admits only the
+    # `data-app-git:<slug>` scope, so handing the container its `data-app:`
+    # service token made every first clone fail with `remote: authentication
+    # required` and the container crash-loop forever. Minted against
+    # `repo_slug` — a draft clones its PARENT's repo, and the scope's slug is
+    # pinned to the repo being requested. See `_mint_container_git_token`.
+    git_token_id, git_token = _mint_container_git_token(repo_slug, owner)
+
     try:
-        config_json = build_config_json(row, secrets=secrets, clone_url=clone_url, clone_token=jwt_token)
+        config_json = build_config_json(row, secrets=secrets, clone_url=clone_url, clone_token=git_token)
         spec = build_container_spec(row, defaults=_effective_config(), data_dir=os.environ.get("DATA_DIR", "/data"))
     except ValueError:
         _rollback_new_service_token(repo, row["id"], new_token_id, previous_token_id)
+        # Same reasoning as the service token above: no container ever saw
+        # this credential, so leaving it live is pure dead weight.
+        _revoke_quietly(git_token_id)
         raise
 
     try:
         _runner().up(slug, spec, config_json)
     except (RunnerUnavailable, RunnerError) as exc:
         _rollback_new_service_token(repo, row["id"], new_token_id, previous_token_id)
+        _revoke_quietly(git_token_id)
         _handle_runner_failure(repo, row["id"], exc)
         raise
 
