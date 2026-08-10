@@ -526,6 +526,32 @@ def require_agent_profiles_enabled() -> None:
         )
 
 
+def access_denied_detail(resource_type: ResourceType, resource_id: str) -> str:
+    """Human-readable 403 detail for a resource-scoped denial.
+
+    Most resource types have many instances, so naming the type and the id
+    ("Access denied to table 'orders'") is exactly right. A **singleton**
+    feature-gate resource does not: cloud chat is modelled as the resource
+    type ``chat`` holding one resource whose id is the literal string
+    ``"chat"`` (``id_format="chat"`` in ``app/resource_types.py``), so the
+    generic form rendered as::
+
+        Access denied to chat 'chat'
+
+    — which reads like a bug and tells the reader nothing. The Studio
+    builders print this straight into their assistant panel, so it is what a
+    user without the grant actually sees on a page whose banner advertises
+    "AI-ASSISTED". For that shape, name the feature instead.
+    """
+    if resource_id == resource_type.value:
+        from app.resource_types import RESOURCE_TYPES
+
+        spec = RESOURCE_TYPES.get(resource_type)
+        label = getattr(spec, "display_name", None) or resource_type.value
+        return f"Access denied to {label} — it is not enabled for your account."
+    return f"Access denied to {resource_type.value} {resource_id!r}"
+
+
 def require_resource_access(
     resource_type: ResourceType,
     path_template: str,
@@ -579,7 +605,7 @@ def require_resource_access(
         if not allowed:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=(f"Access denied to {resource_type.value} {resource_id!r}"),
+                detail=access_denied_detail(resource_type, resource_id),
             )
         return user
 
