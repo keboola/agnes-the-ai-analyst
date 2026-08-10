@@ -302,3 +302,39 @@ def test_the_approvals_env_override_is_honoured(tmp_path: Path, monkeypatch):
 
     monkeypatch.delenv("AGNES_CHAT_APPROVALS_ENABLED")
     assert load_chat_config(yaml).approvals_enabled is False, "…and the yaml stands when env is unset"
+
+
+def test_no_doc_or_dockerfile_names_an_egress_mode_config_does_not_accept():
+    """`_parse_docker_egress_mode` accepts exactly `open` | `none` | `allowlist`
+    and silently falls back to `open` — fully open egress — for anything else,
+    with one WARNING line as the only trace. An operator copying a value out of
+    these docs that is not in the accepted set gets the OPPOSITE of what the
+    doc told them to expect, with no error. (`docker_egress_mode: closed` was
+    exactly this: it read as "closed", parsed as "open".) This walks the same
+    files a copy-pasting operator would, rather than trusting them to match the
+    parser by inspection."""
+    import re
+
+    from app.chat.config import _parse_docker_egress_mode
+
+    accepted = set()
+    for candidate in ("open", "none", "allowlist", "not-a-real-mode"):
+        mode = _parse_docker_egress_mode({"docker_egress_mode": candidate})
+        if mode == candidate:
+            accepted.add(candidate)
+    assert accepted == {"open", "none", "allowlist"}, "the accepted set drifted — update this test too"
+
+    files = [
+        Path("docs/cloud-chat.md"),
+        Path("app/initial_workspace_default/docker-sandbox/Dockerfile"),
+        Path("app/initial_workspace_default/e2b-template/Dockerfile"),
+    ]
+    pattern = re.compile(r"docker_egress_mode\s*:\s*([A-Za-z_-]+)")
+    for f in files:
+        text = f.read_text(encoding="utf-8")
+        for value in pattern.findall(text):
+            assert value in accepted, (
+                f"{f} names `docker_egress_mode: {value}`, which "
+                f"_parse_docker_egress_mode does not accept — it would silently "
+                f"fall back to 'open' at runtime instead of doing what the doc says"
+            )

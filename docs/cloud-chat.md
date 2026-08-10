@@ -446,6 +446,17 @@ Edit `app/initial_workspace_default/e2b-template/Dockerfile` to add
 runtime dependencies the runner needs, then `e2b template build` again.
 The template README walks through the full flow.
 
+**A stale image silently loses features, it does not fail.** Both sandbox
+images ship `matplotlib` so the agent can draw a chart; an image built before
+that was added has no way to obtain it at runtime (E2B's per-hostname egress
+allowlist, and `docker_egress_mode: none` on the Docker provider, both put
+PyPI out of reach), so the agent falls back to prose or a markdown table
+instead of a chart, with nothing in the logs to say why. After upgrading
+Agnes, rebuild the template — `e2b template build`, or
+`docker build -t agnes-chat-sandbox:latest app/initial_workspace_default/docker-sandbox`
+for the self-hosted provider — and confirm the contract label reads `2`:
+`docker inspect -f '{{ index .Config.Labels "agnes.chat-sandbox.contract" }}'`.
+
 ### Per-user workspace size
 
 Workspaces live on the Agnes host at

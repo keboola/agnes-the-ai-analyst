@@ -25,7 +25,9 @@ FROM python:3.13-slim
 # Marks the filesystem contract below. Bump when the contract changes so an
 # operator can tell a stale image from a current one:
 #   docker inspect -f '{{ index .Config.Labels "agnes.chat-sandbox.contract" }}' agnes-chat-sandbox:latest
-LABEL agnes.chat-sandbox.contract="1"
+# v2: added `matplotlib` to the pip install block below (charts) — an image
+# still reporting "1" predates that dependency and cannot draw a chart.
+LABEL agnes.chat-sandbox.contract="2"
 
 # Node.js is required by claude-agent-sdk: it shells out to the
 # `@anthropic-ai/claude-code` CLI for its MCP handshake, and without that
@@ -45,6 +47,16 @@ RUN npm install -g @anthropic-ai/claude-code
 # command module eagerly, so a missing dep breaks the whole `agnes` binary, not
 # one subcommand. Keep in sync with ../e2b-template/Dockerfile and the
 # CLI-relevant entries of [project.dependencies] in pyproject.toml.
+#
+# `matplotlib` is the one entry here that the CLI never imports. It is baked in
+# because the agent is asked to draw charts and had no way to obtain it: under
+# `chat.docker_egress_mode: none` (and behind E2B's per-hostname allowlist)
+# an in-sandbox `pip install matplotlib` cannot reach PyPI at all, and even on
+# an open egress it is a slow download inside every session that wants a plot.
+# Without it the agent improvises — the reported failure was an SVG written to
+# `/tmp` and a user told to open a path that does not exist on their machine.
+# The workspace CLAUDE.md pairs this with the delivery half of the rule: a
+# chart is returned as inline SVG in the reply, never as a file.
 RUN pip install --no-cache-dir \
     "claude-agent-sdk>=0.2.87,<0.3.0" \
     "duckdb>=1.5.2" \
@@ -57,7 +69,8 @@ RUN pip install --no-cache-dir \
     "pyarrow>=12.0.0" \
     "pandas>=2.0.0" \
     "numpy>=1.24.0" \
-    "sqlglot>=30.0.0"
+    "sqlglot>=30.0.0" \
+    "matplotlib>=3.8"
 
 # --- Filesystem contract ----------------------------------------------------
 # ChatManager pins the sandbox env (app/chat/manager.py::_spawn_runner):
