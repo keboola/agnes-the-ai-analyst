@@ -106,18 +106,53 @@ def test_both_sandbox_images_carry_matplotlib(dockerfile: Path):
     assert "matplotlib>=" in body, f"{dockerfile} must bake matplotlib in"
 
 
+def _dangerous_tags() -> set[str]:
+    block = re.search(r"_DANGEROUS_TAGS = new Set\(\[(.*?)\]\)", _read(CHAT_JS), re.DOTALL)
+    assert block, "_DANGEROUS_TAGS moved — re-point this guard"
+    return set(re.findall(r'"([a-z]+)"', block.group(1)))
+
+
 def test_the_sanitizer_keeps_the_chart_channel_open():
     """`svg` in `_DANGEROUS_TAGS` would close the only route a chart has to the
     user — silently, since the answer would still 'render'."""
-    chat = _read(CHAT_JS)
-    block = re.search(r"_DANGEROUS_TAGS = new Set\(\[(.*?)\]\)", chat, re.DOTALL)
-    assert block, "_DANGEROUS_TAGS moved — re-point this guard"
-    tags = set(re.findall(r'"([a-z]+)"', block.group(1)))
+    tags = _dangerous_tags()
     assert "svg" not in tags, "blocking <svg> removes the only chart channel — see this test's docstring"
     # The blocklist is still doing its job; this is not an argument for a laxer one.
     assert {"script", "iframe", "style", "object"} <= tags
     # …and the attribute pass is what makes an <svg> from an untrusted turn safe.
-    assert 'name.startsWith("on")' in chat, "inline handlers must still be stripped"
+    assert 'name.startsWith("on")' in _read(CHAT_JS), "inline handlers must still be stripped"
+
+
+def test_smil_and_foreignobject_stay_blocked():
+    """Admitting `<svg>` while stripping `on*` handlers and unsafe URL schemes
+    is not sufficient on its own, because SMIL defers both checks to runtime:
+    they inspect the attributes an element HAS, and SMIL sets one it does not.
+
+    Measured against this sanitizer before these five names were added, all
+    three of these survived it completely intact — element, `attributeName`
+    and payload:
+
+        <a href="#x"><animate attributeName="href" values="javascript:…"></a>
+        <a><animate attributeName="xlink:href" to="javascript:…"></a>
+        <set attributeName="onload" to="…">
+
+    The scheme allowlist never sees the first two (`values`/`to` are not
+    URL-bearing attribute *names*) and the `on*` strip never sees the third
+    (there the handler name is an attribute *value*). `foreignObject` is
+    HTML-in-SVG and the usual container in these chains.
+
+    The threat model is NOT the chart author. A co-presence peer's message
+    renders through the same `renderMarkdownSafe`, and no prompt rule binds
+    them — which is also why "matplotlib never emits SMIL" is not a defence.
+    It is, however, why this costs nothing: measured on real matplotlib
+    output, a figure contains zero SMIL elements and no foreignObject.
+    """
+    tags = _dangerous_tags()
+    missing = {"animate", "animatetransform", "animatemotion", "set", "foreignobject"} - tags
+    assert not missing, (
+        f"{sorted(missing)} dropped from _DANGEROUS_TAGS — a chat message can set an "
+        "href or an event handler at runtime, which the attribute pass cannot see"
+    )
 
 
 def test_a_chart_svg_is_contained_by_the_bubble():
