@@ -251,3 +251,82 @@ class TestReadonlyFreshDataDirConcurrency:
             t.join(timeout=10)
 
         assert errors == [], errors
+
+
+class TestReadonlySurvivesStrictTzFailureDuringMaterialization:
+    """`_open_duckdb`'s strict-mode timezone check can raise *after*
+    `duckdb.connect()` already succeeded and is holding the file's lock.
+
+    `get_analytics_db_readonly()`'s fresh-instance branch materializes the
+    file with ``_open_duckdb(str(db_path), read_only=False).close()`` — the
+    ``.close()`` is chained onto the call, so it only runs if the call
+    *returns*. With ``AGNES_DUCKDB_TZ_STRICT=1`` and a timezone pin that
+    didn't take, ``_open_duckdb`` instead raises ``RuntimeError`` from
+    inside its own body, after ``duckdb.connect()`` already succeeded —
+    so the connection never reaches the caller for the chained ``.close()``
+    to run on. The surrounding ``except Exception`` in
+    ``get_analytics_db_readonly()`` swallows that RuntimeError, execution
+    falls through to the read-only open right after, and DuckDB refuses
+    it — the exact poisoning this branch exists to prevent, now permanent
+    for the life of the process. Same defect class as
+    ``TestReadonlyOnFreshDataDir`` and ``TestReadonlyFreshDataDirConcurrency``
+    above, one step earlier in the same call chain.
+    """
+
+    def test_readonly_open_succeeds_after_strict_tz_failure(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("AGNES_DUCKDB_TZ_STRICT", "1")
+
+        import duckdb as duckdb_mod
+        from src.db import get_analytics_db_readonly
+
+        real_connect = duckdb_mod.connect
+
+        class _FakeTzConn:
+            """Wraps a real connection; forces the TimeZone probe query to
+            report a non-UTC reading so `_open_duckdb`'s strict-mode branch
+            raises, while delegating everything else — including
+            `.close()` — to the real connection, so a leaked handle here
+            really does hold the file's lock for the assertion below to
+            catch."""
+
+            def __init__(self, real):
+                self._real = real
+
+            def execute(self, sql, *args, **kwargs):
+                if "current_setting('TimeZone')" in sql:
+
+                    class _FakeRow:
+                        @staticmethod
+                        def fetchone():
+                            return ("America/New_York",)
+
+                    return _FakeRow()
+                return self._real.execute(sql, *args, **kwargs)
+
+            def close(self):
+                self._real.close()
+
+        def fake_connect(path, **kwargs):
+            real = real_connect(path, **kwargs)
+            # Only the materialization open (`read_only=False`) needs the
+            # faked timezone reading; the read-only open right after must
+            # go through unwrapped so it genuinely exercises DuckDB's
+            # same-file-different-configuration check against whatever the
+            # materialization step left behind.
+            if kwargs.get("read_only") is False:
+                return _FakeTzConn(real)
+            return real
+
+        monkeypatch.setattr(duckdb_mod, "connect", fake_connect)
+
+        # Fresh instance: the materialization branch hits the faked
+        # non-UTC reading, `_open_duckdb` raises, and
+        # `get_analytics_db_readonly()`'s own `except Exception` swallows
+        # it. This must not leave the write handle open for the read-only
+        # open that follows.
+        conn = get_analytics_db_readonly()
+        try:
+            assert conn.execute("SELECT 1").fetchone() == (1,)
+        finally:
+            conn.close()
