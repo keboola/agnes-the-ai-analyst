@@ -674,16 +674,23 @@ class TestDeploy:
         # a sleeping-but-deployed app must still be able to wake with it.
         assert old_token_row["revoked_at"] is None
 
-        # Exactly one new token was minted during the failed attempt, and
-        # it must be revoked — it was never handed to a container.
+        # A deploy mints TWO credentials — the app's `data-app:` service token
+        # and the container's `data-app-git:` clone token (they differ in scope
+        # and lifetime; see `_mint_container_git_token`). Neither reached a
+        # container on a failed attempt, so BOTH must be revoked: a live git
+        # credential for an app that never deployed is exactly the dangling
+        # PAT this test exists to prevent.
         new_token_ids = {t["id"] for t in tokens_after} - tokens_before
-        assert len(new_token_ids) == 1
+        assert len(new_token_ids) == 2, sorted(new_token_ids)
         conn = get_system_db()
         try:
-            new_token_row = AccessTokenRepository(conn).get_by_id(next(iter(new_token_ids)))
+            new_rows = [AccessTokenRepository(conn).get_by_id(tid) for tid in new_token_ids]
         finally:
             conn.close()
-        assert new_token_row["revoked_at"] is not None
+        assert all(r["revoked_at"] is not None for r in new_rows), [
+            (r["name"], r["revoked_at"]) for r in new_rows
+        ]
+        assert any("data-app-git:" in r["name"] for r in new_rows), [r["name"] for r in new_rows]
 
     def test_deploy_redeploy_revokes_old_stores_new(self, client_as_user, fake_runner, seeded_repo_with_commit):
         r1 = client_as_user.post("/api/data-apps/sapp/deploy", json={})
