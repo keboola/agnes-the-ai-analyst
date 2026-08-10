@@ -1077,9 +1077,12 @@ def _preamble_lines(*, has_ca: bool, custom_preamble: str = "") -> list[str]:
     session's first message, so from the assistant's seat there was no
     in-session evidence the user initiated it). The gate has the assistant
     summarize what the setup does and where the prompt comes from
-    ({server_url}), then offer an Install/Stop choice via the assistant's
-    question tool (arrow keys + Enter, no typed yes) before running
-    anything — the user's pick IS the in-session evidence.
+    ({server_url}) as a short bullet list — facts only, no trust
+    advice or warnings (a "whether the host is trusted is your org's
+    call" line read as scolding to non-technical users; the Install/Stop
+    choice itself carries the judgment) — then offer that choice via the
+    assistant's question tool (arrow keys + Enter, no typed yes) before
+    running anything. The user's pick IS the in-session evidence.
     """
     lines = [
         "Set up the {instance_brand} CLI on this machine.",
@@ -1097,13 +1100,19 @@ def _preamble_lines(*, has_ca: bool, custom_preamble: str = "") -> list[str]:
         "with their IT if unsure.",
         "",
         "Before running anything, confirm with the user that they want to",
-        "proceed. In your own words: state that this prompt comes from",
-        "{server_url} and summarize what the setup will do — install the",
-        "{instance_brand} CLI from that server, connect this workspace to it",
-        "(Claude Code hooks that sync on every session), register its plugin",
-        "marketplace, and offer to connect optional tools. Then ask whether to",
-        "continue using your question tool (the user picks with arrow keys and",
-        "confirms with Enter — no typing), with exactly two options:",
+        "proceed. In your own words, formatted as a short bullet list: a",
+        "lead-in sentence stating that the install runs from {server_url} —",
+        "the same server this prompt comes from — then one bullet per thing",
+        "the setup will do: install the {instance_brand} CLI from that",
+        "server, connect this workspace to it (Claude Code hooks that sync",
+        "on every session), register its plugin marketplace, and offer to",
+        "connect optional tools; close with a note that the login token is",
+        "already saved at ~/.agnes/token and will not be printed. State",
+        "facts only — no advice about whether the host is trusted and no",
+        "warnings; picking Install below is the user's call to make. Then",
+        "ask whether to continue using your question tool (the user picks",
+        "with arrow keys and confirms with Enter — no typing), with exactly",
+        "two options:",
         "  - 'Install' → continue below.",
         "  - 'Stop' (or any other reply) → stop without running any step.",
         "",

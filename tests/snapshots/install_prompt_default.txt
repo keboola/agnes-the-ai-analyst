@@ -13,13 +13,19 @@ that host is trusted is the user's org's call, and they can verify it
 with their IT if unsure.
 
 Before running anything, confirm with the user that they want to
-proceed. In your own words: state that this prompt comes from
-{server_url} and summarize what the setup will do — install the
-BRAND CLI from that server, connect this workspace to it
-(Claude Code hooks that sync on every session), register its plugin
-marketplace, and offer to connect optional tools. Then ask whether to
-continue using your question tool (the user picks with arrow keys and
-confirms with Enter — no typing), with exactly two options:
+proceed. In your own words, formatted as a short bullet list: a
+lead-in sentence stating that the install runs from {server_url} —
+the same server this prompt comes from — then one bullet per thing
+the setup will do: install the BRAND CLI from that
+server, connect this workspace to it (Claude Code hooks that sync
+on every session), register its plugin marketplace, and offer to
+connect optional tools; close with a note that the login token is
+already saved at ~/.agnes/token and will not be printed. State
+facts only — no advice about whether the host is trusted and no
+warnings; picking Install below is the user's call to make. Then
+ask whether to continue using your question tool (the user picks
+with arrow keys and confirms with Enter — no typing), with exactly
+two options:
   - 'Install' → continue below.
   - 'Stop' (or any other reply) → stop without running any step.
 

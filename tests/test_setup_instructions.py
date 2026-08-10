@@ -170,14 +170,19 @@ def test_preamble_confirm_gate_precedes_all_steps():
     """The preamble instructs the assistant to get explicit confirmation
     from the user — naming {server_url} as the prompt's source and
     summarizing what the setup does — BEFORE running anything, including
-    the token-file check. The ask is an Install/Stop choice via the
-    assistant's question tool (arrow keys + Enter), not a typed yes;
-    anything but 'Install' stops the run."""
+    the token-file check. The summary is a bullet list of facts only (no
+    trust advice — that read as scolding to non-technical users), and the
+    ask is an Install/Stop choice via the assistant's question tool
+    (arrow keys + Enter), not a typed yes; anything but 'Install' stops
+    the run."""
     from app.web.setup_instructions import resolve_lines
 
     joined = "\n".join(resolve_lines("agnes.whl"))
     assert "Before running anything, confirm with the user" in joined
-    assert "state that this prompt comes from\n{server_url}" in joined
+    assert "the install runs from {server_url}" in joined
+    assert "formatted as a short bullet list" in joined
+    assert "facts only" in joined
+    assert "no advice about whether the host is trusted" in joined
     assert "using your question tool" in joined
     assert "arrow keys" in joined
     assert "'Install' → continue below." in joined
