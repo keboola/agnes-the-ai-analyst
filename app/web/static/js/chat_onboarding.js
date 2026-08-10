@@ -1075,7 +1075,14 @@ function matchScore(needle, item) {
   const n = needle.toLowerCase().trim();
   if (!n) return 0;
   if ((item.name || "").toLowerCase() === n) return 100;
-  if (hay.includes(n)) return 60;
+  // The substring tier carries the same "too short to mean anything" bar the
+  // per-token tier below already applies. Without it, "install it" reduces to
+  // the needle "it", which occurs inside almost any name/id/description, scores
+  // the full 60, and clears the confidence bar — so an item nobody named gets
+  // added with no confirmation. Exact-name equality above is left unguarded on
+  // purpose: an item genuinely called "ai" is a real match, and equality cannot
+  // happen by accident the way containment can.
+  if (n.length > 2 && hay.includes(n)) return 60;
   let s = 0;
   n.split(/\s+/)
     .filter((t) => t.length > 2)
