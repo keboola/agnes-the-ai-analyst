@@ -30,7 +30,7 @@ class TestMcpSourcesCreateModalDropdowns:
         for dd_id, target, values in (
             ("new-transport-dd", "new-transport", ("stdio", "http", "sse")),
             ("new-scope-dd", "new-scope", ("shared", "per_user")),
-            ("new-auth-method-dd", "new-auth-method", ("", "bearer", "header")),
+            ("new-auth-method-dd", "new-auth-method", ("", "bearer", "oauth")),
         ):
             assert f'data-ds-dropdown-target="{target}"' in text
             assert f'id="{dd_id}-btn"' in text
