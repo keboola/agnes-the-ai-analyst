@@ -1,4 +1,5 @@
 {% extends "base_ds.html" %}
+{% import "macros/_icon.html" as ico %}
 {% block title %}Data sources — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block head_extra %}
@@ -340,6 +341,10 @@
      an admin who hasn't synced yet, or whose last attempt failed, needs to
      see that state instead of nothing. #}
   {% set rs = semantic_refresh_summary or {} %}
+  {# Connection cards are built in JS; the mismatch warning's icon is rendered
+     once here by the shared macro and cloned, never assembled as markup. #}
+  <template id="ds-warn-icon">{{ ico.icon('warning', 16) }}</template>
+
   <div class="ds-semantic-summary {{ 'ds-semantic-summary--error' if rs.last_status == 'error' else ('ds-semantic-summary--pending' if not rs.last_status else '') }}">
     <span>
       <strong>Semantic layer:</strong>
@@ -598,11 +603,10 @@ async function loadTokenMismatchWarnings() {
     box.textContent = "";
     if (!warning) continue;
     // Upstream project names/ids — untrusted, so textContent, never innerHTML.
-    const icon = document.createElement("span");
-    icon.textContent = "⚠";
+    const iconTpl = document.getElementById("ds-warn-icon");
+    if (iconTpl) box.appendChild(iconTpl.content.cloneNode(true));
     const text = document.createElement("span");
     text.textContent = warning.message || "";
-    box.appendChild(icon);
     box.appendChild(text);
   }
 }
