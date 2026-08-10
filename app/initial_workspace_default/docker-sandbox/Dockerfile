@@ -25,7 +25,9 @@ FROM python:3.13-slim
 # Marks the filesystem contract below. Bump when the contract changes so an
 # operator can tell a stale image from a current one:
 #   docker inspect -f '{{ index .Config.Labels "agnes.chat-sandbox.contract" }}' agnes-chat-sandbox:latest
-LABEL agnes.chat-sandbox.contract="1"
+# v2: added `matplotlib` to the pip install block below (charts) — an image
+# still reporting "1" predates that dependency and cannot draw a chart.
+LABEL agnes.chat-sandbox.contract="2"
 
 # Node.js is required by claude-agent-sdk: it shells out to the
 # `@anthropic-ai/claude-code` CLI for its MCP handshake, and without that
@@ -48,7 +50,7 @@ RUN npm install -g @anthropic-ai/claude-code
 #
 # `matplotlib` is the one entry here that the CLI never imports. It is baked in
 # because the agent is asked to draw charts and had no way to obtain it: under
-# `chat.docker_egress_mode: closed` (and behind E2B's per-hostname allowlist)
+# `chat.docker_egress_mode: none` (and behind E2B's per-hostname allowlist)
 # an in-sandbox `pip install matplotlib` cannot reach PyPI at all, and even on
 # an open egress it is a slow download inside every session that wants a plot.
 # Without it the agent improvises — the reported failure was an SVG written to
