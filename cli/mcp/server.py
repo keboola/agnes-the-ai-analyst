@@ -633,6 +633,34 @@ def data_app_deploy(slug: str, sha: str = "", mode: Literal["", "dev"] = "") -> 
 
 
 @tool()
+def data_app_create(slug: str, name: str, description: str = "") -> dict:
+    """Create a new hosted data app (the registry row plus its git repo).
+
+    The FIRST step of building an app, and the one this surface was missing:
+    ``data_app_create_draft`` needs an app to draft FROM, so an agent starting
+    there got ``404 data_app_not_found`` with no way forward.
+
+    The app is created empty. Seed it before deploying: clone with
+    ``data_app_git_credential``, copy the baked scaffold from
+    ``/work/scaffolds/nodejs-dashboard/``, push to ``main``, then
+    ``data_app_deploy``. Deploying an empty repo fails with
+    ``deploy_empty_repo``.
+
+    Args:
+        slug:        URL-safe id, unique per instance (``[a-z0-9-]``).
+        name:        Human-readable title shown in the UI.
+        description: Optional one-line summary.
+
+    Returns ``{"id", "slug", "git_url"}``. Mirrors ``POST /api/data-apps`` and
+    ``agnes app create``.
+    """
+    try:
+        return api_post_json("/api/data-apps", {"slug": slug, "name": name, "description": description})
+    except V2ClientError as exc:
+        raise ValueError(_mcp_error(f"data_app_create({slug})", exc)) from exc
+
+
+@tool()
 def data_app_create_draft(slug: str, branch: str = "init") -> dict:
     """Create a draft of a prod data app on an iteration branch — owner/Admin only.
 
