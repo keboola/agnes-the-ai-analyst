@@ -21,6 +21,7 @@ matching how passthrough tools surface today. That generator is a
 small follow-up — it reads the catalog and dynamically registers
 named tools. For now the REST endpoint is the source of truth.
 """
+
 from __future__ import annotations
 
 import logging
@@ -31,7 +32,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.auth.dependencies import _get_db, get_current_user
-from src.db import get_analytics_db
+from src.db import get_analytics_db_readonly
 from src.rbac import can_access_table
 from src.repositories import table_registry_repo
 from src.sql_ident import quote_ident
@@ -106,12 +107,23 @@ async def query_table(
     # always exists under the id; .name is a UX label that may collide.
     view_name = table_id
 
-    # Reuse the pooled analytics connection — DuckDB rejects opening a
-    # second read-only connection alongside a writer (the orchestrator
-    # holds one for rebuild_*). Safety against accidental mutation comes
-    # from this endpoint's own SQL builder: SELECT only, parameterized,
-    # plus the column allow-list below.
-    analytics_conn = get_analytics_db()
+    # Read-only, like every other analyst read path.
+    #
+    # This used to take the read-WRITE singleton `get_analytics_db()`,
+    # reasoning that DuckDB rejects a read-only open alongside a writer and
+    # that "the orchestrator holds one for rebuild_*". That premise no longer
+    # holds: `src/orchestrator.py` rebuilds into a temp path and swaps the
+    # file, so nothing keeps a writer on `analytics/server.duckdb` — this
+    # endpoint was the only caller of the read-write singleton. And the
+    # exclusion runs both ways: once this handle was open, every subsequent
+    # `get_analytics_db_readonly()` in the process failed, which is what
+    # `/api/query` uses. Taking the writer here to dodge the conflict simply
+    # moved the breakage onto the more important surface.
+    #
+    # Safety against accidental mutation no longer rests on this endpoint's
+    # own SQL builder alone (SELECT only, parameterized, plus the column
+    # allow-list below) — the connection itself now refuses writes.
+    analytics_conn = get_analytics_db_readonly()
     columns = _column_names(analytics_conn, view_name)
     if not columns:
         raise HTTPException(

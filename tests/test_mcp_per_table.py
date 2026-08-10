@@ -20,7 +20,7 @@ import pytest
 
 pytest.importorskip("mcp", reason="mcp SDK not installed")
 
-from src.db import get_analytics_db, get_system_db
+from src.db import close_analytics_db, get_analytics_db, get_system_db
 from src.repositories.table_registry import TableRegistryRepository
 from src.sql_ident import quote_ident
 
@@ -35,10 +35,13 @@ def _seed_view_and_registry(rows: list[dict]) -> dict:
     table_id = f"tt_{uuid.uuid4().hex[:8]}"
 
     # Analytics DB: create the view the endpoint will SELECT from. We
-    # write through the same pooled connection the app uses so the
-    # path resolution stays in one place. The endpoint reopens it
-    # read-only — DuckDB allows concurrent readers next to a writer
-    # in this configuration.
+    # write through the same pooled connection the app uses so the path
+    # resolution stays in one place, then CLOSE it — DuckDB refuses a
+    # read-only open while a read-write connection to the same file is
+    # alive in the process, and the endpoint reads read-only like every
+    # other analyst path. Leaving the writer open would model a state
+    # production never has: the orchestrator rebuilds into a temp file and
+    # swaps it, so nothing holds a writer on analytics/server.duckdb.
     a_conn = get_analytics_db()
     cols = sorted(rows[0].keys()) if rows else ["id"]
     select_parts = []
@@ -61,6 +64,8 @@ def _seed_view_and_registry(rows: list[dict]) -> dict:
         registered_by="system_seed",
     )
     sys_conn.close()
+    # Drop the analytics writer so the file is readable read-only.
+    close_analytics_db()
     return {"table_id": table_id}
 
 
@@ -203,6 +208,8 @@ def test_query_table_filter_column_name_cannot_break_out_of_its_quotes(seeded_ap
         sync_strategy="full_refresh", registered_by="system_seed",
     )
     sys_conn.close()
+    # Drop the analytics writer — the endpoint reads read-only.
+    close_analytics_db()
 
     def _query(value: str):
         return seeded_app["client"].post(
@@ -220,3 +227,32 @@ def test_query_table_filter_column_name_cannot_break_out_of_its_quotes(seeded_ap
     miss = _query("no-such-value")
     assert miss.status_code == 200, miss.text
     assert miss.json()["row_count"] == 0
+
+
+def test_query_table_leaves_the_query_endpoint_usable(seeded_app):
+    """The per-table MCP read must not poison `/api/query` for the process.
+
+    This endpoint used to take the read-WRITE analytics singleton. DuckDB
+    refuses a read-only open while a read-write connection to the same file is
+    alive, so one MCP per-table call made every later
+    `get_analytics_db_readonly()` — the connection behind `/api/query`, the web
+    query box and `agnes query`'s server-side fallback — fail with
+    "Can't open a connection to same database file with a different
+    configuration" until the process restarted.
+    """
+    import src.db as db_mod
+    from src.db import get_analytics_db_readonly
+
+    seed = _seed_view_and_registry([{"id": "1", "country": "CZ"}])
+    r = seeded_app["client"].post(
+        f"/api/mcp/query-table/{seed['table_id']}",
+        headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
+        json={"filter": {}, "limit": 10},
+    )
+    assert r.status_code == 200, r.text
+
+    assert db_mod._analytics_db_conn is None, (
+        "the per-table endpoint opened the read-write analytics singleton"
+    )
+    # The read path every other analyst surface uses still opens.
+    assert get_analytics_db_readonly().execute("SELECT 1").fetchone() == (1,)
