@@ -36,6 +36,10 @@ _UPDATABLE = frozenset(
         "plugins",
         "surfaces",
         "status",
+        # Parity with the DuckDB twin — see its comment: naming an unnamed
+        # draft re-derives the slug, always through ``_unique_slug`` so the
+        # (owner_user_id, slug) UNIQUE holds.
+        "slug",
     }
 )
 
