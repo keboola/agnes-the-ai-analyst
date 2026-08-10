@@ -145,7 +145,15 @@ def render_safe(markdown: Optional[str], *, html_source: bool = False) -> str:
 # has nothing but `<figcaption>` between A and B — so a close-only pattern
 # fused them. Redundant spaces are free: render_plain collapses runs at the end.
 _BLOCK_TAGS = "p|li|h[1-6]|tr|t[dh]|blockquote|pre|div|section|article|figure|figcaption|dd|dt|dl"
-_BLOCK_BOUNDARY_RE = re.compile(rf"</?(?:{_BLOCK_TAGS})\b[^>]*>|<br ?/?>")
+# The attribute run skips over quoted values, because `>` inside one does not
+# close the tag — `<div title="a>b">` is a single tag, and a `[^>]*>` run cut it
+# in half and left `b">` as visible text in the preview. The three alternatives
+# are mutually exclusive on their first character (a quote starts a quoted run,
+# anything else is the bare branch), so the pattern cannot backtrack
+# exponentially on a tag that never closes.
+_BLOCK_BOUNDARY_RE = re.compile(
+    rf"</?(?:{_BLOCK_TAGS})\b(?:\"[^\"]*\"|'[^']*'|[^'\">])*>|<br ?/?>"
+)
 
 
 def render_plain(markdown: Optional[str], *, html_source: bool = False) -> str:

@@ -435,3 +435,26 @@ def test_br_is_still_a_boundary():
 
     assert render_plain("a<br>b", html_source=True) == "a b"
     assert render_plain("a<br/>b", html_source=True) == "a b"
+
+
+def test_a_quoted_gt_inside_a_layout_tag_does_not_leak():
+    """`>` inside a quoted attribute value does not close the tag, so a
+    `[^>]*>` attribute run cut `<div title="a>b">` in half and left `b">` as
+    visible characters in the preview."""
+    from app.markdown_render import render_plain
+
+    assert render_plain('<div title="a>b">First.</div><div>Second.</div>', html_source=True) == "First. Second."
+    assert render_plain("<div title='a>b'>First.</div><div>Second.</div>", html_source=True) == "First. Second."
+
+
+def test_boundary_pattern_stays_linear_on_an_unclosed_tag():
+    """The attribute run is an alternation inside a star, which is the shape
+    that goes exponential when the branches overlap. They are mutually
+    exclusive on their first character; this pins that they stay so."""
+    import time
+
+    from app.markdown_render import render_plain
+
+    started = time.perf_counter()
+    render_plain("<div " + '"x"' * 4000, html_source=True)
+    assert time.perf_counter() - started < 1.0
