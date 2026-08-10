@@ -202,7 +202,7 @@ def _record_project_identity(connection_id: str, row: Dict[str, Any], payload: D
         return
     config = dict(row.get("config") or {})
     known_id = config.get("project_id")
-    if known_id is not None and known_id != project_id:
+    if known_id is not None and str(known_id) != str(project_id):
         # NEVER silently re-bind. Callers are expected to detect the
         # disagreement and report it, but this is the backstop: a caller that
         # forgets would rewrite the binding under a stored master token that
@@ -246,7 +246,12 @@ def project_mismatch_message(row: Dict[str, Any], payload: Dict[str, Any], *, wh
     if known_id is None:
         return None
     token_id, token_name = project_identity(payload)
-    if token_id is None or token_id == known_id:
+    # Compared as strings: the id round-trips through a JSON config column on
+    # two different backends (DuckDB JSON, PG JSONB), and a 5947 that comes
+    # back as "5947" would otherwise read as a permanent, unfixable mismatch
+    # on a correctly-configured connection. Devin Review on #1242 raised the
+    # same risk across endpoints.
+    if token_id is None or str(token_id) == str(known_id):
         return None
     known_name = config.get("project_name") or "unnamed"
     return (
@@ -361,19 +366,37 @@ async def update_connection(
 
     404 if missing; 409 if renaming to a name already taken by a different
     connection.
+
+    Moving the connection to a different ``stack_url`` drops any recorded
+    project identity: a project id is only meaningful on the stack it came
+    from, and keeping the old binding would make every token from the new
+    stack fail ``project_mismatch`` with no way to clear it from the UI. This
+    is also the supported way to re-point a bound connection — see the note
+    on :func:`project_mismatch_message`.
     """
     repo = source_connections_repo()
-    if repo.get(connection_id) is None:
+    existing_row = repo.get(connection_id)
+    if existing_row is None:
         raise HTTPException(status_code=404, detail="connection_not_found")
     if body.name is not None:
         existing = repo.get_by_name(body.name)
         if existing is not None and existing["id"] != connection_id:
             raise HTTPException(status_code=409, detail="connection_name_exists")
     _reject_disallowed_token_env(body.token_env)
+    config = body.config
+    if config is not None:
+        old_stack = ((existing_row.get("config") or {}).get("stack_url") or "").rstrip("/")
+        new_stack = (config.get("stack_url") or "").rstrip("/")
+        if old_stack and new_stack and old_stack != new_stack:
+            config = {k: v for k, v in config.items() if k not in ("project_id", "project_name")}
+            logger.info(
+                "connection %s moved to a different stack; clearing its recorded project identity",
+                connection_id,
+            )
     repo.update(
         connection_id,
         name=body.name,
-        config=body.config,
+        config=config,
         token_env=body.token_env,
         is_default=body.is_default,
     )
@@ -516,22 +539,32 @@ async def set_connection_secret(
             # connection's project comes from. The cost is real and worth
             # naming: a Storage API outage now blocks storing a storage token
             # instead of accepting one nobody has checked.
-            _validate_stack_url(config, required=True)
-            stack_url = (config.get("stack_url") or "").rstrip("/")
-            client = KeboolaStorageClient(url=stack_url, token=body.value)
-            try:
-                info = await run_in_threadpool(client.verify_token)
-            except (StorageApiError, requests.RequestException) as exc:
-                redacted = client._redact(exc)
-                logger.warning(
-                    "storage-token preflight failed for connection %s (%s): %s",
-                    connection_id,
-                    _log_host(stack_url),
-                    redacted,
-                )
-                status = 400 if is_upstream_client_error(exc) else 502
-                raise HTTPException(status_code=status, detail=f"storage_api_error: {redacted}") from exc
-            _reject_project_mismatch(row, info, what="storage token")
+            #
+            # No stack_url yet → nothing to preflight AGAINST, so the token is
+            # stored unverified and unbound rather than refused. The wizard
+            # creates the row before the config is complete (create validates
+            # stack_url with required=False for exactly that reason), so
+            # demanding one here would have broken storing a token on a
+            # half-built connection — a regression this change introduced and
+            # Devin Review on #1242 caught. Identity gets recorded later, at
+            # /test or when a master token is stored.
+            if (config.get("stack_url") or "").strip():
+                _validate_stack_url(config, required=True)
+                stack_url = (config.get("stack_url") or "").rstrip("/")
+                client = KeboolaStorageClient(url=stack_url, token=body.value)
+                try:
+                    info = await run_in_threadpool(client.verify_token)
+                except (StorageApiError, requests.RequestException) as exc:
+                    redacted = client._redact(exc)
+                    logger.warning(
+                        "storage-token preflight failed for connection %s (%s): %s",
+                        connection_id,
+                        _log_host(stack_url),
+                        redacted,
+                    )
+                    status = 400 if is_upstream_client_error(exc) else 502
+                    raise HTTPException(status_code=status, detail=f"storage_api_error: {redacted}") from exc
+                _reject_project_mismatch(row, info, what="storage token")
         key = connection_id
 
     try:
@@ -575,11 +608,18 @@ async def test_connection(
 
     Resolves the stack URL and token from the connection row (token_env →
     environment lookup, or vault secret), then calls
-    ``GET {stack_url}/v2/storage?exclude=components`` with a 10-second
-    timeout.
+    ``GET {stack_url}/v2/storage/tokens/verify`` with a 10-second timeout.
 
     Returns ``{ok: true, project_name: "…"}`` on success or
     ``{ok: false, error: "…"}`` on failure.
+
+    It used to probe ``/v2/storage?exclude=components``, which measured
+    verified live (2026-08-10): that endpoint is the unauthenticated stack
+    index — it answers **200 with no token at all** and carries no ``owner``
+    block. So "Test" reported OK for any token, including a garbage one, and
+    the ``project_name`` it returned was always the empty string. Verifying
+    the token is the only probe that answers the question the button asks,
+    and it is what makes the project identity below readable at all.
     """
     row = source_connections_repo().get(connection_id)
     if row is None:
@@ -605,7 +645,7 @@ async def test_connection(
         )
         return {"ok": False, "error": "no token available (vault empty, token_env unset)"}
 
-    url = f"{stack_url}/v2/storage?exclude=components"
+    url = f"{stack_url}/v2/storage/tokens/verify"
     # Outcome log lines carry the status/reason but never the response body —
     # a proxy-echoed token must not land in server logs (the body still goes
     # to the admin client, same as before).
@@ -614,11 +654,9 @@ async def test_connection(
             resp = await client.get(url, headers={"X-StorageApi-Token": token})
         if resp.status_code == 200:
             data = resp.json()
-            project_name = data.get("owner", {}).get("name") or data.get("name") or ""
-            # The probe already knew which project answered and threw it away.
-            # Persisting it here is what gives the "Add Keboola project" wizard
-            # a project identity at all — /test is the wizard's own last step,
-            # so a connection is bound to its project the moment it is created.
+            project_name = (data.get("owner") or {}).get("name") or ""
+            # This is the wizard's own last step, so verifying here is what
+            # binds a connection to its project the moment it is created.
             #
             # A disagreement is a FAILED test, not a re-binding: the token this
             # probe resolves is not necessarily the one that established the
