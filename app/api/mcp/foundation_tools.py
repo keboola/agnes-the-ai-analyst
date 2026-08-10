@@ -1317,7 +1317,21 @@ def register_foundation_tools(
         register_as_table: bool = False,
         table_name: str = "",
     ) -> dict:
-        """Upload a local file into your chat workspace (client-side only).
+        """Pull a file from the USER'S machine into their chat workspace (client-side only).
+
+        **Direction: user's laptop → workspace. This is not a way to hand a
+        file to the user.** If you are an agent inside a chat sandbox holding
+        a chart, a report or any other output, this tool cannot deliver it —
+        the sandbox filesystem is not the user's computer, and neither is any
+        path you can name here. Return the result IN your reply instead:
+        inline `<svg>` for a chart, a ```mermaid fence for a diagram, a
+        markdown table for figures. Naming a path is never delivery.
+
+        Observed on a live instance: an agent that had written a chart to
+        `/tmp` called this tool to "send" it, got `No Agnes token configured`
+        from the local stdio server, and went on hunting for a channel that
+        does not exist — several tool calls spent before it gave up and told
+        the user to open a path on a machine they were not using.
 
         Uploading a file by naming a path is inherently a CLIENT-SIDE action:
         the path is resolved on the machine that runs the MCP server.  This
