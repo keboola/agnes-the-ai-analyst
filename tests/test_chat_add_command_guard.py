@@ -18,18 +18,53 @@ That makes two failure modes possible, both observed against a live instance:
    shared with a long description could add something to the user's Stack that
    they never named.
 
-There is no JS runner in CI, so these assert the source contract the way
-`test_tour_journey_flags.py` and `test_design_system_contract.py` do.
+Most of these assert the source contract the way `test_tour_journey_flags.py`
+and `test_design_system_contract.py` do. One — the trailing-punctuation
+regression below — actually runs `maybeHandleAddCommand` under `node`,
+because "a trailing full stop still resolves the item" is a claim about
+what the search does, not about what the source says.
 """
 
+import json
 import re
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 ONBOARDING_JS = Path("app/web/static/js/chat_onboarding.js")
 
 
 def _src() -> str:
     return ONBOARDING_JS.read_text(encoding="utf-8")
+
+
+def _node() -> str:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available — the trailing-punctuation regression needs a runtime")
+    return node
+
+
+def _add_command_runtime_source() -> str:
+    """The real `maybeHandleAddCommand` + its dependencies (`matchScore`, the
+    two tuning constants) — for actually running the search rather than
+    grepping the source. The trailing-punctuation bug only shows up once the
+    query is built and matched for real; a source-level regex can't see it."""
+    src = _src()
+    const_start = src.index("const ADD_COMMAND_MAX_WORDS")
+    fn_start = src.index("async function maybeHandleAddCommand")
+    fn_end = src.index("\nfunction matchScore", fn_start)
+    match_start = src.index("function matchScore")
+    match_end = src.index("\n\n", match_start)
+    return "\n".join(
+        [
+            src[const_start:fn_start],
+            src[fn_start:fn_end],
+            src[match_start:match_end],
+        ]
+    )
 
 
 def _handler() -> str:
@@ -118,3 +153,62 @@ def test_single_candidate_still_requires_the_confidence_bar():
         "hit subscribe the user whenever the instance has exactly one "
         "addable item; the ADD_COMMAND_MIN_SCORE bar must apply uniformly"
     )
+
+
+def test_add_shortcut_resolves_the_item_despite_a_trailing_full_stop():
+    """ "add sales-package." must still resolve — and "!" / "?" too.
+
+    The word-count guard tolerates a trailing sentence terminator
+    (`subject.replace(/[.!?]+$/, "")`) so a short imperative that happens to
+    end in punctuation isn't mistaken for prose. But the search term used to
+    be built from the raw regex capture instead of that same normalized
+    subject, so the dot rode along into `q`: the exact-name check failed
+    (`"sales-package" !== "sales-package."`), the substring check failed
+    (`hay` never contains the dot), and the per-token fallback failed too —
+    the only token still carries the dot, so it never matches either. Score
+    0, `scored` ends up empty, and the handler falls through as if nothing
+    had matched, even though the identical message without the full stop
+    resolves cleanly to an exact-name hit.
+    """
+    node = _node()
+    runtime = _add_command_runtime_source()
+    harness = f"""
+"use strict";
+{runtime}
+
+const ITEM = {{
+  id: "pkg-1",
+  name: "sales-package",
+  resource_type: "data_package",
+  in_stack: false,
+  description: "Sales figures",
+}};
+async function browseStack() {{ return [ITEM]; }}
+let subscribeCalls = [];
+async function subscribe(resourceType, resourceId) {{ subscribeCalls.push([resourceType, resourceId]); }}
+async function patchJourney(_fields) {{}}
+const rendered = [];
+const hooks = {{ renderAssistant(msg) {{ rendered.push(msg); }} }};
+function escapeHtml(s) {{ return String(s); }}
+
+(async () => {{
+  const results = {{}};
+  for (const suffix of [".", "!", "?"]) {{
+    subscribeCalls = [];
+    const handled = await maybeHandleAddCommand(`add sales-package${{suffix}}`);
+    results[suffix] = {{ handled, subscribeCalls }};
+  }}
+  process.stdout.write(JSON.stringify(results));
+}})().catch((err) => {{
+  console.error("harness error:", err);
+  process.exitCode = 1;
+}});
+"""
+    out = subprocess.run([node, "-e", harness], capture_output=True, text=True)
+    assert out.returncode == 0, f"node failed:\n{out.stderr}"
+    results = json.loads(out.stdout)
+    for suffix, result in results.items():
+        assert result["handled"] is True, f"'add sales-package{suffix}' was not resolved as a command"
+        assert result["subscribeCalls"] == [["data_package", "pkg-1"]], (
+            f"'add sales-package{suffix}' must subscribe to the exact-name match, got {result['subscribeCalls']}"
+        )

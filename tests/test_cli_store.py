@@ -553,9 +553,7 @@ def test_store_delete_without_tty_names_the_remedy(monkeypatch):
     """
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     called = []
-    monkeypatch.setattr(
-        "cli.commands.store.api_delete", lambda *a, **k: called.append(a)
-    )
+    monkeypatch.setattr("cli.commands.store.api_delete", lambda *a, **k: called.append(a))
 
     result = runner.invoke(store_app, ["delete", "ent123"])
 
@@ -568,12 +566,53 @@ def test_store_delete_with_yes_skips_confirmation(monkeypatch):
     """--yes deletes outright, terminal or not."""
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     called = []
-    monkeypatch.setattr(
-        "cli.commands.store.api_delete", lambda *a, **k: called.append(a)
-    )
+    monkeypatch.setattr("cli.commands.store.api_delete", lambda *a, **k: called.append(a))
 
     result = runner.invoke(store_app, ["delete", "ent123", "--yes"])
 
     assert result.exit_code == 0, result.output
     assert called, "--yes must go through to the API"
     assert "Deleted: ent123" in result.output
+
+
+def test_store_delete_piped_yes_proceeds(monkeypatch):
+    """A piped confirmation answer must reach `typer.confirm`, not be blocked.
+
+    `sys.stdin.isatty()` is False under a pipe just like it is under true
+    EOF, so a guard that checks isatty *before* prompting refuses
+    `echo y | agnes store delete <id>` even though a valid answer is
+    waiting on stdin — breaking existing automation and one-liners that
+    used to work when the prompt read whatever was on stdin directly.
+    """
+    called = []
+    monkeypatch.setattr("cli.commands.store.api_delete", lambda *a, **k: called.append(a))
+
+    result = runner.invoke(store_app, ["delete", "ent123"], input="y\n")
+
+    assert result.exit_code == 0, result.output
+    assert called, "a piped 'y' must proceed with the delete"
+    assert "Deleted: ent123" in result.output
+
+
+def test_store_delete_piped_no_declines(monkeypatch):
+    """A piped 'n' must decline cleanly, without ever calling the API."""
+    called = []
+    monkeypatch.setattr("cli.commands.store.api_delete", lambda *a, **k: called.append(a))
+
+    result = runner.invoke(store_app, ["delete", "ent123"], input="n\n")
+
+    assert result.exit_code != 0
+    assert not called, "must not delete after a declined confirmation"
+
+
+def test_store_delete_true_eof_names_the_remedy(monkeypatch):
+    """Genuinely no input at all (not even a piped answer) still gets the
+    actionable message — this is the case the guard was meant for."""
+    called = []
+    monkeypatch.setattr("cli.commands.store.api_delete", lambda *a, **k: called.append(a))
+
+    result = runner.invoke(store_app, ["delete", "ent123"], input="")
+
+    assert result.exit_code == 1
+    assert "--yes" in result.output
+    assert not called, "must not delete without confirmation"
