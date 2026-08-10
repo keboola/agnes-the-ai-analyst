@@ -176,6 +176,18 @@
       {% endfor %}
     </tbody>
   </table>
+  {# The tokenless connections again, for the MIXED case. Listing them only in
+     the empty state hid them the moment any one project got a master token:
+     such a connection is not a Sources row and is not orphaned either (unless
+     it happens to own previously-imported rows), so it appeared nowhere at
+     all — the same silent state one level up. Devin Review on #1242. #}
+  {% if connections_without_master %}
+  <div class="sl-orphan-note">
+    Also connected, but with no master (owner) token, so the semantic layer will never sync them:
+    {% for c in connections_without_master %}<strong>{{ c.name }}</strong>{% if not loop.last %}, {% endif %}{% endfor %}.
+    Add one in the <em>Master token (semantic layer)</em> row at <a href="/admin/data-sources">Data sources</a>.
+  </div>
+  {% endif %}
   {% endif %}
 
   {% if skipped_unresolved_total %}
