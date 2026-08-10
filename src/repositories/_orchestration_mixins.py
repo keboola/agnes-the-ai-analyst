@@ -118,7 +118,7 @@ class MetricYamlMixin:
             if (m.get("source") or "") == "yaml_import" and (m.get("source_ref") or "") == (source_ref or "")
         }
 
-        written: List[str] = []
+        parsed: List[Dict[str, Any]] = []
         unreadable: List[str] = []
         for file_path in files:
             # Infer category from parent directory name
@@ -163,11 +163,7 @@ class MetricYamlMixin:
                         variant_key = key[len("sql_") :]  # strip 'sql_' prefix → 'by_channel'
                         sql_variants[variant_key] = value
 
-                written.append(metric_id)
-                if dry_run:
-                    continue
-
-                self.create(
+                parsed.append(dict(
                     id=metric_id,
                     name=name,
                     display_name=data.get("display_name", name),
@@ -189,8 +185,13 @@ class MetricYamlMixin:
                     validation=data.get("validation"),
                     source="yaml_import",
                     source_ref=source_ref,
-                )
+                ))
 
+        written = [row["id"] for row in parsed]
+
+        # Every guard below reads only the SHAPE of the input, which is known
+        # before a single row is written — so a refused run leaves the registry
+        # exactly as it found it rather than half-applying the readable files.
         if prune and unreadable:
             # The dangerous middle case. All-or-nothing shapes are caught below,
             # but a half-written export has SOME files that parse — and the ones
@@ -227,6 +228,8 @@ class MetricYamlMixin:
         deleted = sorted(in_scope - set(written)) if prune else []
 
         if not dry_run:
+            for row in parsed:
+                self.create(**row)
             for metric_id in deleted:
                 # Before the delete, never after: an interruption between the
                 # two would otherwise leave a metric gone with no record of it.
