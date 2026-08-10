@@ -16,16 +16,19 @@ from app.api.query import _first_table_from_sql
 class TestPlainTableReferences:
     """The cases that already worked must keep working."""
 
-    @pytest.mark.parametrize("sql,expected", [
-        ("SELECT a FROM orders", "orders"),
-        ("select a from orders", "orders"),
-        ("SELECT a FROM orders WHERE x = 1", "orders"),
-        ("SELECT a FROM my_schema.orders", "my_schema.orders"),
-        ('SELECT a FROM "orders"', "orders"),
-        ("SELECT a FROM `orders`", "orders"),
-        ("SELECT a FROM orders o JOIN items i ON o.id = i.order_id", "orders"),
-        ("SELECT a FROM orders\nWHERE x = 1", "orders"),
-    ])
+    @pytest.mark.parametrize(
+        "sql,expected",
+        [
+            ("SELECT a FROM orders", "orders"),
+            ("select a from orders", "orders"),
+            ("SELECT a FROM orders WHERE x = 1", "orders"),
+            ("SELECT a FROM my_schema.orders", "my_schema.orders"),
+            ('SELECT a FROM "orders"', "orders"),
+            ("SELECT a FROM `orders`", "orders"),
+            ("SELECT a FROM orders o JOIN items i ON o.id = i.order_id", "orders"),
+            ("SELECT a FROM orders\nWHERE x = 1", "orders"),
+        ],
+    )
     def test_extracts_the_table(self, sql, expected):
         assert _first_table_from_sql(sql) == expected
 
@@ -118,10 +121,7 @@ class TestTableValuedFunctionsAreNotTables:
     """
 
     def test_unnest_is_skipped_in_favour_of_the_real_table(self):
-        sql = (
-            "WITH codes AS (SELECT c FROM UNNEST([STRUCT('A' AS c)])) "
-            "SELECT * FROM orders JOIN codes USING (c)"
-        )
+        sql = "WITH codes AS (SELECT c FROM UNNEST([STRUCT('A' AS c)])) SELECT * FROM orders JOIN codes USING (c)"
         assert _first_table_from_sql(sql) == "orders"
 
     def test_unnest_only_query_has_no_table(self):
@@ -180,16 +180,42 @@ def test_labelling_a_long_query_stays_linear():
     from app.api.query import _first_table_from_sql
 
     def elapsed(joins: int) -> float:
+        """Best of N. A shared CI runner descheduling this thread, or a GC
+        pause landing inside one timed call, only ever ADDS time — so the
+        minimum is the closest estimate of the work itself, and taking it on
+        both sides keeps the ratio meaningful. A single sample of each is
+        what made this flaky: shard 6 once measured small=1.4ms against
+        large=912ms — a 656x ratio on 8x the input, which reads as
+        catastrophically superlinear but was one stalled call. Locally the
+        same input scales 0.5 / 1.1 / 2.2 / 4.6 / 9.2 ms across 200 -> 3200
+        joins, i.e. exactly linear.
+        """
         sql = "SELECT * FROM t0 " + " ".join(f"JOIN t{i} ON t{i}.a = t0.a" for i in range(1, joins))
-        start = time.perf_counter()
-        _first_table_from_sql(sql)
-        return time.perf_counter() - start
+        best = float("inf")
+        for _ in range(5):
+            start = time.perf_counter()
+            _first_table_from_sql(sql)
+            best = min(best, time.perf_counter() - start)
+        return best
 
-    small = elapsed(200)
-    large = elapsed(1600)  # 8x the input
-    # Quadratic would be ~64x; allow generous headroom for timer noise while
-    # still failing loudly if the quadratic walk comes back.
-    assert large < max(small * 20, 0.5), f"{small=} {large=}"
+    small = elapsed(400)
+    large = elapsed(3200)  # 8x the input
+    # Linear is ~8x, quadratic ~64x — 20x sits between them, so the RATIO is
+    # the real check. Measured here: linear 8.3x, a quadratic stand-in 57x.
+    #
+    # The floor exists only so timer noise on an unmeasurably fast `small`
+    # cannot fail the ratio — it must therefore sit just above honest linear
+    # cost, not far above it. It used to be 0.5s, which silently disabled
+    # the entire test: this parser does 3200 joins in ~9ms and a quadratic
+    # walk takes ~54ms, so BOTH satisfied `large < 0.5` and the ratio was
+    # never reached. A quadratic regression would have landed green.
+    #
+    # The input sizes moved up (200/1600 -> 400/3200) for the same reason
+    # the samples are best-of-N: a `small` of ~1ms is far enough above
+    # timer resolution that the ratio means something, and the gap between
+    # linear and quadratic (9ms vs 54ms) is wide enough to survive a loaded
+    # runner without either masking the bug or inventing one.
+    assert large < max(small * 20, 0.005), f"{small=} {large=}"
 
 
 def test_quoted_remote_catalog_path_keeps_its_table():
