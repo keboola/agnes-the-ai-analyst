@@ -37,7 +37,7 @@ from pydantic import BaseModel
 from app.auth.access import require_admin
 from app.secrets_vault import VaultKeyNotConfiguredError
 from connectors.keboola.semantic_layer import MasterTokenRequiredError, require_master_token
-from connectors.keboola.storage_api import KeboolaStorageClient, StorageApiError
+from connectors.keboola.storage_api import KeboolaStorageClient, StorageApiError, is_upstream_client_error
 from src.repositories import (
     connection_secrets_repo,
     source_connections_repo,
@@ -331,8 +331,10 @@ async def set_connection_secret(
     ``kind="master"``: a *separate* slot for a Keboola master (owner) Storage
     API token, required by the semantic-layer sync (Metastore API rejects
     non-master tokens). 400 if the connection isn't ``source_type="keboola"``,
-    or if the token fails a live ``verify_token`` preflight (not a master
-    token). 502 if the Storage API preflight call itself fails.
+    if the token fails a live ``verify_token`` preflight (not a master token),
+    or if the Storage API refuses the token outright (4xx — an invalid or
+    expired token is the admin's to fix, not a gateway failure). 502 only when
+    the Storage API is unreachable or answers 5xx.
 
     409 if AGNES_VAULT_KEY is not configured on the server.
     """
@@ -358,9 +360,15 @@ async def set_connection_secret(
         except (StorageApiError, requests.RequestException) as exc:
             # A freshly typed token is in flight — never surface bare str(exc);
             # route through the client's own token-aware redaction. Only these
-            # two named types map to a 502 storage_api_error; an unrelated
+            # two named types map to an upstream error at all; an unrelated
             # programming error should surface as a 500, not be mistaken for
             # an upstream outage.
+            #
+            # A 4xx means the Storage API understood us and said no — the
+            # pasted token is invalid, expired, or belongs to another stack.
+            # That is the admin's to fix, so it must not come back as 502:
+            # a Bad Gateway reads as "Agnes is broken" and sends people
+            # hunting infrastructure instead of re-reading the error.
             redacted = client._redact(exc)
             logger.warning(
                 "master-token preflight failed for connection %s (%s): %s",
@@ -368,7 +376,8 @@ async def set_connection_secret(
                 _log_host(stack_url),
                 redacted,
             )
-            raise HTTPException(status_code=502, detail=f"storage_api_error: {redacted}") from exc
+            status = 400 if is_upstream_client_error(exc) else 502
+            raise HTTPException(status_code=status, detail=f"storage_api_error: {redacted}") from exc
         if not info.get("isMasterToken"):
             # Reuse require_master_token's exact message rather than duplicating
             # it — it already fetched isMasterToken, so hand it the cached
