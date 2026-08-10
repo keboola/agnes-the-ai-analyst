@@ -750,12 +750,27 @@
       </div>
       <div class="modal-form-field">
         <label for="create-ttl">Expires in</label>
-        <select id="create-ttl" name="expires_in_days">
+        {# The real <select> stays the control the JS above reads (ttlIn) —
+           untouched. The custom dropdown alongside it is a visual
+           replacement only: which one is visible is a theme decision
+           (paper-skin.css), not a template one. See _components.html's
+           `dropdown` macro. #}
+        <select id="create-ttl" name="expires_in_days" class="ds-dropdown-native">
           <option value="30">30 days</option>
           <option value="90" selected>90 days</option>
           <option value="365">1 year</option>
           <option value="">Never</option>
         </select>
+        {{ ds.dropdown(
+          id='create-ttl-dd', target='create-ttl',
+          aria_label='Expires in', selected='90',
+          options=[
+            {'value': '30', 'label': '30 days'},
+            {'value': '90', 'label': '90 days'},
+            {'value': '365', 'label': '1 year'},
+            {'value': '', 'label': 'Never'},
+          ],
+        ) }}
       </div>
       <div class="modal-actions">
         <button type="button" class="btn btn-secondary" data-close-modal="create-modal">Cancel</button>
@@ -1246,6 +1261,23 @@ function clearFilters() {
 document.getElementById("clear-filters-btn").addEventListener("click", clearFilters);
 document.getElementById("clear-filters-toolbar").addEventListener("click", clearFilters);
 
+// ds_dropdown.js only pushes a selection FROM the custom button+menu ONTO the
+// paired native <select> — the create-token modal resets `ttlIn.value`
+// straight from code on every open, so the paper-theme dropdown needs an
+// explicit re-sync or it keeps showing whatever was picked last time.
+function syncDropdownFromSelect(sel) {
+  const dd = document.querySelector('.ds-dropdown[data-ds-dropdown-target="' + sel.id + '"]');
+  if (!dd) return;
+  const label = dd.querySelector(".ds-dropdown-btn-label");
+  const opt = sel.options[sel.selectedIndex];
+  dd.querySelectorAll('.ds-dropdown-menu [role="menuitemradio"]').forEach((item) => {
+    const isSelected = item.dataset.value === sel.value;
+    item.classList.toggle("is-selected", isSelected);
+    item.setAttribute("aria-checked", isSelected ? "true" : "false");
+  });
+  if (label && opt) label.textContent = opt.textContent.trim();
+}
+
 // ── Create-token flow ──────────────────────────────────────────────────────
 (function bindCreateFlow() {
   const openBtn = document.getElementById("new-token-btn");
@@ -1263,6 +1295,7 @@ document.getElementById("clear-filters-toolbar").addEventListener("click", clear
   openBtn.addEventListener("click", () => {
     nameIn.value = "";
     ttlIn.value = "90";
+    syncDropdownFromSelect(ttlIn);
     openModal("create-modal");
     setTimeout(() => nameIn.focus(), 20);
   });

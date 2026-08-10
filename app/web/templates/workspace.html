@@ -29,6 +29,7 @@
 
 {% block head_extra %}
 <link rel="stylesheet" href="{{ static_url('css/catalog_card.css') }}">
+<link rel="stylesheet" href="{{ static_url('css/ds_dropdown.css') }}">
 <style>
   /* Page chrome only — the table rides the shared .data-table primitive.
      (Page-local: this stylesheet only loads on /workspace.) */
@@ -162,11 +163,32 @@
       <select id="ws-owner" aria-label="Filter by owner"><option value="all" selected>All</option></select>
     </label>
     <label class="ws-select"><span class="ws-select-pre">Sort:</span>
-      <select id="ws-sort" aria-label="Sort your workspace">
+      <select id="ws-sort" aria-label="Sort your workspace" class="ds-dropdown-native">
         <option value="added" selected>Recently updated</option>
         <option value="name">Name A–Z</option>
         <option value="type">Type</option>
       </select>
+      {# Custom dropdown replacement (#1055) — the real <select> stays the
+         control the JS below reads/listens on (sortSelect / applySort()),
+         untouched. Which one is visible is a theme decision (paper-skin.css),
+         not a template one. See _components.html's `dropdown` macro /
+         stack_unified.html's stk-sort for the pattern.
+
+         `#ws-owner` (above) is NOT converted the same way: its options are
+         rebuilt at runtime from the rendered rows' owners (`rebuildOwners()`),
+         including rows added later by the async plugin fetch, so there is no
+         fixed {value, label} list to hand the macro, and ds_dropdown.js reads
+         the paired select's option list once at bootstrap with no hook to
+         resync when it's rebuilt. #}
+      {{ ds.dropdown(
+        id='ws-sort-dd', target='ws-sort',
+        aria_label='Sort your workspace', selected='added',
+        options=[
+          {'value': 'added', 'label': 'Recently updated'},
+          {'value': 'name', 'label': 'Name A–Z'},
+          {'value': 'type', 'label': 'Type'},
+        ],
+      ) }}
     </label>
   </div>
 
@@ -260,6 +282,7 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="{{ static_url('js/components/ds_dropdown.js') }}" defer></script>
 <script src="{{ static_url('js/catalog_card.js') }}"></script>
 <script>
 (function () {

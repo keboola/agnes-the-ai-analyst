@@ -645,10 +645,13 @@ def test_toolbar_is_a_floating_bottom_dock(seeded_app):
     ]
     assert tinted == [".fbar-dock__veil"], f"one tint layer, got {tinted}"
     assert "background: linear-gradient(to bottom,\n    transparent 0," in band
-    # Upward-opening menus: the shared one, and the page's own "+ Add".
+    # Upward-opening menus: the shared rule (now also covering #1055's
+    # .ds-dropdown-menu — a comma-separated selector, like the veil layers
+    # above, so this goes through _css_rule rather than a plain string split),
+    # and the page's own "+ Add".
     page_css = text.split("{% endblock %}", 1)[0]
-    for rule, css in ((".fbar-dock .fbar-menu {", shared), (".fbar-dock .lib-new__menu {", page_css)):
-        block = css.split(rule, 1)[1].split("}", 1)[0]
+    for selector, css in ((".fbar-dock .fbar-menu", shared), (".fbar-dock .lib-new__menu", page_css)):
+        block = _css_rule(css, selector)
         assert "top: auto;" in block
         assert "bottom: calc(100%" in block
 

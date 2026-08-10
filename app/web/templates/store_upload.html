@@ -3,6 +3,7 @@
 {% block title %}Upload to Store — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block head_extra %}
+<link rel="stylesheet" href="{{ static_url('css/ds_dropdown.css') }}">
 <style>
   .upload-lint { border: 1px solid var(--ds-border); border-radius: var(--radius-lg); background: var(--ds-surface); padding: var(--space-4); margin-bottom: var(--space-4); }
   .upload-lint-head { font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .4px; font-weight: var(--font-semibold); color: var(--ds-text-muted); margin-bottom: var(--space-2); }
@@ -551,12 +552,25 @@
 
         <div class="field">
           <label class="field-label" for="category">Category</label>
-          <select id="category">
-            <option value="">— None —</option>
-            {% for cat in categories %}
-            <option value="{{ cat }}">{{ cat }}</option>
+          {% set category_options = [{'value': '', 'label': '— None —'}] %}
+          {% for cat in categories %}
+          {% set _ = category_options.append({'value': cat, 'label': cat}) %}
+          {% endfor %}
+          {# The real <select> stays the control the JS below reads at submit
+             time (`document.getElementById('category').value`) — untouched.
+             The custom dropdown alongside it is a visual replacement only:
+             which one is visible is a theme decision (paper-skin.css), not a
+             template one. See _components.html's `dropdown` macro. #}
+          <select id="category" class="ds-dropdown-native">
+            {% for opt in category_options %}
+            <option value="{{ opt.value }}">{{ opt.label }}</option>
             {% endfor %}
           </select>
+          {{ ds.dropdown(
+            id='category-dd', target='category',
+            aria_label='Category', selected='',
+            options=category_options,
+          ) }}
           <div class="field-hint">Subject area of your entity — helps people filter the Store.</div>
         </div>
 
@@ -1402,4 +1416,8 @@ function formatSize(n) {
   return (n / 1024 / 1024).toFixed(1) + ' MB';
 }
 </script>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ static_url('js/components/ds_dropdown.js') }}" defer></script>
 {% endblock %}

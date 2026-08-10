@@ -294,6 +294,9 @@
           </label>
           <label style="flex:1; display:flex; flex-direction:column; gap:4px;">
             <span style="font-size:12px; color:var(--text-muted);">Status</span>
+            {# #1055: not converted to ds.dropdown() — catalog_legacy.html is
+               a frozen legacy copy (spec 2026-08-07 default-chrome-ux-parity),
+               and no new features land on the legacy path. #}
             <select id="rcp-status"
                     style="padding:8px; border:1px solid var(--border); border-radius:6px; height:38px;">
               <option value="prod" selected>Prod</option>
@@ -306,7 +309,12 @@
         {# v55 Recipes RBAC matrix on Create — same inline pattern as
            Create Memory Domain. Optional; with no rows ticked, the new
            recipe is admin-only (default-closed). Admins can grant later
-           via Edit Recipe or /admin/access. #}
+           via Edit Recipe or /admin/access. Per-group requirement <select>s
+           below (`.rcp-rbac-req`) are generated in JS — one per admin group
+           fetched from /api/admin/groups, not fixed in this template — so
+           they stay out of the ds.dropdown() conversion (#1055): pairing
+           would mean generating unique per-row ids and re-implementing the
+           macro's markup in JS, not a template change. #}
         <details id="rcp-rbac-details"
                  style="border:1px solid var(--border); border-radius:8px; padding:8px 12px;">
           <summary style="cursor:pointer; font-weight:600; font-size:13px; user-select:none;">
@@ -392,6 +400,9 @@
           </label>
           <label style="flex:1; display:flex; flex-direction:column; gap:4px;">
             <span style="font-size:12px; color:var(--text-muted);">Status</span>
+            {# #1055: not converted to ds.dropdown() — catalog_legacy.html is
+               a frozen legacy copy (spec 2026-08-07 default-chrome-ux-parity),
+               and no new features land on the legacy path. #}
             <select id="ercp-status"
                     style="padding:8px; border:1px solid var(--border); border-radius:6px; height:38px;">
               <option value="prod">Prod</option>
@@ -404,7 +415,9 @@
         {# v55 Recipes RBAC matrix — same lazy-hydrate + diff-on-save pattern
            as Edit Memory Domain. Hidden until the admin expands it; loads
            groups + grants on first toggle, diffs against the original on
-           submit, and POSTs/DELETEs only the deltas. #}
+           submit, and POSTs/DELETEs only the deltas. Per-group <select>s
+           below (`.ercp-rbac-req`) are JS-generated per admin group, same
+           reasoning as `.rcp-rbac-req` above — out of scope for #1055. #}
         <details id="ercp-rbac-details"
                  style="border:1px solid var(--border); border-radius:8px; padding:8px 12px; margin-top:4px;">
           <summary style="cursor:pointer; font-weight:600; font-size:13px; user-select:none;">

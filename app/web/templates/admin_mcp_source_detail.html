@@ -2,6 +2,10 @@
 {% block title %}MCP source detail — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block head_extra %}
+{# The edit form's three `<select>`s (transport/scope/auth-method) each get
+   a paired `ds.dropdown()` alongside them (#1055) — see `_components.html`'s
+   `dropdown` macro. #}
+<link rel="stylesheet" href="{{ static_url('css/ds_dropdown.css') }}">
 <style>
   .src-toolbar {
     display: flex; justify-content: space-between; align-items: center;
@@ -195,11 +199,27 @@
         <input id="edit-name" type="text" autocomplete="off">
 
         <label for="edit-transport">Transport</label>
-        <select id="edit-transport">
+        {# The real <select> stays the control the JS below reads/listens on
+           (syncTransportFields / edit-save-btn) — untouched. The custom
+           dropdown alongside it is a visual replacement only; which one is
+           visible is a theme decision (paper-skin.css), not a template one.
+           Its initial `selected=` is a placeholder — the true value is
+           populated from server data at edit-toggle-btn time, and
+           syncDropdown() below keeps the custom UI in step with it. #}
+        <select id="edit-transport" class="ds-dropdown-native">
           <option value="stdio">stdio (subprocess)</option>
           <option value="http">http (streamable)</option>
           <option value="sse">sse (server-sent events)</option>
         </select>
+        {{ ds.dropdown(
+          id='edit-transport-dd', target='edit-transport',
+          aria_label='Transport', selected='stdio',
+          options=[
+            {'value': 'stdio', 'label': 'stdio (subprocess)'},
+            {'value': 'http', 'label': 'http (streamable)'},
+            {'value': 'sse', 'label': 'sse (server-sent events)'},
+          ],
+        ) }}
 
         <div class="transport-fields" data-transport="stdio">
           <label for="edit-command">Command</label>
@@ -220,10 +240,18 @@
         </div>
 
         <label for="edit-scope">Secret scope</label>
-        <select id="edit-scope">
+        <select id="edit-scope" class="ds-dropdown-native">
           <option value="shared">shared (one server-wide secret)</option>
           <option value="per_user">per_user (each analyst supplies their own)</option>
         </select>
+        {{ ds.dropdown(
+          id='edit-scope-dd', target='edit-scope',
+          aria_label='Secret scope', selected='shared',
+          options=[
+            {'value': 'shared', 'label': 'shared (one server-wide secret)'},
+            {'value': 'per_user', 'label': 'per_user (each analyst supplies their own)'},
+          ],
+        ) }}
 
         <label for="edit-connect-hint">Connect hint</label>
         <textarea id="edit-connect-hint" autocomplete="off" placeholder="Generate a token in Settings → API, then paste it below."></textarea>
@@ -234,12 +262,22 @@
         <div class="help" style="font-size:11px; color: var(--ds-text-muted); margin-top:4px;">Non-secret env vars passed to the stdio subprocess (KEY=VALUE per line).</div>
 
         <label for="edit-auth-method">Auth method</label>
-        <select id="edit-auth-method">
+        <select id="edit-auth-method" class="ds-dropdown-native">
           <option value="">none</option>
           <option value="bearer">bearer (env var)</option>
           <option value="oauth">oauth (per-user browser connect)</option>
           <option value="header">custom header</option>
         </select>
+        {{ ds.dropdown(
+          id='edit-auth-method-dd', target='edit-auth-method',
+          aria_label='Auth method', selected='',
+          options=[
+            {'value': '', 'label': 'none'},
+            {'value': 'bearer', 'label': 'bearer (env var)'},
+            {'value': 'oauth', 'label': 'oauth (per-user browser connect)'},
+            {'value': 'header', 'label': 'custom header'},
+          ],
+        ) }}
 
         <label for="edit-auth-secret-env" style="margin-top:16px;">Auth secret env var — Advanced (legacy)</label>
         <input id="edit-auth-secret-env" type="text" autocomplete="off">
@@ -374,10 +412,29 @@
 
 <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
 
+<script src="{{ static_url('js/components/ds_dropdown.js') }}" defer></script>
 <script>
 const SOURCE_ID = {{ source_id | tojson }};
 const SOURCE_API = `/api/admin/mcp-sources/${encodeURIComponent(SOURCE_ID)}`;
 const TOOLS_API = `/api/admin/mcp-tools`;
+
+// Keep a paired `.ds-dropdown`'s label + aria-checked state in sync when JS
+// sets the underlying <select>'s value directly (edit-toggle-btn populates
+// the form from server data below), bypassing ds_dropdown.js's own
+// selectItem() — that module only reacts to clicks on its own menu items,
+// so a direct .value= assignment would otherwise leave the custom dropdown
+// showing a stale/default label under the paper theme.
+function syncDropdown(selectId, value) {
+  const host = document.querySelector(`.ds-dropdown[data-ds-dropdown-target="${selectId}"]`);
+  if (!host) return;
+  const label = host.querySelector(".ds-dropdown-btn-label");
+  host.querySelectorAll('[role="menuitemradio"]').forEach((item) => {
+    const match = item.dataset.value === value;
+    item.classList.toggle("is-selected", match);
+    item.setAttribute("aria-checked", match ? "true" : "false");
+    if (match && label) label.textContent = item.textContent.trim();
+  });
+}
 
 function esc(s) {
   const d = document.createElement("div");
@@ -476,13 +533,16 @@ document.getElementById("edit-toggle-btn").addEventListener("click", () => {
   if (!source) return;
   document.getElementById("edit-name").value = source.name || "";
   document.getElementById("edit-transport").value = source.transport || "stdio";
+  syncDropdown("edit-transport", source.transport || "stdio");
   document.getElementById("edit-command").value = source.command || "";
   document.getElementById("edit-args").value = (source.args || []).join("\n");
   document.getElementById("edit-url-http").value = source.transport === "http" ? (source.url || "") : "";
   document.getElementById("edit-url-sse").value = source.transport === "sse" ? (source.url || "") : "";
   document.getElementById("edit-auth-method").value = source.auth_method || "";
+  syncDropdown("edit-auth-method", source.auth_method || "");
   document.getElementById("edit-auth-secret-env").value = source.auth_secret_env || "";
   document.getElementById("edit-scope").value = source.scope || "shared";
+  syncDropdown("edit-scope", source.scope || "shared");
   document.getElementById("edit-connect-hint").value = source.connect_hint || "";
   document.getElementById("edit-env").value =
     Object.entries(source.env || {}).map(([k, v]) => `${k}=${v}`).join("\n");

@@ -4,7 +4,11 @@
 {% block head_extra %}
 {# Design-system component macros — toolbar "+ Add MCP source" + modal
    buttons render via `ds.button`. JS-generated per-row `.icon-btn`
-   actions stay page-local, mirroring admin_marketplaces.html. #}
+   actions stay page-local, mirroring admin_marketplaces.html. The three
+   create-modal `<select>`s (transport/scope/auth-method) each get a paired
+   `ds.dropdown()` alongside them (#1055) — see `_components.html`'s
+   `dropdown` macro. #}
+<link rel="stylesheet" href="{{ static_url('css/ds_dropdown.css') }}">
 <style>
   .mcp-toolbar {
     display: flex; justify-content: space-between; align-items: center;
@@ -168,11 +172,24 @@
     <input id="new-name" type="text" placeholder="e.g. Acme CRM MCP" required autocomplete="off">
 
     <label for="new-transport">Transport</label>
-    <select id="new-transport">
+    {# The real <select> stays the control the JS below reads/listens on
+       (syncTransportFields / confirm-create-btn) — untouched. The custom
+       dropdown alongside it is a visual replacement only; which one is
+       visible is a theme decision (paper-skin.css), not a template one. #}
+    <select id="new-transport" class="ds-dropdown-native">
       <option value="stdio">stdio (subprocess)</option>
       <option value="http">http (streamable)</option>
       <option value="sse">sse (server-sent events)</option>
     </select>
+    {{ ds.dropdown(
+      id='new-transport-dd', target='new-transport',
+      aria_label='Transport', selected='stdio',
+      options=[
+        {'value': 'stdio', 'label': 'stdio (subprocess)'},
+        {'value': 'http', 'label': 'http (streamable)'},
+        {'value': 'sse', 'label': 'sse (server-sent events)'},
+      ],
+    ) }}
 
     <div class="transport-fields is-active" data-transport="stdio">
       <label for="new-command">Command</label>
@@ -195,10 +212,18 @@
     </div>
 
     <label for="new-scope">Secret scope</label>
-    <select id="new-scope">
+    <select id="new-scope" class="ds-dropdown-native">
       <option value="shared">shared (one server-wide secret)</option>
       <option value="per_user">per_user (each analyst supplies their own)</option>
     </select>
+    {{ ds.dropdown(
+      id='new-scope-dd', target='new-scope',
+      aria_label='Secret scope', selected='shared',
+      options=[
+        {'value': 'shared', 'label': 'shared (one server-wide secret)'},
+        {'value': 'per_user', 'label': 'per_user (each analyst supplies their own)'},
+      ],
+    ) }}
     <div class="help">Whether this source uses a single shared vault secret or a per-analyst secret.</div>
 
     <label for="new-env">Environment variables (KEY=VALUE per line)</label>
@@ -206,12 +231,22 @@
     <div class="help">Non-secret env vars passed to the stdio subprocess (KEY=VALUE per line).</div>
 
     <label for="new-auth-method">Auth method</label>
-    <select id="new-auth-method">
+    <select id="new-auth-method" class="ds-dropdown-native">
       <option value="">none</option>
       <option value="bearer">bearer (env var)</option>
           <option value="oauth">oauth (per-user browser connect)</option>
       <option value="header">custom header</option>
     </select>
+    {{ ds.dropdown(
+      id='new-auth-method-dd', target='new-auth-method',
+      aria_label='Auth method', selected='',
+      options=[
+        {'value': '', 'label': 'none'},
+        {'value': 'bearer', 'label': 'bearer (env var)'},
+        {'value': 'oauth', 'label': 'oauth (per-user browser connect)'},
+        {'value': 'header', 'label': 'custom header'},
+      ],
+    ) }}
 
     <label for="new-auth-secret-env" style="margin-top:16px;">Auth secret env var — Advanced (legacy)</label>
     <input id="new-auth-secret-env" type="text" placeholder="e.g. ACME_CRM_TOKEN" autocomplete="off">
@@ -239,8 +274,26 @@
 
 <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
 
+<script src="{{ static_url('js/components/ds_dropdown.js') }}" defer></script>
 <script>
 const API = "/api/admin/mcp-sources";
+
+// Keep a paired `.ds-dropdown`'s label + aria-checked state in sync when JS
+// sets the underlying <select>'s value directly (form reset below), bypassing
+// ds_dropdown.js's own selectItem() — that module only reacts to clicks on
+// its own menu items, so a direct .value= assignment would otherwise leave
+// the custom dropdown showing a stale label under the paper theme.
+function syncDropdown(selectId, value) {
+  const host = document.querySelector(`.ds-dropdown[data-ds-dropdown-target="${selectId}"]`);
+  if (!host) return;
+  const label = host.querySelector(".ds-dropdown-btn-label");
+  host.querySelectorAll('[role="menuitemradio"]').forEach((item) => {
+    const match = item.dataset.value === value;
+    item.classList.toggle("is-selected", match);
+    item.setAttribute("aria-checked", match ? "true" : "false");
+    if (match && label) label.textContent = item.textContent.trim();
+  });
+}
 
 function esc(s) {
   const d = document.createElement("div");
@@ -368,13 +421,16 @@ document.getElementById("open-create-btn").addEventListener("click", () => {
   // Reset form
   document.getElementById("new-name").value = "";
   document.getElementById("new-transport").value = "stdio";
+  syncDropdown("new-transport", "stdio");
   document.getElementById("new-command").value = "";
   document.getElementById("new-args").value = "";
   document.getElementById("new-url-http").value = "";
   document.getElementById("new-url-sse").value = "";
   document.getElementById("new-auth-method").value = "";
+  syncDropdown("new-auth-method", "");
   document.getElementById("new-auth-secret-env").value = "";
   document.getElementById("new-scope").value = "shared";
+  syncDropdown("new-scope", "shared");
   document.getElementById("new-env").value = "";
   syncTransportFields();
   openModal("create-modal");

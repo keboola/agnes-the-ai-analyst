@@ -553,3 +553,88 @@
     {%- endif %}
 </div>
 {%- endmacro %}
+
+
+{# ─────────────────────────────────────────────────────────────────────
+   Dropdown — `.ds-dropdown` custom select replacement (issue #1055).
+
+   Accessible button+menu pattern generalized from the chat composer's
+   "+" upload menu (chat.js `plusBtn`/`plusMenu`): a trigger button
+   (aria-haspopup="menu", aria-expanded, aria-controls) opens a
+   `role="menu"` list. Items are `role="menuitemradio"` (not the upload
+   menu's plain `menuitem`) because these choices are mutually exclusive,
+   like a `<select>`. Interaction — open/close, arrow-key nav, Enter/
+   Space, Esc, outside-click, selection — lives in
+   `js/components/ds_dropdown.js`.
+
+   Ships ALONGSIDE a real `<select>` rather than replacing it, so
+   existing `change`-event wiring keeps working unchanged: pass `target`
+   with the select's id and the JS module sets `.value` and dispatches a
+   `change` event on it when an item is chosen. A dropdown paired this
+   way (`data-ds-dropdown-target` set) is HIDDEN by default —
+   `.ds-dropdown[data-ds-dropdown-target] { display: none }` in
+   ds_dropdown.css — deferring to the paired `<select>` until a theme
+   claims the control (currently `[data-theme="paper"]` in
+   paper-skin.css, which also hides the native `<select>`). This keeps
+   the choice a CSS/theme decision rather than a template one, so the
+   default topnav/blue chrome renders byte-for-byte unchanged.
+
+   `id`         base id — generates `{id}-btn` / `{id}-menu`
+   `options`    list of {value, label} dicts
+   `selected`   currently selected value — drives the initial button
+                label and which item carries `aria-checked="true"`
+   `target`     id of the paired native `<select>` to keep in sync
+                (optional — omit for a standalone dropdown)
+   `aria_label` accessible name for the menu (default 'Options')
+   `klass`      extra class string on the wrapper
+   `attrs`      raw extra attributes on the wrapper
+
+   Example:
+       {{ ds.dropdown(
+           id='stk-sort-dd', target='stk-sort',
+           aria_label='Sort your stack', selected='name',
+           options=[
+               {'value': 'name', 'label': 'Name (A–Z)'},
+               {'value': 'recent', 'label': 'Recently used'},
+               {'value': 'type', 'label': 'By type'},
+           ],
+       ) }}
+   ───────────────────────────────────────────────────────────────────── #}
+{% macro dropdown(id, options=[], selected=None, target=None, aria_label=None, klass='', attrs='') -%}
+  {%- set selected_opt = (options | selectattr('value', 'equalto', selected) | first) if selected is not none else None -%}
+  {#- `current` is what's ACTUALLY shown as chosen — the button label already
+     falls back to the first option when `selected` is absent/unmatched, so
+     the per-item is-selected/aria-checked below must fall back the same way,
+     or the list opens with the button's own displayed value marked nowhere. -#}
+  {%- set current = selected_opt.value if selected_opt else (options[0].value if options else None) -%}
+  {%- set selected_label = selected_opt.label if selected_opt else (options[0].label if options else '') -%}
+  {%- set classes = ['ds-dropdown'] -%}
+  {%- if klass %}{%- set _ = classes.append(klass) -%}{%- endif -%}
+<div class="{{ classes | join(' ') }}"
+     {%- if target %} data-ds-dropdown-target="{{ target }}"{% endif -%}
+     {%- if attrs %} {{ attrs | safe }}{% endif %}>
+    <button type="button" class="ds-dropdown-btn" id="{{ id }}-btn"
+            aria-haspopup="menu" aria-expanded="false" aria-controls="{{ id }}-menu"
+            {%- if aria_label %} aria-labelledby="{{ id }}-name {{ id }}-btn-label"{% endif %}>
+        {%- if aria_label %}
+        {#- Visually hidden — the button's accessible name otherwise comes
+           only from the currently-selected-value span below, so a screen
+           reader hears e.g. "none" with no indication which field that is.
+           aria-labelledby concatenates both: field name, then value. -#}
+        <span class="ds-dropdown-name" id="{{ id }}-name">{{ aria_label }}</span>
+        {%- endif %}
+        <span class="ds-dropdown-btn-label" id="{{ id }}-btn-label">{{ selected_label }}</span>
+        <svg class="ds-dropdown-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+    </button>
+    <ul class="ds-dropdown-menu" id="{{ id }}-menu" role="menu"
+        aria-label="{{ aria_label or 'Options' }}" hidden>
+        {%- for opt in options %}
+        <li class="ds-dropdown-menu-item{% if opt.value == current %} is-selected{% endif %}"
+            role="menuitemradio"
+            aria-checked="{{ 'true' if opt.value == current else 'false' }}"
+            tabindex="0"
+            data-value="{{ opt.value }}">{{ opt.label }}</li>
+        {%- endfor %}
+    </ul>
+</div>
+{%- endmacro %}
