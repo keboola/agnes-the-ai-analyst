@@ -275,6 +275,10 @@ class TestToolRegistration:
             # Triple-surface with GET /api/admin/source-connections +
             # `agnes admin connection list`.
             "admin_source_connections_list",
+            # Why a connected project's metrics are (or aren't) landing.
+            # Triple-surface with GET /api/admin/semantic-layer/coverage +
+            # `agnes admin semantic-layer coverage`.
+            "admin_semantic_layer_coverage",
             # Job management for scheduler — list, get, enqueue tasks.
             # Triple-surface with GET /api/jobs + GET /api/jobs/{job_id} +
             # POST /api/jobs + `agnes admin jobs`.
