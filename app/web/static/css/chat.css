@@ -612,6 +612,90 @@ body.chat-page-body main { margin: 0; padding: 0; }
   margin: 8px 0;
 }
 
+/* Provenance chips. Rendered from the SERVER's verdict (app/chat/sources.py),
+   which checks each claimed table/metric against the turn's own tool calls.
+   Three states carry the whole point: `is-ok` a tool call supports it,
+   `is-unverified` the answer named something nothing ran on, `is-none` the
+   answer declared no source at all. The unflattering two are the reason this
+   exists, so they are legible rather than tucked away — but they stay a chip
+   row, not a banner: this annotates an answer, it does not accuse it. */
+.msg-sources {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--ds-border-light, var(--ds-border));
+}
+.msg-sources-label {
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  /* --ds-text-muted measured 3.93:1 against the bubble at this size — under
+     WCAG AA, and this row exists to be read rather than sensed. */
+  color: var(--ds-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.msg-source-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: var(--ds-radius-pill);
+  border: 1px solid var(--ds-border);
+  font-size: var(--text-xs);
+  font-family: var(--ds-font-mono);
+  color: var(--ds-text-secondary);
+  background: var(--ds-surface-dim);
+}
+.msg-source-kind {
+  font-family: var(--ds-font);
+  color: var(--ds-text-muted);
+}
+.msg-source-chip.is-ok {
+  border-color: var(--ds-accent-success-line);
+  background: var(--ds-accent-success-bg);
+  color: var(--ds-accent-success-ink);
+}
+.msg-source-chip.is-unverified {
+  border-color: var(--ds-accent-warn-line);
+  background: var(--ds-accent-warn-bg);
+  color: var(--ds-accent-warn-ink);
+}
+.msg-source-chip.is-none {
+  border-style: dashed;
+  color: var(--ds-text-muted);
+  font-family: var(--ds-font);
+}
+.msg-source-flag {
+  font-family: var(--ds-font);
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+  /* NO font-size shrink here. `0.85em` of the chip's own --text-xs came out at
+     8.5px measured — the one word on this row that must be readable, set
+     smaller than everything around it. Caps + weight carry the emphasis. */
+  letter-spacing: 0.03em;
+}
+
+/* Mermaid output. Inserted WITHOUT the markdown sanitizer (its <style> block
+   carries every colour it has — see renderMermaidBlocks), so the container is
+   what bounds it: a diagram sizes itself from its content and would otherwise
+   push the bubble wider than the column. */
+.msg-mermaid {
+  margin: 10px 0;
+  overflow-x: auto;
+}
+.msg-mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+.msg-mermaid-error {
+  font-size: var(--text-xs);
+  color: var(--ds-accent-warn-ink);
+  margin: 8px 0 4px;
+}
+
 .msg-time { font-variant-numeric: tabular-nums; }
 
 .msg-copy {

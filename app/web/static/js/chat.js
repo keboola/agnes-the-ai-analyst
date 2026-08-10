@@ -253,6 +253,161 @@ function setThreadTitle(title) {
   if (railNewChat) railNewChat.classList.toggle("on", !title);
 }
 
+// ---------- Mermaid diagrams ----------------------------------------------
+// A ```mermaid fence becomes a rendered diagram. Two constraints shape how.
+//
+// 1. It must NOT go through renderMarkdownSafe. Mermaid's output carries a
+//    <style> block that every one of its class-based colours depends on, and
+//    `style` is in _DANGEROUS_TAGS — sanitizing mermaid's SVG would strip its
+//    appearance and leave a grey skeleton. So the fence survives sanitization
+//    as an ordinary code block (inert text), and only afterwards do we hand
+//    the SOURCE to mermaid and insert what it returns. The untrusted thing is
+//    the diagram source; `securityLevel: 'strict'` is mermaid's own answer to
+//    it — HTML labels off, click handlers refused, label text escaped — and
+//    that, not our sanitizer, is what stands between a hostile diagram and
+//    the page.
+// 2. It is 3.5 MB. Loaded once, on demand, the first time a diagram actually
+//    appears in a thread — a user who never sees one never pays for it, which
+//    is the only reason a dependency this size is tolerable here.
+const _MERMAID_URL = "/static/vendor/mermaid.min.js";
+let _mermaidReady = null;
+
+function loadMermaid() {
+  if (_mermaidReady) return _mermaidReady;
+  _mermaidReady = new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = _MERMAID_URL;
+    s.onload = () => (window.mermaid ? resolve(window.mermaid) : reject(new Error("mermaid absent after load")));
+    s.onerror = () => reject(new Error("mermaid failed to load"));
+    document.head.appendChild(s);
+  }).then((m) => {
+    m.initialize({
+      startOnLoad: false,
+      securityLevel: "strict",
+      theme: document.documentElement.dataset.colorScheme === "dark" ? "dark" : "default",
+      fontFamily: getComputedStyle(document.documentElement).getPropertyValue("--ds-font") || "inherit",
+    });
+    return m;
+  });
+  return _mermaidReady;
+}
+
+let _mermaidSeq = 0;
+
+/** Swap every ```mermaid code block inside `root` for its rendered diagram.
+ *  A block that fails to render KEEPS its source on screen with a short note:
+ *  a diagram the agent got syntactically wrong is still information, and a
+ *  silently blank space would read as a product fault rather than a bad
+ *  diagram. */
+function renderMermaidBlocks(root) {
+  if (!root) return;
+  const blocks = root.querySelectorAll("code.language-mermaid");
+  if (!blocks.length) return;
+  loadMermaid()
+    .then(async (mermaid) => {
+      for (const code of blocks) {
+        const host = code.closest("pre") || code;
+        const source = code.textContent || "";
+        try {
+          const { svg } = await mermaid.render(`ag-mmd-${++_mermaidSeq}`, source);
+          const fig = document.createElement("div");
+          fig.className = "msg-mermaid";
+          // Deliberately not renderMarkdownSafe — see the note above.
+          fig.innerHTML = svg;
+          host.replaceWith(fig);
+        } catch (err) {
+          const note = document.createElement("div");
+          note.className = "msg-mermaid-error";
+          note.textContent = "This diagram could not be drawn; its source is below.";
+          host.parentNode && host.parentNode.insertBefore(note, host);
+        }
+      }
+      maybeScrollToBottom();
+    })
+    .catch(() => {
+      /* Diagrams are additive: the fenced source stays readable. */
+    });
+}
+
+// ---------- Sources block -------------------------------------------------
+// The workspace prompt asks an answer that reports a figure to end with a
+// fenced ```sources block. The server parses it and checks each table/metric
+// claim against the turn's own tool calls (app/chat/sources.py); this renders
+// that verdict and takes the raw fence off the screen.
+//
+// Borrowed shape, not borrowed rule: a mandated fenced trailer that the host
+// lifts out and re-renders as chrome is how kai-agent does `next_actions`.
+// The one place we deliberately diverge is the clipboard — kai strips its
+// block when copying, because suggestions are chrome. Provenance is not: a
+// transcript that dropped it would be exactly the report someone needs when
+// they doubt a number, minus the part that answers them.
+const _SOURCES_FENCE_RE = /```sources[ \t]*\r?\n[\s\S]*?```/i;
+
+/** Remove the raw fence from rendered markdown. The block is a wire format
+ *  between the agent and this renderer — showing it as a code block would put
+ *  the machinery on screen next to the thing it produced. */
+function stripSourcesFence(markdown) {
+  return (markdown || "").replace(_SOURCES_FENCE_RE, "").trimEnd();
+}
+
+const _CLAIM_LABEL = { table: "table", metric: "metric", assumption: "assumes" };
+
+/** Chips under an assistant turn. `verdict` is the server's, never recomputed
+ *  here — the client has no record of what actually ran, and a second opinion
+ *  derived from less information would be worse than none. */
+function renderSourcesChips(bubble, verdict) {
+  if (!verdict) return;
+  const claims = verdict.claims || [];
+  // Nothing declared AND nothing claimed: stay silent. "No source declared"
+  // under a greeting or a clarifying question is noise, and the server cannot
+  // tell a figure from a sentence. The honest signal is the one below —
+  // shown only once an answer has claimed something, or has been asked to.
+  if (!verdict.declared && claims.length === 0) return;
+
+  const wrap = document.createElement("div");
+  wrap.className = "msg-sources";
+
+  const label = document.createElement("span");
+  label.className = "msg-sources-label";
+  label.textContent = "Sources";
+  wrap.appendChild(label);
+
+  if (!claims.length) {
+    const none = document.createElement("span");
+    none.className = "msg-source-chip is-none";
+    none.textContent = "none declared";
+    wrap.appendChild(none);
+    bubble.appendChild(wrap);
+    return;
+  }
+
+  for (const c of claims) {
+    const chip = document.createElement("span");
+    // Three states, and the middle one is the point of the whole feature:
+    // verified (a tool call supports it), unverified (the answer named
+    // something nothing ran touched), and neutral (an assumption, which there
+    // is nothing to check against).
+    const state = c.verified === true ? "is-ok" : c.verified === false ? "is-unverified" : "is-neutral";
+    chip.className = `msg-source-chip ${state}`;
+    const kind = document.createElement("span");
+    kind.className = "msg-source-kind";
+    kind.textContent = _CLAIM_LABEL[c.kind] || c.kind;
+    chip.appendChild(kind);
+    chip.appendChild(document.createTextNode(c.ref));
+    if (c.verified === false) {
+      chip.title = "No tool call in this turn touched this — the answer named it, nothing ran on it.";
+      const mark = document.createElement("span");
+      mark.className = "msg-source-flag";
+      mark.textContent = "unverified";
+      chip.appendChild(mark);
+    } else if (c.verified === true) {
+      chip.title = "A tool call in this turn used this.";
+    }
+    wrap.appendChild(chip);
+  }
+  bubble.appendChild(wrap);
+}
+
 // ---------- Copy transcript ----------------------------------------------
 // A chat session is owner-only by design: GET /api/chat/sessions/{id}/messages
 // 404s for everyone else, admins included, and /admin/sessions browses the
@@ -1323,9 +1478,10 @@ function renderMessage(m) {
   const article = createMessageShell({ role: m.role, createdAt: m.created_at });
   const bubble = article.querySelector(".msg-bubble");
   const body = bubble.querySelector(".msg-body");
-  body.innerHTML = renderMarkdownSafe(m.content || "");
+  body.innerHTML = renderMarkdownSafe(stripSourcesFence(m.content));
   enhanceCodeBlocks(body);
   enhanceTables(body);
+  renderMermaidBlocks(body);
 
   // §5.3 Co-presence: per-message sender attribution for foreign senders.
   // sender_email is an optional co-drive field — single-user sessions never
@@ -1361,6 +1517,13 @@ function renderMessage(m) {
     }
   }
 
+  // After the tool blocks: the chips summarise what those calls support, so
+  // they read as the conclusion of the evidence above them rather than as a
+  // header over it.
+  if (m.role === "assistant") renderSourcesChips(bubble, m.sources);
+
+  // Copy carries the ORIGINAL content, fence and all — see the note on
+  // stripSourcesFence. The fence is hidden from the eye, not from the record.
   attachMessageActions(article, m.content || "");
   $("chat-messages").appendChild(article);
   if (m.role === "assistant") _markLatestAssistant(article);
@@ -1632,9 +1795,14 @@ function finalizeAssistantMessage(frame) {
   const content = (frame && frame.content) || currentAssistantText;
   if (currentAssistantArticle && currentAssistantBody) {
     currentAssistantArticle.classList.remove("is-streaming");
-    currentAssistantBody.innerHTML = renderMarkdownSafe(content);
+    currentAssistantBody.innerHTML = renderMarkdownSafe(stripSourcesFence(content));
     enhanceCodeBlocks(currentAssistantBody);
     enhanceTables(currentAssistantBody);
+    renderMermaidBlocks(currentAssistantBody);
+    // The live turn and a later reload must agree, so both read the SERVER's
+    // verdict — stamped onto this frame before the fan-out and recomputed
+    // identically by GET /sessions/{id}/messages.
+    renderSourcesChips(currentAssistantBody.closest(".msg-bubble"), frame && frame.sources);
     attachMessageActions(currentAssistantArticle, content);
     _markLatestAssistant(currentAssistantArticle);
     maybeMakeCollapsible(currentAssistantArticle);
@@ -1647,6 +1815,7 @@ function finalizeAssistantMessage(frame) {
       role: "assistant",
       content,
       tool_calls: frame && frame.tool_calls,
+      sources: frame && frame.sources,
       created_at: new Date().toISOString(),
     });
   }
