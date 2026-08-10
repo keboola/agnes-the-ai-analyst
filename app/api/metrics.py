@@ -250,7 +250,12 @@ async def import_metrics(
             sql=metric.get("sql", ""),
             sql_variants=sql_variants if sql_variants else None,
             validation=metric.get("validation"),
-            source="yaml_import",
+            # NOT "yaml_import": that value marks rows written by
+            # `agnes admin metrics import`, and `--prune` deletes the rows in
+            # that scope which its directory no longer lists. An upload made
+            # here is in no directory, so sharing the value made hand-uploaded
+            # metrics collateral of the next prune run.
+            source="web_upload",
         )
         count += 1
 

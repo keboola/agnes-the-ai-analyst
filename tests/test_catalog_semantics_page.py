@@ -547,3 +547,25 @@ class TestCatalogSemanticsDetailCompleteness:
         body = self._page(seeded_app)
         for label in ("Expression", "Time column", "Filters", "Variants"):
             assert f"<strong>{label}</strong>" not in body
+
+
+def test_web_uploaded_metrics_are_a_distinct_writer(seeded_app):
+    """`POST /api/admin/metrics/import` must not stamp the same `source` the
+    CLI import uses: `agnes admin metrics import --prune` deletes rows in that
+    scope which its directory no longer lists, and an uploaded metric is in no
+    directory. Sharing the value made hand-uploaded metrics collateral."""
+    import io
+
+    c, token = seeded_app["client"], seeded_app["admin_token"]
+    resp = c.post(
+        "/api/admin/metrics/import",
+        files={"file": ("m.yml", io.BytesIO(b"name: uploaded\ncategory: ops\nsql: SELECT 1\n"), "text/yaml")},
+        headers=_auth(token),
+    )
+    assert resp.status_code == 200, resp.text
+
+    from src.repositories import metric_repo
+
+    row = metric_repo().get("ops/uploaded")
+    assert row is not None
+    assert row["source"] == "web_upload", "an upload must not claim to be the CLI's yaml_import"
