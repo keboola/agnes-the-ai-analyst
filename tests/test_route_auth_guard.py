@@ -115,12 +115,24 @@ def test_all_routes_authenticated():
     and the broker's ``require_broker_ticket`` (opaque short-lived ticket,
     not a user session — but still a real auth gate, per AC-G-ticket-reuse
     and AC-G-rbac-fidelity elsewhere in this suite).
+
+    ``app/api/kai.py``'s ``_require_session_credential`` is recognized on the
+    same footing: same opaque-credential store, resolved the same way, plus a
+    scope check that a broker ticket cannot satisfy. It is the embedded turn
+    engine's equivalent gate, not an exemption.
     """
     from app.api.broker import require_broker_ticket
+    from app.api.kai import _require_session_credential
     from app.auth.access import require_admin
     from app.auth.dependencies import get_current_user, require_session_token
 
-    recognized_calls = (require_admin, get_current_user, require_session_token, require_broker_ticket)
+    recognized_calls = (
+        require_admin,
+        get_current_user,
+        require_session_token,
+        require_broker_ticket,
+        _require_session_credential,
+    )
 
     offenders = []
     for route in _live_api_routes():

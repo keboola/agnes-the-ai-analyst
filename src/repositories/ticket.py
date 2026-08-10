@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 import duckdb
 
@@ -64,3 +64,25 @@ class TicketRepository:
 
     def revoke_session(self, session_id: str) -> None:
         self.conn.execute("DELETE FROM chat_broker_tickets WHERE session_id = ?", [session_id])
+
+    def revoke_session_scopes(self, session_id: str, scopes: Sequence[str]) -> None:
+        """Revoke only the session's tickets in ``scopes``, leaving its other
+        scopes alone.
+
+        ``revoke_session`` is scope-blind, which is wrong for a caller that
+        holds a long-lived session credential in one scope and rotates
+        short-lived egress tickets in others (``app/api/kai.py``): sweeping
+        the whole session would delete the very credential the caller
+        authenticated with, and it has no way to be handed a new one.
+
+        An empty ``scopes`` deletes **nothing** — fail safe. The alternative
+        (an empty ``IN ()`` degrading to "match everything") is exactly the
+        accident this method exists to prevent.
+        """
+        if not scopes:
+            return
+        placeholders = ", ".join("?" for _ in scopes)
+        self.conn.execute(
+            f"DELETE FROM chat_broker_tickets WHERE session_id = ? AND scope IN ({placeholders})",  # noqa: S608
+            [session_id, *scopes],
+        )

@@ -151,7 +151,15 @@ class ChatRepository:
         slack_thread_ts: Optional[str] = None,
         title: Optional[str] = None,
         agent_id: Optional[str] = None,
+        session_id: Optional[str] = None,
     ) -> ChatSession:
+        """``session_id`` lets a caller own the id instead of taking a
+        generated ``chat_<hex>`` one. Needed when an external turn engine
+        shares the row's key and constrains its shape: the embedded
+        ``kai-agent`` engine stores the chat id in a Postgres ``uuid`` column,
+        so ``chat_<hex>`` is rejected outright and the two sides could not key
+        off one value (``app/api/kai.py``). Omitted ⇒ generated, as before.
+        """
         if self._sessions_pg is not None:
             return self._sessions_pg.create_session(
                 user_email=user_email,
@@ -160,8 +168,9 @@ class ChatRepository:
                 slack_thread_ts=slack_thread_ts,
                 title=title,
                 agent_id=agent_id,
+                session_id=session_id,
             )
-        chat_id = _gen_id("chat")
+        chat_id = session_id or _gen_id("chat")
         now = datetime.now(timezone.utc)
         self._conn.execute(
             "INSERT INTO chat_sessions "

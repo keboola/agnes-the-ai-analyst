@@ -1179,6 +1179,39 @@ Relevance-ranked search uses DuckDB FTS BM25 with an ILIKE fallback.
 - /api/initial-workspace.zip
 - /api/initial-workspace/applied
 
+### `/api/kai` — Embedded kai-agent turn engine (host wiring)
+
+Host-side wiring for an embedded `kai-agent` turn engine (`app/api/kai.py`).
+Enabled only when `KAI_HOST_JWT_SECRET` is set — every route below `503`s with
+`kai_integration_not_configured` otherwise, so an instance that does not embed
+the engine exposes nothing.
+
+- /api/kai/sessions — `POST`, ordinary user auth, **no request body**. Creates
+  the `chat_sessions` row and returns `{chat_id, token, expires_at}`. `token`
+  is the short-lived HS256 session JWT the engine verifies; every identity
+  claim comes from the resolved caller, never from the request, so a caller can
+  only ever mint a token for themselves. `chat_id` is Agnes's — the caller
+  passes it to the engine as `body.id` so the engine's chat row and this
+  session share one key (no cross-database join). Signed with
+  `KAI_HOST_JWT_SECRET` and stamped with `KAI_HOST_JWT_ISSUER` /
+  `KAI_HOST_JWT_AUDIENCE` / `KAI_TENANT_ID`, which must match the engine's
+  `HOST_JWT_*` config. Lifetime is 12 h, inside the engine's 24 h `exp` ceiling.
+- /api/kai/tickets — `POST`, authenticated by the opaque
+  `downstream_credential` carried in that JWT (**not** user auth, and **not** a
+  broker ticket — presenting a `main`/`mcp` ticket here is `401
+  kai_credential_scope_mismatch`, so a sandbox that captured one turn's ticket
+  cannot refresh itself). Called once per turn by the engine's server, never by
+  the sandbox. Returns `{"llm": "<ticket>"}`, plus `"mcp"` when
+  `KAI_BROKER_MCP_ENABLED` is set. Minting retires the session's previous
+  *egress* tickets only — one live set per chat, while the session credential
+  in its own scope survives (the engine has no way to be handed a replacement).
+
+The LLM upstream needs no new route: the engine's in-sandbox relay speaks plain
+pass-through, which is exactly what `/api/broker/anthropic/{subpath}` already
+is. Point the engine's `HOST_BROKER_LLM_URL` at it and the `llm` ticket
+(`main` scope) authenticates there, where the real credential is injected,
+model-gated, budgeted and metered server-side.
+
 ### `/api/knowledge` — Unified knowledge search
 
 - /api/knowledge/search — one query fanned out across document Collections

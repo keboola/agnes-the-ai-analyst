@@ -148,3 +148,39 @@ def test_revoke_session_invalidates_all_tickets_for_session(repo):
 
 def test_revoke_session_unknown_session_is_idempotent(repo):
     repo.revoke_session("never-existed")  # must not raise
+
+
+def test_revoke_session_scopes_spares_other_scopes(repo):
+    """The scope-limited sweep is what lets a caller rotate short-lived egress
+    tickets while keeping a long-lived session credential in another scope
+    (``app/api/kai.py``) — a scope-blind sweep would delete the credential the
+    caller authenticated with."""
+    credential = repo.mint("chat_5", "kai_session")
+    llm = repo.mint("chat_5", "main")
+    mcp = repo.mint("chat_5", "mcp")
+
+    repo.revoke_session_scopes("chat_5", ["main", "mcp"])
+
+    assert repo.resolve(llm) is None
+    assert repo.resolve(mcp) is None
+    # the credential in the untouched scope survives
+    assert repo.resolve(credential) is not None
+
+
+def test_revoke_session_scopes_is_session_scoped(repo):
+    mine = repo.mint("chat_6", "main")
+    theirs = repo.mint("chat_7", "main")
+    repo.revoke_session_scopes("chat_6", ["main"])
+    assert repo.resolve(mine) is None
+    assert repo.resolve(theirs) is not None
+
+
+def test_revoke_session_scopes_empty_deletes_nothing(repo):
+    """Fail safe: an empty scope list must not degrade to "match everything"."""
+    tok = repo.mint("chat_8", "main")
+    repo.revoke_session_scopes("chat_8", [])
+    assert repo.resolve(tok) is not None
+
+
+def test_revoke_session_scopes_unknown_is_idempotent(repo):
+    repo.revoke_session_scopes("never-existed", ["main"])  # must not raise

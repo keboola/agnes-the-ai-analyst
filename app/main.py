@@ -500,6 +500,7 @@ from app.api.slack import router as slack_router
 from app.api.admin_chat import router as admin_chat_router
 from app.api.notifications_ws import router as notifications_ws_router
 from app.api.broker import router as broker_router
+from app.api.kai import router as kai_router
 from app.instance_config import get_slack_transport
 from services.slack_bot.socket_mode_client import (
     SocketModeDispatcher,
@@ -2560,6 +2561,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_chat_router)
     app.include_router(notifications_ws_router)
     app.include_router(broker_router)
+    app.include_router(kai_router)
 
     # Git smart-HTTP endpoint for Claude Code: /marketplace.git/*
     # Native ASGI route that shells out to the real `git http-backend` CLI

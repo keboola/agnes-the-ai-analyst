@@ -639,6 +639,26 @@ _EXEMPT: dict[str, str] = {
     "/api/broker/anthropic/{subpath}": _BROKER_REASON,
     "/api/broker/agnes-api": _BROKER_REASON,
     "/api/broker/agnes-mcp": _BROKER_REASON,
+    # Embedded kai-agent turn engine host wiring (app/api/kai.py). Both routes
+    # are handshake/credential surfaces for the engine, not analyst features:
+    # /sessions mints the engine's own session token for the calling user
+    # (bodyless by design — every claim comes from the resolved identity, so
+    # there is nothing for a CLI flag or an MCP argument to carry), and
+    # /tickets is an internal engine-server→Agnes route gated by an opaque
+    # credential rather than user auth, exactly like the /api/broker/* family.
+    # Same reasoning as the standing credential-provisioning exemption: an
+    # agent-invokable tool that mints session credentials is a
+    # privilege-escalation seam, not a convenience.
+    "/api/kai/sessions": (
+        "embedded kai-agent turn engine — mints the engine's session token for "
+        "the calling user; bodyless credential handshake with no CLI/MCP "
+        "analogue (see the credential-provisioning exemption in CONTRIBUTING.md)"
+    ),
+    "/api/kai/tickets": (
+        "embedded kai-agent turn engine — internal engine-server→Agnes route "
+        "minting per-turn scope-split broker tickets, gated by an opaque "
+        "credential (not user auth), like the other /api/broker/* routes"
+    ),
     "/api/admin/run-keboola-semantic-layer-refresh": (
         "scheduler-driven Keboola semantic layer (Metastore) sync trigger — "
         "admin/scheduler maintenance op, mirrors the run-bq-metadata-refresh / "

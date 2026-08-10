@@ -65,8 +65,12 @@ class ChatSessionPgRepository:
         slack_thread_ts: Optional[str] = None,
         title: Optional[str] = None,
         agent_id: Optional[str] = None,
+        session_id: Optional[str] = None,
     ) -> ChatSession:
-        chat_id = _gen_id("chat")
+        """``session_id`` lets a caller own the id — see the DuckDB sibling's
+        docstring for why an external turn engine needs it. Omitted ⇒
+        generated, as before."""
+        chat_id = session_id or _gen_id("chat")
         now = datetime.now(timezone.utc)
         with self._engine.begin() as conn:
             conn.execute(
