@@ -76,6 +76,49 @@ def _auto_slug(name: str) -> str:
     return _SLUG_RE.sub("-", name.lower()).strip("-")[:100].strip("-") or "agent"
 
 
+#: Slugs `create_agent` hands an agent that had no name yet: the literal
+#: fallback and its uniqueness suffixes.
+_PLACEHOLDER_SLUG_RE = re.compile(r"^agent(-\d+)?$")
+
+
+def _placeholder_slug_rename(before: Dict[str, Any], new_name: Any, owner_user_id: str) -> Optional[str]:
+    """The slug to move to when naming a still-unnamed draft, else ``None``.
+
+    The builder creates the row on "New agent", before the user types a
+    name, so ``create_agent`` falls back to the slug ``agent`` (then
+    ``agent-2``, …). Nothing re-derived it afterwards, so an agent
+    displayed as "Revenue Analyst" kept answering on ``/agent`` — and the
+    slug is the public address (``POST /api/v1/agents/{slug}/responses``,
+    ``agnes chat <slug>``), which the builder shows nowhere.
+
+    Deliberately narrow, because a slug is an address and moving one
+    breaks whatever already points at it. Both must hold:
+
+    - the agent is still a ``draft`` — a ``ready`` agent may already be
+      wired into a script, placeholder slug or not;
+    - its slug is still the untouched placeholder — a slug derived from
+      any real name (including a first name of "Agent") has been the
+      agent's address since, so a later rename leaves it alone.
+
+    Returns ``None`` when the re-derived slug would equal the current one,
+    so an unsluggable name ("!!!", which falls back to ``agent``) cannot
+    push the agent onto ``agent-2`` via the uniqueness search.
+    """
+    name = (new_name or "").strip() if isinstance(new_name, str) else ""
+    if not name:
+        return None
+    if (before.get("status") or "") != "draft":
+        return None
+    current = before.get("slug") or ""
+    if not _PLACEHOLDER_SLUG_RE.match(current):
+        return None
+    candidate = _auto_slug(name)
+    if candidate == current:
+        return None
+    resolved = _unique_slug(candidate, owner_user_id)
+    return None if resolved == current else resolved
+
+
 def _unique_slug(base: str, owner_user_id: str) -> str:
     """First free slug in ``base``, ``base-2``, ``base-3``, … for one owner.
 
@@ -303,8 +346,12 @@ async def update_agent(
     payload: AgentUpdate,
     user: dict = Depends(get_current_user),
 ):
-    """Patch an agent the caller owns. Only supplied fields change."""
-    _writable(agent_id, user)
+    """Patch an agent the caller owns. Only supplied fields change.
+
+    Naming a still-unnamed draft also re-derives its slug — see
+    ``_placeholder_slug_rename``.
+    """
+    before = _writable(agent_id, user)
     supplied = payload.model_dump(exclude_unset=True, exclude_none=True)
     # Map the builder's wire names onto the canonical columns.
     fields: Dict[str, Any] = {}
@@ -315,6 +362,9 @@ async def update_agent(
             fields[key] = json.dumps(value)
         else:
             fields[key] = value
+    new_slug = _placeholder_slug_rename(before, fields.get("name"), user["id"])
+    if new_slug:
+        fields["slug"] = new_slug
     if fields:
         agents_repo().update(agent_id, **fields)
     row = _live(agent_id)
