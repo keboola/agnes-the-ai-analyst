@@ -92,7 +92,10 @@ class MetricYamlMixin:
         if path.is_file():
             files = [path]
         elif path.is_dir():
-            files = sorted(path.glob("*/*.yml"))
+            # Both extensions: a .yaml file was invisible to the import, which
+            # was merely incomplete before and is destructive now — prune reads
+            # "not in the directory" as "deleted upstream".
+            files = sorted(set(path.glob("*/*.yml")) | set(path.glob("*/*.yaml")))
 
         if prune:
             # --prune deletes everything in scope the input does not mention, so

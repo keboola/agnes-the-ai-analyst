@@ -124,7 +124,10 @@ def _audit_prune(metric_id: str, *, source_ref: Optional[str]) -> None:
             action="metrics.prune",
             resource=f"metric:{metric_id}"[:256],
             params={"source_ref": source_ref},
-            result="success",
+            # Not "success": this is written BEFORE the delete so an
+            # interruption cannot lose the record, and a row claiming an
+            # outcome that has not happened yet is worse than a vague one.
+            result="attempted",
             client_kind="cli",
         )
     except Exception:  # noqa: BLE001 - an audit outage must not abort the import
