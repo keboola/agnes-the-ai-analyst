@@ -808,7 +808,23 @@ def _scan(cmd: str) -> list[tuple[str, str]]:
         )
     # schemed URLs anywhere in the command
     for u in re.findall(r"https?://([^/\s'\"]+)", cmd):
-        host = u.split(":")[0]
+        # Drop `user:pass@` BEFORE reading the host. Taking `split(":")[0]` off
+        # the whole authority read the basic-auth USERNAME as the hostname, and
+        # that is wrong in both directions:
+        #
+        #   http://agnes:<jwt>@agnes.keboola.dev/…  → "agnes"  → denied,
+        #       which is the shape of every data-app clone URL, so cloning an
+        #       app's repo from the sandbox was refused no matter what the
+        #       allowlist contained (watched live: "Outbound network to 'agnes'
+        #       is not in the Agnes egress allowlist");
+        #   http://api.github.com:x@evil.com/…      → "api.github.com" → ALLOWED,
+        #       an allowlist bypass — anyone who can get a command run in the
+        #       sandbox reaches any host by putting an allowed name in the
+        #       userinfo.
+        #
+        # rsplit on the LAST "@": userinfo may itself contain one (a JWT does
+        # not, but a password can), and the authority is what follows the last.
+        host = u.rsplit("@", 1)[-1].split(":")[0]
         if host not in ALLOWED_HOSTS:
             verdicts.append(("deny", _egress_reason(host)))
 

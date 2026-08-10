@@ -120,6 +120,7 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     # Hosted data apps (data-apps platform plan, Task 11) — triple-surface
     # with /api/data-apps* + `agnes app list/show/deploy/logs`.
     "data_apps_list",
+    "data_app_create",
     "data_app_get",
     "data_app_deploy",
     "data_app_logs",
@@ -170,6 +171,7 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
 # name below, and that this tuple stays a subset of FOUNDATION_TOOL_NAMES.
 DATA_APP_TOOL_NAMES: tuple[str, ...] = (
     "data_apps_list",
+    "data_app_create",
     "data_app_get",
     "data_app_deploy",
     "data_app_logs",
@@ -1738,6 +1740,39 @@ def register_foundation_tools(
                 f"{base_url}/api/data-apps/{slug}/deploy",
                 json=payload,
                 headers=headers_fn(),
+                timeout=60,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @tool()
+    async def data_app_create(slug: str, name: str, description: str = "") -> dict:
+        """Create a new hosted data app (the registry row plus its git repo).
+
+        This is the FIRST step of building an app from chat, and it was the
+        missing one: `data_app_create_draft` needs an app to draft FROM, so an
+        agent that started there got `404 data_app_not_found` and had no way
+        forward — REST and the CLI both had a create, this surface did not.
+
+        The app is created empty. Seed it before deploying: clone the repo with
+        `data_app_git_credential`, copy the baked scaffold from
+        `/work/scaffolds/nodejs-dashboard/`, push to `main`, then
+        `data_app_deploy`. Deploying an empty repo fails with
+        `deploy_empty_repo`.
+
+        Args:
+            slug:        URL-safe id, unique per instance (`[a-z0-9-]`).
+            name:        Human-readable title shown in the UI.
+            description: Optional one-line summary.
+
+        Returns ``{"id", "slug", "git_url"}``. Mirrors ``POST /api/data-apps``
+        and ``agnes app create``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.post(
+                f"{base_url}/api/data-apps",
+                headers=headers_fn(),
+                json={"slug": slug, "name": name, "description": description},
                 timeout=60,
             )
             r.raise_for_status()

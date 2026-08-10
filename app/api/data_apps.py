@@ -552,7 +552,17 @@ def _mint_git_credential(row: dict) -> str:
         prefix=token_id.replace("-", "")[:8],
         expires_at=expires_at,
     )
-    base = get_public_url() or AGNES_INTERNAL_URL
+    # `get_public_url()` reads PUBLIC_URL / `server.public_url` only — NOT
+    # `SERVER_URL`, which is what a compose deployment actually sets. On any
+    # box configured that way this fell through to AGNES_INTERNAL_URL
+    # (`http://app:8000`), a name only resolvable inside the compose network —
+    # so the clone URL handed to a REMOTE sandbox (chat.provider=e2b) pointed
+    # at a host that does not exist there. Watched live: the agent fetched its
+    # credential, ran `git clone`, and the egress hook reported the host as
+    # `app`. The docstring above already says this URL has to work from a
+    # remote sandbox; SERVER_URL is the missing link in that chain, and it is
+    # the same value the sandbox itself is handed as AGNES_SERVER.
+    base = get_public_url() or (os.environ.get("SERVER_URL") or "").strip().rstrip("/") or AGNES_INTERNAL_URL
     return f"{base.replace('://', f'://agnes:{jwt_token}@')}/data-apps.git/{slug}"
 
 

