@@ -117,16 +117,20 @@
                 <button type="button" role="tab" class="os-tab"
                         data-os-tab="windows" aria-selected="false">Windows (PowerShell)</button>
             </div>
-            {# Deliberately just the official installer, nothing else. The
-               previous self-healing one-liner (already-installed check +
-               in-session PATH fix + trailing `claude --version`) read as a
-               wall of shell to the non-technical audience this page serves;
-               the installer is idempotent (re-run = update), so the check
-               bought nothing. The one real loss is the in-session PATH fix
-               (the installer is a child process and cannot mutate the open
-               terminal's PATH) — covered by the reopen-the-terminal hint in
-               the copy below, and `claude --version` moved to its own
-               verify box. #}
+            {# Deliberately just the official installer, nothing else — ONE
+               command on a dark copy-box. The previous self-healing
+               one-liner (already-installed check + in-session PATH fix +
+               trailing `claude --version`) read as a wall of shell to the
+               non-technical audience this page serves; the installer is
+               idempotent (re-run = update), so the check bought nothing.
+               Verify (`claude --version`), the one-time OAuth sign-in, and
+               the `/exit` return live as inline code chips in the lede
+               below — a second dark box for the verify command read as
+               another thing to run and diluted the single-command shape.
+               The one real loss is the in-session PATH fix (the installer
+               is a child process and cannot mutate the open terminal's
+               PATH) — covered by the reopen-the-terminal sentence in the
+               lede. #}
             <div class="install-cmd" role="tabpanel" data-os-panel="unix">
                 <span class="multiline" id="install-cmd-claude-unix">curl -fsSL https://claude.ai/install.sh | bash</span>
                 <button class="copy-btn" data-copy-target="install-cmd-claude-unix">Copy</button>
@@ -136,14 +140,6 @@
                 <button class="copy-btn" data-copy-target="install-cmd-claude-windows">Copy</button>
             </div>
 
-            <p class="step-lede" style="margin-top: 14px;">
-                Then check it works:
-            </p>
-            <div class="install-cmd">
-                <span class="multiline" id="install-cmd-claude-verify">claude --version</span>
-                <button class="copy-btn" data-copy-target="install-cmd-claude-verify">Copy</button>
-            </div>
-
             <div class="callout-hint">
                 <strong>Don't have a terminal open yet?</strong>
                 On macOS, press <kbd>⌘</kbd> + <kbd>Space</kbd>, type <em>Terminal</em>, hit Enter.
@@ -151,11 +147,14 @@
             </div>
 
             <p class="step-lede" style="margin-top: 14px;">
-                When it prints a version number, you're done &mdash;
-                <strong>keep using this same terminal</strong>.
-                "command not found"? Close and reopen the terminal, then check again.
+                Once it finishes, verify with <code>claude --version</code>, then sign in with
+                <code>claude</code> (one-time OAuth in your browser) &mdash; type <code>/exit</code>
+                when you're signed in to come back to the terminal.
+                See <em>command not found</em>? Close and reopen the terminal, then try again &mdash;
+                the installer can't refresh an already-open window.
                 Don't have a Claude license yet?
-                <a href="/setup-advanced#claude-plan">Here's how to get one</a>.
+                <a href="/setup-advanced#claude-plan">Here's how to get one</a>
+                (Pro&nbsp;/&nbsp;Max&nbsp;5×&nbsp;/&nbsp;Max&nbsp;20×&nbsp;/&nbsp;Enterprise &mdash; Enterprise is the option for Finance and Legal).
             </p>
         </div>
 
@@ -257,7 +256,7 @@
         <div class="install-block install-block-secret">
             <div class="step-num" aria-hidden="true"><span>4</span></div>
             <div class="label">Launch Claude — we'll hand it your login first</div>
-            <p class="step-lede">One click copies a single line: it saves your login token to a file on this computer, then starts Claude. Paste it into your <strong>terminal</strong> and press Enter. First launch opens a one-time browser sign-in to Claude.</p>
+            <p class="step-lede">One click copies a single line: it saves your login token to a file on this computer, then starts Claude. Paste it into your <strong>terminal</strong> and press Enter. If you skipped the sign-in in step 1, the first launch opens the one-time browser sign-in now.</p>
 
             <div class="os-tabs" role="tablist" aria-label="Operating system">
                 <button type="button" role="tab" class="os-tab is-active"
