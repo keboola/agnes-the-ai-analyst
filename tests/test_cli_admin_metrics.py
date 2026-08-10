@@ -116,3 +116,20 @@ def test_taking_over_another_sources_metric_is_called_out(monkeypatch, tmp_path)
     out = _clean(result.output)
     assert "would take over revenue/mrr" in out
     assert "another source" in out
+
+
+def test_deletions_carry_the_pre_upgrade_upload_caveat(monkeypatch, tmp_path):
+    """Uploads made through /admin before the web_upload split are stamped
+    yaml_import and cannot be told apart from CLI imports, so they fall in
+    scope. The warning belongs where the deletions are listed, not only in the
+    release notes."""
+    report = {"added": [], "updated": [], "adopted": [], "written": [], "deleted": ["a/2"]}
+    result, _ = _run(monkeypatch, tmp_path, report, ["--prune", "--dry-run"])
+    out = _clean(result.output)
+    assert "before this release are indistinguishable" in out
+
+
+def test_no_caveat_when_there_is_nothing_to_delete(monkeypatch, tmp_path):
+    report = {"added": ["a/1"], "updated": [], "adopted": [], "written": ["a/1"], "deleted": []}
+    result, _ = _run(monkeypatch, tmp_path, report, ["--prune"])
+    assert "indistinguishable" not in _clean(result.output)

@@ -97,6 +97,15 @@ def _echo_report(report: dict, *, path: str, dry_run: bool, prune: bool) -> None
         typer.echo("  (--prune not set: metrics missing from this directory were left in place)")
     elif not report["deleted"]:
         typer.echo("  nothing to prune")
+    else:
+        # One-time migration caveat, surfaced where the deletions are listed
+        # rather than left in the release notes: uploads made through the admin
+        # page before the web_upload split are stamped yaml_import and cannot be
+        # told apart from CLI-imported rows, so they land in this scope.
+        typer.echo(
+            "  note: metrics uploaded via /admin before this release are indistinguishable "
+            "from CLI-imported ones — check the list above before running without --dry-run"
+        )
 
 
 def _audit_prune(metric_id: str, *, source_ref: Optional[str]) -> None:
