@@ -206,7 +206,7 @@ def _collect_members(plugins: List[dict], etag: str) -> List[Tuple[str, bytes]]:
             # whole plugin (it raises "agents: Invalid input" for a scaffolded
             # but unused `agents`/`commands` dir holding only a .gitkeep).
             if rel == ".claude-plugin/plugin.json":
-                data = _sanitize_served_plugin_json(data, plugin_dir)
+                data = _sanitize_served_plugin_json(data, plugin_dir, plugin["manifest_name"])
             members.append((arc, data))
 
     return members
@@ -238,31 +238,62 @@ def _dir_has_real_files(d, base) -> bool:
     return any(p.is_file() and not p.name.startswith(".") for p in resolved.rglob("*"))
 
 
-def _sanitize_served_plugin_json(raw: bytes, plugin_dir) -> bytes:
-    """Drop ``plugin.json`` component keys whose referenced directory is empty
-    or missing. Returns ``raw`` unchanged on any parse problem or when nothing
-    needs dropping (keeps byte-for-byte determinism for the common case)."""
+def _sanitize_served_plugin_json(raw: bytes, plugin_dir, manifest_name: str) -> bytes:
+    """Reconcile a curated ``plugin.json`` with what we serve for it.
+
+    Two edits, both keyed on the same rule: what leaves here must agree with
+    the catalog entry, because Claude Code matches a loaded plugin back to
+    its entry BY NAME (see ``marketplace_filter.resolve_manifest_name``).
+
+    * ``name`` is forced to ``manifest_name``. For a conformant plugin the
+      two are already equal and nothing changes; they diverge exactly when
+      ``resolve_manifest_name`` rejected the declared name and fell back to
+      the upstream one. Serving the rejected name here while the entry
+      carries the fallback is the "Plugin <X> not found in marketplace"
+      failure that name resolution exists to prevent — the bundle path never
+      had it, since ``_bundle_plugin_json_bytes`` synthesizes from the same
+      field.
+    * Component keys whose referenced directory is empty or missing are
+      dropped, so ``claude plugin install`` doesn't reject the whole plugin
+      ("agents: Invalid input") over a scaffolded but unused dir.
+
+    Returns ``raw`` unchanged on any parse problem or when neither edit
+    applies, keeping byte-for-byte determinism for the common case — which
+    is what lets the ETag stay stable across repackaging.
+
+    The two edits are independent: an unresolvable ``plugin_dir`` (``OSError``,
+    e.g. a broken symlink or a permission error) only disables the
+    component-key pruning pass, since that is the one that needs the
+    directory. Name reconciliation must still apply — it is the edit that
+    keeps the served file from disagreeing with the catalog entry, and
+    bailing out on it here would silently resurrect the exact "Plugin <X>
+    not found in marketplace" failure this function exists to prevent.
+    """
     try:
         data = json.loads(raw)
     except Exception:
         return raw
     if not isinstance(data, dict):
         return raw
-    dropped = False
+    changed = False
+    if manifest_name and data.get("name") != manifest_name:
+        data["name"] = manifest_name
+        changed = True
     try:
         base = plugin_dir.resolve()
     except OSError:
-        return raw
-    for key in _PLUGIN_COMPONENT_KEYS:
-        val = data.get(key)
-        # Only handle the string-path form (e.g. "./agents"); leave arrays /
-        # other shapes untouched — a populated dir or explicit list is valid.
-        if not isinstance(val, str):
-            continue
-        if not _dir_has_real_files(plugin_dir / val, base):
-            data.pop(key, None)
-            dropped = True
-    if not dropped:
+        base = None
+    if base is not None:
+        for key in _PLUGIN_COMPONENT_KEYS:
+            val = data.get(key)
+            # Only handle the string-path form (e.g. "./agents"); leave arrays /
+            # other shapes untouched — a populated dir or explicit list is valid.
+            if not isinstance(val, str):
+                continue
+            if not _dir_has_real_files(plugin_dir / val, base):
+                data.pop(key, None)
+                changed = True
+    if not changed:
         return raw
     return json.dumps(data, indent=2).encode("utf-8")
 

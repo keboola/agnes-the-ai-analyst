@@ -347,7 +347,6 @@ def _is_paper_theme() -> bool:
 templates.env.globals["is_paper"] = _is_paper_theme
 
 
-
 # The ONE default behind `library.show_unverified_trust`, read off the registry
 # rather than restated at each read site. Three callsites resolve this flag (the
 # Jinja global below plus /library and the store-item detail route), and each
@@ -428,7 +427,8 @@ def _detail_template(base: str) -> str:
 #: never seen. /library is the rail's one browse surface and lists every
 #: one of these kinds, so that is where back goes; `?section=` opens the
 #: matching band (library.html folds them by default). Keys are the
-#: `type_key` vocabulary /library groups by (`_SECTION_LABELS`).
+#: `type_key` vocabulary /library groups by (`_SECTION_LABELS`), plus
+#: `semantics` — see below.
 _RAIL_DETAIL_BACK: dict[str, tuple[str, str]] = {
     "data_package": ("/library?section=data_package", "All data packages"),
     "memory_domain": ("/library?section=memory_domain", "All memory"),
@@ -437,6 +437,17 @@ _RAIL_DETAIL_BACK: dict[str, tuple[str, str]] = {
     "skill": ("/library?section=skill", "All skills"),
     "agent": ("/library?section=agent", "All agents"),
     "files": ("/library?section=files", "Library"),
+    # /catalog/semantics is not a `type_key`: the Definitions block is an
+    # adjacent destination BELOW the inventory, not one of the bands, so it
+    # has no `?section=` to open. It gets an anchor instead — without one the
+    # bare /library the fallback returns lands the reader at the top of the
+    # page, with the whole inventory between them and the block they clicked.
+    # `#lib-defs` exists exactly when that block rendered (library.html emits
+    # it under `if definitions_footer`, set only when the caller can see at
+    # least one metric or glossary term); when it did not, the anchor is inert
+    # and the browser stays at the top, which is what a bare /library did
+    # anyway.
+    "semantics": ("/library#lib-defs", "Library"),
 }
 
 
@@ -3959,6 +3970,24 @@ async def catalog_semantics(
     accessible_ids = get_accessible_tables(user, conn)
     allowed = None if accessible_ids is None else set(accessible_ids)
     metrics = [m for m in metric_repo().list() if _first_inaccessible_table(m, allowed) is None]
+    def _variants(raw) -> dict:
+        """``sql_variants`` as a mapping the template can iterate.
+
+        The repository serializes this column on write but does not
+        deserialize on read, so it arrives as a JSON *string* — on which
+        ``.items()`` silently yields nothing in Jinja, which is how the
+        variants stayed invisible. Parsed here rather than in the repo:
+        changing the read shape there would ripple through both backends and
+        their contract tests. Anything that is not an object is dropped,
+        since the template renders one labelled block per key.
+        """
+        if isinstance(raw, str):
+            try:
+                raw = _json.loads(raw)
+            except ValueError:
+                return {}
+        return raw if isinstance(raw, dict) else {}
+
     # Two projections of the description: sanitized HTML for the expanded
     # detail, plain text for the one-line row preview and the client-side
     # filter index. Metric descriptions carry the business definition; the
@@ -3974,6 +4003,7 @@ async def catalog_semantics(
             **m,
             "description_html": render_safe(m.get("description"), html_source=stores_html(m)),
             "description_text": render_plain(m.get("description"), html_source=stores_html(m)),
+            "sql_variants": _variants(m.get("sql_variants")),
         }
         for m in metrics
     ]

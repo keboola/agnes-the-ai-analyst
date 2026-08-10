@@ -328,6 +328,7 @@
     line-height: 1.5;
 }
 .sl-detail__desc { margin: 0 0 10px; overflow-x: auto; }
+.sl-variant-name { margin: 0 0 4px; font-size: 11px; color: var(--ds-text-muted); }
 /* Every heading level, not just h2-h3. The html_source allowlist preserves
    h1/h5/h6 because dropping them fused the sections they separated
    ("Section ASection B") — but a preserved tag with no rule here falls back
@@ -552,8 +553,25 @@
                   {% elif m.table_name %}<span><strong>Table</strong> {{ m.table_name }}</span>{% endif %}
                   {% if m.dimensions %}<span><strong>Dimensions</strong> {{ m.dimensions | join(', ') }}</span>{% endif %}
                   {% if m.synonyms %}<span><strong>Synonyms</strong> {{ m.synonyms | join(', ') }}</span>{% endif %}
+                  {% if m.time_column %}<span><strong>Time column</strong> {{ m.time_column }}</span>{% endif %}
                 </div>
+                {# The upstream definition, above the SQL composed from it. A
+                   metric imported from an external catalog carries its
+                   expression verbatim, and that — not the generated query — is
+                   what an analyst opens this detail to read. #}
+                {% if m.expression %}
+                <p><strong>Expression</strong></p>
+                <pre><code>{{ m.expression }}</code></pre>
+                {% endif %}
                 <pre><code>{{ m.sql }}</code></pre>
+                {% if m.sql_variants %}
+                <p><strong>Variants</strong></p>
+                {% for variant, variant_sql in m.sql_variants.items() %}
+                <p class="sl-variant-name"><code>{{ variant }}</code></p>
+                <pre><code>{{ variant_sql }}</code></pre>
+                {% endfor %}
+                {% endif %}
+                {% if m.filters %}<p><strong>Filters</strong></p><ul>{% for f in m.filters %}<li><code>{{ f }}</code></li>{% endfor %}</ul>{% endif %}
                 {% if m.notes %}<p><strong>Notes:</strong></p><ul>{% for n in m.notes %}<li>{{ n }}</li>{% endfor %}</ul>{% endif %}
                 {% if m.validation %}<p><strong>Validation:</strong> <code>{{ m.validation }}</code></p>{% endif %}
               </div>
