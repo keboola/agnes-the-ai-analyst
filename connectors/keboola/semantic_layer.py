@@ -1122,12 +1122,25 @@ def sync_semantic_layer(
     # later master-token sync. The prune scope stays "NULL or default id"
     # either way, so a downgrade still cleans up what it previously owned.
     stamp = default_id if slot == "connection" else None
+    # Guard this path too when the credentials carry a connection identity:
+    # rows here are stamped with the default connection's id, so the same
+    # cross-attribution the master-token loop refuses is reachable whenever
+    # that connection's STORAGE token opens a different project than the one
+    # it is bound to (Devin Review on #1242). A legacy env pair stamps nothing
+    # (`stamp` is None), so there is no binding to contradict and no guard to
+    # apply.
+    expected_project = None
+    if slot == "connection" and default_conn is not None:
+        default_config = default_conn.get("config") or {}
+        if default_config.get("project_id") is not None:
+            expected_project = (default_config["project_id"], default_config.get("project_name") or "")
     result = _sync_one_source(
         url,
         token,
         stamp,
         adopt_null=True,
         prune_scope_refs={None, default_id},
+        expected_project=expected_project,
     )
     return _aggregate_sources([_as_source_entry(default_id, default_conn["name"] if default_conn else None, result)])
 
