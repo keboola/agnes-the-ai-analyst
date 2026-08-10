@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import json
 import time
+from unittest import mock
 
 import pytest
 
@@ -386,11 +387,54 @@ def test_workspace_serves_a_gzipped_tar_of_the_template(seeded_app, kai_env):
     assert not any(n.startswith("docker-sandbox/") for n in names)
 
 
-def test_workspace_archive_is_byte_stable(seeded_app, kai_env):
+def test_workspace_archive_is_byte_stable_across_a_second_boundary(seeded_app, kai_env):
     """The engine re-fetches on every SDK respawn; a payload differing only by
-    timestamp would churn the sandbox tree for nothing."""
+    timestamp would churn the sandbox tree for nothing.
+
+    The second boundary is the point. Pinning only the tar members' mtime
+    leaves the gzip *container* header carrying `time.time()`, so two packs
+    within the same second compare equal and the bug hides — which is exactly
+    how it shipped. Freeze the clock a second apart instead of sleeping.
+    """
     credential = _claims(_mint_session(seeded_app)["token"])["downstream_credential"]
     headers = {"Authorization": f"Bearer {credential}"}
-    first = seeded_app["client"].get("/api/kai/workspace", headers=headers).content
-    second = seeded_app["client"].get("/api/kai/workspace", headers=headers).content
+
+    with mock.patch("time.time", return_value=1_700_000_000.0):
+        first = seeded_app["client"].get("/api/kai/workspace", headers=headers).content
+    with mock.patch("time.time", return_value=1_700_000_042.0):
+        second = seeded_app["client"].get("/api/kai/workspace", headers=headers).content
+
     assert first == second
+    # Belt and braces: the gzip header's 4-byte MTIME field must be zeroed.
+    assert first[4:8] == b"\x00\x00\x00\x00"
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "auth"),
+    [
+        # /sessions is user-authenticated; the rest carry the engine's own
+        # credential. Each route must be probed with the token it actually
+        # accepts, or it 401s before ever reaching the kill switch.
+        ("post", "/api/kai/sessions", "user"),
+        ("post", "/api/kai/tickets", "credential"),
+        ("post", "/api/kai/mcp", "credential"),
+        ("get", "/api/kai/workspace", "credential"),
+    ],
+)
+def test_every_route_honours_the_kill_switch(seeded_app, kai_env, monkeypatch, method, path, auth):
+    """Unsetting the secret must stop the integration *now*.
+
+    Checking it only on session creation left every already-issued credential
+    minting egress tickets and reaching tools for the rest of its 12 h life,
+    which is not what an operator disabling the integration expects — and the
+    engine's verify path has no revocation to fall back on.
+    """
+    credential = _claims(_mint_session(seeded_app)["token"])["downstream_credential"]
+    bearer = seeded_app["analyst_token"] if auth == "user" else credential
+    monkeypatch.delenv("KAI_HOST_JWT_SECRET", raising=False)
+
+    call = getattr(seeded_app["client"], method)
+    resp = call(path, headers={"Authorization": f"Bearer {bearer}"})
+
+    assert resp.status_code == 503, f"{method.upper()} {path} still served with the secret unset"
+    assert resp.json()["detail"] == "kai_integration_not_configured"

@@ -2087,6 +2087,12 @@ def create_app() -> FastAPI:
             # the broker's stream-through (#1020) actually reach the sandbox
             # incrementally.
             "/api/broker/anthropic",  # SSE stream — do not gzip
+            # Embedded kai-agent host routes, for both reasons above at once:
+            # /api/kai/mcp proxies a Streamable-HTTP MCP server that may answer
+            # as text/event-stream (buffering it collapses a long tool call
+            # into one burst at the end), and /api/kai/workspace returns an
+            # already-gzipped tarball, where re-compressing only burns CPU.
+            "/api/kai",
             "/cli/wheel/",
             "/cli/download",
             "/marketplace.git",  # git smart-HTTP is self-chunked; double-gzip bloats

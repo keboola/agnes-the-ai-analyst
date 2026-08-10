@@ -56,6 +56,7 @@ Deployment config (all env, like the rest of the broker's upstream wiring):
 from __future__ import annotations
 
 import asyncio
+import gzip
 import hashlib
 import hmac
 import io
@@ -183,6 +184,18 @@ def _create_session_and_credential(user_email: str) -> tuple[str, str]:
     ``uuid`` column and validates the shape on the way in, so a ``chat_<hex>``
     id is rejected with ``Invalid UUID`` before the turn starts. Agnes's own
     column is a VARCHAR, so a UUID sits in it unchanged.
+
+    **Known consequence of ``Surface.WEB``:** this is an ordinary chat row, so
+    it appears in the caller's chat history — and while the engine holds the
+    transcript in its own database, it renders there as an empty, untitled
+    conversation. The row itself is deliberate, not incidental: it is the RBAC
+    anchor, the GDPR purge target and the join key, so it has to exist. Only
+    the *surface value* is a judgement call, and `WEB` is kept because that is
+    what these sessions are from the user's side; `list_sessions` filters on
+    email + archived and not on surface, so no other value would hide them
+    either. Making them presentable is a frontend decision (render from the
+    engine, or filter engine-backed rows out of the list) rather than
+    something to paper over here.
     """
     session = chat_session_repo().create_session(
         user_email=user_email,
@@ -250,6 +263,12 @@ def _require_session_credential(request: Request) -> Dict[str, Any]:
     tickets, or a sandbox that got hold of one turn's ticket could refresh
     itself indefinitely.
     """
+    # The kill switch is checked on EVERY route, not just session creation.
+    # Otherwise unsetting it stops new sessions while every already-issued
+    # credential keeps minting egress tickets and reaching tools for the rest
+    # of its 12 h life — an operator who disables the integration expects it to
+    # stop now, and there is no revocation on the engine's own verify path.
+    _secret()
     auth = request.headers.get("authorization", "")
     credential = auth[7:] if auth.lower().startswith("bearer ") else ""
     if not credential:
@@ -448,6 +467,10 @@ async def kai_mcp(request: Request, row: Dict[str, Any] = Depends(require_broker
     would otherwise be buffered whole — the same mistake the Anthropic proxy
     had to fix for token deltas.
     """
+    # Same kill switch as every other route — this one authenticates through
+    # the broker ticket dependency, which does not pass through
+    # `_require_session_credential`, so it asserts for itself.
+    _secret()
     _require_scope(row, "mcp")
     token = await asyncio.to_thread(_mint_mcp_access_token, row["session_id"])
 
@@ -546,23 +569,30 @@ def _build_workspace_archive() -> Optional[bytes]:
 
     buffer = io.BytesIO()
     members = 0
-    # mtime=0 so the same template packs to the same bytes every time: the
+    # Byte-stability needs BOTH timestamps pinned, not just the members': the
     # engine re-fetches on every SDK respawn, and a payload that differs only
     # by timestamp would churn the sandbox tree for no reason.
-    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
-        for path in sorted(root.rglob("*")):
-            if not path.is_file() or path.is_symlink():
-                continue
-            rel = path.relative_to(root)
-            if rel.parts[0] in _WORKSPACE_EXCLUDED_TOPLEVEL or ".git" in rel.parts:
-                continue
-            info = tar.gettarinfo(str(path), arcname=rel.as_posix())
-            info.mtime = 0
-            info.uid = info.gid = 0
-            info.uname = info.gname = ""
-            with path.open("rb") as fh:
-                tar.addfile(info, fh)
-            members += 1
+    #
+    # `tarfile.open(mode="w:gz")` builds its own GzipFile with no mtime, so the
+    # gzip *container* header carries `time.time()` even when every member
+    # carries `mtime=0` — two packs of an identical tree a second apart then
+    # differ in 4 header bytes. So the gzip layer is constructed explicitly
+    # with `mtime=0` and the tar written into it uncompressed (`w|`).
+    with gzip.GzipFile(fileobj=buffer, mode="wb", mtime=0) as gz:
+        with tarfile.open(fileobj=gz, mode="w|") as tar:
+            for path in sorted(root.rglob("*")):
+                if not path.is_file() or path.is_symlink():
+                    continue
+                rel = path.relative_to(root)
+                if rel.parts[0] in _WORKSPACE_EXCLUDED_TOPLEVEL or ".git" in rel.parts:
+                    continue
+                info = tar.gettarinfo(str(path), arcname=rel.as_posix())
+                info.mtime = 0
+                info.uid = info.gid = 0
+                info.uname = info.gname = ""
+                with path.open("rb") as fh:
+                    tar.addfile(info, fh)
+                members += 1
 
     if members == 0:
         return None

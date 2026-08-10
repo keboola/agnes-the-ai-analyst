@@ -1609,6 +1609,18 @@ KNOWN_UNTESTED = {
     # Sandboxed data-apps authoring replay (Task 7, wave 3B) — same
     # ticket-authed, never parameter-free shape as the broker routes above.
     "POST /api/broker/data-apps",
+    # Embedded kai-agent turn engine host wiring — same shape as the broker
+    # routes above: /tickets, /mcp and /workspace are credential/ticket-authed
+    # internal engine routes, and /sessions mints a credential as a side
+    # effect, so none belong in a parameter-free smoke sweep that would either
+    # 401 uninformatively or leave live tokens behind. Behaviour is covered in
+    # tests/test_kai_host.py (claim set, exp ceiling, ticket payload shape,
+    # scope enforcement in both directions, the kill switch on every route,
+    # and the workspace archive contract).
+    "POST /api/kai/sessions",
+    "POST /api/kai/tickets",
+    "POST /api/kai/mcp",
+    "GET /api/kai/workspace",
     # Collections (bring-your-files) — behaviorally covered in the dedicated
     # suites tests/test_api_collections.py (CRUD/upload/search/reingest, RBAC fail-closed,
     # SessionPrincipal) and tests/test_web_library.py (/library pages), plus the
