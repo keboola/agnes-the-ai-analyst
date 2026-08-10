@@ -99,3 +99,77 @@ def test_the_per_event_transform_no_longer_touches_meta() -> None:
         "per-event path, and it races the rebuild for extract.duckdb. It belongs in "
         "app.worker.kinds._run_jira_refresh."
     )
+
+
+class TestSlaPollEnqueuesTheRefresh:
+    """The SLA poller writes parquet too, so it owes the same rebuild.
+
+    It calls `transform_single_issue` directly rather than going through
+    `trigger_incremental_transform`, so it never enqueued anything. That was
+    harmless while the transform refreshed `_meta` inline; once that moved to the
+    job, a poller-only instance would never refresh the catalog — or, for a table
+    whose first partition the poller writes, never create its extract view, since
+    `update_meta` does a `CREATE OR REPLACE VIEW` as well.
+    """
+
+    @staticmethod
+    def _drive(monkeypatch, results):
+        """Run poll_sla.run() over `results`, returning the enqueued job kinds."""
+        from connectors.jira.scripts import poll_sla
+
+        enqueued: list = []
+
+        class _FakeJobs:
+            def enqueue(self, kind, payload, idempotency_key=None):
+                enqueued.append(kind)
+                return {"status": "queued"}
+
+        keys = [f"PROJ-{i}" for i in range(1, len(results) + 1)]
+        monkeypatch.setattr(
+            poll_sla,
+            "load_config",
+            lambda: {"data_dir": Path("/srv/raw"), "base_url": "https://x", "email": "e", "api_token": "t"},
+        )
+        monkeypatch.setattr(poll_sla, "configured_field_ids", lambda: ["customfield_1"])
+        monkeypatch.setattr(poll_sla, "find_open_issues", lambda _d: keys)
+        monkeypatch.setattr(poll_sla, "update_issue_sla", lambda k, *a, **kw: results[keys.index(k)])
+        monkeypatch.setattr(poll_sla.time, "sleep", lambda _s: None)
+        monkeypatch.setattr("src.repositories.jobs_repo", lambda: _FakeJobs())
+
+        stats = poll_sla.run()
+        return enqueued, stats
+
+    def test_a_run_that_wrote_something_enqueues_exactly_one_refresh(self, monkeypatch) -> None:
+        enqueued, stats = self._drive(monkeypatch, ["updated", "skipped", "healed"])
+
+        assert enqueued == ["jira-refresh"], "one coalesced rebuild per run, not per issue"
+        assert stats["updated"] == 1 and stats["healed"] == 1
+
+    def test_a_run_that_wrote_nothing_enqueues_nothing(self, monkeypatch) -> None:
+        """This runs every 15 minutes; a rebuild with nothing to publish is pure cost."""
+        enqueued, _ = self._drive(monkeypatch, ["skipped", "skipped"])
+
+        assert enqueued == []
+
+    def test_an_unreachable_job_queue_does_not_fail_the_poll(self, monkeypatch) -> None:
+        """The module also runs as a standalone script; the poll's own work is already durable."""
+        from connectors.jira.scripts import poll_sla
+
+        monkeypatch.setattr(
+            poll_sla,
+            "load_config",
+            lambda: {"data_dir": Path("/srv/raw"), "base_url": "https://x", "email": "e", "api_token": "t"},
+        )
+        monkeypatch.setattr(poll_sla, "configured_field_ids", lambda: ["customfield_1"])
+        monkeypatch.setattr(poll_sla, "find_open_issues", lambda _d: ["PROJ-1"])
+        monkeypatch.setattr(poll_sla, "update_issue_sla", lambda *a, **kw: "updated")
+        monkeypatch.setattr(poll_sla.time, "sleep", lambda _s: None)
+
+        def _boom():
+            raise RuntimeError("no queue here")
+
+        monkeypatch.setattr("src.repositories.jobs_repo", _boom)
+
+        stats = poll_sla.run()
+
+        assert stats["updated"] == 1
