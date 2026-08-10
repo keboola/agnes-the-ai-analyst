@@ -427,7 +427,8 @@ def _detail_template(base: str) -> str:
 #: never seen. /library is the rail's one browse surface and lists every
 #: one of these kinds, so that is where back goes; `?section=` opens the
 #: matching band (library.html folds them by default). Keys are the
-#: `type_key` vocabulary /library groups by (`_SECTION_LABELS`).
+#: `type_key` vocabulary /library groups by (`_SECTION_LABELS`), plus
+#: `semantics` — see below.
 _RAIL_DETAIL_BACK: dict[str, tuple[str, str]] = {
     "data_package": ("/library?section=data_package", "All data packages"),
     "memory_domain": ("/library?section=memory_domain", "All memory"),
@@ -436,6 +437,17 @@ _RAIL_DETAIL_BACK: dict[str, tuple[str, str]] = {
     "skill": ("/library?section=skill", "All skills"),
     "agent": ("/library?section=agent", "All agents"),
     "files": ("/library?section=files", "Library"),
+    # /catalog/semantics is not a `type_key`: the Definitions block is an
+    # adjacent destination BELOW the inventory, not one of the bands, so it
+    # has no `?section=` to open. It gets an anchor instead — without one the
+    # bare /library the fallback returns lands the reader at the top of the
+    # page, with the whole inventory between them and the block they clicked.
+    # `#lib-defs` exists exactly when that block rendered (library.html emits
+    # it under `if definitions_footer`, set only when the caller can see at
+    # least one metric or glossary term); when it did not, the anchor is inert
+    # and the browser stays at the top, which is what a bare /library did
+    # anyway.
+    "semantics": ("/library#lib-defs", "Library"),
 }
 
 
