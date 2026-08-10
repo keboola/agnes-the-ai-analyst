@@ -3970,6 +3970,7 @@ async def catalog_semantics(
     accessible_ids = get_accessible_tables(user, conn)
     allowed = None if accessible_ids is None else set(accessible_ids)
     metrics = [m for m in metric_repo().list() if _first_inaccessible_table(m, allowed) is None]
+
     def _variants(raw) -> dict:
         """``sql_variants`` as a mapping the template can iterate.
 
@@ -6238,6 +6239,7 @@ async def admin_semantic_layer_page(
     """
     from app.api.keboola_semantic_layer_refresh import get_last_refresh_summary
     from connectors.keboola.semantic_layer import _default_keboola_connection, _enumerate_master_sources
+    from src.repositories import source_connections_repo
 
     ctx = _build_context(request, user=user)
 
@@ -6283,6 +6285,19 @@ async def admin_semantic_layer_page(
         )
 
     known_ids = {s["connection_id"] for s in raw_sources}
+
+    # Every Keboola connection that exists but holds no master token. Without
+    # this the page could only say "no projects have a master token yet",
+    # which reads as "no project is connected" to an admin looking at a
+    # working Keboola connection — the state every wizard-connected instance
+    # starts in, since the master token is a SEPARATE slot from the storage
+    # token the wizard fills.
+    keboola_connections = source_connections_repo().list(source_type="keboola")
+    connections_without_master = [
+        {"id": c["id"], "name": c.get("name") or c["id"]} for c in keboola_connections if c["id"] not in known_ids
+    ]
+    connection_names = {c["id"]: (c.get("name") or c["id"]) for c in keboola_connections}
+
     all_refs = {
         m.get("source_ref") for m in metrics if m.get("source") == "keboola_semantic_layer" and m.get("source_ref")
     }
@@ -6292,8 +6307,18 @@ async def admin_semantic_layer_page(
     orphaned = []
     for ref in sorted(all_refs - known_ids):
         metric_count, glossary_count = _counts(ref)
+        # A ref that still names a live connection is not a mystery UUID — it
+        # is "this project lost its master token", which is both the common
+        # case and the one with an obvious next step. Only a ref with no
+        # connection left behind it stays an opaque id.
         orphaned.append(
-            {"source_ref": ref, "label": ref, "metric_count": metric_count, "glossary_count": glossary_count}
+            {
+                "source_ref": ref,
+                "label": connection_names.get(ref, ref),
+                "connection_exists": ref in connection_names,
+                "metric_count": metric_count,
+                "glossary_count": glossary_count,
+            }
         )
 
     # NULL-source_ref rows (legacy, pre-provenance) normally fold into the
@@ -6314,8 +6339,22 @@ async def admin_semantic_layer_page(
                 }
             )
 
+    # Datasets whose Keboola table isn't registered here, deduped across
+    # sources. Every metric hanging off one is dropped as
+    # `skipped_unresolved_table`, and until now that count went nowhere the
+    # admin could see: a sync reporting "9 glossary, 0 metrics" gave no hint
+    # that 50 metrics died on 12 unregistered tables.
+    unresolved_tables: list[str] = []
+    for entry in last_by_ref.values():
+        for tid in entry.get("unresolved_tables") or []:
+            if tid not in unresolved_tables:
+                unresolved_tables.append(tid)
+
     ctx["sources"] = sources
     ctx["orphaned"] = orphaned
+    ctx["connections_without_master"] = connections_without_master
+    ctx["unresolved_tables"] = sorted(unresolved_tables)
+    ctx["skipped_unresolved_total"] = sum(int(e.get("skipped_unresolved_table") or 0) for e in last_by_ref.values())
     ctx["default_connection_id"] = default_id
     ctx["semantic_refresh_summary"] = summary
     return templates.TemplateResponse(request, "admin_semantic_layer.html", ctx)

@@ -76,22 +76,50 @@ def test_run_refresh_maps_master_token_error_to_400(seeded_app):
     assert "master token" in r.json()["detail"]
 
 
-def test_run_refresh_maps_returned_error_status_to_502(seeded_app):
+def test_run_refresh_maps_returned_error_to_an_error_status(seeded_app):
     """sync_semantic_layer() reports config/upstream failures (missing
     credentials, Storage/Metastore API errors) by *returning*
     {"status": "error"} rather than raising — the endpoint must not treat
     that as a 200 success (previously: the admin UI showed a false "OK"
-    after a failed sync)."""
+    after a failed sync).
+
+    A result with no ``code`` keeps the historical 502 so an older/unknown
+    error shape never silently becomes a 4xx."""
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
-    fake_result = {"status": "error", "error": "Keboola credentials not configured"}
+    fake_result = {"status": "error", "error": "Keboola semantic layer sync failed"}
     with patch("app.api.keboola_semantic_layer_refresh.sync_semantic_layer", return_value=fake_result):
         r = c.post(
             "/api/admin/run-keboola-semantic-layer-refresh",
             headers={"Authorization": f"Bearer {token}"},
         )
     assert r.status_code == 502
-    assert r.json()["detail"] == "Keboola credentials not configured"
+    assert r.json()["detail"] == "Keboola semantic layer sync failed"
+
+
+@pytest.mark.parametrize(
+    "code,expected_status",
+    [
+        # The admin can fix these, so 502 Bad Gateway is a lie that reads as an
+        # Agnes outage — the misdiagnosis this mapping exists to prevent.
+        ("credentials_not_configured", 400),
+        ("upstream_client_error", 400),
+        # A genuine outage is still a gateway failure.
+        ("upstream_error", 502),
+        ("something_new", 502),
+    ],
+)
+def test_run_refresh_status_follows_the_error_code(seeded_app, code, expected_status):
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    fake_result = {"status": "error", "error": "nope", "code": code}
+    with patch("app.api.keboola_semantic_layer_refresh.sync_semantic_layer", return_value=fake_result):
+        r = c.post(
+            "/api/admin/run-keboola-semantic-layer-refresh",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert r.status_code == expected_status
+    assert r.json()["detail"] == "nope"
 
 
 def test_run_refresh_requires_admin(seeded_app):
@@ -183,13 +211,17 @@ class TestLastRefreshSummary:
 
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
-        fake_result = {"status": "error", "error": "Keboola credentials not configured"}
+        fake_result = {
+            "status": "error",
+            "error": "Keboola credentials not configured",
+            "code": "credentials_not_configured",
+        }
         with patch("app.api.keboola_semantic_layer_refresh.sync_semantic_layer", return_value=fake_result):
             r = c.post(
                 "/api/admin/run-keboola-semantic-layer-refresh",
                 headers={"Authorization": f"Bearer {token}"},
             )
-        assert r.status_code == 502
+        assert r.status_code == 400
 
         summary = get_last_refresh_summary()
         assert summary["last_status"] == "error"
