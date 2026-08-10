@@ -324,6 +324,16 @@ def test_home_renders_automode_block_by_default(fresh_db, monkeypatch):
     assert "data-cmd-template=" in body
     assert "{TOKEN}" in body
     assert "eyJ" not in body
+    # Step 1 is the bare official installer per OS — the self-healing
+    # one-liner (already-installed check + in-session PATH fix) is gone;
+    # `claude --version` lives in its own verify box instead.
+    assert "irm https://claude.ai/install.ps1 | iex" in body
+    assert "curl -fsSL https://claude.ai/install.sh | bash" in body
+    assert "install-cmd-claude-verify" in body
+    # Step 4 is guard-free: token write + launch only. No `command -v`
+    # gate, no "CLI not found" else-branch.
+    assert "command -v claude" not in body
+    assert "Claude Code CLI not found" not in body
 
 
 def test_home_hides_automode_launch_tail_when_env_off(fresh_db, monkeypatch):
