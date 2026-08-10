@@ -119,6 +119,7 @@ class MetricYamlMixin:
         }
 
         written: List[str] = []
+        unreadable: List[str] = []
         for file_path in files:
             # Infer category from parent directory name
             category_from_dir = file_path.parent.name
@@ -132,7 +133,11 @@ class MetricYamlMixin:
             elif isinstance(raw, dict):
                 metrics_data = [raw]
             else:
+                unreadable.append(str(file_path))
                 continue
+
+            if not any(isinstance(d, dict) and d.get("name") for d in metrics_data):
+                unreadable.append(str(file_path))
 
             for data in metrics_data:
                 if not isinstance(data, dict):
@@ -185,6 +190,18 @@ class MetricYamlMixin:
                     source="yaml_import",
                     source_ref=source_ref,
                 )
+
+        if prune and unreadable:
+            # The dangerous middle case. All-or-nothing shapes are caught below,
+            # but a half-written export has SOME files that parse — and the ones
+            # that do not look exactly like metrics the source dropped. Refusing
+            # keeps a truncated download from trimming the registry.
+            listed = ", ".join(sorted(unreadable)[:5])
+            raise ValueError(
+                f"refusing to prune: {len(unreadable)} file(s) could not be read as a metric "
+                f"({listed}). A half-written export is indistinguishable from one that dropped "
+                "those metrics, so fix or remove them first."
+            )
 
         if prune and not written:
             # Files existing is not the same as metrics parsing out of them: a
