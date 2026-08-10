@@ -231,6 +231,44 @@ class TestSemanticLayerPageSources:
         # while a connection exists.
         assert "No Keboola projects are connected yet" not in body
 
+    def test_tokenless_connections_stay_visible_once_another_project_has_a_token(self, seeded_app, vault_key):
+        """The mixed case: one project set up, another not.
+
+        Listing tokenless connections only in the empty state hid them the
+        moment ANY project got a master token — such a connection is not a
+        Sources row and is not orphaned either (unless it happens to own
+        previously-imported rows), so it appeared nowhere on the page. Same
+        silent state this page set out to remove, one level up. Devin Review
+        on #1242.
+        """
+        from src.repositories import source_connections_repo
+
+        _make_master_connection(
+            "conn-ready",
+            name="Configured Project",
+            stack_url="https://connection.keboola.com",
+            token="master-tok",
+            is_default=True,
+        )
+        source_connections_repo().create(
+            id="conn-tokenless",
+            name="Forgotten Project",
+            source_type="keboola",
+            config={"stack_url": "https://connection.keboola.com"},
+            is_default=False,
+            created_by="test",
+        )
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        body = c.get("/admin/semantic-layer", headers=_auth(token)).text
+
+        # The Sources table renders (a project IS configured) ...
+        assert "Configured Project" in body
+        assert "One row per Keboola project with a master token" in body
+        # ... and the one that will never sync is still named.
+        assert "Forgotten Project" in body
+
     def test_orphan_row_naming_a_live_connection_shows_its_name(self, seeded_app):
         """An orphaned ref that still matches a connection is not a mystery
         UUID — it is "this project lost its master token", and the page must
