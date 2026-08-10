@@ -307,7 +307,15 @@
     line-height: 1.5;
 }
 .sl-detail__desc { margin: 0 0 10px; overflow-x: auto; }
-.sl-detail__desc h2, .sl-detail__desc h3 {
+/* Every heading level, not just h2-h3. The html_source allowlist preserves
+   h1/h5/h6 because dropping them fused the sections they separated
+   ("Section ASection B") — but a preserved tag with no rule here falls back
+   to the browser default, so an imported <h1> rendered at ~2em inside a
+   compact metric row and out-shouted the page's own heading. h4 was in the
+   same position before this change. Structure is preserved; the row decides
+   how big it looks. */
+.sl-detail__desc h1, .sl-detail__desc h2, .sl-detail__desc h3,
+.sl-detail__desc h4, .sl-detail__desc h5, .sl-detail__desc h6 {
     font-size: 13px; font-weight: 600; color: var(--ds-text-primary); margin: 8px 0 4px;
 }
 .sl-detail__desc table { border-collapse: collapse; margin: 0 0 8px; }
