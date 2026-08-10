@@ -279,6 +279,44 @@ class TestCatalogSemanticsLinkFromCatalog:
         assert "/catalog/semantics" in resp.text
 
 
+class TestCatalogSemanticsWayOut:
+    """The page is link-only — reached from the Library's Definitions block,
+    the Catalog's Semantic layer card, a chat citation or global search — and
+    is a nav destination in neither chrome. Without a back link the browser's
+    Back button was the only way out, and under the rail no nav item lit up
+    either, so the chrome read as "nowhere"."""
+
+    def _body(self, seeded_app) -> str:
+        c = seeded_app["client"]
+        token = seeded_app["analyst_token"]
+        resp = c.get("/catalog/semantics", headers=_auth(token))
+        assert resp.status_code == 200
+        return resp.text
+
+    def test_topnav_back_link_returns_to_the_catalog(self, seeded_app):
+        # Topnav's own nav highlights Data Packages for any /catalog/* path,
+        # and the legacy Catalog page carries the card that links here.
+        body = self._body(seeded_app)
+        assert '<a class="sl-back" href="/catalog">' in body
+        assert "Data Packages" in body
+
+    def test_rail_back_link_returns_to_the_library(self, seeded_app, monkeypatch):
+        # `detail_back` has no rail key for this kind, so it falls through to
+        # /library — the rail's one browse surface, and the block the reader
+        # clicked to get here. /catalog is not in the rail nav at all.
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        body = self._body(seeded_app)
+        assert '<a class="sl-back" href="/library">' in body
+        assert '<a class="sl-back" href="/catalog">' not in body
+
+    def test_rail_highlights_library_while_on_this_page(self, seeded_app, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        body = self._body(seeded_app)
+        # The Library rail item carries `on` — the same active class the rail
+        # gives /library itself.
+        assert 'class="rail-i on" href="/library" id="nav-artefacts"' in body
+
+
 class TestCatalogSemanticsDetailRendering:
     """The expanded detail renders the full definition (description as
     sanitized markdown, a type/unit/grain meta line, and dimensions), and
@@ -415,3 +453,29 @@ class TestCatalogSemanticsSidebarLayout:
             ".sl-cat-nav must declare `display: block` so its category buttons "
             "stack vertically instead of inheriting the global `nav` flex-row layout"
         )
+
+
+def test_every_heading_the_allowlist_admits_is_styled_in_the_detail():
+    """A preserved tag with no rule falls back to the browser default.
+
+    The `html_source` allowlist keeps `h1`/`h5`/`h6` because dropping them
+    fused the sections they separated. But `.sl-detail__desc` styled only
+    `h2, h3`, so an imported `<h1>` rendered at ~2em with large margins inside
+    a compact metric row — and out-shouted the page's own `<h1>Semantic
+    layer</h1>` in the document outline. Preserving structure and sizing it
+    are two halves of the same change.
+    """
+    from pathlib import Path
+
+    import app.markdown_render as mr
+
+    tpl = Path("app/web/templates/catalog_semantics.html").read_text(encoding="utf-8")
+    admitted = {
+        t for t in (mr._ALLOWED_TAGS | mr._HTML_SOURCE_EXTRA_TAGS) if len(t) == 2 and t[0] == "h" and t[1].isdigit()
+    }
+    assert admitted, "expected the allowlists to admit heading tags"
+    missing = [h for h in sorted(admitted) if f".sl-detail__desc {h}" not in tpl]
+    assert not missing, (
+        f"headings admitted by the allowlist but unstyled in .sl-detail__desc: {missing} — "
+        "they will render at browser-default size inside a compact metric row"
+    )

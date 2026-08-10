@@ -18,6 +18,27 @@
 
 {% block head_extra %}
 <style>
+/* ── Back link ───────────────────────────────────────────────────────────
+   Mirrors `.detail-back` from macros/_detail.html — same chevron, size and
+   ink — but restated here because that CSS ships with the detail scaffold
+   and this is a listing page on the plain base_ds shell. `--ds-text-muted`
+   would be the intuitive choice for a secondary control and is what the
+   detail pages deliberately do NOT use: it measures 3.67:1 on this page's
+   background, under the 4.5:1 AA floor for 13px text. */
+.sl-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: var(--space-6) 0 0;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--ds-text-secondary);
+    text-decoration: none;
+}
+.sl-back:hover { color: var(--ds-text-primary); }
+.sl-back svg { width: 15px; height: 15px; }
+.sl-back + .sl-page-head { padding-top: var(--space-3); }
+
 /* ── Page header ─────────────────────────────────────────────────────── */
 .sl-page-head {
     display: flex;
@@ -307,7 +328,15 @@
     line-height: 1.5;
 }
 .sl-detail__desc { margin: 0 0 10px; overflow-x: auto; }
-.sl-detail__desc h2, .sl-detail__desc h3 {
+/* Every heading level, not just h2-h3. The html_source allowlist preserves
+   h1/h5/h6 because dropping them fused the sections they separated
+   ("Section ASection B") — but a preserved tag with no rule here falls back
+   to the browser default, so an imported <h1> rendered at ~2em inside a
+   compact metric row and out-shouted the page's own heading. h4 was in the
+   same position before this change. Structure is preserved; the row decides
+   how big it looks. */
+.sl-detail__desc h1, .sl-detail__desc h2, .sl-detail__desc h3,
+.sl-detail__desc h4, .sl-detail__desc h5, .sl-detail__desc h6 {
     font-size: 13px; font-weight: 600; color: var(--ds-text-primary); margin: 8px 0 4px;
 }
 .sl-detail__desc table { border-collapse: collapse; margin: 0 0 8px; }
@@ -407,6 +436,21 @@
 {% endblock %}
 
 {% block content %}
+{# ── Back link ───────────────────────────────────────────────────────────
+   This page is reached from a link (the Library's Definitions block, the
+   Catalog's Semantic layer card, a chat citation, global search) but is not
+   itself a nav destination in either chrome — so without this the only way
+   out was the browser's Back button. `detail_back` resolves it per layout:
+   topnav keeps /catalog (the entry it links from, and the nav item its own
+   /catalog/* path highlights); rail has no key for this kind and falls
+   through to /library, which is both the rail's one browse surface and the
+   block the reader clicked to get here. #}
+{% set _back = detail_back('semantics', '/catalog', 'Data Packages') %}
+<a class="sl-back" href="{{ _back.href }}">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M15 18l-6-6 6-6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  {{ _back.label }}
+</a>
+
 {# ── Page header ─────────────────────────────────────────────────────── #}
 <div class="sl-page-head">
   <div class="sl-page-head__left">

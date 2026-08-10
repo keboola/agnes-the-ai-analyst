@@ -77,6 +77,29 @@ _ALLOWED_ATTRIBUTES: dict[str, set[str]] = {
 
 _ALLOWED_URL_SCHEMES: set[str] = {"http", "https", "mailto"}
 
+# Structural block containers kept ONLY on the `html_source` path. An imported
+# description is free to lay its lines out with <div>, and stripping those with
+# no replacement fuses the text they separated ("sales.Excludes refunds") — the
+# same defect render_plain avoids by inserting boundaries before sanitization,
+# except here the fix has to preserve structure rather than a space. No entry is
+# added to _ALLOWED_ATTRIBUTES for them, so every attribute (including on*
+# handlers) is still stripped; these carry layout, never behaviour. Curator
+# markdown keeps the narrow set — it has <p> and never needs these.
+_HTML_SOURCE_EXTRA_TAGS: set[str] = {
+    "div", "section", "article",
+    "dl", "dt", "dd",
+    "figure", "figcaption",
+    # The headings the narrow allowlist omits. It keeps h2-h4 so a curator
+    # cannot outrank the page's own headings; an imported description is not
+    # authored against this page at all, and dropping its <h1> fused the
+    # sections it separated ("Section ASection B").
+    "h1", "h5", "h6",
+    # The headings the narrow allowlist omits. It keeps h2-h4 so a curator
+    # cannot outrank the page's own headings; an imported description is not
+    # authored against this page at all, and dropping its <h1> fused the
+    # sections it separated ("Section ASection B").
+}
+
 
 def render_safe(markdown: Optional[str], *, html_source: bool = False) -> str:
     """Render curator-authored markdown to sanitized HTML.
@@ -90,17 +113,19 @@ def render_safe(markdown: Optional[str], *, html_source: bool = False) -> str:
     markdown — a metric description imported verbatim from an external catalog
     sits in the same column as a hand-authored markdown one, and such catalogs
     routinely store rich HTML. Raw HTML then renders as markup instead of as
-    its own escaped characters; the nh3 allowlist is identical either way, so
-    this widens what is *displayed*, never what is *allowed*. Leave it off for
-    curator-authored content, where pasted HTML showing up as literal text is
-    the intended tell.
+    its own escaped characters, and the allowlist gains the structural block
+    containers in ``_HTML_SOURCE_EXTRA_TAGS`` so a <div>-laid-out description
+    keeps its line breaks. Attributes, URL schemes and `link_rel` are unchanged,
+    and no tag that can carry behaviour is added — so this widens what is
+    *displayed*, never what can *act*. Leave it off for curator-authored
+    content, where pasted HTML showing up as literal text is the intended tell.
     """
     if not markdown:
         return ""
     html = (_md_html_source if html_source else _md).render(markdown)
     return nh3.clean(
         html,
-        tags=_ALLOWED_TAGS,
+        tags=(_ALLOWED_TAGS | _HTML_SOURCE_EXTRA_TAGS) if html_source else _ALLOWED_TAGS,
         attributes=_ALLOWED_ATTRIBUTES,
         url_schemes=_ALLOWED_URL_SCHEMES,
         link_rel="noopener noreferrer",
@@ -108,14 +133,36 @@ def render_safe(markdown: Optional[str], *, html_source: bool = False) -> str:
     )
 
 
-# Closing tags of block-level elements (plus <br>) mark word boundaries when
-# flattening rendered HTML to plain text; without this, "<p>a</p><p>b</p>"
-# collapses to "ab". The list deliberately includes block elements the render
-# allowlist does NOT keep (div, section, …): an imported description is free to
-# separate its lines with <div>, and those tags must still leave a boundary
-# behind when they are stripped — see the ordering note in render_plain.
+# Block-level element tags (plus <br>) mark word boundaries when flattening
+# rendered HTML to plain text; without this, "<p>a</p><p>b</p>" collapses to
+# "ab". The list deliberately includes block elements the render allowlist does
+# NOT keep (div, section, …): an imported description is free to separate its
+# lines with <div>, and those tags must still leave a boundary behind when they
+# are stripped — see the ordering note in render_plain.
+#
+# OPENING tags count too, not just closing ones. Nested structure separates text
+# with an opening tag and no closing tag in between — "<figure>A<figcaption>B"
+# has nothing but `<figcaption>` between A and B — so a close-only pattern
+# fused them. Redundant spaces are free: render_plain collapses runs at the end.
+_BLOCK_TAGS = "p|li|h[1-6]|tr|t[dh]|blockquote|pre|div|section|article|figure|figcaption|dd|dt|dl"
+# The attribute run skips over quoted values, because `>` inside one does not
+# close the tag — `<div title="a>b">` is a single tag, and a `[^>]*>` run cut it
+# in half and left `b">` as visible text in the preview.
+#
+# Two properties keep it cheap on hostile input. The three alternatives are
+# mutually exclusive on their first character (a quote starts a quoted run,
+# anything else takes the bare branch), so there is no exponential backtracking.
+# And the bare branch excludes `<`, so an unterminated tag stops at the next
+# tag start instead of scanning to the end of the text — without that, N
+# unclosed tags each rescanned the remainder and the whole substitution went
+# quadratic (20 KB of `<div ` took 620 ms). A `<` inside a quoted value is
+# still consumed by the quoted branch, so well-formed tags are unaffected.
+# IGNORECASE because this runs on the RENDERED html, before nh3 — and nh3 is
+# what normalizes tag case. `<DIV>` reaches this pattern exactly as the upstream
+# catalog wrote it, and a lower-case-only pattern left those lines fused.
 _BLOCK_BOUNDARY_RE = re.compile(
-    r"</(?:p|li|h[1-6]|tr|t[dh]|blockquote|pre|div|section|article|figure|figcaption|dd|dt|dl)>|<br ?/?>"
+    rf"</?(?:{_BLOCK_TAGS})\b(?:\"[^\"]*\"|'[^']*'|[^'\"<>])*>|<br ?/?>",
+    re.IGNORECASE,
 )
 
 
