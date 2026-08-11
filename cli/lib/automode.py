@@ -133,10 +133,13 @@ def marketplace_trust_state(settings_path: Path, host: str) -> "TrustResult":
         return TrustResult.WRITTEN
     if not isinstance(environment, list):
         return TrustResult.NOT_WRITTEN
-    mine = [e for e in environment if isinstance(e, str) and host in e]
-    if not mine:
+    ours = [e for e in environment if isinstance(e, str) and _is_ours(e, host)]
+    if not ours:
+        # A user's own note naming the host is not a declaration. Counting it
+        # as one reported the trust as already granted and stopped the write,
+        # so the entries never landed. (Devin Review on #1262.)
         return TrustResult.WRITTEN
-    return TrustResult.REWRITTEN if any(_is_retired(e) for e in mine) else TrustResult.ALREADY_PRESENT
+    return TrustResult.REWRITTEN if any(_is_retired(e) for e in ours) else TrustResult.ALREADY_PRESENT
 
 
 def ensure_marketplace_trusted(settings_path: Path, host: str) -> TrustResult:
@@ -205,10 +208,9 @@ def ensure_marketplace_trusted(settings_path: Path, host: str) -> TrustResult:
         )
         return TrustResult.NOT_WRITTEN
 
-    mine = [i for i, e in enumerate(environment) if isinstance(e, str) and host in e]
-    ours = [i for i in mine if _is_ours(environment[i], host)]
-    retired = [i for i in mine if _is_retired(environment[i])]
-    if mine:
+    ours = [i for i, e in enumerate(environment) if isinstance(e, str) and _is_ours(e, host)]
+    retired = [i for i in ours if _is_retired(environment[i])]
+    if ours:
         # A machine that ran an older `agnes init` carries the RETIRED wording
         # — the sentence that told the reading agent installing from this host
         # "is a routine, sanctioned internal operation, not integration of
