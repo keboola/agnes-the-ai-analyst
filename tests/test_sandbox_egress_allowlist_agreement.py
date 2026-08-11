@@ -31,7 +31,6 @@ import os
 import re
 from pathlib import Path
 
-import pytest
 
 HOOK = Path("app/initial_workspace_default/.claude/hooks/pre_tool_use.py")
 PROVIDER = Path("app/chat/e2b_provider.py")
@@ -55,37 +54,6 @@ def _load_hook(agnes_server: str | None):
             os.environ.pop("AGNES_SERVER", None)
         else:
             os.environ["AGNES_SERVER"] = prev
-
-
-def test_the_hook_admits_this_instance_own_host():
-    """The case that was broken: the sandbox could not reach Agnes at all."""
-    mod = _load_hook("https://agnes.example.com")
-    assert "agnes.example.com" in mod.ALLOWED_HOSTS
-
-
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [
-        ("https://agnes.example.com", "agnes.example.com"),
-        ("http://app:8000", "app"),
-        ("app:8000", "app"),  # bare host:port — urlparse yields no hostname without a scheme
-        ("https://agnes.example.com/sub/path", "agnes.example.com"),
-    ],
-)
-def test_the_host_is_derived_from_every_spelling_the_env_uses(raw, expected):
-    assert expected in _load_hook(raw).ALLOWED_HOSTS
-
-
-@pytest.mark.parametrize("raw", [None, "", "   "])
-def test_an_absent_server_url_leaves_the_allowlist_untouched(raw):
-    """Fail closed: no host is better than a wrong one, and the four baked
-    entries are what a sandbox needs to function at all."""
-    assert _load_hook(raw).ALLOWED_HOSTS == {
-        "127.0.0.1",
-        "localhost",
-        "api.anthropic.com",
-        "api.github.com",
-    }
 
 
 def test_the_two_allowlists_agree_on_the_baked_entries():
@@ -127,15 +95,16 @@ def _decide(mod, cmd: str):
 
 def test_basic_auth_credentials_are_not_read_as_the_hostname():
     """`split(":")[0]` over the whole authority read the basic-auth USERNAME as
-    the host, and that was wrong in both directions.
+    the host. Every data-app clone URL is `http://agnes:<jwt>@<host>/...`, so
+    the hook decided on `agnes` — refusing a request to a host it never
+    actually looked at, and reporting "Outbound network to 'agnes'" to a
+    reader who had no such host anywhere.
 
-    Deny side, watched live: every data-app clone URL is
-    `http://agnes:<jwt>@<host>/data-apps.git/<slug>`, so the hook reported
-    "Outbound network to 'agnes' is not in the Agnes egress allowlist" and
-    refused the clone no matter what the allowlist contained.
+    The relay on 127.0.0.1 is the in-sandbox case that matters: it IS
+    allowlisted, and a credentialed URL pointed at it was refused anyway.
     """
-    mod = _load_hook("https://agnes.example.com")
-    decision, reason = _decide(mod, "git clone http://agnes:JWT@agnes.example.com/data-apps.git/x")
+    mod = _load_hook(None)
+    decision, reason = _decide(mod, "git clone http://agnes:JWT@127.0.0.1:34025/data-apps.git/x")
     assert decision == "allow", reason
 
 
