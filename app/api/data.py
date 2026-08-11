@@ -183,6 +183,7 @@ async def check_access(
             logger.exception("audit_log write failed for data.access_check (invalid id); continuing")
         raise HTTPException(status_code=404, detail="Table not found")
     granted = can_access_table(user, table_id, conn)
+    check_unavailable = False
     # Authorized — but is this table distributed at all? On Caddy this probe is
     # the ONLY hook before file_server streams the parquet, so the check has to
     # live here and not only in the download handler below. Decided BEFORE the
@@ -201,6 +202,7 @@ async def check_access(
         # nothing. Say what happened and let them retry. (Devin Review on
         # #1265.)
         logger.exception("data.access_check: distribution check failed for %s", table_id)
+        check_unavailable = True
         refusal = HTTPException(
             status_code=503,
             detail={
@@ -213,14 +215,21 @@ async def check_access(
         "duration_ms": int((time.monotonic() - t0) * 1000),
     }
     if refusal is not None:
-        params["refused"] = "not_distributed"
+        # A registry the server could not read is not a refused table, and an
+        # operator reading this trail has to be able to tell a temporary
+        # outage from a deliberate denial. (Devin Review on #1265.)
+        params["refused"] = "check_unavailable" if check_unavailable else "not_distributed"
     try:
         audit_repo().log(
             user_id=identity_for_audit(user)[0],
             action="data.access_check",
             resource=resource,
             params=params,
-            result="success" if granted and refusal is None else "error.403",
+            result=(
+                "success"
+                if granted and refusal is None
+                else ("error.503" if check_unavailable else "error.403")
+            ),
             client_kind=client_kind_from_user(user),
         )
     except Exception:
