@@ -80,3 +80,53 @@ def test_the_guard_reads_real_docstrings():
     for source in (HTTP_TOOLS, STDIO_TOOLS):
         for tool in SEARCH_TOOLS:
             assert len(_docstring(source.read_text(encoding="utf-8"), tool)) > 200
+
+
+# ---------------------------------------------------------------------------
+# Devin Review on this PR: the guards above read the WHOLE docstring, but only
+# its first paragraph reaches the model.
+# ---------------------------------------------------------------------------
+
+
+def _wire_description(source: str, func: str) -> str:
+    """What `progressive_tool` actually puts on the wire for this tool.
+
+    Both servers register through `src.mcp_tooling.progressive_tool`, which
+    sends only the first docstring paragraph as the tool description and
+    stashes the rest behind an on-demand `tool_docs('<name>')` call. Caveats
+    living further down are therefore invisible to a model reading the tool
+    list — the docstring guards above passed while the preventive half of this
+    change set did nothing.
+    """
+    from src.mcp_tooling import summarize_docstring
+
+    summary, _has_more = summarize_docstring(_docstring(source, func))
+    return summary
+
+
+@pytest.mark.parametrize("tool", SEARCH_TOOLS)
+@pytest.mark.parametrize(("label", "pattern"), CAVEATS, ids=[c[0] for c in CAVEATS])
+def test_the_caveat_survives_into_the_wire_description(tool, label, pattern):
+    for source, which in ((HTTP_TOOLS, "HTTP"), (STDIO_TOOLS, "stdio")):
+        wire = _wire_description(source.read_text(encoding="utf-8"), tool)
+        assert re.search(pattern, wire, re.I), (
+            f"{tool} ({which}) mentions {label} only below the first paragraph, "
+            f"so a model reading the tool list never sees it"
+        )
+
+
+@pytest.mark.parametrize("tool", SEARCH_TOOLS)
+def test_the_wire_description_points_at_the_hint(tool):
+    """The runtime half only helps if the model is told to read it."""
+    for source, which in ((HTTP_TOOLS, "HTTP"), (STDIO_TOOLS, "stdio")):
+        wire = _wire_description(source.read_text(encoding="utf-8"), tool).lower()
+        assert "hint" in wire, f"{tool} ({which}) never tells the model to read the hint"
+
+
+def test_the_wire_extractor_is_not_silently_returning_everything():
+    """A summarizer that returned the full docstring would pass every test
+    above while proving nothing."""
+    for source in (HTTP_TOOLS, STDIO_TOOLS):
+        for tool in SEARCH_TOOLS:
+            src = source.read_text(encoding="utf-8")
+            assert len(_wire_description(src, tool)) < len(_docstring(src, tool))

@@ -158,3 +158,70 @@ class TestCombinedKnowledgeSearchCarriesTheSameHint:
         assert body["results"], "fixture did not produce a hit; the test proves nothing"
         assert "hint" not in body
         assert "searched_collections" not in body
+
+
+class TestABlankCollectionFilterIsNotAFilter:
+    """Devin Review on this PR: `?corpus_id=` produced the wrong sentence.
+
+    `search_collections` narrowed on `corpus_id is not None`, and an empty
+    string passes that — which is what an HTML form and most clients send for
+    an unset optional. The allowed list narrowed to nothing (no collection has
+    the empty id), and the hint's `searched == 0` branch then told a caller
+    with plenty of access that no collections were shared with them: the exact
+    wrong conclusion this change set exists to prevent, produced by its own
+    fix.
+    """
+
+    def test_blank_corpus_id_searches_everything_the_caller_can_see(self, seeded_app):
+        tok = seeded_app["admin_token"]
+        _make_collection_with_file(seeded_app, tok, "Blank filter", "alpha bravo charlie")
+
+        body = _search(seeded_app, tok, "nosuchwordanywhere", corpus_id="")
+
+        assert body["searched_collections"] >= 1, "a blank filter narrowed the search to nothing"
+        assert "no collections are shared with you" not in body.get("hint", "").lower()
+        assert "DO have access" in body["hint"]
+
+    def test_a_real_corpus_id_still_narrows(self, seeded_app):
+        """The filter must keep working — this is not "ignore corpus_id"."""
+        tok = seeded_app["admin_token"]
+        col = _make_collection_with_file(seeded_app, tok, "Narrowed", "alpha bravo charlie")
+        _make_collection_with_file(seeded_app, tok, "Other", "delta echo")
+
+        body = _search(seeded_app, tok, "nosuchwordanywhere", corpus_id=col["id"])
+        assert body["searched_collections"] == 1
+
+
+class TestTheCombinedHintCountsEverySearchedLeg:
+    """Devin Review on this PR (second round), on the hint added in the first.
+
+    `_empty_combined_hint` judged "nothing was searched" from documents,
+    tables and metrics only. Two things were wrong with that: a caller can
+    hold memory-domain grants and none of those three, and the **glossary**
+    has no RBAC at all — `unified_search` fetches it for every authenticated
+    caller — so something always ran and the claim was never literally true.
+    """
+
+    def test_the_admin_fan_out_is_never_reported_as_no_access(self, seeded_app):
+        tok = seeded_app["admin_token"]
+        r = seeded_app["client"].get(
+            "/api/knowledge/search", params={"q": "nosuchwordanywhere"}, headers=_auth(tok)
+        )
+        assert r.status_code == 200, r.text
+        hint = r.json().get("hint", "")
+        assert "ask an admin for a grant" not in hint, "an admin was told to ask themselves for access"
+        assert "DO have access" in hint
+
+    def test_the_no_access_branch_admits_the_glossary_ran(self):
+        """Otherwise the sentence claims a search that did happen did not."""
+        from app.api.knowledge_search import _empty_combined_hint
+
+        hint = _empty_combined_hint(0, 0, 0, False)
+        assert "glossary" in hint.lower()
+        assert "nothing was searched" not in hint.lower()
+
+    def test_knowledge_grants_alone_are_enough_to_be_a_wording_miss(self):
+        from app.api.knowledge_search import _empty_combined_hint
+
+        hint = _empty_combined_hint(0, 0, 0, True)
+        assert "DO have access" in hint, "a caller with only knowledge grants was sent to an admin"
