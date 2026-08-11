@@ -351,18 +351,24 @@ def apply_filename_fallback(
         return top, confidence, set()
     if prepare is not None:
         prepare()
-    # A passage that CONTAINS the searched words is a body hit, even when its
-    # file is also named after them: relabelling it would misdescribe it and
-    # move it out of the order its own score earned. Keyed on the text, not on
-    # presence in `top` — with semantic scoring every chunk is in `top`, and
-    # excluding those would disable the name pass exactly where the previous
-    # round fixed it. (Devin Review on #1267.)
-    name_hits = [
-        pair
-        for pair in _rank_by_filename(chunks, query, filename_of, k=k)
-        if _cover(pair[1].get("text", "")) == 0.0
-        and _cover(filename_of(pair[1].get("file_id")) or "") > best_body_cover
-    ]
+    # The label goes to whichever explained more of the question. A passage
+    # that carries the searched words stays a body hit — relabelling it would
+    # misdescribe it and move it out of the order its own score earned — but
+    # only while its text accounts for at least as much as its file's NAME
+    # does. A chunk that happens to contain one word of a two-word question,
+    # inside the file named after both, is a name hit; treating any textual
+    # overlap as disqualifying let the named file lose to whichever chunk id
+    # sorted first. Keyed on the text rather than on presence in `top`,
+    # because with semantic scoring every chunk is in `top`.
+    # (Devin Review on #1267, three rounds on this trigger.)
+    name_hits = []
+    for pair in _rank_by_filename(chunks, query, filename_of, k=k):
+        name_cover = _cover(filename_of(pair[1].get("file_id")) or "")
+        if name_cover <= best_body_cover:
+            continue
+        if _cover(pair[1].get("text", "")) >= name_cover:
+            continue
+        name_hits.append(pair)
     if not name_hits:
         return top, confidence, set()
 
