@@ -2761,12 +2761,26 @@ def create_app() -> FastAPI:
         endpoint someone adds, and at least five request models already carry a
         credential in a plain ``value`` / ``token`` field
         (``admin_source_connections``, ``admin_datasource_secrets``,
-        ``admin_slack_secrets``, ``admin_mcp``, ``cli_auth``). Dropping
-        ``input`` outright cannot miss one. ``loc``, ``msg`` and ``type``
-        survive, which is what a client needs to fix the call — the wrong field
-        name in that live case is still named.
+        ``admin_slack_secrets``, ``admin_mcp``, ``cli_auth``).
+
+        So the shape is a keep-list, not a drop-list: only ``loc``, ``msg``,
+        ``type`` and ``url`` are echoed. Dropping ``input`` alone was still a
+        guess — a Pydantic v2 error also carries ``ctx``, and for a
+        ``value_error`` raised by a field validator that mapping holds the
+        validator's own exception, whose text routinely embeds the rejected
+        value (``got {v!r}`` appears in ~37 validators here). A keep-list also
+        covers whatever key a future Pydantic adds. What survives is what a
+        client needs to fix the call — the wrong field name in that live case
+        is still named. (Devin Review on this PR.)
+
+        The one channel a keep-list cannot close is ``msg`` itself, which is
+        author-controlled: a validator that interpolates the value it rejected
+        publishes it. That is a rule for validators on credential-carrying
+        fields, not something this handler can decide — it cannot tell a
+        rejected enum from a rejected token.
         """
-        redacted = [{k: v for k, v in error.items() if k != "input"} for error in exc.errors()]
+        keep = ("loc", "msg", "type", "url")
+        redacted = [{k: error[k] for k in keep if k in error} for error in exc.errors()]
         return JSONResponse(status_code=422, content=jsonable_encoder({"detail": redacted}))
 
     @app.exception_handler(StarletteHTTPException)

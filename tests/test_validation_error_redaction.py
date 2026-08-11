@@ -59,3 +59,32 @@ def test_validation_error_still_names_the_offending_field(seeded_app):
     detail = resp.json()["detail"]
     assert any("value" in (e.get("loc") or []) for e in detail), detail
     assert all("input" not in e for e in detail), detail
+
+
+def test_a_custom_validator_error_carries_no_ctx_back(seeded_app):
+    """Devin Review: dropping `input` alone was still a guess.
+
+    A Pydantic v2 error for a `value_error` also carries `ctx`, holding the
+    validator's own exception — and ~37 validators in this app format the
+    rejected value into their message (`got {v!r}`). One of those on a
+    credential field would round-trip the secret through a key the drop-list
+    never named. The echo is a keep-list now, so only `loc`/`msg`/`type`/`url`
+    survive, whatever Pydantic adds next.
+    """
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+
+    resp = c.post(
+        "/api/admin/mcp-sources",
+        headers=_auth(token),
+        json={"name": "ctx-probe", "transport": SECRET, "url": "https://example.com/mcp"},
+    )
+
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"]
+    assert detail, resp.text
+    value_errors = [e for e in detail if e.get("type") == "value_error"]
+    assert value_errors, f"expected a custom-validator error to exercise ctx: {detail}"
+    for e in detail:
+        assert set(e) <= {"loc", "msg", "type", "url"}, e
+    assert SECRET not in resp.text
