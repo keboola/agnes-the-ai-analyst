@@ -50,6 +50,7 @@ import typer
 from cli.client import api_get
 from cli.config import _config_dir, save_config, save_token
 from cli.error_render import render_error
+from cli.server_moved import is_redirect, redirect_body
 from cli.lib.automode import ensure_marketplace_trusted
 from cli.lib.commands import install_claude_commands
 from cli.lib.hooks import install_claude_hooks
@@ -381,6 +382,17 @@ def init(
                 json={"setup_token": setup_token_raw},
                 timeout=30,
             )
+            # A moved server answers 3xx here too, and `raise_for_status()`
+            # does not treat that as an error — the flow fell through to
+            # `.json()` on an empty body and reported a JSON decode failure
+            # for a server that had simply changed address. Same diagnosis as
+            # both HTTP clients use. (Devin Review on #1266.)
+            if is_redirect(exchange_resp.status_code):
+                typer.echo(
+                    render_error(exchange_resp.status_code, redirect_body(exchange_resp, server_url)),
+                    err=True,
+                )
+                raise typer.Exit(1)
             if exchange_resp.status_code == 401:
                 typer.echo(
                     render_error(
