@@ -385,7 +385,8 @@ async def update_connection(
     _reject_disallowed_token_env(body.token_env)
     config = body.config
     if config is not None:
-        old_stack = ((existing_row.get("config") or {}).get("stack_url") or "").rstrip("/")
+        old_config = existing_row.get("config") or {}
+        old_stack = (old_config.get("stack_url") or "").rstrip("/")
         new_stack = (config.get("stack_url") or "").rstrip("/")
         if old_stack and new_stack and old_stack != new_stack:
             config = {k: v for k, v in config.items() if k not in ("project_id", "project_name")}
@@ -393,6 +394,23 @@ async def update_connection(
                 "connection %s moved to a different stack; clearing its recorded project identity",
                 connection_id,
             )
+        else:
+            # `config` REPLACES the stored dict, and the admin form posts only
+            # the fields it renders — `project_id`/`project_name` are not among
+            # them, because they are recorded by the connection itself rather
+            # than typed. So every ordinary edit (a rename, a token_env change,
+            # re-saving the same form) silently dropped the binding, and the
+            # next token from any project was accepted again: the safeguard
+            # this change set exists to add, removed by using the UI. Carried
+            # forward unless the caller explicitly supplies the key — an
+            # explicit `null` still clears it, which is how a mis-recorded
+            # binding is reset without moving the stack. The branch above stays
+            # the one deliberate clear: a project id means nothing on a
+            # different stack. (Devin Review on this PR.)
+            config = {
+                **{k: v for k, v in old_config.items() if k in ("project_id", "project_name")},
+                **config,
+            }
     repo.update(
         connection_id,
         name=body.name,
