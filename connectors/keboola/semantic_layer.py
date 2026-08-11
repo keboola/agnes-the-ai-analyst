@@ -1480,13 +1480,22 @@ def _project_identity(url: str, token: str) -> Optional[dict]:
     if not (url and token):
         return None
     try:
-        owner = KeboolaStorageClient(url=url, token=token).verify_token().get("owner") or {}
+        info = KeboolaStorageClient(url=url, token=token).verify_token()
+        owner = info.get("owner") or {}
     except (StorageApiError, requests.RequestException) as e:
         logger.warning("Project identity lookup failed for %s: %s", url, e)
         return None
     if owner.get("id") is None:
         return None
-    return {"id": owner.get("id"), "name": owner.get("name") or ""}
+    # `is_master` rides along because the call that establishes identity is the
+    # same call `check_master_token` reads — the sync aborts on a downgraded
+    # token, and coverage would otherwise report happily for a project whose
+    # sync cannot run. One round-trip, two answers. (Devin Review.)
+    return {
+        "id": owner.get("id"),
+        "name": owner.get("name") or "",
+        "is_master": bool(info.get("isMasterToken")),
+    }
 
 
 def compute_semantic_coverage() -> dict:
@@ -1575,6 +1584,23 @@ def compute_semantic_coverage() -> dict:
         # missed that entirely — the report gave a clean bill of health to a
         # connection whose sync cannot start, which is the single most
         # misleading thing this page can say.
+        # The sync's own preflight, applied to the same payload: a master
+        # token that has been downgraded makes `_sync_one_source` abort with
+        # `MasterTokenRequiredError`, and the Metastore rejects it with an
+        # opaque "Failed to create project scope" — so a report that skips
+        # this check describes a sync that never runs. (Devin Review.)
+        if entry["project"] and entry["project"].get("is_master") is False:
+            entry["warnings"].append(
+                {
+                    "code": "master_token_downgraded",
+                    "message": (
+                        "The stored owner token is no longer a master token, so the sync aborts "
+                        "before it reads anything. Store the project's owner token again on the "
+                        "Data sources page."
+                    ),
+                }
+            )
+
         bound_id = (conn.get("config") or {}).get("project_id")
         if bound_id is not None and entry["project"] and str(entry["project"]["id"]) != str(bound_id):
             entry["token_project_mismatch"] = True
