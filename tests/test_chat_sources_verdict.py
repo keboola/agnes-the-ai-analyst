@@ -180,3 +180,44 @@ class TestTheManagerFeedsTheVerdictRealToolCalls:
         src = self.SOURCE.read_text(encoding="utf-8")
         assert 'tool_calls=frame.get("tool_calls")' in src
         assert src.index('frame["tool_calls"] =') < src.index('tool_calls=frame.get("tool_calls")')
+
+
+class TestPushSinksDoNotShowTheRawFence:
+    """Devin Review on this PR: only the web client stripped it.
+
+    The web draws chips from the server's verdict and removes the fence
+    (`stripSourcesFence`). A push sink has neither, so where an answer used
+    to end in a readable `Sources:` line it would now end in a code block of
+    machinery — on every answer, for every Slack and Telegram user.
+    """
+
+    def test_strip_block_removes_the_fence_and_keeps_the_prose(self):
+        from app.chat.sources import strip_block
+
+        content = "Revenue was 4.2M.\n\n```sources\ntable: orders\n```"
+        assert strip_block(content) == "Revenue was 4.2M."
+
+    def test_strip_block_is_a_no_op_without_a_fence(self):
+        from app.chat.sources import strip_block
+
+        assert strip_block("just prose") == "just prose"
+        assert strip_block("") == ""
+
+    def test_the_verdict_still_parses_out_of_the_unstripped_content(self):
+        """The strip must NOT reach persistence — the verdict is derived from
+        the saved content on every reload, so a stripped save loses the chips."""
+        from app.chat.sources import verdict
+
+        content = "Revenue was 4.2M.\n\n```sources\ntable: orders\n```"
+        assert verdict(content, [{"tool": "query", "args": {"sql": "select * from orders"}}]).declared
+
+    def test_the_slack_sink_strips_on_both_of_its_post_paths(self):
+        import pathlib
+
+        src = (pathlib.Path(__file__).resolve().parents[1] / "services" / "slack_bot" / "sink.py").read_text(
+            encoding="utf-8"
+        )
+        assert src.count('strip_block(data.get("content", ""))') == 2, (
+            "both the streaming reply and the ephemeral responder post content"
+        )
+        assert 'content = data.get("content", "")' not in src, "a post path still sends the raw fence"
