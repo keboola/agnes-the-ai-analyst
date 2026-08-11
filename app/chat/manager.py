@@ -26,6 +26,7 @@ from app.chat.persistence import ChatRepository
 from app.chat.profiles import get_profile
 from app.chat.provider import SandboxHandle, SandboxProvider
 from app.chat.replay import append_frame
+from app.chat.sources import verdict as sources_verdict
 from app.chat.types import RELAY_PROTOCOL_VERSION, ChatSession, SessionState, Surface
 from app.chat.workdir import WorkdirManager
 from app.coordination.base import CoordinationUnavailable
@@ -2078,6 +2079,41 @@ class ChatManager:
                 # bridge posts its "approve this on the web" nudge only when
                 # nobody is.
                 frame["attended"] = _approval_attended(live)
+            if frame.get("type") == "assistant_message":
+                # Stamp provenance BEFORE the fan-out, so the live turn and a
+                # later reload of the same thread agree — `GET
+                # /sessions/{id}/messages` recomputes the identical verdict
+                # from the identical pair. Both derive it rather than store it
+                # (see app/chat/sources.py); this is the only place the pair
+                # exists before it reaches a sink.
+                #
+                # The calls come from the turn buffer, NOT from the frame: the
+                # runner emits each tool call as its own `tool_call` frame and
+                # its final `assistant_message` carries only content/tokens/
+                # model, so `frame.get("tool_calls")` was always None and every
+                # declared source was judged unsupported — an amber UNVERIFIED
+                # badge on correct answers, which teaches readers to ignore the
+                # badge. The buffer is the right source: it holds this turn's
+                # frames and is cleared right after this message is persisted,
+                # so it is exactly the set of calls that produced this answer.
+                # Persisting the same list is what makes the reload path agree
+                # — it recomputes from `m.tool_calls`, which was being stored
+                # as None for the same reason. (Devin Review on this PR.)
+                #
+                # Trimmed to `{tool, args}` rather than stored as whole
+                # frames: the rest of a frame is transport envelope
+                # (`type`, `frame_seq`, ids) that no reader wants, and this
+                # list is persisted on the message row, so the envelope
+                # would be dead weight on every assistant message forever.
+                # It is also the shape `chat.js::formatToolCall` already
+                # expects, and the shape `verify()` serialises into its
+                # haystack.
+                frame["tool_calls"] = [
+                    {"tool": f.get("tool"), "args": f.get("args") or {}}
+                    for f in live.turn_buffer
+                    if f.get("type") == "tool_call" and isinstance(f.get("tool"), str)
+                ] or None
+                frame["sources"] = sources_verdict(frame.get("content", "") or "", frame.get("tool_calls")).to_dict()
             await self._broadcast(live, frame)
             ftype = frame.get("type")
             # Accumulate in-flight turn frames for mid-turn replay and partial

@@ -120,6 +120,7 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     # Hosted data apps (data-apps platform plan, Task 11) — triple-surface
     # with /api/data-apps* + `agnes app list/show/deploy/logs`.
     "data_apps_list",
+    "data_app_create",
     "data_app_get",
     "data_app_deploy",
     "data_app_logs",
@@ -170,6 +171,7 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
 # name below, and that this tuple stays a subset of FOUNDATION_TOOL_NAMES.
 DATA_APP_TOOL_NAMES: tuple[str, ...] = (
     "data_apps_list",
+    "data_app_create",
     "data_app_get",
     "data_app_deploy",
     "data_app_logs",
@@ -1377,7 +1379,21 @@ def register_foundation_tools(
         register_as_table: bool = False,
         table_name: str = "",
     ) -> dict:
-        """Upload a local file into your chat workspace (client-side only).
+        """Pull a file from the USER'S machine into their chat workspace (client-side only).
+
+        **Direction: user's laptop → workspace. This is not a way to hand a
+        file to the user.** If you are an agent inside a chat sandbox holding
+        a chart, a report or any other output, this tool cannot deliver it —
+        the sandbox filesystem is not the user's computer, and neither is any
+        path you can name here. Return the result IN your reply instead:
+        inline `<svg>` for a chart, a ```mermaid fence for a diagram, a
+        markdown table for figures. Naming a path is never delivery.
+
+        Observed on a live instance: an agent that had written a chart to
+        `/tmp` called this tool to "send" it, got `No Agnes token configured`
+        from the local stdio server, and went on hunting for a channel that
+        does not exist — several tool calls spent before it gave up and told
+        the user to open a path on a machine they were not using.
 
         Uploading a file by naming a path is inherently a CLIENT-SIDE action:
         the path is resolved on the machine that runs the MCP server.  This
@@ -1724,6 +1740,39 @@ def register_foundation_tools(
                 f"{base_url}/api/data-apps/{slug}/deploy",
                 json=payload,
                 headers=headers_fn(),
+                timeout=60,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @tool()
+    async def data_app_create(slug: str, name: str, description: str = "") -> dict:
+        """Create a new hosted data app (the registry row plus its git repo).
+
+        This is the FIRST step of building an app from chat, and it was the
+        missing one: `data_app_create_draft` needs an app to draft FROM, so an
+        agent that started there got `404 data_app_not_found` and had no way
+        forward — REST and the CLI both had a create, this surface did not.
+
+        The app is created empty. Seed it before deploying: clone the repo with
+        `data_app_git_credential`, copy the baked scaffold from
+        `/work/scaffolds/nodejs-dashboard/`, push to `main`, then
+        `data_app_deploy`. Deploying an empty repo fails with
+        `deploy_empty_repo`.
+
+        Args:
+            slug:        URL-safe id, unique per instance (`[a-z0-9-]`).
+            name:        Human-readable title shown in the UI.
+            description: Optional one-line summary.
+
+        Returns ``{"id", "slug", "git_url"}``. Mirrors ``POST /api/data-apps``
+        and ``agnes app create``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.post(
+                f"{base_url}/api/data-apps",
+                headers=headers_fn(),
+                json={"slug": slug, "name": name, "description": description},
                 timeout=60,
             )
             r.raise_for_status()

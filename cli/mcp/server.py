@@ -431,7 +431,15 @@ def chat_upload_file(
     register_as_table: bool = False,
     table_name: str = "",
 ) -> dict:
-    """Upload a local file into your chat workspace (POST /api/chat/uploads).
+    """Push a file from THIS machine into your chat workspace (POST /api/chat/uploads).
+
+    **Direction: this machine → workspace. Not a way to hand a file to the
+    user.** An agent inside a chat sandbox that has produced a chart or a
+    report cannot deliver it with this tool — the path it would name is the
+    sandbox's, not the reader's, and this server is not running there anyway
+    (it fails with "No Agnes token configured"). Put the result in the reply:
+    inline ``<svg>`` for a chart, a ```mermaid fence for a diagram, a markdown
+    table for figures.
 
     The file at ``file_path`` (local filesystem path) is read and posted to
     the Agnes server, landing in your per-user workspace ``uploads/`` folder
@@ -654,6 +662,34 @@ def data_app_deploy(slug: str, sha: str = "", mode: Literal["", "dev"] = "") -> 
         return api_post_json(f"/api/data-apps/{slug}/deploy", payload)
     except V2ClientError as exc:
         raise ValueError(_mcp_error(f"data_app_deploy({slug})", exc)) from exc
+
+
+@tool()
+def data_app_create(slug: str, name: str, description: str = "") -> dict:
+    """Create a new hosted data app (the registry row plus its git repo).
+
+    The FIRST step of building an app, and the one this surface was missing:
+    ``data_app_create_draft`` needs an app to draft FROM, so an agent starting
+    there got ``404 data_app_not_found`` with no way forward.
+
+    The app is created empty. Seed it before deploying: clone with
+    ``data_app_git_credential``, copy the baked scaffold from
+    ``/work/scaffolds/nodejs-dashboard/``, push to ``main``, then
+    ``data_app_deploy``. Deploying an empty repo fails with
+    ``deploy_empty_repo``.
+
+    Args:
+        slug:        URL-safe id, unique per instance (``[a-z0-9-]``).
+        name:        Human-readable title shown in the UI.
+        description: Optional one-line summary.
+
+    Returns ``{"id", "slug", "git_url"}``. Mirrors ``POST /api/data-apps`` and
+    ``agnes app create``.
+    """
+    try:
+        return api_post_json("/api/data-apps", {"slug": slug, "name": name, "description": description})
+    except V2ClientError as exc:
+        raise ValueError(_mcp_error(f"data_app_create({slug})", exc)) from exc
 
 
 @tool()
