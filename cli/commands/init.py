@@ -226,7 +226,18 @@ def _stdin_is_interactive() -> bool:
         return False
 
 
-def _maybe_declare_marketplace_trust(host: str, decision: Optional[bool]) -> None:
+def _trust_optin_command(server_url: str = "") -> str:
+    """The re-run command, complete enough to paste.
+
+    `agnes init` requires `--server-url` (or a bundle), so printing the flags
+    alone handed the reader a command that fails the moment they run it.
+    (Devin Review on #1262.)
+    """
+    base = "agnes init --force --trust-marketplace-host"
+    return f"{base} --server-url {server_url}" if server_url else base
+
+
+def _maybe_declare_marketplace_trust(host: str, decision: Optional[bool], server_url: str = "") -> None:
     """Declare *host* in the user-scope ``autoMode.environment`` — if asked to.
 
     This is the one thing ``agnes init`` does outside the workspace it was
@@ -287,7 +298,7 @@ def _maybe_declare_marketplace_trust(host: str, decision: Optional[bool]) -> Non
                 "which applies to every project on this machine, so it is not done unattended. "
                 "Claude Code's auto mode may ask before `agnes refresh-marketplace --bootstrap` "
                 "installs plugins — approve it there, or re-run with "
-                "`agnes init --force --trust-marketplace-host` to declare it once."
+                f"`{_trust_optin_command(server_url)}` to declare it once."
             )
             return
         typer.echo("")
@@ -318,7 +329,7 @@ def _maybe_declare_marketplace_trust(host: str, decision: Optional[bool]) -> Non
         typer.echo(
             f"Could not declare {host} in {settings_path} — nothing was saved (see the warning above). "
             "Approve the marketplace bootstrap when auto mode asks, or fix that file and re-run "
-            "`agnes init --force --trust-marketplace-host`."
+            f"`{_trust_optin_command(server_url)}`."
         )
 
 
@@ -1025,7 +1036,7 @@ def init(
     try:
         marketplace_host = configured_marketplace_host()
         if marketplace_host:
-            _maybe_declare_marketplace_trust(marketplace_host, trust_marketplace_host)
+            _maybe_declare_marketplace_trust(marketplace_host, trust_marketplace_host, server_url or "")
     except (KeyboardInterrupt, typer.Abort):
         # Ctrl-C at the consent prompt means "stop", not "carry on without
         # declaring". Swallowing it here printed a warning and walked straight

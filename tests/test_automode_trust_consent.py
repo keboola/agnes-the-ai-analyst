@@ -470,3 +470,15 @@ def test_a_user_note_is_not_mistaken_for_a_declaration(tmp_path):
     env = json.loads(settings.read_text())["autoMode"]["environment"]
     assert note in env
     assert env[-2:] == marketplace_trust_entries(HOST)
+
+
+def test_the_printed_optin_command_is_runnable(init_env, monkeypatch):
+    """Devin Review on #1262: the suggested re-run was missing `--server-url`,
+    so a reader who pasted it got an immediate failure."""
+    monkeypatch.setattr("cli.commands.init._stdin_is_interactive", lambda: False)
+
+    result = _run_init(init_env["workspace"])
+
+    assert "agnes init --force --trust-marketplace-host --server-url http://test.example.com" in result.output, (
+        result.output
+    )
