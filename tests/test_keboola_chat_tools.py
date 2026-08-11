@@ -953,3 +953,49 @@ class TestAnEditDoesNotResurrectADisabledServer(TestChatToolsEndpoint):
         before = mcp_sources_repo().get(source_id)
         assert c.put(f"{BASE}/{conn_id}", json={"name": "occupied"}, headers=_auth(token)).status_code == 200
         assert mcp_sources_repo().get(source_id)["name"] == before["name"]
+
+
+class TestARotationDoesNotReEnableADisabledServer(TestChatToolsEndpoint):
+    """Devin Review on this PR: the same bug on the sibling path.
+
+    Re-running enable is the documented way to propagate a rotated token, and
+    `build_stdio_spec` always describes an ENABLED source — so refreshing the
+    credential of a server the admin had switched off started serving that
+    project's tools again, to every group still holding grants.
+    """
+
+    def _disable(self, conn_id: str, name: str) -> str:
+        from src.keboola_chat_tools import build_stdio_spec
+        from src.repositories import mcp_sources_repo
+
+        spec = build_stdio_spec(
+            connection_id=conn_id, connection_name=name, stack_url="https://connection.example.com"
+        )
+        mcp_sources_repo().upsert(**{**spec, "enabled": False})
+        return derived_source_id(conn_id)
+
+    def test_re_running_enable_keeps_it_disabled(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-resync-disabled")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.repositories import mcp_sources_repo
+
+        source_id = self._disable(conn_id, "kbc-resync-disabled")
+        assert mcp_sources_repo().get(source_id)["enabled"] is False
+
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+        assert mcp_sources_repo().get(source_id)["enabled"] is False, (
+            "refreshing a credential re-activated a server the admin switched off"
+        )
+
+    def test_a_first_enable_still_enables(self, seeded_app):
+        """The endpoint's actual job must survive the fix."""
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-first-enable")
+
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.repositories import mcp_sources_repo
+
+        assert mcp_sources_repo().get(derived_source_id(conn_id))["enabled"] is True
