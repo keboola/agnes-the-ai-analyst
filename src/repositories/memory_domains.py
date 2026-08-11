@@ -207,8 +207,10 @@ class MemoryDomainsRepository:
 
     def hard_delete(self, domain_id: str) -> None:
         """Permanent delete — wipes the row + knowledge_item_domains
-        junction. Not currently wired into the API; kept for future
-        admin cleanup workflows."""
+        junction. Used to undo a domain this same request created when the
+        step after it failed (`app/api/authoring_suggestions.py`): the soft
+        delete leaves the slug taking its unique constraint, so a retry would
+        still collide. Otherwise reserved for admin cleanup workflows."""
         self.conn.execute(
             "DELETE FROM knowledge_item_domains WHERE domain_id = ?", [domain_id]
         )
