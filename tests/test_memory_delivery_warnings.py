@@ -205,3 +205,44 @@ class TestBatch:
         )
         assert body["delivery_warnings"] == {}
         assert body["delivery_notice"] is None
+
+
+class TestTheAllItemsTabSeesThemToo:
+    """Devin Review on #1258: the second approval surface showed nothing.
+
+    `/api/memory` backs the All Items tab, whose batch bar exposes Approve and
+    Mark required — but the list carried no `delivery_warnings`, so the per-item
+    strip and the notice never rendered there. A warning that appears on only
+    one of the two surfaces an approval can be issued from does not do its job.
+    """
+
+    def test_the_list_annotates_rows_for_an_admin(self, seeded_app):
+        _create_item(DIRECTIVE_CONTENT, status="approved", title="Recap")
+
+        resp = seeded_app["client"].get("/api/memory", headers=_auth(seeded_app["admin_token"]))
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        rows = [it for it in data["items"] if it.get("title") == "Recap"]
+        assert rows, data
+        kinds = {w["kind"] for w in rows[0]["delivery_warnings"]}
+        assert {"slash_command", "session_control", "harness_config"} <= kinds, rows[0]
+        assert data.get("delivery_notice")
+
+    def test_a_clean_list_carries_no_notice(self, seeded_app):
+        _create_item(CLEAN_CONTENT, status="approved", title="Clean")
+
+        data = seeded_app["client"].get("/api/memory", headers=_auth(seeded_app["admin_token"])).json()
+
+        rows = [it for it in data["items"] if it.get("title") == "Clean"]
+        assert rows and rows[0]["delivery_warnings"] == []
+        assert data.get("delivery_notice") is None
+
+    def test_a_non_admin_pays_for_no_scan(self, seeded_app):
+        """Nobody else can approve, so nobody else needs the annotation."""
+        _create_item(DIRECTIVE_CONTENT, status="approved", title="Recap")
+
+        data = seeded_app["client"].get("/api/memory", headers=_auth(seeded_app["analyst_token"])).json()
+
+        assert all("delivery_warnings" not in it for it in data["items"]), data["items"][:1]
+        assert "delivery_notice" not in data
