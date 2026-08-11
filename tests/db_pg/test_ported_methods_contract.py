@@ -319,3 +319,35 @@ def test_store_submissions_set_inline_result(ctx):
     # Invalid status rejected identically on both backends.
     with pytest.raises(ValueError):
         repo.set_inline_result(sub_id, inline_checks=None, status="bogus")
+
+
+def test_metrics_yaml_reconcile_prunes_on_both_backends(ctx, tmp_path):
+    """`--prune` reaches only the rows this importer wrote, and it must behave
+    identically on DuckDB and Postgres — the delete path is the one place the
+    mixin can destroy data, so parity here is not a formality."""
+    repo = ctx.metrics()
+    yaml_dir = tmp_path / "metrics_prune"
+    (yaml_dir / "revenue").mkdir(parents=True)
+    (yaml_dir / "revenue" / "mrr.yml").write_text("name: mrr\ncategory: revenue\nsql: SELECT 1\n")
+    (yaml_dir / "revenue" / "arr.yml").write_text("name: arr\ncategory: revenue\nsql: SELECT 2\n")
+
+    repo.reconcile_from_yaml(yaml_dir)
+    repo.create(id="manual/nps", name="nps", display_name="NPS", category="manual", sql="SELECT 3", source="manual")
+
+    (yaml_dir / "revenue" / "arr.yml").unlink()
+    report = repo.reconcile_from_yaml(yaml_dir, prune=True)
+
+    assert report["deleted"] == ["revenue/arr"]
+    ids = {m["id"] for m in repo.list()}
+    assert ids == {"revenue/mrr", "manual/nps"}, "prune reached outside its source scope"
+
+
+def test_metrics_yaml_reconcile_dry_run_writes_nothing_on_both_backends(ctx, tmp_path):
+    repo = ctx.metrics()
+    yaml_dir = tmp_path / "metrics_dry"
+    (yaml_dir / "revenue").mkdir(parents=True)
+    (yaml_dir / "revenue" / "mrr.yml").write_text("name: mrr\ncategory: revenue\nsql: SELECT 1\n")
+
+    report = repo.reconcile_from_yaml(yaml_dir, dry_run=True)
+    assert report["added"] == ["revenue/mrr"]
+    assert repo.list() == []

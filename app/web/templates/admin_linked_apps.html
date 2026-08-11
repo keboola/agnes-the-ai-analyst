@@ -34,6 +34,13 @@
     <p class="wiz-note">The source whose "list data apps" tool exposes the Keboola apps to ingest.
       Not registered yet? <a href="/admin">Register an MCP source</a> first, then come back.</p>
     <div class="wiz-row">
+      {# #1055: not converted to ds.dropdown() — options are fetched and the
+         <select> rebuilt entirely by loadSources() (fillSelect/replaceChildren)
+         after the page loads, but ds_dropdown.js only wires up (open/close/
+         select) the `.ds-dropdown-menu` items present at DOMContentLoaded and
+         exposes no public re-init hook. Keeping the custom menu in sync would
+         need touching ds_dropdown.js, which is out of scope here. Same reason
+         for #wiz-tool / #wiz-group below. #}
       <select id="wiz-source" aria-label="MCP source"><option value="">Loading sources…</option></select>
       {{ ds.button('Next', variant='primary', id='wiz-source-next') }}
     </div>

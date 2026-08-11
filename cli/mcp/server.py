@@ -142,7 +142,7 @@ def collection_get(collection_id: str) -> dict:
 
 @tool()
 def collections_search(query: str, k: int = 10, collection_id: str = "") -> dict:
-    """Hybrid search across your accessible file Collections (RBAC-filtered).
+    """Hybrid search across your accessible file Collections (RBAC-filtered). Filenames are not indexed, matching is whole word, and there is no wildcard — so an empty result is a wording miss far more often than an access problem; read the response's ``hint`` before concluding anything from it.
 
     Returns ranked chunks with citations (``filename``, ``ordinal``, ``text``,
     ``score``). Optionally restrict to one collection via ``collection_id``.
@@ -150,6 +150,21 @@ def collections_search(query: str, k: int = 10, collection_id: str = "") -> dict
     The response's ``retrieval`` field says how results were ranked:
     ``hybrid`` (lexical + semantic) or ``lexical_only`` — the degraded mode
     when the server has no embedding model installed.
+
+    Three behaviours that make a reasonable query miss — search the
+    document's TEXT, not its metadata:
+
+    * **filenames are not indexed.** Searching ``report`` will not find
+      ``report.md``; only the words inside it are matched.
+    * **matching is whole word.** ``test`` does not find ``Testovaci``.
+    * **there is no wildcard.** ``*`` and an empty query return nothing,
+      not everything — there is no "list all chunks" query. Use
+      ``collection_get`` to enumerate a collection's files.
+
+    An empty ``results`` therefore does NOT mean you lack access. The
+    response carries ``searched_collections`` and a ``hint`` saying which
+    case you are in; read them before concluding anything about
+    permissions.
     """
     params: dict = {"q": query, "k": k}
     if collection_id:
@@ -162,7 +177,7 @@ def collections_search(query: str, k: int = 10, collection_id: str = "") -> dict
 
 @tool()
 def knowledge_search(query: str, k: int = 10) -> dict:
-    """One query across documents, the knowledge base, and the data catalog.
+    """One query across documents, the knowledge base, and the data catalog. Filenames are not indexed, matching is whole word, and there is no wildcard — so an empty result is a wording miss far more often than an access problem; read the response's ``hint`` before concluding anything from it.
 
     Fans out server-side over Collections chunks (hybrid lexical+vector),
     corporate-memory knowledge items (fulltext), and table catalog cards —
@@ -173,6 +188,11 @@ def knowledge_search(query: str, k: int = 10) -> dict:
     The response's ``retrieval`` field labels the chunk engine's mode:
     ``hybrid`` (lexical + semantic) or ``lexical_only`` — the degraded mode
     when no embedding model is installed where the ranking ran.
+
+    The chunk leg carries the same three surprises as
+    ``collections_search``: filenames are not indexed, matching is whole
+    word, and there is no wildcard. An empty result is not evidence that
+    you lack access — check the ``hint`` before saying so.
 
     Offline fallback (K3, #798): if the server is unreachable (network/VPN
     down), falls back to `agnes pull`-shipped knowledge artifacts under
@@ -211,6 +231,38 @@ def knowledge_search(query: str, k: int = 10) -> dict:
             "source": "local",
             "note": "server unreachable — searched local knowledge artifacts (documents only)",
         }
+
+
+@tool()
+def collection_file_read(collection_id: str, file_id: str) -> dict:
+    """Read one file's text straight, without guessing search terms.
+
+    Use this when you know WHICH file you want — "what is in this
+    document?", "summarise this upload". ``collections_search`` is for when
+    you do not: it needs words that appear in the body, and it cannot
+    enumerate a collection (see its own note).
+
+    Returns ``kind`` plus, for readable files, ``text`` and ``truncated``.
+    The server caps the text (~20k characters), so ``truncated: true`` means
+    you are holding a PREFIX — do not summarise it as the whole document;
+    fall back to ``collections_search`` with a distinctive term to reach the
+    rest. Read ``text`` regardless of ``kind``: ``kind`` describes how a
+    BROWSER would show the file (``text`` / ``pdf`` / ``image``), and a PDF
+    comes back ``kind="pdf"`` while still carrying its ingested text. When
+    ``text`` is empty, ``reason`` says why (still ingesting, rejected, or
+    nothing extractable) — relay that rather than reporting an access error.
+
+    Do not loop this over a whole collection: reading many files to answer
+    one question is what retrieval is for.
+
+    Args:
+        collection_id: Collection id from ``collections_list`` (``col_...``).
+        file_id: File id from ``collection_get`` (``cf_...``).
+    """
+    try:
+        return api_get_json(f"/api/collections/{collection_id}/files/{file_id}/preview")
+    except V2ClientError as exc:
+        raise ValueError(_mcp_error("collection_file_read", exc)) from exc
 
 
 @tool()
@@ -379,7 +431,15 @@ def chat_upload_file(
     register_as_table: bool = False,
     table_name: str = "",
 ) -> dict:
-    """Upload a local file into your chat workspace (POST /api/chat/uploads).
+    """Push a file from THIS machine into your chat workspace (POST /api/chat/uploads).
+
+    **Direction: this machine → workspace. Not a way to hand a file to the
+    user.** An agent inside a chat sandbox that has produced a chart or a
+    report cannot deliver it with this tool — the path it would name is the
+    sandbox's, not the reader's, and this server is not running there anyway
+    (it fails with "No Agnes token configured"). Put the result in the reply:
+    inline ``<svg>`` for a chart, a ```mermaid fence for a diagram, a markdown
+    table for figures.
 
     The file at ``file_path`` (local filesystem path) is read and posted to
     the Agnes server, landing in your per-user workspace ``uploads/`` folder
@@ -602,6 +662,34 @@ def data_app_deploy(slug: str, sha: str = "", mode: Literal["", "dev"] = "") -> 
         return api_post_json(f"/api/data-apps/{slug}/deploy", payload)
     except V2ClientError as exc:
         raise ValueError(_mcp_error(f"data_app_deploy({slug})", exc)) from exc
+
+
+@tool()
+def data_app_create(slug: str, name: str, description: str = "") -> dict:
+    """Create a new hosted data app (the registry row plus its git repo).
+
+    The FIRST step of building an app, and the one this surface was missing:
+    ``data_app_create_draft`` needs an app to draft FROM, so an agent starting
+    there got ``404 data_app_not_found`` with no way forward.
+
+    The app is created empty. Seed it before deploying: clone with
+    ``data_app_git_credential``, copy the baked scaffold from
+    ``/work/scaffolds/nodejs-dashboard/``, push to ``main``, then
+    ``data_app_deploy``. Deploying an empty repo fails with
+    ``deploy_empty_repo``.
+
+    Args:
+        slug:        URL-safe id, unique per instance (``[a-z0-9-]``).
+        name:        Human-readable title shown in the UI.
+        description: Optional one-line summary.
+
+    Returns ``{"id", "slug", "git_url"}``. Mirrors ``POST /api/data-apps`` and
+    ``agnes app create``.
+    """
+    try:
+        return api_post_json("/api/data-apps", {"slug": slug, "name": name, "description": description})
+    except V2ClientError as exc:
+        raise ValueError(_mcp_error(f"data_app_create({slug})", exc)) from exc
 
 
 @tool()

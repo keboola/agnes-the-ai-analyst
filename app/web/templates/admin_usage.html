@@ -6,6 +6,7 @@
 {% set page_hero_subtitle = "Claude Code tool / skill / agent / slash-command invocations across users." %}
 
 {% block head_extra %}
+<link rel="stylesheet" href="{{ static_url('css/ds_dropdown.css') }}">
 {# The /admin/activity page already ships the .obs-* styles via
    activity_center.html. We re-include them here so /admin/usage renders
    identically without depending on the user having visited /admin/activity
@@ -93,17 +94,28 @@
     <div class="obs-topbar-right">
       <label class="obs-window">
         <span class="obs-label">Time range</span>
-        <select id="u-window">
+        <select id="u-window" class="ds-dropdown-native">
           <option value="1440">Last 24h</option>
           <option value="10080" selected>Last 7d</option>
           <option value="43200">Last 30d</option>
           <option value="129600">Last 90d</option>
           <option value="525600">Last 365d</option>
         </select>
+        {{ ds.dropdown(
+          id='u-window-dd', target='u-window',
+          aria_label='Time range', selected='10080',
+          options=[
+            {'value': '1440', 'label': 'Last 24h'},
+            {'value': '10080', 'label': 'Last 7d'},
+            {'value': '43200', 'label': 'Last 30d'},
+            {'value': '129600', 'label': 'Last 90d'},
+            {'value': '525600', 'label': 'Last 365d'},
+          ],
+        ) }}
       </label>
       <label class="obs-window">
         <span class="obs-label">Group by</span>
-        <select id="u-groupby">
+        <select id="u-groupby" class="ds-dropdown-native">
           <option value="">None (raw events)</option>
           <option value="day" selected>Day</option>
           <option value="username">User</option>
@@ -111,6 +123,18 @@
           <option value="source">Source</option>
           <option value="ref_id">Plugin (source/ref_id)</option>
         </select>
+        {{ ds.dropdown(
+          id='u-groupby-dd', target='u-groupby',
+          aria_label='Group by', selected='day',
+          options=[
+            {'value': '', 'label': 'None (raw events)'},
+            {'value': 'day', 'label': 'Day'},
+            {'value': 'username', 'label': 'User'},
+            {'value': 'tool_name', 'label': 'Tool'},
+            {'value': 'source', 'label': 'Source'},
+            {'value': 'ref_id', 'label': 'Plugin (source/ref_id)'},
+          ],
+        ) }}
       </label>
     </div>
   </header>
@@ -208,6 +232,7 @@
 
 </div>
 
+<script src="{{ static_url('js/components/ds_dropdown.js') }}" defer></script>
 <script>
 (function() {
   const state = readUrl();
@@ -251,9 +276,28 @@
   const prevBtn = $('u-prev'), nextBtn = $('u-next');
   const narrative = $('usage-narrative');
 
+  // ds_dropdown.js only pushes a selection FROM the custom button+menu ONTO
+  // the paired native <select> — every direct `.value =` assignment below
+  // (URL-state hydration, KPI quick-filters) needs this to keep the
+  // paper-theme dropdown's label/checked state from going stale.
+  function syncDropdownFromSelect(sel) {
+    const dd = document.querySelector('.ds-dropdown[data-ds-dropdown-target="' + sel.id + '"]');
+    if (!dd) return;
+    const label = dd.querySelector('.ds-dropdown-btn-label');
+    const opt = sel.options[sel.selectedIndex];
+    dd.querySelectorAll('.ds-dropdown-menu [role="menuitemradio"]').forEach(item => {
+      const isSelected = item.dataset.value === sel.value;
+      item.classList.toggle('is-selected', isSelected);
+      item.setAttribute('aria-checked', isSelected ? 'true' : 'false');
+    });
+    if (label && opt) label.textContent = opt.textContent.trim();
+  }
+
   // Apply state -> controls
   winSel.value = String(state.window);
+  syncDropdownFromSelect(winSel);
   groupSel.value = state.group_by || '';
+  syncDropdownFromSelect(groupSel);
   fQ.value = state.q;
 
   function buildBaseQS() {
@@ -539,9 +583,11 @@
       } else if (k === 'users') {
         state.group_by = 'username';
         groupSel.value = 'username';
+        syncDropdownFromSelect(groupSel);
       } else if (k === 'tools') {
         state.group_by = 'tool_name';
         groupSel.value = 'tool_name';
+        syncDropdownFromSelect(groupSel);
       } else {
         Object.assign(state, { username: '', tool_name: '', source: '', event_type: '', only_errors: false, q: '' });
         fUser.value=''; fTool.value=''; fSrc.value=''; fEv.value=''; fQ.value='';

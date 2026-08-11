@@ -50,6 +50,9 @@ _VALIDATION_STUB_CONTEXT = {
     },
     "now": datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc),
     "today": "2026-01-01",
+    # Admin-authored overrides validate against the laptop-workspace shape —
+    # the chat sandbox never renders an admin override through this stub.
+    "is_sandbox": False,
 }
 
 # Same stub with an anonymous-style user context to validate templates against
@@ -148,7 +151,10 @@ def get_welcome(
     """
     effective_url = server_url or str(request.base_url).rstrip("/")
     try:
-        content = render_claude_md(conn, user=user, server_url=effective_url)
+        # This is a laptop workspace, not the chat sandbox: is_sandbox=False
+        # is the default, but spelled out here because it's the crux of what
+        # this endpoint renders differently from app/main.py's sandbox path.
+        content = render_claude_md(conn, user=user, server_url=effective_url, is_sandbox=False)
     except TemplateError as exc:
         logger.warning("render_claude_md failed (template error): %s", exc)
         raise HTTPException(status_code=500, detail=f"Template render error: {exc}")

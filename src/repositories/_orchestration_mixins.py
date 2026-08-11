@@ -13,11 +13,12 @@ parity structural: there is only one implementation, so it cannot diverge.
 The mixins depend solely on public methods the cross-engine parity guard
 (``tests/db_pg/test_repo_method_parity.py``) already pins on both backends.
 """
+
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import yaml
 
@@ -33,11 +34,59 @@ class MetricYamlMixin:
     def import_from_yaml(self, path: Union[str, Path]) -> int:
         """Import metrics from a YAML file or directory of YAML files.
 
+        Upsert-only: the registry can grow but never shrink. Use
+        :meth:`reconcile_from_yaml` when the directory is meant to be the
+        source of truth.
+
         Args:
             path: Path to a single .yml file or a directory containing */*.yml files.
 
         Returns:
             Number of metrics imported.
+        """
+        return len(self.reconcile_from_yaml(path)["written"])
+
+    def reconcile_from_yaml(
+        self,
+        path: Union[str, Path],
+        *,
+        source_ref: Optional[str] = None,
+        prune: bool = False,
+        dry_run: bool = False,
+        on_delete: Optional[Callable[[str], None]] = None,
+    ) -> Dict[str, List[str]]:
+        """Import metrics, optionally making the registry MATCH the directory.
+
+        ``import_from_yaml`` only ever adds, so a metric deleted upstream stays
+        forever and a rename leaves both ids behind (#1219). ``prune=True``
+        removes the rows this importer previously wrote that the directory no
+        longer contains.
+
+        **What prune may delete is keyed on the writer, never on the id.** The
+        scope is ``source='yaml_import'`` — so a metric an admin wrote in the
+        UI (``manual``) or another importer created (``keboola_semantic_layer``)
+        is out of reach by construction, not by luck. ``source_ref`` narrows it
+        further: two YAML exports into one instance both carry
+        ``source='yaml_import'``, so without a second key the later import
+        would delete the earlier one's metrics. Passing it also stamps the rows,
+        so the scope exists from the first run.
+
+        A rename is indistinguishable from delete + create at this level — the
+        id is ``category/name`` — which is precisely why ``dry_run=True``
+        exists: it returns the same report and writes nothing.
+
+        ``on_delete`` is called with each id immediately BEFORE its row goes,
+        so a caller can record the deletion where an interruption cannot lose
+        it. The mixin stays free of any audit dependency, which is what keeps
+        it backend-neutral.
+
+        Returns a report of metric ids: ``added`` (did not exist), ``updated``
+        (already owned by this scope), ``adopted`` (existed under a different
+        writer or label — overwritten and re-stamped, so it JOINS this scope),
+        ``written`` (all three, in file order), ``deleted`` (pruned, empty
+        unless ``prune``) and ``unreadable`` (file paths skipped because no
+        metric could be parsed from them — reported so a partial import cannot
+        pass for a complete one).
         """
         path = Path(path)
         files: List[Path] = []
@@ -45,15 +94,51 @@ class MetricYamlMixin:
         if path.is_file():
             files = [path]
         elif path.is_dir():
-            files = sorted(path.glob("*/*.yml"))
+            # Both extensions: a .yaml file was invisible to the import, which
+            # was merely incomplete before and is destructive now — prune reads
+            # "not in the directory" as "deleted upstream".
+            files = sorted(set(path.glob("*/*.yml")) | set(path.glob("*/*.yaml")))
 
-        count = 0
+        if prune:
+            # --prune deletes everything in scope the input does not mention, so
+            # an input that mentions almost nothing reads as "the source dropped
+            # almost everything". These two shapes are nearly always a mistyped
+            # path instead, and the cost of that reading is the whole scope.
+            if path.is_file():
+                raise ValueError(
+                    "refusing to prune against a single file: a file describes some metrics, "
+                    "not the whole scope. Point --prune at the export directory."
+                )
+
+        existing = {m["id"]: m for m in self.list()}
+
+        # Ids this importer owns right now — the only rows prune may remove.
+        # Each --source-ref owns its own partition and the unlabeled import owns
+        # the unlabeled one, so labelling an export genuinely protects it: an
+        # unlabeled prune that also swept labelled rows would contradict the
+        # coexistence the flag exists to provide.
+        in_scope = {
+            mid
+            for mid, m in existing.items()
+            if (m.get("source") or "") == "yaml_import" and (m.get("source_ref") or "") == (source_ref or "")
+        }
+
+        parsed: List[Dict[str, Any]] = []
+        unreadable: List[str] = []
         for file_path in files:
             # Infer category from parent directory name
             category_from_dir = file_path.parent.name
 
-            with open(file_path, "r") as f:
-                raw = yaml.safe_load(f)
+            try:
+                with open(file_path, "r") as f:
+                    raw = yaml.safe_load(f)
+            except yaml.YAMLError:
+                # Broken syntax is the same thing as a file that yields no
+                # metric — and far likelier in a half-written export. Recording
+                # it lets the prune guard name the file, instead of the import
+                # dying on a parser traceback partway through the directory.
+                unreadable.append(str(file_path))
+                continue
 
             # Support both list-wrapped [{...}] and plain {...} formats
             if isinstance(raw, list):
@@ -61,7 +146,11 @@ class MetricYamlMixin:
             elif isinstance(raw, dict):
                 metrics_data = [raw]
             else:
+                unreadable.append(str(file_path))
                 continue
+
+            if not any(isinstance(d, dict) and d.get("name") for d in metrics_data):
+                unreadable.append(str(file_path))
 
             for data in metrics_data:
                 if not isinstance(data, dict):
@@ -84,10 +173,10 @@ class MetricYamlMixin:
                 sql_variants: Dict[str, str] = {}
                 for key, value in data.items():
                     if key.startswith("sql_by_"):
-                        variant_key = key[len("sql_"):]  # strip 'sql_' prefix → 'by_channel'
+                        variant_key = key[len("sql_") :]  # strip 'sql_' prefix → 'by_channel'
                         sql_variants[variant_key] = value
 
-                self.create(
+                parsed.append(dict(
                     id=metric_id,
                     name=name,
                     display_name=data.get("display_name", name),
@@ -108,10 +197,70 @@ class MetricYamlMixin:
                     sql_variants=sql_variants if sql_variants else None,
                     validation=data.get("validation"),
                     source="yaml_import",
-                )
-                count += 1
+                    source_ref=source_ref,
+                ))
 
-        return count
+        written = [row["id"] for row in parsed]
+
+        # Every guard below reads only the SHAPE of the input, which is known
+        # before a single row is written — so a refused run leaves the registry
+        # exactly as it found it rather than half-applying the readable files.
+        if prune and unreadable:
+            # The dangerous middle case. All-or-nothing shapes are caught below,
+            # but a half-written export has SOME files that parse — and the ones
+            # that do not look exactly like metrics the source dropped. Refusing
+            # keeps a truncated download from trimming the registry.
+            listed = ", ".join(sorted(unreadable)[:5])
+            raise ValueError(
+                f"refusing to prune: {len(unreadable)} file(s) could not be read as a metric "
+                f"({listed}). A half-written export is indistinguishable from one that dropped "
+                "those metrics, so fix or remove them first."
+            )
+
+        if prune and not written:
+            # Files existing is not the same as metrics parsing out of them: a
+            # directory one level too shallow globs to nothing, and a truncated
+            # or half-written export has files that yield nothing. Both arrive
+            # here as an empty parse, which is exactly how you tell prune to
+            # delete the whole scope.
+            raise ValueError(
+                f"refusing to prune: no metrics parsed from {path} — expected "
+                "<dir>/<category>/<name>.yml files with a `name:` each. Pruning on an empty "
+                "read would delete every metric this importer previously wrote."
+            )
+
+        # `added` means "did not exist", not "is not mine". An incoming id that
+        # already belongs to another writer is ADOPTED: create() upserts, so the
+        # row is overwritten and its `source` re-stamped — which also moves it
+        # into this importer's prune scope. Reporting that as an addition told
+        # the operator a new metric would appear while a hand-authored one was
+        # about to be taken over.
+        added = [mid for mid in written if mid not in existing]
+        updated = [mid for mid in written if mid in in_scope]
+        adopted = [mid for mid in written if mid in existing and mid not in in_scope]
+        deleted = sorted(in_scope - set(written)) if prune else []
+
+        if not dry_run:
+            for row in parsed:
+                self.create(**row)
+            for metric_id in deleted:
+                # Before the delete, never after: an interruption between the
+                # two would otherwise leave a metric gone with no record of it.
+                if on_delete is not None:
+                    on_delete(metric_id)
+                self.delete(metric_id)
+
+        return {
+            "added": added,
+            "updated": updated,
+            "adopted": adopted,
+            "written": written,
+            "deleted": deleted,
+            # Reported, not swallowed: skipping is right (one broken file must
+            # not abort a directory) but silence makes a partial import read as
+            # a complete one.
+            "unreadable": unreadable,
+        }
 
     def export_to_yaml(self, output_dir: Union[str, Path]) -> int:
         """Export all metrics to YAML files under output_dir/{category}/{name}.yml.

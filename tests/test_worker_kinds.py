@@ -467,7 +467,12 @@ class TestJiraWebhookEnqueues:
         monkeypatch.setattr("src.orchestrator.SyncOrchestrator", ExplodingOrchestrator)
         monkeypatch.setattr(
             "connectors.jira.incremental_transform.transform_single_issue",
-            lambda issue_key, deleted=False: True,
+            # **kwargs absorbs the raw_dir/output_dir the caller now passes. These
+            # cases are about the enqueue behaviour, not the paths — those are pinned
+            # in connectors/jira/tests/test_webhook_transform_paths.py, and a stub
+            # narrower than the real signature turns any signature change into four
+            # failures here that say nothing about enqueuing.
+            lambda issue_key, deleted=False, **kwargs: True,
         )
 
         result = trigger_incremental_transform("KSP-1", deleted=False)
@@ -488,7 +493,12 @@ class TestJiraWebhookEnqueues:
         monkeypatch.setattr("src.orchestrator.SyncOrchestrator", lambda: None)
         monkeypatch.setattr(
             "connectors.jira.incremental_transform.transform_single_issue",
-            lambda issue_key, deleted=False: True,
+            # **kwargs absorbs the raw_dir/output_dir the caller now passes. These
+            # cases are about the enqueue behaviour, not the paths — those are pinned
+            # in connectors/jira/tests/test_webhook_transform_paths.py, and a stub
+            # narrower than the real signature turns any signature change into four
+            # failures here that say nothing about enqueuing.
+            lambda issue_key, deleted=False, **kwargs: True,
         )
 
         trigger_incremental_transform("KSP-1", deleted=False)
@@ -512,7 +522,12 @@ class TestJiraWebhookEnqueues:
         monkeypatch.setattr("src.orchestrator.SyncOrchestrator", lambda: None)
         monkeypatch.setattr(
             "connectors.jira.incremental_transform.transform_single_issue",
-            lambda issue_key, deleted=False: True,
+            # **kwargs absorbs the raw_dir/output_dir the caller now passes. These
+            # cases are about the enqueue behaviour, not the paths — those are pinned
+            # in connectors/jira/tests/test_webhook_transform_paths.py, and a stub
+            # narrower than the real signature turns any signature change into four
+            # failures here that say nothing about enqueuing.
+            lambda issue_key, deleted=False, **kwargs: True,
         )
 
         # Simulate a jira-refresh job already RUNNING (e.g. claimed by the
@@ -538,7 +553,12 @@ class TestJiraWebhookEnqueues:
         monkeypatch.setattr("src.orchestrator.SyncOrchestrator", lambda: None)
         monkeypatch.setattr(
             "connectors.jira.incremental_transform.transform_single_issue",
-            lambda issue_key, deleted=False: True,
+            # **kwargs absorbs the raw_dir/output_dir the caller now passes. These
+            # cases are about the enqueue behaviour, not the paths — those are pinned
+            # in connectors/jira/tests/test_webhook_transform_paths.py, and a stub
+            # narrower than the real signature turns any signature change into four
+            # failures here that say nothing about enqueuing.
+            lambda issue_key, deleted=False, **kwargs: True,
         )
 
         jobs_repo().enqueue("jira-refresh", {}, idempotency_key="jira-refresh")

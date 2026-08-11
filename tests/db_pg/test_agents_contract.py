@@ -152,6 +152,34 @@ def test_update_whitelist(repo):
         repo.update("a1", owner_user_id="u2")  # not whitelisted
 
 
+def test_update_whitelists_are_identical_across_backends():
+    """The two ``_UPDATABLE`` sets are hand-maintained copies.
+
+    Nothing else compares them, so widening one (as the placeholder-slug
+    rename had to) silently leaves the other backend raising ValueError on
+    the very write the feature depends on — a one-backend outage the
+    parametrized tests below cannot see, because each backend only ever
+    exercises its own copy.
+    """
+    from src.repositories.agents import _UPDATABLE as duck
+    from src.repositories.agents_pg import _UPDATABLE as pg
+
+    assert duck == pg, f"only in DuckDB: {sorted(duck - pg)}; only in Postgres: {sorted(pg - duck)}"
+
+
+def test_slug_is_updatable_on_both_backends(repo):
+    """Renaming a draft re-derives its slug (app/api/agents.py).
+
+    That write goes through ``update``, so ``slug`` must be whitelisted —
+    and the row must remain addressable under the NEW slug and gone from
+    the old one, since the slug is the public address.
+    """
+    repo.create(id="a1", owner_user_id="u1", name="", slug="agent")
+    repo.update("a1", name="Revenue Analyst", slug="revenue-analyst")
+    assert repo.get_by_slug("u1", "revenue-analyst")["id"] == "a1"
+    assert repo.get_by_slug("u1", "agent") is None
+
+
 def test_builder_superset_roundtrip(repo):
     """v111 paper-theme builder superset — create + update + read the authored
     fields on the same canonical row that holds main's agent-as-API columns."""

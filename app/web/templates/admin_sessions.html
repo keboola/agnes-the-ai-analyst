@@ -6,6 +6,7 @@
 {% set page_hero_subtitle = "Every collected JSONL across users plus a transcript viewer with next-error navigation." %}
 
 {% block head_extra %}
+<link rel="stylesheet" href="{{ static_url('css/ds_dropdown.css') }}">
 <style>
 .obs-page { font: 14px/1.5 var(--font-sans, system-ui); color: var(--text-primary, #111827); }
 .obs-topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px;
@@ -86,13 +87,24 @@
     <div class="obs-topbar-right">
       <label class="obs-window">
         <span class="obs-label">Time range</span>
-        <select id="sx-window">
+        <select id="sx-window" class="ds-dropdown-native">
           <option value="1440">Last 24h</option>
           <option value="10080" selected>Last 7d</option>
           <option value="43200">Last 30d</option>
           <option value="129600">Last 90d</option>
           <option value="525600">All time</option>
         </select>
+        {{ ds.dropdown(
+          id='sx-window-dd', target='sx-window',
+          aria_label='Time range', selected='10080',
+          options=[
+            {'value': '1440', 'label': 'Last 24h'},
+            {'value': '10080', 'label': 'Last 7d'},
+            {'value': '43200', 'label': 'Last 30d'},
+            {'value': '129600', 'label': 'Last 90d'},
+            {'value': '525600', 'label': 'All time'},
+          ],
+        ) }}
       </label>
     </div>
   </header>
@@ -162,6 +174,7 @@
   </section>
 </div>
 
+<script src="{{ static_url('js/components/ds_dropdown.js') }}" defer></script>
 <script>
 (function() {
   const state = readUrl();
@@ -196,7 +209,25 @@
   const rowCount = $('sx-row-count'), prevBtn = $('sx-prev'), nextBtn = $('sx-next');
   const narrative = $('sx-narrative');
 
+  // ds_dropdown.js only pushes a selection FROM the custom button+menu ONTO
+  // the paired native <select> — URL-state hydration below sets `.value =`
+  // directly, so the paper-theme dropdown needs an explicit re-sync or it
+  // keeps showing whatever was picked last time.
+  function syncDropdownFromSelect(sel) {
+    const dd = document.querySelector('.ds-dropdown[data-ds-dropdown-target="' + sel.id + '"]');
+    if (!dd) return;
+    const label = dd.querySelector('.ds-dropdown-btn-label');
+    const opt = sel.options[sel.selectedIndex];
+    dd.querySelectorAll('.ds-dropdown-menu [role="menuitemradio"]').forEach(item => {
+      const isSelected = item.dataset.value === sel.value;
+      item.classList.toggle('is-selected', isSelected);
+      item.setAttribute('aria-checked', isSelected ? 'true' : 'false');
+    });
+    if (label && opt) label.textContent = opt.textContent.trim();
+  }
+
   winSel.value = String(state.window);
+  syncDropdownFromSelect(winSel);
   fErr.checked = state.only_errors;
   fQ.value = state.q;
 

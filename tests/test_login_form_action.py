@@ -47,3 +47,20 @@ def test_password_login_form_action_pinned(web_client):
         "scripts/e2e/_login.sh pins this selector — keep it stable, or move "
         "the LOGIN_FORM constant in lockstep."
     )
+
+
+def test_password_page_is_not_labelled_external_without_sso(web_client):
+    """With no Google OAuth configured, `/login/password` is the ONLY door —
+    every employee and the instance admin sign in here.
+
+    It used to be headed "External User Access — For partners, investors, and
+    other external users", which made first-time admins stop and check whether
+    they had been given the wrong URL. The external-user framing is correct
+    only when SSO is the primary path.
+    """
+    resp = web_client.get("/login/password")
+    assert resp.status_code == 200
+    html = resp.text
+    assert "External User Access" not in html
+    assert "For partners, investors" not in html
+    assert "<h2>Sign In</h2>" in html

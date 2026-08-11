@@ -50,6 +50,7 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     "collections_list",
     "collection_get",
     "collections_search",
+    "collection_file_read",
     "knowledge_search",
     "glossary_search",
     "collections_reingest",
@@ -119,6 +120,7 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
     # Hosted data apps (data-apps platform plan, Task 11) — triple-surface
     # with /api/data-apps* + `agnes app list/show/deploy/logs`.
     "data_apps_list",
+    "data_app_create",
     "data_app_get",
     "data_app_deploy",
     "data_app_logs",
@@ -169,6 +171,7 @@ FOUNDATION_TOOL_NAMES: tuple[str, ...] = (
 # name below, and that this tuple stays a subset of FOUNDATION_TOOL_NAMES.
 DATA_APP_TOOL_NAMES: tuple[str, ...] = (
     "data_apps_list",
+    "data_app_create",
     "data_app_get",
     "data_app_deploy",
     "data_app_logs",
@@ -277,13 +280,28 @@ def register_foundation_tools(
 
     @tool()
     async def collections_search(query: str, k: int = 10, collection_id: str = "") -> dict:
-        """Hybrid search across your accessible file Collections (RBAC-filtered).
+        """Hybrid search across your accessible file Collections (RBAC-filtered). Filenames are not indexed, matching is whole word, and there is no wildcard — so an empty result is a wording miss far more often than an access problem; read the response's ``hint`` before concluding anything from it.
 
         Returns ranked chunks with citations (``filename``, ``ordinal``, ``text``,
         ``score``). Optionally restrict to one collection via ``collection_id``.
         The response's ``retrieval`` field says how results were ranked:
         ``hybrid`` (lexical + semantic) or ``lexical_only`` — the degraded
         mode when the server has no embedding model installed.
+
+        Three behaviours that make a reasonable query miss — search the
+        document's TEXT, not its metadata:
+
+        * **filenames are not indexed.** Searching ``report`` will not find
+          ``report.md``; only the words inside it are matched.
+        * **matching is whole word.** ``test`` does not find ``Testovaci``.
+        * **there is no wildcard.** ``*`` and an empty query return nothing,
+          not everything — there is no "list all chunks" query. Use
+          ``collection_get`` to enumerate a collection's files.
+
+        An empty ``results`` therefore does NOT mean you lack access. The
+        response carries ``searched_collections`` and a ``hint`` saying which
+        case you are in; read them before concluding anything about
+        permissions.
 
         NOTE (deferred follow-up, "Add artefacts to My Stack" spec): this
         fans out over every RBAC-accessible collection — it does NOT gate by
@@ -313,7 +331,7 @@ def register_foundation_tools(
 
     @tool()
     async def knowledge_search(query: str, k: int = 10) -> dict:
-        """One query across documents, the knowledge base, and the data catalog.
+        """One query across documents, the knowledge base, and the data catalog. Filenames are not indexed, matching is whole word, and there is no wildcard — so an empty result is a wording miss far more often than an access problem; read the response's ``hint`` before concluding anything from it.
 
         Fans out server-side over Collections chunks (hybrid lexical+vector),
         corporate-memory knowledge items (fulltext), table catalog cards,
@@ -330,6 +348,13 @@ def register_foundation_tools(
         NOTE (deferred follow-up, "Add artefacts to My Stack" spec): the
         Collections leg of this fan-out is not gated by Stack membership
         either — see ``collections_search``'s note.
+
+        The chunk leg carries the same three surprises as
+        ``collections_search``: filenames are not indexed, matching is whole
+        word, and there is no wildcard. An empty result is not evidence that
+        you lack access — it carries ``searched_collections``,
+        ``searched_tables`` and a ``hint`` saying which of the two it is;
+        read the hint before telling anyone they have no access.
 
         Args:
             query: Natural-language or keyword query.
@@ -363,6 +388,43 @@ def register_foundation_tools(
                 f"{base_url}/api/glossary/search",
                 headers=headers_fn(),
                 params={"q": query, "limit": k},
+                timeout=30,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @tool()
+    async def collection_file_read(collection_id: str, file_id: str) -> dict:
+        """Read one file's text straight, without guessing search terms.
+
+        Use this when you know WHICH file you want — "what is in this
+        document?", "summarise this upload". `collections_search` is for
+        when you do not: it needs words that appear in the body, and it
+        cannot enumerate a collection (see its own note).
+
+        Returns ``kind`` plus, for readable files, ``text`` and
+        ``truncated``. The server caps the text (~20k characters), so
+        ``truncated: true`` means you are holding a PREFIX — do not
+        summarise it as the whole document; fall back to
+        ``collections_search`` with a distinctive term to reach the rest.
+        Read ``text`` regardless of ``kind``: ``kind`` describes how a
+        BROWSER would show the file (``text`` / ``pdf`` / ``image``), and a
+        PDF comes back ``kind="pdf"`` while still carrying its ingested
+        text. When ``text`` is empty, ``reason`` says why (still ingesting,
+        rejected, or nothing extractable) — relay that rather than
+        reporting an access error.
+
+        Do not loop this over a whole collection: reading many files to
+        answer one question is what retrieval is for.
+
+        Args:
+            collection_id: Collection id from ``collections_list`` (``col_...``).
+            file_id: File id from ``collection_get`` (``cf_...``).
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.get(
+                f"{base_url}/api/collections/{collection_id}/files/{file_id}/preview",
+                headers=headers_fn(),
                 timeout=30,
             )
             r.raise_for_status()
@@ -1317,7 +1379,21 @@ def register_foundation_tools(
         register_as_table: bool = False,
         table_name: str = "",
     ) -> dict:
-        """Upload a local file into your chat workspace (client-side only).
+        """Pull a file from the USER'S machine into their chat workspace (client-side only).
+
+        **Direction: user's laptop → workspace. This is not a way to hand a
+        file to the user.** If you are an agent inside a chat sandbox holding
+        a chart, a report or any other output, this tool cannot deliver it —
+        the sandbox filesystem is not the user's computer, and neither is any
+        path you can name here. Return the result IN your reply instead:
+        inline `<svg>` for a chart, a ```mermaid fence for a diagram, a
+        markdown table for figures. Naming a path is never delivery.
+
+        Observed on a live instance: an agent that had written a chart to
+        `/tmp` called this tool to "send" it, got `No Agnes token configured`
+        from the local stdio server, and went on hunting for a channel that
+        does not exist — several tool calls spent before it gave up and told
+        the user to open a path on a machine they were not using.
 
         Uploading a file by naming a path is inherently a CLIENT-SIDE action:
         the path is resolved on the machine that runs the MCP server.  This
@@ -1664,6 +1740,39 @@ def register_foundation_tools(
                 f"{base_url}/api/data-apps/{slug}/deploy",
                 json=payload,
                 headers=headers_fn(),
+                timeout=60,
+            )
+            r.raise_for_status()
+            return r.json()
+
+    @tool()
+    async def data_app_create(slug: str, name: str, description: str = "") -> dict:
+        """Create a new hosted data app (the registry row plus its git repo).
+
+        This is the FIRST step of building an app from chat, and it was the
+        missing one: `data_app_create_draft` needs an app to draft FROM, so an
+        agent that started there got `404 data_app_not_found` and had no way
+        forward — REST and the CLI both had a create, this surface did not.
+
+        The app is created empty. Seed it before deploying: clone the repo with
+        `data_app_git_credential`, copy the baked scaffold from
+        `/work/scaffolds/nodejs-dashboard/`, push to `main`, then
+        `data_app_deploy`. Deploying an empty repo fails with
+        `deploy_empty_repo`.
+
+        Args:
+            slug:        URL-safe id, unique per instance (`[a-z0-9-]`).
+            name:        Human-readable title shown in the UI.
+            description: Optional one-line summary.
+
+        Returns ``{"id", "slug", "git_url"}``. Mirrors ``POST /api/data-apps``
+        and ``agnes app create``.
+        """
+        async with httpx.AsyncClient() as c:
+            r = await c.post(
+                f"{base_url}/api/data-apps",
+                headers=headers_fn(),
+                json={"slug": slug, "name": name, "description": description},
                 timeout=60,
             )
             r.raise_for_status()

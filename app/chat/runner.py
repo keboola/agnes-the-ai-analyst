@@ -1316,6 +1316,17 @@ async def _start_relay() -> int:
     real_server = os.environ.get("AGNES_SERVER", "").strip()
     _relay = Relay(server_url=real_server)
     port = await _relay.start()
+    # Keep the real address reachable by name for the things that need the
+    # HOST rather than an API base: the egress allowlist in
+    # `.claude/hooks/pre_tool_use.py` derives its Agnes host from the
+    # environment, and it runs *after* this rewrite — so it was reading
+    # `127.0.0.1` and never adding the real host, which is what made a
+    # `git clone` of a data-app repo from the sandbox fail while the MCP
+    # tools (which go through this very relay on loopback) kept working.
+    # Written before the overwrite so the two can never disagree.
+    # (Devin Review on this PR.)
+    if real_server:
+        os.environ["AGNES_REAL_SERVER"] = real_server
     os.environ["AGNES_SERVER"] = f"http://127.0.0.1:{port}/agnes-api"
     os.environ["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{port}/anthropic"
     os.environ["ANTHROPIC_API_KEY"] = "sk-dummy-broker"

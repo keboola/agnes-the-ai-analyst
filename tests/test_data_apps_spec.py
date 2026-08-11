@@ -27,7 +27,11 @@ def test_slug_re():
 
 def test_config_json_internal_repo_embeds_token():
     cfg = build_config_json(
-        APP, secrets={"DB_PASSWORD": "s3"}, clone_url="http://app:8000/data-apps.git/sales", clone_token="PATPAT"
+        APP,
+        secrets={"DB_PASSWORD": "s3"},
+        clone_url="http://app:8000/data-apps.git/sales",
+        clone_token="PATPAT",
+        service_token="SERVICE",
     )
     git = cfg["dataApp"]["git"]
     # The token is embedded into the repository URL: the runtime image only
@@ -40,7 +44,10 @@ def test_config_json_internal_repo_embeds_token():
     assert git["#password"] == "PATPAT"
     # secrets: caller-provided + injected platform vars
     assert cfg["dataApp"]["secrets"]["#DB_PASSWORD"] == "s3"
-    assert cfg["dataApp"]["secrets"]["AGNES_TOKEN"] == "PATPAT"
+    # NOT the clone token: `AGNES_TOKEN` is the app's RUNTIME credential for
+    # the Agnes API. This assertion used to read "PATPAT" and so encoded the
+    # very swap that left every hosted app unable to read data.
+    assert cfg["dataApp"]["secrets"]["AGNES_TOKEN"] == "SERVICE"
     assert "input" not in cfg  # Data Loader never configured on this platform
 
 
@@ -48,7 +55,7 @@ def test_config_json_draft_uses_pinned_branch():
     from src.data_apps.spec import build_config_json
 
     row = {"repo_mode": "internal", "is_draft": True, "draft_branch": "init", "slug": "d--init"}
-    cfg = build_config_json(row, secrets={}, clone_url="http://app:8000/data-apps.git/d", clone_token="PAT")
+    cfg = build_config_json(row, secrets={}, clone_url="http://app:8000/data-apps.git/d", clone_token="PAT", service_token="SERVICE")
     assert cfg["dataApp"]["git"]["branch"] == "init"
     assert cfg["dataApp"]["git"]["repository"].endswith("/data-apps.git/d")
     assert cfg["dataApp"]["git"]["#password"] == "PAT"
@@ -58,7 +65,7 @@ def test_config_json_prod_still_agnes_live():
     from src.data_apps.spec import build_config_json
 
     row = {"repo_mode": "internal", "slug": "d"}
-    cfg = build_config_json(row, secrets={}, clone_url="http://x/data-apps.git/d", clone_token="PAT")
+    cfg = build_config_json(row, secrets={}, clone_url="http://x/data-apps.git/d", clone_token="PAT", service_token="SERVICE")
     assert cfg["dataApp"]["git"]["branch"] == "agnes-live"
 
 
@@ -93,7 +100,7 @@ def test_config_json_external_repo():
         "cpu_limit": "",
         "env": "{}",
     }
-    cfg = build_config_json(app_external, secrets={}, clone_url="", clone_token="")
+    cfg = build_config_json(app_external, secrets={}, clone_url="", clone_token="", service_token="SERVICE")
     git = cfg["dataApp"]["git"]
     assert git["repository"] == "https://github.com/user/repo.git"
     assert git["branch"] == "feature-x"
@@ -129,7 +136,7 @@ def test_config_json_embeds_percent_encoded_token():
     from src.data_apps.spec import build_config_json
 
     row = {"repo_mode": "internal", "slug": "s"}
-    cfg = build_config_json(row, secrets={}, clone_url="http://app:8000/data-apps.git/s", clone_token="a/b@c:d")
+    cfg = build_config_json(row, secrets={}, clone_url="http://app:8000/data-apps.git/s", clone_token="a/b@c:d", service_token="SERVICE")
     assert cfg["dataApp"]["git"]["repository"] == "http://agnes:a%2Fb%40c%3Ad@app:8000/data-apps.git/s"
     assert cfg["dataApp"]["git"]["#password"] == "a/b@c:d"  # raw token still in the field
 
@@ -139,7 +146,11 @@ def test_config_json_does_not_double_embed_credentials():
 
     row = {"repo_mode": "internal", "slug": "s"}
     cfg = build_config_json(
-        row, secrets={}, clone_url="http://agnes:existing@app:8000/data-apps.git/s", clone_token="NEW"
+        row,
+        secrets={},
+        clone_url="http://agnes:existing@app:8000/data-apps.git/s",
+        clone_token="NEW",
+        service_token="SERVICE",
     )
     assert cfg["dataApp"]["git"]["repository"] == "http://agnes:existing@app:8000/data-apps.git/s"
 
@@ -148,6 +159,42 @@ def test_config_json_external_repo_repository_untouched():
     from src.data_apps.spec import build_config_json
 
     row = {"repo_mode": "external", "repo_url": "https://github.com/org/repo", "repo_branch": "main", "slug": "s"}
-    cfg = build_config_json(row, secrets={}, clone_url="ignored", clone_token="PAT")
+    cfg = build_config_json(row, secrets={}, clone_url="ignored", clone_token="PAT", service_token="SERVICE")
     # External repos keep their own URL + branch; no token embedding, no username field.
     assert cfg["dataApp"]["git"] == {"repository": "https://github.com/org/repo", "branch": "main"}
+
+
+def test_the_runtime_credential_is_the_service_token_not_the_clone_token():
+    """Devin Review on #1239: one parameter was serving two different roles.
+
+    `AGNES_TOKEN` is what the running app calls the Agnes API with. When the
+    deploy path was corrected to pass the git-scoped clone token (so the first
+    clone would stop failing), the shared parameter carried it into
+    `AGNES_TOKEN` too — and `data-app-git:<slug>` is admitted by exactly one
+    surface, the internal git backend. Every hosted app therefore started
+    healthy and was refused by every data endpoint it called, which is
+    invisible from the outside: the container is up and the app renders.
+    """
+    from src.data_apps.spec import build_config_json
+
+    row = {"repo_mode": "internal", "slug": "s"}
+    cfg = build_config_json(
+        row,
+        secrets={},
+        clone_url="http://app:8000/data-apps.git/s",
+        clone_token="GIT-SCOPED",
+        service_token="SERVICE-SCOPED",
+    )
+    secrets = cfg["dataApp"]["secrets"]
+    assert secrets["AGNES_TOKEN"] == "SERVICE-SCOPED", "the app cannot read Agnes data with a clone token"
+    assert cfg["dataApp"]["git"]["#password"] == "GIT-SCOPED", "the clone still needs the git-scoped one"
+
+
+def test_the_deploy_path_passes_the_service_token():
+    """Source-level: the two credentials exist in `_deploy` and are not swapped."""
+    import pathlib
+
+    src = (pathlib.Path(__file__).resolve().parents[1] / "app" / "api" / "data_apps.py").read_text(encoding="utf-8")
+    call = src[src.index("config_json = build_config_json(") :][:600]
+    assert "clone_token=git_token" in call
+    assert "service_token=jwt_token" in call

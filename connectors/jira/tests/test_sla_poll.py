@@ -218,8 +218,10 @@ class TestUpdateIssueSlaHealing:
         assert fields["customfield_10328"]["name"] == "Time to first response"
         assert fields["customfield_10161"]["name"] == "Time to resolution"
 
-        # transform_single_issue should have been called once
-        mock_transform.assert_called_once_with(issue_key="TEST-1")
+        # transform_single_issue should have been called once, anchored to the raw
+        # directory this function just wrote the JSON into — without raw_dir the
+        # transform resolves $DATA_DIR/extracts/<source>/raw and never finds it.
+        mock_transform.assert_called_once_with(issue_key="TEST-1", raw_dir=raw_dir)
 
 
 # ---------------------------------------------------------------------------

@@ -1019,10 +1019,40 @@ async function maybeShowGapResolver(text) {
 // ── "add <thing>" parity ─────────────────────────────────────────────────────
 // Typing "add X" in chat does what clicking Add in the Catalog does. Returns
 // true if it handled the message.
+//
+// This runs BEFORE the model sees the message, so anything it claims is
+// swallowed whole. Two guards keep that power proportionate:
+//
+//   * only a short, single-clause imperative counts as a command. A message
+//     that merely opens with the verb is prose — "Install instructions for the
+//     CLI, please", "Add the sales package, then explain churn" — and taking
+//     it here silently discarded everything after the first clause.
+//   * the match must be confident before we mutate the Stack. `matchScore`
+//     awards 12 points per incidental word found anywhere in an item's name,
+//     id or *description*, so a long sentence could clear `> 0` on one shared
+//     word and subscribe the user to something they never named.
+//
+// Anything that fails either guard falls through to the model, which can ask
+// what was meant. Bailing out is always safe here; guessing is not.
+const ADD_COMMAND_MAX_WORDS = 8;
+const ADD_COMMAND_MIN_SCORE = 60; // exact name (100) or substring hit (60)
+
 async function maybeHandleAddCommand(text) {
-  const m = text.trim().match(/^(?:add|enable|install)\s+(.+)/i);
+  const m = text.trim().match(/^(?:add|enable|install)\s+(.+)$/i);
   if (!m) return false;
-  const query = m[1]
+  // A trailing sentence terminator ("add sales-package.") is punctuation,
+  // not part of what to add — strip it once so every downstream
+  // normalization agrees on the same subject. Previously only the
+  // word-count check was normalized this way; the search query was still
+  // built from the raw capture, so the dot rode along into `q` and broke
+  // the exact-name match, the substring match, and the per-token fallback
+  // alike — the identical message without the trailing "." resolved fine.
+  const subject = m[1].trim().replace(/[.!?]+$/, "");
+  // Sentence break or newline => prose, not a command.
+  if (/[.!?;:]\s|\n/.test(subject)) return false;
+  const words = subject.split(/\s+/).filter(Boolean);
+  if (words.length > ADD_COMMAND_MAX_WORDS) return false;
+  const query = subject
     .replace(/\b(the|a|an|package|data|memory|to|my|stack|please)\b/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -1032,18 +1062,21 @@ async function maybeHandleAddCommand(text) {
   } catch (_) {
     return false;
   }
-  const q = (query || m[1]).toLowerCase();
+  const q = (query || subject).toLowerCase();
   const scored = items
     .filter((i) => !i.in_stack)
     .map((i) => ({ i, s: matchScore(q, i) }))
     .filter((x) => x.s > 0)
     .sort((a, b) => b.s - a.s);
-  if (!scored.length) {
-    hooks.renderAssistant(
-      `I couldn't find anything called "**${escapeHtml(m[1])}**" to add. Open the [Catalog](/catalog) to see what's available.`,
-    );
-    return true;
-  }
+  // No match, or only a weak bag-of-words match, or several equally weak
+  // candidates: hand the turn to the model rather than dead-ending on a
+  // "couldn't find X" that quotes the user's own sentence back at them.
+  // The bar applies uniformly regardless of how many candidates matched —
+  // a lone addable item on the instance is not itself a reason to trust a
+  // weak match; it just means there's nothing else it *could* be.
+  if (!scored.length) return false;
+  const confident = scored[0].s >= ADD_COMMAND_MIN_SCORE;
+  if (!confident) return false;
   const target = scored[0].i;
   try {
     await subscribe(target.resource_type, target.id);
@@ -1065,14 +1098,26 @@ function matchScore(needle, item) {
   const n = needle.toLowerCase().trim();
   if (!n) return 0;
   if ((item.name || "").toLowerCase() === n) return 100;
-  if (hay.includes(n)) return 60;
+  // The substring tier carries the same "too short to mean anything" bar the
+  // per-token tier below already applies. Without it, "install it" reduces to
+  // the needle "it", which occurs inside almost any name/id/description, scores
+  // the full 60, and clears the confidence bar — so an item nobody named gets
+  // added with no confirmation. Exact-name equality above is left unguarded on
+  // purpose: an item genuinely called "ai" is a real match, and equality cannot
+  // happen by accident the way containment can.
+  if (n.length > 2 && hay.includes(n)) return 60;
   let s = 0;
   n.split(/\s+/)
     .filter((t) => t.length > 2)
     .forEach((t) => {
       if (hay.includes(t)) s += 12;
     });
-  return s;
+  // Bag-of-words overlap ranks candidates but must never *be* confidence:
+  // five matching tokens reach 60, which is exactly ADD_COMMAND_MIN_SCORE, so
+  // an ordinary five-word sentence whose words happen to appear in a
+  // description would have counted as naming that item. Capped below the bar
+  // so only the exact-name (100) and substring (60) tiers can clear it.
+  return Math.min(s, ADD_COMMAND_MIN_SCORE - 1);
 }
 
 // ── escaping ─────────────────────────────────────────────────────────────────

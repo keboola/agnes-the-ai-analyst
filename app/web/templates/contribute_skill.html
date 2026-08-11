@@ -2,6 +2,7 @@
 {% block title %}Contribute a skill — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block head_extra %}
+<link rel="stylesheet" href="{{ static_url('css/ds_dropdown.css') }}">
 <style>
   /* /admin/contribute-skill — paste a generated SKILL.md and publish it into
      the local "Agnes Contributed" marketplace. Mirrors the admin landing
@@ -145,14 +146,28 @@
       {{ ds.button('Paste from clipboard', variant='secondary', type='button', id='paste-btn') }}
       <span class="contrib-field">
         <label for="grant_group">Visible to</label>
-        <select name="grant_group" id="grant_group">
-          {% for group in (groups or []) %}
-          <option value="{{ group.name }}"{% if group.name == 'Admin' %} selected{% endif %}>{{ group.name }}</option>
-          {% else %}
-          <option value="Admin" selected>Admin</option>
-          <option value="Everyone">Everyone</option>
+        {% set grant_group_options = [] %}
+        {% for group in (groups or []) %}
+        {% set _ = grant_group_options.append({'value': group.name, 'label': group.name}) %}
+        {% else %}
+        {% set _ = grant_group_options.append({'value': 'Admin', 'label': 'Admin'}) %}
+        {% set _ = grant_group_options.append({'value': 'Everyone', 'label': 'Everyone'}) %}
+        {% endfor %}
+        {# The real <select> stays the control the form submits (plain POST,
+           no JS reads it) — untouched. The custom dropdown alongside it is a
+           visual replacement only: which one is visible is a theme decision
+           (paper-skin.css), not a template one. See _components.html's
+           `dropdown` macro. #}
+        <select name="grant_group" id="grant_group" class="ds-dropdown-native">
+          {% for opt in grant_group_options %}
+          <option value="{{ opt.value }}"{% if opt.value == 'Admin' %} selected{% endif %}>{{ opt.label }}</option>
           {% endfor %}
         </select>
+        {{ ds.dropdown(
+          id='grant-group-dd', target='grant_group',
+          aria_label='Visible to', selected='Admin',
+          options=grant_group_options,
+        ) }}
       </span>
     </div>
     <textarea name="skill_md" id="skill_md" required
@@ -204,4 +219,8 @@
     } catch (e) { /* ignore */ }
   })();
 </script>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ static_url('js/components/ds_dropdown.js') }}" defer></script>
 {% endblock %}

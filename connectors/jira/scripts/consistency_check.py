@@ -399,6 +399,29 @@ class JiraConsistencyChecker:
             logger.error(f"Error running backfill: {e}")
             return [], issue_keys
 
+    def _enqueue_jira_refresh(self) -> None:
+        """Ask for one coalesced `jira-refresh` after this run's parquet writes.
+
+        Mirrors the webhook path in `connectors/jira/service.py`, including its
+        follow-up: the dedup matches `status IN ('queued', 'running')`, so
+        collapsing onto a refresh that is already RUNNING is not enough — that job
+        may have read the parquet before these writes landed, and nothing else
+        would recover them.
+
+        Non-fatal by design. This module runs as a standalone script and from a
+        systemd timer as well as from the admin endpoint, and the checker's real
+        work — backfilled JSON and rewritten parquet — is durable before this runs.
+        """
+        try:
+            from app.job_correlation import stamp_request_id
+            from src.repositories import jobs_repo
+
+            result = jobs_repo().enqueue("jira-refresh", stamp_request_id({}), idempotency_key="jira-refresh")
+            if result.get("status") == "running":
+                jobs_repo().enqueue("jira-refresh", stamp_request_id({}), idempotency_key="jira-refresh-followup")
+        except Exception as enqueue_err:
+            logger.warning(f"Could not enqueue jira-refresh after the consistency check: {enqueue_err}")
+
     def transform_issues(self, issue_keys: list[str]) -> tuple[list[str], list[str]]:
         """
         Trigger incremental Parquet transform for specific issues.
@@ -540,6 +563,18 @@ class JiraConsistencyChecker:
             logger.info(f"Transforming {len(missing_in_parquet)} issues with Parquet lag")
             transformed, transform_failed = self.transform_issues(missing_in_parquet)
             self.stats["transform_failed"].extend(transform_failed)
+
+        # One coalesced rebuild for whatever the fixes just wrote. `transform_issues`
+        # shells out to `connectors.jira.incremental_transform`, which writes parquet
+        # and nothing else — the `_meta` refresh, and the `CREATE OR REPLACE VIEW`
+        # inside it, live in the `jira-refresh` job now. Nothing on this path used to
+        # announce anything, which was invisible while the transform refreshed `_meta`
+        # inline. Without it, a run where this checker is the ONLY writer leaves the
+        # catalog's row/size numbers stale until some unrelated webhook fires — and
+        # "the only writer" is precisely a webhook outage, i.e. when this checker
+        # matters most.
+        if not dry_run and (self.stats["auto_backfilled"] or (auto_fix and missing_in_parquet)):
+            self._enqueue_jira_refresh()
 
         # Calculate final stats
         duration = time.time() - start_time

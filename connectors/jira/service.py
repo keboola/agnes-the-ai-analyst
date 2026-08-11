@@ -97,6 +97,27 @@ def trigger_incremental_transform(issue_key: str, deleted: bool = False) -> bool
 
         success = transform_single_issue(
             issue_key=issue_key,
+            # The transform has to read the JSON out of the directory `save_issue`
+            # just wrote it to. Left unset, `transform_single_issue` falls back to
+            # `$DATA_DIR/extracts/<source>/raw` — derived from DATA_DIR, so it
+            # ignores JIRA_DATA_DIR entirely. On any deployment where the two do not
+            # coincide (including the default one, where JIRA_DATA_DIR is unset and
+            # resolves to the legacy raw path) every webhook transform died on
+            # "Issue JSON not found" while the endpoint still answered Jira 200 —
+            # so edits to issues already in the parquet silently stopped landing,
+            # and only *new* issues appeared, backfilled later by the consistency
+            # check.
+            raw_dir=Config.JIRA_DATA_DIR,
+            # `output_dir` is deliberately NOT passed. Its default is the
+            # extract.duckdb-contract location the orchestrator actually serves,
+            # which is right on every deployment. `JIRA_PARQUET_DIR` — the obvious
+            # candidate to forward — means the LEGACY Data Broker root across this
+            # connector (`jira.env.example.txt`, `scripts/consistency_check.py`,
+            # `scripts/poll_sla.py`), which nothing serves; forwarding it would send
+            # webhook writes off the served layout on exactly the installs that set
+            # it, reintroducing this bug from the other side. It would also break
+            # `update_meta`, which derives the extract dir as `output_dir.parent`
+            # and assumes the `<source>/data` shape.
             deleted=deleted,
         )
 

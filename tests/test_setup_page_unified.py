@@ -25,8 +25,10 @@ def client(tmp_path, monkeypatch):
     (tmp_path / "analytics").mkdir()
     (tmp_path / "extracts").mkdir()
     from src.db import close_system_db
+
     close_system_db()
     from app.main import create_app
+
     app = create_app()
     yield TestClient(app)
     close_system_db()
@@ -35,12 +37,12 @@ def client(tmp_path, monkeypatch):
 def test_setup_page_renders_unified_layout(client):
     """Bare `/setup` (no query param) renders the unified flow:
 
-      - `agnes init` is mandatory (subsumes the old admin-only
-        `agnes auth import-token` + `agnes auth whoami` pair).
-      - Marketplace block is always emitted (Fix B in 2026-05-10
-        init-report response): anonymous visitors with no plugin grants
-        still get the marketplace registration step so the SessionStart
-        hook is pre-wired. Confirm = step 8.
+    - `agnes init` is mandatory (subsumes the old admin-only
+      `agnes auth import-token` + `agnes auth whoami` pair).
+    - Marketplace block is always emitted (Fix B in 2026-05-10
+      init-report response): anonymous visitors with no plugin grants
+      still get the marketplace registration step so the SessionStart
+      hook is pre-wired. Confirm = step 8.
     """
     resp = client.get("/setup", follow_redirects=True)
     assert resp.status_code == 200
@@ -90,8 +92,7 @@ def test_setup_page_renders_marketplace_for_user_with_grants(client, monkeypatch
     from src import marketplace_filter
 
     async def _admin_user(request: Request):  # type: ignore[no-redef]
-        return {"id": "admin-1", "email": "admin@example.com",
-                "is_admin": True, "name": "Admin", "groups": ["Admin"]}
+        return {"id": "admin-1", "email": "admin@example.com", "is_admin": True, "name": "Admin", "groups": ["Admin"]}
 
     monkeypatch.setattr(
         marketplace_filter,
@@ -167,3 +168,28 @@ def test_first_time_setup_renders_all_wizard_fields(client):
     assert "&copy;" in text or "<footer>" in text
     # The bespoke login-card chrome is gone.
     assert "max-width: 520px" not in text
+
+
+def test_first_time_setup_data_source_dropdown(client):
+    """The Step 2 "Data Source" `<select>` (#1055) keeps its native control —
+    `toggleSourceFields()` / `configureSource()` read `#data-source` directly
+    and must keep working unchanged — with a paired `ds.dropdown()` custom
+    button+menu alongside it. Visibility between the two is a CSS theme
+    decision (paper-skin.css), not a template one."""
+    resp = client.get("/first-time-setup", follow_redirects=False)
+    assert resp.status_code == 200
+    text = resp.text
+    # Native select: untouched wiring.
+    assert 'id="data-source"' in text
+    assert 'onchange="toggleSourceFields()"' in text
+    assert 'class="ds-dropdown-native"' in text or "ds-dropdown-native" in text
+    # Custom dropdown: paired to the native select.
+    assert 'class="ds-dropdown"' in text
+    assert 'data-ds-dropdown-target="data-source"' in text
+    assert 'id="data-source-dd-btn"' in text
+    assert 'aria-controls="data-source-dd-menu"' in text
+    assert 'role="menuitemradio"' in text
+    for value in ("keboola", "bigquery", "local"):
+        assert f'data-value="{value}"' in text
+    assert 'aria-checked="true"' in text
+    assert "js/components/ds_dropdown.js" in text

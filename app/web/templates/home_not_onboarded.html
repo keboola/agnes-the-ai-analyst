@@ -117,25 +117,26 @@
                 <button type="button" role="tab" class="os-tab"
                         data-os-tab="windows" aria-selected="false">Windows (PowerShell)</button>
             </div>
-            {# The command self-heals the common failure modes in the SAME
-               terminal, so the user never has to reopen one:
-               1. `claude` already works → skips straight to the version check.
-               2. Installed but not on this session's PATH — the official
-                  installer delegates to `claude install`, a CHILD process,
-                  which can write the registry / rc files but never mutate
-                  the PATH of the already-open terminal → prepend
-                  ~/.local/bin to THIS session's PATH (the pasted command
-                  runs in the user's own shell, so it may do what the
-                  installer cannot) without re-downloading anything.
-               3. Truly missing → official installer, then the same PATH fix.
-               The trailing `claude --version` is the success check (and the
-               visible proof) in every branch. #}
+            {# Deliberately just the official installer, nothing else — ONE
+               command on a dark copy-box. The previous self-healing
+               one-liner (already-installed check + in-session PATH fix +
+               trailing `claude --version`) read as a wall of shell to the
+               non-technical audience this page serves; the installer is
+               idempotent (re-run = update), so the check bought nothing.
+               Verify (`claude --version`), the one-time OAuth sign-in, and
+               the `/exit` return live as inline code chips in the lede
+               below — a second dark box for the verify command read as
+               another thing to run and diluted the single-command shape.
+               The one real loss is the in-session PATH fix (the installer
+               is a child process and cannot mutate the open terminal's
+               PATH) — covered by the reopen-the-terminal sentence in the
+               lede. #}
             <div class="install-cmd" role="tabpanel" data-os-panel="unix">
-                <span class="multiline" id="install-cmd-claude-unix">command -v claude &gt;/dev/null 2&gt;&amp;1 || { [ -x "$HOME/.local/bin/claude" ] || curl -fsSL https://claude.ai/install.sh | bash; export PATH="$HOME/.local/bin:$PATH"; }; claude --version</span>
+                <span class="multiline" id="install-cmd-claude-unix">curl -fsSL https://claude.ai/install.sh | bash</span>
                 <button class="copy-btn" data-copy-target="install-cmd-claude-unix">Copy</button>
             </div>
             <div class="install-cmd" role="tabpanel" data-os-panel="windows" hidden>
-                <span class="multiline" id="install-cmd-claude-windows">if (-not (Get-Command claude -ErrorAction SilentlyContinue)) { if (-not (Test-Path "$env:USERPROFILE\.local\bin\claude.exe")) { irm https://claude.ai/install.ps1 | iex }; $env:Path = "$env:USERPROFILE\.local\bin;$env:Path" }; claude --version</span>
+                <span class="multiline" id="install-cmd-claude-windows">irm https://claude.ai/install.ps1 | iex</span>
                 <button class="copy-btn" data-copy-target="install-cmd-claude-windows">Copy</button>
             </div>
 
@@ -146,11 +147,12 @@
             </div>
 
             <p class="step-lede" style="margin-top: 14px;">
-                The command checks first — if Claude Code already works, nothing is installed.
-                When it prints a version number (e.g. <code>2.1.221 (Claude Code)</code>), you're done —
-                <strong>keep using this same terminal</strong> for the next steps.
-                Already using the Claude <em>desktop app</em>? That's a different thing — Claude Code
-                (this CLI) is what this command checks and installs. Don't have a Claude license yet?
+                Once it finishes, verify with <code>claude --version</code>, then sign in with
+                <code>claude</code> (one-time OAuth in your browser) &mdash; type <code>/exit</code>
+                when you're signed in to come back to the terminal.
+                See <em>command not found</em>? Close and reopen the terminal, then try again &mdash;
+                the installer can't refresh an already-open window.
+                Don't have a Claude license yet?
                 <a href="/setup-advanced#claude-plan">Here's how to get one</a>
                 (Pro&nbsp;/&nbsp;Max&nbsp;5×&nbsp;/&nbsp;Max&nbsp;20×&nbsp;/&nbsp;Enterprise &mdash; Enterprise is the option for Finance and Legal).
             </p>
@@ -254,7 +256,7 @@
         <div class="install-block install-block-secret">
             <div class="step-num" aria-hidden="true"><span>4</span></div>
             <div class="label">Launch Claude — we'll hand it your login first</div>
-            <p class="step-lede">One click copies a single line: it saves your login token to a file on this computer, then starts Claude. Paste it into your <strong>terminal</strong> and press Enter. First launch opens a one-time browser sign-in to Claude.</p>
+            <p class="step-lede">One click copies a single line: it saves your login token to a file on this computer, then starts Claude. Paste it into your <strong>terminal</strong> and press Enter. If you skipped the sign-in in step 1, the first launch opens the one-time browser sign-in now.</p>
 
             <div class="os-tabs" role="tablist" aria-label="Operating system">
                 <button type="button" role="tab" class="os-tab is-active"
@@ -263,27 +265,41 @@
                         data-os-tab="windows" aria-selected="false">Windows (PowerShell)</button>
             </div>
             <div class="install-cmd install-cmd-secret" role="tabpanel" data-os-panel="unix">
-                {# The `claude` check runs FIRST; the token is written only
-                   when the flow can actually continue. A missing CLI leaves
-                   NOTHING behind — no 90-day plaintext credential sitting on
-                   disk for a flow that stopped (the very hygiene the
-                   bootstrap-token cleanup exists for); the retry paste
-                   rewrites the token anyway. The write-success gate before
-                   the launch is preserved inside the happy branch. #}
+                {# Deliberately CLI-guard-free: write the token, launch
+                   Claude, nothing else. The old `command -v claude` gate
+                   (token written only when the flow could continue, so a
+                   missing CLI left no 90-day plaintext credential behind)
+                   made the command unreadable to the audience this page
+                   serves. Accepted trade-off: the file lives under the
+                   user's own profile (0600 via umask on this Unix line;
+                   the PowerShell line inherits the profile dir's ACLs —
+                   user-scoped, not world-readable), a retry paste
+                   overwrites it, `agnes init` deletes it after use, and a
+                   missing CLI now just fails the launch with 'command not
+                   found' — the copy below routes that to "reopen the
+                   terminal / re-run step 1, paste again". The
+                   write-SUCCESS gate before the launch stays on both
+                   lines (`&&` here, `if ($?)` on PowerShell — 5.1 has no
+                   `&&`): a user whose token failed to save must not land
+                   in a session that silently lacks their login. #}
                 <span class="multiline install-cmd-masked" id="install-cmd-token-unix"
-                      data-cmd-template="if command -v claude &gt;/dev/null 2&gt;&amp;1; then umask 077 &amp;&amp; mkdir -p ~/.agnes &amp;&amp; printf '%s' '{TOKEN}' &gt; ~/.agnes/token &amp;&amp; claude --permission-mode auto --allowedTools &quot;Bash(agnes:*)&quot; &quot;Bash(agnes *)&quot; &quot;Bash(uv tool install:*)&quot;; else echo '❌ Claude Code CLI not found — run step 1 in this terminal, then paste this command again.'; fi"
-                      aria-label="Checks Claude Code is installed, then saves your login token to a file and launches Claude. If the CLI is missing, it prints guidance and saves nothing. The token itself is masked here and never shown on screen."
-                      draggable="false" tabindex="0">if command -v claude &gt;/dev/null 2&gt;&amp;1; then umask 077 &amp;&amp; mkdir -p ~/.agnes &amp;&amp; printf '%s' '&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;' &gt; ~/.agnes/token &amp;&amp; claude --permission-mode auto --allowedTools "Bash(agnes:*)" "Bash(agnes *)" "Bash(uv tool install:*)"; else echo '❌ Claude Code CLI not found — run step 1 in this terminal, then paste this command again.'; fi</span>
+                      data-cmd-template="umask 077 &amp;&amp; mkdir -p ~/.agnes &amp;&amp; printf '%s' '{TOKEN}' &gt; ~/.agnes/token &amp;&amp; claude --permission-mode auto --allowedTools &quot;Bash(agnes:*)&quot; &quot;Bash(agnes *)&quot; &quot;Bash(uv tool install:*)&quot;"
+                      aria-label="Saves your login token to a file, then launches Claude. The token itself is masked here and never shown on screen."
+                      draggable="false" tabindex="0">umask 077 &amp;&amp; mkdir -p ~/.agnes &amp;&amp; printf '%s' '&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;' &gt; ~/.agnes/token &amp;&amp; claude --permission-mode auto --allowedTools "Bash(agnes:*)" "Bash(agnes *)" "Bash(uv tool install:*)"</span>
             </div>
             <div class="install-cmd install-cmd-secret" role="tabpanel" data-os-panel="windows" hidden>
                 <span class="multiline install-cmd-masked" id="install-cmd-token-windows"
-                      data-cmd-template="if (Get-Command claude -ErrorAction SilentlyContinue) { New-Item -ItemType Directory -Force &quot;$HOME\.agnes&quot; | Out-Null; [IO.File]::WriteAllText(&quot;$HOME\.agnes\token&quot;, '{TOKEN}'); if ($?) { claude --permission-mode auto --allowedTools &quot;Bash(agnes:*)&quot; &quot;Bash(agnes *)&quot; &quot;Bash(uv tool install:*)&quot; } } else { Write-Host '❌ Claude Code CLI not found — run step 1 in this terminal, then paste this command again.' }"
-                      aria-label="Checks Claude Code is installed, then saves your login token to a file and launches Claude. If the CLI is missing, it prints guidance and saves nothing. The token itself is masked here and never shown on screen."
-                      draggable="false" tabindex="0">if (Get-Command claude -ErrorAction SilentlyContinue) { New-Item -ItemType Directory -Force "$HOME\.agnes" | Out-Null; [IO.File]::WriteAllText("$HOME\.agnes\token", '&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;'); if ($?) { claude --permission-mode auto --allowedTools "Bash(agnes:*)" "Bash(agnes *)" "Bash(uv tool install:*)" } } else { Write-Host '❌ Claude Code CLI not found — run step 1 in this terminal, then paste this command again.' }</span>
+                      data-cmd-template="New-Item -ItemType Directory -Force &quot;$HOME\.agnes&quot; | Out-Null; [IO.File]::WriteAllText(&quot;$HOME\.agnes\token&quot;, '{TOKEN}'); if ($?) { claude --permission-mode auto --allowedTools &quot;Bash(agnes:*)&quot; &quot;Bash(agnes *)&quot; &quot;Bash(uv tool install:*)&quot; }"
+                      aria-label="Saves your login token to a file, then launches Claude. The token itself is masked here and never shown on screen."
+                      draggable="false" tabindex="0">New-Item -ItemType Directory -Force "$HOME\.agnes" | Out-Null; [IO.File]::WriteAllText("$HOME\.agnes\token", '&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;'); if ($?) { claude --permission-mode auto --allowedTools "Bash(agnes:*)" "Bash(agnes *)" "Bash(uv tool install:*)" }</span>
             </div>
 
             <div class="setup-cta-row">
                 <button type="button" id="launchClaudeBtn" class="btn-setup-warn" onclick="launchClaudeWithToken(this)">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                    </svg>
                     Copy launch command (includes your login)
                 </button>
                 <span class="setup-cta-meta">
@@ -307,8 +323,10 @@ What can I help you with?
 &gt;</div>
             <p class="step-lede" style="margin-top: 12px;">
                 When you see the <code>&gt;</code> prompt, you're ready for the next step.
-                See <strong>"❌ Claude Code CLI not found"</strong> instead? Run step 1
-                in this terminal, then paste this command again.
+                See a <strong>"command not found"</strong> error instead (on Windows,
+                <strong>"is not recognized as the name of a cmdlet"</strong>)? Claude Code isn't
+                reachable from this terminal — reopen the terminal (or run step 1), then paste
+                this command again.
             </p>
         </div>
         {% else %}
@@ -338,6 +356,10 @@ What can I help you with?
 
             <div class="setup-cta-row">
                 <button type="button" id="launchClaudeBtn" class="btn-setup-warn" onclick="launchClaudeWithToken(this)">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                    </svg>
                     Copy save-token command (includes your login)
                 </button>
                 <span class="setup-cta-meta">

@@ -389,6 +389,15 @@ def _decrypt_secrets(row: dict) -> dict:
 
 
 def _revoke_service_token(row: dict) -> None:
+    """Revoke everything this app's container authenticates with.
+
+    Both credentials, because both callers (an explicit stop and a delete)
+    mean "this app is not coming back on its own". The container git token
+    used to be left behind here, and being expiry-less it then outlived the
+    app itself — a deleted app's repository stayed reachable with a live
+    credential. (Devin Review on this PR.)
+    """
+    _revoke_container_git_tokens_for_row(row)
     token_id = row.get("service_token_id")
     if not token_id:
         return
@@ -396,6 +405,21 @@ def _revoke_service_token(row: dict) -> None:
         access_token_repo().revoke(token_id)
     except Exception:
         logger.warning("failed to revoke previous service token %s for data app %s", token_id, row["slug"])
+
+
+def _revoke_container_git_tokens_for_row(row: dict) -> None:
+    """``_revoke_container_git_tokens`` with the slugs resolved off an app row.
+
+    A draft clones its PARENT's repo, so the scope half of the name is the
+    parent's slug — the same resolution `_deploy` does before minting.
+    """
+    repo_slug = row.get("slug") or ""
+    if row.get("is_draft") and row.get("parent_app_id"):
+        parent = data_apps_repo().get(row["parent_app_id"])
+        if parent:
+            repo_slug = parent["slug"]
+    if repo_slug and row.get("owner_user_id"):
+        _revoke_container_git_tokens(row["owner_user_id"], repo_slug, row.get("slug") or "")
 
 
 def _rmtree_config_dir(slug: str) -> None:
@@ -437,6 +461,13 @@ def _mint_service_token(slug: str, owner: dict) -> tuple[str, str]:
         email=owner["email"],
         token_id=token_id,
         typ="pat",
+        # No `exp` claim, matching the `expires_at=None` on the row below. The
+        # two disagreed: the record said "never", the JWT carried the default
+        # 30-day expiry, so a hosted app that slept and woke more than a month
+        # after its last deploy started failing every Agnes call with nothing
+        # anywhere saying why. (Devin Review on this PR, on the sibling git
+        # token; the same mismatch was here.)
+        omit_exp=True,
         extra_claims={"scope": f"data-app:{slug}"},
     )
     prefix = token_id.replace("-", "")[:8]
@@ -450,6 +481,113 @@ def _mint_service_token(slug: str, owner: dict) -> tuple[str, str]:
         expires_at=None,
     )
     return token_id, jwt_token
+
+
+def _mint_container_git_token(repo_slug: str, app_slug: str, owner: dict) -> tuple[str, str]:
+    """Mint the credential the CONTAINER clones its repo with.
+
+    This has to exist separately from `_mint_service_token`, and the deploy
+    path used to reuse that one — which could never work. The git surface
+    (`app/api/data_apps_git.py`) is the only caller of `resolve_token_to_user`
+    that passes `allow_data_app_git_scope=True`, and it admits exactly the
+    `data-app-git:<slug>` scope; a `data-app:<slug>` service token is rejected
+    there like anywhere else. So every hosted app's entrypoint got
+    ``remote: authentication required`` on its first clone and crash-looped
+    forever. Watched end to end on a live instance before this fix: the
+    container restarting every few seconds, `git clone` failing, the app row
+    stuck in `error`, and nothing in the Agnes log to say why — the rejection
+    happens inside the git surface, which does not log a denial.
+
+    Two properties matter and they pull in different directions from
+    `_mint_git_credential`, which is the *analyst's* 24-hour authoring
+    credential:
+
+    - **Scope follows the REPO, not the app.** A draft shares its parent's
+      repository, and the git surface pins `scope`'s slug to the repo being
+      requested — a token minted for the draft's own slug is refused against
+      the parent's repo. Callers pass `repo_slug`, already resolved.
+    - **No expiry.** The container re-clones whenever it is recreated, which
+      includes waking from `sleep_mode: recreate` long after the deploy. A
+      24-hour token would leave an app that deployed fine on Monday unable to
+      wake on Wednesday — a failure that looks like a hosting bug and is not
+      one. This matches `_mint_service_token`, which is unbounded for the same
+      reason, and carries the same documented trade-off.
+    """
+    token_id = str(uuid.uuid4())
+    jwt_token = create_access_token(
+        user_id=owner["id"],
+        email=owner["email"],
+        token_id=token_id,
+        typ="pat",
+        # No `exp` claim — see `_mint_service_token`. The container re-clones
+        # on every recreate, including waking from `sleep_mode: recreate` long
+        # after the deploy, which is the whole reason this credential is
+        # unbounded; a 30-day JWT expiry made that wake fail to fetch its own
+        # code and crash-loop with no explanation. (Devin Review on this PR.)
+        omit_exp=True,
+        # Clone-only. The scope encodes WHICH repo, never what may be done to
+        # it, and this credential is minted for the app's OWNER — so without
+        # this claim the git surface saw an owner and allowed pushes, making
+        # "the clone token" a non-expiring read/write credential sitting in
+        # every hosted container's `config.json`. Enforced in
+        # `app/api/data_apps_git.py`. (agnes-reviewer-rbac on this PR.)
+        extra_claims={"scope": f"data-app-git:{repo_slug}", "git_write": False},
+    )
+    access_token_repo().create(
+        id=token_id,
+        user_id=owner["id"],
+        name=_container_git_token_name(repo_slug, app_slug),
+        token_hash=hashlib.sha256(jwt_token.encode()).hexdigest(),
+        prefix=token_id.replace("-", "")[:8],
+        expires_at=None,
+    )
+    return token_id, jwt_token
+
+
+def _container_git_token_name(repo_slug: str, app_slug: str) -> str:
+    """The name every container git token is created under.
+
+    One literal, because it is also the *key* these tokens are found by when
+    they have to be revoked: unlike the service token, whose id is kept on the
+    app row (`service_token_id`), this credential had nowhere to be recorded,
+    so nothing could revoke it. Keying the sweep on the name avoids a column,
+    a migration on both ladders and a parity sibling for a value only this
+    module reads.
+
+    It carries BOTH slugs on purpose. The *scope* follows the repo — a draft
+    clones its parent's repository, so its token must be minted against the
+    parent's slug — but the *ownership* follows the app: a parent and each of
+    its drafts hold distinct, simultaneously-live tokens against that one
+    repo. Keying only on `repo_slug` would make a draft's deploy revoke the
+    parent's live container credential, breaking the parent the next time it
+    woke and re-cloned.
+    """
+    return f"data-app-git:{repo_slug} (container {app_slug})"
+
+
+def _revoke_container_git_tokens(owner_id: str, repo_slug: str, app_slug: str, *, keep: str | None = None) -> None:
+    """Revoke this app's container git tokens, optionally sparing the newest.
+
+    These are minted with **no expiry** on purpose — a container re-clones
+    whenever it is recreated, including waking from `sleep_mode: recreate`
+    long after the deploy — so nothing ages them out. Every deploy minted
+    another and none was recorded anywhere, so they accumulated without bound
+    and stayed valid forever, including for apps that had since been deleted.
+    Each one grants read/write on the app's repository.
+
+    Best-effort per token: on the deploy path this runs after a deploy the
+    caller already considers successful, and a bookkeeping failure must not
+    turn it into an error. (Devin Review on this PR.)
+    """
+    name = _container_git_token_name(repo_slug, app_slug)
+    try:
+        tokens = access_token_repo().list_for_user(owner_id, include_revoked=False)
+    except Exception:  # noqa: BLE001
+        logger.warning("could not list tokens to revoke container git credentials for %s", app_slug, exc_info=True)
+        return
+    for token in tokens:
+        if token.get("name") == name and token.get("id") != keep:
+            _revoke_quietly(token["id"])
 
 
 _GIT_CREDENTIAL_TTL = timedelta(hours=24)
@@ -503,7 +641,36 @@ def _mint_git_credential(row: dict) -> str:
         prefix=token_id.replace("-", "")[:8],
         expires_at=expires_at,
     )
-    base = get_public_url() or AGNES_INTERNAL_URL
+    # `get_public_url()` reads PUBLIC_URL / `server.public_url` only — NOT
+    # `SERVER_URL`, which is what a compose deployment actually sets. On any
+    # box configured that way this fell through to AGNES_INTERNAL_URL
+    # (`http://app:8000`), a name only resolvable inside the compose network —
+    # so the clone URL handed to a REMOTE sandbox (chat.provider=e2b) pointed
+    # at a host that does not exist there. Watched live: the agent fetched its
+    # credential, ran `git clone`, and the egress hook reported the host as
+    # `app`. The docstring above already says this URL has to work from a
+    # remote sandbox; SERVER_URL is the missing link in that chain, and it is
+    # the same value the sandbox itself is handed as AGNES_SERVER.
+    base = get_public_url() or (os.environ.get("SERVER_URL") or "").strip().rstrip("/") or AGNES_INTERNAL_URL
+    return _clone_url_with_credential(base, jwt_token, slug)
+
+
+def _clone_url_with_credential(base: str, jwt_token: str, slug: str) -> str:
+    """`<scheme>://agnes:<jwt>@<host>/data-apps.git/<slug>`.
+
+    Its own function so the assembly can be tested without minting a token
+    against a real owner. The scheme guard is the reason it needs testing: a
+    schemeless base (`host:port`, which compose files do carry in
+    ``SERVER_URL``) has nothing for the credential to be injected after, so
+    the `replace("://", …)` was a silent no-op and the clone URL went out
+    authenticating as nobody — the failure the ``SERVER_URL`` fallback exists
+    to prevent, one step further along. Defaulted to https rather than
+    rejected: this is a fallback for a value the operator set for something
+    else, and refusing it would take away the only working address on that
+    box. (Devin Review on this PR.)
+    """
+    if "://" not in base:
+        base = f"https://{base}"
     return f"{base.replace('://', f'://agnes:{jwt_token}@')}/data-apps.git/{slug}"
 
 
@@ -618,6 +785,19 @@ class DraftParentMissingError(Exception):
     succeed. ``deploy_data_app`` maps this to HTTP 409 ``parent_not_found``."""
 
 
+def _revoke_quietly(token_id: str) -> None:
+    """Best-effort revoke of a token no container ever received.
+
+    Never raises: this runs on the failure path of a deploy that is already
+    reporting an error, and a bookkeeping problem must not replace the real
+    one in the caller's traceback.
+    """
+    try:
+        access_token_repo().revoke(token_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("could not revoke unused container git token %s", token_id, exc_info=True)
+
+
 def _rollback_new_service_token(repo, app_id: str, new_token_id: str, previous_token_id: str) -> None:
     """Undo a tentatively-minted+stored service token after a deploy step
     following the mint fails (spec build or runner `up`).
@@ -704,17 +884,38 @@ def redeploy_current(row: dict) -> None:
             repo_slug = parent["slug"]
     clone_url = f"{AGNES_INTERNAL_URL}/data-apps.git/{repo_slug}"
 
+    # NOT `jwt_token` (the service token). The git surface admits only the
+    # `data-app-git:<slug>` scope, so handing the container its `data-app:`
+    # service token made every first clone fail with `remote: authentication
+    # required` and the container crash-loop forever. Minted against
+    # `repo_slug` — a draft clones its PARENT's repo, and the scope's slug is
+    # pinned to the repo being requested. See `_mint_container_git_token`.
+    git_token_id, git_token = _mint_container_git_token(repo_slug, slug, owner)
+
     try:
-        config_json = build_config_json(row, secrets=secrets, clone_url=clone_url, clone_token=jwt_token)
+        config_json = build_config_json(
+            row,
+            secrets=secrets,
+            clone_url=clone_url,
+            clone_token=git_token,
+            # The RUNTIME credential, not the clone one: `AGNES_TOKEN` is what
+            # the app calls the Agnes API with, and a git-scoped token is
+            # refused by every data endpoint. (Devin Review on this PR.)
+            service_token=jwt_token,
+        )
         spec = build_container_spec(row, defaults=_effective_config(), data_dir=os.environ.get("DATA_DIR", "/data"))
     except ValueError:
         _rollback_new_service_token(repo, row["id"], new_token_id, previous_token_id)
+        # Same reasoning as the service token above: no container ever saw
+        # this credential, so leaving it live is pure dead weight.
+        _revoke_quietly(git_token_id)
         raise
 
     try:
         _runner().up(slug, spec, config_json)
     except (RunnerUnavailable, RunnerError) as exc:
         _rollback_new_service_token(repo, row["id"], new_token_id, previous_token_id)
+        _revoke_quietly(git_token_id)
         _handle_runner_failure(repo, row["id"], exc)
         raise
 
@@ -728,6 +929,12 @@ def redeploy_current(row: dict) -> None:
             access_token_repo().revoke(previous_token_id)
         except Exception:
             logger.warning("failed to revoke previous service token %s for data app %s", previous_token_id, slug)
+    # The container git token gets the same treatment, and for the same
+    # reason it has to happen *here* rather than before the runner call: the
+    # previously-deployed container may still be running or asleep and will
+    # re-clone with the old credential if it wakes. Sparing the one we just
+    # handed to the runner, everything older for this repo goes.
+    _revoke_container_git_tokens(owner["id"], repo_slug, slug, keep=git_token_id)
 
 
 class CreateDataAppRequest(BaseModel):

@@ -99,6 +99,14 @@
     <!-- Git mode -->
     <div data-pane="git" class="hidden">
       <div class="prompt-git-field">
+        {# #1055: not converted to ds.dropdown() — populatePicker() rebuilds
+           this <select>'s options from scratch (gitPathSelect.innerHTML = '')
+           on every load()/card, fetched from the IWT repo file list. Card
+           markup itself repeats per card (install / workspace), so this one
+           template spot renders it twice. ds_dropdown.js only wires up the
+           menu items present at DOMContentLoaded and exposes no re-init hook,
+           so a custom dropdown here would drift out of sync with the picker
+           without changes to that file — out of scope here. #}
         <select class="search-input" data-role="git-path-select" aria-label="Pick a repo file to bind">
           <option value="">— pick a file from the IWT repo —</option>
         </select>

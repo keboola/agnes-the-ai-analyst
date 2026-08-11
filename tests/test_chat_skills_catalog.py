@@ -154,7 +154,9 @@ class TestListBundledSkills:
 # ---------------------------------------------------------------------------
 
 
-def test_extras_skill_bundled():
+def test_extras_skill_bundled(monkeypatch):
+    """With the feature ON, the bundled data-apps skill is listed."""
+    monkeypatch.setenv("AGNES_DATA_APPS_ENABLED", "1")
     from app.chat.skills_catalog import BUNDLED_TEMPLATE_DIR, list_bundled_skills
 
     entries = list_bundled_skills(BUNDLED_TEMPLATE_DIR)
@@ -163,6 +165,31 @@ def test_extras_skill_bundled():
     entry = next(s for s in entries if s["name"] == "agnes-data-apps-extras")
     assert entry["source"] == "bundled"
     assert entry["description"]
+
+
+def test_a_feature_gated_skill_is_not_offered_when_its_feature_is_off(monkeypatch):
+    """Devin Review on #1239: the slash menu advertised a pruned skill.
+
+    This catalog reads the SHIPPED template, not the user's converged
+    workspace, so `_prune_disabled_feature_skills` deleting the skill from the
+    sandbox changed nothing here — the composer kept offering it, and invoking
+    it did nothing because the files were gone. Both now consult one gate.
+    """
+    monkeypatch.setenv("AGNES_DATA_APPS_ENABLED", "0")
+    from app.chat.skills_catalog import BUNDLED_TEMPLATE_DIR, list_bundled_skills
+
+    names = {s["name"] for s in list_bundled_skills(BUNDLED_TEMPLATE_DIR)}
+    assert "agnes-data-apps-extras" not in names, "the menu offers a skill this instance does not have"
+
+
+def test_an_ungated_bundled_skill_is_unaffected(monkeypatch):
+    """The gate must subtract only what it names."""
+    monkeypatch.setenv("AGNES_DATA_APPS_ENABLED", "0")
+    from app.chat.workdir import _FEATURE_GATED_SKILLS, skill_disabled_on_this_instance
+
+    assert skill_disabled_on_this_instance("agnes-data-apps-extras") is True
+    assert skill_disabled_on_this_instance("some-other-skill") is False
+    assert "some-other-skill" not in _FEATURE_GATED_SKILLS
 
 
 # ---------------------------------------------------------------------------
