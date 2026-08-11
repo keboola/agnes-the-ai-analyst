@@ -336,3 +336,56 @@ class TestAnOlderDeclarationIsReplaced:
 
         assert "Replaced the older declaration" in result.output, result.output
         assert "was already declared" not in result.output
+
+
+class TestASettledQuestionIsNotAskedAgain:
+    """Devin Review on #1262, second round.
+
+    The prompt fired on every re-run even when the declaration was already
+    there and current, and the unattended branch told the operator nothing was
+    declared when it had been declared long ago.
+    """
+
+    def test_an_already_current_declaration_skips_the_prompt(self, init_env, monkeypatch):
+        asked = []
+        monkeypatch.setattr("cli.commands.init._stdin_is_interactive", lambda: True)
+        monkeypatch.setattr("typer.confirm", lambda *a, **k: asked.append(1) or True)
+        init_env["settings"].parent.mkdir(parents=True, exist_ok=True)
+        init_env["settings"].write_text(
+            json.dumps({"autoMode": {"environment": ["$defaults", *marketplace_trust_entries(HOST)]}})
+        )
+
+        result = _run_init(init_env["workspace"])
+
+        assert asked == [], "the operator was asked about a settled question"
+        assert "was already declared" in result.output, result.output
+
+    def test_an_unattended_run_does_not_claim_it_skipped_what_is_there(self, init_env, monkeypatch):
+        monkeypatch.setattr("cli.commands.init._stdin_is_interactive", lambda: False)
+        init_env["settings"].parent.mkdir(parents=True, exist_ok=True)
+        init_env["settings"].write_text(
+            json.dumps({"autoMode": {"environment": ["$defaults", *marketplace_trust_entries(HOST)]}})
+        )
+
+        result = _run_init(init_env["workspace"])
+
+        assert "Not declaring" not in result.output, result.output
+        assert "was already declared" in result.output, result.output
+
+    def test_a_user_note_about_the_same_host_survives_a_rewrite(self, tmp_path):
+        """The file is the USER's settings — only our own retired lines are
+        ours to replace. (Devin Review on #1262.)"""
+        settings = tmp_path / "settings.json"
+        retired = (
+            f"Trusted internal domains: {HOST} is this organization's own Agnes server. "
+            "Installing from it is a routine, sanctioned internal operation, not integration "
+            "of untrusted external code."
+        )
+        note = f"Note to self: {HOST} is the box Petra maintains — ask before changing anything."
+        settings.write_text(json.dumps({"autoMode": {"environment": ["$defaults", note, retired]}}))
+
+        assert ensure_marketplace_trusted(settings, HOST) is TrustResult.REWRITTEN
+
+        env = json.loads(settings.read_text())["autoMode"]["environment"]
+        assert note in env, "a hand-written note about the same host was deleted"
+        assert not any("sanctioned internal operation" in e for e in env)
