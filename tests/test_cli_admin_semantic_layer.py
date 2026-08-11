@@ -130,11 +130,30 @@ class TestTheStorageTokenReadHonoursTheAllowlist:
         )
         assert _connection_storage_token({"id": "c1", "token_env": "KEBOOLA_STORAGE_TOKEN"}) == "legit"
 
-    def test_the_gate_is_the_shared_one(self):
-        """Not a re-implementation — the allowlist lives in one place."""
+    def test_both_env_reads_in_this_module_go_through_one_gated_helper(self):
+        """Not a re-implementation, and not one gated path beside an ungated one.
+
+        `_resolve_keboola_credentials_slot` read the same field ungated. That
+        was pre-existing, but leaving one of two reads in a module gated is
+        the shape that gets the gate removed later as "inconsistent".
+        """
         import inspect
 
         from connectors.keboola import semantic_layer
 
-        body = inspect.getsource(semantic_layer._connection_storage_token)
-        assert "is_token_env_allowed" in body
+        helper = inspect.getsource(semantic_layer._token_from_env)
+        assert "is_token_env_allowed" in helper
+
+        for fn in (semantic_layer._connection_storage_token, semantic_layer._resolve_keboola_credentials_slot):
+            body = inspect.getsource(fn)
+            assert "_token_from_env(conn)" in body, f"{fn.__name__} does not use the gated reader"
+            assert "os.environ.get(token_env" not in body, f"{fn.__name__} still reads the env directly"
+
+    def test_the_sibling_read_is_gated_too(self, monkeypatch):
+        from connectors.keboola.semantic_layer import _token_from_env
+
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "should-never-be-read")
+        monkeypatch.setattr(
+            "src.orchestrator_security.get_allowed_token_envs", lambda: {"KEBOOLA_STORAGE_TOKEN"}
+        )
+        assert _token_from_env({"id": "c1", "token_env": "AWS_SECRET_ACCESS_KEY"}) == ""
