@@ -64,14 +64,20 @@ _HARNESS_VERB = r"disabl\w+|enabl\w+|turn(?:ing|ed)?\s+(?:off|on)|switch(?:ing|e
 # `telemetry` and bare `permissions` are deliberately absent — product
 # telemetry and RBAC permissions are both data topics here, so they would fire
 # on ordinary notes. Only the harness's own machinery is named.
-_HARNESS_NOUN = (
-    r"recaps?|hooks?|permission[- ]modes?|classifiers?|guardrails?|safety|auto[- ]?mode|settings\.json|/config"
-)
+_HARNESS_NOUN_WORDS = r"recaps?|hooks?|permission[- ]modes?|classifiers?|guardrails?|safety|auto[- ]?mode|settings\.json"
+# `/config` is a SLASH token, not a word, so it cannot ride the same `\b`: a
+# leading `\b` before `/` requires a WORD character in front of the slash —
+# precisely the URL/path shape this module says it excludes. The effect was
+# inverted: `example.com/config was disabled` fired, and the standalone
+# `disable the /config area` it was added for never did. It gets its own
+# boundary — nothing word-ish, no slash and no dot before it, and nothing
+# path-like after — while the word nouns keep theirs. (Devin Review on #1258.)
+_HARNESS_NOUN = rf"(?:\b(?:{_HARNESS_NOUN_WORDS})\b|(?<![\w/.])/config(?![\w/.]))"
 # Both directions: "disable the recaps" and "with recaps disabled" are the same
 # instruction, and the incident note used the second one.
 _HARNESS_CONFIG_RE = re.compile(
-    rf"\b(?:{_HARNESS_VERB})\b[^.\n]{{0,48}}?\b(?:{_HARNESS_NOUN})\b"
-    rf"|\b(?:{_HARNESS_NOUN})\b[^.\n]{{0,48}}?\b(?:{_HARNESS_VERB})\b",
+    rf"\b(?:{_HARNESS_VERB})\b[^.\n]{{0,48}}?{_HARNESS_NOUN}"
+    rf"|{_HARNESS_NOUN}[^.\n]{{0,48}}?\b(?:{_HARNESS_VERB})\b",
     re.IGNORECASE,
 )
 
