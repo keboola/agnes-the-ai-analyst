@@ -35,9 +35,7 @@ from typing import Any
 # `/data/config` are not instructions, `/config` on its own is.
 #: Claude Code commands whose names are not also ordinary web paths. A bare
 #: mention of one of these in prose is already the shape of an instruction.
-_UNAMBIGUOUS_SLASH = (
-    "exit|quit|clear|compact|login|logout|permissions|resume|doctor|hooks|agnes-private"
-)
+_UNAMBIGUOUS_SLASH = "exit|quit|clear|compact|permissions|resume|doctor|hooks|agnes-private"
 
 #: …and the ones that collide with this product's OWN pages and with ordinary
 #: prose: `/agents` is the agent-builder page, `/status`, `/cost`, `/review`,
@@ -46,7 +44,7 @@ _UNAMBIGUOUS_SLASH = (
 #: an instruction to the reading agent — flagging it taught admins to ignore
 #: the warning. These count only when a verb tells someone to run them, which
 #: `_VERB_SLASH_RE` below already catches. (Devin Review on #1258.)
-_AMBIGUOUS_SLASH = "agents|status|cost|review|config|init|model|help"
+_AMBIGUOUS_SLASH = "agents|status|cost|review|config|init|model|help|login|logout"
 
 _KNOWN_SLASH_RE = re.compile(
     rf"(?<![\w/])/(?:{_UNAMBIGUOUS_SLASH})\b",
@@ -86,7 +84,7 @@ _HARNESS_NOUN_WORDS = r"recaps?|hooks?|permission[- ]modes?|classifiers?|guardra
 # `disable the /config area` it was added for never did. It gets its own
 # boundary — nothing word-ish, no slash and no dot before it, and nothing
 # path-like after — while the word nouns keep theirs. (Devin Review on #1258.)
-_HARNESS_NOUN = rf"(?:\b(?:{_HARNESS_NOUN_WORDS})\b|(?<![\w/.])/config(?![\w/.]))"
+_HARNESS_NOUN = rf"(?:\b(?:{_HARNESS_NOUN_WORDS})\b|(?<![\w/.])/config(?!\.\w)(?![\w/]))"
 # Both directions: "disable the recaps" and "with recaps disabled" are the same
 # instruction, and the incident note used the second one.
 _HARNESS_CONFIG_RE = re.compile(
