@@ -1679,3 +1679,77 @@ def test_the_admin_page_offers_a_way_out_of_a_project_binding():
     # It has to send explicit nulls: the handler carries the keys forward when
     # they are ABSENT, which is what stops an ordinary edit dropping them.
     assert "project_id: null" in src and "project_name: null" in src
+
+
+def test_the_test_button_is_targeted_explicitly_not_by_position():
+    """Devin Review on this PR: adding the unbind control moved the target.
+
+    `testConn` disabled `card.querySelector("button")` — the FIRST button in
+    the card — which stopped being Test the moment a control landed in the
+    header above the action row. The link greyed out, Test stayed live, and
+    repeated presses fired duplicate requests with no sign of progress.
+    """
+    import pathlib
+
+    src = (
+        pathlib.Path(__file__).resolve().parents[1] / "app" / "web" / "templates" / "admin_data_sources.html"
+    ).read_text(encoding="utf-8")
+
+    assert 'data-role="test"' in src, "the Test button carries no stable handle"
+    assert 'card.querySelector("button")' not in src, "still selecting by position"
+    assert "card.querySelector('button[data-role=\"test\"]')" in src
+
+
+class TestOnlyKeboolaCarriesItsProjectForward:
+    """Devin Review on this PR: the carry-forward was type-blind.
+
+    On Keboola, `project_id`/`project_name` are RECORDED — written from the
+    token's own owner block, never typed — so an absent key must mean
+    "unchanged". On BigQuery, `project_id` is an ordinary field the admin
+    types, and carrying it forward made it unclearable: emptying the field
+    brought it straight back.
+    """
+
+    def test_a_bigquery_project_id_can_be_cleared(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        created = c.post(
+            BASE,
+            json={
+                "name": "bq-clearable",
+                "source_type": "bigquery",
+                "config": {"project_id": "my-gcp-project", "dataset": "analytics"},
+            },
+            headers=_auth(token),
+        )
+        assert created.status_code == 201, created.text
+        conn_id = created.json()["id"]
+
+        r = c.put(f"{BASE}/{conn_id}", json={"config": {"dataset": "analytics"}}, headers=_auth(token))
+        assert r.status_code == 200, r.text
+        assert "project_id" not in r.json()["config"], "a typed BigQuery field could not be cleared"
+
+    def test_a_keboola_binding_is_still_carried_forward(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        created = c.post(
+            BASE,
+            json={
+                "name": "kbc-still-bound",
+                "source_type": "keboola",
+                "config": {
+                    "stack_url": "https://connection.example.com",
+                    "project_id": 1234,
+                    "project_name": "Acme",
+                },
+            },
+            headers=_auth(token),
+        )
+        assert created.status_code == 201, created.text
+        conn_id = created.json()["id"]
+
+        r = c.put(
+            f"{BASE}/{conn_id}",
+            json={"name": "renamed", "config": {"stack_url": "https://connection.example.com"}},
+            headers=_auth(token),
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["config"].get("project_id") == 1234
