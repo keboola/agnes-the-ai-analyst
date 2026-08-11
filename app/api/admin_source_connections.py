@@ -783,7 +783,24 @@ async def delete_connection_secret(
         # credential, which is what "cleared" has to mean.
         # (Devin Review on this PR.)
         try:
-            shared_secrets_repo().delete(derived_source_id(connection_id))
+            derived = derived_source_id(connection_id)
+            shared_secrets_repo().delete(derived)
+            # …and close the host-env fallback with it. `connectors/mcp/client.py`
+            # reads `os.environ[auth_secret_env]` when the vault has nothing, and
+            # the derived source names `KBC_STORAGE_TOKEN` — a variable a Keboola
+            # deployment plausibly has set. Deleting only the vault copy therefore
+            # left the agent authenticating from the host environment, so
+            # "cleared" did not cut it off at all. Re-enabling rebuilds the spec
+            # and restores the name. (Devin Review on this PR.)
+            source = mcp_sources_repo().get(derived)
+            if source is not None and source.get("auth_secret_env"):
+                mcp_sources_repo().upsert(
+                    **{
+                        k: v
+                        for k, v in {**source, "auth_secret_env": None}.items()
+                        if k not in ("created_at", "updated_at")
+                    }
+                )
         except Exception:  # noqa: BLE001 — best-effort; the primary delete already succeeded
             logger.warning(
                 "cleared the token for connection %s but could not clear the chat-tools copy",

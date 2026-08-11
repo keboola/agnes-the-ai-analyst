@@ -1874,3 +1874,18 @@ def test_a_failed_sync_reports_one_project_s_reason_and_code():
         ("bad token for A", "invalid_token"),
         ("stack unreachable for B", "upstream_down"),
     ), (out["error"], out.get("code"))
+
+
+def test_the_error_formatter_is_declared_once():
+    """Devin Review on #1249: a rebase left two identical declarations.
+
+    The later copy silently replaces the earlier one — harmless while they
+    agree, and a trap the moment one is edited: the edit would appear to do
+    nothing.
+    """
+    import pathlib
+
+    src = (
+        pathlib.Path(__file__).resolve().parents[1] / "app" / "web" / "templates" / "admin_data_sources.html"
+    ).read_text(encoding="utf-8")
+    assert src.count("function detailMessage") == 1, "detailMessage is declared more than once"

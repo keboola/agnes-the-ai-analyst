@@ -1087,3 +1087,45 @@ class TestEnableTurnsADisabledServerBackOn(TestChatToolsEndpoint):
 
         assert c.put(f"{BASE}/{conn_id}", json={"name": "renamed-still-off"}, headers=_auth(token)).status_code == 200
         assert mcp_sources_repo().get(source_id)["enabled"] is False
+
+
+class TestClearingAlsoClosesTheHostEnvFallback(TestChatToolsEndpoint):
+    """Devin Review on this PR: the vault copy was not the only credential.
+
+    `connectors/mcp/client.py` reads `os.environ[auth_secret_env]` when the
+    vault has nothing, and the derived source names `KBC_STORAGE_TOKEN` — a
+    variable a Keboola deployment plausibly has set. Deleting only the vault
+    copy therefore left the agent authenticating from the host environment,
+    which is the opposite of what clearing a token is for.
+    """
+
+    def test_clearing_removes_the_env_var_name_too(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-envfallback")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.repositories import mcp_sources_repo
+
+        source_id = derived_source_id(conn_id)
+        assert mcp_sources_repo().get(source_id)["auth_secret_env"], "fixture set no env name"
+
+        assert c.delete(f"{BASE}/{conn_id}/secret", headers=_auth(token)).status_code == 204
+
+        assert not mcp_sources_repo().get(source_id)["auth_secret_env"], (
+            "the agent can still authenticate from the host environment"
+        )
+
+    def test_re_enabling_restores_it(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-envrestore")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+        assert c.delete(f"{BASE}/{conn_id}/secret", headers=_auth(token)).status_code == 204
+
+        assert (
+            c.put(f"{BASE}/{conn_id}/secret", json={"value": "fresh"}, headers=_auth(token)).status_code == 204
+        )
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.repositories import mcp_sources_repo
+
+        assert mcp_sources_repo().get(derived_source_id(conn_id))["auth_secret_env"]
