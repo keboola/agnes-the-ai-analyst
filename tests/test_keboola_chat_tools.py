@@ -975,51 +975,17 @@ class TestAnEditDoesNotResurrectADisabledServer(TestChatToolsEndpoint):
         assert mcp_sources_repo().get(source_id)["name"] == before["name"]
 
 
-class TestARotationDoesNotReEnableADisabledServer(TestChatToolsEndpoint):
-    """Devin Review on this PR: the same bug on the sibling path.
+class TestEnableAlwaysEnables:
+    """Devin Review on this PR, from both sides.
 
-    Re-running enable is the documented way to propagate a rotated token, and
-    `build_stdio_spec` always describes an ENABLED source — so refreshing the
-    credential of a server the admin had switched off started serving that
-    project's tools again, to every group still holding grants.
+    An earlier revision carried a stored `enabled=False` over so that a
+    re-run to propagate a rotated token could not silently re-enable a
+    switched-off server. The cost was the opposite bug: the page's switch
+    could no longer turn chat tools back ON — it reported success and left
+    the server off. Both are gone now that a rotation propagates on its own
+    path (`set_connection_secret`), so this endpoint can mean what its name
+    says. The unrelated-edit path still preserves the flag.
     """
-
-    def _disable(self, conn_id: str, name: str) -> str:
-        from src.keboola_chat_tools import build_stdio_spec
-        from src.repositories import mcp_sources_repo
-
-        spec = build_stdio_spec(
-            connection_id=conn_id, connection_name=name, stack_url="https://connection.example.com"
-        )
-        mcp_sources_repo().upsert(**{**spec, "enabled": False})
-        return derived_source_id(conn_id)
-
-    def test_re_running_enable_keeps_it_disabled(self, seeded_app):
-        c, token = seeded_app["client"], seeded_app["admin_token"]
-        conn_id = self._create_keboola(c, token, name="kbc-resync-disabled")
-        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
-
-        from src.repositories import mcp_sources_repo
-
-        source_id = self._disable(conn_id, "kbc-resync-disabled")
-        assert mcp_sources_repo().get(source_id)["enabled"] is False
-
-        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
-        assert mcp_sources_repo().get(source_id)["enabled"] is False, (
-            "refreshing a credential re-activated a server the admin switched off"
-        )
-
-    def test_a_first_enable_still_enables(self, seeded_app):
-        """The endpoint's actual job must survive the fix."""
-        c, token = seeded_app["client"], seeded_app["admin_token"]
-        conn_id = self._create_keboola(c, token, name="kbc-first-enable")
-
-        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
-
-        from src.repositories import mcp_sources_repo
-
-        assert mcp_sources_repo().get(derived_source_id(conn_id))["enabled"] is True
-
 
 class TestTheSwitchReflectsWhatTheSourceDoes(TestChatToolsEndpoint):
     """Devin Review on this PR: `has_chat_tools` was row existence alone.
@@ -1054,3 +1020,51 @@ class TestTheSwitchReflectsWhatTheSourceDoes(TestChatToolsEndpoint):
         conn_id = self._create_keboola(c, token, name="kbc-switch-legacy")
         assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
         assert c.get(f"{BASE}/{conn_id}", headers=_auth(token)).json()["has_chat_tools"] is True
+
+
+class TestEnableTurnsADisabledServerBackOn(TestChatToolsEndpoint):
+    """The switch must be able to undo itself.
+
+    With the flag carried over unconditionally, an admin who switched the
+    derived server off could never turn chat tools back on from the
+    data-sources page: the request succeeded and the server stayed off.
+    """
+
+    def test_enabling_a_disabled_source_enables_it(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-reenable")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.keboola_chat_tools import build_stdio_spec
+        from src.repositories import mcp_sources_repo
+
+        source_id = derived_source_id(conn_id)
+        spec = build_stdio_spec(
+            connection_id=conn_id, connection_name="kbc-reenable", stack_url="https://connection.example.com"
+        )
+        mcp_sources_repo().upsert(**{**spec, "enabled": False})
+        assert mcp_sources_repo().get(source_id)["enabled"] is False
+
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+        assert mcp_sources_repo().get(source_id)["enabled"] is True, (
+            "the switch reported success and left the server off"
+        )
+        assert c.get(f"{BASE}/{conn_id}", headers=_auth(token)).json()["has_chat_tools"] is True
+
+    def test_an_unrelated_edit_still_preserves_the_flag(self, seeded_app):
+        """An edit is not a request to enable — that path keeps the flag."""
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-edit-keeps-off")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.keboola_chat_tools import build_stdio_spec
+        from src.repositories import mcp_sources_repo
+
+        source_id = derived_source_id(conn_id)
+        spec = build_stdio_spec(
+            connection_id=conn_id, connection_name="kbc-edit-keeps-off", stack_url="https://connection.example.com"
+        )
+        mcp_sources_repo().upsert(**{**spec, "enabled": False})
+
+        assert c.put(f"{BASE}/{conn_id}", json={"name": "renamed-still-off"}, headers=_auth(token)).status_code == 200
+        assert mcp_sources_repo().get(source_id)["enabled"] is False
