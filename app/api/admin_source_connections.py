@@ -458,7 +458,47 @@ async def update_connection(
         token_env=body.token_env,
         is_default=body.is_default,
     )
+    _resync_derived_chat_tools(connection_id)
     return _with_secret_status(repo.get(connection_id))
+
+
+def _resync_derived_chat_tools(connection_id: str) -> None:
+    """Rebuild the derived MCP source's spec from the connection's row.
+
+    The spec embeds the connection's NAME and `stack_url` (see
+    ``src.keboola_chat_tools.build_stdio_spec``), so an edit that moved the
+    project to a new stack left the agent talking to the old one — and, since
+    storing a token now propagates to the derived copy, a freshly rotated
+    credential was being copied to a source still pointed at the previous
+    address. A rename left the agent's source under the old label for the same
+    reason. Only an EXISTING derived source is touched, so this never enables
+    chat tools; the token slot is not written here at all. Best-effort: the
+    connection update itself already succeeded, and this must not turn a good
+    edit into a `500`. (Devin Review on this PR.)
+    """
+    source_id = derived_source_id(connection_id)
+    try:
+        if mcp_sources_repo().get(source_id) is None:
+            return
+        row = source_connections_repo().get(connection_id)
+        if row is None or row.get("source_type") != "keboola":
+            return
+        stack_url = ((row.get("config") or {}).get("stack_url") or "").rstrip("/")
+        if not stack_url:
+            return
+        mcp_sources_repo().upsert(
+            **build_stdio_spec(
+                connection_id=connection_id,
+                connection_name=row.get("name") or connection_id,
+                stack_url=stack_url,
+            )
+        )
+    except Exception:  # noqa: BLE001 — the connection edit already landed
+        logger.warning(
+            "updated connection %s but could not re-sync its chat-tools source",
+            connection_id,
+            exc_info=True,
+        )
 
 
 @router.delete("/{connection_id}", status_code=204)
