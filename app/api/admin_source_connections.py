@@ -407,10 +407,18 @@ async def update_connection(
             # binding is reset without moving the stack. The branch above stays
             # the one deliberate clear: a project id means nothing on a
             # different stack. (Devin Review on this PR.)
-            config = {
-                **{k: v for k, v in old_config.items() if k in ("project_id", "project_name")},
-                **config,
-            }
+            # Keboola only. `project_id`/`project_name` are *recorded* there —
+            # written by the connection from its own token's owner block, never
+            # typed — which is why an absent key must mean "unchanged". On a
+            # BigQuery connection `project_id` is an ordinary configuration
+            # field the admin DOES type, so carrying it forward would make it
+            # unclearable: an admin who empties the field would see it come
+            # straight back. (Devin Review on this PR.)
+            if existing_row.get("source_type") == "keboola":
+                config = {
+                    **{k: v for k, v in old_config.items() if k in ("project_id", "project_name")},
+                    **config,
+                }
     repo.update(
         connection_id,
         name=body.name,
