@@ -1634,6 +1634,21 @@ class TestKeboolaChatToolsParity:
         yield
         _reset_ephemeral_key_for_tests()
 
+    @pytest.fixture(autouse=True)
+    def _storage_api_is_reachable(self):
+        """Storing a token runs a live `verify_token` preflight (#1242) and
+        re-validates the stack URL, DNS included. These two tests are about
+        REST/CLI parity on the chat-tools pair, not about the Storage API, so
+        one stable project answers for both surfaces."""
+        from unittest.mock import patch
+
+        with (
+            patch("app.api.admin_source_connections.KeboolaStorageClient.verify_token") as verify,
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+        ):
+            verify.return_value = {"isMasterToken": False, "owner": {"id": 4242, "name": "Test Project"}}
+            yield verify
+
     def _seed_connection(self, parity_env, name: str) -> str:
         c, token = parity_env["client"], parity_env["admin_token"]
         r = c.post(
