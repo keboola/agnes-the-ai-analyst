@@ -220,11 +220,10 @@ def init(
         None,
         "--token",
         help=(
-            "Personal access token. Can also be supplied via the "
-            "AGNES_TOKEN env var or --token-file (see also). Inline "
-            "--token sometimes trips Claude Code's auto-classifier "
-            "(long bearer-token string in a command line); prefer "
-            "--token-file or AGNES_TOKEN to dodge that."
+            "Personal access token. Prefer --token-file or the AGNES_TOKEN "
+            "env var: an inline --token puts the secret into the command "
+            "line, where it is visible in shell history and in process "
+            "listings to every other user on the machine."
         ),
     ),
     token_file: Optional[str] = typer.Option(
@@ -233,8 +232,9 @@ def init(
         help=(
             "Path to a file whose first non-blank line is the PAT. Wins "
             "over AGNES_TOKEN env when both are set; loses to an explicit "
-            "--token flag. The token never appears in the command string "
-            "this way, which dodges Claude Code's bearer-token classifier."
+            "--token flag. The recommended way to pass the token: it stays "
+            "out of argv, so it reaches neither shell history nor the "
+            "process table."
         ),
     ),
     bundle: Optional[str] = typer.Option(
@@ -460,8 +460,10 @@ def init(
     #   5. --bundle exchange result (already set above as `token`)
     #   6. → error
     #
-    # --token-file and AGNES_TOKEN exist so the analyst can avoid Claude
-    # Code's auto-classifier flagging the long JWT in the command line.
+    # --token-file and AGNES_TOKEN exist so the PAT never has to travel in
+    # argv, where shell history and the process table both expose it. This
+    # is the repo-wide "no secrets on the command line" rule, not a special
+    # case — see .claude/skills/agnes-conventions/references/security.md.
     # ------------------------------------------------------------------
     if token is None and token_file:
         try:
