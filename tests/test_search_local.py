@@ -84,3 +84,34 @@ def test_rank_parity_with_server_engine(workspace):
     server_top, _conf = rank_chunks(list(CHUNKS), "monthly invoices", k=5)
     local_hits = local_search("monthly invoices", workspace=workspace, k=5)
     assert [c["id"] for _s, c in server_top] == [h["chunk_id"] for h in local_hits]
+
+
+def test_filename_fallback_matches_the_server(workspace):
+    """Offline search must find a file by name, like the server does.
+
+    `local_search` calls `rank_chunks` directly, so the filename fallback
+    added to `search()` did not reach it — `agnes search --local` and the
+    stdio MCP fallback kept answering `[]` for a query the server now
+    resolves. The artifact schema already denormalizes `filename` onto the
+    chunk rows, so the two surfaces can behave identically. Devin Review
+    on #1267.
+    """
+    from src.search.local import local_search
+
+    hits = local_search("handbook", workspace=workspace, k=5)
+    assert hits, "a file cannot be found by its name offline"
+    assert hits[0]["filename"] == "handbook.md"
+    assert hits[0]["match"] == "filename"
+
+
+def test_content_hits_offline_are_labelled_content(workspace):
+    from src.search.local import local_search
+
+    hits = local_search("monthly invoices", workspace=workspace, k=5)
+    assert hits and hits[0]["match"] == "content"
+
+
+def test_offline_extension_alone_still_matches_nothing(workspace):
+    from src.search.local import local_search
+
+    assert local_search("md", workspace=workspace, k=5) == []

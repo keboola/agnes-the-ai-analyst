@@ -162,6 +162,17 @@ def unified_search(
     buckets: List[List[Dict[str, Any]]] = []
 
     chunk_hits = [dict(h, type="chunk") for h in _chunk_search(corpus_ids, query, k=k)] if corpus_ids else []
+    # Filename-only hits are capped like the other weak-signal buckets below.
+    # `search()` falls back to matching FILE NAMES when nothing in any body
+    # matched, and each bucket is min-max normalized on its own — so the top
+    # name match scores 1.0, exactly like a strong content hit. The sort's
+    # tie-break is `type`, and "chunk" sorts first alphabetically, so without
+    # this a query whose word happens to be in a filename returned that file
+    # and buried the glossary definition, knowledge note or table that
+    # matched the word for real. Hits with no `match` key predate the label
+    # and are treated as content.
+    if chunk_hits and all(h.get("match") == "filename" for h in chunk_hits):
+        chunk_hits = chunk_hits[: max(2, k // 5)]
     buckets.append(chunk_hits)
 
     knowledge_hits: List[Dict[str, Any]] = []
