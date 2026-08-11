@@ -140,37 +140,117 @@ class TestANameHitCannotCrowdOutRealMatches:
     glossary entries and tables that actually matched.
     """
 
-    def test_a_body_hit_is_labelled_as_one(self):
-        import inspect
+    def test_a_body_hit_is_labelled_as_one(self, e2e_env):
+        from src.ingest.retrieval import search
+
+        cid = _seed("label-body", "notes.md", [{"ordinal": 0, "text": "alpha bravo charlie"}])
+        res = search([cid], "bravo")
+        assert res and res[0]["matched_on"] == "body"
+
+    def test_a_name_hit_is_labelled_as_one(self, e2e_env):
+        from src.ingest.retrieval import search
+
+        cid = _seed("label-name", "quarterly-report.md", [{"ordinal": 0, "text": "alpha bravo"}])
+        res = search([cid], "quarterly-report")
+        assert res and res[0]["matched_on"] == "filename"
+
+    def test_the_fallback_fires_even_when_scoring_returns_something(self, e2e_env):
+        """The trigger is "no body carries the query", not "no results".
+
+        With the embeddings extra installed every chunk gets a non-zero
+        cosine, so `rank_chunks` essentially always returns rows — an
+        empty-only trigger made the whole fallback dead code on exactly the
+        instances that have semantic search. Simulated here by scoring every
+        chunk from a query that appears in no body. (Devin Review on #1267.)
+        """
+        from unittest.mock import patch
 
         from src.ingest import retrieval
 
-        src = inspect.getsource(retrieval.search)
-        assert 'matched_on = "body"' in src
-        assert 'matched_on = "filename"' in src
-        assert '"matched_on": matched_on' in src
+        cid = _seed("label-semantic", "quarterly-report.md", [{"ordinal": 0, "text": "alpha bravo"}])
 
-    def test_the_combined_search_caps_a_name_only_chunk_bucket(self):
-        import inspect
+        real = retrieval.rank_chunks
 
-        from src.search import unified
+        def _always_scores(chunks, query, *, k=10):
+            top, _conf = real(chunks, query, k=k)
+            if top:
+                return top, "medium"
+            return [(0.42, ch) for ch in chunks][:k], "medium"
 
-        src = inspect.getsource(unified.unified_search)
-        assert 'all(h.get("matched_on") == "filename" for h in chunk_hits)' in src, src[:200]
-        i = src.index('matched_on')
-        assert "_sem_cap" in src[i : i + 400], "the cap must be the one the semantic buckets use"
+        with patch.object(retrieval, "rank_chunks", _always_scores):
+            res = retrieval.search([cid], "quarterly-report")
+
+        assert res, "the fallback never ran"
+        assert res[0]["matched_on"] == "filename"
+        assert res[0]["confidence"] == "low"
+
+    def test_the_combined_search_caps_a_name_only_chunk_bucket(self, e2e_env):
+        """Two name-only chunks at most WHEN something else matched too."""
+        from src.search.unified import unified_search
+
+        cid = _seed(
+            "cap-name",
+            "quarterly-report.md",
+            [{"ordinal": i, "text": f"alpha bravo charlie {i}"} for i in range(6)],
+        )
+        knowledge = [
+            {"id": f"k{i}", "title": f"quarterly report note {i}", "content": "quarterly report", "domain": "d"}
+            for i in range(3)
+        ]
+
+        from unittest.mock import patch
+
+        with patch("src.search.unified._knowledge_search", return_value=knowledge):
+            hits = unified_search(
+                "quarterly-report",
+                corpus_ids=[cid],
+                user_groups=None,
+                granted_domains=None,
+                tables=[],
+                k=10,
+            )
+
+        chunks = [h for h in hits if h.get("type") == "chunk"]
+        assert chunks, "the name match must still be reachable"
+        assert len(chunks) <= 2, f"a name-only bucket took {len(chunks)} slots"
+        assert any(h.get("type") == "knowledge" for h in hits), "real matches must survive"
+
+    def test_the_cap_does_not_fire_when_nothing_else_matched(self, e2e_env):
+        """Then the cap would only throw away the answer to the query that
+        motivated the fallback. (Devin Review on #1267.)"""
+        from src.search.unified import unified_search
+
+        cid = _seed(
+            "cap-alone",
+            "quarterly-report.md",
+            [{"ordinal": i, "text": f"alpha bravo charlie {i}"} for i in range(6)],
+        )
+
+        from unittest.mock import patch
+
+        with patch("src.search.unified._knowledge_search", return_value=[]):
+            hits = unified_search(
+                "quarterly-report",
+                corpus_ids=[cid],
+                user_groups=None,
+                granted_domains=None,
+                tables=[],
+                k=10,
+            )
+
+        chunks = [h for h in hits if h.get("type") == "chunk"]
+        assert len(chunks) > 2, f"only {len(chunks)} chunks, but nothing else matched"
 
     def test_offline_search_has_the_same_fallback(self):
-        """`agnes search --local` and the stdio MCP fallback run this path; the
-        module promises "the exact same ranking behavior" as the server."""
+        """Behaviour is pinned in `tests/test_search_local.py` against a real
+        built artifact; this only guards that the offline reader still calls
+        the shared ranker rather than growing its own."""
         import inspect
 
         from src.search import local
 
         src = inspect.getsource(local.local_search)
         assert "_rank_by_filename" in src
-        assert 'matched_on = "filename"' in src
-        assert 'confidence = "low"' in src
 
 
 class TestTheAdviceMatchesTheBehaviour:
@@ -192,3 +272,21 @@ class TestTheAdviceMatchesTheBehaviour:
             text = (ROOT / path).read_text()
             assert "file names are a fallback, not an index" in text, path
             assert 'matched_on: "filename"' in text, path
+
+
+class TestAHumanCanTellWhichKindOfHitItIs:
+    """Devin Review on #1267: the snippet under a name match is the file's
+    opening text, which does not contain the query. MCP agents read
+    `matched_on`; a person reading the collections UI saw a normal-looking
+    quotation instead."""
+
+    def test_the_collection_page_labels_a_name_match(self):
+        page = (ROOT / "app" / "web" / "templates" / "library_detail_legacy.html").read_text()
+        assert 'res.matched_on === "filename"' in page
+        assert "matched by file name" in page
+
+    def test_the_api_carries_the_label_to_it(self, e2e_env):
+        from src.ingest.retrieval import search
+
+        cid = _seed("label-api", "quarterly-report.md", [{"ordinal": 0, "text": "alpha bravo"}])
+        assert search([cid], "quarterly-report")[0]["matched_on"] == "filename"

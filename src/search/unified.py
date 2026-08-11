@@ -170,8 +170,7 @@ def unified_search(
     _sem_cap = max(2, k // 5)
 
     chunk_hits = [dict(h, type="chunk") for h in _chunk_search(corpus_ids, query, k=k)] if corpus_ids else []
-    if chunk_hits and all(h.get("matched_on") == "filename" for h in chunk_hits):
-        chunk_hits = chunk_hits[:_sem_cap]
+    name_only_chunks = bool(chunk_hits) and all(h.get("matched_on") == "filename" for h in chunk_hits)
     buckets.append(chunk_hits)
 
     knowledge_hits: List[Dict[str, Any]] = []
@@ -230,6 +229,15 @@ def unified_search(
             }
         )
     buckets.append(glossary_hits)
+
+    # Cap a name-only chunk bucket ONLY when something else actually matched.
+    # The cap exists to stop weak name hits crowding out real matches from the
+    # other sources; when there are no other matches it would just throw away
+    # the answer to the query that motivated the fallback — "what is in
+    # quarterly-report.md?" deserves more than two chunks of that file when
+    # nothing else in the instance matched. (Devin Review on #1267.)
+    if name_only_chunks and any(bucket for bucket in buckets[1:]):
+        buckets[0] = buckets[0][:_sem_cap]
 
     merged: List[Dict[str, Any]] = []
     for bucket in buckets:
