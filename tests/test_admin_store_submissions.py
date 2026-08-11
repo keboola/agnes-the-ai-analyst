@@ -1761,6 +1761,39 @@ class TestQuarantineGates:
         )
         assert r.status_code == 204, r.text
 
+    def test_a_newer_unjudged_upload_does_not_clear_an_adverse_verdict(self, web_client):
+        """Devin Review on #1263: the objection must not expire.
+
+        Reading only the LATEST submission let an author walk out of the gate:
+        re-upload once, and the fresh `pending_llm` row becomes "latest" while
+        the `blocked_llm` verdict stops counting — exactly the withdrawal this
+        refusal exists to prevent. The sibling predicate
+        `_entity_review_blocked` scans the whole chain for the same reason.
+        """
+        from src.db import get_system_db
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+
+        user_id, user_cookies = _create_user(web_client, "evade@x.com")
+        entity_id, _ = _seed_quarantined_entity(user_id, "evade@x.com", "evader")
+
+        conn = get_system_db()
+        StoreSubmissionsRepository(conn).create(
+            submitter_id=user_id,
+            submitter_email="evade@x.com",
+            type="skill",
+            name="evader",
+            version="1.0.1",
+            status="pending_llm",
+            entity_id=entity_id,
+            inline_checks={"manifest": {"status": "pass", "issues": []}},
+        )
+        conn.close()
+
+        r = web_client.delete(f"/api/store/entities/{entity_id}", cookies=user_cookies)
+
+        assert r.status_code == 403, r.text
+        assert r.json()["detail"]["code"] == "quarantined_owner_cannot_delete"
+
     def test_admin_can_delete_quarantined(self, web_client):
         user_id, _ = _create_user(web_client, "u@x.com")
         entity_id, _sub_id = _seed_quarantined_entity(user_id, "u@x.com", "q2")
