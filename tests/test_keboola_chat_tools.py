@@ -439,21 +439,41 @@ class TestDisableDoesNotClaimSuccessItCannotVouchFor(TestChatToolsEndpoint):
         assert detail["error"] == "chat_tools_not_fully_removed"
         assert "tools and their grants" in detail["still_present"]
 
-    def test_the_other_steps_still_run_when_one_fails(self, seeded_app):
-        """A partial teardown beats stopping at the first failure."""
+    def test_the_later_steps_still_run_when_a_LATER_one_fails(self, seeded_app):
+        """A partial teardown beats stopping — except after the tools step.
+
+        Failing to remove the tools is the one failure that must stop, because
+        the tools ARE the access and they outlive their source row (see
+        `TestAFailedToolRemovalStopsTheTeardown`). A failure further down —
+        the credential, the per-user rows — leaves nothing addressable, so
+        continuing is strictly better than stopping.
+        """
         c, token = seeded_app["client"], seeded_app["admin_token"]
         conn_id = self._create_keboola(c, token, name="kbc-chat-partial")
         assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
 
-        from src.repositories import mcp_sources_repo, shared_secrets_repo
+        import app.api.admin_source_connections as mod
+        from src.repositories import mcp_sources_repo, tool_registry_repo
 
+        real = mod.shared_secrets_repo
         source_id = derived_source_id(conn_id)
-        with pytest.MonkeyPatch.context() as mp:
-            self._failing_tool_registry(mp)
-            assert c.delete(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 500
 
-        assert mcp_sources_repo().get(source_id) is None, "the source survived an unrelated failure"
-        assert shared_secrets_repo().get(source_id) is None, "the credential survived an unrelated failure"
+        class _Boom:
+            def __getattr__(self, name):
+                def _fail(*a, **kw):
+                    raise RuntimeError("vault unavailable")
+
+                return _fail if name == "delete" else getattr(real(), name)
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(mod, "shared_secrets_repo", lambda: _Boom())
+            r = c.delete(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token))
+
+        assert r.status_code == 500
+        assert r.json()["detail"]["still_present"] == ["the copied credential"]
+        # The steps before AND after the failing one ran.
+        assert tool_registry_repo().list_for_source(source_id) == []
+        assert mcp_sources_repo().get(source_id) is None
 
     def test_a_clean_disable_is_still_204_and_idempotent(self, seeded_app):
         """The broad catch was load-bearing for nothing — deletes are no-ops."""
@@ -601,3 +621,135 @@ class TestTheStoredStackUrlIsValidatedOnTheWayIn:
             headers=_auth(token),
         )
         assert r.status_code == 201, r.text
+
+
+class TestClearingTheTokenCutsTheAgentOffToo(TestChatToolsEndpoint):
+    """Devin Review on this PR: the agent kept a working copy.
+
+    Enabling chat tools copies the connection's storage token into the MCP
+    vault. Clearing the connection's token is how an admin cuts a project off
+    — and the copy survived it, so the agent went on querying that project
+    with a credential the admin believed they had removed.
+    """
+
+    def test_clearing_the_storage_token_clears_the_agent_copy(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-clear-token")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.repositories import shared_secrets_repo
+
+        source_id = derived_source_id(conn_id)
+        assert shared_secrets_repo().get(source_id), "fixture stored no copy"
+
+        assert c.delete(f"{BASE}/{conn_id}/secret", headers=_auth(token)).status_code == 204
+
+        assert shared_secrets_repo().get(source_id) is None, (
+            "the agent still holds a credential the admin cleared"
+        )
+
+    def test_clearing_the_master_token_leaves_the_agent_copy(self, seeded_app):
+        """The copy is of the STORAGE token; the master one is a different slot."""
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-clear-master")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.repositories import shared_secrets_repo
+
+        assert c.delete(f"{BASE}/{conn_id}/secret?kind=master", headers=_auth(token)).status_code == 204
+        assert shared_secrets_repo().get(derived_source_id(conn_id))
+
+
+class TestADerivedNameClashIsExplained(TestChatToolsEndpoint):
+    """Devin Review on this PR: `mcp_sources.name` is unique.
+
+    A hand-registered source already holding the derived name made the upsert
+    die with an opaque 500, with nothing naming the clash.
+    """
+
+    def test_a_taken_name_answers_409_and_says_what_clashed(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-clash")
+
+        from src.keboola_chat_tools import build_stdio_spec
+        from src.repositories import mcp_sources_repo
+
+        spec = build_stdio_spec(
+            connection_id=conn_id, connection_name="kbc-clash", stack_url="https://connection.example.com"
+        )
+        squatter = {**spec, "id": "someone-elses-source"}
+        mcp_sources_repo().upsert(**squatter)
+
+        r = c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token))
+        assert r.status_code == 409, f"expected an explained clash, got {r.status_code}: {r.text}"
+        detail = r.json()["detail"]
+        assert detail["error"] == "mcp_source_name_taken"
+        assert detail["name"] == spec["name"]
+        assert "someone-elses-source" in detail["message"]
+
+    def test_a_failed_clash_check_leaves_no_orphaned_credential(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-clash-secret")
+
+        from src.keboola_chat_tools import build_stdio_spec
+        from src.repositories import mcp_sources_repo, shared_secrets_repo
+
+        spec = build_stdio_spec(
+            connection_id=conn_id, connection_name="kbc-clash-secret", stack_url="https://connection.example.com"
+        )
+        mcp_sources_repo().upsert(**{**spec, "id": "squatter-2"})
+
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 409
+        assert shared_secrets_repo().get(spec["id"]) is None
+
+
+def test_the_cli_points_at_the_step_that_actually_creates_tools():
+    """Dual-surface: the web hint was fixed; the CLI printed the same wrong
+    next step, naming a command that cannot grant MCP tools either."""
+    import pathlib
+
+    src = (pathlib.Path(__file__).resolve().parents[1] / "cli" / "commands" / "admin_connection.py").read_text(
+        encoding="utf-8"
+    )
+    assert "Introspect" in src
+    assert "agnes admin grant --help" not in src, "still points at a command that cannot grant tool access"
+
+
+class TestAFailedToolRemovalStopsTheTeardown(TestChatToolsEndpoint):
+    """Devin Review on this PR: continuing left the access live.
+
+    `list_passthrough_for_groups` joins `tool_registry` to `tool_grants` and
+    never to `mcp_sources`, so a tool whose parent source is gone is still
+    served to any granted group. Deleting the source after failing to remove
+    the tools therefore left the access working AND removed the row an admin
+    would use to clean it up from /admin/mcp.
+    """
+
+    def test_the_source_survives_a_failed_tool_removal(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-teardown-stop")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        import app.api.admin_source_connections as mod
+        from src.repositories import mcp_sources_repo, shared_secrets_repo
+
+        real = mod.tool_registry_repo
+
+        class _Boom:
+            def __getattr__(self, name):
+                def _fail(*a, **kw):
+                    raise RuntimeError("registry unavailable")
+
+                return _fail if name == "delete_for_source" else getattr(real(), name)
+
+        source_id = derived_source_id(conn_id)
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(mod, "tool_registry_repo", lambda: _Boom())
+            r = c.delete(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token))
+
+        assert r.status_code == 500
+        assert r.json()["detail"]["still_present"] == ["tools and their grants"]
+        assert mcp_sources_repo().get(source_id) is not None, (
+            "the source an admin would clean up from was deleted while the tools stayed live"
+        )
+        assert shared_secrets_repo().get(source_id) is not None
