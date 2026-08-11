@@ -537,9 +537,20 @@ async def data_apps_git_broker(
     try:
         basic = base64.b64encode(f"agnes:{token}".encode()).decode()
         headers = {"Authorization": f"Basic {basic}"}
-        ctype = request.headers.get("content-type")
-        if ctype:
-            headers["Content-Type"] = ctype
+        # Forward the headers git itself sets, not just Content-Type. The
+        # first cut carried Content-Type alone, which silently downgraded
+        # protocol v2 on the brokered path but not on the direct one — the
+        # git surface reads `git-protocol` off the request
+        # (`git_router.py::_build_cgi_env`). `Content-Encoding` matters for
+        # the same reason in the other direction: remote-curl gzips
+        # `git-upload-pack` bodies, and a proxy that drops the header while
+        # forwarding the compressed bytes describes the body wrongly. The set
+        # is an allowlist rather than a passthrough so hop-by-hop headers and
+        # the sandbox's own Authorization cannot ride along (Devin Review).
+        for name in ("content-type", "content-encoding", "git-protocol", "accept"):
+            value = request.headers.get(name)
+            if value:
+                headers[name] = value
         target = f"/data-apps.git/{slug}/{path}"
         if request.url.query:
             target = f"{target}?{request.url.query}"

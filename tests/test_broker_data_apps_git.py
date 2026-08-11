@@ -227,9 +227,18 @@ def test_the_skill_names_the_two_errors_a_missing_push_produces():
 
 @pytest.fixture
 def git_broker_env(e2e_env):
-    """A real app repo + owner + non-owner, each with a `data_apps` ticket."""
+    """A real app repo + owner + non-owner, each with a `data_apps` ticket.
+
+    Drives the real `git http-backend` CGI, so it needs the binary; without
+    it the route would 500 for environmental rather than behavioural reasons
+    (Devin Review).
+    """
     import hashlib
+    import shutil
     import uuid
+
+    if shutil.which("git") is None:
+        pytest.skip("git binary not available")
 
     import yaml
     from fastapi.testclient import TestClient
@@ -343,3 +352,13 @@ def test_the_per_request_credential_does_not_outlive_the_call(git_broker_env):
     finally:
         conn.close()
     assert live == 0, f"{live} per-request git token(s) left live after the call"
+
+
+def test_git_protocol_and_encoding_headers_reach_the_git_surface():
+    """Carrying only Content-Type silently downgraded protocol v2 on the
+    brokered path but not on the direct one — the git surface reads
+    `git-protocol` off the request — and described a gzipped body as
+    uncompressed (Devin Review on this PR)."""
+    body = _route_body()
+    for name in ("content-type", "content-encoding", "git-protocol"):
+        assert f'"{name}"' in body, f"{name} is dropped on the way to the git surface"
