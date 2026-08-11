@@ -232,3 +232,65 @@ class TestPushSinksDoNotShowTheRawFence:
             "both the streaming reply and the ephemeral responder post content"
         )
         assert 'content = data.get("content", "")' not in src, "a post path still sends the raw fence"
+
+
+class TestTheBlockLocatorIsLinear:
+    """Devin Review on #1239: `verdict()` now runs on every assistant message
+    of every history read, over model output.
+
+    The old body pattern was non-greedy with DOTALL, so every UNTERMINATED
+    opening fence made the engine rescan to end-of-string — O(occurrences x
+    length). The repo's rule is that regexes over untrusted text stay linear.
+    """
+
+    def test_the_body_is_not_matched_with_a_regex(self):
+        import inspect
+
+        from app.chat import sources
+
+        # Compare the COMPILED patterns, not the source text — the module
+        # comment quotes the old pattern to explain why it went.
+        assert not any(
+            "(.*?)" in getattr(v, "pattern", "")
+            for v in vars(sources).values()
+            if hasattr(v, "pattern")
+        ), "a non-greedy body pattern is back"
+        src = inspect.getsource(sources)
+        assert "_OPEN_RE" in src and "content.find(_CLOSE" in src
+
+    def test_many_fences_are_handled_in_linear_time(self):
+        """500 opening fences over 100 KB. The point is that this returns —
+        the old pattern rescanned to end-of-string per occurrence."""
+        import time
+
+        from app.chat.sources import strip_block
+
+        hostile = ("```sources\n" + "x" * 200) * 500
+        started = time.monotonic()
+        out = strip_block(hostile)
+        assert time.monotonic() - started < 1.0, "the locator is not linear"
+        assert "```sources" not in out
+
+    def test_a_lone_unterminated_fence_leaves_the_text_alone(self):
+        """With nothing after it to act as a closing fence, it is not a block."""
+        from app.chat.sources import extract_block, strip_block
+
+        lone = "answer\n\n```sources\ntable: orders"
+        assert extract_block(lone) is None
+        assert strip_block(lone) == lone
+
+    def test_an_unterminated_fence_is_not_a_block(self):
+        """Treating it as one would let a truncated answer swallow the rest."""
+        from app.chat.sources import extract_block, strip_block
+
+        text = "Revenue was 4.2M.\n\n```sources\ntable: orders"
+        assert extract_block(text) is None
+        assert strip_block(text) == text
+
+    def test_every_complete_block_is_still_stripped(self):
+        from app.chat.sources import strip_block
+
+        two = "a\n\n```sources\nt: x\n```\n\nb\n\n```sources\nt: y\n```"
+        out = strip_block(two)
+        assert "```sources" not in out
+        assert "a" in out and "b" in out

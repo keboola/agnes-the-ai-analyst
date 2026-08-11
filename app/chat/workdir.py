@@ -64,7 +64,7 @@ def skill_disabled_on_this_instance(skill_name: str) -> bool:
     return not feature_enabled(section, key, env_var=env_var, default=False)
 
 
-def _reconcile_feature_gated_skills(ws: Path, bundled_template_dir: Path) -> None:
+def _reconcile_feature_gated_skills(ws: Path, bundled_template_dir: Path, *, allow_restore: bool = True) -> None:
     """Make the workspace's gated skills agree with the instance's flags.
 
     Both directions, because pruning alone is a one-way door: a skill removed
@@ -79,6 +79,16 @@ def _reconcile_feature_gated_skills(ws: Path, bundled_template_dir: Path) -> Non
     import shutil
 
     _prune_disabled_feature_skills(ws)
+
+    # PRUNING applies everywhere — a skill for a feature this instance does not
+    # have is useless whoever shipped it. RESTORING does not: in template-
+    # OVERRIDE mode the operator's repo is authoritative for the workspace
+    # tree, and copying a skill in from the SHIPPED default because a flag is
+    # on would add something their template deliberately omits. Restore only
+    # puts back what the default tree would have provided anyway.
+    # (Devin Review on this PR.)
+    if not allow_restore:
+        return
 
     skills_root = ws / ".claude" / "skills"
     src_root = bundled_template_dir / ".claude" / "skills"
@@ -210,6 +220,15 @@ class WorkdirManager:
         self._cached_sha_at = now_mono
         return self._cached_sha
 
+    def _template_override_active(self) -> bool:
+        """Is the admin's git template repo authoritative for the workspace?
+
+        Mirrors the condition ``run_init`` branches on, so the two can never
+        disagree about which tree owns the workspace.
+        """
+        status = self._get_template_status()
+        return bool(status and status.configured and status.synced and self._fetch_template_zip is not None)
+
     def needs_reinit(self, user_email: str) -> bool:
         row = self._repo.get_workdir(user_email)
         if row is None:
@@ -234,11 +253,15 @@ class WorkdirManager:
             # nothing until an unrelated upgrade happened to force a reinit.
             # Cheap enough to run on every convergence: one `is_dir()` per
             # gated skill on the common path. (Devin Review on this PR.)
-            _reconcile_feature_gated_skills(ws, self._bundled_template_dir)
+            _reconcile_feature_gated_skills(
+                ws, self._bundled_template_dir, allow_restore=not self._template_override_active()
+            )
             return ws
 
         self.run_init(user_email, ws)
-        _reconcile_feature_gated_skills(ws, self._bundled_template_dir)
+        _reconcile_feature_gated_skills(
+            ws, self._bundled_template_dir, allow_restore=not self._template_override_active()
+        )
         return ws
 
     def run_init(self, user_email: str, workspace: Optional[Path] = None) -> None:
