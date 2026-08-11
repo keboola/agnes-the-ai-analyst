@@ -71,12 +71,19 @@ class TestEmptyResultCarriesAHint:
         assert body.get("searched_collections", 0) >= 1
         assert str(body["searched_collections"]) in body["hint"]
 
-    def test_hint_names_the_three_engine_surprises(self, seeded_app):
+    def test_hint_names_the_engine_surprises(self, seeded_app):
+        """The caveats have to match the engine, not the other way round.
+
+        File names ARE searched now, as a fallback when no body matches, so
+        the hint says that instead of the old "not indexed" — a reader steered
+        away from a query that works is worse off than one told nothing.
+        """
         tok = seeded_app["admin_token"]
         _make_collection_with_file(seeded_app, tok, "Notes", "alpha bravo charlie")
 
         hint = _search(seeded_app, tok, "nosuchwordanywhere")["hint"].lower()
-        assert "filename" in hint, "must say filenames are not indexed"
+        assert "file names are searched" in hint, "must say file names are searched as a fallback"
+        assert "not indexed" not in hint, "the stale caveat must not come back"
         assert "whole word" in hint or "whole-word" in hint, "must say matching is whole-word"
         assert "wildcard" in hint or "*" in hint, "must say there is no wildcard"
 
@@ -146,8 +153,8 @@ class TestCombinedKnowledgeSearchCarriesTheSameHint:
         hint = body.get("hint", "")
         assert hint, "the docstring promises a hint; the response must carry one"
         assert "DO have access" in hint
-        for caveat in ("filenames are not indexed", "whole word", "wildcard"):
-            assert caveat in hint, f"hint does not name: {caveat}"
+        for caveat in ("file names are searched", "whole word", "wildcard"):
+            assert caveat in hint.lower(), f"hint does not name: {caveat}"
 
     def test_a_non_empty_result_carries_no_hint(self, seeded_app):
         """The hint is for the ambiguous case only — not noise on every call."""
