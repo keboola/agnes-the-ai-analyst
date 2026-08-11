@@ -93,3 +93,44 @@ def test_apps_runner_can_reach_docker_socket():
     )
     # Never pinned to root — root-owned config dirs would break app-side cleanup.
     assert str(svc.get("user", "")) not in ("0", "0:0", "root")
+
+
+def test_services_others_wait_on_declare_a_start_period():
+    """A dependency gate is only as good as the boot window it allows.
+
+    ``depends_on: {X: {condition: service_healthy}}`` makes compose refuse to
+    start the dependent when X reports unhealthy. Without ``start_period`` the
+    very first probes fire against a container that is still booting and count
+    toward ``retries``, so a slow-but-fine boot is indistinguishable from a
+    broken one — compose aborts with "dependency failed to start" and the
+    dependents are created and never run. ``restart:`` does not rescue those:
+    a container that never started is not a container that stopped.
+
+    The failure is silent by construction. The deploy succeeds, the gating
+    service is healthy moments later, and the dependents are simply absent —
+    which on this stack means no scheduled sync and no background jobs until
+    somebody notices a number that stopped moving.
+
+    Asserted over every gate rather than one service so a new one cannot be
+    added without a boot window.
+    """
+    services = yaml.safe_load(COMPOSE.read_text())["services"]
+
+    gated = set()
+    for spec in services.values():
+        depends = (spec or {}).get("depends_on")
+        if not isinstance(depends, dict):
+            continue  # list form carries no condition, so no health gate
+        gated |= {dep for dep, cfg in depends.items() if (cfg or {}).get("condition") == "service_healthy"}
+
+    assert gated, "no service_healthy gates found — guard would assert nothing"
+
+    missing = [
+        name
+        for name in sorted(gated)
+        if name in services and not (services[name].get("healthcheck") or {}).get("start_period")
+    ]
+    assert not missing, (
+        f"services gating others via service_healthy but declaring no healthcheck start_period: {missing}. "
+        "Their dependents will be created and never started whenever boot outruns interval x retries."
+    )
