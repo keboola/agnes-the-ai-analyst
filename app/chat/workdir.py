@@ -46,6 +46,24 @@ _FEATURE_GATED_SKILLS = {
 }
 
 
+def skill_disabled_on_this_instance(skill_name: str) -> bool:
+    """Is this bundled skill gated off by an instance feature flag?
+
+    The single reader of ``_FEATURE_GATED_SKILLS``, shared by the sandbox
+    prune below and by ``app.chat.skills_catalog`` — the composer's slash menu
+    lists the SHIPPED template, not the converged workspace, so without a
+    common gate it went on advertising a skill whose files the prune had
+    already removed.
+    """
+    from app.instance_config import feature_enabled
+
+    gate = _FEATURE_GATED_SKILLS.get(skill_name)
+    if gate is None:
+        return False
+    section, key, env_var = gate
+    return not feature_enabled(section, key, env_var=env_var, default=False)
+
+
 def _prune_disabled_feature_skills(ws: Path) -> None:
     """Remove bundled skills whose feature is off on THIS instance.
 
@@ -55,19 +73,25 @@ def _prune_disabled_feature_skills(ws: Path) -> None:
     flag back on restores it on the next convergence — the bundled tree is the
     source, this only subtracts.
 
+    Called from ``ensure_user_workdir``, on BOTH paths — the one that reinits
+    and the one that finds the workspace already current. Placing it inside
+    ``run_init`` alone made the sentence above false for every existing
+    workspace, because a feature flag is not one of the things ``needs_reinit``
+    compares. It also applies in template-OVERRIDE mode: an operator's repo may
+    vendor the bundled skill, and a skill for a feature this instance does not
+    have is exactly as useless whoever shipped it.
+
     Best-effort by design. A skill that cannot be removed is a worse outcome
     than the one it causes (the agent wastes a call on a 404), so a failure
     here is logged and the workspace is still usable.
     """
     import shutil
 
-    from app.instance_config import feature_enabled
-
     skills_root = ws / ".claude" / "skills"
     if not skills_root.is_dir():
         return
-    for skill_name, (section, key, env_var) in _FEATURE_GATED_SKILLS.items():
-        if feature_enabled(section, key, env_var=env_var, default=False):
+    for skill_name, (section, key, _env_var) in _FEATURE_GATED_SKILLS.items():
+        if not skill_disabled_on_this_instance(skill_name):
             continue
         target = skills_root / skill_name
         if not target.is_dir():
@@ -166,9 +190,20 @@ class WorkdirManager:
         ws.mkdir(parents=True, exist_ok=True)
         sentinel = ws / ".claude" / "init-complete"
         if sentinel.exists() and not self.needs_reinit(user_email):
+            # Still prune: a feature flag is not part of `needs_reinit`, which
+            # compares only the marketplace SHA and the Agnes version. With the
+            # prune living inside `run_init` its docstring's promise — "an
+            # operator who turns a feature off later must see the skill leave"
+            # — held for a fresh workspace and for nobody else: an operator
+            # flipping `data_apps.enabled` off on a live instance changed
+            # nothing until an unrelated upgrade happened to force a reinit.
+            # Cheap enough to run on every convergence: one `is_dir()` per
+            # gated skill on the common path. (Devin Review on this PR.)
+            _prune_disabled_feature_skills(ws)
             return ws
 
         self.run_init(user_email, ws)
+        _prune_disabled_feature_skills(ws)
         return ws
 
     def run_init(self, user_email: str, workspace: Optional[Path] = None) -> None:
@@ -200,7 +235,6 @@ class WorkdirManager:
                 server_url=self._server_url,
                 bundled_template_dir=self._bundled_template_dir,
             )
-            _prune_disabled_feature_skills(ws)
             # DEFAULT MODE: overwrite the workspace CLAUDE.md with the
             # server-rendered analyst prompt (admin Workspace Prompt override
             # or shipped default), RBAC-filtered for this user — the same

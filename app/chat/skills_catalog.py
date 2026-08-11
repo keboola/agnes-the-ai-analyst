@@ -74,8 +74,20 @@ def list_bundled_skills(bundled_template_dir: Path) -> list[dict]:
     skills_dir = bundled_template_dir / ".claude" / "skills"
     if not skills_dir.is_dir():
         return out
+    # The same feature gate the sandbox prune uses. This list reads the
+    # SHIPPED template, not the user's converged workspace, so without it the
+    # composer's slash menu kept advertising a skill that
+    # `_prune_disabled_feature_skills` had deleted from the sandbox —
+    # invoking it did nothing, because the files were gone. Gating here rather
+    # than reading the workspace keeps one source of truth (the flag) and
+    # avoids making the menu depend on a filesystem convergence having already
+    # run for this user. (Devin Review on #1239.)
+    from app.chat.workdir import skill_disabled_on_this_instance
+
     for skill_dir in sorted(skills_dir.iterdir()):
         if not skill_dir.is_dir():
+            continue
+        if skill_disabled_on_this_instance(skill_dir.name):
             continue
         skill_md = skill_dir / "SKILL.md"
         if not skill_md.is_file():

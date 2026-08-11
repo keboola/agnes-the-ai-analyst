@@ -245,3 +245,48 @@ def test_regular_session_symlinks_scaffolds(workdir_mgr: WorkdirManager):
     link = sdir / "scaffolds"
     assert link.exists(), "session dir must include scaffolds/"
     assert (link / "nodejs-dashboard" / "app.js").exists()
+
+
+class TestTheFeaturePruneRunsOnEveryConvergence:
+    """Devin Review on #1239, three threads with one root cause.
+
+    `_prune_disabled_feature_skills` lived inside `run_init`, which
+    `ensure_user_workdir` only reaches when the sentinel is missing or
+    `needs_reinit` is true — and `needs_reinit` compares the marketplace SHA
+    and the Agnes version, never a feature flag. So its own docstring's
+    promise ("an operator who turns a feature off later must see the skill
+    leave") held for a brand-new workspace and for nobody else. It was also
+    skipped entirely in template-OVERRIDE mode, where an operator's repo can
+    vendor the same bundled skill.
+    """
+
+    def test_the_prune_runs_on_the_already_current_path(self):
+        import inspect
+
+        from app.chat.workdir import WorkdirManager
+
+        src = inspect.getsource(WorkdirManager.ensure_user_workdir)
+        before_reinit = src[: src.index("self.run_init")]
+        assert "_prune_disabled_feature_skills(ws)" in before_reinit, (
+            "a workspace that needs no reinit never prunes, so flipping the flag off does nothing"
+        )
+
+    def test_the_prune_runs_after_run_init_too(self):
+        import inspect
+
+        from app.chat.workdir import WorkdirManager
+
+        src = inspect.getsource(WorkdirManager.ensure_user_workdir)
+        after_reinit = src[src.index("self.run_init") :]
+        assert "_prune_disabled_feature_skills(ws)" in after_reinit
+
+    def test_it_is_not_confined_to_the_default_branch_of_run_init(self):
+        """OVERRIDE mode gets it too — being called from the caller, not from
+        one arm of the branch."""
+        import inspect
+
+        from app.chat.workdir import WorkdirManager
+
+        assert "_prune_disabled_feature_skills" not in inspect.getsource(WorkdirManager.run_init), (
+            "pruning inside run_init reaches only the branch it sits in"
+        )
