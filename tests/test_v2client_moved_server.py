@@ -351,3 +351,31 @@ class TestTheSetupExchangeNamesAFixThatWorks:
         page = (ROOT / "cli" / "commands" / "init.py").read_text(encoding="utf-8")
         block = page.split("is_redirect(exchange_resp.status_code)")[1][:1200]
         assert '"unexpected_redirect"' in block
+
+
+class TestATlsUpgradeIsAMove:
+    """Devin Review on #1266: `http://host` → `https://host` keeps the netloc.
+
+    It is the commonest redirect there is — a server that got TLS — and it is
+    cross-origin as far as httpx is concerned, so credentials are stripped on
+    that hop too. Classifying it as "not a move" left the user with no remedy
+    for the one case they can fix in a second.
+    """
+
+    def test_the_scheme_change_is_reported_with_the_new_base(self):
+        assert (
+            server_moved.redirect_target("https://agnes.example.com/api/v1/agents", "http://agnes.example.com")
+            == "https://agnes.example.com"
+        )
+
+    def test_the_message_offers_the_https_address(self):
+        msg = server_moved.moved_server_message(
+            308, "https://agnes.example.com/api/v1/agents", "http://agnes.example.com"
+        )
+        assert "AGNES_SERVER=https://agnes.example.com" in msg
+
+    def test_a_same_scheme_same_host_redirect_is_still_not_a_move(self):
+        assert (
+            server_moved.redirect_target("http://agnes.example.com/api/v1/agents/", "http://agnes.example.com")
+            == ""
+        )
