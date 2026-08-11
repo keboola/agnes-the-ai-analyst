@@ -172,6 +172,64 @@ class TestInlineMediaStillCarriesItsText:
         assert body.get("reason"), "a text-less PDF must say why, not return a bare null"
 
 
+class TestAPdfWhoseBytesAreGoneStillReads:
+    """Devin Review on this PR (follow-up): the 404 came before the text.
+
+    A collection file can lose its blob — an ingestion that recorded the row
+    and never landed the bytes, or storage cleaned up underneath it — while
+    its extracted text stays in `corpus_chunks`. The inline-media branch
+    404'd `file_blob_missing` before it ever looked, so the new non-browser
+    readers reported a hard error for a file whose answer was available. The
+    textual branch has always degraded in exactly this situation.
+
+    The 404 is kept for the case it was written for: a text-less medium with
+    no bytes, where the modal would otherwise draw a broken embed. And in the
+    degraded case `raw_url` is withheld, so the modal has no URL to break on.
+    """
+
+    def _pdf_row_gone(self, seeded_app, token: str, monkeypatch) -> tuple:
+        """A PDF row whose blob no longer resolves.
+
+        Simulated by neutralising `_blob_path_or_none` rather than deleting
+        the file: that helper is also what `_blob_path_or_404` consults, so
+        one patch makes both agree the bytes are gone — which is the real
+        shape of the failure (row present, blob unreadable).
+        """
+        c = seeded_app["client"].post("/api/collections", json={"name": "Gone"}, headers=_auth(token))
+        col = c.json()
+        up = seeded_app["client"].post(
+            f"/api/collections/{col['id']}/files",
+            files={"files": ("paper.pdf", b"%PDF-1.4 fake", "application/pdf")},
+            headers=_auth(token),
+        )
+        assert up.status_code == 201, up.text
+        monkeypatch.setattr("app.api.collections._blob_path_or_none", lambda _row: None)
+        return col["id"], up.json()[0]["file_id"]
+
+    def test_missing_blob_with_text_degrades_instead_of_404(self, seeded_app, monkeypatch):
+        tok = seeded_app["admin_token"]
+        monkeypatch.setattr("app.api.collections._extracted_text", lambda _fid: "Quarterly revenue was 4.2M.")
+        cid, fid = self._pdf_row_gone(seeded_app, tok, monkeypatch)
+
+        r = seeded_app["client"].get(f"/api/collections/{cid}/files/{fid}/preview", headers=_auth(tok))
+
+        assert r.status_code == 200, f"the text was available; a 404 throws it away: {r.text}"
+        body = r.json()
+        assert body["text"] == "Quarterly revenue was 4.2M."
+        assert body["raw_url"] is None, "a URL that would 404 must not be handed to the modal"
+
+    def test_missing_blob_without_text_still_404s(self, seeded_app, monkeypatch):
+        """The case the 404 was written for must not regress."""
+        tok = seeded_app["admin_token"]
+        monkeypatch.setattr("app.api.collections._extracted_text", lambda _fid: "")
+        cid, fid = self._pdf_row_gone(seeded_app, tok, monkeypatch)
+
+        r = seeded_app["client"].get(f"/api/collections/{cid}/files/{fid}/preview", headers=_auth(tok))
+
+        assert r.status_code == 404
+        assert r.json()["detail"] == "file_blob_missing"
+
+
 class TestCliCat:
     def test_cat_prints_the_text_of_a_pdf(self):
         """The CLI keys on `text`, not on `kind` — a PDF with text is readable."""
