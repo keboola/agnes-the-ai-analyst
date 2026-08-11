@@ -236,7 +236,10 @@ class TestBothClientsShareOneGuard:
         A moved server answers 3xx there as well. (Devin Review on #1266.)"""
         for path in (ROOT / "cli" / "commands").glob("*.py"):
             src = path.read_text(encoding="utf-8")
-            calls = re.findall(r"(?:^|[^.\w])(?:_?httpx)\.(get|post|put|delete)\(", src)
+            # `httpx.Client(...)` counts too — `agnes auth login` verifies
+            # through one, and a client without `follow_redirects` hands the
+            # 3xx straight back. (Devin Review on #1266.)
+            calls = re.findall(r"(?:^|[^.\w])(?:_?httpx)\.(get|post|put|delete|Client)\(", src)
             if not calls:
                 continue
             if "AGNES_SERVER" not in src and "server_url" not in src:
