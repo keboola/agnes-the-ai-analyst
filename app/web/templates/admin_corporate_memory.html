@@ -824,6 +824,13 @@
             background: var(--error);
         }
 
+        /* A batch approval that shipped instruction-shaped text is neither a
+           plain success nor a failure — it went through, and the admin should
+           know what went with it (Devin Review on #1258). */
+        .toast.warning {
+            background: var(--warning);
+        }
+
         /* Keyboard shortcut hints */
         .shortcut-hint {
             display: none;
@@ -956,6 +963,52 @@
         .tag-suggestion.new-tag .hint { color: var(--ds-primary); }
         .tag-suggestions .empty-hint {
             padding: 8px 12px; color: var(--text-muted); font-size: 12px; font-style: italic;
+        }
+
+        /* Approval delivers an item into every analyst's .claude/rules/, where
+           Claude Code loads it as a project rule. The notice states that once
+           per queue; the per-item strip names the lines that will read as
+           orders. Warn palette, not danger — this annotates a decision, it
+           does not block one. */
+        .delivery-notice {
+            display: flex;
+            gap: var(--space-3);
+            align-items: flex-start;
+            background: var(--ds-accent-warn-bg);
+            border: 1px solid var(--ds-accent-warn-line);
+            border-radius: var(--radius-lg);
+            padding: var(--space-3) var(--space-4);
+            margin-bottom: var(--space-4);
+            font-size: var(--text-xs);
+            color: var(--ds-accent-warn-ink);
+        }
+        .delivery-notice code {
+            font-size: inherit;
+        }
+        .delivery-warning {
+            border: 1px solid var(--ds-accent-warn-line);
+            background: var(--ds-accent-warn-bg);
+            border-radius: var(--radius-md);
+            padding: var(--space-2) var(--space-3);
+            margin: var(--space-3) 0 0;
+        }
+        .delivery-warning__title {
+            font-size: var(--text-xs);
+            font-weight: 650;
+            color: var(--ds-accent-warn-ink);
+        }
+        .delivery-warning__list {
+            margin: var(--space-2) 0 0;
+            padding-left: var(--space-4);
+            font-size: var(--text-xs);
+            color: var(--ds-accent-warn-ink);
+        }
+        .delivery-warning__kind {
+            font-weight: 650;
+            text-transform: lowercase;
+        }
+        .delivery-warning__excerpt {
+            font-style: italic;
         }
     </style>
 {% endblock %}
@@ -1131,6 +1184,9 @@
                        oninput="onReviewSearchInput()"
                        style="flex: 1; max-width: 420px; padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg); color: var(--text);">
             </div>
+            <!-- Filled from /api/memory/admin/pending's `delivery_notice` so
+                 the page and the CLI describe the channel identically. -->
+            <div id="reviewDeliveryNotice" class="delivery-notice" style="display:none;"></div>
             <div id="reviewList" class="knowledge-list">
                 <div class="loading">Loading pending items...</div>
             </div>
@@ -1190,6 +1246,9 @@
                     <option value="">All domains</option>
                 </select>
             </div>
+            <!-- The All Items tab approves too, so it carries the same notice
+                 the review queue does (Devin Review on #1258). -->
+            <div id="allDeliveryNotice" class="delivery-notice" style="display:none;"></div>
             <div id="allList" class="knowledge-list">
                 <div class="loading">Loading items...</div>
             </div>
@@ -1295,6 +1354,8 @@
                     <input type="text" id="treeQuery" placeholder="Search…" oninput="onTreeQueryInput()" style="padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-md);">
                 </label>
             </div>
+            <!-- Browse approves too (Devin Review on #1258). -->
+            <div id="browseDeliveryNotice" class="delivery-notice" style="display:none;"></div>
             <div id="browseTree">
                 <div class="loading">Loading tree…</div>
             </div>
@@ -2640,6 +2701,12 @@
     }
 
     function renderBrowseTree(data, container) {
+        renderDeliveryNotice(
+            // The notice renderer wants `items` to decide whether the tab has
+            // anything to act on; a tree's items live inside its groups.
+            {delivery_notice: data.delivery_notice, items: (data.groups || []).flatMap(g => g.items || [])},
+            'browseDeliveryNotice',
+        );
         if (!data.groups || data.groups.length === 0) {
             container.innerHTML = '<div class="empty-state"><p>No items match the current filters.</p></div>';
             return;
@@ -3288,7 +3355,36 @@
     // Rendering: Review Queue
     // ─────────────────────────────────────────────────────────────
 
+    // The standing explainer. Shown whenever the queue has anything to act
+    // on — an admin who only ever sees clean items should still know what
+    // approving does, since that is the whole point of saying it here.
+    // `elId` names the tab's notice slot: the same warning has to appear on
+    // every surface an approval can be issued from, and the All Items tab is
+    // one of them (Devin Review on #1258).
+    function renderDeliveryNotice(data, elId) {
+        const el = document.getElementById(elId || 'reviewDeliveryNotice');
+        if (!el) return;
+        const notice = data && data.delivery_notice;
+        const hasItems = data && Array.isArray(data.items) && data.items.length > 0;
+        if (!notice || !hasItems) {
+            el.style.display = 'none';
+            el.innerHTML = '';
+            return;
+        }
+        el.innerHTML = `
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2" style="flex-shrink:0; margin-top:1px;"
+                 aria-hidden="true">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="12" y1="16" x2="12" y2="12"/>
+                <line x1="12" y1="8" x2="12.01" y2="8"/>
+            </svg>
+            <span>${escapeHtml(notice)}</span>`;
+        el.style.display = '';
+    }
+
     function renderReviewItems(data, list, paginationEl) {
+        renderDeliveryNotice(data);
         if (!data.items || data.items.length === 0) {
             list.innerHTML = `
                 <div class="empty-state">
@@ -3312,6 +3408,7 @@
     // ─────────────────────────────────────────────────────────────
 
     function renderAllItems(data, list, paginationEl) {
+        renderDeliveryNotice(data, 'allDeliveryNotice');
         if (!data.items || data.items.length === 0) {
             list.innerHTML = `
                 <div class="empty-state">
@@ -3419,6 +3516,22 @@
                 </div>
             </div>`;
 
+        // Spans of this item that an agent will read as orders once approval
+        // sends it to .claude/rules/. escapeHtml on both fields: the excerpt
+        // is analyst-authored text on its way into innerHTML.
+        const deliveryWarnings = Array.isArray(item.delivery_warnings) ? item.delivery_warnings : [];
+        const deliveryWarningHtml = deliveryWarnings.length ? `
+            <div class="delivery-warning">
+                <div class="delivery-warning__title">Reads as an instruction to the agent</div>
+                <ul class="delivery-warning__list">
+                    ${deliveryWarnings.map(w => `
+                        <li>
+                            <span class="delivery-warning__kind">${escapeHtml(String(w.reason || w.kind || ''))}</span>
+                            — <span class="delivery-warning__excerpt">${escapeHtml(String(w.excerpt || ''))}</span>
+                        </li>`).join('')}
+                </ul>
+            </div>` : '';
+
         const isRequired = !!item.is_required || status === 'mandatory';
         const tags = parseJsonField(item.tags);
         const upvotes = item.upvotes || 0;
@@ -3446,6 +3559,7 @@
                     </div>
                 </div>
                 <div class="memory-item__content knowledge-content">${escapeHtml(item.content || '')}</div>
+                ${deliveryWarningHtml}
                 <div class="memory-item__footer">
                     <span class="memory-item__votes"
                           title="Analyst votes — useful items trend up, outdated ones get flagged.">
@@ -3790,7 +3904,15 @@
                 const failCount = (result.failed || []).length + (result.not_found || []).length;
                 let msg = `${successCount} item${successCount !== 1 ? 's' : ''} ${doneLabel}`;
                 if (failCount > 0) msg += `, ${failCount} failed`;
-                showToast(msg, failCount > 0 ? 'error' : 'success');
+                // The batch endpoint answers with the spans that will read as
+                // orders once these items ship to `.claude/rules/`. Throwing
+                // that away made a batch approval the one path where the
+                // warning never reached anyone (Devin Review on #1258).
+                const warned = Object.keys(result.delivery_warnings || {}).length;
+                if (warned > 0) {
+                    msg += ` — ${warned} carr${warned === 1 ? 'ies' : 'y'} text that reads as an instruction`;
+                }
+                showToast(msg, failCount > 0 ? 'error' : (warned > 0 ? 'warning' : 'success'));
                 refreshCurrentTab();
             } else {
                 showToast(result.error || `Batch ${action} failed`, 'error');

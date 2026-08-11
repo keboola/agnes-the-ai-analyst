@@ -36802,6 +36802,7 @@
     },
     "/api/memory/admin/approve": {
       "post": {
+        "description": "Approve an item \u2014 status \u2192 approved.\n\nThe response echoes ``delivery_warnings`` because approval is the moment\nthe item enters the rules channel, and a caller that approves through the\nAPI (or the CLI on top of it) never sees the review page's banner. The\ncount also lands on the audit row, so \"who approved a note carrying agent\ndirectives\" is answerable after the fact.",
         "operationId": "admin_approve_api_memory_admin_approve_post",
         "parameters": [
           {
@@ -36954,7 +36955,7 @@
     },
     "/api/memory/admin/batch": {
       "post": {
-        "description": "Batch governance action on multiple items.\n\nv49: ``mandate`` flips the new ``is_required`` boolean to TRUE (was\n``status='mandatory'`` overload). Other actions still drive ``status``.",
+        "description": "Batch governance action on multiple items.\n\nv49: ``mandate`` flips the new ``is_required`` boolean to TRUE (was\n``status='mandatory'`` overload). Other actions still drive ``status``.\n\n``approve`` and ``mandate`` are the two actions that put an item into the\n``.claude/rules/`` delivery channel, so those responses carry\n``delivery_warnings`` per item \u2014 this endpoint backs ``agnes admin memory\napprove``, where a batch of ids is exactly the path on which nobody reads\nthe content first. ``reject`` and ``revoke`` take items *out* of the\nchannel and report nothing.",
         "operationId": "admin_batch_api_memory_admin_batch_post",
         "parameters": [
           {
@@ -37614,7 +37615,7 @@
     },
     "/api/memory/admin/pending": {
       "get": {
-        "description": "Get pending items queue for admin review.\n\n``search`` narrows by title/content substring (same ``repo.search``\nbacking the main list endpoint, pinned to ``status='pending'``) so an\nadmin can find specific items inside a large review queue without\npaging through it.",
+        "description": "Get pending items queue for admin review.\n\n``search`` narrows by title/content substring (same ``repo.search``\nbacking the main list endpoint, pinned to ``status='pending'``) so an\nadmin can find specific items inside a large review queue without\npaging through it.\n\nEach row carries ``delivery_warnings`` \u2014 the spans that will read as\ninstructions once the item is approved and ``agnes pull`` writes it into\nevery analyst's ``.claude/rules/``. ``delivery_notice`` states what that\nchannel is, once per response rather than per row.",
         "operationId": "admin_pending_api_memory_admin_pending_get",
         "parameters": [
           {
@@ -37864,7 +37865,7 @@
     },
     "/api/memory/admin/{item_id}": {
       "get": {
-        "description": "Single-item GET \u2014 powers the ``#item-<id>`` deep link from\n`/memory/d/<slug>`'s Edit affordance. The admin page uses this to\nfetch the row directly (bypassing pagination of the All-Items list)\nso the edit modal opens reliably regardless of which page the item\nhappens to fall on. Returns the same dict shape as the list rows.\n\nRoute placement note: declared AFTER all named ``/admin/<word>`` GET\nroutes (pending, audit, contradictions, duplicate-candidates) so the\ncatch-all ``{item_id}`` doesn't shadow them \u2014 FastAPI matches in\ndeclaration order.",
+        "description": "Single-item GET \u2014 powers the ``#item-<id>`` deep link from\n`/memory/d/<slug>`'s Edit affordance. The admin page uses this to\nfetch the row directly (bypassing pagination of the All-Items list)\nso the edit modal opens reliably regardless of which page the item\nhappens to fall on. Returns the same dict shape as the list rows.\n\nRoute placement note: declared AFTER all named ``/admin/<word>`` GET\nroutes (pending, audit, contradictions, duplicate-candidates) so the\ncatch-all ``{item_id}`` doesn't shadow them \u2014 FastAPI matches in\ndeclaration order.\n\nCarries ``delivery_warnings`` for the same reason the pending queue does:\nthis is the row the edit modal reads, and an admin editing a note before\napproving it should see which of its lines will read as an instruction.",
         "operationId": "admin_get_item_api_memory_admin__item_id__get",
         "parameters": [
           {
