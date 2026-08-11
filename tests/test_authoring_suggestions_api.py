@@ -263,3 +263,30 @@ def test_a_failed_seeding_leaves_no_domain_behind(seeded_app):
         json={},
     )
     assert r2.status_code == 200, r2.text
+
+
+def test_a_slug_with_stray_whitespace_still_approves(seeded_app):
+    """Devin Review on #1263: the domain took the raw slug, the item a trimmed
+    one — so the seeding could not resolve it and every approval rolled back."""
+    from src.db import get_system_db
+    from src.repositories.knowledge import KnowledgeRepository
+
+    c = seeded_app["client"]
+    sid = _submit(
+        c,
+        seeded_app["analyst_token"],
+        domain="corporate-memory",
+        payload={"name": "  Spaced  ", "slug": "  spaced-slug  ", "content": "knowledge here"},
+    ).json()["id"]
+
+    r = c.post(
+        f"/api/admin/authoring-suggestions/{sid}/approve",
+        headers=_auth(seeded_app["admin_token"]),
+        json={},
+    )
+    assert r.status_code == 200, r.text
+
+    conn = get_system_db()
+    items = [it for it in KnowledgeRepository(conn).list_items(limit=200) if it.get("domain") == "spaced-slug"]
+    conn.close()
+    assert items and items[0]["content"] == "knowledge here"

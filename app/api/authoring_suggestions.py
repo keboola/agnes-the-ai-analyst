@@ -93,9 +93,17 @@ def _replay_corporate_memory(payload: dict, by: str, submitted_by: Optional[str]
     """
     from app.api.memory_domains import seed_domain_item
 
+    # Normalize ONCE, and use the same values for both writes: the domain was
+    # being created with the slug exactly as submitted while the item was
+    # filed under a trimmed copy, so a submission whose slug carried a stray
+    # space failed every approval attempt — the seeding raises on a slug it
+    # cannot resolve, which rolls the whole approval back, forever.
+    # (Devin Review on #1263.)
+    name = (payload["name"] or "").strip()
+    slug = (payload["slug"] or "").strip()
     domain_id = memory_domains_repo().create(
-        name=payload["name"],
-        slug=payload["slug"],
+        name=name,
+        slug=slug,
         description=payload.get("description"),
         icon=None,
         color=None,
@@ -103,8 +111,8 @@ def _replay_corporate_memory(payload: dict, by: str, submitted_by: Optional[str]
     )
     try:
         seed_domain_item(
-            slug=payload["slug"],
-            name=payload["name"],
+            slug=slug,
+            name=name,
             content=payload.get("content"),
             content_title=payload.get("content_title"),
             # The SUBMITTER, not the approver — `by` is the admin who approved,
