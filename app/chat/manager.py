@@ -2099,7 +2099,20 @@ class ChatManager:
                 # Persisting the same list is what makes the reload path agree
                 # — it recomputes from `m.tool_calls`, which was being stored
                 # as None for the same reason. (Devin Review on this PR.)
-                frame["tool_calls"] = [f for f in live.turn_buffer if f.get("type") == "tool_call"] or None
+                #
+                # Trimmed to `{tool, args}` rather than stored as whole
+                # frames: the rest of a frame is transport envelope
+                # (`type`, `frame_seq`, ids) that no reader wants, and this
+                # list is persisted on the message row, so the envelope
+                # would be dead weight on every assistant message forever.
+                # It is also the shape `chat.js::formatToolCall` already
+                # expects, and the shape `verify()` serialises into its
+                # haystack.
+                frame["tool_calls"] = [
+                    {"tool": f.get("tool"), "args": f.get("args") or {}}
+                    for f in live.turn_buffer
+                    if f.get("type") == "tool_call" and isinstance(f.get("tool"), str)
+                ] or None
                 frame["sources"] = sources_verdict(frame.get("content", "") or "", frame.get("tool_calls")).to_dict()
             await self._broadcast(live, frame)
             ftype = frame.get("type")
