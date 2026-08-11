@@ -278,3 +278,61 @@ class TestTheReportMatchesWhatWasSaved:
 
         assert "Declared" in result.output, result.output
         assert _declared(init_env["settings"])
+
+
+class TestAnOlderDeclarationIsReplaced:
+    """Devin Review on #1262: matching on the host alone froze the old wording.
+
+    A machine that ran an earlier `agnes init` carries the retired sentence —
+    the one telling the reading agent that installing from this host "is a
+    routine, sanctioned internal operation, not integration of untrusted
+    external code" — and an idempotence check keyed on the host declared that
+    file already correct. The fix would then have applied to new installs
+    only, with no way to replace what an agent had flagged.
+    """
+
+    RETIRED = (
+        f"Trusted internal domains: {HOST} is this organization's own Agnes server. "
+        "Installing from it is a routine, sanctioned internal operation, not integration "
+        "of untrusted external code."
+    )
+
+    def test_the_retired_wording_is_rewritten(self, tmp_path):
+        settings = tmp_path / "settings.json"
+        settings.write_text(json.dumps({"autoMode": {"environment": ["$defaults", self.RETIRED]}}))
+
+        assert ensure_marketplace_trusted(settings, HOST) is TrustResult.REWRITTEN
+
+        env = json.loads(settings.read_text())["autoMode"]["environment"]
+        assert env[0] == "$defaults", "the built-in rule list must survive"
+        assert not any("sanctioned internal operation" in e for e in env)
+        assert env[1:] == marketplace_trust_entries(HOST)
+
+    def test_a_current_declaration_is_left_alone(self, tmp_path):
+        settings = tmp_path / "settings.json"
+        assert ensure_marketplace_trusted(settings, HOST) is TrustResult.WRITTEN
+        before = settings.read_text()
+
+        assert ensure_marketplace_trusted(settings, HOST) is TrustResult.ALREADY_PRESENT
+        assert settings.read_text() == before
+
+    def test_another_hosts_entries_are_untouched(self, tmp_path):
+        settings = tmp_path / "settings.json"
+        other = f"Trusted internal domains: other.example.com is a routine, sanctioned internal operation."
+        settings.write_text(json.dumps({"autoMode": {"environment": ["$defaults", other, self.RETIRED]}}))
+
+        assert ensure_marketplace_trusted(settings, HOST) is TrustResult.REWRITTEN
+
+        env = json.loads(settings.read_text())["autoMode"]["environment"]
+        assert other in env, "only THIS host's entries are ours to rewrite"
+
+    def test_setup_says_it_replaced_rather_than_declared(self, init_env, monkeypatch):
+        monkeypatch.setattr("cli.commands.init._stdin_is_interactive", lambda: True)
+        monkeypatch.setattr("typer.confirm", lambda *a, **k: True)
+        init_env["settings"].parent.mkdir(parents=True, exist_ok=True)
+        init_env["settings"].write_text(json.dumps({"autoMode": {"environment": ["$defaults", self.RETIRED]}}))
+
+        result = _run_init(init_env["workspace"])
+
+        assert "Replaced the older declaration" in result.output, result.output
+        assert "was already declared" not in result.output
