@@ -36,13 +36,14 @@ def is_redirect(status_code: int) -> bool:
     return status_code in REDIRECT_STATUSES
 
 
-def moved_server_message(status_code: int, location: str, configured: str) -> str:
-    """Explain a redirect in terms the caller can act on.
+def _parse_target(location: str, configured: str) -> tuple[bool, str]:
+    """``(is_cross_host_move, new_base_url)`` for a ``Location`` header.
 
-    ``location`` may be absolute, protocol-relative (``//host/path`` — absolute
-    despite the leading slash), or relative. Only a genuine cross-host move
-    gets the re-point instructions; telling someone to change a hostname they
-    are already using is noise.
+    One parser for both the prose message and the typed body, so the two can
+    never disagree about whether a redirect is a move.
+
+    ``location`` may be absolute, protocol-relative (``//host/path`` —
+    absolute despite the leading slash), or relative.
     """
     configured = (configured or "").rstrip("/")
     moved = False
@@ -69,6 +70,17 @@ def moved_server_message(status_code: int, location: str, configured: str) -> st
                 new_base = str(target.copy_with(raw_path=b"/")).rstrip("/")
         except Exception:
             moved = False
+    return moved, new_base
+
+
+def moved_server_message(status_code: int, location: str, configured: str) -> str:
+    """Explain a redirect in prose, for the client that writes to stderr.
+
+    Only a genuine cross-host move gets the re-point instructions; telling
+    someone to change a hostname they are already using is noise.
+    """
+    configured = (configured or "").rstrip("/")
+    moved, new_base = _parse_target(location, configured)
 
     where = f" (redirect to {location})" if location else " (redirect)"
     head = f"{configured} answered HTTP {status_code}{where} instead of handling the request."
@@ -91,16 +103,43 @@ def moved_server_message(status_code: int, location: str, configured: str) -> st
     )
 
 
+def redirect_target(location: str, configured: str) -> str:
+    """The moved-to base URL, or ``""`` when this is not a cross-host move."""
+    _, new_base = _parse_target(location, configured)
+    return new_base
+
+
 def redirect_body(response: "httpx.Response", configured: str) -> dict:
     """A typed error body for a redirect, for clients that raise rather than exit.
 
-    Shaped as ``{code, hint}`` so ``cli.error_render`` prints the hint as the
-    human half instead of flattening it.
+    The remedy is split across ``fix`` / ``config`` rather than folded into
+    ``hint``, because ``cli.error_render`` WRAPS ``hint`` at 80 columns: the
+    whole explanation in one field reflowed into a paragraph and split the
+    new hostname mid-token —
+
+        or set `server: https://agnes-analytics-
+        platform.example.com` in your agnes config.yaml
+
+    — so the command the message exists to hand over could not be copied.
+    Keys outside the wrap set render through ``_kv_line``, one per line,
+    untouched (Devin Review on #1266).
     """
     location: Optional[str] = response.headers.get("Location", "")
-    return {
-        "detail": {
-            "code": "server_moved",
-            "hint": moved_server_message(response.status_code, location or "", configured),
-        }
-    }
+    configured = (configured or "").rstrip("/")
+    new_base = redirect_target(location or "", configured)
+
+    detail: dict = {"code": "server_moved"}
+    if new_base:
+        detail["moved_to"] = new_base
+        detail["fix"] = f"AGNES_SERVER={new_base} agnes <command>"
+        detail["config"] = f"server: {new_base}"
+        detail["hint"] = (
+            f"{configured} answered HTTP {response.status_code} and that address has moved. "
+            "Redirects are not followed automatically — credentials are stripped on a "
+            "cross-origin hop, so the retry would fail as 'not authenticated' rather than "
+            "work. Use the one-off command above, or set the config line in your agnes "
+            "config.yaml."
+        )
+    else:
+        detail["hint"] = moved_server_message(response.status_code, location or "", configured)
+    return {"detail": detail}
