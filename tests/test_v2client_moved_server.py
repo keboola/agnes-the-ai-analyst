@@ -379,3 +379,17 @@ class TestATlsUpgradeIsAMove:
             server_moved.redirect_target("http://agnes.example.com/api/v1/agents/", "http://agnes.example.com")
             == ""
         )
+
+
+def test_a_tls_downgrade_is_not_a_move():
+    """Devin Review on #1266: `https` → `http` on the same host is a
+    misconfigured proxy, not a relocation. Printing "point your CLI at
+    http://…" would talk someone out of TLS on the strength of a redirect
+    anyone on the path can forge."""
+    assert (
+        server_moved.redirect_target("http://agnes.example.com/api/v1/agents", "https://agnes.example.com") == ""
+    )
+    msg = server_moved.moved_server_message(
+        308, "http://agnes.example.com/api/v1/agents", "https://agnes.example.com"
+    )
+    assert "AGNES_SERVER=http://" not in msg
