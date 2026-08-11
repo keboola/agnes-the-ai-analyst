@@ -1089,6 +1089,72 @@ class TestEnableTurnsADisabledServerBackOn(TestChatToolsEndpoint):
         assert mcp_sources_repo().get(source_id)["enabled"] is False
 
 
+class TestAnEditKeepsWhatTheAdminAdjusted(TestChatToolsEndpoint):
+    """Devin Review on this PR: the resync rebuilt the whole row.
+
+    `build_stdio_spec` describes a freshly enabled source, so upserting it
+    wholesale on an unrelated save — flipping "set as default", a rename —
+    discarded every setting an admin had adjusted on that server entry. Only
+    the connection's own name and stack URL go stale, so only those are
+    re-derived.
+    """
+
+    def test_customisations_survive_an_unrelated_edit(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-custom")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.repositories import mcp_sources_repo
+
+        source_id = derived_source_id(conn_id)
+        before = mcp_sources_repo().get(source_id)
+        keep = {
+            k: before[k]
+            for k in ("id", "name", "transport", "command", "url", "auth_method", "auth_secret_env", "enabled")
+            if k in before
+        }
+        mcp_sources_repo().upsert(
+            **keep,
+            scope="per_user",
+            connect_hint="Ask the data team before using this.",
+            args=["--pinned", "1.2.3"],
+            env={**(before.get("env") or {}), "KBC_EXTRA": "keep-me"},
+        )
+
+        assert (
+            c.put(f"{BASE}/{conn_id}", json={"name": "kbc-custom-renamed"}, headers=_auth(token)).status_code == 200
+        )
+
+        after = mcp_sources_repo().get(source_id)
+        assert after["scope"] == "per_user"
+        assert after["connect_hint"] == "Ask the data team before using this."
+        assert list(after["args"]) == ["--pinned", "1.2.3"]
+        assert (after.get("env") or {}).get("KBC_EXTRA") == "keep-me"
+
+    def test_the_two_derived_fields_are_still_refreshed(self, seeded_app):
+        """…and the point of the resync survives: name and stack URL follow
+        the connection, or the agent talks to the wrong project."""
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-moves")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.keboola_chat_tools import STACK_URL_ENV, derived_source_name
+        from src.repositories import mcp_sources_repo
+
+        assert (
+            c.put(
+                f"{BASE}/{conn_id}",
+                json={"name": "kbc-moved", "config": {"stack_url": "https://other.example.com"}},
+                headers=_auth(token),
+            ).status_code
+            == 200
+        )
+
+        after = mcp_sources_repo().get(derived_source_id(conn_id))
+        assert after["name"] == derived_source_name("kbc-moved")
+        assert (after.get("env") or {})[STACK_URL_ENV] == "https://other.example.com"
+
+
 class TestClearingTheTokenSwitchesTheAgentOff:
     """Devin Review on this PR, across three rounds.
 
