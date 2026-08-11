@@ -1354,6 +1354,8 @@
                     <input type="text" id="treeQuery" placeholder="Search…" oninput="onTreeQueryInput()" style="padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-md);">
                 </label>
             </div>
+            <!-- Browse approves too (Devin Review on #1258). -->
+            <div id="browseDeliveryNotice" class="delivery-notice" style="display:none;"></div>
             <div id="browseTree">
                 <div class="loading">Loading tree…</div>
             </div>
@@ -2699,6 +2701,12 @@
     }
 
     function renderBrowseTree(data, container) {
+        renderDeliveryNotice(
+            // The notice renderer wants `items` to decide whether the tab has
+            // anything to act on; a tree's items live inside its groups.
+            {delivery_notice: data.delivery_notice, items: (data.groups || []).flatMap(g => g.items || [])},
+            'browseDeliveryNotice',
+        );
         if (!data.groups || data.groups.length === 0) {
             container.innerHTML = '<div class="empty-state"><p>No items match the current filters.</p></div>';
             return;

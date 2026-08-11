@@ -1611,9 +1611,24 @@ async def get_tree(
     # its items.
     start = (page - 1) * per_page
     paged = ordered[start : start + per_page]
+
+    # The Browse tab approves too — its cards carry the same actions — so its
+    # items need the same annotation the review queue and All Items get, or
+    # the warning is missing on one of the three surfaces an approval can be
+    # issued from. Only the PAGED groups are scanned, and only for an admin.
+    # (Devin Review on #1258.)
+    payload_notice = None
+    if _is_privileged_viewer(user, conn):
+        flagged = False
+        for group in paged:
+            group["items"] = [_with_delivery_warnings(it) for it in group["items"]]
+            flagged = flagged or any(it.get("delivery_warnings") for it in group["items"])
+        payload_notice = DELIVERY_NOTICE if flagged else None
+
     return {
         "axis": axis,
         "groups": paged,
+        "delivery_notice": payload_notice,
         "page": page,
         "per_page": per_page,
         "total_groups": len(ordered),
