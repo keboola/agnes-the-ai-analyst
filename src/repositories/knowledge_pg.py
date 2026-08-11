@@ -177,6 +177,28 @@ class KnowledgePgRepository:
                     "now": now,
                 },
             )
+            # The junction too, not just the inline column. Every domain-scoped
+            # query in this repo joins `knowledge_item_domains` (visibility
+            # filters, the admin domain view), so an item created with a
+            # `domain` but no junction row was invisible under its own domain
+            # here while the DuckDB sibling showed it — a divergence the
+            # domain builder's seeded item made user-visible.
+            # (Devin Review on #1263.) Unknown slug behaves like the DuckDB
+            # repo: the caller hears about it rather than getting a silent
+            # half-write.
+            if domain:
+                row = conn.execute(
+                    sa.text("SELECT id FROM memory_domains WHERE slug = :slug"), {"slug": domain}
+                ).fetchone()
+                if not row:
+                    raise ValueError(f"Unknown memory domain slug: {domain}")
+                conn.execute(
+                    sa.text(
+                        "INSERT INTO knowledge_item_domains(item_id, domain_id, added_by) "
+                        "VALUES (:item, :dom, :by) ON CONFLICT DO NOTHING"
+                    ),
+                    {"item": id, "dom": row[0], "by": source_user or "system"},
+                )
 
     def _resolve_domain_slug(self, slug: str) -> Optional[str]:
         """slug → ``memory_domains.id``. Returns None for unknown slug (parity with DuckDB repo)."""
