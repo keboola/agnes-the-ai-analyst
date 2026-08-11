@@ -6391,6 +6391,12 @@ async def admin_semantic_layer_page(
     ctx["orphaned"] = orphaned
     ctx["connections_without_master"] = connections_without_master
     ctx["unresolved_tables"] = sorted(unresolved_tables)
+    # Per-source lists are capped; sum the reported totals so the page can say
+    # when it is showing a subset. Falls back to the listed count for an entry
+    # written before the total was recorded.
+    ctx["unresolved_tables_total"] = sum(
+        int(e.get("unresolved_tables_total") or len(e.get("unresolved_tables") or [])) for e in last_by_ref.values()
+    )
     ctx["skipped_unresolved_total"] = sum(int(e.get("skipped_unresolved_table") or 0) for e in last_by_ref.values())
     ctx["default_connection_id"] = default_id
     ctx["semantic_refresh_summary"] = summary
