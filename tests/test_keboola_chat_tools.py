@@ -524,3 +524,80 @@ def test_the_admin_page_renders_a_structured_error_detail():
     assert "function detailMessage(" in src
     assert "still_present" in src, "the partial-teardown list is never shown"
     assert 'showToast("Failed: " + (body.detail' not in src, "the chat-tools toast still stringifies an object"
+
+
+class TestTheStoredStackUrlIsValidatedOnTheWayIn:
+    """Devin Review on this PR: the enable path cited a guard with no caller.
+
+    Enabling chat tools deliberately skips the DNS-resolving validation — it
+    makes no outbound request, and re-resolving would only make enabling fail
+    whenever DNS is down. Its justification was that the URL "is the
+    connection's own, already SSRF-validated on create/update". That was not
+    true: `_validate_stack_url`'s `required=False` branch, written for exactly
+    those two handlers, had no caller anywhere, so an admin-supplied
+    `stack_url` was stored unchecked. Validate-at-use on `/test`, `/tables`
+    and `/secret` is unchanged — it closes the DNS-rebind window and this does
+    not replace it.
+    """
+
+    def test_create_rejects_a_plain_http_stack_url(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        r = c.post(
+            BASE,
+            json={
+                "name": "kbc-ssrf-http",
+                "source_type": "keboola",
+                "config": {"stack_url": "http://connection.example.com"},
+            },
+            headers=_auth(token),
+        )
+        assert r.status_code == 400, r.text
+
+    def test_update_rejects_a_plain_http_stack_url(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        created = c.post(
+            BASE,
+            json={
+                "name": "kbc-ssrf-update",
+                "source_type": "keboola",
+                "config": {"stack_url": "https://connection.example.com"},
+            },
+            headers=_auth(token),
+        )
+        assert created.status_code == 201, created.text
+        r = c.put(
+            f"{BASE}/{created.json()['id']}",
+            json={"config": {"stack_url": "http://connection.example.com"}},
+            headers=_auth(token),
+        )
+        assert r.status_code == 400, r.text
+
+    def test_an_unresolvable_stack_is_still_storable(self, seeded_app):
+        """The private-range half needs DNS and deliberately stays at use.
+
+        A stack that does not resolve from the Agnes host yet — a fresh
+        deployment, split-horizon DNS, a momentary outage — is a legitimate
+        thing to configure, and `/test` is where the operator finds out.
+        """
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        r = c.post(
+            BASE,
+            json={
+                "name": "kbc-unresolvable",
+                "source_type": "keboola",
+                "config": {"stack_url": "https://connection.example.com"},
+            },
+            headers=_auth(token),
+        )
+        assert r.status_code == 201, r.text
+
+    def test_a_partial_config_from_the_wizard_still_saves(self, seeded_app):
+        """`required=False` exists so the add-data-source wizard can save a
+        config that has no stack_url yet — that must keep working."""
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        r = c.post(
+            BASE,
+            json={"name": "kbc-partial", "source_type": "keboola", "config": {}},
+            headers=_auth(token),
+        )
+        assert r.status_code == 201, r.text
