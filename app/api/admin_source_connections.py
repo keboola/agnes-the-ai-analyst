@@ -431,6 +431,26 @@ async def set_connection_secret(
             status_code=409,
             detail="vault_key_not_configured: set AGNES_VAULT_KEY on the server before storing secrets",
         ) from exc
+    if body.kind != "master":
+        # Rotation propagates to the agent's copy, symmetrically with the
+        # clear above. Copy-not-reference is a deliberate design, but it made
+        # the two halves of the same admin intent behave differently: clearing
+        # cut the agent off while rotating left the OLD value live in the MCP
+        # vault — so rotating a leaked token left the leak working, and the
+        # agent kept authenticating with a credential that may already have
+        # been revoked upstream. Only an EXISTING copy is updated; this does
+        # not enable chat tools for a connection that never had them.
+        # (Devin Review on this PR.)
+        derived = derived_source_id(connection_id)
+        try:
+            if shared_secrets_repo().has(derived):
+                shared_secrets_repo().upsert(derived, body.value)
+        except Exception:  # noqa: BLE001 — the primary store already succeeded
+            logger.warning(
+                "stored a new token for connection %s but could not re-sync the chat-tools copy",
+                connection_id,
+                exc_info=True,
+            )
 
 
 @router.delete("/{connection_id}/secret", status_code=204)
