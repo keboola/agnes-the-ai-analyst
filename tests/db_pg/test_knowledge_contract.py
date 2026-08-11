@@ -427,3 +427,58 @@ def test_a_dismissal_still_hides_a_legacy_item_with_null_is_required(k_repo):
         "a dismissed legacy item (is_required IS NULL) reappeared — the "
         "Required exemption predicate is not NULL-safe"
     )
+
+
+# ---------------------------------------------------------------------------
+# create(domain=…) contract — the junction row, on both engines
+# ---------------------------------------------------------------------------
+
+
+def _domain_repo_for(k_repo):
+    """The memory-domains repo talking to the SAME backend as ``k_repo``."""
+    if hasattr(k_repo, "conn"):
+        from src.repositories.memory_domains import MemoryDomainsRepository
+
+        return MemoryDomainsRepository(k_repo.conn)
+    import src.db_pg as db_pg
+    from src.repositories.memory_domains_pg import MemoryDomainsPgRepository
+
+    return MemoryDomainsPgRepository(db_pg.get_engine())
+
+
+def test_create_with_a_domain_links_the_item_on_both_engines(k_repo):
+    """Devin Review on #1263: PG wrote the inline column and no junction row.
+
+    Every domain-scoped query in the PG repo joins `knowledge_item_domains`,
+    so an item created with a `domain` was invisible under its own domain
+    there while DuckDB showed it. The domain builder's seeded item made that
+    divergence user-visible.
+    """
+    domains = _domain_repo_for(k_repo)
+    domains.create(name="Month-end", slug="month-end", description=None, icon=None, color=None, created_by="u")
+
+    k_repo.create(
+        id="ki_domain_link",
+        title="Seeded",
+        content="knowledge",
+        category="corporate-memory",
+        status="pending",
+        domain="month-end",
+        source_user="author@example.com",
+    )
+
+    domain_id = domains.get_by_slug("month-end")["id"]
+    items = domains.list_items_of_domain(domain_id)
+    assert [i["id"] for i in items] == ["ki_domain_link"], items
+
+
+def test_create_with_an_unknown_domain_is_rejected_on_both_engines(k_repo):
+    with pytest.raises(ValueError):
+        k_repo.create(
+            id="ki_bad_domain",
+            title="Seeded",
+            content="knowledge",
+            category="corporate-memory",
+            status="pending",
+            domain="no-such-domain",
+        )
