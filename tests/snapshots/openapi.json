@@ -10477,7 +10477,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.83.3"
+    "version": "0.83.4"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -28312,6 +28312,116 @@
           }
         },
         "summary": "Data Apps Broker",
+        "tags": [
+          "broker"
+        ]
+      }
+    },
+    "/api/broker/data-apps.git/{slug}/{path}": {
+      "get": {
+        "description": "Carry a sandbox's git traffic to a hosted app's repo.\n\nWithout this the authoring flow has no transport at all. The sandbox\nreaches Agnes only through the in-sandbox relay \u2014 `runner.py` rewrites\n`AGNES_SERVER` to it so \"the relay is the only thing that ever holds a\nreal credential\" \u2014 and the relay's `data_apps` ticket is confined by\n`_within_data_apps_prefix` to `/api/data-apps*`. A repo lives at\n`/data-apps.git/<slug>`, a different top-level prefix, so `git clone`\nfrom a sandbox was refused by the broker and (going direct) by the\nsandbox's own egress hook. Watched live: the agent fetched a credential,\nthen failed to clone by name, by hostname and by IP.\n\nUnlike its `{method, path, body}` siblings this is a **proxy**, not an\nenvelope replay: git speaks binary bodies and its own content types, and\nits first call is a GET. It is also the one broker route that attaches a\ncredential rather than an identity JWT \u2014 the git surface authenticates\nonly a `data-app-git:<slug>` PAT in basic auth (see\n`app/api/data_apps_git.py`). That token is minted per request and revoked\nin `finally`, so the sandbox never holds one and nothing outlives the\ncall.\n\nAuthorization is layered, not replaced: this route pins the slug to an app\nthe ticket's owner may reach, and the git surface then applies its own\nowner-or-admin check and its own scope-vs-slug pin. Bodies are buffered\n(an app repo is a scaffold, not a monorepo); a genuinely large push is a\nreason to revisit, not a reason to stream today.",
+        "operationId": "broker_data_apps_git_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "title": "Path",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Data Apps Git Broker",
+        "tags": [
+          "broker"
+        ]
+      },
+      "post": {
+        "description": "Carry a sandbox's git traffic to a hosted app's repo.\n\nWithout this the authoring flow has no transport at all. The sandbox\nreaches Agnes only through the in-sandbox relay \u2014 `runner.py` rewrites\n`AGNES_SERVER` to it so \"the relay is the only thing that ever holds a\nreal credential\" \u2014 and the relay's `data_apps` ticket is confined by\n`_within_data_apps_prefix` to `/api/data-apps*`. A repo lives at\n`/data-apps.git/<slug>`, a different top-level prefix, so `git clone`\nfrom a sandbox was refused by the broker and (going direct) by the\nsandbox's own egress hook. Watched live: the agent fetched a credential,\nthen failed to clone by name, by hostname and by IP.\n\nUnlike its `{method, path, body}` siblings this is a **proxy**, not an\nenvelope replay: git speaks binary bodies and its own content types, and\nits first call is a GET. It is also the one broker route that attaches a\ncredential rather than an identity JWT \u2014 the git surface authenticates\nonly a `data-app-git:<slug>` PAT in basic auth (see\n`app/api/data_apps_git.py`). That token is minted per request and revoked\nin `finally`, so the sandbox never holds one and nothing outlives the\ncall.\n\nAuthorization is layered, not replaced: this route pins the slug to an app\nthe ticket's owner may reach, and the git surface then applies its own\nowner-or-admin check and its own scope-vs-slug pin. Bodies are buffered\n(an app repo is a scaffold, not a monorepo); a genuinely large push is a\nreason to revisit, not a reason to stream today.",
+        "operationId": "broker_data_apps_git_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "title": "Path",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Data Apps Git Broker",
         "tags": [
           "broker"
         ]
