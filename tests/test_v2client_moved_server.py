@@ -229,6 +229,23 @@ class TestBothClientsShareOneGuard:
             src = (ROOT / name).read_text(encoding="utf-8")
             assert "server_moved" in src, f"{name} does not use the shared redirect guard"
 
+    def test_direct_httpx_call_sites_outside_the_clients_are_guarded_too(self):
+        """The guard used to scan `cli/*client*.py` only, and the CLI has
+        module-level `httpx` calls elsewhere — the setup-token exchange in
+        `cli/commands/init.py` talks to the configured Agnes server directly.
+        A moved server answers 3xx there as well. (Devin Review on #1266.)"""
+        for path in (ROOT / "cli" / "commands").glob("*.py"):
+            src = path.read_text(encoding="utf-8")
+            calls = re.findall(r"(?:^|[^.\w])(?:_?httpx)\.(get|post|put|delete)\(", src)
+            if not calls:
+                continue
+            if "AGNES_SERVER" not in src and "server_url" not in src:
+                continue  # not talking to the Agnes server (e.g. a Keboola stack)
+            assert "server_moved" in src, (
+                f"{path.name} calls the Agnes server with httpx directly but does not consult "
+                "the shared redirect diagnosis"
+            )
+
     def test_both_clients_reference_the_shared_helper(self):
         """If a third client appears, this is the check that should be widened."""
         clients = [p for p in (ROOT / "cli").glob("*client*.py")]
