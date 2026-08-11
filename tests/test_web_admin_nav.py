@@ -1,4 +1,4 @@
-"""Guard tests for the grouped `/admin` sidebar (`_admin_nav.html`).
+"""Guard tests for the grouped, collapsible `/admin` sidebar (`_admin_nav.html`).
 
 (a) Inventory-driven coverage: every ``require_admin``-gated, template-
     rendering GET route registered in ``app/web/router.py`` must be
@@ -11,6 +11,15 @@
 (c) The sidebar renders for admins on admin pages only — never for a
     non-admin (403 before the template body even runs), and never on a
     non-admin page.
+(d) Section disclosure: the section containing the current page renders
+    expanded server-side (no ``hidden`` on its body, ``aria-expanded="true"``
+    on its header); every other section renders collapsed. This is what
+    keeps first paint honest — a client-side-only default would flash the
+    full ~31-row list before JS could collapse it.
+(e) Collapsed-sidebar markup: the whole-sidebar collapse toggle and one
+    rail icon button per section are always present in the rendered HTML
+    (CSS/JS decide which of the two representations is visible; the guard
+    only needs to know both exist to be toggled between).
 """
 
 from __future__ import annotations
@@ -18,7 +27,7 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
-from app.web.admin_nav import ADMIN_NAV_SECTIONS, resolve_active_href
+from app.web.admin_nav import ADMIN_NAV_SECTIONS, resolve_active_href, resolve_active_section_key
 
 ROUTER_SRC = Path("app/web/router.py").read_text(encoding="utf-8")
 
@@ -135,6 +144,26 @@ class TestAdminNavInventoryCoverage:
                     dead.append(href)
         assert not dead, f"nav entr(ies) point at a URL with no matching router route: {dead}"
 
+    def test_exactly_the_seven_decided_sections_in_order(self) -> None:
+        """The IA is a decision, not a projection — pin the seven section
+        keys/labels and their order so a future edit that reshuffles them
+        (or quietly drops one) fails loudly."""
+        assert [(s["key"], s["label"]) for s in ADMIN_NAV_SECTIONS] == [
+            ("people", "People & access"),
+            ("data", "Data"),
+            ("connections", "Connections"),
+            ("moderation", "Moderation"),
+            ("content", "Content"),
+            ("instance", "Instance"),
+            ("insights", "Insights"),
+        ]
+
+    def test_every_section_has_a_distinct_key_and_icon(self) -> None:
+        keys = [s["key"] for s in ADMIN_NAV_SECTIONS]
+        icons = [s["icon"] for s in ADMIN_NAV_SECTIONS]
+        assert len(keys) == len(set(keys)), keys
+        assert all(icons), "every section must carry an icon name for the collapsed rail"
+
 
 class TestAdminNavActiveState:
     def test_active_href_resolves_own_section_item(self) -> None:
@@ -175,6 +204,73 @@ class TestAdminNavActiveState:
             assert resp.status_code == 200, resp.text
             actives = re.findall(r'admin-nav__link is-active"[^>]*>([^<]+)<', resp.text)
             assert actives == [expected_label], (path, actives)
+
+
+class TestAdminNavActiveSection:
+    """`resolve_active_section_key` picks the ONE section that should render
+    expanded by default — the one containing `resolve_active_href`'s pick."""
+
+    def test_active_section_matches_the_active_item_s_section(self) -> None:
+        assert resolve_active_section_key("/admin/users") == "people"
+        assert resolve_active_section_key("/admin/tables") == "data"
+        assert resolve_active_section_key("/admin/mcp-sources") == "connections"
+        assert resolve_active_section_key("/admin/store/lint") == "moderation"
+        assert resolve_active_section_key("/admin/news") == "content"
+        assert resolve_active_section_key("/admin/server-config") == "instance"
+        assert resolve_active_section_key("/admin/activity") == "insights"
+
+    def test_hub_page_has_no_active_section_key(self) -> None:
+        assert resolve_active_section_key("/admin") is None
+
+    def test_only_the_active_section_renders_expanded_server_side(self, seeded_app) -> None:
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/admin/users", headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 200, resp.text
+        text = resp.text
+
+        # The active section's header carries aria-expanded="true" and its
+        # body carries no `hidden` attribute; every other section's header
+        # carries aria-expanded="false" and its body IS hidden.
+        groups = re.findall(
+            r'data-admin-nav-group="([\w-]+)">\s*'
+            r'<button type="button" class="admin-nav__group-hd" data-admin-nav-toggle\s*'
+            r'aria-expanded="(true|false)"',
+            text,
+        )
+        assert len(groups) == len(ADMIN_NAV_SECTIONS), groups
+        by_key = dict(groups)
+        assert by_key["people"] == "true"
+        for section in ADMIN_NAV_SECTIONS:
+            if section["key"] == "people":
+                continue
+            assert by_key[section["key"]] == "false", section["key"]
+
+        # The active section's body has no `hidden`; the rest do.
+        bodies = re.findall(
+            r'<div class="admin-nav__group-body" id="admin-nav-body-([\w-]+)"( hidden)?>',
+            text,
+        )
+        by_body_key = dict(bodies)
+        assert by_body_key["people"] == "", "the active section's body must not be hidden"
+        for section in ADMIN_NAV_SECTIONS:
+            if section["key"] == "people":
+                continue
+            assert by_body_key[section["key"]] == " hidden", section["key"]
+
+
+class TestAdminNavCollapsedMarkup:
+    def test_collapse_toggle_and_seven_rail_icons_present(self, seeded_app) -> None:
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/admin/users", headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 200, resp.text
+        text = resp.text
+        assert "data-admin-nav-collapse-toggle" in text
+        rail_keys = re.findall(r'data-admin-nav-rail-btn="([\w-]+)"', text)
+        assert rail_keys == [s["key"] for s in ADMIN_NAV_SECTIONS]
+        flyout_keys = re.findall(r'data-admin-nav-flyout="([\w-]+)"', text)
+        assert flyout_keys == [s["key"] for s in ADMIN_NAV_SECTIONS]
 
 
 class TestAdminNavGating:

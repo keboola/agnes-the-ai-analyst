@@ -351,10 +351,15 @@ templates.env.globals["is_paper"] = _is_paper_theme
 # resolver registered as globals (like `static_url`/`is_paper` above) so
 # `_admin_nav.html` (included from base_admin.html / base_admin_page.html)
 # resolves them regardless of which context builder the enclosing page uses.
-from app.web.admin_nav import ADMIN_NAV_SECTIONS, resolve_active_href  # noqa: E402
+from app.web.admin_nav import (  # noqa: E402
+    ADMIN_NAV_SECTIONS,
+    resolve_active_href,
+    resolve_active_section_key,
+)
 
 templates.env.globals["admin_nav_sections"] = ADMIN_NAV_SECTIONS
 templates.env.globals["admin_nav_active_href"] = resolve_active_href
+templates.env.globals["admin_nav_active_section_key"] = resolve_active_section_key
 
 
 # The ONE default behind `library.show_unverified_trust`, read off the registry

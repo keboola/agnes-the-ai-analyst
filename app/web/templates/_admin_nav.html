@@ -1,4 +1,6 @@
-{# Grouped left sidebar for the /admin section (issue #896 follow-up mock).
+{# Grouped, collapsible left sidebar for the /admin section (issue #896
+   follow-up, then a height/grab-bag follow-up — see admin_nav.py's module
+   docstring for the seven-section rationale).
 
    Included by base_admin.html / base_admin_page.html only — every /admin/*
    HTML page is already gated server-side by `Depends(require_admin)`, so a
@@ -7,23 +9,98 @@
    guard on the rail's Admin flyout in _app_rail.html), not the primary gate.
 
    Data comes from `app/web/admin_nav.py` (`ADMIN_NAV_SECTIONS`,
-   `resolve_active_href`), registered as the Jinja globals
-   `admin_nav_sections` / `admin_nav_active_href` — the single source of
-   truth `tests/test_web_admin_nav.py` also imports directly, so a page added
-   to the router without a nav entry fails that guard. #}
+   `resolve_active_href`, `resolve_active_section_key`), registered as the
+   Jinja globals `admin_nav_sections` / `admin_nav_active_href` /
+   `admin_nav_active_section_key` — the single source of truth
+   `tests/test_web_admin_nav.py` also imports directly, so a page added to
+   the router without a nav entry fails that guard.
+
+   Two independent collapse mechanisms, both persisted per browser in
+   localStorage (owned by js/admin/admin_nav.js), both resolved server-side
+   for FIRST PAINT so nothing flashes fully expanded before JS runs:
+
+     1. Per-SECTION disclosure. `_active_section_key` (computed from the
+        request path, not from any stored state) is the one section that
+        renders expanded by default; every other section renders with its
+        body `hidden` and its header's `aria-expanded="false"`. A caller's
+        own manually-opened/closed sections persist across page loads, but
+        the ACTIVE section is always forced open by the JS on load too — it
+        must never end up hidden just because a stale stored value says so.
+
+     2. Whole-SIDEBAR collapse, to a ~52px icon strip (one icon per
+        section — `.admin-nav__rail`) — collapsed state itself has no
+        server-side signal (it's pure per-device chrome, like the rail's own
+        nav collapse), so it starts expanded on a cold load and the tiny
+        inline script below applies a stored "collapsed" preference before
+        the rest of the aside paints. Clicking a rail icon opens a flyout
+        listing that section's items (positioned beside the rail, not
+        inline, so collapsing never grows the column's height). #}
 {% if session.user.is_admin %}
 {% set _admin_path = request.url.path %}
 {% set _active_href = admin_nav_active_href(_admin_path) %}
-<aside class="admin-nav" aria-label="Admin sections">
-    <a class="admin-nav__title" href="/admin">Admin</a>
-    {% for section in admin_nav_sections %}
-    <div class="admin-nav__group">
-        <h5>{{ section['label'] }}</h5>
-        {% for item in section['items'] %}
-        <a class="admin-nav__link{% if item['href'] == _active_href %} is-active{% endif %}"
-           href="{{ item['href'] }}">{{ item['label'] }}</a>
+{% set _active_section_key = admin_nav_active_section_key(_admin_path) %}
+{% import "macros/_icon.html" as ico %}
+<aside class="admin-nav" aria-label="Admin sections" data-admin-nav data-active-section="{{ _active_section_key or '' }}">
+    <script>
+    (function () {
+        // Applied synchronously, before the rest of this aside paints, so a
+        // caller who collapsed the sidebar on a previous visit never sees it
+        // flash open first. Inert (no class added) with JS disabled or in a
+        // storage-denying context — the sidebar simply starts expanded.
+        try {
+            if (localStorage.getItem("agnes.adminNav.collapsed") === "1") {
+                document.currentScript.closest(".admin-nav").classList.add("is-collapsed");
+            }
+        } catch (e) { /* private mode / storage disabled */ }
+    })();
+    </script>
+    <div class="admin-nav__head">
+        <a class="admin-nav__title" href="/admin">Admin</a>
+        <button type="button" class="admin-nav__collapse-toggle" data-admin-nav-collapse-toggle
+                aria-expanded="true" aria-label="Collapse sidebar">
+            <span class="admin-nav__collapse-glyph admin-nav__collapse-glyph--open" aria-hidden="true">&laquo;</span>
+            <span class="admin-nav__collapse-glyph admin-nav__collapse-glyph--closed" aria-hidden="true">&raquo;</span>
+        </button>
+    </div>
+    <div class="admin-nav__sections">
+        {% for section in admin_nav_sections %}
+        {% set _sec_open = section['key'] == _active_section_key %}
+        <div class="admin-nav__group{% if _sec_open %} is-open{% endif %}" data-admin-nav-group="{{ section['key'] }}">
+            <button type="button" class="admin-nav__group-hd" data-admin-nav-toggle
+                    aria-expanded="{{ 'true' if _sec_open else 'false' }}"
+                    aria-controls="admin-nav-body-{{ section['key'] }}">
+                <span class="admin-nav__group-txt">{{ section['label'] }}</span>
+                {{ ico.icon('chevron', 14, 'admin-nav__group-chev') }}
+            </button>
+            <div class="admin-nav__group-body" id="admin-nav-body-{{ section['key'] }}"{% if not _sec_open %} hidden{% endif %}>
+                {% for item in section['items'] %}
+                <a class="admin-nav__link{% if item['href'] == _active_href %} is-active{% endif %}"
+                   href="{{ item['href'] }}">{{ item['label'] }}</a>
+                {% endfor %}
+            </div>
+        </div>
         {% endfor %}
     </div>
-    {% endfor %}
+    <div class="admin-nav__rail">
+        {% for section in admin_nav_sections %}
+        <div class="admin-nav__rail-item">
+            <button type="button" class="admin-nav__rail-btn{% if section['key'] == _active_section_key %} is-active{% endif %}"
+                    data-admin-nav-rail-btn="{{ section['key'] }}"
+                    aria-haspopup="true" aria-expanded="false" aria-controls="admin-nav-flyout-{{ section['key'] }}"
+                    aria-label="{{ section['label'] }}">
+                {{ ico.icon(section['icon'], 18) }}
+            </button>
+            <div class="admin-nav__flyout" id="admin-nav-flyout-{{ section['key'] }}"
+                 data-admin-nav-flyout="{{ section['key'] }}" role="group" aria-label="{{ section['label'] }}" hidden>
+                <div class="admin-nav__flyout-label">{{ section['label'] }}</div>
+                {% for item in section['items'] %}
+                <a class="admin-nav__flyout-item{% if item['href'] == _active_href %} is-active{% endif %}"
+                   href="{{ item['href'] }}">{{ item['label'] }}</a>
+                {% endfor %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
 </aside>
+<script src="{{ static_url('js/admin/admin_nav.js') }}" defer></script>
 {% endif %}
