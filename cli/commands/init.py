@@ -50,7 +50,7 @@ import typer
 from cli.client import api_get
 from cli.config import _config_dir, save_config, save_token
 from cli.error_render import render_error
-from cli.server_moved import is_redirect, redirect_body
+from cli.server_moved import is_redirect, redirect_target
 from cli.lib.automode import ensure_marketplace_trusted
 from cli.lib.commands import install_claude_commands
 from cli.lib.hooks import install_claude_hooks
@@ -388,10 +388,28 @@ def init(
             # for a server that had simply changed address. Same diagnosis as
             # both HTTP clients use. (Devin Review on #1266.)
             if is_redirect(exchange_resp.status_code):
-                typer.echo(
-                    render_error(exchange_resp.status_code, redirect_body(exchange_resp, server_url)),
-                    err=True,
-                )
+                # The generic remedy (AGNES_SERVER / config.yaml) is wrong for
+                # THIS command: `agnes init` reads neither — it takes the
+                # address as an argument. So the fix named here is the one
+                # that works. (Devin Review on #1266.)
+                moved_to = redirect_target(exchange_resp.headers.get("Location", "") or "", server_url)
+                detail = {"code": "server_moved" if moved_to else "unexpected_redirect"}
+                if moved_to:
+                    detail["moved_to"] = moved_to
+                    detail["fix"] = f"agnes init --server-url {moved_to} …"
+                    detail["hint"] = (
+                        f"{server_url} answered HTTP {exchange_resp.status_code} and that address has moved. "
+                        "Redirects are not followed automatically — credentials are stripped on a "
+                        "cross-origin hop. Re-run setup against the new address with the command above; "
+                        "the setup token is unchanged."
+                    )
+                else:
+                    detail["hint"] = (
+                        f"{server_url} answered HTTP {exchange_resp.status_code} instead of exchanging the "
+                        "setup token, and the redirect stays on the same address. Check whether a proxy "
+                        "sits in front of the server."
+                    )
+                typer.echo(render_error(exchange_resp.status_code, {"detail": detail}), err=True)
                 raise typer.Exit(1)
             if exchange_resp.status_code == 401:
                 typer.echo(
