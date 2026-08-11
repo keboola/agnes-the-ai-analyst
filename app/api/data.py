@@ -89,6 +89,14 @@ def _distribution_refusal(table_id: str) -> Optional[HTTPException]:
 
     A table absent from the registry is left alone — the caller's own
     existence handling (404) owns that case.
+
+    The manifest ORs this with a per-user "granted but not subscribed" flag
+    (`app/api/sync.py`); that half is deliberately NOT mirrored here. It is a
+    stack-subscription property, not a table property: such a caller passes
+    `can_access_table`, so what they skipped is subscribing to the package,
+    not the authorization. Mirroring it would turn this into a second RBAC
+    decision on top of the one that already ran, with two places to keep in
+    agreement. (Devin Review on #1265 asked; this is the answer.)
     """
     from src.repositories import table_registry_repo
 
