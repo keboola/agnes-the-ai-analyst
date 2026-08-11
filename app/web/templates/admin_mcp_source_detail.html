@@ -556,6 +556,12 @@ document.getElementById("edit-toggle-btn").addEventListener("click", () => {
   // (Devin Review on this PR.)
   const authSel = document.getElementById("edit-auth-method");
   const storedAuth = source.auth_method || "";
+  // Ignore an option THIS function added on a previous open, or the warning
+  // disappears the second time the form is opened: the first open inserts the
+  // stale value as an option, which then makes it look "known". Marked with a
+  // data attribute rather than removed, so re-opening re-evaluates from the
+  // real option list every time. (Devin Review on this PR.)
+  Array.from(authSel.querySelectorAll("option[data-stale]")).forEach(o => o.remove());
   const knownAuth = Array.from(authSel.options).some(o => o.value === storedAuth);
   const staleNote = document.getElementById("edit-auth-method-stale");
   if (!knownAuth) {
@@ -563,6 +569,7 @@ document.getElementById("edit-toggle-btn").addEventListener("click", () => {
     opt.value = storedAuth;
     opt.textContent = `${storedAuth} — no longer supported, pick another`;
     opt.disabled = true;
+    opt.dataset.stale = "1";
     authSel.insertBefore(opt, authSel.firstChild);
     if (staleNote) {
       staleNote.textContent =
