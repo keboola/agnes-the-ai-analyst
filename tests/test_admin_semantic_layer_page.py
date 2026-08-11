@@ -277,3 +277,56 @@ class TestSemanticLayerPageSources:
         # Not folded into any per-connection row — there is none rendered,
         # since the only connection has no master token.
         assert "No Master Token Project" not in body
+
+
+class TestAGlossaryOnlySyncIsNotReportedAsEmpty:
+    """Devin Review on #1248: the cell looked only at metrics.
+
+    A project that publishes glossary terms and no metrics is a normal shape
+    — the sync itself documents it — and reading that run as "imported
+    nothing" sent admins looking for a fault that was not there.
+    """
+
+    def test_a_glossary_only_run_reads_as_a_success(self, seeded_app, vault_key):
+        from app.api import keboola_semantic_layer_refresh as endpoint_module
+
+        _make_master_connection(
+            "conn-gloss", name="Terms only", stack_url="https://connection.keboola.com", token="t", is_default=True
+        )
+        endpoint_module._refresh_state["last_result"] = {
+            "status": "ok",
+            "sources": [
+                {
+                    "connection_id": "conn-gloss",
+                    "status": "ok",
+                    "created_or_updated": 0,
+                    "glossary_created_or_updated": 9,
+                    "pruned": 0,
+                }
+            ],
+        }
+
+        body = seeded_app["client"].get("/admin/semantic-layer", headers=_auth(seeded_app["admin_token"])).text
+        assert "ran, imported nothing" not in body, "a glossary-only run was reported as empty"
+        assert "9 terms" in body
+
+    def test_a_genuinely_empty_run_still_says_so(self, seeded_app, vault_key):
+        from app.api import keboola_semantic_layer_refresh as endpoint_module
+
+        _make_master_connection(
+            "conn-empty", name="Nothing", stack_url="https://connection.keboola.com", token="t", is_default=True
+        )
+        endpoint_module._refresh_state["last_result"] = {
+            "status": "ok",
+            "sources": [
+                {
+                    "connection_id": "conn-empty",
+                    "status": "ok",
+                    "created_or_updated": 0,
+                    "glossary_created_or_updated": 0,
+                }
+            ],
+        }
+
+        body = seeded_app["client"].get("/admin/semantic-layer", headers=_auth(seeded_app["admin_token"])).text
+        assert "ran, imported nothing" in body
