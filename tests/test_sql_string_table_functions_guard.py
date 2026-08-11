@@ -42,6 +42,20 @@ BLOCKED = [
     # Upper/mixed case reaches the guard lowercased, but the AST path must not
     # depend on the caller having lowercased it.
     "select * from QUERY('select 1')".lower(),
+    # QUOTED function name. DuckDB resolves it the same way, but sqlglot models
+    # the callee as an `exp.Identifier` rather than a `str`, so a guard that
+    # tested `isinstance(name, str)` read it as "not one of ours" — and since
+    # the statement parses, the text fallback never ran either. Quoting was a
+    # one-character bypass. (Devin Review on #1264.)
+    "select * from \"query\"('select * from customers')",
+    "select * from `query`('select * from customers')",
+    "select * from \"query_table\"('customers')",
+    # Catalog-qualified call — the name is still the callee.
+    "select * from system.main.query('select 1')",
+    # The `_execute` siblings: same string-argument shape, and they WRITE.
+    "select postgres_execute('db', 'drop table customers')",
+    "select sqlite_execute('f.db', 'delete from t')",
+    "select mysql_execute('db', 'update t set x = 1')",
 ]
 
 ALLOWED = [
@@ -54,6 +68,10 @@ ALLOWED = [
     # call. This is precisely what an AST check gets right and a substring
     # check gets wrong.
     "select * from customers where note = 'query(1)'",
+    # A quoted IDENTIFIER that is not a call must still be fine — the guard
+    # keys on the call, not on the quoting.
+    'select * from "saved_queries" where id = 1',
+    'select "query_id" from job_history',
 ]
 
 
@@ -97,3 +115,30 @@ def test_unparseable_sql_carrying_the_call_is_still_rejected():
     shape ``_has_file_table_source`` uses."""
     with pytest.raises(HTTPException):
         _assert_select_only("select * from query('select 1') where )( garbage".strip().lower())
+
+
+def test_sqlglot_models_a_quoted_call_as_an_identifier():
+    """Tripwire for the shape the bypass depended on.
+
+    If sqlglot ever normalizes a quoted callee to a plain `str`, this test
+    fails and `_anonymous_name` can be simplified — but until then the guard
+    must unwrap the identifier, and this pins WHY.
+    """
+    import sqlglot
+    from sqlglot import exp
+
+    statement = sqlglot.parse("""select * from "query"('select 1')""", read="duckdb")[0]
+    anonymous = list(statement.find_all(exp.Anonymous))
+    assert anonymous, "quoted call is not an Anonymous node any more — revisit the guard"
+    assert isinstance(anonymous[0].this, exp.Identifier), type(anonymous[0].this)
+
+    from app.api.query import _anonymous_name
+
+    assert _anonymous_name(anonymous[0]) == "query"
+
+
+def test_unparseable_quoted_call_is_still_rejected():
+    """The text fallback must see the same call the parser does."""
+    with pytest.raises(HTTPException) as exc:
+        _assert_select_only("""select * from "query"('select 1'""")
+    assert exc.value.status_code == 400

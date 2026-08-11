@@ -930,13 +930,45 @@ _SQL_STRING_TABLE_FUNCTIONS = frozenset(
         "postgres_query",
         "sqlite_query",
         "mysql_query",
+        # Same shape, opposite direction: the extensions that ship the `_query`
+        # readers also ship these, which run an arbitrary statement string
+        # against an attached database — writes included. They are not table
+        # functions, so they appear in a projection rather than in FROM, and
+        # none of them is on `_BLOCKED_SQL_TOKENS`. Whether they resolve
+        # depends on which extensions the analytics connection has loaded;
+        # naming them costs nothing and closes the case where one is.
+        # (Devin Review on #1264.)
+        "postgres_execute",
+        "sqlite_execute",
+        "mysql_execute",
     }
 )
 
 # Fallback ONLY for unparseable SQL, mirroring `_FROM_STRING_LITERAL_RE`: the
 # function name followed by its opening paren. Over-matching is acceptable on
-# SQL that does not parse — it is almost certainly invalid anyway.
-_SQL_STRING_FN_RE = re.compile(r"\b(?:" + "|".join(sorted(_SQL_STRING_TABLE_FUNCTIONS)) + r")\s*\(")
+# SQL that does not parse — it is almost certainly invalid anyway. The optional
+# quote characters are there because DuckDB accepts a quoted function name
+# (`"query"('…')`) and the fallback must see the same call the parser does.
+_SQL_STRING_FN_RE = re.compile(
+    r"""["`\[]?\b(?:""" + "|".join(sorted(_SQL_STRING_TABLE_FUNCTIONS)) + r""")\b["`\]]?\s*\("""
+)
+
+
+def _anonymous_name(node) -> str:
+    """The called name of an ``exp.Anonymous``, quoted or not.
+
+    ``node.this`` is a plain ``str`` for ``query(…)`` but an ``exp.Identifier``
+    for ``"query"(…)`` — a form DuckDB resolves identically. An ``isinstance
+    (…, str)`` test therefore read the quoted call as "not one of ours", and
+    because the statement PARSES, the text fallback never ran either: quoting
+    the function name walked straight through the guard. (Devin Review on
+    #1264 — filed as a question about node shape; it is a bypass.)
+    """
+    raw = getattr(node, "this", None)
+    if isinstance(raw, str):
+        return raw
+    name = getattr(raw, "name", None)
+    return name if isinstance(name, str) else ""
 
 
 def _has_sql_string_table_function(sql: str) -> bool:
@@ -967,8 +999,8 @@ def _has_sql_string_table_function(sql: str) -> bool:
             continue
         found_statement = True
         for node in statement.find_all(exp.Anonymous):
-            name = node.this
-            if isinstance(name, str) and name.lower() in _SQL_STRING_TABLE_FUNCTIONS:
+            name = _anonymous_name(node)
+            if name and name.lower() in _SQL_STRING_TABLE_FUNCTIONS:
                 return True
     if not found_statement:
         # sqlglot returned nothing parseable (e.g. all-None statements) —
