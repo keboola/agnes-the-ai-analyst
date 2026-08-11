@@ -6221,6 +6221,33 @@ async def admin_data_sources_page(
     return templates.TemplateResponse(request, "admin_data_sources.html", ctx)
 
 
+def _orphan_reason(connection_id: str) -> str:
+    """Why this connection dropped out of the semantic-layer sync.
+
+    `_enumerate_master_sources()` skips a connection for THREE different
+    reasons, and the page reported all of them as "master token missing" — so
+    an admin whose connection was missing a stack URL, or whose token the
+    server could no longer decrypt, was sent to re-add a token that was
+    already there, and the rows still did not refresh.
+    (Devin Review on this PR.)
+    """
+    from app.api.admin_source_connections import master_secret_key
+    from src.repositories import connection_secrets_repo, source_connections_repo
+
+    row = source_connections_repo().get(connection_id)
+    if row is None:
+        return "the connection no longer exists"
+    if not ((row.get("config") or {}).get("stack_url") or ""):
+        return "no connection URL on this project — add one at"
+    try:
+        token = connection_secrets_repo().get(master_secret_key(connection_id)) or ""
+    except Exception:  # noqa: BLE001 — an unreadable secret is itself the answer
+        return "its master token cannot be read (vault key changed?) — re-add it at"
+    if not token:
+        return "master token missing — add it at"
+    return "it did not sync on the last run — check its status at"
+
+
 @router.get("/admin/semantic-layer", response_class=HTMLResponse)
 async def admin_semantic_layer_page(
     request: Request,
@@ -6353,6 +6380,7 @@ async def admin_semantic_layer_page(
                 "source_ref": ref,
                 "label": connection_names.get(ref, ref),
                 "connection_exists": ref in connection_names,
+                "reason": _orphan_reason(ref) if ref in connection_names else None,
                 "metric_count": metric_count,
                 "glossary_count": glossary_count,
             }
