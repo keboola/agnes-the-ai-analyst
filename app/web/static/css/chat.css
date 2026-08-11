@@ -1832,6 +1832,22 @@ html[data-ui-layout="rail"] .cloud-chat-capabilities {
   flex-direction: column;
   align-items: center;
   padding: 34px 20px 6px;
+  /* Drop the base rule's ``overflow-y: auto``. That belongs to the topnav
+     empty state, where this panel holds the capability cards inside a
+     bounded (``flex: 0 1 auto``) column and genuinely scrolls. Under the
+     rail the element is two lines — the trust caption and the "Ask …
+     anything" heading — at natural height, so it can never need to scroll,
+     and the inherited value only bit: the block's height lands on a
+     fraction (21.375 caption + 5 gap + 32.195 heading = 58.57px at the
+     28px clamp ceiling), Chrome resolves that to ~0.5px of scrollable
+     overflow, and ``auto`` paints a scrollbar for it. Sub-pixel, so
+     ``scrollHeight - clientHeight`` rounds to 0 and reads as "no overflow"
+     — the only tell is that ``scrollTop`` clamps to 0.5 instead of 0. The
+     visible result was a 59px grey thumb floating ~87px inside the window
+     edge (the panel is the 1280px --rdb-col, not the full width), coming
+     and going with the viewport width as the heading's clamp() moved the
+     fraction around. */
+  overflow: visible;
 }
 /* Empty-state layout order: greeting → composer → suggestions → banner →
    footer credit (very bottom). The primary entry point (greeting + composer)

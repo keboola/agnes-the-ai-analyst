@@ -1286,6 +1286,44 @@ class TestRailDashboard:
         monkeypatch.setattr(access, "has_explicit_grant", lambda *a, **k: True)
         web_client.app.state.chat_config = SimpleNamespace(enabled=True)
 
+    def test_dashboard_caption_block_is_not_a_scroller(self, web_client):
+        """`#chat-capabilities` must not keep the base rule's `overflow-y: auto`
+        under the rail.
+
+        The base `.cloud-chat-capabilities` rule is written for the topnav empty
+        state, where the panel holds the capability cards inside a bounded
+        (`flex: 0 1 auto`) column and legitimately scrolls. The rail dashboard
+        reuses the same element for two lines at natural height — the trust
+        caption and the "Ask … anything" heading — where the inherited value can
+        only do harm: the block's height lands on a fraction, Chrome resolves
+        that to ~0.5px of scrollable overflow, and `auto` paints a scrollbar for
+        it. It rendered as a ~59px grey thumb floating inside the page (the
+        panel is the 1280px --rdb-col, not the full width), appearing and
+        disappearing with the viewport width as the heading's clamp() moved the
+        fraction around.
+
+        Sub-pixel overflow is invisible to `scrollHeight - clientHeight` (it
+        rounds to 0), so nothing downstream would catch a regression here.
+        """
+        css = web_client.get("/static/css/chat.css").text
+
+        def block(selector: str) -> str:
+            start = css.index(selector + " {")
+            return css[start : css.index("}", start)]
+
+        rail = block('html[data-ui-layout="rail"] .cloud-chat-capabilities')
+        assert "overflow: visible" in rail, (
+            "the rail dashboard rule no longer cancels the base overflow — the "
+            "sub-pixel scrollbar on the caption/heading block is back"
+        )
+
+        # The other half of the contract: the topnav empty state is untouched.
+        # Its panel is a real scroller and must stay one.
+        assert "overflow-y: auto" in block(".cloud-chat-capabilities"), (
+            "the topnav capability panel lost its scroll — default chrome must "
+            "not change (see TestDefaultContentParity)"
+        )
+
     def test_rail_chat_renders_dashboard_empty_state(self, web_client, admin_cookie, monkeypatch):
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         self._enable_chat(web_client, monkeypatch)
