@@ -51,6 +51,13 @@
     color: var(--ds-primary); background: color-mix(in srgb, var(--ds-primary) 10%, var(--surface));
     padding: 1px 8px; border-radius: var(--radius-full);
   }
+  /* The snippet under a name match is the file's opening text, not a passage
+     containing the query — the badge says which kind of hit this is. */
+  .result__matched-on {
+    font-size: 0.72rem; font-weight: var(--font-medium);
+    padding: 1px 8px; border-radius: var(--radius-full);
+    color: var(--ds-text-secondary); background: color-mix(in srgb, var(--ds-text-secondary) 10%, var(--surface));
+  }
   .result__confidence {
     font-size: 0.72rem; font-weight: var(--font-medium);
     padding: 1px 8px; border-radius: var(--radius-full);
@@ -274,6 +281,15 @@
           conf.textContent = confidence + " confidence";
           var score = document.createElement("span"); score.className = "result__score"; score.textContent = "score " + res.score;
           cite.appendChild(fn); cite.appendChild(loc); cite.appendChild(conf); cite.appendChild(score);
+          // A name match carries the file's opening chunk, whose text does NOT
+          // contain the query — say so, or the snippet reads as a quotation
+          // that answers the question. (Devin Review on #1267.)
+          if (res.matched_on === "filename") {
+            var how = document.createElement("span");
+            how.className = "result__matched-on";
+            how.textContent = "matched by file name";
+            cite.appendChild(how);
+          }
           var txt = document.createElement("p"); txt.className = "result__text"; txt.textContent = (res.text || "").slice(0, 500);
           el.appendChild(cite); el.appendChild(txt); box.appendChild(el);
         });

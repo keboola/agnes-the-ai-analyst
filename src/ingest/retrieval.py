@@ -287,16 +287,16 @@ def search(
         return []
 
     top, confidence = rank_chunks(chunks, query, k=k)
-    # How the hit was found, carried on every result. The combined search caps
-    # name-only hits (see `src/search/unified.py`): min-max normalization makes
-    # any bucket's top hit 1.0, so without a label a weak name match would
-    # arrive looking exactly as strong as a document that genuinely contains
-    # the words, and could fill every slot. (Devin Review on #1267.)
-    matched_on = "body"
 
-    # Resolve filenames for citations (cache per file).
+    # Resolve filenames for citations. One query per CORPUS, not one per file:
+    # the fallback below asks for every candidate's name, and a per-file `get`
+    # turned a miss on a large collection set into hundreds of round-trips.
+    # (Devin Review on #1267.)
     cf_repo = corpus_files_repo()
     name_cache: Dict[str, Optional[str]] = {}
+    for cid in corpus_ids:
+        for row in cf_repo.list_for_corpus(cid):
+            name_cache[row.get("id")] = row.get("filename")
 
     def _filename(file_id: str) -> Optional[str]:
         if file_id not in name_cache:
@@ -304,22 +304,34 @@ def search(
             name_cache[file_id] = row.get("filename") if row else None
         return name_cache[file_id]
 
-    if not top:
-        # Nothing in any BODY matched — try the file NAMES before giving up.
-        # `rank_chunks` scores text only (its docstring: "no filename
-        # resolution"), so "what is in quarterly-report.md?" — the most
-        # natural way to ask about a file you are looking at — matched
-        # nothing, and an agent read that empty result as missing access.
-        #
-        # A fallback rather than a scoring input on purpose: a filename is
-        # weak evidence next to the words actually in the document, so it
-        # must never reorder a search that already worked. Runs only on the
-        # empty case, so the cost lands where there is nothing to lose.
-        top = _rank_by_filename(chunks, query, _filename, k=k)
-        if top:
+    # Try the file NAMES when nothing in any BODY carries the query's words.
+    # `rank_chunks` scores text only (its docstring: "no filename
+    # resolution"), so "what is in quarterly-report.md?" — the most natural
+    # way to ask about a file you are looking at — matched nothing, and an
+    # agent read that empty result as missing access.
+    #
+    # The trigger is "no body contains a query word", NOT "no results at all":
+    # with the embeddings extra installed every chunk gets a non-zero cosine,
+    # so `top` is essentially never empty and an empty-only trigger made the
+    # whole fallback dead code on exactly the instances that have semantic
+    # search. (Devin Review on #1267.)
+    #
+    # Still a fallback, never a scoring input: a filename is weak evidence
+    # next to the words actually in the document, so it cannot reorder a
+    # search that already found them.
+    q_terms = set(_tokenize(query))
+    body_carries_query = any(q_terms & set(_tokenize(ch.get("text", "") or "")) for _s, ch in top)
+    filename_ids: set = set()
+    if not body_carries_query:
+        name_hits = _rank_by_filename(chunks, query, _filename, k=k)
+        if name_hits:
+            filename_ids = {ch.get("id") for _s, ch in name_hits}
+            # Name hits lead; whatever the semantic pass found keeps the rest
+            # of the slots, so nothing that did match is lost.
+            rest = [pair for pair in top if pair[1].get("id") not in filename_ids]
+            top = (name_hits + rest)[:k]
             # A name match is a hint, not evidence — never claim more.
             confidence = "low"
-            matched_on = "filename"
 
     results: List[Dict[str, Any]] = []
     for score, ch in top:
@@ -334,7 +346,12 @@ def search(
                 "text": ch.get("text"),
                 "score": round(float(score), 4),
                 "confidence": confidence,
-                "matched_on": matched_on,
+                # How THIS hit was found. The combined search caps a bucket of
+                # name-only hits (see `src/search/unified.py`): min-max
+                # normalization makes any bucket's top hit 1.0, so without the
+                # label a weak name match arrives looking exactly as strong as
+                # a document that genuinely contains the words.
+                "matched_on": "filename" if ch.get("id") in filename_ids else "body",
             }
         )
     return results
