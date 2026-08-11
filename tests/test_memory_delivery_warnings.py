@@ -312,6 +312,20 @@ class TestMarkingRequiredSaysWhatItPublishes:
         assert {w["kind"] for w in body["delivery_warnings"]} >= {"slash_command"}
         assert body["delivery_notice"]
 
+    def test_the_path_segment_endpoint_reports_too(self, seeded_app):
+        """The page calls this one — fixing only its sibling would leave the
+        surface admins actually use publishing silently."""
+        item_id = _create_item(DIRECTIVE_CONTENT, status="approved", title="Recap")
+
+        body = seeded_app["client"].post(
+            f"/api/memory/items/{item_id}/mark-mandatory",
+            headers=_auth(seeded_app["admin_token"]),
+        ).json()
+
+        assert body["is_required"] is True
+        assert {w["kind"] for w in body["delivery_warnings"]} >= {"slash_command"}
+        assert body["delivery_notice"]
+
     def test_a_clean_item_reports_none(self, seeded_app):
         item_id = _create_item(CLEAN_CONTENT, status="approved", title="Clean")
 
