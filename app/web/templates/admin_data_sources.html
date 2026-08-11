@@ -602,7 +602,13 @@ async function loadTokenMismatchWarnings() {
   for (const source of sources) {
     const box = document.getElementById(`ds-mismatch-${source.connection_id}`);
     if (!box) continue;
-    const warning = (source.warnings || []).find((w) => w.code === "token_project_mismatch");
+    // BOTH mismatch codes. Matching only the storage-vs-master one filtered
+    // out the more serious warning — a master token that contradicts the
+    // project the connection is locked to, which stops the sync outright —
+    // on the very page its message tells the admin to visit. (Devin Review.)
+    const warning = (source.warnings || []).find(
+      (w) => w.code === "token_project_mismatch" || w.code === "master_token_project_mismatch",
+    );
     box.hidden = !warning;
     box.textContent = "";
     if (!warning) continue;
