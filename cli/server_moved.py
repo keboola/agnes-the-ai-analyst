@@ -120,6 +120,26 @@ def moved_server_message(status_code: int, location: str, configured: str) -> st
     where = f" (redirect to {location})" if location else " (redirect)"
     head = f"{configured} answered HTTP {status_code}{where} instead of handling the request."
 
+    # A cross-host move to a plaintext address is a MOVE we refuse to follow,
+    # not a proxy quirk — say so, and name the address, or the reader is sent
+    # looking for a proxy that does not exist. (Devin Review on #1266.)
+    if not moved and location:
+        try:
+            target = httpx.URL(location if "://" in location else "")
+            if target.netloc and target.scheme == "http" and httpx.URL(configured).scheme == "https":
+                return "\n".join(
+                    [
+                        head,
+                        f"That address points at {location}, which is unencrypted.",
+                        "The CLI will not send credentials there, and does not follow redirects:",
+                        "your token would be stripped on the hop anyway.",
+                        "If the server really moved, use its https address;",
+                        "if it did not, a proxy in front of it is rewriting the scheme.",
+                    ]
+                )
+        except Exception:
+            pass
+
     if moved and new_base:
         return "\n".join(
             [
