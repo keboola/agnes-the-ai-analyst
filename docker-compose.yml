@@ -49,6 +49,30 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+      # Without this, the first three probes fire at 30/60/90s against a
+      # container that is still booting, and Docker marks it unhealthy at
+      # ~90s. `scheduler` AND `caddy` declare
+      # `depends_on: app: condition: service_healthy`, so compose then
+      # aborts with "dependency failed to start" and NEVER STARTS THEM —
+      # and `restart: unless-stopped` does not rescue a container that was
+      # created and never ran. Observed as: deploy reports success, app is
+      # fine, and the scheduler is silently absent — no scheduled sync, no
+      # consistency checks, no SLA polling — until someone notices a number
+      # that stopped moving. `caddy` survived only because that recreate did
+      # not touch it; a pass that recreates both takes the site down.
+      #
+      # Boot legitimately exceeds 90s after an image change. Operator stdio
+      # MCP wheels live on the data volume and `pip install --user` lands in
+      # the container filesystem, so every recreate reinstalls them (#806) —
+      # ~2s per wheel, and the set grows as operators add sources — before
+      # alembic even runs. Plain restarts skip that and boot fast; it is the
+      # recreate, i.e. every deploy, that pays.
+      #
+      # During start_period failures do not count toward `retries`, and the
+      # first success ends it immediately, so a generous value costs nothing
+      # in steady state. The healthcheck should accommodate a boot the
+      # deployment genuinely needs rather than the other way round.
+      start_period: 180s
     restart: unless-stopped
     # Container memory cap. Default 4g suits a small / single-VM deploy.
     # DuckDB enforces memory_limit per-connection and (1.5+) defaults a
