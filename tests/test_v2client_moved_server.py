@@ -282,3 +282,36 @@ class TestTheMessageNamesTheFileToEdit:
 
         monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "agnes-cfg"))
         assert server_moved.config_file_path() == str(cli_config._config_dir() / "config.yaml")
+
+
+class TestTheCodeNamesWhatHappened:
+    """Devin Review on #1266: a same-origin redirect is not a move.
+
+    A proxy or an in-app redirect answering 3xx has no new address to point
+    at, and `code: "server_moved"` sent the reader looking for a hostname
+    change that never happened — under a hint that said nothing moved.
+    """
+
+    def _body(self, location: str, configured: str = "https://agnes.example.com") -> dict:
+        return server_moved.redirect_body(
+            httpx.Response(
+                308,
+                headers={"Location": location},
+                request=httpx.Request("GET", f"{configured}/api/v1/agents"),
+            ),
+            configured,
+        )["detail"]
+
+    def test_a_cross_host_move_is_still_server_moved(self):
+        detail = self._body("https://new.example.com/api/v1/agents")
+        assert detail["code"] == "server_moved"
+        assert detail["moved_to"] == "https://new.example.com"
+
+    def test_a_same_origin_redirect_is_not(self):
+        detail = self._body("https://agnes.example.com/api/v1/agents/")
+        assert detail["code"] == "unexpected_redirect", detail
+        assert "moved_to" not in detail
+
+    def test_a_relative_redirect_is_not_either(self):
+        detail = self._body("/api/v1/agents/")
+        assert detail["code"] == "unexpected_redirect", detail

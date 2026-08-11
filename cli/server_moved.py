@@ -144,7 +144,11 @@ def redirect_body(response: "httpx.Response", configured: str) -> dict:
     configured = (configured or "").rstrip("/")
     new_base = redirect_target(location or "", configured)
 
-    detail: dict = {"code": "server_moved"}
+    # The code names what happened. A same-origin redirect is not a move — a
+    # proxy or an in-app redirect answering 3xx has nothing to re-point, and
+    # calling it `server_moved` sent the reader hunting for a hostname change
+    # that never happened. (Devin Review on #1266.)
+    detail: dict = {"code": "server_moved" if new_base else "unexpected_redirect"}
     if new_base:
         detail["moved_to"] = new_base
         detail["fix"] = f"AGNES_SERVER={new_base} agnes <command>"
