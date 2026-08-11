@@ -519,7 +519,7 @@ function _connectionCardHtml(row) {
     </div>
   </div>
   <div class="ds-conn-actions">
-    <button type="button" class="btn btn-secondary" onclick="testConn('${id}')">Test</button>
+    <button type="button" class="btn btn-secondary" data-role="test" onclick="testConn('${id}')">Test</button>
     <button type="button" class="btn btn-secondary" onclick="toggleBrowse('${id}')">Browse &amp; register tables</button>
     ${!isDefault ? `<button type="button" class="btn btn-secondary" onclick="setDefaultConn('${id}')">Set as default</button>` : ""}
     <button type="button" class="btn btn-secondary" onclick="toggleRotate('${id}')">Rotate token</button>
@@ -563,8 +563,13 @@ function renderConnList() {
 async function testConn(id) {
   const resultEl = document.getElementById(`ds-test-${id}`);
   const card = document.getElementById(`ds-conn-${id}`);
-  const btn = card.querySelector("button");
-  btn.disabled = true;
+  // Explicitly the Test button. This was `querySelector("button")` — the
+  // FIRST button in the card — which stopped being Test the moment the unbind
+  // control landed in the header above the action row: the link greyed out
+  // instead, Test stayed live, and repeated presses fired duplicate requests
+  // with no sign anything was happening. (Devin Review.)
+  const btn = card.querySelector('button[data-role="test"]');
+  if (btn) btn.disabled = true;
   resultEl.className = "ds-conn-test-result";
   try {
     const r = await fetch(`${API_CONNECTIONS}/${id}/test`, { method: "POST", credentials: "include" });
@@ -579,7 +584,7 @@ async function testConn(id) {
   } catch (e) {
     resultEl.className = "ds-conn-test-result show fail";
     resultEl.textContent = "✗ Request failed";
-  } finally { btn.disabled = false; }
+  } finally { if (btn) btn.disabled = false; }
 }
 
 async function deleteConn(id) {
