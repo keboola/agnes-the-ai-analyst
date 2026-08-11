@@ -735,6 +735,13 @@ class TestTryJoinComposition:
         assert skip_reason == "ambiguous_relationship"
 
     def test_falls_back_when_joined_table_not_registered(self):
+        """Reason is `unresolved_joined_table`, NOT `foreign_alias_reference`.
+
+        The metric's SQL is fine — the joined table simply is not registered
+        in Agnes. Reporting it as a definition defect told the admin that
+        registering a table would not help, when that is exactly the fix.
+        (Devin Review on #1248.)
+        """
         table_lookup = {("in.c-a", "activities"): "crm_activities"}
         relationship_lookup = {
             "in.c-a.activities": [
@@ -749,9 +756,10 @@ class TestTryJoinComposition:
             {},
         )
         assert result is None
-        assert skip_reason == "foreign_alias_reference"
+        assert skip_reason == "unresolved_joined_table"
 
     def test_falls_back_when_column_metadata_missing(self):
+        """Same class as above: registered, but without its columns."""
         table_lookup = {
             ("in.c-a", "activities"): "crm_activities",
             ("in.c-a", "opportunities"): "crm_opportunities",
@@ -774,7 +782,7 @@ class TestTryJoinComposition:
             {},
         )
         assert result is None
-        assert skip_reason == "foreign_alias_reference"
+        assert skip_reason == "unresolved_joined_table"
 
 
 def _relationship_metric_item(name, sql, dataset, model_uuid="model-1"):

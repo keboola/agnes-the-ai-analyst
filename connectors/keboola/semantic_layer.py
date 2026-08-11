@@ -257,15 +257,24 @@ def try_join_composition(
     if relationship is None:
         return None, skip_reason
 
+    # These two failures are AGNES-side, not definition defects: the metric's
+    # SQL is fine, one of the tables it joins simply is not registered here
+    # (or is registered without its columns). Reporting them as
+    # `foreign_alias_reference` put them in the coverage report's "blocked by
+    # their own definition" bucket, telling the admin that registering a table
+    # would not help — when registering a table is exactly the fix.
+    # Deliberately a new reason rather than a new counter: it folds into
+    # `skipped_foreign_alias` below, so the published sync counters are
+    # unchanged. (Devin Review on this PR.)
     table_name = resolve_table_name(dataset_table_id, table_lookup)
     joined_table_name = resolve_table_name(relationship["from"], table_lookup)
     if table_name is None or joined_table_name is None:
-        return None, "foreign_alias_reference"
+        return None, "unresolved_joined_table"
 
     to_columns = column_lookup.get(table_name)
     from_columns = column_lookup.get(joined_table_name)
     if not to_columns or not from_columns:
-        return None, "foreign_alias_reference"
+        return None, "unresolved_joined_table"
 
     alias_sides = resolve_join_aliases(relationship["on"], from_columns, to_columns)
     if alias_sides is None:
@@ -759,7 +768,10 @@ def _sync_one_source(
         if row is None:
             if skip_reason == "unresolved_table":
                 skipped_unresolved_table += 1
-            elif skip_reason == "foreign_alias_reference":
+            elif skip_reason in ("foreign_alias_reference", "unresolved_joined_table"):
+                # One counter for both: the published per-source counters are a
+                # stable surface, and the distinction only matters to the
+                # coverage report's fixable/unfixable split.
                 skipped_foreign_alias += 1
             elif skip_reason == "embedded_sql_comment":
                 skipped_embedded_comment += 1
@@ -1348,6 +1360,15 @@ def compute_semantic_coverage() -> dict:
         name: {c["column_name"] for c in column_metadata.list_for_table(name)} for name in set(table_lookup.values())
     }
 
+    # The sync lets the DEFAULT connection claim legacy unattributed rows
+    # (`adopt_null=(connection_id == default_id)`); coverage must judge
+    # ownership the same way or it reports a name as taken by another source
+    # that the sync would in fact adopt and import — telling the admin a
+    # metric will not land when it will, which is the direction that costs
+    # them the most. (Devin Review on this PR.)
+    _default = _default_keboola_connection()
+    default_id = _default["id"] if _default else None
+
     sources: list[dict] = []
     for source in _enumerate_master_sources():
         conn_id = source["connection_id"]
@@ -1428,7 +1449,9 @@ def compute_semantic_coverage() -> dict:
                 # bundled yaml starter pack already owned that name, and the
                 # sync's own `skipped_unresolved_table` counter read 0.
                 existing = metric_repository.find_by_name(row["name"])
-                if not _is_owned_by_source(existing, row["id"], {conn_id}, adopt_null=False):
+                if not _is_owned_by_source(
+                    existing, row["id"], {conn_id}, adopt_null=(conn_id == default_id)
+                ):
                     entry["conflicts"].append(
                         {
                             "metric": row["name"],
