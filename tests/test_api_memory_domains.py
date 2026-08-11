@@ -275,3 +275,32 @@ class TestMemoryDomainsJunction:
             headers=headers,
         )
         assert resp.status_code == 404
+
+
+class TestSeededItemsDoNotGrowATaxonomy:
+    """Devin Review on #1263: `category` feeds the admin page's dropdowns.
+
+    They are built with `SELECT DISTINCT category`, so one category per domain
+    would grow a long tail of single-item entries there. The domain is already
+    recorded in `domain`; the category says where the item came from.
+    """
+
+    def test_the_category_is_one_stable_label(self, seeded_app):
+        from app.api.memory_domains import SEEDED_ITEM_CATEGORY
+
+        c = seeded_app["client"]
+        made = []
+        for slug in ("taxo-one", "taxo-two"):
+            resp = c.post(
+                "/api/admin/memory-domains",
+                json={"name": slug, "slug": slug, "content": "some knowledge"},
+                headers=_auth(seeded_app["admin_token"]),
+            )
+            assert resp.status_code == 201, resp.text
+            made.append(resp.json()["item_id"])
+
+        conn = get_system_db()
+        repo = KnowledgeRepository(conn)
+        cats = {repo.get_by_id(i)["category"] for i in made}
+        conn.close()
+        assert cats == {SEEDED_ITEM_CATEGORY}, cats
