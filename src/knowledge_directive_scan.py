@@ -33,9 +33,23 @@ from typing import Any
 # in prose is already the shape of an instruction.
 # The lookbehind keeps URLs and paths out — `example.com/config` and
 # `/data/config` are not instructions, `/config` on its own is.
+#: Claude Code commands whose names are not also ordinary web paths. A bare
+#: mention of one of these in prose is already the shape of an instruction.
+_UNAMBIGUOUS_SLASH = (
+    "exit|quit|clear|compact|login|logout|permissions|resume|doctor|hooks|agnes-private"
+)
+
+#: …and the ones that collide with this product's OWN pages and with ordinary
+#: prose: `/agents` is the agent-builder page, `/status`, `/cost`, `/review`,
+#: `/config`, `/init`, `/model`, `/help` all read as paths or plain words. A
+#: note saying "agent profiles are managed at /agents" is documentation, not
+#: an instruction to the reading agent — flagging it taught admins to ignore
+#: the warning. These count only when a verb tells someone to run them, which
+#: `_VERB_SLASH_RE` below already catches. (Devin Review on #1258.)
+_AMBIGUOUS_SLASH = "agents|status|cost|review|config|init|model|help"
+
 _KNOWN_SLASH_RE = re.compile(
-    r"(?<![\w/])/(?:exit|quit|clear|compact|config|init|login|logout|model|permissions"
-    r"|resume|doctor|hooks|help|agents|status|cost|review|agnes-private)\b",
+    rf"(?<![\w/])/(?:{_UNAMBIGUOUS_SLASH})\b",
     re.IGNORECASE,
 )
 
