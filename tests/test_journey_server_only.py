@@ -117,3 +117,62 @@ def test_put_bq_coercion_cannot_bypass_server_only(seeded_app, bq_instance):
     )
     assert resp.status_code == 422, resp.text
     assert "server_only" in resp.text
+
+
+@pytest.mark.journey
+def test_server_only_table_is_not_downloadable(seeded_app, mock_extract_factory):
+    """`server_only` must be a SERVER-side gate, not advice `agnes pull` is
+    trusted to follow.
+
+    The flag's whole purpose is "this parquet is not distributed". `agnes pull`
+    honours it client-side (`cli/lib/pull.py`), but the bytes were still one
+    authenticated GET away: `/api/data/{id}/download` gated on
+    `can_access_table` and nothing else, and on Caddy deployments
+    `forward_auth` → `check-access` → `file_server` serves the file without
+    the app ever seeing the request — so `check-access` is the only place that
+    can close that path too.
+
+    Deliberately asserted with the ADMIN token: this is not an authorization
+    question. The table is undistributed for everyone, exactly as the manifest
+    reports it to everyone.
+    """
+    c = seeded_app["client"]
+    env = seeded_app["env"]
+    hdrs = _auth(seeded_app["admin_token"])
+
+    for name, server_only in (("dist_tbl", False), ("nodist_tbl", True)):
+        resp = c.post(
+            "/api/admin/register-table",
+            json={
+                "name": name,
+                "source_type": "keboola",
+                "query_mode": "local",
+                "server_only": server_only,
+            },
+            headers=hdrs,
+        )
+        assert resp.status_code == 201, resp.text
+
+    mock_extract_factory(
+        "keboola",
+        [
+            {"name": "dist_tbl", "data": [{"id": "1"}]},
+            {"name": "nodist_tbl", "data": [{"id": "1"}]},
+        ],
+    )
+    from src.orchestrator import SyncOrchestrator
+    SyncOrchestrator(analytics_db_path=env["analytics_db"]).rebuild()
+
+    # The distributed table is unaffected — both surfaces still serve it.
+    assert c.get("/api/data/dist_tbl/check-access", headers=hdrs).status_code == 204
+    assert c.get("/api/data/dist_tbl/download", headers=hdrs).status_code == 200
+
+    # The server_only one is refused on BOTH, and the refusal names the flag
+    # so an operator staring at a failed download knows why.
+    resp = c.get("/api/data/nodist_tbl/download", headers=hdrs)
+    assert resp.status_code == 403, resp.text
+    assert "server_only" in resp.text
+
+    resp = c.get("/api/data/nodist_tbl/check-access", headers=hdrs)
+    assert resp.status_code == 403, resp.text
+    assert "server_only" in resp.text
