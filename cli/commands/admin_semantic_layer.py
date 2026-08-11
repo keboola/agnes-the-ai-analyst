@@ -59,7 +59,7 @@ def coverage(
     sources = data.get("sources") or []
     if not sources:
         typer.echo("No Keboola project has a master (owner) token configured.")
-        typer.echo("Add one with: agnes admin connection secret --id <connection> --kind master")
+        typer.echo("Add one with: agnes admin connection secret <connection-id> --kind master")
         return
 
     for source in sources:
