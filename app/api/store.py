@@ -3668,6 +3668,28 @@ def _entity_review_blocked(entity_id: str) -> bool:
     return any((s.get("status") or "") in BLOCKING_SUBMISSION_STATUSES for s in subs)
 
 
+def entity_has_adverse_verdict(entity_id: str) -> bool:
+    """True when review REJECTED any submission for ``entity_id``.
+
+    The shared list, not a second copy: `_entity_review_blocked` and the
+    install repo already decide "review rejected this" from
+    `BLOCKING_SUBMISSION_STATUSES`, and two lists would silently disagree
+    about the same upload the first time one of them gained a status.
+    Unreadable history counts as adverse — never fail open.
+
+    Exported because the DETAIL PAGE has to reach the same verdict: the
+    endpoint permitting a withdrawal while the button stays disabled is the
+    same bug in a different place, and the author only ever sees the button.
+    (Devin Review on #1263, twice.)
+    """
+    try:
+        subs = store_submissions_repo().list_for_entity(entity_id)
+    except Exception:
+        logger.exception("store: could not read submissions for entity %s", entity_id)
+        return True
+    return any((s.get("status") or "") in BLOCKING_SUBMISSION_STATUSES for s in subs)
+
+
 def is_own_unflagged_private(entity: Dict[str, Any], user_id: str) -> bool:
     """True when ``entity`` is THIS caller's own deliberately-Private row.
 
@@ -3781,18 +3803,7 @@ async def delete_entity(
     # prevent. `pending` / `review_error` are still not verdicts, so an upload
     # nothing ever objected to remains the author's to withdraw.
     # (Devin Review on #1263.)
-    # The SHARED list, not a second copy: `_entity_review_blocked` and the
-    # install repo already decide "review rejected this" from
-    # `BLOCKING_SUBMISSION_STATUSES`, and two lists would silently disagree
-    # about the same upload the first time one of them gained a status.
-    # (Devin Review on #1263.)
-    _ADVERSE_VERDICTS = BLOCKING_SUBMISSION_STATUSES
-    try:
-        _subs = store_submissions_repo().list_for_entity(entity_id)
-    except Exception:
-        logger.exception("store: could not read submissions for entity %s", entity_id)
-        _subs = None  # unreadable history → refuse, never fail open
-    ever_adverse = True if _subs is None else any((s.get("status") or "") in _ADVERSE_VERDICTS for s in _subs)
+    ever_adverse = entity_has_adverse_verdict(entity_id)
     if (
         entity.get("visibility_status") not in ("approved", "archived")
         and ever_adverse
