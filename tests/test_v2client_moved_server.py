@@ -28,6 +28,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 
+import cli.server_moved as server_moved
 import cli.v2_client as v2
 from cli.v2_client import V2ClientError
 
@@ -239,3 +240,45 @@ class TestBothClientsShareOneGuard:
             assert "server_moved" in src, (
                 f"{path.name} makes httpx calls but does not consult the shared redirect guard"
             )
+
+
+class TestTheMessageNamesTheFileToEdit:
+    """Devin Review on #1266: "your agnes config.yaml" — which one?
+
+    The pre-refactor message printed the resolved path. Losing it makes the
+    remedy a search task, and the path is not guessable: `AGNES_CONFIG_DIR`
+    moves it, which is exactly what a second instance on one machine does.
+    """
+
+    def test_the_resolved_path_appears_in_the_stderr_message(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "agnes-cfg"))
+        msg = server_moved.moved_server_message(
+            308, "https://new.example.com/api/v1/agents", "https://old.example.com"
+        )
+        assert str(tmp_path / "agnes-cfg" / "config.yaml") in msg
+
+    def test_the_resolved_path_appears_in_the_typed_body(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "agnes-cfg"))
+        body = server_moved.redirect_body(
+            httpx.Response(
+                308,
+                headers={"Location": "https://new.example.com/api/v1/agents"},
+                request=httpx.Request("GET", "https://old.example.com/api/v1/agents"),
+            ),
+            "https://old.example.com",
+        )
+        assert str(tmp_path / "agnes-cfg" / "config.yaml") in body["detail"]["hint"]
+
+    def test_naming_the_path_does_not_create_the_directory(self, monkeypatch, tmp_path):
+        """A message must not write to disk — `cli.config._config_dir` mkdirs."""
+        target = tmp_path / "never-created"
+        monkeypatch.setenv("AGNES_CONFIG_DIR", str(target))
+        server_moved.config_file_path()
+        assert not target.exists()
+
+    def test_it_points_where_the_config_is_actually_read_from(self, monkeypatch, tmp_path):
+        """The duplicated resolution must not drift from `cli.config`."""
+        from cli import config as cli_config
+
+        monkeypatch.setenv("AGNES_CONFIG_DIR", str(tmp_path / "agnes-cfg"))
+        assert server_moved.config_file_path() == str(cli_config._config_dir() / "config.yaml")
