@@ -50,7 +50,7 @@ import typer
 from cli.client import api_get
 from cli.config import _config_dir, save_config, save_token
 from cli.error_render import render_error
-from cli.lib.automode import ensure_marketplace_trusted
+from cli.lib.automode import ensure_marketplace_trusted, marketplace_trust_entries
 from cli.lib.commands import install_claude_commands
 from cli.lib.hooks import install_claude_hooks
 from cli.lib.initial_workspace import apply_override, probe_status
@@ -206,6 +206,78 @@ def _cleanup_stale_ca_env_vars() -> None:
                 typer.echo(line)
 
 
+def _stdin_is_interactive() -> bool:
+    """Is there a human on the other end to answer a prompt?
+
+    A named seam rather than an inline ``sys.stdin.isatty()`` so both branches
+    are reachable from tests: Click's ``CliRunner`` swaps ``sys.stdin`` during
+    ``invoke``, so patching the stream a test can see does not affect the
+    stream the command reads. A closed or detached stdin raises rather than
+    answering, and that is a "no human" too.
+    """
+    try:
+        return sys.stdin.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
+def _maybe_declare_marketplace_trust(host: str, decision: Optional[bool]) -> None:
+    """Declare *host* in the user-scope ``autoMode.environment`` — if asked to.
+
+    This is the one thing ``agnes init`` does outside the workspace it was
+    pointed at: ``~/.claude/settings.json`` applies to every project on the
+    machine. It used to happen silently, announced only by a line printed
+    afterwards, which is how an agent came to report that a tool had written
+    trust claims about itself into its configuration without anyone
+    authorizing it. The claim was true and the mechanism is the sanctioned
+    one; being unasked is what made it wrong.
+
+    So the write is opt-in, and the three paths differ on purpose:
+
+    - ``--trust-marketplace-host`` / ``--no-trust-marketplace-host``: the
+      operator already decided; do that.
+    - Interactive: show the file and the exact lines, then ask. Default No —
+      declining costs one approval prompt later, agreeing changes machine-wide
+      settings, and the cheaper mistake should be the default.
+    - Non-interactive (the pasted-install path, where the "operator" is an
+      agent relaying a script): skip, and say how to opt in. Claude Code's
+      auto mode may then ask before ``agnes refresh-marketplace --bootstrap``
+      installs plugins — which is the human deciding in the moment, the thing
+      the declaration was pre-empting.
+    """
+    settings_path = user_settings_path()
+
+    if decision is False:
+        typer.echo(f"Skipping the auto-mode trust declaration for {host} (--no-trust-marketplace-host).")
+        return
+
+    if decision is None:
+        if not _stdin_is_interactive():
+            typer.echo(
+                f"Not declaring {host} as internal infrastructure: that writes to {settings_path}, "
+                "which applies to every project on this machine, so it is not done unattended. "
+                "Claude Code's auto mode may ask before `agnes refresh-marketplace --bootstrap` "
+                "installs plugins — approve it there, or re-run with "
+                "`agnes init --force --trust-marketplace-host` to declare it once."
+            )
+            return
+        typer.echo("")
+        typer.echo(f"Optional: declare {host} as internal infrastructure for Claude Code's auto mode.")
+        typer.echo(f"This edits {settings_path} — your user-scope settings, which apply to")
+        typer.echo("every project on this machine, not just this workspace. It would add:")
+        for entry in marketplace_trust_entries(host):
+            typer.echo(f"  - {entry}")
+        typer.echo("Declining costs one approval prompt when the marketplace is first cloned.")
+        if not typer.confirm("Add them?", default=False):
+            typer.echo("Skipped. Approve the marketplace bootstrap when auto mode asks.")
+            return
+
+    if ensure_marketplace_trusted(settings_path, host):
+        typer.echo(f"Declared {host} in {settings_path} (autoMode.environment). Delete those two entries to undo.")
+    else:
+        typer.echo(f"{host} was already declared in {settings_path} (autoMode.environment).")
+
+
 init_app = typer.Typer(help="Bootstrap an analyst workspace in this directory")
 
 
@@ -260,6 +332,19 @@ def init(
             "(server re-checks admin membership). Parquet distribution "
             "stays stack-scoped either way — `agnes pull` downloads only "
             "your stack."
+        ),
+    ),
+    trust_marketplace_host: Optional[bool] = typer.Option(
+        None,
+        "--trust-marketplace-host/--no-trust-marketplace-host",
+        help=(
+            "Declare this instance's marketplace host in ~/.claude/settings.json "
+            "(autoMode.environment), so Claude Code's auto mode treats plugin installs "
+            "from it as internal rather than as untrusted external code. That file "
+            "applies to every project on this machine, not just this workspace, so it "
+            "is asked for rather than assumed: without this flag an interactive run "
+            "prompts and an unattended run skips. Skipping costs one approval prompt "
+            "when the marketplace is first cloned."
         ),
     ),
     workspace_str: Optional[str] = typer.Option(None, "--workspace", help="Target dir (default: cwd)"),
@@ -880,21 +965,25 @@ def init(
     install_claude_commands(workspace)
 
     # ------------------------------------------------------------------
-    # Declare the marketplace host as trusted internal infrastructure for
+    # Offer to declare the marketplace host as internal infrastructure for
     # Claude Code's auto-mode classifier, in the USER-scope ~/.claude/
     # settings.json (NOT the workspace settings above — the classifier reads
-    # `autoMode` only from user/managed settings). Without this the classifier
-    # soft-denies `agnes refresh-marketplace --bootstrap` as "Untrusted Code
-    # Integration". The host is derived from the configured server (saved via
-    # save_config above), never hardcoded. Best-effort: a failure here must
-    # never break init.
+    # `autoMode` only from user/managed settings). Without the declaration the
+    # classifier soft-denies `agnes refresh-marketplace --bootstrap` as
+    # "Untrusted Code Integration", which costs one approval prompt rather
+    # than breaking anything. The host is derived from the configured server
+    # (saved via save_config above), never hardcoded.
+    #
+    # Opt-in, because this is the only write that leaves the workspace — see
+    # `_maybe_declare_marketplace_trust`. Best-effort either way: a failure
+    # here must never break init.
     # ------------------------------------------------------------------
     try:
         marketplace_host = configured_marketplace_host()
-        if marketplace_host and ensure_marketplace_trusted(user_settings_path(), marketplace_host):
-            typer.echo(f"Registered {marketplace_host} as trusted internal infrastructure for Claude Code auto mode.")
+        if marketplace_host:
+            _maybe_declare_marketplace_trust(marketplace_host, trust_marketplace_host)
     except Exception as exc:  # noqa: BLE001 — best-effort, never break init
-        typer.echo(f"warn: could not register auto-mode trust: {exc}", err=True)
+        typer.echo(f"warn: could not declare auto-mode trust: {exc}", err=True)
 
     # ------------------------------------------------------------------
     # Always chmod +x hook scripts that landed on disk, regardless of
