@@ -697,3 +697,50 @@ class TestAGlossaryOnlySyncIsNotReportedAsEmpty:
 
         body = seeded_app["client"].get("/admin/semantic-layer", headers=_auth(seeded_app["admin_token"])).text
         assert "ran, imported nothing" in body
+
+
+class TestASyncThatOnlyPrunedIsNotReportedAsEmpty:
+    """Devin Review on #1248: the zero-check ignored removals.
+
+    A run that wrote nothing but removed stale rows did work, and hiding the
+    deletions is the one direction an admin cannot check by looking.
+    """
+
+    def test_a_prune_only_run_reads_as_a_success(self, seeded_app, vault_key):
+        from app.api import keboola_semantic_layer_refresh as endpoint_module
+
+        _make_master_connection(
+            "conn-pruned", name="Pruned", stack_url="https://connection.keboola.com", token="t", is_default=True
+        )
+        endpoint_module._refresh_state["last_result"] = {
+            "status": "ok",
+            "sources": [
+                {
+                    "connection_id": "conn-pruned",
+                    "status": "ok",
+                    "created_or_updated": 0,
+                    "glossary_created_or_updated": 0,
+                    "pruned": 7,
+                }
+            ],
+        }
+
+        body = seeded_app["client"].get("/admin/semantic-layer", headers=_auth(seeded_app["admin_token"])).text
+        assert "ran, imported nothing" not in body, "a prune-only run hid its deletions"
+        assert "7 pruned" in body
+
+
+def test_the_data_sources_page_shows_both_mismatch_codes():
+    """Devin Review on #1248: the more serious warning was filtered out.
+
+    A master token contradicting the project the connection is locked to
+    stops the sync outright — and the message tells the admin to go to this
+    page, which then did not show it.
+    """
+    import pathlib
+
+    src = (
+        pathlib.Path(__file__).resolve().parents[1] / "app" / "web" / "templates" / "admin_data_sources.html"
+    ).read_text(encoding="utf-8")
+    assert 'w.code === "master_token_project_mismatch"' in src
+    assert 'w.code === "token_project_mismatch"' in src
