@@ -246,3 +246,42 @@ class TestTheAllItemsTabSeesThemToo:
 
         assert all("delivery_warnings" not in it for it in data["items"]), data["items"][:1]
         assert "delivery_notice" not in data
+
+
+class TestTheBrowseTabSeesThemToo:
+    """Devin Review on #1258, second round: three surfaces, not two.
+
+    Browse cards carry the same approve actions, and `/api/memory/tree` fed
+    them rows with no `delivery_warnings` — so the one tab an admin actually
+    browses in showed nothing about what approval publishes.
+    """
+
+    def test_tree_rows_are_annotated_for_an_admin(self, seeded_app):
+        _create_item(DIRECTIVE_CONTENT, status="approved", title="Recap")
+
+        resp = seeded_app["client"].get("/api/memory/tree", headers=_auth(seeded_app["admin_token"]))
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        rows = [it for g in data["groups"] for it in g["items"] if it.get("title") == "Recap"]
+        assert rows, data
+        assert {w["kind"] for w in rows[0]["delivery_warnings"]} >= {"slash_command"}
+        assert data.get("delivery_notice")
+
+    def test_a_clean_tree_carries_no_notice(self, seeded_app):
+        _create_item(CLEAN_CONTENT, status="approved", title="Clean")
+
+        data = seeded_app["client"].get("/api/memory/tree", headers=_auth(seeded_app["admin_token"])).json()
+
+        rows = [it for g in data["groups"] for it in g["items"] if it.get("title") == "Clean"]
+        assert rows and rows[0]["delivery_warnings"] == []
+        assert data.get("delivery_notice") is None
+
+    def test_a_non_admin_pays_for_no_scan(self, seeded_app):
+        _create_item(DIRECTIVE_CONTENT, status="approved", title="Recap")
+
+        data = seeded_app["client"].get("/api/memory/tree", headers=_auth(seeded_app["analyst_token"])).json()
+
+        rows = [it for g in data["groups"] for it in g["items"]]
+        assert all("delivery_warnings" not in it for it in rows)
+        assert data.get("delivery_notice") is None
