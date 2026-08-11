@@ -1565,3 +1565,87 @@ class TestProjectIdentityBinding:
         assert resp.status_code == 204, resp.text
         row = c.get(f"{BASE}/{conn_id}", headers=_auth(token)).json()
         assert "project_id" not in (row["config"] or {})
+
+
+class TestAnOrdinaryEditKeepsTheProjectBinding:
+    """Devin Review on this PR: the safeguard was removable through the UI.
+
+    `PUT /{id}` REPLACES the stored config, and the admin form posts only the
+    fields it renders — `project_id`/`project_name` are recorded by the
+    connection itself, not typed, so they are never in the payload. Every
+    ordinary edit (a rename, a token_env change, re-saving the same form)
+    therefore dropped the binding, and the next token from any project was
+    accepted again. The deliberate clear on a stack move must survive.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _stable_vault_key(self, monkeypatch):
+        monkeypatch.setenv("AGNES_VAULT_KEY", Fernet.generate_key().decode())
+        _reset_ephemeral_key_for_tests()
+        yield
+        _reset_ephemeral_key_for_tests()
+
+    def _bound(self, c, token, *, name):
+        resp = c.post(
+            BASE,
+            json={
+                "name": name,
+                "source_type": "keboola",
+                "config": {
+                    "stack_url": "https://connection.example.com",
+                    "project_id": 1234,
+                    "project_name": "Acme Analytics",
+                },
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 201, resp.text
+        return resp.json()["id"]
+
+    def test_editing_the_name_keeps_the_binding(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._bound(c, token, name="edit-keeps-binding")
+
+        r = c.put(
+            f"{BASE}/{conn_id}",
+            json={"name": "renamed", "config": {"stack_url": "https://connection.example.com"}},
+            headers=_auth(token),
+        )
+        assert r.status_code == 200, r.text
+        cfg = r.json()["config"]
+        assert cfg.get("project_id") == 1234, "an ordinary edit disabled the wrong-token safeguard"
+        assert cfg.get("project_name") == "Acme Analytics"
+
+    def test_moving_to_another_stack_still_clears_it(self, seeded_app):
+        """A project id means nothing on a different stack."""
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._bound(c, token, name="edit-moves-stack")
+
+        r = c.put(
+            f"{BASE}/{conn_id}",
+            json={"config": {"stack_url": "https://other.example.com"}},
+            headers=_auth(token),
+        )
+        assert r.status_code == 200, r.text
+        cfg = r.json()["config"]
+        assert "project_id" not in cfg
+        assert "project_name" not in cfg
+
+    def test_an_explicit_null_clears_it_without_moving_stack(self, seeded_app):
+        """How a mis-recorded binding is reset from the UI."""
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._bound(c, token, name="edit-explicit-clear")
+
+        r = c.put(
+            f"{BASE}/{conn_id}",
+            json={
+                "config": {
+                    "stack_url": "https://connection.example.com",
+                    "project_id": None,
+                    "project_name": None,
+                }
+            },
+            headers=_auth(token),
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["config"].get("project_id") is None
