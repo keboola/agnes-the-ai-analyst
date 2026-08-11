@@ -284,7 +284,7 @@ def register_foundation_tools(
 
     @tool()
     async def collections_search(query: str, k: int = 10, collection_id: str = "") -> dict:
-        """Hybrid search across your accessible file Collections (RBAC-filtered). Matching is whole word and there is no wildcard, and file names are searched only as a fallback when no document body matches — so an empty result is a wording miss far more often than an access problem; read the response's ``hint`` before concluding anything from it.
+        """Hybrid search across your accessible file Collections (RBAC-filtered). Matching is whole word, there is no wildcard, and file names are a fallback searched only when no document body matches — so an empty result is a wording miss far more often than an access problem; read the response's ``hint`` before concluding anything from it.
 
         Returns ranked chunks with citations (``filename``, ``ordinal``, ``text``,
         ``score``). Optionally restrict to one collection via ``collection_id``.
@@ -338,7 +338,7 @@ def register_foundation_tools(
 
     @tool()
     async def knowledge_search(query: str, k: int = 10) -> dict:
-        """One query across documents, the knowledge base, and the data catalog. Matching is whole word and there is no wildcard, and file names are searched only as a fallback when no document body matches — so an empty result is a wording miss far more often than an access problem; read the response's ``hint`` before concluding anything from it.
+        """One query across documents, the knowledge base, and the data catalog. Matching is whole word, there is no wildcard, and file names are a fallback searched only when no document body matches — so an empty result is a wording miss far more often than an access problem; read the response's ``hint`` before concluding anything from it.
 
         Fans out server-side over Collections chunks (hybrid lexical+vector),
         corporate-memory knowledge items (fulltext), table catalog cards,
