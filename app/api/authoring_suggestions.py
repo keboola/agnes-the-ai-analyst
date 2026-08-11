@@ -101,6 +101,11 @@ def _replay_corporate_memory(payload: dict, by: str, submitted_by: Optional[str]
     # (Devin Review on #1263.)
     name = (payload["name"] or "").strip()
     slug = (payload["slug"] or "").strip()
+    if not name or not slug:
+        # Present-but-empty is as unusable as absent, and the caller maps a
+        # KeyError to 400 invalid_payload — creating a nameless, slugless
+        # domain instead would be the worst of both. (Devin Review on #1263.)
+        raise KeyError("name" if not name else "slug")
     domain_id = memory_domains_repo().create(
         name=name,
         slug=slug,
