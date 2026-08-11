@@ -159,6 +159,12 @@ def api_get_stream(path: str, dest: "io.IOBase | str", **params) -> int:
         params=params or None,
         timeout=600,
     ) as r:
+        # A redirect here is worse than elsewhere: without this the 3xx is
+        # not an error, so the loop below writes the redirect's (empty) body
+        # to `dest` and reports success — a downloaded file that is not the
+        # file. Checked before the `>= 400` branch, which never saw it.
+        if is_redirect(r.status_code):
+            raise V2ClientError(status_code=r.status_code, body=redirect_body(r, get_server_url()))
         if r.status_code >= 400:
             # Read the (likely small) error body before raising.
             body = b"".join(r.iter_bytes())
