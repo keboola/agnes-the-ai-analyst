@@ -253,3 +253,33 @@ def test_a_refused_probe_is_not_audited_as_a_success(seeded_app, mock_extract_fa
     assert rows, "the refused probe left no audit trail at all"
     latest = rows[0]
     assert str(latest.get("result", "")).startswith("error."), latest
+
+
+@pytest.mark.journey
+def test_a_registry_outage_does_not_release_the_bytes(seeded_app, mock_extract_factory):
+    """Devin Review on #1265: the new read can fail, and the answer matters.
+
+    A 500 tells the caller nothing and a 204 would release a parquet this gate
+    has not cleared, so both surfaces answer 503 with a code that says what to
+    do. Fail-closed: the check is between the caller and raw bytes.
+    """
+    from unittest.mock import patch
+
+    c = seeded_app["client"]
+    hdrs = _auth(seeded_app["admin_token"])
+
+    resp = c.post(
+        "/api/admin/register-table",
+        json={"name": "outage_tbl", "source_type": "keboola", "query_mode": "local"},
+        headers=hdrs,
+    )
+    assert resp.status_code == 201, resp.text
+
+    with patch("app.api.data._distribution_refusal", side_effect=RuntimeError("registry gone")):
+        probe = c.get("/api/data/outage_tbl/check-access", headers=hdrs)
+    assert probe.status_code == 503, probe.text
+    assert probe.json()["detail"]["code"] == "distribution_check_unavailable"
+
+    with patch("app.api.data._distribution_refusal", side_effect=RuntimeError("registry gone")):
+        download = c.get("/api/data/outage_tbl/download", headers=hdrs)
+    assert download.status_code == 503, download.text
