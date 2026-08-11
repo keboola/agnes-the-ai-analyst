@@ -222,3 +222,44 @@ def test_a_corporate_memory_submission_without_content_still_creates_the_domain(
     )
     assert a.status_code == 200, a.text
     assert a.json()["created_resource_id"]
+
+
+def test_a_failed_seeding_leaves_no_domain_behind(seeded_app):
+    """Devin Review on #1263: a half-done approval must not become permanent.
+
+    The domain is created first, so a failure while saving the knowledge
+    reopened the suggestion with the domain already there — and every retry
+    then died on the duplicate slug, leaving the submission impossible to
+    approve and an empty domain nobody asked for.
+    """
+    from unittest.mock import patch
+
+    from src.repositories import memory_domains_repo
+
+    c = seeded_app["client"]
+    sid = _submit(
+        c,
+        seeded_app["analyst_token"],
+        domain="corporate-memory",
+        payload={"name": "Rollback", "slug": "rollback-me", "content": "some knowledge"},
+    ).json()["id"]
+
+    with patch("app.api.memory_domains.seed_domain_item", side_effect=RuntimeError("boom")):
+        r = c.post(
+            f"/api/admin/authoring-suggestions/{sid}/approve",
+            headers=_auth(seeded_app["admin_token"]),
+            json={},
+        )
+    assert r.status_code == 409, r.text
+
+    assert not any(d["slug"] == "rollback-me" for d in memory_domains_repo().list()), (
+        "the domain survived a failed approval, so no retry can ever succeed"
+    )
+
+    # …and the retry works once the failure is gone.
+    r2 = c.post(
+        f"/api/admin/authoring-suggestions/{sid}/approve",
+        headers=_auth(seeded_app["admin_token"]),
+        json={},
+    )
+    assert r2.status_code == 200, r2.text
