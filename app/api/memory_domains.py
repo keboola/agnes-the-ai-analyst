@@ -246,13 +246,30 @@ async def create_memory_domain(
     # domain is the exact failure this field exists to remove. The domain
     # itself is already created and audited, so the 500 is honest — retrying
     # the item is possible, and re-POSTing the domain 409s on the slug.
-    item_id: Optional[str] = seed_domain_item(
-        slug=payload.slug,
-        name=payload.name,
-        content=payload.content,
-        content_title=payload.content_title,
-        source_user=user.get("email"),
-    )
+    try:
+        item_id: Optional[str] = seed_domain_item(
+            slug=payload.slug,
+            name=payload.name,
+            content=payload.content,
+            content_title=payload.content_title,
+            source_user=user.get("email"),
+        )
+    except Exception:
+        # Undo the domain this request just created. Leaving it behind turns a
+        # transient failure into a permanent one: the caller sees a 500, the
+        # empty domain stays, and every retry is refused for the duplicate
+        # slug. Hard, because a soft delete keeps the slug taking its unique
+        # constraint. The suggestion-queue path does the same thing.
+        # (Devin Review on #1263, once per creation path.)
+        try:
+            repo.hard_delete(domain_id)
+        except Exception:
+            logger.exception(
+                "memory_domains: seeding failed for %s and the rollback failed too — "
+                "delete that domain by hand before retrying",
+                domain_id,
+            )
+        raise
     if item_id:
         _audit(
             conn,
