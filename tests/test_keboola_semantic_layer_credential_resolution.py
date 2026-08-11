@@ -94,10 +94,49 @@ class TestResolveKeboolaCredentials:
         assert token == "named-conn-vault-token"
 
     def test_falls_back_to_connections_own_token_env_when_no_vault_secret(self, e2e_env, monkeypatch):
+        """A default-allowlist name still resolves — the common case."""
+        from connectors.keboola.semantic_layer import _resolve_keboola_credentials
+
+        monkeypatch.delenv("KEBOOLA_STACK_URL", raising=False)
+        monkeypatch.setenv("KBC_STORAGE_TOKEN", "token-from-custom-env")
+        _make_keboola_connection(is_default=True, with_vault_secret=False, token_env="KBC_STORAGE_TOKEN")
+
+        url, token = _resolve_keboola_credentials(None, None)
+
+        assert url == "https://connection.named.keboola.com"
+        assert token == "token-from-custom-env"
+
+    def test_a_token_env_outside_the_allowlist_is_not_read(self, e2e_env, monkeypatch):
+        """`token_env` is admin-supplied and otherwise unbounded: it names ANY
+        environment variable of the server process, and whatever it names is
+        sent as a bearer token to the stack URL the same admin chose. So the
+        name has to be one the operator allowed (`src.orchestrator_security`),
+        exactly as the orchestrator's own remote-attach path requires — this
+        module was the one place reading it ungated.
+
+        The migration for a deployment that uses a custom name is to list it in
+        `AGNES_REMOTE_ATTACH_TOKEN_ENVS` (see the next test); the override
+        REPLACES the default set, so the defaults must be listed too.
+        """
         from connectors.keboola.semantic_layer import _resolve_keboola_credentials
 
         monkeypatch.delenv("KEBOOLA_STACK_URL", raising=False)
         monkeypatch.delenv("KEBOOLA_STORAGE_TOKEN", raising=False)
+        monkeypatch.delenv("AGNES_REMOTE_ATTACH_TOKEN_ENVS", raising=False)
+        monkeypatch.setenv("CUSTOM_KBC_TOKEN_ENV", "token-from-custom-env")
+        _make_keboola_connection(is_default=True, with_vault_secret=False, token_env="CUSTOM_KBC_TOKEN_ENV")
+
+        url, token = _resolve_keboola_credentials(None, None)
+
+        assert url == "https://connection.named.keboola.com"
+        assert token == ""
+
+    def test_an_allowlisted_custom_token_env_is_read(self, e2e_env, monkeypatch):
+        from connectors.keboola.semantic_layer import _resolve_keboola_credentials
+
+        monkeypatch.delenv("KEBOOLA_STACK_URL", raising=False)
+        monkeypatch.delenv("KEBOOLA_STORAGE_TOKEN", raising=False)
+        monkeypatch.setenv("AGNES_REMOTE_ATTACH_TOKEN_ENVS", "CUSTOM_KBC_TOKEN_ENV,KEBOOLA_STORAGE_TOKEN")
         monkeypatch.setenv("CUSTOM_KBC_TOKEN_ENV", "token-from-custom-env")
         _make_keboola_connection(is_default=True, with_vault_secret=False, token_env="CUSTOM_KBC_TOKEN_ENV")
 
