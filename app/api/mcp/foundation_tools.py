@@ -349,7 +349,9 @@ def register_foundation_tools(
         The chunk leg carries the same three surprises as
         ``collections_search``: filenames are not indexed, matching is whole
         word, and there is no wildcard. An empty result is not evidence that
-        you lack access.
+        you lack access — it carries ``searched_collections``,
+        ``searched_tables`` and a ``hint`` saying which of the two it is;
+        read the hint before telling anyone they have no access.
 
         Args:
             query: Natural-language or keyword query.

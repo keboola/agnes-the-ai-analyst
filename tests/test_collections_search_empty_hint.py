@@ -113,3 +113,48 @@ class TestRetrievalLabelUnchanged:
         tok = seeded_app["admin_token"]
         body = _search(seeded_app, tok, "anything")
         assert body["retrieval"] in ("hybrid", "lexical_only")
+
+
+class TestCombinedKnowledgeSearchCarriesTheSameHint:
+    """`/api/knowledge/search` is the surface the in-chat agent actually calls.
+
+    Devin Review on this PR: the stdio `knowledge_search` docstring tells the
+    model to "check the ``hint``" before concluding it has no access, but the
+    combined endpoint never returned one — only the collections-only sibling
+    did. So the tool promised guidance that was not in the response, and an
+    empty combined search could still produce the exact "I don't have access
+    to your files" answer this change set exists to prevent.
+
+    The counts differ from the collections case on purpose: this leg also
+    searches the table catalog and metrics, so zero *collections* is not by
+    itself an access problem.
+    """
+
+    def _knowledge(self, seeded_app, token: str, q: str) -> dict:
+        r = seeded_app["client"].get("/api/knowledge/search", params={"q": q}, headers=_auth(token))
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    def test_empty_combined_search_says_it_is_not_an_access_problem(self, seeded_app):
+        tok = seeded_app["admin_token"]
+        _make_collection_with_file(seeded_app, tok, "Combined notes", "alpha bravo charlie")
+
+        body = self._knowledge(seeded_app, tok, "nosuchwordanywhere")
+        assert body["results"] == []
+        assert "searched_collections" in body, "no count to check the access reading against"
+        assert "searched_tables" in body
+        hint = body.get("hint", "")
+        assert hint, "the docstring promises a hint; the response must carry one"
+        assert "DO have access" in hint
+        for caveat in ("filenames are not indexed", "whole word", "wildcard"):
+            assert caveat in hint, f"hint does not name: {caveat}"
+
+    def test_a_non_empty_result_carries_no_hint(self, seeded_app):
+        """The hint is for the ambiguous case only — not noise on every call."""
+        tok = seeded_app["admin_token"]
+        _make_collection_with_file(seeded_app, tok, "Findable", "distinctivetoken here")
+
+        body = self._knowledge(seeded_app, tok, "distinctivetoken")
+        assert body["results"], "fixture did not produce a hit; the test proves nothing"
+        assert "hint" not in body
+        assert "searched_collections" not in body

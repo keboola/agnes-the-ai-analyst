@@ -62,6 +62,33 @@ def _resolve_knowledge_grants(user) -> Tuple[Optional[List[str]], Optional[List[
     return groups, domains
 
 
+def _empty_combined_hint(collections: int, tables: int, metrics: int) -> str:
+    """Why the combined search is empty, in terms the caller can act on.
+
+    The collections-only sibling (``app.api.collections._empty_search_hint``)
+    can read ``searched == 0`` as "you need a grant". Here it cannot: this leg
+    fans out over collections, corporate memory, the table catalog, metrics and
+    the glossary, so an empty *collection* set says nothing on its own — a
+    caller with no collections but forty tables was searched, and telling them
+    to ask for a grant would send them to the wrong person. Only when every leg
+    is empty is this an access question.
+    """
+    if collections == 0 and tables == 0 and metrics == 0:
+        return (
+            "Nothing was searched: no collections, tables or metrics are shared with you yet. "
+            "This is an access question, not a query one — ask an admin for a grant, or call "
+            "collections_list / catalog to confirm what you can reach."
+        )
+    scope = f"{collections} collection(s) and {tables} table(s)"
+    return (
+        f"Searched {scope} and found no match. You DO have access — this is a wording miss, "
+        "not an access problem. Note: filenames are not indexed (search the text, not the file "
+        "name), matching is whole word (`test` will not find `Testovaci`), and there is no "
+        "wildcard (`*` and an empty query return nothing). Try a distinctive word you expect "
+        "inside the document, or call collections_list / catalog to see what is there."
+    )
+
+
 @router.get("/search")
 async def knowledge_search(
     q: str = Query(..., min_length=1, description="Search query"),
@@ -79,6 +106,14 @@ async def knowledge_search(
     ``lexical_only`` means the embeddings extra is absent and document chunks
     were ranked without semantic scoring (#898). Knowledge and table hits are
     lexical by design and unaffected.
+
+    An empty result carries ``searched_collections``, ``searched_tables`` and a
+    ``hint``, for the same reason ``/api/collections/search`` does: a bare
+    ``[]`` cannot be told apart from "you may see nothing", and an agent handed
+    that ambiguity picks the scarier reading and reports an access problem the
+    caller does not have. This is the *combined* leg, so the counts are what
+    make the difference checkable — nothing searched at all is a grant
+    question, anything searched is a wording one.
     """
     from app.api.collections import _accessible_corpus_ids
     from src.ingest.retrieval import retrieval_mode
@@ -126,7 +161,12 @@ async def knowledge_search(
         metrics=metrics,
         k=k,
     )
-    return {"query": q, "results": results, "retrieval": retrieval_mode()}
+    payload: dict = {"query": q, "results": results, "retrieval": retrieval_mode()}
+    if not results:
+        payload["searched_collections"] = len(corpus_ids)
+        payload["searched_tables"] = len(tables)
+        payload["hint"] = _empty_combined_hint(len(corpus_ids), len(tables), len(metrics))
+    return payload
 
 
 @router.get("/artifacts/{corpus_id}/download")
