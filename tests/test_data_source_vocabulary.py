@@ -73,3 +73,19 @@ def test_config_example_matches_the_docs():
             f"config/instance.yaml.example does not list {value!r} — the three "
             "places that name this vocabulary must agree"
         )
+
+
+def test_the_first_time_setup_guide_offers_the_canonical_value():
+    """Devin Review on #1263: `CLAUDE.md` still told an agent to ask for
+    `csv` — the value this PR's own docs explain has no connector behind it.
+    An agent following the setup guide would configure an instance with no
+    external source while the operator believed they had picked one."""
+    from pathlib import Path
+
+    guide = (Path(__file__).resolve().parents[1] / "CLAUDE.md").read_text(encoding="utf-8")
+    line = next(ln for ln in guide.splitlines() if "Data source type" in ln)
+    # The canonical value is what the agent should ASK for; the alias may be
+    # mentioned, but only where the text says what it means.
+    offered = line.split("—", 1)[1].split("(", 1)[0]
+    assert "`local`" in offered, line
+    assert "`csv`" not in offered, line
