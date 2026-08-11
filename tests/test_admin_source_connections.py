@@ -1836,3 +1836,41 @@ class TestBookkeepingCannotFailAPassingConnectionTest:
         )
         after = src[i:]
         assert "passed but its project identity could not be recorded" in after
+
+
+def test_the_secret_path_bookkeeping_is_isolated_too():
+    """Devin Review on this PR: I fixed `/test` and left `PUT /secret`.
+
+    The token is safely stored before `_record_project_identity` runs, so a
+    vault or DB fault there turned an already-successful save into an error
+    response — the admin retries a store that already worked.
+    """
+    import inspect
+
+    from app.api import admin_source_connections as mod
+
+    src = inspect.getsource(mod.set_connection_secret)
+    i = src.index("_record_project_identity(connection_id, row, info)")
+    assert src[:i].rstrip().endswith("try:"), "the identity write is not isolated on the secret path"
+    assert "could not record its project identity" in src[i:]
+
+
+def test_a_failed_sync_reports_one_project_s_reason_and_code():
+    """Devin Review on this PR: two independent `next(...)` scans.
+
+    With several projects failing, the message could come from one and the
+    failure type from another — the worst pairing when only one of them is
+    the project the admin is debugging.
+    """
+    from connectors.keboola.semantic_layer import _aggregate_sources
+
+    sources = [
+        {"connection_id": "a", "status": "error", "error": "bad token for A", "code": "invalid_token"},
+        {"connection_id": "b", "status": "error", "error": "stack unreachable for B", "code": "upstream_down"},
+    ]
+    out = _aggregate_sources(sources)
+    assert out["status"] == "error"
+    assert (out["error"], out["code"]) in (
+        ("bad token for A", "invalid_token"),
+        ("stack unreachable for B", "upstream_down"),
+    ), (out["error"], out.get("code"))
