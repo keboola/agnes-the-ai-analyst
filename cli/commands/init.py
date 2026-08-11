@@ -275,6 +275,11 @@ def _maybe_declare_marketplace_trust(host: str, decision: Optional[bool]) -> Non
     result = ensure_marketplace_trusted(settings_path, host)
     if result is TrustResult.WRITTEN:
         typer.echo(f"Declared {host} in {settings_path} (autoMode.environment). Delete those two entries to undo.")
+    elif result is TrustResult.REWRITTEN:
+        typer.echo(
+            f"Replaced the older declaration of {host} in {settings_path} (autoMode.environment) — "
+            "the previous wording argued for a conclusion instead of describing the host."
+        )
     elif result is TrustResult.ALREADY_PRESENT:
         typer.echo(f"{host} was already declared in {settings_path} (autoMode.environment).")
     else:
