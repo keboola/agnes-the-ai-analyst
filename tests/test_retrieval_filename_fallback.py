@@ -434,6 +434,24 @@ class TestAPassageThatContainsTheWordsStaysABodyHit:
         assert res[0]["matched_on"] == "body", res
         assert res[0]["ordinal"] == 1
 
+    def test_a_large_named_file_is_not_lost_to_the_shortlist_cut(self, e2e_env):
+        """The shortlist was cut to `k` BEFORE the filter, so a file whose
+        early chunks all mention one query word could fill it, be filtered
+        out, and leave the file unfound. (Devin Review on #1267.)"""
+        from src.ingest.retrieval import search
+
+        cid = _seed(
+            "big-named",
+            "quarterly-report.md",
+            [{"ordinal": i, "text": f"quarterly notes page {i}"} for i in range(12)]
+            + [{"ordinal": 12, "text": "closing remarks"}],
+        )
+
+        res = search([cid], "quarterly report", k=5)
+
+        assert res, "the named file was lost"
+        assert res[0]["filename"] == "quarterly-report.md"
+
     def test_a_two_word_question_still_reaches_the_named_file(self, e2e_env):
         """The half-coverage short-circuit killed exactly this case: any
         passage containing one of two content words hid the file named after
