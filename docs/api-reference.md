@@ -1209,7 +1209,11 @@ the engine exposes nothing.
 - /api/kai/mcp — `POST`, authenticated by an **`mcp`-scoped broker ticket**
   (an `llm` ticket is rejected). Forwards the sandbox's verbatim
   Streamable-HTTP MCP request to Agnes's own MCP server under the ticket's
-  real identity, and streams the response back (a Streamable-HTTP server may
+  real identity, and streams the response back chunk by chunk over a real
+  HTTP self-call to `AGNES_MCP_INTERNAL_URL` — an in-process ASGI dispatch
+  buffers the whole reply and applies no timeout, which would trip the
+  engine relay's time-to-headers bound on any slow tool (a Streamable-HTTP
+  server may
   answer as SSE). The brokered identity is a short-lived `mcp-oauth` access
   token minted for the ticket's user, so the engine reaches exactly the tools
   and RBAC a Claude Desktop connector would — the broker adds no authority.

@@ -438,3 +438,67 @@ def test_every_route_honours_the_kill_switch(seeded_app, kai_env, monkeypatch, m
 
     assert resp.status_code == 503, f"{method.upper()} {path} still served with the secret unset"
     assert resp.json()["detail"] == "kai_integration_not_configured"
+
+
+def test_mcp_token_cache_drops_expired_entries(seeded_app, kai_env):
+    """The cache must not become an unbounded leak.
+
+    An entry is dead the moment its token expires — the next mint replaces it —
+    but a chat that never comes back would otherwise keep a full JWT resident
+    for the process lifetime, so memory grew with every engine chat ever served.
+    """
+    from app.api import kai as kai_mod
+
+    body = _mint_session(seeded_app)
+    kai_mod._mcp_token_cache["ghost-chat-that-never-returns"] = ("stale.jwt.value", 1)
+
+    kai_mod._mint_mcp_access_token(body["chat_id"])
+
+    assert "ghost-chat-that-never-returns" not in kai_mod._mcp_token_cache
+    assert body["chat_id"] in kai_mod._mcp_token_cache
+
+
+def test_mcp_proxy_does_not_use_an_in_process_asgi_dispatch(seeded_app, kai_env):
+    """`httpx.ASGITransport` looks like it streams and does not.
+
+    It runs the ASGI app to completion, accumulating every body chunk, then
+    yields one joined blob — so `stream=True` buys nothing and `httpx.Timeout`
+    is inert (no network layer to apply it to). Buffering is not merely slow
+    here: the engine's relay bounds time-to-headers, so a tool slower than that
+    bound would die on a relay 502. Pin the transport choice so a future
+    "simplification" back to ASGITransport has to argue with this test.
+    """
+    import inspect
+
+    from app.api import kai as kai_mod
+
+    source = inspect.getsource(kai_mod.kai_mcp)
+    assert "ASGITransport" not in source
+    assert "_mcp_internal_base()" in source
+
+
+def test_workspace_ignores_a_deregistered_template_clone(seeded_app, kai_env, monkeypatch, tmp_path):
+    """The YAML is the source of truth, not the filesystem.
+
+    An admin can unset the template URL while the clone lingers on disk;
+    shipping that stale tree to the engine's sandbox is exactly what
+    `is_configured()` exists to prevent. Probing `.is_dir()` alone would.
+    """
+    from app.api import kai as kai_mod
+    from app.chat.skills_catalog import BUNDLED_TEMPLATE_DIR
+
+    clone = tmp_path / "iwt"
+    (clone / "workspace").mkdir(parents=True)
+    (clone / "workspace" / "CLAUDE.md").write_text("# leftover clone", encoding="utf-8")
+
+    import src.initial_workspace as iw
+
+    monkeypatch.setattr(iw, "get_initial_workspace_dir", lambda: clone)
+
+    # De-registered: the clone exists but no URL is configured.
+    monkeypatch.setattr(iw, "is_configured", lambda: False)
+    assert kai_mod._workspace_template_root() == BUNDLED_TEMPLATE_DIR
+
+    # Registered: the same clone is now the caller's workspace.
+    monkeypatch.setattr(iw, "is_configured", lambda: True)
+    assert kai_mod._workspace_template_root() == clone / "workspace"

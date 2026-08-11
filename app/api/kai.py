@@ -338,10 +338,41 @@ async def issue_kai_tickets(row: Dict[str, Any] = Depends(_require_session_crede
 # `{method, path, body}` to describe, just bytes to forward.
 # ---------------------------------------------------------------------------
 
-#: Where the brokered request is dispatched, in-process. This is the mounted
-#: Streamable-HTTP MCP app — the same surface, tools and RBAC a Claude Desktop
-#: connector reaches; the broker adds no authority of its own.
+#: Where the brokered request is dispatched: the mounted Streamable-HTTP MCP
+#: app — the same surface, tools and RBAC a Claude Desktop connector reaches;
+#: the broker adds no authority of its own.
 _MCP_STREAMABLE_PATH = "/api/mcp/http/"
+
+
+def _mcp_internal_base() -> str:
+    """Base URL for the self-call that reaches the mounted MCP app.
+
+    A **real** HTTP hop, not `httpx.ASGITransport`. The transport looks like it
+    streams — you can pass `stream=True` — but it runs the whole ASGI app to
+    completion, accumulating every `http.response.body` chunk in a list, and
+    only then hands back a stream that yields one joined blob. Two consequences
+    that both matter here:
+
+    - Nothing reaches the sandbox until the tool has finished. Worse than slow:
+      the engine's relay bounds *time to headers* (~15 s), and buffering means
+      headers cannot arrive before the tool completes — so every MCP tool
+      slower than that bound would die on a relay-level 502 rather than
+      returning late.
+    - `httpx.Timeout` is inert, because there is no network layer to apply it
+      to. A hung tool would hold the request open indefinitely.
+
+    Same env var and default the MCP tools already use for their own self-calls
+    (`app/api/mcp_streamable.py`, `app/api/mcp_http.py`), so a deployment that
+    has MCP working at all already has this pointing at the right place — and
+    if it does not, MCP tools are broken independently of this route.
+    """
+    return os.environ.get("AGNES_MCP_INTERNAL_URL", "http://localhost:8000").rstrip("/")
+
+
+#: Bounds on the brokered MCP hop. `read` is generous because a tool may think
+#: for a while before writing; `connect` is tight because the target is this
+#: same process. Unlike the ASGI transport these are real: the hop is HTTP.
+_MCP_PROXY_TIMEOUT = httpx.Timeout(connect=10.0, read=600.0, write=60.0, pool=10.0)
 
 #: TTL of the access token minted for the brokered identity. Short, because it
 #: exists only to carry one chat's MCP traffic and is re-minted on demand.
@@ -369,6 +400,11 @@ _MCP_SCOPES = ["read"]
 #: makes many JSON-RPC calls, so the token is reused across them. In-process
 #: like the broker's own budget cache — Agnes runs a single chat worker, and a
 #: lost cache just re-mints.
+#:
+#: Swept on every mint (see `_prune_mcp_token_cache`). Without that it is an
+#: unbounded leak rather than a cache: a chat's entry is never read again once
+#: the chat ends, but it would hold a full JWT for the process lifetime, so
+#: memory grew with the number of engine chats ever served and never shrank.
 _mcp_token_cache: Dict[str, tuple[str, int]] = {}
 
 #: Headers never copied from the sandbox's request. `authorization` is
@@ -402,6 +438,19 @@ _MCP_DROP_RESPONSE_HEADERS = frozenset(
 )
 
 
+def _prune_mcp_token_cache(now: int) -> None:
+    """Drop entries whose token has expired.
+
+    An entry is dead weight the moment its token expires — the next mint for
+    that session replaces it anyway — and a chat that never comes back would
+    otherwise keep a JWT resident for the process lifetime. Sweeping the whole
+    dict is fine at this size: one entry per live engine chat, and the sweep
+    runs only on a mint (a DB write already dominates it).
+    """
+    for stale in [sid for sid, (_, exp) in _mcp_token_cache.items() if exp <= now]:
+        del _mcp_token_cache[stale]
+
+
 def _mint_mcp_access_token(session_id: str) -> str:
     """An access token the mounted MCP app's verifier accepts, for the
     identity behind ``session_id``.
@@ -422,10 +471,11 @@ def _mint_mcp_access_token(session_id: str) -> str:
     from app.auth.jwt import create_access_token
     from src.repositories import oauth_clients_repo, users_repo
 
-    cached = _mcp_token_cache.get(session_id)
     now = int(_time.time())
+    cached = _mcp_token_cache.get(session_id)
     if cached and cached[1] - _MCP_ACCESS_TOKEN_REFRESH_MARGIN_SECONDS > now:
         return cached[0]
+    _prune_mcp_token_cache(now)
 
     session = chat_session_repo().get_session(session_id)
     if session is None:
@@ -462,10 +512,13 @@ async def kai_mcp(request: Request, row: Dict[str, Any] = Depends(require_broker
     Scope-gated on ``mcp``: an ``llm``-scoped ticket cannot reach the tool
     surface, mirroring `_require_scope` on every other broker route.
 
-    The response streams. A Streamable-HTTP server answers either as JSON or
-    as an SSE stream, and a tool that takes a while to produce its result
-    would otherwise be buffered whole — the same mistake the Anthropic proxy
-    had to fix for token deltas.
+    The response streams chunk by chunk. A Streamable-HTTP server answers
+    either as JSON or as an SSE stream, and a tool that takes a while to
+    produce its result must not be buffered whole — the same mistake the
+    Anthropic proxy had to fix for token deltas, and here it additionally
+    collides with the engine relay's time-to-headers bound (see
+    `_mcp_internal_base` for why this is a real HTTP hop and not an in-process
+    ASGI dispatch).
     """
     # Same kill switch as every other route — this one authenticates through
     # the broker ticket dependency, which does not pass through
@@ -478,12 +531,7 @@ async def kai_mcp(request: Request, row: Dict[str, Any] = Depends(require_broker
     headers = {k: v for k, v in request.headers.items() if k.lower() not in _MCP_DROP_REQUEST_HEADERS}
     headers["Authorization"] = f"Bearer {token}"
 
-    transport = httpx.ASGITransport(app=request.app)
-    client = httpx.AsyncClient(
-        transport=transport,
-        base_url="http://kai-mcp-broker",
-        timeout=httpx.Timeout(connect=15.0, read=600.0, write=60.0, pool=15.0),
-    )
+    client = httpx.AsyncClient(base_url=_mcp_internal_base(), timeout=_MCP_PROXY_TIMEOUT)
     try:
         upstream_req = client.build_request("POST", _MCP_STREAMABLE_PATH, headers=headers, content=body)
         upstream = await client.send(upstream_req, stream=True)
@@ -541,12 +589,21 @@ def _workspace_template_root() -> "Path":
     source of truth rather than drifting apart.
     """
     from app.chat.skills_catalog import BUNDLED_TEMPLATE_DIR
-    from src.initial_workspace import get_initial_workspace_dir
+    from src.initial_workspace import _WORKSPACE_SUBDIR, _iwt_snapshot
 
     try:
-        override = get_initial_workspace_dir() / "workspace"
-        if override.is_dir():
-            return override
+        # `_iwt_snapshot()` and not a bare `get_initial_workspace_dir().is_dir()`:
+        # the YAML is the source of truth, and an admin can unset the template
+        # URL while the clone lingers on disk. Probing the filesystem alone
+        # would keep shipping a de-registered template to the engine's sandbox
+        # — the exact "unset must beat a stale clone" rule `is_configured()`
+        # exists to enforce. The snapshot also collapses the two probes into
+        # one, so an unset landing mid-call cannot yield a contradictory answer.
+        iwt_root = _iwt_snapshot()
+        if iwt_root is not None:
+            override = iwt_root / _WORKSPACE_SUBDIR
+            if override.is_dir():
+                return override
     except Exception:
         # A broken/unsynced override must not deny the caller a workspace —
         # fall back to the bundled tree, which is always present.
