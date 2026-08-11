@@ -486,7 +486,14 @@ class TestTheUnresolvedTableListSaysWhenItIsASubset:
 
         body = seeded_app["client"].get("/admin/semantic-layer", headers=_auth(seeded_app["admin_token"])).text
 
-        assert "Showing 20 of 57" in body, "the page presents a capped list as the complete set"
+        # Substring chosen to sit inside ONE source line: the template wraps
+        # this sentence, so the rendered HTML carries a newline + indentation
+        # in the middle of it.
+        # `sl-note` is the marker, not the sentence: a wording-keyed assertion
+        # passes vacuously against any other wording, which is exactly how the
+        # negative cases below would have gone green against the old code.
+        assert 'class="sl-note"' in body, "the page presents a capped list as the complete set"
+        assert "at least one project has more" in body
         assert "will not be enough" in body
 
     def test_a_complete_list_carries_no_subset_note(self, seeded_app, vault_key):
@@ -517,7 +524,7 @@ class TestTheUnresolvedTableListSaysWhenItIsASubset:
         body = seeded_app["client"].get("/admin/semantic-layer", headers=_auth(seeded_app["admin_token"])).text
 
         assert "in.c-demo.a" in body
-        assert "Showing" not in body or "of 2" not in body
+        assert 'class="sl-note"' not in body, "a complete list was flagged as a subset"
 
     def test_the_sync_result_reports_the_true_total(self):
         """The payload must carry the count even though the list is cut."""
@@ -531,6 +538,33 @@ class TestTheUnresolvedTableListSaysWhenItIsASubset:
         tot = src.index('"unresolved_tables_total"')
         assert tot > cut, "the total must sit alongside the truncated list"
 
+    def test_two_projects_reporting_the_same_table_do_not_fake_a_subset(self, seeded_app, vault_key):
+        """Devin Review, second pass: the list is de-duplicated, a total is not.
+
+        Summing per-project totals against a de-duplicated list counted a
+        table reported by two projects twice, so the page warned that tables
+        were hidden when none were.
+        """
+        from app.api import keboola_semantic_layer_refresh as endpoint_module
+
+        _make_master_connection(
+            "conn-a", name="A", stack_url="https://connection.keboola.com", token="t", is_default=True
+        )
+        _make_master_connection("conn-b", name="B", stack_url="https://connection.keboola.com", token="t2")
+        shared = ["in.c-demo.shared"]
+        endpoint_module._refresh_state["last_result"] = {
+            "status": "ok",
+            "sources": [
+                {"connection_id": "conn-a", "status": "ok", "skipped_unresolved_table": 1,
+                 "unresolved_tables": shared, "unresolved_tables_total": 1},
+                {"connection_id": "conn-b", "status": "ok", "skipped_unresolved_table": 1,
+                 "unresolved_tables": shared, "unresolved_tables_total": 1},
+            ],
+        }
+
+        body = seeded_app["client"].get("/admin/semantic-layer", headers=_auth(seeded_app["admin_token"])).text
+        assert 'class="sl-note"' not in body, "one table reported twice faked a hidden remainder"
+
     def test_the_page_renders_the_subset_note(self):
         import pathlib
 
@@ -541,5 +575,5 @@ class TestTheUnresolvedTableListSaysWhenItIsASubset:
             / "templates"
             / "admin_semantic_layer.html"
         ).read_text(encoding="utf-8")
-        assert "unresolved_tables_total > unresolved_tables|length" in src
+        assert "unresolved_tables_truncated" in src
         assert ".sl-note {" in src, "the note class must be styled, not bare"
