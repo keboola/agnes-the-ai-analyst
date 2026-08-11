@@ -820,3 +820,53 @@ class TestRotatingTheTokenPropagatesToo(TestChatToolsEndpoint):
         # point — either way the storage-token copy must be untouched.
         assert r.status_code in (204, 400, 502), r.text
         assert shared_secrets_repo().get(source_id) == "kbc-token-value"
+
+
+class TestMovingTheConnectionMovesTheAgentToo(TestChatToolsEndpoint):
+    """Devin Review on this PR: the derived spec embeds the address.
+
+    `build_stdio_spec` bakes the connection's name and `stack_url` into the
+    MCP source, so an edit that moved the project to a new stack left the
+    agent talking to the old one — and, now that storing a token propagates
+    to the derived copy, a freshly rotated credential was being copied to a
+    source still pointed at the previous address.
+    """
+
+    def test_changing_the_stack_url_moves_the_derived_source(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-moved")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.repositories import mcp_sources_repo
+
+        source_id = derived_source_id(conn_id)
+        before = mcp_sources_repo().get(source_id)
+        assert "connection.example.com" in str(before), before
+
+        r = c.put(
+            f"{BASE}/{conn_id}",
+            json={"config": {"stack_url": "https://moved.example.com"}},
+            headers=_auth(token),
+        )
+        assert r.status_code == 200, r.text
+
+        after = mcp_sources_repo().get(source_id)
+        assert "moved.example.com" in str(after), "the agent still points at the old address"
+        assert "connection.example.com" not in str(after)
+
+    def test_editing_a_connection_without_chat_tools_creates_nothing(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-notools", with_secret=False)
+
+        assert (
+            c.put(
+                f"{BASE}/{conn_id}",
+                json={"config": {"stack_url": "https://moved.example.com"}},
+                headers=_auth(token),
+            ).status_code
+            == 200
+        )
+
+        from src.repositories import mcp_sources_repo
+
+        assert mcp_sources_repo().get(derived_source_id(conn_id)) is None
