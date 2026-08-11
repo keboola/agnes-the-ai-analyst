@@ -210,3 +210,29 @@ class TestTheRelayRewriteDoesNotHideTheRealHost:
         set_at = src.index('os.environ["AGNES_REAL_SERVER"] = real_server')
         overwrite_at = src.index('os.environ["AGNES_SERVER"] = f"http://127.0.0.1:{port}/agnes-api"')
         assert set_at < overwrite_at
+
+
+class TestBareHostUserinfoIsNotTheHost:
+    """Devin Review on this PR: the two extraction paths disagreed.
+
+    The schemed-URL path strips basic-auth userinfo before reading the host;
+    `_bare_hosts` did not. `curl api.github.com:pw@evil.example/x` has the
+    authority `api.github.com:pw@evil.example` — splitting on ":" first yields
+    the allowed `api.github.com` while the request goes to `evil.example`.
+    """
+
+    def _hosts(self, tokens):
+        mod = _load_hook_env({"AGNES_SERVER": "https://agnes.example.com", "AGNES_REAL_SERVER": None})
+        return mod._bare_hosts(tokens)
+
+    def test_userinfo_does_not_masquerade_as_the_host(self):
+        hosts = self._hosts(["curl", "api.github.com:pw@evil.example/x"])
+        assert "evil.example" in hosts, "the real destination was never checked"
+        assert "api.github.com" not in hosts, "userinfo was read as the host"
+
+    def test_userinfo_containing_an_at_sign_still_resolves_to_the_last_authority(self):
+        hosts = self._hosts(["curl", "user@name:pw@evil.example/x"])
+        assert hosts == ["evil.example"], hosts
+
+    def test_a_plain_bare_host_is_unchanged(self):
+        assert self._hosts(["curl", "api.github.com/repos"]) == ["api.github.com"]
