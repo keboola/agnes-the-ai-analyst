@@ -250,7 +250,7 @@ class TestANameHitCannotCrowdOutRealMatches:
         from src.search import local
 
         src = inspect.getsource(local.local_search)
-        assert "_rank_by_filename" in src
+        assert "apply_filename_fallback" in src, "the offline reader must share the server's fallback"
 
 
 class TestTheAdviceMatchesTheBehaviour:
@@ -290,3 +290,84 @@ class TestAHumanCanTellWhichKindOfHitItIs:
 
         cid = _seed("label-api", "quarterly-report.md", [{"ordinal": 0, "text": "alpha bravo"}])
         assert search([cid], "quarterly-report")[0]["matched_on"] == "filename"
+
+
+class TestTheTriggerSurvivesAnOrdinarySentence:
+    """Devin Review on #1267, third round: the headline case still missed.
+
+    "no body contains ANY query word" meant one stray `in` or `the` in one
+    passage disabled the name pass — which is every question phrased as a
+    sentence rather than as keywords. The trigger compares coverage now: a
+    name that explains more of the question than the best passage does leads.
+    """
+
+    def test_a_natural_question_still_finds_the_file(self, e2e_env):
+        from src.ingest.retrieval import search
+
+        cid = _seed(
+            "sentence",
+            "quarterly-report.md",
+            [{"ordinal": 0, "text": "alpha bravo charlie is in the delta"}],
+        )
+
+        res = search([cid], "what is in quarterly-report.md")
+
+        assert res, "the question that motivated the whole change found nothing"
+        assert res[0]["matched_on"] == "filename"
+
+    def test_a_passage_that_explains_more_keeps_its_place(self, e2e_env):
+        from src.ingest.retrieval import search
+
+        cid = _seed(
+            "real-body",
+            "quarterly-report.md",
+            [{"ordinal": 0, "text": "the quarterly report explains margin by region"}],
+        )
+
+        res = search([cid], "quarterly report margin")
+
+        assert res and res[0]["matched_on"] == "body"
+
+    def test_scores_do_not_contradict_the_order(self, e2e_env):
+        """A kept body hit must not carry a bigger number than the name hit
+        printed above it. (Devin Review on #1267.)"""
+        from src.ingest.retrieval import search
+
+        cid = _seed(
+            "monotone",
+            "quarterly-report.md",
+            [{"ordinal": 0, "text": "alpha bravo"}, {"ordinal": 1, "text": "in the report of margins"}],
+        )
+
+        res = search([cid], "what is in quarterly-report.md")
+
+        assert res
+        scores = [r["score"] for r in res]
+        assert scores == sorted(scores, reverse=True), res
+
+    def test_an_ordinary_search_does_not_load_every_file_list(self, e2e_env):
+        """The bulk name listing is for the fallback; a search that finds real
+        matches must not pay for it. (Devin Review on #1267.)"""
+        from unittest.mock import patch
+
+        from src.repositories import corpus_files_repo
+
+        cid = _seed("no-bulk", "notes.md", [{"ordinal": 0, "text": "margin by region explained"}])
+
+        real = corpus_files_repo().list_for_corpus
+        calls = []
+
+        def _counting(corpus_id):
+            calls.append(corpus_id)
+            return real(corpus_id)
+
+        with patch("src.repositories.corpus_files_repo") as factory:
+            repo = factory.return_value
+            repo.list_for_corpus.side_effect = _counting
+            repo.get.side_effect = corpus_files_repo().get
+            from src.ingest.retrieval import search
+
+            res = search([cid], "margin region")
+
+        assert res, "precondition: this query matches a body"
+        assert calls == [], f"the bulk listing ran anyway: {calls}"

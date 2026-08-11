@@ -72,28 +72,16 @@ def local_search(query: str, *, workspace: Path, k: int = 10) -> List[Dict[str, 
     if not chunks:
         return []
 
-    from src.ingest.retrieval import _rank_by_filename, _tokenize, rank_chunks
+    from src.ingest.retrieval import apply_filename_fallback, rank_chunks
 
     top, confidence = rank_chunks(chunks, query, k=k)
-    # Same fallback, same trigger as the server (`src.ingest.retrieval.search`):
-    # a query that matches only a FILE NAME must not answer "nothing" here
-    # while the server finds it — this module's docstring promises "the exact
-    # same ranking behavior", and `agnes search --local` and the stdio MCP
-    # fallback are the offline halves of the same question. Keyed on "no body
-    # carries the query" rather than "no results", because a scorer that
-    # returns weak rows for everything would otherwise disable it silently.
-    # The artifact denormalizes `filename` onto every chunk row, so the lookup
-    # is local. (Devin Review on #1267.)
-    q_terms = set(_tokenize(query))
-    filename_ids: set = set()
-    if not any(q_terms & set(_tokenize(ch.get("text", "") or "")) for _s, ch in top):
-        by_id = {ch.get("file_id"): ch.get("filename") for ch in chunks}
-        name_hits = _rank_by_filename(chunks, query, by_id.get, k=k)
-        if name_hits:
-            filename_ids = {ch.get("id") for _s, ch in name_hits}
-            rest = [pair for pair in top if pair[1].get("id") not in filename_ids]
-            top = (name_hits + rest)[:k]
-            confidence = "low"
+    # The same fallback the server runs, from the same function — this module
+    # promises "the exact same ranking behavior", and `agnes search --local`
+    # plus the stdio MCP fallback are the offline half of the same question.
+    # The artifact denormalizes `filename` onto every chunk row, so there is
+    # nothing to prepare. (Devin Review on #1267.)
+    names = {ch.get("file_id"): ch.get("filename") for ch in chunks}
+    top, confidence, filename_ids = apply_filename_fallback(chunks, query, names.get, top, confidence, k=k)
     return [
         {
             "type": "chunk",
