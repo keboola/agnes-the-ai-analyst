@@ -418,13 +418,17 @@ function renderSourcesChips(bubble, verdict) {
 //
 // Read back from the API rather than scraped off the DOM. The rendered bubbles
 // have already been through markdown → HTML, and the endpoint's `tool_calls`
-// is the only provenance beyond raw prose. NOT "in order, as stored" for every
-// row, though: on the live agent path nothing persists real tool calls at all
-// (the runner streams them as separate frames the manager never re-attaches
-// to the final message), so the only rows that ever carry `tool_calls` here
-// are the cancelled/interrupted markers manager.py writes — which have no
-// `tool`/`args` keys. formatToolCall() below skips those rather than
-// rendering `tool: undefined` with an empty fence.
+// is the only provenance beyond raw prose.
+//
+// Rows DO carry real tool calls now. They did not until the manager started
+// re-attaching the turn's `tool_call` frames to the final assistant message
+// (it had to: the sources verdict is computed against them, and against an
+// empty list every declared source read as unverified). They arrive trimmed
+// to `{tool, args}`. Two other kinds of row still exist and are not tool
+// calls at all: the cancelled/interrupted markers manager.py writes
+// (`{"cancelled": true}`, `{"interrupted": true, "reason": …}`), which have
+// no `tool` key. formatToolCall() below skips those rather than rendering
+// `tool: undefined` with an empty fence.
 
 /** One tool_calls[] entry as `{label, argsJson}`, or `null` for a row with no
  *  `tool` name — the shape of manager.py's cancelled/interrupted markers

@@ -160,12 +160,23 @@ class TestTheManagerFeedsTheVerdictRealToolCalls:
     def _stamp_block(self) -> str:
         src = self.SOURCE.read_text(encoding="utf-8")
         i = src.index('if frame.get("type") == "assistant_message":')
-        return src[i : i + 2000]
+        return src[i : i + 4000]
 
     def test_the_verdict_is_fed_from_the_turn_buffer(self):
         block = self._stamp_block()
-        assert 'live.turn_buffer if f.get("type") == "tool_call"' in block, (
+        assert 'live.turn_buffer' in block and '"tool_call"' in block, (
             "the verdict is computed against a field the runner never sets"
+        )
+
+    def test_only_the_tool_and_args_are_persisted(self):
+        """This list rides on the message row forever — the frame envelope
+        (`type`, `frame_seq`, ids) would be dead weight on every message, and
+        `chat.js::formatToolCall` reads `{tool, args}` anyway."""
+        block = self._stamp_block()
+        assert '"tool": f.get("tool")' in block
+        assert '"args": f.get("args")' in block
+        assert 'isinstance(f.get("tool"), str)' in block, (
+            "a frame with no tool name would render as `tool: undefined`"
         )
 
     def test_the_calls_are_attached_before_the_verdict_is_computed(self):
