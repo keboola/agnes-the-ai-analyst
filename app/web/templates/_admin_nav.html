@@ -1,0 +1,29 @@
+{# Grouped left sidebar for the /admin section (issue #896 follow-up mock).
+
+   Included by base_admin.html / base_admin_page.html only — every /admin/*
+   HTML page is already gated server-side by `Depends(require_admin)`, so a
+   non-admin never reaches a route that renders this partial. The
+   `session.user.is_admin` check below is defence in depth (mirrors the same
+   guard on the rail's Admin flyout in _app_rail.html), not the primary gate.
+
+   Data comes from `app/web/admin_nav.py` (`ADMIN_NAV_SECTIONS`,
+   `resolve_active_href`), registered as the Jinja globals
+   `admin_nav_sections` / `admin_nav_active_href` — the single source of
+   truth `tests/test_web_admin_nav.py` also imports directly, so a page added
+   to the router without a nav entry fails that guard. #}
+{% if session.user.is_admin %}
+{% set _admin_path = request.url.path %}
+{% set _active_href = admin_nav_active_href(_admin_path) %}
+<aside class="admin-nav" aria-label="Admin sections">
+    <a class="admin-nav__title" href="/admin">Admin</a>
+    {% for section in admin_nav_sections %}
+    <div class="admin-nav__group">
+        <h5>{{ section['label'] }}</h5>
+        {% for item in section['items'] %}
+        <a class="admin-nav__link{% if item['href'] == _active_href %} is-active{% endif %}"
+           href="{{ item['href'] }}">{{ item['label'] }}</a>
+        {% endfor %}
+    </div>
+    {% endfor %}
+</aside>
+{% endif %}

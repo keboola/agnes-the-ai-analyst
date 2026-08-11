@@ -1,4 +1,4 @@
-{% extends "base_ds.html" %}
+{% extends "base_admin.html" %}
 {% block title %}Sync — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block head_extra %}
@@ -65,7 +65,7 @@
 </style>
 {% endblock %}
 
-{% block content %}
+{% block admin_content %}
 <div>
   {% set page_hero_eyebrow = "Data Pipeline" %}
   {% set page_hero_title = "Sync" %}

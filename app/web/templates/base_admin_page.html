@@ -1,0 +1,30 @@
+{#
+  Admin layout for pages that ride the `base_page.html` hero + toolbar + page
+  convention (`page_hero_title` etc., `{% block toolbar %}`, `{% block page %}`).
+
+  Usage (leaf template) — literally a one-line `{% extends %}` swap, nothing
+  else changes:
+
+      {% extends "base_admin_page.html" %}
+      {% set page_hero_title = "Users & Access" %}
+      {% block toolbar %}...{% endblock %}
+      {% block page %}...{% endblock %}
+
+  Wraps `base_page.html`'s own `content` block (hero + toolbar + page, via
+  `{{ super() }}`) in the two-column `.admin-split` grid from the issue #896
+  sidebar mock — same `_admin_nav.html` sidebar as `base_admin.html`, whose
+  docstring covers the shared mechanics (active-state source, the ~820px
+  responsive collapse, why the stylesheet link lives inside `content` rather
+  than `head_extra`).
+#}
+{% extends "base_page.html" %}
+
+{% block content %}
+<link rel="stylesheet" href="{{ static_url('css/admin-nav.css') }}">
+<div class="admin-split">
+    {% include "_admin_nav.html" %}
+    <div class="admin-main">
+        {{ super() }}
+    </div>
+</div>
+{% endblock %}

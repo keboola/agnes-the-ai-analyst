@@ -347,6 +347,16 @@ def _is_paper_theme() -> bool:
 templates.env.globals["is_paper"] = _is_paper_theme
 
 
+# Grouped /admin sidebar (issue #896 follow-up mock) — data + active-state
+# resolver registered as globals (like `static_url`/`is_paper` above) so
+# `_admin_nav.html` (included from base_admin.html / base_admin_page.html)
+# resolves them regardless of which context builder the enclosing page uses.
+from app.web.admin_nav import ADMIN_NAV_SECTIONS, resolve_active_href  # noqa: E402
+
+templates.env.globals["admin_nav_sections"] = ADMIN_NAV_SECTIONS
+templates.env.globals["admin_nav_active_href"] = resolve_active_href
+
+
 # The ONE default behind `library.show_unverified_trust`, read off the registry
 # rather than restated at each read site. Three callsites resolve this flag (the
 # Jinja global below plus /library and the store-item detail route), and each
@@ -3979,6 +3989,7 @@ async def catalog_semantics(
     accessible_ids = get_accessible_tables(user, conn)
     allowed = None if accessible_ids is None else set(accessible_ids)
     metrics = [m for m in metric_repo().list() if _first_inaccessible_table(m, allowed) is None]
+
     def _variants(raw) -> dict:
         """``sql_variants`` as a mapping the template can iterate.
 

@@ -1,4 +1,4 @@
-{% extends "base_ds.html" %}
+{% extends "base_admin.html" %}
 {% block title %}Access tokens — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block head_extra %}
@@ -573,7 +573,7 @@
 </style>
 {% endblock %}
 
-{% block content %}
+{% block admin_content %}
 {# modal Cancel/Revoke render via `ds.button` (auto-imported by base_ds).
    Bespoke .chip-btn / .clear-link / JS-generated .revoke-btn + token card
    stack stay page-local. #}

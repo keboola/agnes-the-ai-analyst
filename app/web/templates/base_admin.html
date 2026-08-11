@@ -1,0 +1,40 @@
+{#
+  Admin layout for pages that own their whole `content` block directly
+  (extend `base_ds.html` today — no shared hero/toolbar convention).
+
+  Usage (leaf template):
+
+      {% extends "base_admin.html" %}
+      {% block admin_content %}
+        ...whatever used to live in {% block content %}...
+      {% endblock %}
+
+  Wraps the page's own body in the two-column `.admin-split` grid from the
+  issue #896 sidebar mock: `_admin_nav.html` (grouped section links, active
+  state derived from `request.url.path` via `app/web/admin_nav.py`) on the
+  left, the page's content in `.admin-main` on the right. Below ~820px the
+  sidebar hides (admin-nav.css) — pages stay usable via their own
+  hero/tabs, unaffected by this wrapper.
+
+  See `base_admin_page.html` for the sibling base used by pages that extend
+  `base_page.html` (hero + toolbar + page blocks) instead.
+#}
+{% extends "base_ds.html" %}
+
+{# NOT loaded via {% block head_extra %}: leaf templates below this base
+   routinely override that block for their own page-local <style> WITHOUT
+   calling {{ super() }} (that's the pre-existing pattern across
+   admin_tables.html, admin_server_config.html, etc.), which would silently
+   drop this stylesheet. `content` is exclusively owned by this base (leaf
+   templates fill `admin_content` instead), so a <link> here always renders —
+   valid HTML5 wherever it sits, and admin-nav.css has no page-load-order
+   dependency to protect. #}
+{% block content %}
+<link rel="stylesheet" href="{{ static_url('css/admin-nav.css') }}">
+<div class="admin-split">
+    {% include "_admin_nav.html" %}
+    <div class="admin-main">
+        {% block admin_content %}{% endblock %}
+    </div>
+</div>
+{% endblock %}

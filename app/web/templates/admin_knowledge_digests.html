@@ -1,4 +1,4 @@
-{% extends "base_ds.html" %}
+{% extends "base_admin.html" %}
 {% block title %}Maintained Digests — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block head_extra %}
@@ -107,7 +107,7 @@
 </style>
 {% endblock %}
 
-{% block content %}
+{% block admin_content %}
 <div class="knowledge-digests-page">
   {% set page_hero_eyebrow = "Agent Experience" %}
   {% set page_hero_title = "Maintained digests" %}
