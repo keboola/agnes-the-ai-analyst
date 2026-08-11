@@ -142,7 +142,7 @@ def collection_get(collection_id: str) -> dict:
 
 @tool()
 def collections_search(query: str, k: int = 10, collection_id: str = "") -> dict:
-    """Hybrid search across your accessible file Collections (RBAC-filtered).
+    """Hybrid search across your accessible file Collections (RBAC-filtered). Filenames are not indexed, matching is whole word, and there is no wildcard — so an empty result is a wording miss far more often than an access problem; read the response's ``hint`` before concluding anything from it.
 
     Returns ranked chunks with citations (``filename``, ``ordinal``, ``text``,
     ``score``). Optionally restrict to one collection via ``collection_id``.
@@ -177,7 +177,7 @@ def collections_search(query: str, k: int = 10, collection_id: str = "") -> dict
 
 @tool()
 def knowledge_search(query: str, k: int = 10) -> dict:
-    """One query across documents, the knowledge base, and the data catalog.
+    """One query across documents, the knowledge base, and the data catalog. Filenames are not indexed, matching is whole word, and there is no wildcard — so an empty result is a wording miss far more often than an access problem; read the response's ``hint`` before concluding anything from it.
 
     Fans out server-side over Collections chunks (hybrid lexical+vector),
     corporate-memory knowledge items (fulltext), and table catalog cards —

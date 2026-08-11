@@ -296,6 +296,14 @@ async def search_collections(
     from src.ingest.retrieval import retrieval_mode, search as _search
 
     allowed = _accessible_corpus_ids(user)
+    # A BLANK `corpus_id` means "no filter", not "the collection whose id is
+    # the empty string". `is not None` accepted `?corpus_id=` — which every
+    # HTML form and most clients send for an unset optional — narrowed the
+    # allowed list to nothing, and then landed in the hint's `searched == 0`
+    # branch, telling a caller with plenty of access that no collections are
+    # shared with them: the exact wrong conclusion this change set exists to
+    # prevent, produced by the fix for it. (Devin Review on this PR.)
+    corpus_id = corpus_id or None
     if corpus_id is not None:
         allowed = [c for c in allowed if c == corpus_id]
     k = max(1, min(k, 50))

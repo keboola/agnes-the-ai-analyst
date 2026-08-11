@@ -62,7 +62,7 @@ def _resolve_knowledge_grants(user) -> Tuple[Optional[List[str]], Optional[List[
     return groups, domains
 
 
-def _empty_combined_hint(collections: int, tables: int, metrics: int) -> str:
+def _empty_combined_hint(collections: int, tables: int, metrics: int, knowledge: bool) -> str:
     """Why the combined search is empty, in terms the caller can act on.
 
     The collections-only sibling (``app.api.collections._empty_search_hint``)
@@ -70,16 +70,26 @@ def _empty_combined_hint(collections: int, tables: int, metrics: int) -> str:
     fans out over collections, corporate memory, the table catalog, metrics and
     the glossary, so an empty *collection* set says nothing on its own — a
     caller with no collections but forty tables was searched, and telling them
-    to ask for a grant would send them to the wrong person. Only when every leg
-    is empty is this an access question.
+    to ask for a grant would send them to the wrong person.
+
+    "Nothing was searched" is never literally true either: the **glossary** has
+    no RBAC (``unified_search`` fetches it for any authenticated caller), so
+    something always ran. The all-empty branch therefore says which sources
+    were empty rather than claiming the search did not happen — and it counts
+    the knowledge leg, which the first version of this hint ignored even though
+    a caller can hold memory-domain grants and no documents, tables or metrics
+    at all. (Devin Review on this PR.)
     """
-    if collections == 0 and tables == 0 and metrics == 0:
+    if collections == 0 and tables == 0 and metrics == 0 and not knowledge:
         return (
-            "Nothing was searched: no collections, tables or metrics are shared with you yet. "
-            "This is an access question, not a query one — ask an admin for a grant, or call "
+            "Only the public glossary was searched — no documents, tables, metrics or knowledge "
+            "notes are shared with you yet, and nothing in the glossary matched. This part is an "
+            "access question, not a query one — ask an admin for a grant, or call "
             "collections_list / catalog to confirm what you can reach."
         )
     scope = f"{collections} collection(s) and {tables} table(s)"
+    # (knowledge notes and the glossary ran too; the two counts are the ones a
+    # caller can check against `collections_list` / `catalog`.)
     return (
         f"Searched {scope} and found no match. You DO have access — this is a wording miss, "
         "not an access problem. Note: filenames are not indexed (search the text, not the file "
@@ -112,8 +122,10 @@ async def knowledge_search(
     ``[]`` cannot be told apart from "you may see nothing", and an agent handed
     that ambiguity picks the scarier reading and reports an access problem the
     caller does not have. This is the *combined* leg, so the counts are what
-    make the difference checkable — nothing searched at all is a grant
-    question, anything searched is a wording one.
+    make the difference checkable — an all-empty fan-out is a grant question,
+    anything reachable is a wording one. The glossary is excluded from that
+    judgement on purpose: it has no RBAC, so it runs for everyone and its
+    presence would make every caller look like they had access.
     """
     from app.api.collections import _accessible_corpus_ids
     from src.ingest.retrieval import retrieval_mode
@@ -165,7 +177,10 @@ async def knowledge_search(
     if not results:
         payload["searched_collections"] = len(corpus_ids)
         payload["searched_tables"] = len(tables)
-        payload["hint"] = _empty_combined_hint(len(corpus_ids), len(tables), len(metrics))
+        # `groups is None` is the admin short-circuit from
+        # `_resolve_knowledge_grants` — everything is reachable, not nothing.
+        knowledge_reachable = groups is None or bool(groups) or bool(domains)
+        payload["hint"] = _empty_combined_hint(len(corpus_ids), len(tables), len(metrics), knowledge_reachable)
     return payload
 
 
