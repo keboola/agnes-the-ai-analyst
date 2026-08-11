@@ -200,6 +200,21 @@ def rank_chunks(
     return scored[:k], confidence
 
 
+#: Function words that are evidence for nothing. They appear in most English
+#: questions and in almost every passage, so counting them made a passage
+#: containing "is" and "in" look as explanatory as a file NAMED after the
+#: subject — which is how "what is in quarterly-report.md" kept missing the
+#: file it names. (Devin Review on #1267.)
+_QUERY_STOP_TOKENS = frozenset(
+    {
+        "a", "about", "an", "and", "any", "are", "as", "at", "be", "by", "can", "do", "does", "file",
+        "find", "for", "from", "get", "give", "has", "have", "how", "i", "in", "is", "it", "its", "me",
+        "my", "of", "on", "or", "our", "please", "show", "tell", "that", "the", "their", "there",
+        "these", "this", "to", "was", "were", "what", "when", "where", "which", "who", "why", "with",
+        "you", "your",
+    }
+)
+
 #: Filename tokens too generic to identify a file. An extension is shared by
 #: every file of that type, so matching on it returns the whole corpus as
 #: "hits" — noise dressed as a result.
@@ -269,6 +284,73 @@ def _rank_by_filename(
     return scored[:k]
 
 
+
+def apply_filename_fallback(
+    chunks: List[Dict[str, Any]],
+    query: str,
+    filename_of: Any,
+    top: List[tuple[float, Dict[str, Any]]],
+    confidence: str,
+    *,
+    k: int = 10,
+    prepare: Any = None,
+) -> tuple[List[tuple[float, Dict[str, Any]]], str, set]:
+    """Let file NAMES answer when they explain the question better than any body.
+
+    Returns ``(top, confidence, filename_ids)``. Shared by the server's
+    ``search()`` and the offline ``src.search.local`` reader so the two cannot
+    drift — they are the online and offline halves of the same question.
+
+    The trigger is comparative, and it took three rounds of review to get
+    right. "No results at all" made the whole thing dead code wherever the
+    embeddings extra is installed, because every chunk then scores a non-zero
+    cosine. "No body contains ANY query word" was barely better: one stray
+    ``in`` or ``the`` disabled it, which is every question phrased as a
+    sentence. So both sides are scored the same way — the share of the query's
+    CONTENT words (function words and bare extensions excluded) that the
+    candidate accounts for — and a name only leads when it explains more of
+    the question than the best passage does.
+
+    Name hits lead; whatever the body pass found keeps the remaining slots,
+    rescaled UNDER the weakest name hit. The two raw scales are unrelated
+    (coverage ratios here, fused lexical/vector scores there), and a merged
+    list whose scores contradict its order misleads every consumer that reads
+    them. (Devin Review on #1267.)
+    """
+    q_terms = {t for t in _tokenize(query) if t not in _FILENAME_STOP_TOKENS and t not in _QUERY_STOP_TOKENS}
+    if not q_terms:
+        return top, confidence, set()
+
+    def _cover(text: str) -> float:
+        return len(q_terms & set(_tokenize(text or ""))) / len(q_terms)
+
+    best_body_cover = max((_cover(ch.get("text", "")) for _s, ch in top), default=0.0)
+    if best_body_cover >= 1.0:
+        # Some passage already accounts for every content word in the
+        # question. No name can beat that, so the name pass — and the file
+        # listing `prepare` loads for it — is skipped entirely: an ordinary
+        # search must not pay for a fallback it cannot use. (Devin Review on
+        # #1267.)
+        return top, confidence, set()
+    if prepare is not None:
+        prepare()
+    name_hits = [
+        pair
+        for pair in _rank_by_filename(chunks, query, filename_of, k=k)
+        if _cover(filename_of(pair[1].get("file_id")) or "") > best_body_cover
+    ]
+    if not name_hits:
+        return top, confidence, set()
+
+    filename_ids = {ch.get("id") for _s, ch in name_hits}
+    rest = [pair for pair in top if pair[1].get("id") not in filename_ids]
+    floor = min(s for s, _ch in name_hits)
+    top_rest = max((s for s, _ch in rest), default=0.0) or 1.0
+    rest = [(round(floor * 0.9 * (s / top_rest), 6), ch) for s, ch in rest]
+    # A name match is a hint, not evidence — never claim more.
+    return (name_hits + rest)[:k], "low", filename_ids
+
+
 def search(
     corpus_ids: List[str],
     query: str,
@@ -288,15 +370,25 @@ def search(
 
     top, confidence = rank_chunks(chunks, query, k=k)
 
-    # Resolve filenames for citations. One query per CORPUS, not one per file:
-    # the fallback below asks for every candidate's name, and a per-file `get`
-    # turned a miss on a large collection set into hundreds of round-trips.
-    # (Devin Review on #1267.)
+    # Resolve filenames for citations, one file at a time and cached — a
+    # normal search cites at most `k` of them. The bulk listing below is
+    # loaded ONLY when the name pass actually runs, so an ordinary search
+    # never pays for every collection's file list. (Devin Review on #1267,
+    # both halves: the per-file loop was an N+1 for the name pass, and
+    # loading everything up front was a tax on the searches that do not need
+    # it.)
     cf_repo = corpus_files_repo()
     name_cache: Dict[str, Optional[str]] = {}
-    for cid in corpus_ids:
-        for row in cf_repo.list_for_corpus(cid):
-            name_cache[row.get("id")] = row.get("filename")
+    names_bulk_loaded = False
+
+    def _load_all_names() -> None:
+        nonlocal names_bulk_loaded
+        if names_bulk_loaded:
+            return
+        names_bulk_loaded = True
+        for cid in corpus_ids:
+            for row in cf_repo.list_for_corpus(cid):
+                name_cache.setdefault(row.get("id"), row.get("filename"))
 
     def _filename(file_id: str) -> Optional[str]:
         if file_id not in name_cache:
@@ -304,34 +396,11 @@ def search(
             name_cache[file_id] = row.get("filename") if row else None
         return name_cache[file_id]
 
-    # Try the file NAMES when nothing in any BODY carries the query's words.
-    # `rank_chunks` scores text only (its docstring: "no filename
-    # resolution"), so "what is in quarterly-report.md?" — the most natural
-    # way to ask about a file you are looking at — matched nothing, and an
-    # agent read that empty result as missing access.
-    #
-    # The trigger is "no body contains a query word", NOT "no results at all":
-    # with the embeddings extra installed every chunk gets a non-zero cosine,
-    # so `top` is essentially never empty and an empty-only trigger made the
-    # whole fallback dead code on exactly the instances that have semantic
-    # search. (Devin Review on #1267.)
-    #
-    # Still a fallback, never a scoring input: a filename is weak evidence
-    # next to the words actually in the document, so it cannot reorder a
-    # search that already found them.
-    q_terms = set(_tokenize(query))
-    body_carries_query = any(q_terms & set(_tokenize(ch.get("text", "") or "")) for _s, ch in top)
-    filename_ids: set = set()
-    if not body_carries_query:
-        name_hits = _rank_by_filename(chunks, query, _filename, k=k)
-        if name_hits:
-            filename_ids = {ch.get("id") for _s, ch in name_hits}
-            # Name hits lead; whatever the semantic pass found keeps the rest
-            # of the slots, so nothing that did match is lost.
-            rest = [pair for pair in top if pair[1].get("id") not in filename_ids]
-            top = (name_hits + rest)[:k]
-            # A name match is a hint, not evidence — never claim more.
-            confidence = "low"
+    # Names are only consulted when they beat the body — see
+    # `apply_filename_fallback`, which the offline reader shares.
+    top, confidence, filename_ids = apply_filename_fallback(
+        chunks, query, _filename, top, confidence, k=k, prepare=_load_all_names
+    )
 
     results: List[Dict[str, Any]] = []
     for score, ch in top:
