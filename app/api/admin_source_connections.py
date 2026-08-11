@@ -443,26 +443,52 @@ def _remove_chat_tools(connection_id: str) -> None:
     for the same "no orphaned credential material" reason the canonical path
     cites; the OAuth trio does not apply — the derived source is stdio.
     (Devin Review on this PR.)
+
+    A step that FAILS is reported, not swallowed. Every removal used to sit
+    under `except Exception: logger.debug(…)`, which cannot tell "there was
+    nothing to delete" from "the delete did not work" — so an admin cutting
+    access could be answered `204` while the tools, the grants and the copied
+    credential were all still live, which is the one outcome this endpoint
+    exists to prevent. Idempotency does not need the broad catch anyway: each
+    repository's `delete` is a `DELETE … WHERE id = ?`, a no-op on a row that
+    is not there. (Devin Review on this PR.)
     """
     source_id = derived_source_id(connection_id)
-    try:
-        tool_registry_repo().delete_for_source(source_id)
-    except Exception:
-        logger.debug("no derived tools for connection %s (expected)", connection_id)
-    try:
-        mcp_sources_repo().delete(source_id)
-    except Exception:
-        logger.debug("no derived MCP source for connection %s (expected)", connection_id)
-    try:
-        shared_secrets_repo().delete(source_id)
-    except Exception:
-        logger.debug("no derived MCP secret for connection %s (expected)", connection_id)
-    try:
+    failed: list[str] = []
+
+    def _step(what: str, fn) -> None:
+        try:
+            fn()
+        except Exception:  # noqa: BLE001 — every step runs; the caller is told which failed
+            logger.warning("could not remove %s for connection %s", what, connection_id, exc_info=True)
+            failed.append(what)
+
+    def _drop_per_user_secrets() -> None:
         pu_secrets = per_user_secrets_repo()
         for uid in pu_secrets.list_for_source(source_id):
             pu_secrets.delete(source_id, uid)
-    except Exception:
-        logger.debug("no per-user secrets for connection %s (expected)", connection_id)
+
+    # Every step is attempted even after one fails: a partial teardown that
+    # removes three of four things is strictly better than stopping at the
+    # first, and the report below says what survived.
+    _step("tools and their grants", lambda: tool_registry_repo().delete_for_source(source_id))
+    _step("the derived MCP source", lambda: mcp_sources_repo().delete(source_id))
+    _step("the copied credential", lambda: shared_secrets_repo().delete(source_id))
+    _step("per-user credentials", _drop_per_user_secrets)
+
+    if failed:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "chat_tools_not_fully_removed",
+                "still_present": failed,
+                "message": (
+                    "Chat tools were not fully removed — the items listed are still live, "
+                    "so analyst access has NOT been revoked. Retry, or remove the derived "
+                    f"source {source_id} from /admin/mcp."
+                ),
+            },
+        )
 
 
 @router.post("/{connection_id}/chat-tools", status_code=201)
