@@ -103,6 +103,8 @@
   .ds-conn-name { font-size: 13px; font-weight: 600; color: var(--text-primary, var(--ds-text-primary)); }
   /* Project identity sits between the connection's own name and the stack
      host: it is what distinguishes two connections to the same stack. */
+  .ds-unbind { margin-left: 8px; padding: 0; border: 0; background: none; font-size: 11px;
+    color: var(--ds-text-muted); text-decoration: underline; cursor: pointer; }
   .ds-conn-project {
     font-size: 11px; color: var(--ds-text-secondary);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -487,8 +489,18 @@ function _connectionCardHtml(row) {
   // token's own owner block. Several projects on one stack render as the same
   // host, so the URL alone never told two connections apart — and the "master
   // token: SET" badge said nothing about WHICH project that token unlocks.
+  // …and an explicit way OUT of that binding. The connection is locked to the
+  // first project it verified against, so a token for a different project on
+  // the same stack is refused — correct, and the whole point — but re-pointing
+  // an existing connection to another project then had no route at all from
+  // this page: an edit no longer clears the binding (it used to, silently, on
+  // every save, which is the bug that made the lock necessary). "Unbind" is
+  // that route. (Devin Review.)
   const projectLine = config.project_id != null
-    ? `<div class="ds-conn-project">${_esc(config.project_name || "unnamed")} · project ${_esc(String(config.project_id))}</div>`
+    ? `<div class="ds-conn-project">${_esc(config.project_name || "unnamed")} · project ${_esc(String(config.project_id))}
+        <button type="button" class="ds-unbind" onclick="unbindProject('${id}')"
+                title="Forget which project this connection is locked to, so a token for another project on the same stack can be stored">unbind</button>
+      </div>`
     : "";
 
   return `
@@ -709,6 +721,34 @@ async function removeMasterToken(id) {
     } else {
       const body = await r.json().catch(() => ({}));
       showToast("Failed: " + (body.detail || "unknown error"), false);
+    }
+  } catch (_) {
+    showToast("Request failed.", false);
+  }
+}
+
+/* Clear a connection's recorded project identity.
+   Sends the keys explicitly as null rather than omitting them: `PUT /{id}`
+   replaces the stored config, and the handler carries `project_id` /
+   `project_name` FORWARD when they are absent (an admin form posts neither,
+   so an ordinary edit must not drop the binding). An explicit null is how
+   the caller says "clear it" — see `update_connection`. */
+async function unbindProject(id) {
+  const row = _connections.find(c => c.id === id);
+  if (!row) return;
+  if (!confirm("Forget which Keboola project this connection is locked to?\n\nThe next token you store will re-bind it to whichever project that token opens.")) return;
+  try {
+    const r = await fetch(`/api/admin/source-connections/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config: { ...(row.config || {}), project_id: null, project_name: null } }),
+    });
+    if (r.ok) {
+      showToast("Project binding cleared.", true);
+      await loadConnections();
+    } else {
+      const body = await r.json().catch(() => ({}));
+      showToast("Failed: " + (body.detail?.message || body.detail || `HTTP ${r.status}`), false);
     }
   } catch (_) {
     showToast("Request failed.", false);

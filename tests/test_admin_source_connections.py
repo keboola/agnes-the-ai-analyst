@@ -1649,3 +1649,26 @@ class TestAnOrdinaryEditKeepsTheProjectBinding:
         )
         assert r.status_code == 200, r.text
         assert r.json()["config"].get("project_id") is None
+
+
+def test_the_admin_page_offers_a_way_out_of_a_project_binding():
+    """Devin Review on this PR: the lock had no release.
+
+    Making the binding survive an ordinary edit (its own fix) turned it into a
+    one-way door: a connection is refused a token for any other project, and
+    the page offered no control to clear the recorded identity — so
+    re-pointing an existing connection at another project on the same stack
+    became impossible from the UI.
+    """
+    import pathlib
+
+    src = (
+        pathlib.Path(__file__).resolve().parents[1] / "app" / "web" / "templates" / "admin_data_sources.html"
+    ).read_text(encoding="utf-8")
+
+    assert "function unbindProject(" in src
+    assert 'onclick="unbindProject(' in src, "the control is defined but never rendered"
+    assert ".ds-unbind {" in src, "the control must be styled, not bare"
+    # It has to send explicit nulls: the handler carries the keys forward when
+    # they are ABSENT, which is what stops an ordinary edit dropping them.
+    assert "project_id: null" in src and "project_name: null" in src
