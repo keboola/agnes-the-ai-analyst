@@ -101,16 +101,36 @@ def _replay_corporate_memory(payload: dict, by: str, submitted_by: Optional[str]
         color=None,
         created_by=by,
     )
-    seed_domain_item(
-        slug=payload["slug"],
-        name=payload["name"],
-        content=payload.get("content"),
-        content_title=payload.get("content_title"),
-        # The SUBMITTER, not the approver — `by` is the admin who approved,
-        # and attributing someone else's knowledge to them would be wrong in
-        # the one field corporate memory uses to say who knows this.
-        source_user=submitted_by or by,
-    )
+    try:
+        seed_domain_item(
+            slug=payload["slug"],
+            name=payload["name"],
+            content=payload.get("content"),
+            content_title=payload.get("content_title"),
+            # The SUBMITTER, not the approver — `by` is the admin who approved,
+            # and attributing someone else's knowledge to them would be wrong in
+            # the one field corporate memory uses to say who knows this.
+            source_user=submitted_by or by,
+        )
+    except Exception:
+        # The caller reopens the suggestion on failure so the admin can retry —
+        # but the domain is already created, and a retry then dies on the
+        # duplicate slug, leaving the submission impossible to approve and an
+        # empty domain nobody asked for. Undo our own half before letting the
+        # error out. (Devin Review on #1263.)
+        try:
+            # HARD delete: the soft one only stamps `deleted_at`, and the slug
+            # stays unique-constrained — a retry would still collide, which is
+            # the whole failure being undone. Nothing was ever published under
+            # this domain; it was created moments ago in this same request.
+            memory_domains_repo().hard_delete(domain_id)
+        except Exception:
+            logger.exception(
+                "authoring: seeding failed for domain %s and the rollback failed too — "
+                "the domain must be deleted by hand before this suggestion can be approved",
+                domain_id,
+            )
+        raise
     return domain_id
 
 
