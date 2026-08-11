@@ -461,6 +461,13 @@ def _mint_service_token(slug: str, owner: dict) -> tuple[str, str]:
         email=owner["email"],
         token_id=token_id,
         typ="pat",
+        # No `exp` claim, matching the `expires_at=None` on the row below. The
+        # two disagreed: the record said "never", the JWT carried the default
+        # 30-day expiry, so a hosted app that slept and woke more than a month
+        # after its last deploy started failing every Agnes call with nothing
+        # anywhere saying why. (Devin Review on this PR, on the sibling git
+        # token; the same mismatch was here.)
+        omit_exp=True,
         extra_claims={"scope": f"data-app:{slug}"},
     )
     prefix = token_id.replace("-", "")[:8]
@@ -512,6 +519,12 @@ def _mint_container_git_token(repo_slug: str, app_slug: str, owner: dict) -> tup
         email=owner["email"],
         token_id=token_id,
         typ="pat",
+        # No `exp` claim — see `_mint_service_token`. The container re-clones
+        # on every recreate, including waking from `sleep_mode: recreate` long
+        # after the deploy, which is the whole reason this credential is
+        # unbounded; a 30-day JWT expiry made that wake fail to fetch its own
+        # code and crash-loop with no explanation. (Devin Review on this PR.)
+        omit_exp=True,
         # Clone-only. The scope encodes WHICH repo, never what may be done to
         # it, and this credential is minted for the app's OWNER — so without
         # this claim the git surface saw an owner and allowed pushes, making

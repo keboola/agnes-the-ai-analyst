@@ -249,3 +249,24 @@ def test_absent_claim_still_allows_a_push():
     assert 'not payload.get("git_write")' not in git_src, (
         "a falsy check would revoke push for every pre-existing token"
     )
+
+
+def test_neither_unbounded_token_carries_a_jwt_expiry():
+    """Devin Review on #1239: the record said "never", the JWT said 30 days.
+
+    `create_access_token` embeds the default expiry unless `omit_exp=True`, so
+    both of these carried one while their `access_tokens` rows were written
+    with `expires_at=None`. The container re-clones on every recreate —
+    including waking from `sleep_mode: recreate` long after the deploy, which
+    is the entire reason the credential is unbounded — so a hosted app that
+    slept more than a month could not fetch its own code, and crash-looped
+    with nothing anywhere saying why.
+    """
+    src = SOURCE.read_text(encoding="utf-8")
+    for fn, end in (
+        ("def _mint_service_token", "def _mint_container_git_token"),
+        ("def _mint_container_git_token", "def _container_git_token_name"),
+    ):
+        body = src[src.index(fn) : src.index(end)]
+        assert "expires_at=None" in body, f"{fn} no longer claims to be unbounded — re-point this guard"
+        assert "omit_exp=True" in body, f"{fn}'s JWT still carries an expiry its record denies"
