@@ -1474,9 +1474,15 @@ def compute_semantic_coverage() -> dict:
     import requests
 
     from connectors.keboola.metastore_client import MetastoreApiError, MetastoreClient
-    from src.repositories import column_metadata_repo, source_connections_repo, table_registry_repo
+    from src.repositories import (
+        column_metadata_repo,
+        metric_repo,
+        source_connections_repo,
+        table_registry_repo,
+    )
 
     conns_by_id = {c["id"]: c for c in source_connections_repo().list(source_type="keboola")}
+    metric_repository = metric_repo()
     table_lookup = table_lookup_from_registry(table_registry_repo().list_by_source("keboola"))
     column_metadata = column_metadata_repo()
     column_lookup = {
@@ -1498,6 +1504,7 @@ def compute_semantic_coverage() -> dict:
             "glossary": {"upstream": 0},
             "blocked": [],
             "unregistered_tables": [],
+            "conflicts": [],
             "warnings": [],
             "error": None,
         }
@@ -1554,6 +1561,23 @@ def compute_semantic_coverage() -> dict:
                 column_lookup=column_lookup,
             )
             if row is not None:
+                # Mapping cleanly is not enough to land: the sync refuses to
+                # take a name another source already holds, and that check
+                # happens after the mapper, so counting mapped rows alone
+                # overstates coverage by exactly the number of conflicts.
+                # Found live — a Keboola `mrr` never landed because the
+                # bundled yaml starter pack already owned that name, and the
+                # sync's own `skipped_unresolved_table` counter read 0.
+                existing = metric_repository.find_by_name(row["name"])
+                if not _is_owned_by_source(existing, row["id"], {conn_id}, adopt_null=False):
+                    entry["conflicts"].append(
+                        {
+                            "metric": row["name"],
+                            "held_by": (existing or {}).get("source") or "",
+                            "held_id": (existing or {}).get("id") or "",
+                        }
+                    )
+                    continue
                 importable += 1
                 continue
             attrs = item.get("attributes") or {}
@@ -1576,8 +1600,7 @@ def compute_semantic_coverage() -> dict:
                 {
                     "code": "no_metrics_bound",
                     "message": (
-                        f"None of the {len(metrics)} metrics this project publishes can bind to a "
-                        f"registered table."
+                        f"None of the {len(metrics)} metrics this project publishes can bind to a registered table."
                     ),
                 }
             )
@@ -1588,6 +1611,18 @@ def compute_semantic_coverage() -> dict:
                     "message": (
                         f"{len(entry['blocked'])} metric(s) cannot be composed from their own "
                         f"definition; registering a table will not fix these."
+                    ),
+                }
+            )
+        if entry["conflicts"]:
+            names = ", ".join(c["metric"] for c in entry["conflicts"][:5])
+            entry["warnings"].append(
+                {
+                    "code": "name_conflict",
+                    "message": (
+                        f"{len(entry['conflicts'])} metric name(s) are already held by another "
+                        f"source and are never overwritten ({names}). Two definitions of the same "
+                        f"metric exist; the one in use is not this project's."
                     ),
                 }
             )
