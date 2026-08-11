@@ -949,8 +949,29 @@ async function connectAndValidate() {
     let connId = null;
     if (_wizardConnId) {
       const still = await fetch(`${API_CONNECTIONS}/${_wizardConnId}`, { credentials: "include" });
-      if (still.ok) connId = _wizardConnId;
-      else _wizardConnId = null; // deleted underneath us — re-create below
+      if (still.ok) {
+        connId = _wizardConnId;
+        // Apply whatever the admin just corrected. Reuse without this made a
+        // mistyped URL unfixable: the wizard told them to correct it and
+        // retry, then talked to the original address every time, failing
+        // identically with nothing to say the new value was ignored.
+        // (Devin Review.)
+        const patch = await fetch(`${API_CONNECTIONS}/${connId}`, {
+          method: "PUT", credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ config: { stack_url: stack } }),
+        });
+        if (!patch.ok) {
+          const pb = await patch.json().catch(() => ({}));
+          const pd = pb.detail;
+          errEl.textContent = "Failed to update the connection URL: " +
+            ((pd && typeof pd === "object" ? (pd.message || pd.error) : pd) || `HTTP ${patch.status}`);
+          errEl.style.display = "block";
+          return;
+        }
+      } else {
+        _wizardConnId = null; // deleted underneath us — re-create below
+      }
     }
     if (!connId) {
     const createResp = await fetch(API_CONNECTIONS, {
