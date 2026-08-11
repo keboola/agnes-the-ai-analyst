@@ -332,3 +332,14 @@ class TestAFailedSeedLeavesNoDomainOnThisPathEither:
         retry = c.post("/api/admin/memory-domains", json=body, headers=_auth(seeded_app["admin_token"]))
         assert retry.status_code == 201, retry.text
         assert retry.json()["item_id"]
+
+
+def test_the_assistant_is_told_about_the_content_field():
+    """Devin Review on #1263: the corporate-memory assistant was still
+    describing the three-field body, so it could not offer the one thing this
+    change added."""
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[1] / "app" / "chat" / "profiles.py").read_text(encoding="utf-8")
+    i = text.index("POST /api/admin/memory-domains`")
+    assert "content" in text[i : i + 420], text[i : i + 420]
