@@ -404,7 +404,7 @@ async def list_knowledge(
     )
     total_pages = math.ceil(total_count / per_page) if per_page > 0 else 1
 
-    return {
+    payload = {
         "items": items,
         "count": len(items),
         "page": page,
@@ -412,6 +412,18 @@ async def list_knowledge(
         "total_count": total_count,
         "total_pages": total_pages,
     }
+
+    # The All Items tab approves from this list, so it needs the same
+    # annotation the review queue gets — a warning that only appears on one of
+    # the two surfaces an approval can be issued from does not do its job.
+    # Admin-only: nobody else can approve, and every other caller would pay
+    # for a scan they cannot act on. (Devin Review on #1258.)
+    if _is_privileged_viewer(user, conn):
+        payload["items"] = [_with_delivery_warnings(it) for it in payload["items"]]
+        payload["delivery_notice"] = (
+            DELIVERY_NOTICE if any(it.get("delivery_warnings") for it in payload["items"]) else None
+        )
+    return payload
 
 
 @router.get("/stats")
