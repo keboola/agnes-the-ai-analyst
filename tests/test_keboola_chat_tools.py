@@ -398,3 +398,68 @@ class TestAFailedResyncKeepsTheLiveSetupWorking(TestChatToolsEndpoint):
         from src.repositories import shared_secrets_repo
 
         assert shared_secrets_repo().get(derived_source_id(conn_id)) is None
+
+
+class TestDisableDoesNotClaimSuccessItCannotVouchFor(TestChatToolsEndpoint):
+    """Devin Review on this PR: every removal step swallowed its own failure.
+
+    `try/except Exception: logger.debug(…)` cannot tell "there was nothing to
+    delete" (normal — the endpoint is idempotent) from "the delete did not
+    work". An admin turning chat tools off to cut access could therefore be
+    answered `204` while the tools, the grants and the copied credential were
+    all still live: the one outcome this endpoint exists to prevent.
+    """
+
+    @staticmethod
+    def _failing_tool_registry(mp):
+        import app.api.admin_source_connections as mod
+
+        real = mod.tool_registry_repo
+
+        class _Boom:
+            def __getattr__(self, name):
+                def _fail(*a, **kw):
+                    raise RuntimeError("registry unavailable")
+
+                return _fail if name == "delete_for_source" else getattr(real(), name)
+
+        mp.setattr(mod, "tool_registry_repo", lambda: _Boom())
+
+    def test_a_failed_removal_is_not_answered_204(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-chat-failremove")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        with pytest.MonkeyPatch.context() as mp:
+            self._failing_tool_registry(mp)
+            resp = c.delete(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token))
+
+        assert resp.status_code == 500, "a failed revoke was reported as success"
+        detail = resp.json()["detail"]
+        assert detail["error"] == "chat_tools_not_fully_removed"
+        assert "tools and their grants" in detail["still_present"]
+
+    def test_the_other_steps_still_run_when_one_fails(self, seeded_app):
+        """A partial teardown beats stopping at the first failure."""
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-chat-partial")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.repositories import mcp_sources_repo, shared_secrets_repo
+
+        source_id = derived_source_id(conn_id)
+        with pytest.MonkeyPatch.context() as mp:
+            self._failing_tool_registry(mp)
+            assert c.delete(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 500
+
+        assert mcp_sources_repo().get(source_id) is None, "the source survived an unrelated failure"
+        assert shared_secrets_repo().get(source_id) is None, "the credential survived an unrelated failure"
+
+    def test_a_clean_disable_is_still_204_and_idempotent(self, seeded_app):
+        """The broad catch was load-bearing for nothing — deletes are no-ops."""
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-chat-idem")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        assert c.delete(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 204
+        assert c.delete(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 204
