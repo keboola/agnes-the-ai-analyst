@@ -482,7 +482,14 @@ class TestSourceConnectionsTest:
 
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.json.return_value = {"id": "123", "name": "Test Project"}
+        # The `owner` shape the handler actually reads. With the pre-#1242
+        # `{"id", "name"}` shape left here, `project_name` resolved to "" and
+        # the redaction assertion below passed trivially — the string never
+        # entered the handler at all. (Devin Review on this PR.)
+        mock_response.json.return_value = {
+            "id": "123",
+            "owner": {"id": 987, "name": "Test Project"},
+        }
 
         mock_client = MagicMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
