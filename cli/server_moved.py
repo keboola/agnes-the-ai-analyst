@@ -81,7 +81,16 @@ def _parse_target(location: str, configured: str) -> tuple[bool, str]:
             # telling the user to point at an address that cannot exist.
             # No host means same origin, which falls through to the generic
             # message below.
-            moved = bool(target.netloc) and target.netloc != httpx.URL(configured).netloc
+            # ORIGIN, not just host: `http://host` → `https://host` keeps the
+            # netloc and changes the scheme, which is the commonest redirect
+            # of all (a server that got TLS) and is cross-origin as far as
+            # httpx is concerned — credentials are stripped on that hop too.
+            # Calling it "not a move" left the user with no remedy for the
+            # one case they can fix in a second. (Devin Review on #1266.)
+            current = httpx.URL(configured)
+            moved = bool(target.netloc) and (
+                target.netloc != current.netloc or target.scheme != current.scheme
+            )
             if moved:
                 new_base = str(target.copy_with(raw_path=b"/")).rstrip("/")
         except Exception:
