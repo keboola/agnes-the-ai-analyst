@@ -361,13 +361,52 @@ class TestTheTriggerSurvivesAnOrdinarySentence:
             calls.append(corpus_id)
             return real(corpus_id)
 
-        with patch("src.repositories.corpus_files_repo") as factory:
-            repo = factory.return_value
-            repo.list_for_corpus.side_effect = _counting
-            repo.get.side_effect = corpus_files_repo().get
-            from src.ingest.retrieval import search
+        # Patch where `search` LOOKS IT UP — `src.ingest.retrieval` imported
+        # the factory into its own namespace at import time, so patching
+        # `src.repositories.corpus_files_repo` left the real one in place and
+        # the counter could never move. (Devin Review on #1267 — the guard was
+        # green and asserting nothing.)
+        from src.ingest import retrieval as retrieval_mod
 
-            res = search([cid], "margin region")
+        real_repo = corpus_files_repo()
+
+        class _Spy:
+            def list_for_corpus(self, corpus_id):
+                return _counting(corpus_id)
+
+            def get(self, file_id):
+                return real_repo.get(file_id)
+
+        with patch.object(retrieval_mod, "corpus_files_repo", lambda: _Spy()):
+            res = retrieval_mod.search([cid], "margin region")
 
         assert res, "precondition: this query matches a body"
         assert calls == [], f"the bulk listing ran anyway: {calls}"
+
+
+class TestFillerWordsDoNotDecideWhichFileWins:
+    """Devin Review on #1267: the shortlist and the filter disagreed.
+
+    `_rank_by_filename` scored candidates with filler words counted, so a file
+    named after "what is this" could outrank the file the question names and
+    take the shortlist's slots — after which the stricter filter downstream
+    had nothing left to accept.
+    """
+
+    def test_the_named_file_wins_over_a_filler_word_match(self, e2e_env):
+        from src.ingest.retrieval import search
+
+        target = _seed("filler-target", "quarterly-report.md", [{"ordinal": 0, "text": "alpha bravo"}])
+        decoy = _seed("filler-decoy", "what-is-in-this.md", [{"ordinal": 0, "text": "charlie delta"}])
+
+        res = search([target, decoy], "what is in quarterly-report.md", k=5)
+
+        assert res, "the question found nothing at all"
+        assert res[0]["filename"] == "quarterly-report.md", [r["filename"] for r in res]
+
+    def test_a_filler_only_query_matches_no_file(self, e2e_env):
+        from src.ingest.retrieval import search
+
+        cid = _seed("filler-only", "what-is-this.md", [{"ordinal": 0, "text": "alpha bravo"}])
+
+        assert search([cid], "what is this") == []
