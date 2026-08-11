@@ -23,6 +23,8 @@ client that makes httpx calls without consulting it.
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import Optional
 
 import httpx
@@ -34,6 +36,20 @@ REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
 def is_redirect(status_code: int) -> bool:
     return status_code in REDIRECT_STATUSES
+
+
+def config_file_path() -> str:
+    """The file `server:` is actually read from — the path, not a generic name.
+
+    Resolved here rather than imported from ``cli.config`` because
+    ``_config_dir`` creates the directory as a side effect, and printing an
+    error message must not write to disk. ``tests/test_v2client_moved_server.py``
+    pins the two to the same location so the duplication cannot drift.
+    (Devin Review on #1266: the refactor dropped the real path, leaving the
+    user to guess which file to edit.)
+    """
+    base = os.environ.get("AGNES_CONFIG_DIR", os.path.expanduser("~/.config/agnes"))
+    return str(Path(base) / "config.yaml")
 
 
 def _parse_target(location: str, configured: str) -> tuple[bool, str]:
@@ -94,7 +110,7 @@ def moved_server_message(status_code: int, location: str, configured: str) -> st
                 "would fail as 'not authenticated' rather than work.",
                 "Point the CLI at the new address:",
                 f"  AGNES_SERVER={new_base} agnes <command>     (one-off)",
-                f"  or set `server: {new_base}` in your agnes config.yaml",
+                f"  or set `server: {new_base}` in {config_file_path()}",
             ]
         )
     return (
@@ -137,8 +153,8 @@ def redirect_body(response: "httpx.Response", configured: str) -> dict:
             f"{configured} answered HTTP {response.status_code} and that address has moved. "
             "Redirects are not followed automatically — credentials are stripped on a "
             "cross-origin hop, so the retry would fail as 'not authenticated' rather than "
-            "work. Use the one-off command above, or set the config line in your agnes "
-            "config.yaml."
+            "work. Use the one-off command above, or set the config line in "
+            f"{config_file_path()}."
         )
     else:
         detail["hint"] = moved_server_message(response.status_code, location or "", configured)
