@@ -98,3 +98,43 @@ def test_the_token_mismatch_strip_stays_hidden_when_empty():
     assert src.index(".ds-token-mismatch[hidden]") < src.index(".ds-token-mismatch {"), (
         "the hidden rule must not be overridden by the later display:flex"
     )
+
+
+class TestTheStorageTokenReadHonoursTheAllowlist:
+    """Devin Review on #1248: a new read path skipped the gate.
+
+    An admin can set `token_env` to ANY name, so an ungated
+    `os.environ.get(token_env)` turns a connection row into a way to read an
+    arbitrary host environment variable — the value is then sent to the
+    configured stack as a Storage token, and here its project identity is
+    rendered back onto the admin page. `/test` and `/tables` gate the same
+    read behind `is_token_env_allowed` with an explicit SECURITY comment.
+    """
+
+    def test_a_disallowed_token_env_is_not_read(self, monkeypatch):
+        from connectors.keboola.semantic_layer import _connection_storage_token
+
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "should-never-be-read")
+        monkeypatch.setattr(
+            "src.orchestrator_security.get_allowed_token_envs", lambda: {"KEBOOLA_STORAGE_TOKEN"}
+        )
+        token = _connection_storage_token({"id": "c1", "token_env": "AWS_SECRET_ACCESS_KEY"})
+        assert token == "", "an arbitrary host env var was read as a Storage token"
+
+    def test_an_allowed_token_env_is_read(self, monkeypatch):
+        from connectors.keboola.semantic_layer import _connection_storage_token
+
+        monkeypatch.setenv("KEBOOLA_STORAGE_TOKEN", "legit")
+        monkeypatch.setattr(
+            "src.orchestrator_security.get_allowed_token_envs", lambda: {"KEBOOLA_STORAGE_TOKEN"}
+        )
+        assert _connection_storage_token({"id": "c1", "token_env": "KEBOOLA_STORAGE_TOKEN"}) == "legit"
+
+    def test_the_gate_is_the_shared_one(self):
+        """Not a re-implementation — the allowlist lives in one place."""
+        import inspect
+
+        from connectors.keboola import semantic_layer
+
+        body = inspect.getsource(semantic_layer._connection_storage_token)
+        assert "is_token_env_allowed" in body
