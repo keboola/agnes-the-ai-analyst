@@ -83,7 +83,7 @@ def test_a_failed_deploy_revokes_the_unused_container_token():
     src = SOURCE.read_text(encoding="utf-8")
     up_block = src[src.index("        _runner().up(slug, spec, config_json)") :][:600]
     assert "_revoke_quietly(git_token_id)" in up_block
-    spec_block = src[src.index("        config_json = build_config_json(") :][:800]
+    spec_block = src[src.index("        config_json = build_config_json(") :][:1400]
     assert "_revoke_quietly(git_token_id)" in spec_block
 
 
