@@ -25,7 +25,15 @@ class _CapturingClient:
         self.calls = []
 
     async def post(self, url, json=None, content=None, headers=None):
-        self.calls.append({"url": url, "json": json, "content": content, "headers": headers})
+        return await self.request("POST", url, json=json, content=content, headers=headers)
+
+    async def request(self, method, url, json=None, content=None, headers=None):
+        # The transparent leg forwards the caller's METHOD (git opens with a
+        # GET); the envelope leg always POSTs. Record both through one entry
+        # point so a test can assert on the method that actually went out.
+        self.calls.append(
+            {"method": method, "url": url, "json": json, "content": content, "headers": headers}
+        )
 
         class _Resp:
             status_code = 200
@@ -172,6 +180,10 @@ def test_relay_forwards_sdk_headers_and_swaps_credential():
 
     class _FakeClient:
         async def post(self, url, content=None, headers=None):
+            return await self.request("POST", url, content=content, headers=headers)
+
+        async def request(self, method, url, content=None, headers=None):
+            captured["method"] = method
             captured["url"] = url
             captured["headers"] = headers
             return _FakeResp()
@@ -356,5 +368,49 @@ def test_relay_non_sse_anthropic_response_stays_buffered():
             writer.close()
         finally:
             await r.stop()
+
+    asyncio.run(_run())
+
+
+def test_relay_carries_git_transparently_with_the_callers_method():
+    """`/data-apps.git` is a transport for git smart-HTTP, so it rides the
+    transparent leg (raw body, caller headers) rather than the JSON envelope —
+    and the METHOD has to survive: git's first call is
+    `GET /info/refs?service=git-upload-pack`, which a hardcoded POST turned
+    into a 405 before the repo was ever reached.
+    """
+    client = _CapturingClient()
+
+    async def _run() -> None:
+        r = Relay(server_url="http://agnes:8000")
+        r.set_tickets(main="TOKMAIN", mcp="TOKMCP", data_apps="TOKAPPS")
+        r._client = client
+        await r._forward(
+            "/data-apps.git/my-app/info/refs?service=git-upload-pack",
+            b"",
+            {"content-type": "application/x-git-upload-pack-request"},
+            method="GET",
+        )
+
+    asyncio.run(_run())
+    call = client.calls[-1]
+    assert call["method"] == "GET", "the caller's method must reach the broker"
+    assert call["url"] == (
+        "http://agnes:8000/api/broker/data-apps.git/my-app/info/refs?service=git-upload-pack"
+    ), "path AND query must pass through untouched"
+    assert call["json"] is None, "git must not be wrapped in the JSON envelope"
+    assert call["headers"]["Authorization"] == "Bearer TOKAPPS", "rides the data_apps ticket"
+
+
+def test_relay_refuses_git_without_a_data_apps_ticket():
+    """Fail closed: no ticket for the scope means no request, never an
+    unauthenticated one."""
+    import pytest
+
+    async def _run() -> None:
+        r = Relay(server_url="http://agnes:8000")
+        r.set_tickets(main="TOKMAIN", mcp="TOKMCP")  # no data_apps ticket
+        with pytest.raises(RuntimeError, match="no ticket for the scope"):
+            await r._forward("/data-apps.git/my-app/info/refs", b"", {}, method="GET")
 
     asyncio.run(_run())

@@ -25,6 +25,7 @@ privileged admin writes, regardless of the resolved identity's own grants.
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import os
 import uuid
@@ -43,10 +44,18 @@ from app.api.broker_agent_policy import (
     parse_usage,
     usage_accumulator,
 )
-from app.auth.access import mint_agent_session_jwt, mint_co_session_jwt, require_admin
+from app.auth.access import is_user_admin, mint_agent_session_jwt, mint_co_session_jwt, require_admin
 from app.auth.jwt import create_access_token
 from src.agent_scope_intersection import agent_is_passthrough
-from src.repositories import agents_repo, audit_repo, chat_session_repo, ticket_repo, users_repo
+from src.repositories import (
+    access_token_repo,
+    agents_repo,
+    audit_repo,
+    chat_session_repo,
+    data_apps_repo,
+    ticket_repo,
+    users_repo,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -409,6 +418,144 @@ _DATA_APPS_PATH_PREFIX = "/api/data-apps"
 
 def _within_data_apps_prefix(path: str) -> bool:
     return path == _DATA_APPS_PATH_PREFIX or path.startswith(_DATA_APPS_PATH_PREFIX + "/")
+
+
+def _ticket_owner_for_git(session_id: str) -> Dict[str, Any]:
+    """The user a brokered git request runs as — solo sessions only.
+
+    Deliberately narrower than `_mint_identity_jwt`. Pushing to an app's repo
+    is a write with no notion of a partial identity, and the two narrowed
+    session kinds have exactly that:
+
+    - a **co-session** has no single owner (its authority is the live
+      participant intersection), so there is nobody to attribute a commit to;
+    - an **agent session** runs under owner-grants ∩ agent-scope, and nothing
+      in that intersection describes repository access.
+
+    Both fail closed with 403 rather than falling through to the owner, which
+    is the mistake `_mint_identity_jwt` documents for its own co-session
+    branch. Solo sessions — what web chat actually uses — resolve to their
+    owner.
+    """
+    session = chat_session_repo().get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=401, detail="ticket_session_not_found")
+    if getattr(session, "is_co_session", False):
+        raise HTTPException(status_code=403, detail="git_not_available_to_co_session")
+    agent_id = getattr(session, "agent_id", None)
+    if agent_id:
+        agent = agents_repo().get_by_id(agent_id)
+        if agent is None or agent.get("deleted_at") is not None:
+            raise HTTPException(status_code=401, detail="ticket_agent_not_found")
+        if not agent_is_passthrough(agent):
+            raise HTTPException(status_code=403, detail="git_not_available_to_scoped_agent")
+    user = users_repo().get_by_email(session.user_email)
+    if user is None:
+        raise HTTPException(status_code=401, detail="ticket_user_not_found")
+    return user
+
+
+async def data_apps_git_broker(
+    slug: str,
+    path: str,
+    request: Request,
+    row: Dict[str, Any] = Depends(require_broker_ticket),
+) -> Response:
+    """Carry a sandbox's git traffic to a hosted app's repo.
+
+    Without this the authoring flow has no transport at all. The sandbox
+    reaches Agnes only through the in-sandbox relay — `runner.py` rewrites
+    `AGNES_SERVER` to it so "the relay is the only thing that ever holds a
+    real credential" — and the relay's `data_apps` ticket is confined by
+    `_within_data_apps_prefix` to `/api/data-apps*`. A repo lives at
+    `/data-apps.git/<slug>`, a different top-level prefix, so `git clone`
+    from a sandbox was refused by the broker and (going direct) by the
+    sandbox's own egress hook. Watched live: the agent fetched a credential,
+    then failed to clone by name, by hostname and by IP.
+
+    Unlike its `{method, path, body}` siblings this is a **proxy**, not an
+    envelope replay: git speaks binary bodies and its own content types, and
+    its first call is a GET. It is also the one broker route that attaches a
+    credential rather than an identity JWT — the git surface authenticates
+    only a `data-app-git:<slug>` PAT in basic auth (see
+    `app/api/data_apps_git.py`). That token is minted per request and revoked
+    in `finally`, so the sandbox never holds one and nothing outlives the
+    call.
+
+    Authorization is layered, not replaced: this route pins the slug to an app
+    the ticket's owner may reach, and the git surface then applies its own
+    owner-or-admin check and its own scope-vs-slug pin. Bodies are buffered
+    (an app repo is a scaffold, not a monorepo); a genuinely large push is a
+    reason to revisit, not a reason to stream today.
+    """
+    _require_scope(row, "data_apps")
+
+    from app.api.data_apps import mint_git_token
+
+    user = _ticket_owner_for_git(row["session_id"])
+    app_row = data_apps_repo().get_by_slug(slug)
+    if app_row is None:
+        raise HTTPException(status_code=404, detail="data_app_not_found")
+    if app_row.get("owner_user_id") != user["id"] and not is_user_admin(user["id"]):
+        try:
+            audit_repo().log(
+                action="broker_data_apps_git_rejected",
+                params={"slug": slug, "session_id": row.get("session_id")},
+                result="denied",
+                client_kind="broker",
+            )
+        except Exception:
+            pass
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    token_id, token = mint_git_token(app_row)
+    try:
+        basic = base64.b64encode(f"agnes:{token}".encode()).decode()
+        headers = {"Authorization": f"Basic {basic}"}
+        ctype = request.headers.get("content-type")
+        if ctype:
+            headers["Content-Type"] = ctype
+        target = f"/data-apps.git/{slug}/{path}"
+        if request.url.query:
+            target = f"{target}?{request.url.query}"
+        transport = httpx.ASGITransport(app=request.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://broker-replay") as client:
+            upstream = await client.request(
+                request.method,
+                target,
+                headers=headers,
+                content=await request.body(),
+                timeout=120.0,
+            )
+    finally:
+        try:
+            access_token_repo().revoke(token_id)
+        except Exception:
+            logger.warning("could not revoke per-request git token %s", token_id, exc_info=True)
+
+    return Response(
+        content=upstream.content,
+        status_code=upstream.status_code,
+        media_type=upstream.headers.get("content-type"),
+    )
+
+
+# Registered as two distinct routes rather than one `methods=["GET", "POST"]`
+# route so each verb gets its own `operation_id` — same rationale as
+# `data_apps_git_get`/`data_apps_git_post` in app/api/data_apps_git.py, which
+# FastAPI otherwise warns about as a duplicate operation id.
+router.add_api_route(
+    "/data-apps.git/{slug}/{path:path}",
+    data_apps_git_broker,
+    methods=["GET"],
+    operation_id="broker_data_apps_git_get",
+)
+router.add_api_route(
+    "/data-apps.git/{slug}/{path:path}",
+    data_apps_git_broker,
+    methods=["POST"],
+    operation_id="broker_data_apps_git_post",
+)
 
 
 @router.post("/data-apps")
