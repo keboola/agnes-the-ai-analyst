@@ -145,6 +145,20 @@ async def _data_apps_git(slug: str, path: str, request: Request):
         admin = is_user_admin(user["id"])
         is_push = _is_push_request(request, path)
         if is_push:
+            # `git_write: false` denies the push outright, ownership or not.
+            # The container's credential is minted FOR the app's owner, so
+            # `is_owner` was true for it and "the clone token" was in fact a
+            # push credential — non-expiring, and baked into every hosted
+            # container's `config.json`, where any code running in the app
+            # (including an external repo, or a compromised dependency) can
+            # read it. Nothing at this layer could tell it apart from the
+            # analyst's own 24-hour authoring PAT: both carry
+            # `data-app-git:<slug>`, and the scope encodes WHICH repo, never
+            # what may be done to it. Absent claim = writable, so the
+            # analyst's credential and every token minted before this release
+            # are unaffected. (agnes-reviewer-rbac on this PR.)
+            if payload.get("git_write") is False:
+                return user, app_row, False
             allowed = is_owner or admin
         else:
             allowed = is_owner or admin or can_access(user["id"], ResourceType.DATA_APP.value, slug)

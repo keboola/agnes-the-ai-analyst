@@ -33,6 +33,121 @@ logger = logging.getLogger(__name__)
 WORKSPACE_LINK_ENTRIES = (".claude", "CLAUDE.md", "snapshots", "scripts", "scaffolds", "CLAUDE.local.md")
 
 
+#: Bundled skills that only make sense when a feature is switched on, keyed by
+#: the flag that governs them. The workspace tree ships every skill it has, and
+#: nothing consults the instance's own configuration — so on an instance with
+#: data apps OFF the agent still learns the data-app workflow and reaches for
+#: it. Observed on a live instance: asked for a chart, it loaded
+#: `agnes-data-apps-extras`, called `data_apps_list`, and got a 404
+#: `data_apps_disabled` — a wasted round trip, and worse, the skill had already
+#: aimed it at building a hosted dashboard for what was a one-off plot.
+_FEATURE_GATED_SKILLS = {
+    "agnes-data-apps-extras": ("data_apps", "enabled", "AGNES_DATA_APPS_ENABLED"),
+}
+
+
+def skill_disabled_on_this_instance(skill_name: str) -> bool:
+    """Is this bundled skill gated off by an instance feature flag?
+
+    The single reader of ``_FEATURE_GATED_SKILLS``, shared by the sandbox
+    prune below and by ``app.chat.skills_catalog`` — the composer's slash menu
+    lists the SHIPPED template, not the converged workspace, so without a
+    common gate it went on advertising a skill whose files the prune had
+    already removed.
+    """
+    from app.instance_config import feature_enabled
+
+    gate = _FEATURE_GATED_SKILLS.get(skill_name)
+    if gate is None:
+        return False
+    section, key, env_var = gate
+    return not feature_enabled(section, key, env_var=env_var, default=False)
+
+
+def _reconcile_feature_gated_skills(ws: Path, bundled_template_dir: Path, *, allow_restore: bool = True) -> None:
+    """Make the workspace's gated skills agree with the instance's flags.
+
+    Both directions, because pruning alone is a one-way door: a skill removed
+    while its feature was off was never put back when the operator turned the
+    feature on again, so the assistant lost it permanently on every workspace
+    that had already converged (the template copy that would restore it only
+    runs on a reinit, and a feature flag is not something ``needs_reinit``
+    compares). Restoring is the same shape as the prune — copy the directory
+    back from the bundled tree, which is the source this only ever subtracted
+    from. (Devin Review on this PR.)
+    """
+    import shutil
+
+    _prune_disabled_feature_skills(ws)
+
+    # PRUNING applies everywhere — a skill for a feature this instance does not
+    # have is useless whoever shipped it. RESTORING does not: in template-
+    # OVERRIDE mode the operator's repo is authoritative for the workspace
+    # tree, and copying a skill in from the SHIPPED default because a flag is
+    # on would add something their template deliberately omits. Restore only
+    # puts back what the default tree would have provided anyway.
+    # (Devin Review on this PR.)
+    if not allow_restore:
+        return
+
+    skills_root = ws / ".claude" / "skills"
+    src_root = bundled_template_dir / ".claude" / "skills"
+    if not src_root.is_dir():
+        return
+    for skill_name in _FEATURE_GATED_SKILLS:
+        if skill_disabled_on_this_instance(skill_name):
+            continue
+        src = src_root / skill_name
+        target = skills_root / skill_name
+        if not src.is_dir() or target.exists():
+            continue
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(src, target)
+            logger.info("workdir: restored skill %s (its feature is on again)", skill_name)
+        except OSError:
+            logger.warning("workdir: could not restore skill %s", skill_name, exc_info=True)
+
+
+def _prune_disabled_feature_skills(ws: Path) -> None:
+    """Remove bundled skills whose feature is off on THIS instance.
+
+    Runs after the template copy rather than filtering the copy itself: the
+    workspace is converged repeatedly, and an operator who turns a feature off
+    later must see the skill leave. Removal is by directory, so turning the
+    flag back on restores it on the next convergence — the bundled tree is the
+    source, this only subtracts.
+
+    Called from ``ensure_user_workdir``, on BOTH paths — the one that reinits
+    and the one that finds the workspace already current. Placing it inside
+    ``run_init`` alone made the sentence above false for every existing
+    workspace, because a feature flag is not one of the things ``needs_reinit``
+    compares. It also applies in template-OVERRIDE mode: an operator's repo may
+    vendor the bundled skill, and a skill for a feature this instance does not
+    have is exactly as useless whoever shipped it.
+
+    Best-effort by design. A skill that cannot be removed is a worse outcome
+    than the one it causes (the agent wastes a call on a 404), so a failure
+    here is logged and the workspace is still usable.
+    """
+    import shutil
+
+    skills_root = ws / ".claude" / "skills"
+    if not skills_root.is_dir():
+        return
+    for skill_name, (section, key, _env_var) in _FEATURE_GATED_SKILLS.items():
+        if not skill_disabled_on_this_instance(skill_name):
+            continue
+        target = skills_root / skill_name
+        if not target.is_dir():
+            continue
+        try:
+            shutil.rmtree(target)
+            logger.info("workdir: pruned skill %s (%s.%s is off)", skill_name, section, key)
+        except OSError:
+            logger.warning("workdir: could not prune skill %s", skill_name, exc_info=True)
+
+
 def _safe_email_dir(email: str) -> str:
     """Email → directory-safe slug. Lowercase, replace non-[a-z0-9_-.@] with '_'."""
     return "".join(c if c.isalnum() or c in "._-@" else "_" for c in email.lower())
@@ -105,6 +220,15 @@ class WorkdirManager:
         self._cached_sha_at = now_mono
         return self._cached_sha
 
+    def _template_override_active(self) -> bool:
+        """Is the admin's git template repo authoritative for the workspace?
+
+        Mirrors the condition ``run_init`` branches on, so the two can never
+        disagree about which tree owns the workspace.
+        """
+        status = self._get_template_status()
+        return bool(status and status.configured and status.synced and self._fetch_template_zip is not None)
+
     def needs_reinit(self, user_email: str) -> bool:
         row = self._repo.get_workdir(user_email)
         if row is None:
@@ -120,9 +244,24 @@ class WorkdirManager:
         ws.mkdir(parents=True, exist_ok=True)
         sentinel = ws / ".claude" / "init-complete"
         if sentinel.exists() and not self.needs_reinit(user_email):
+            # Still prune: a feature flag is not part of `needs_reinit`, which
+            # compares only the marketplace SHA and the Agnes version. With the
+            # prune living inside `run_init` its docstring's promise — "an
+            # operator who turns a feature off later must see the skill leave"
+            # — held for a fresh workspace and for nobody else: an operator
+            # flipping `data_apps.enabled` off on a live instance changed
+            # nothing until an unrelated upgrade happened to force a reinit.
+            # Cheap enough to run on every convergence: one `is_dir()` per
+            # gated skill on the common path. (Devin Review on this PR.)
+            _reconcile_feature_gated_skills(
+                ws, self._bundled_template_dir, allow_restore=not self._template_override_active()
+            )
             return ws
 
         self.run_init(user_email, ws)
+        _reconcile_feature_gated_skills(
+            ws, self._bundled_template_dir, allow_restore=not self._template_override_active()
+        )
         return ws
 
     def run_init(self, user_email: str, workspace: Optional[Path] = None) -> None:

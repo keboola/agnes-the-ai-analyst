@@ -37,6 +37,53 @@ ALLOWED_HOSTS = {
     "api.github.com",
 }
 
+
+def _agnes_host() -> str | None:
+    """This instance's own hostname, from the env the sandbox is spawned with.
+
+    It cannot be a literal above: the host differs per deployment, and this
+    file ships verbatim. `app/chat/e2b_provider.py::_effective_allow_out`
+    derives the same host for the VM-level policy and its comment claims the
+    two agree — they did not. The VM allowed the Agnes host and this hook did
+    not, so every in-sandbox request to Agnes was refused here, before it ever
+    reached the network that would have permitted it.
+
+    What that cost, watched live: asked to build a data app, the agent got its
+    git credential from the API, then failed to clone the app's repo by name,
+    by hostname and by IP — including one attempt with the sandbox bypass —
+    because `…/data-apps.git/<slug>` lives on the Agnes host. Authoring a data
+    app from chat was impossible for that reason alone. The MCP tools kept
+    working throughout, which is what made it confusing: they reach the server
+    through the local relay on 127.0.0.1, which was allowed.
+
+    On trust: `AGNES_SERVER` is set by the manager at spawn, but the agent can
+    write to its own environment — so a rewritten value would widen this set.
+    That is not a regression. This hook lives inside the sandbox on a
+    filesystem the agent can write, so it has always been advisory; the
+    authoritative control is the VM egress policy (`deny_out=[ALL_TRAFFIC]`
+    plus an allowlist the sandbox cannot touch), and that policy is unchanged.
+    """
+    import os
+    from urllib.parse import urlparse
+
+    # `AGNES_REAL_SERVER` first: the runner starts a loopback relay and
+    # overwrites `AGNES_SERVER` with `http://127.0.0.1:<port>/agnes-api`
+    # before `claude` — and therefore this hook — ever runs, so reading
+    # `AGNES_SERVER` alone yielded the loopback host and the real Agnes host
+    # was never allowed. `AGNES_SERVER` stays as the fallback for contexts
+    # with no relay (tests, a directly-invoked workspace).
+    raw = (os.environ.get("AGNES_REAL_SERVER") or os.environ.get("AGNES_SERVER") or "").strip()
+    if not raw:
+        return None
+    # A bare `host:port` parses with no hostname — accept both spellings.
+    parsed = urlparse(raw if "//" in raw else f"//{raw}")
+    return parsed.hostname or None
+
+
+_host = _agnes_host()
+if _host:
+    ALLOWED_HOSTS.add(_host)
+
 DESTRUCTIVE_PATHS = ("workspace/snapshots/", "workspace/scripts/")
 DESTRUCTIVE_PREFIXES = ("rm ", "rm\t", "unlink ", "truncate -s 0", "shred ")
 
@@ -376,9 +423,7 @@ def _split_segments_with_seps(cmd: str) -> tuple[tuple[str, str], ...]:
         # Only an UNQUOTED << opens a heredoc. Searching the raw line let a
         # quoted one (echo 'a << b') swallow every later line of a
         # multi-line command (review finding on #1141).
-        found_marker, q_single, q_double = _has_unquoted_heredoc(
-            line, in_single=q_single, in_double=q_double
-        )
+        found_marker, q_single, q_double = _has_unquoted_heredoc(line, in_single=q_single, in_double=q_double)
         if found_marker:
             # The body is data ONLY if the receiving program does not execute
             # it. `bash <<EOF … EOF` runs every line, so skipping it let the
@@ -537,11 +582,7 @@ def _strip_prefix(toks: list[str], *, env_is_wrapper: bool, wrapper: str | None 
         # A bare file-descriptor number is part of the redirection that
         # follows it: the segment lexer splits `2>/dev/null` into `2`, `>`,
         # `/dev/null`, and the lone `2` was becoming the head.
-        if (
-            re.fullmatch(r"\d+", toks[i])
-            and i + 1 < len(toks)
-            and re.match(r"^&?[<>]{1,3}", toks[i + 1])
-        ):
+        if re.fullmatch(r"\d+", toks[i]) and i + 1 < len(toks) and re.match(r"^&?[<>]{1,3}", toks[i + 1]):
             i += 1
             continue
         m_redir = re.match(r"^\d*(?:&?[<>]{1,3})(.*)$", toks[i])
@@ -712,7 +753,14 @@ def _bare_hosts(toks: list[str]) -> list[str]:
                 if t in value_flags:
                     skip_next = True
                 continue
-            cand = t.split("/")[0].split(":")[0]
+            # Strip basic-auth userinfo BEFORE reading the host, exactly as
+            # the schemed-URL path does. `curl api.github.com:pw@evil.example/x`
+            # has authority `api.github.com:pw@evil.example` — splitting on
+            # ":" first yields `api.github.com`, an allowed host, while the
+            # request goes to `evil.example`. rsplit, because userinfo may
+            # itself contain "@". (Devin Review on this PR.)
+            authority = t.split("/")[0]
+            cand = authority.rsplit("@", 1)[-1].split(":")[0]
             if "." in cand and not cand.startswith("http"):
                 hosts.append(cand)
     return hosts
@@ -773,7 +821,23 @@ def _scan(cmd: str) -> list[tuple[str, str]]:
         )
     # schemed URLs anywhere in the command
     for u in re.findall(r"https?://([^/\s'\"]+)", cmd):
-        host = u.split(":")[0]
+        # Drop `user:pass@` BEFORE reading the host. Taking `split(":")[0]` off
+        # the whole authority read the basic-auth USERNAME as the hostname, and
+        # that is wrong in both directions:
+        #
+        #   http://agnes:<jwt>@agnes.keboola.dev/…  → "agnes"  → denied,
+        #       which is the shape of every data-app clone URL, so cloning an
+        #       app's repo from the sandbox was refused no matter what the
+        #       allowlist contained (watched live: "Outbound network to 'agnes'
+        #       is not in the Agnes egress allowlist");
+        #   http://api.github.com:x@evil.com/…      → "api.github.com" → ALLOWED,
+        #       an allowlist bypass — anyone who can get a command run in the
+        #       sandbox reaches any host by putting an allowed name in the
+        #       userinfo.
+        #
+        # rsplit on the LAST "@": userinfo may itself contain one (a JWT does
+        # not, but a password can), and the authority is what follows the last.
+        host = u.rsplit("@", 1)[-1].split(":")[0]
         if host not in ALLOWED_HOSTS:
             verdicts.append(("deny", _egress_reason(host)))
 

@@ -245,3 +245,96 @@ def test_regular_session_symlinks_scaffolds(workdir_mgr: WorkdirManager):
     link = sdir / "scaffolds"
     assert link.exists(), "session dir must include scaffolds/"
     assert (link / "nodejs-dashboard" / "app.js").exists()
+
+
+class TestTheFeaturePruneRunsOnEveryConvergence:
+    """Devin Review on #1239, three threads with one root cause.
+
+    `_prune_disabled_feature_skills` lived inside `run_init`, which
+    `ensure_user_workdir` only reaches when the sentinel is missing or
+    `needs_reinit` is true — and `needs_reinit` compares the marketplace SHA
+    and the Agnes version, never a feature flag. So its own docstring's
+    promise ("an operator who turns a feature off later must see the skill
+    leave") held for a brand-new workspace and for nobody else. It was also
+    skipped entirely in template-OVERRIDE mode, where an operator's repo can
+    vendor the same bundled skill.
+    """
+
+    def test_the_prune_runs_on_the_already_current_path(self):
+        import inspect
+
+        from app.chat.workdir import WorkdirManager
+
+        src = inspect.getsource(WorkdirManager.ensure_user_workdir)
+        before_reinit = src[: src.index("self.run_init")]
+        assert "_reconcile_feature_gated_skills(" in before_reinit, (
+            "a workspace that needs no reinit never prunes, so flipping the flag off does nothing"
+        )
+
+    def test_the_prune_runs_after_run_init_too(self):
+        import inspect
+
+        from app.chat.workdir import WorkdirManager
+
+        src = inspect.getsource(WorkdirManager.ensure_user_workdir)
+        after_reinit = src[src.index("self.run_init") :]
+        assert "_reconcile_feature_gated_skills(" in after_reinit
+
+    def test_it_is_not_confined_to_the_default_branch_of_run_init(self):
+        """OVERRIDE mode gets it too — being called from the caller, not from
+        one arm of the branch."""
+        import inspect
+
+        from app.chat.workdir import WorkdirManager
+
+        assert "_prune_disabled_feature_skills" not in inspect.getsource(WorkdirManager.run_init), (
+            "pruning inside run_init reaches only the branch it sits in"
+        )
+
+
+class TestTurningTheFeatureBackOnRestoresTheSkill:
+    """Devin Review on #1239: pruning alone was a one-way door.
+
+    The template copy that would put the skill back only runs on a reinit,
+    and a feature flag is not something `needs_reinit` compares — so a
+    workspace that had already converged lost the skill permanently the
+    moment an operator toggled the feature off and on again.
+    """
+
+    def _ws(self, tmp_path):
+        ws = tmp_path / "workspace"
+        (ws / ".claude" / "skills" / "agnes-data-apps-extras").mkdir(parents=True)
+        (ws / ".claude" / "skills" / "agnes-data-apps-extras" / "SKILL.md").write_text("x", encoding="utf-8")
+        return ws
+
+    def test_the_skill_comes_back_when_the_feature_is_on(self, tmp_path, monkeypatch):
+        from app.chat.workdir import _reconcile_feature_gated_skills
+
+        ws = self._ws(tmp_path)
+        template = tmp_path / "template"
+        (template / ".claude" / "skills" / "agnes-data-apps-extras").mkdir(parents=True)
+        (template / ".claude" / "skills" / "agnes-data-apps-extras" / "SKILL.md").write_text("y", encoding="utf-8")
+
+        target = ws / ".claude" / "skills" / "agnes-data-apps-extras"
+
+        monkeypatch.setenv("AGNES_DATA_APPS_ENABLED", "0")
+        _reconcile_feature_gated_skills(ws, template)
+        assert not target.exists(), "the prune half stopped working"
+
+        monkeypatch.setenv("AGNES_DATA_APPS_ENABLED", "1")
+        _reconcile_feature_gated_skills(ws, template)
+        assert target.is_dir(), "turning the feature back on never restored the skill"
+        assert (target / "SKILL.md").read_text(encoding="utf-8") == "y"
+
+    def test_an_existing_skill_is_not_overwritten(self, tmp_path, monkeypatch):
+        """Restore fills a gap; it must not clobber a workspace that has it."""
+        from app.chat.workdir import _reconcile_feature_gated_skills
+
+        ws = self._ws(tmp_path)
+        template = tmp_path / "template"
+        (template / ".claude" / "skills" / "agnes-data-apps-extras").mkdir(parents=True)
+        (template / ".claude" / "skills" / "agnes-data-apps-extras" / "SKILL.md").write_text("y", encoding="utf-8")
+
+        monkeypatch.setenv("AGNES_DATA_APPS_ENABLED", "1")
+        _reconcile_feature_gated_skills(ws, template)
+        assert (ws / ".claude" / "skills" / "agnes-data-apps-extras" / "SKILL.md").read_text(encoding="utf-8") == "x"

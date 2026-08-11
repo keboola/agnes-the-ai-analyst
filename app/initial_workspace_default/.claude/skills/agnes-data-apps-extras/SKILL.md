@@ -18,11 +18,27 @@ If you haven't loaded `dataapp-development` yet, load it now. If you're
 unsure which deployment path applies, see `references/path-d.md` — Agnes is
 detected by the presence of the `data_app_*` MCP tools.
 
+## 0. The app has to exist before it can have a draft
+
+For a NEW app, call `data_app_create(slug, name, description)` first. A draft
+is a sibling row on an existing app's repo, so `data_app_create_draft` against
+a slug that was never created returns `404 data_app_not_found` — watched live,
+that is exactly where a run stops, retrying the draft call and getting the same
+404. Order: `data_app_create` → seed the repo (§1) → `data_app_create_draft`
+only when you want an iteration branch off a *deployed* app.
+
+For an app that already exists, skip this and go straight to §1.
+
 ## 1. Scaffold-first, custom-code-second
 
 Never start from a blank repo. `cp -R` the baked scaffold at
-`scaffolds/nodejs-dashboard/` (sibling of this skill's session workspace)
-into the app's managed repo **before** writing a single line of real code,
+**`/work/scaffolds/nodejs-dashboard/`** — an absolute path, at the session
+workspace root. It is **not** inside this skill's own directory: watched
+live, "sibling of this skill's session workspace" was read as a path
+relative to the skill, and three `ls`/`cp` attempts against
+`.claude/skills/agnes-data-apps-extras/scaffolds/` all failed with "No such
+file or directory" before the run stalled. Copy it into the app's managed
+repo **before** writing a single line of real code,
 then immediately call `data_app_deploy(draft_slug, mode="dev")`. This boots
 the container and warms `npm install` while you write the real
 `src/App.tsx` / `server/index.ts` — HMR picks up your edits from there. Do
