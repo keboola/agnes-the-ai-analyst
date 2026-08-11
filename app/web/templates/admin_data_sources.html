@@ -55,6 +55,10 @@
 
   /* Storage token and master token resolving to different projects — the fix
      belongs on this page, so the warning does too. */
+  /* `display:flex` beats the UA sheet's `[hidden] { display: none }`, so
+     without this the empty warning strip rendered under EVERY Keboola
+     connection card — an orange band warning about nothing. (Devin Review.) */
+  .ds-token-mismatch[hidden] { display: none; }
   .ds-token-mismatch {
     display: flex; gap: 8px; align-items: flex-start;
     margin-top: 8px; padding: 8px 10px; border-radius: 8px;
