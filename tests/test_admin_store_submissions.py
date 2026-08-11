@@ -1729,6 +1729,38 @@ class TestQuarantineGates:
         body = r.json()["detail"]
         assert body["code"] == "quarantined_owner_cannot_delete"
 
+    def test_owner_can_withdraw_a_crashed_review(self, web_client):
+        """`review_error` is not a verdict — the owner must have an exit.
+
+        Seen in production: a skill whose inline checks all passed sat in
+        `review_error` (the LLM call crashed) for a month. Delete and Edit
+        were both locked and re-uploading 409'd with "delete the existing
+        entity first", so the author had no way out of a state nothing had
+        ever objected to.
+        """
+        user_id, user_cookies = _create_user(web_client, "crash@x.com")
+        entity_id, _ = _seed_quarantined_entity(
+            user_id, "crash@x.com", "crashed", status="review_error",
+        )
+
+        r = web_client.delete(
+            f"/api/store/entities/{entity_id}", cookies=user_cookies,
+        )
+        assert r.status_code == 204, r.text
+
+    def test_owner_can_withdraw_while_the_verdict_is_pending(self, web_client):
+        """Nothing has been judged yet — withdrawing your own not-yet-public
+        upload erases no evidence."""
+        user_id, user_cookies = _create_user(web_client, "pend@x.com")
+        entity_id, _ = _seed_quarantined_entity(
+            user_id, "pend@x.com", "pending", status="pending_llm",
+        )
+
+        r = web_client.delete(
+            f"/api/store/entities/{entity_id}", cookies=user_cookies,
+        )
+        assert r.status_code == 204, r.text
+
     def test_admin_can_delete_quarantined(self, web_client):
         user_id, _ = _create_user(web_client, "u@x.com")
         entity_id, _sub_id = _seed_quarantined_entity(user_id, "u@x.com", "q2")
