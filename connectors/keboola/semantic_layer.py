@@ -984,7 +984,13 @@ def _sync_one_source(
         "glossary_pruned": glossary_pruned,
         "skipped_missing_term": skipped_missing_term,
         "skipped_duplicate_project": 0,
+        # Truncated for the payload, but the TOTAL rides along: the admin
+        # page presents this list as the set to go and register, so a
+        # silent cut at 20 meant an admin could register everything shown,
+        # sync again, and still lose metrics with nothing naming the rest.
+        # (Devin Review on this PR.)
         "unresolved_tables": unresolved_tables[:_MAX_REPORTED_UNRESOLVED_TABLES],
+        "unresolved_tables_total": len(unresolved_tables),
         "source_ref": source_ref,
         "project_key": project_key,
     }
