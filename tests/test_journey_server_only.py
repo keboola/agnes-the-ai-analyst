@@ -280,6 +280,21 @@ def test_a_registry_outage_does_not_release_the_bytes(seeded_app, mock_extract_f
     assert probe.status_code == 503, probe.text
     assert probe.json()["detail"]["code"] == "distribution_check_unavailable"
 
+    # …and the audit trail says outage, not denial: an operator reading it has
+    # to be able to tell a temporary failure from a refused table.
+    from src.repositories import audit_repo
+
+    result = audit_repo().query(action="data.access_check", resource_prefix="table:outage_tbl")
+    rows = list(result[0] if isinstance(result, tuple) else result)
+    assert rows, "the failed probe left no audit trail"
+    assert str(rows[0].get("result", "")) == "error.503", rows[0]
+    params = rows[0].get("params")
+    if isinstance(params, str):
+        import json as _json
+
+        params = _json.loads(params)
+    assert (params or {}).get("refused") == "check_unavailable", rows[0]
+
     with patch("app.api.data._distribution_refusal", side_effect=RuntimeError("registry gone")):
         download = c.get("/api/data/outage_tbl/download", headers=hdrs)
     assert download.status_code == 503, download.text
