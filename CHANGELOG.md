@@ -45,6 +45,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- Ownership of a settings line is decided by its exact text, not by its label: "Trusted internal domains:" is Claude Code's own trust-slot name, so an admin may maintain their own list under it, and the first version of the refresh would have deleted that during an upgrade. A line counts as ours only when it is byte-for-byte one we generate, or one of the retired ones we used to. Found by Devin Review on this PR.
 - The opt-in command setup prints is runnable as printed — it named the flags but not the `--server-url` `agnes init` requires, so pasting it failed immediately. Found by Devin Review on this PR.
 - A hand-written note naming the marketplace host is no longer read as a declaration: the state check matched any line containing the hostname, so someone else's note made setup report the trust as already granted and skip the write — the entries the classifier actually reads never landed. Only lines this tool wrote count. Found by Devin Review on this PR.
 - The Data sources page no longer sweeps every connected project's Metastore to draw one warning line. It uses only the token-mismatch messages, so it asks for them: `GET /api/admin/semantic-layer/coverage?warnings_only=true` stops after the identity checks (two token verifications per connection) and skips the semantic-model enumeration entirely. The Semantic layer page still asks for the full report. Found by Devin Review on this PR.
