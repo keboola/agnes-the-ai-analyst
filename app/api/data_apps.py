@@ -455,6 +455,42 @@ def _mint_service_token(slug: str, owner: dict) -> tuple[str, str]:
 _GIT_CREDENTIAL_TTL = timedelta(hours=24)
 
 
+def mint_git_token(row: dict) -> tuple[str, str]:
+    """Mint the raw `data-app-git:<slug>` PAT that `_mint_git_credential`
+    embeds, and return ``(token_id, jwt)``.
+
+    Split out because the broker's git leg needs the token WITHOUT a URL: it
+    proxies an in-sandbox `git` request to the git surface and attaches the
+    credential itself, so the sandbox never holds one (see
+    `app/api/broker.py::data_apps_git_broker`). The token id comes back so
+    that caller can revoke it the moment the request is done — a per-request
+    credential that outlived the request would pile up rows for nothing.
+    """
+    owner = users_repo().get_by_id(row["owner_user_id"])
+    if not owner:
+        raise OwnerNotFoundError(row["owner_user_id"])
+    slug = row["slug"]
+    token_id = str(uuid.uuid4())
+    expires_at = datetime.now(timezone.utc) + _GIT_CREDENTIAL_TTL
+    jwt_token = create_access_token(
+        user_id=owner["id"],
+        email=owner["email"],
+        token_id=token_id,
+        typ="pat",
+        expires_delta=_GIT_CREDENTIAL_TTL,
+        extra_claims={"scope": f"data-app-git:{slug}"},
+    )
+    access_token_repo().create(
+        id=token_id,
+        user_id=owner["id"],
+        name=f"data-app-git:{slug}",
+        token_hash=hashlib.sha256(jwt_token.encode()).hexdigest(),
+        prefix=token_id.replace("-", "")[:8],
+        expires_at=expires_at,
+    )
+    return token_id, jwt_token
+
+
 def _mint_git_credential(row: dict) -> str:
     """Mint a PAT scoped `data-app-git:<slug>` for this app's owner and
     return a clone URL with it embedded as `agnes:<jwt>@` basic-auth.
@@ -481,28 +517,8 @@ def _mint_git_credential(row: dict) -> str:
     `AGNES_INTERNAL_URL` unconditionally — that one is used *inside* the
     container's config.json, which only ever runs in-cluster.
     """
-    owner = users_repo().get_by_id(row["owner_user_id"])
-    if not owner:
-        raise OwnerNotFoundError(row["owner_user_id"])
+    _token_id, jwt_token = mint_git_token(row)
     slug = row["slug"]
-    token_id = str(uuid.uuid4())
-    expires_at = datetime.now(timezone.utc) + _GIT_CREDENTIAL_TTL
-    jwt_token = create_access_token(
-        user_id=owner["id"],
-        email=owner["email"],
-        token_id=token_id,
-        typ="pat",
-        expires_delta=_GIT_CREDENTIAL_TTL,
-        extra_claims={"scope": f"data-app-git:{slug}"},
-    )
-    access_token_repo().create(
-        id=token_id,
-        user_id=owner["id"],
-        name=f"data-app-git:{slug}",
-        token_hash=hashlib.sha256(jwt_token.encode()).hexdigest(),
-        prefix=token_id.replace("-", "")[:8],
-        expires_at=expires_at,
-    )
     base = get_public_url() or AGNES_INTERNAL_URL
     return f"{base.replace('://', f'://agnes:{jwt_token}@')}/data-apps.git/{slug}"
 

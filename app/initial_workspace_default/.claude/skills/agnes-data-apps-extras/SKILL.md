@@ -29,6 +29,25 @@ the container and warms `npm install` while you write the real
 not wait for "real" code before the first deploy; a cold first deploy racing
 `npm install` is exactly the failure mode this cadence avoids.
 
+## 1b. Cloning the repo: use the relay, not the credential URL
+
+From a chat sandbox, clone and push through the **relay**:
+
+    git clone "$AGNES_SERVER_BASE/data-apps.git/<slug>" app-repo
+
+where `$AGNES_SERVER_BASE` is the loopback origin the `agnes` CLI already
+talks to (`http://127.0.0.1:<port>`) — the host part of `AGNES_SERVER`,
+without its `/agnes-api` path. No credential goes in that URL and none is
+needed: the relay attaches one server-side, which is the whole reason it
+exists.
+
+Do **not** use the URL from `data_app_git_credential(slug)` here. That one
+carries an embedded token and points at the deployment's public host, which
+a sandbox cannot reach — its egress allowlist admits loopback, Anthropic and
+GitHub, nothing else. It is for an analyst laptop or an MCP client, not for
+you. Reaching for it inside the sandbox is what a run does right before it
+stalls, having tried the hostname, then the IP, then the sandbox bypass.
+
 ## 2. Draft-branch discipline
 
 Every app-code change happens on the draft's pinned branch — **never** push
