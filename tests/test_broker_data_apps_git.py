@@ -218,3 +218,24 @@ def test_the_proxy_still_forwards_no_other_client_headers():
     src = inspect.getsource(broker.data_apps_git_broker)
     assert "request.headers.items()" not in src, "blanket header forwarding would leak client headers"
     assert "dict(request.headers)" not in src
+
+
+def test_the_per_request_token_is_deleted_not_just_revoked():
+    """Devin Review on #1252: one dead row per git call, forever.
+
+    This token lives for a single brokered call and is minted on every one of
+    them — a clone is several — so revoking left a permanent entry in the
+    owner's token list, drowning the PATs they actually manage. Revocation is
+    for a credential someone might still hold; nobody holds this one but the
+    broker, and it is dead before the response returns.
+    """
+    import inspect
+
+    from app.api import broker
+
+    src = inspect.getsource(broker.data_apps_git_broker)
+    assert "access_token_repo().delete(token_id)" in src
+    assert "access_token_repo().revoke(token_id)" not in src
+    # …and it must still happen in `finally`, or an upstream error leaks it.
+    i = src.index("access_token_repo().delete(token_id)")
+    assert "finally:" in src[:i]
