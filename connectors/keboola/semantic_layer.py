@@ -484,9 +484,14 @@ def _resolve_keboola_credentials_slot(
     except Exception:
         conn_token = ""
     if not conn_token:
-        token_env = conn.get("token_env") or ""
-        if token_env:
-            conn_token = os.environ.get(token_env, "")
+        # Same gate as `_connection_storage_token` and as `/test` / `/tables`.
+        # An admin can point `token_env` at any name, so an ungated read makes
+        # a connection row a way to send an arbitrary host environment
+        # variable to the configured stack as a Storage token. Pre-existing
+        # rather than introduced here, but leaving one of two reads in this
+        # module gated and the other not is the shape that gets the gate
+        # removed later as "inconsistent". (Devin Review on this PR.)
+        conn_token = _token_from_env(conn)
 
     # url/token here are at most a PARTIAL legacy pair (the full-pair case
     # returned above) — mixing that partial half with the named connection's
@@ -1417,6 +1422,28 @@ DEFINITION_BLOCKED_REASONS = frozenset(
 )
 
 
+def _token_from_env(conn: dict) -> str:
+    """``token_env``'s value, but only for an allowlisted name.
+
+    The single gated reader for both places this module resolves a Storage
+    token from the environment. See `src.orchestrator_security` for why the
+    allowlist exists: `token_env` is admin-supplied and otherwise unbounded.
+    """
+    token_env = conn.get("token_env") or ""
+    if not token_env:
+        return ""
+    from src.orchestrator_security import is_token_env_allowed
+
+    if not is_token_env_allowed(token_env):
+        logger.warning(
+            "connection %s names token_env %r, which is not in the allowlist — not read",
+            conn.get("id"),
+            token_env,
+        )
+        return ""
+    return os.environ.get(token_env, "")
+
+
 def _connection_storage_token(conn: dict) -> str:
     """The connection's regular (non-master) Storage token, vault first then
     ``token_env`` — the same precedence
@@ -1432,26 +1459,7 @@ def _connection_storage_token(conn: dict) -> str:
                 return token
     except Exception:
         logger.warning("Could not read storage token for connection %s", conn.get("id"))
-    token_env = conn.get("token_env") or ""
-    if not token_env:
-        return ""
-    # Gated exactly as `/test` and `/tables` gate it. An admin can set
-    # `token_env` to ANY name, so an ungated read turns a connection row into
-    # a way to exfiltrate an arbitrary host environment variable — the value
-    # is then sent to the configured stack as a Storage token and, here, its
-    # project identity is rendered back onto the admin page. The allowlist is
-    # the control that stops it; skipping it on a new read path reopens what
-    # the other two close. (Devin Review on this PR.)
-    from src.orchestrator_security import is_token_env_allowed
-
-    if not is_token_env_allowed(token_env):
-        logger.warning(
-            "connection %s names token_env %r, which is not in the allowlist — not read",
-            conn.get("id"),
-            token_env,
-        )
-        return ""
-    return os.environ.get(token_env, "")
+    return _token_from_env(conn)
 
 
 def _project_identity(url: str, token: str) -> Optional[dict]:
