@@ -58,8 +58,11 @@ def test_the_container_token_is_scoped_to_the_repo_not_the_app():
     would be refused — the failure would look identical to the original bug
     and only for drafts."""
     src = SOURCE.read_text(encoding="utf-8")
-    assert "_mint_container_git_token(repo_slug, owner)" in src
-    mint_at = src.index("_mint_container_git_token(repo_slug, owner)")
+    # `slug` (the app's own) rides along for the token NAME — the sweep that
+    # revokes superseded credentials keys on it, so a draft's deploy cannot
+    # revoke its parent's. The scope half is still `repo_slug`.
+    assert "_mint_container_git_token(repo_slug, slug, owner)" in src
+    mint_at = src.index("_mint_container_git_token(repo_slug, slug, owner)")
     resolve_at = src.index('repo_slug = parent["slug"]')
     assert resolve_at < mint_at, "repo_slug must be resolved to the parent before the mint"
 
@@ -126,3 +129,41 @@ def test_the_clone_url_prefers_a_reachable_base_over_the_compose_hostname():
     assert chain.index("SERVER_URL") < chain.index("AGNES_INTERNAL_URL"), (
         "the internal compose hostname must stay the LAST resort"
     )
+
+
+def test_superseded_container_tokens_are_revoked_after_a_successful_deploy():
+    """Devin Review on this PR: nothing ever cancelled these.
+
+    They are deliberately expiry-less (a container re-clones whenever it is
+    recreated, including waking from sleep), and the id was not recorded
+    anywhere — so every deploy left another permanent read/write credential
+    on the app's repo, and deleting the app left them all valid.
+
+    Order matters as much as the call: revoking before the runner accepts the
+    deploy would strand a previously-deployed container that is still asleep
+    and will re-clone with the old credential when it wakes — the same
+    reasoning the service token's own revoke is placed after `_runner().up`.
+    """
+    src = SOURCE.read_text(encoding="utf-8")
+    call = "_revoke_container_git_tokens(owner[\"id\"], repo_slug, slug, keep=git_token_id)"
+    assert call in src, "superseded container git tokens are never revoked"
+    assert src.index("_runner().up(slug, spec, config_json)") < src.index(call), (
+        "revoking before the runner accepts the deploy strands a sleeping container"
+    )
+
+
+def test_the_token_name_is_per_app_so_a_draft_cannot_revoke_its_parent():
+    """A draft shares its parent's REPO, so a name keyed only on `repo_slug`
+    would make the two indistinguishable — and the draft's deploy would
+    revoke the credential the parent's container wakes with."""
+    src = SOURCE.read_text(encoding="utf-8")
+    body = src[src.index("def _container_git_token_name") : src.index("def _revoke_container_git_tokens(")]
+    assert "{app_slug}" in body, "the name must distinguish a draft from its parent"
+    assert "{repo_slug}" in body, "the scope half must still follow the repo"
+
+
+def test_teardown_revokes_the_container_token_too():
+    """A deleted app must not leave a live credential on its repository."""
+    src = SOURCE.read_text(encoding="utf-8")
+    body = src[src.index("def _revoke_service_token(") : src.index("def _revoke_container_git_tokens_for_row(")]
+    assert "_revoke_container_git_tokens_for_row(row)" in body
