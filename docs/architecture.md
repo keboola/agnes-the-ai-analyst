@@ -277,8 +277,8 @@ Jira Cloud webhook (issue created/updated/deleted)
 Output tables (6): `issues`, `comments`, `attachments`, `changelog`, `issuelinks`, `remote_links`.
 
 Background supplements:
-- `jira-sla-poll` — refreshes SLA fields for open tickets every 5 min.
-- `jira-consistency` — detects and backfills missing issues every 6 h.
+- `jira-sla-poll` — refreshes SLA fields for open tickets every 45 min.
+- `jira-consistency` — detects and backfills missing issues every 30 min.
 
 Files NOT to modify: `connectors/jira/file_lock.py`, `connectors/jira/transform.py`.
 
