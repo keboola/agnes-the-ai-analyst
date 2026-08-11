@@ -189,6 +189,15 @@ def seed_domain_item(
 
     from src.repositories import knowledge_repo
 
+    # Resolve the domain BEFORE writing anything. `create` inserts the item
+    # row and only then links it to the domain, so an unresolvable slug — the
+    # one failure this call can actually hit — used to leave a note nobody
+    # asked for and nothing points at. There is no delete on the knowledge
+    # repo (items are retired by status, never removed), so the fix is to not
+    # create the half. (Devin Review on #1263.)
+    if memory_domains_repo().get_by_slug(slug.strip()) is None:
+        raise ValueError(f"Unknown memory domain slug: {slug.strip()}")
+
     item_id = str(_uuid.uuid4())
     knowledge_repo().create(
         id=item_id,
