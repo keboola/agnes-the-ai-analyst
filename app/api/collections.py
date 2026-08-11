@@ -1149,7 +1149,8 @@ async def preview_file(
         # rendering the broken embed this check exists to prevent.
         # (Devin Review on this PR.)
         media_blob = _blob_path_or_none(row)
-        if media_blob is None and not _extracted_text(file_id):
+        media_text = _extracted_text(file_id)
+        if media_blob is None and not media_text:
             _blob_path_or_404(row)  # raises 404 file_blob_missing
         # The modal draws these from `raw_url` and ignores `text` — but a
         # non-browser reader (`agnes collections cat`, the
@@ -1159,11 +1160,31 @@ async def preview_file(
         # "no text preview is available" while the text sat in corpus_chunks.
         # Attaching it costs the modal one unused field and keeps `kind`
         # (its actual switch) untouched.
-        media_text = _extracted_text(file_id)
+        #
+        # …untouched EXCEPT when the bytes are gone. `kind` is what the modal
+        # switches on (`file_preview.js`), not `raw_url`: `kind: "pdf"` builds
+        # an <iframe> and assigns the URL unconditionally, so withholding the
+        # URL alone left it pointing at `null` — a blank frame with no error
+        # handler, which is the broken embed the 404 existed to prevent, now
+        # reached by a different route. (`kind: "image"` degrades better, its
+        # <img> has an onerror, but it still throws the text away.) So the
+        # degraded case reports what it actually has: `kind: "text"`, which
+        # renders the extracted text and the "extracted during indexing" note
+        # the textual branch already uses. One server-side decision rather
+        # than a second one in the client, so the CLI and MCP readers see the
+        # same shape. (Devin Review on this PR, twice.)
+        if media_blob is None:
+            return {
+                **base,
+                "kind": "text",
+                "text": media_text[:_PREVIEW_MAX_CHARS],
+                "truncated": len(media_text) > _PREVIEW_MAX_CHARS,
+                "source": "extracted",
+            }
         return {
             **base,
             "kind": "image" if ext != "pdf" else "pdf",
-            "raw_url": (f"/api/collections/{collection_id}/files/{file_id}/raw" if media_blob is not None else None),
+            "raw_url": f"/api/collections/{collection_id}/files/{file_id}/raw",
             "text": media_text[:_PREVIEW_MAX_CHARS] or None,
             "truncated": len(media_text) > _PREVIEW_MAX_CHARS,
             "source": "extracted" if media_text else None,

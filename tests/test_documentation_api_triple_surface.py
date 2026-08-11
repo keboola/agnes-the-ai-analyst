@@ -259,15 +259,19 @@ _COLLECTIONS_FILES_REASON = (
     "analogue. The collection read surfaces carry the triple-surface contract."
 )
 _LIBRARY_PREVIEW_REASON = (
-    "Backs the Library's file-preview modal — a browser viewer, not a data "
-    "product. `…/raw` streams image/PDF bytes for the BROWSER to draw (no "
-    "JSON/MCP analogue), and `…/preview` exists to tell that viewer which "
-    "shape to render; its text is capped at a glance (_PREVIEW_MAX_CHARS), so "
-    "it is deliberately not a faithful read-the-file surface an agent could "
-    "rely on. Agent-facing access to collection text stays `collections_search` "
-    "/ `agnes collections search`. A real 'read this file whole' tool would be "
-    "its own feature (uncapped, paginated) and would then owe all three "
-    "surfaces."
+    "`…/raw` streams image/PDF bytes for the BROWSER to draw and has no "
+    "JSON/MCP analogue — that half is exempt for the reason it always was. "
+    "`…/preview` is NO LONGER exempt on the old ground that it is a viewer "
+    "hint no agent should rely on: it now backs `collection_file_read` (both "
+    "MCP servers) and `agnes collections cat`, because an agent being shown a "
+    "file it cannot open was the actual complaint. It stays listed here only "
+    "because the endpoint PATH is browser-shaped (the modal fetches it "
+    "directly) while the contract is carried by the tool and command named "
+    "above, which `tests/test_collection_file_read.py` pins on all three "
+    "surfaces. The cap (_PREVIEW_MAX_CHARS) is still real and still means "
+    "this is a glance, not a whole-file read — callers are told so via "
+    "`truncated`, and an uncapped paginated reader would still be its own "
+    "feature."
 )
 _AUTHORING_SUGGESTIONS_REASON = (
     "Authoring-studio suggestion queue (v80) — web-form/admin-moderation flow. "
