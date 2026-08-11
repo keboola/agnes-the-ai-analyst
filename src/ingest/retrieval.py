@@ -287,6 +287,12 @@ def search(
         return []
 
     top, confidence = rank_chunks(chunks, query, k=k)
+    # How the hit was found, carried on every result. The combined search caps
+    # name-only hits (see `src/search/unified.py`): min-max normalization makes
+    # any bucket's top hit 1.0, so without a label a weak name match would
+    # arrive looking exactly as strong as a document that genuinely contains
+    # the words, and could fill every slot. (Devin Review on #1267.)
+    matched_on = "body"
 
     # Resolve filenames for citations (cache per file).
     cf_repo = corpus_files_repo()
@@ -313,6 +319,7 @@ def search(
         if top:
             # A name match is a hint, not evidence — never claim more.
             confidence = "low"
+            matched_on = "filename"
 
     results: List[Dict[str, Any]] = []
     for score, ch in top:
@@ -327,6 +334,7 @@ def search(
                 "text": ch.get("text"),
                 "score": round(float(score), 4),
                 "confidence": confidence,
+                "matched_on": matched_on,
             }
         )
     return results

@@ -18,6 +18,10 @@ outrank a real match in the text.
 
 from __future__ import annotations
 
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
 
 def _seed(slug: str, filename: str, chunks: list[dict]) -> str:
     from src.repositories import corpus_chunks_repo, corpus_files_repo, file_corpora_repo
@@ -125,3 +129,66 @@ class TestFilenameFallback:
         row = search([cid], "quarterly-report")[0]
         for key in ("chunk_id", "corpus_id", "file_id", "filename", "ordinal", "text", "score"):
             assert key in row, f"filename hit is missing {key}"
+
+
+class TestANameHitCannotCrowdOutRealMatches:
+    """Devin Review on #1267: `_minmax` makes any bucket's top hit 1.0.
+
+    A fallback that matched only file names would therefore arrive looking
+    exactly as strong as a document that genuinely contains the words, and
+    could fill every slot of a combined answer — hiding the knowledge notes,
+    glossary entries and tables that actually matched.
+    """
+
+    def test_a_body_hit_is_labelled_as_one(self):
+        import inspect
+
+        from src.ingest import retrieval
+
+        src = inspect.getsource(retrieval.search)
+        assert 'matched_on = "body"' in src
+        assert 'matched_on = "filename"' in src
+        assert '"matched_on": matched_on' in src
+
+    def test_the_combined_search_caps_a_name_only_chunk_bucket(self):
+        import inspect
+
+        from src.search import unified
+
+        src = inspect.getsource(unified.unified_search)
+        assert 'all(h.get("matched_on") == "filename" for h in chunk_hits)' in src, src[:200]
+        i = src.index('matched_on')
+        assert "_sem_cap" in src[i : i + 400], "the cap must be the one the semantic buckets use"
+
+    def test_offline_search_has_the_same_fallback(self):
+        """`agnes search --local` and the stdio MCP fallback run this path; the
+        module promises "the exact same ranking behavior" as the server."""
+        import inspect
+
+        from src.search import local
+
+        src = inspect.getsource(local.local_search)
+        assert "_rank_by_filename" in src
+        assert 'matched_on = "filename"' in src
+        assert 'confidence = "low"' in src
+
+
+class TestTheAdviceMatchesTheBehaviour:
+    """The caveat told users and agents not to do the thing that now works."""
+
+    def test_no_surface_still_says_filenames_are_not_indexed(self):
+        import subprocess
+
+        out = subprocess.run(
+            ["grep", "-rn", "filenames are not indexed", "--include=*.py", "app", "cli", "src"],
+            capture_output=True,
+            text=True,
+            cwd=str(ROOT),
+        ).stdout
+        assert out.strip() == "", f"stale caveat still shipped:\n{out}"
+
+    def test_both_mcp_surfaces_describe_the_fallback(self):
+        for path in ("cli/mcp/server.py", "app/api/mcp/foundation_tools.py"):
+            text = (ROOT / path).read_text()
+            assert "file names are a fallback, not an index" in text, path
+            assert 'matched_on: "filename"' in text, path
