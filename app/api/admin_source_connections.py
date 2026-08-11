@@ -449,6 +449,24 @@ async def delete_connection_secret(
         raise HTTPException(status_code=400, detail="invalid_kind")
     key = master_secret_key(connection_id) if kind == "master" else connection_id
     connection_secrets_repo().delete(key)
+    if kind != "master":
+        # The chat-tools source holds a COPY of the storage token, taken at
+        # enable time. Clearing the connection's token is how an admin cuts a
+        # project off, and leaving the copy behind meant the agent kept
+        # querying that project with a credential the admin believed they had
+        # removed — until they separately noticed the chat-tools switch. The
+        # derived source and its tools stay (so the admin still sees the
+        # switch is on and can turn it off deliberately); what goes is the
+        # credential, which is what "cleared" has to mean.
+        # (Devin Review on this PR.)
+        try:
+            shared_secrets_repo().delete(derived_source_id(connection_id))
+        except Exception:  # noqa: BLE001 — best-effort; the primary delete already succeeded
+            logger.warning(
+                "cleared the token for connection %s but could not clear the chat-tools copy",
+                connection_id,
+                exc_info=True,
+            )
 
 
 def _remove_chat_tools(connection_id: str) -> None:
@@ -498,13 +516,21 @@ def _remove_chat_tools(connection_id: str) -> None:
         for uid in pu_secrets.list_for_source(source_id):
             pu_secrets.delete(source_id, uid)
 
-    # Every step is attempted even after one fails: a partial teardown that
-    # removes three of four things is strictly better than stopping at the
-    # first, and the report below says what survived.
+    # Tools and grants FIRST, and a failure there stops the teardown. The
+    # remaining steps are attempted after any *other* failure, because a
+    # partial teardown that removes three of four things beats stopping at the
+    # first — but that reasoning inverts here: `list_passthrough_for_groups`
+    # joins `tool_registry` to `tool_grants` and never to `mcp_sources`, so a
+    # tool whose parent source is gone is STILL served to any granted group.
+    # Deleting the source after failing to remove the tools would therefore
+    # leave the access live while removing the row an admin would use to clean
+    # it up from /admin/mcp — strictly worse than stopping.
+    # (Devin Review on this PR.)
     _step("tools and their grants", lambda: tool_registry_repo().delete_for_source(source_id))
-    _step("the derived MCP source", lambda: mcp_sources_repo().delete(source_id))
-    _step("the copied credential", lambda: shared_secrets_repo().delete(source_id))
-    _step("per-user credentials", _drop_per_user_secrets)
+    if not failed:
+        _step("the derived MCP source", lambda: mcp_sources_repo().delete(source_id))
+        _step("the copied credential", lambda: shared_secrets_repo().delete(source_id))
+        _step("per-user credentials", _drop_per_user_secrets)
 
     if failed:
         raise HTTPException(
@@ -594,6 +620,25 @@ async def enable_chat_tools(
             detail="vault_key_not_configured: set AGNES_VAULT_KEY on the server before storing secrets",
         ) from exc
 
+    # A derived source is named after the connection, and `mcp_sources.name` is
+    # unique — so a hand-registered source that already owns that name made the
+    # upsert die with an opaque 500 and no hint at what clashed.
+    # (Devin Review on this PR.)
+    clashing = mcp_sources_repo().get_by_name(spec["name"])
+    if clashing is not None and clashing["id"] != spec["id"]:
+        if previous_secret is None:
+            shared_secrets_repo().delete(spec["id"])
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "mcp_source_name_taken",
+                "name": spec["name"],
+                "message": (
+                    f"An MCP source named {spec['name']!r} already exists (id {clashing['id']}). "
+                    "Rename this connection, or remove that source under /admin/mcp, then try again."
+                ),
+            },
+        )
     try:
         mcp_sources_repo().upsert(**spec)
     except Exception:
