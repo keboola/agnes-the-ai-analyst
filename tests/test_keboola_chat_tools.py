@@ -362,8 +362,7 @@ class TestAFailedResyncKeepsTheLiveSetupWorking(TestChatToolsEndpoint):
         from src.repositories import shared_secrets_repo
 
         source_id = derived_source_id(conn_id)
-        working = shared_secrets_repo().get(source_id)
-        assert working, "fixture stored no credential"
+        assert shared_secrets_repo().get(source_id), "fixture stored no credential"
 
         # Rotate the connection's token, then make the config write fail.
         assert (
@@ -374,6 +373,10 @@ class TestAFailedResyncKeepsTheLiveSetupWorking(TestChatToolsEndpoint):
             ).status_code
             == 204
         )
+        # Read AFTER the rotation: storing a token now propagates to the
+        # agent's copy, so this — not the pre-rotation value — is what the
+        # live setup authenticates with and what a failed re-sync must keep.
+        working = shared_secrets_repo().get(source_id)
         with pytest.MonkeyPatch.context() as mp:
             self._failing_sources_repo(mp)
             # TestClient re-raises server exceptions rather than rendering a
@@ -753,3 +756,67 @@ class TestAFailedToolRemovalStopsTheTeardown(TestChatToolsEndpoint):
             "the source an admin would clean up from was deleted while the tools stayed live"
         )
         assert shared_secrets_repo().get(source_id) is not None
+
+
+class TestRotatingTheTokenPropagatesToo(TestChatToolsEndpoint):
+    """Devin Review on this PR: clearing propagated, rotating did not.
+
+    Copy-not-reference is deliberate, but the asymmetry meant the two halves
+    of one admin intent behaved differently: rotating a leaked token left the
+    leaked value live in the MCP vault, and the agent went on authenticating
+    with a credential that may already have been revoked upstream.
+    """
+
+    def test_a_rotated_token_reaches_the_agent_copy(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-rotate")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.repositories import shared_secrets_repo
+
+        source_id = derived_source_id(conn_id)
+        assert shared_secrets_repo().get(source_id) == "kbc-token-value"
+
+        assert (
+            c.put(f"{BASE}/{conn_id}/secret", json={"value": "rotated"}, headers=_auth(token)).status_code == 204
+        )
+
+        assert shared_secrets_repo().get(source_id) == "rotated", (
+            "the agent still holds the previous token after a rotation"
+        )
+
+    def test_storing_a_token_does_not_enable_chat_tools(self, seeded_app):
+        """Only an EXISTING copy is updated — this is not a back door to on."""
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-rotate-off", with_secret=False)
+
+        assert (
+            c.put(f"{BASE}/{conn_id}/secret", json={"value": "fresh"}, headers=_auth(token)).status_code == 204
+        )
+
+        from src.repositories import mcp_sources_repo, shared_secrets_repo
+
+        source_id = derived_source_id(conn_id)
+        assert shared_secrets_repo().get(source_id) is None
+        assert mcp_sources_repo().get(source_id) is None
+
+    def test_the_master_token_slot_is_untouched(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-rotate-master")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.repositories import shared_secrets_repo
+
+        source_id = derived_source_id(conn_id)
+        # `kind` rides in the BODY on PUT (it is a query param only on DELETE);
+        # sending it as a query string silently stored a STORAGE token, which
+        # is how this test first "failed" against correct code.
+        r = c.put(
+            f"{BASE}/{conn_id}/secret",
+            json={"value": "master-v2", "kind": "master"},
+            headers=_auth(token),
+        )
+        # Whether the master token verifies against the live stack is not the
+        # point — either way the storage-token copy must be untouched.
+        assert r.status_code in (204, 400, 502), r.text
+        assert shared_secrets_repo().get(source_id) == "kbc-token-value"
