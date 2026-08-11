@@ -469,3 +469,31 @@ class TestAPassageThatContainsTheWordsStaysABodyHit:
 
         assert res, "nothing at all came back"
         assert res[0]["filename"] == "quarterly-report.md", [(r["filename"], r["matched_on"]) for r in res]
+
+
+class TestEverySurfaceSaysHowTheHitWasFound:
+    """Devin Review on #1267: the label existed but three readers ignored it."""
+
+    def test_the_cli_marks_a_name_match(self):
+        page = (ROOT / "cli" / "commands" / "search.py").read_text()
+        assert 'r.get("matched_on") == "filename"' in page
+        assert "matched by file name" in page
+
+    def test_the_tool_descriptions_state_the_real_rule(self):
+        for path in ("cli/mcp/server.py", "app/api/mcp/foundation_tools.py"):
+            text = (ROOT / path).read_text()
+            assert "only when nothing in any body matches" not in text, path
+            assert "explains the question better" in text or "explains more of the question" in text, path
+
+    def test_confidence_is_per_row(self, e2e_env):
+        """A name hit is low-confidence; a passage that really matched keeps
+        the body pass's own judgement."""
+        from src.ingest.retrieval import search
+
+        cid = _seed(
+            "per-row-conf",
+            "quarterly-report.md",
+            [{"ordinal": 0, "text": "alpha bravo"}, {"ordinal": 1, "text": "charlie delta"}],
+        )
+        res = search([cid], "quarterly report")
+        assert res and all(r["confidence"] == "low" for r in res if r["matched_on"] == "filename")

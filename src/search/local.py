@@ -93,7 +93,7 @@ def local_search(query: str, *, workspace: Path, k: int = 10) -> List[Dict[str, 
             "section_path": ch.get("section_path"),
             "text": ch.get("text"),
             "score": round(float(score), 4),
-            "confidence": confidence,
+            "confidence": "low" if ch.get("id") in filename_ids else confidence,
             "matched_on": "filename" if ch.get("id") in filename_ids else "body",
         }
         for score, ch in top

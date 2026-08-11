@@ -142,7 +142,7 @@ def collection_get(collection_id: str) -> dict:
 
 @tool()
 def collections_search(query: str, k: int = 10, collection_id: str = "") -> dict:
-    """Hybrid search across your accessible file Collections (RBAC-filtered). Matching is whole word, there is no wildcard, and file names are a fallback searched only when no document body matches — so an empty result is a wording miss far more often than an access problem; read the response's ``hint`` before concluding anything from it.
+    """Hybrid search across your accessible file Collections (RBAC-filtered). Matching is whole word, there is no wildcard, and file names are a fallback, consulted only when no passage explains the question better — so an empty result is a wording miss far more often than an access problem; read the response's ``hint`` before concluding anything from it.
 
     Returns ranked chunks with citations (``filename``, ``ordinal``, ``text``,
     ``score``). Optionally restrict to one collection via ``collection_id``.
@@ -155,8 +155,8 @@ def collections_search(query: str, k: int = 10, collection_id: str = "") -> dict
     document's TEXT first:
 
     * **file names are a fallback, not an index.** The words inside a
-      document are matched first; only when nothing in any body matches
-      are file names tried, and such a hit comes back with
+      document are matched first; file names are tried only when no
+      passage explains more of the question than a name does, and such a hit comes back with
       ``matched_on: "filename"`` and ``confidence: "low"``. Treat it as
       "this file is probably the one you mean", not as a quote.
     * **matching is whole word.** ``test`` does not find ``Testovaci``.
@@ -180,7 +180,7 @@ def collections_search(query: str, k: int = 10, collection_id: str = "") -> dict
 
 @tool()
 def knowledge_search(query: str, k: int = 10) -> dict:
-    """One query across documents, the knowledge base, and the data catalog. Matching is whole word, there is no wildcard, and file names are a fallback searched only when no document body matches — so an empty result is a wording miss far more often than an access problem; read the response's ``hint`` before concluding anything from it.
+    """One query across documents, the knowledge base, and the data catalog. Matching is whole word, there is no wildcard, and file names are a fallback, consulted only when no passage explains the question better — so an empty result is a wording miss far more often than an access problem; read the response's ``hint`` before concluding anything from it.
 
     Fans out server-side over Collections chunks (hybrid lexical+vector),
     corporate-memory knowledge items (fulltext), and table catalog cards —
@@ -194,7 +194,7 @@ def knowledge_search(query: str, k: int = 10) -> dict:
 
     The chunk leg carries the same surprises as ``collections_search``:
     matching is whole word, there is no wildcard, and file names are a
-    fallback searched only when no body matches. An empty result is not evidence that
+    fallback, consulted only when no passage explains the question better. An empty result is not evidence that
     you lack access — check the ``hint`` before saying so.
 
     Offline fallback (K3, #798): if the server is unreachable (network/VPN

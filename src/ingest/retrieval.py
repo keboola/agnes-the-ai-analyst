@@ -344,7 +344,11 @@ def apply_filename_fallback(
     def _cover(text: str) -> float:
         return len(q_terms & set(_tokenize(text or ""))) / len(q_terms)
 
-    best_body_cover = max((_cover(ch.get("text", "")) for _s, ch in top), default=0.0)
+    # Over EVERY candidate, not just the `k` rows `rank_chunks` kept: a
+    # passage that explains the whole question but ranked k+1 would otherwise
+    # be invisible here and the pass would fire on a partial view.
+    # (Devin Review on #1267.)
+    best_body_cover = max((_cover(ch.get("text", "")) for ch in chunks), default=0.0)
     if best_body_cover >= _NAME_PASS_BODY_CEILING:
         # Some passage already explains the WHOLE question — no name can beat
         # that, so neither the pass nor the file listing `prepare` loads is
@@ -384,8 +388,11 @@ def apply_filename_fallback(
     floor = min(s for s, _ch in name_hits)
     top_rest = max((s for s, _ch in rest), default=0.0) or 1.0
     rest = [(round(floor * 0.9 * (s / top_rest), 6), ch) for s, ch in rest]
-    # A name match is a hint, not evidence — never claim more.
-    return (name_hits + rest)[:k], "low", filename_ids
+    # `confidence` stays the body pass's own judgement — the name rows are
+    # already marked by `matched_on`, and downgrading the whole response
+    # misdescribes the passages that did match. The caller labels per row.
+    # (Devin Review on #1267.)
+    return (name_hits + rest)[:k], confidence, filename_ids
 
 
 def search(
@@ -451,7 +458,10 @@ def search(
                 "section_path": ch.get("section_path"),
                 "text": ch.get("text"),
                 "score": round(float(score), 4),
-                "confidence": confidence,
+                # A name match is a hint, not evidence — that row says so,
+                # while a passage that really matched keeps the body pass's
+                # own judgement. (Devin Review on #1267.)
+                "confidence": "low" if ch.get("id") in filename_ids else confidence,
                 # How THIS hit was found. The combined search caps a bucket of
                 # name-only hits (see `src/search/unified.py`): min-max
                 # normalization makes any bucket's top hit 1.0, so without the
