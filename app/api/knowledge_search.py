@@ -104,10 +104,11 @@ def _empty_combined_hint(collections: int, tables: int, metrics: int) -> str:
     scope = f"{collections} collection(s) and {tables} table(s), plus knowledge notes and the glossary,"
     return (
         f"Searched {scope} and found no match. You DO have access — this is a wording miss, "
-        "not an access problem. Note: filenames are not indexed (search the text, not the file "
-        "name), matching is whole word (`test` will not find `Testovaci`), and there is no "
-        "wildcard (`*` and an empty query return nothing). Try a distinctive word you expect "
-        "inside the document, or call collections_list / catalog to see what is there."
+        "not an access problem. Note: matching is whole word (`test` will not find `Testovaci`) "
+        "and there is no wildcard (`*` and an empty query return nothing). File names are "
+        "searched too, as a fallback when no document body matches — so nothing here matched "
+        "either. Try a distinctive word you expect inside the document, or call "
+        "collections_list / catalog to see what is there."
     )
 
 

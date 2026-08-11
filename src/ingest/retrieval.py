@@ -200,6 +200,201 @@ def rank_chunks(
     return scored[:k], confidence
 
 
+#: Function words that are evidence for nothing. They appear in most English
+#: questions and in almost every passage, so counting them made a passage
+#: containing "is" and "in" look as explanatory as a file NAMED after the
+#: subject — which is how "what is in quarterly-report.md" kept missing the
+#: file it names. (Devin Review on #1267.)
+_QUERY_STOP_TOKENS = frozenset(
+    {
+        "a", "about", "an", "and", "any", "are", "as", "at", "be", "by", "can", "do", "does", "file",
+        "find", "for", "from", "get", "give", "has", "have", "how", "i", "in", "is", "it", "its", "me",
+        "my", "of", "on", "or", "our", "please", "show", "tell", "that", "the", "their", "there",
+        "these", "this", "to", "was", "were", "what", "when", "where", "which", "who", "why", "with",
+        "you", "your",
+    }
+)
+
+#: Filename tokens too generic to identify a file. An extension is shared by
+#: every file of that type, so matching on it returns the whole corpus as
+#: "hits" — noise dressed as a result.
+_FILENAME_STOP_TOKENS = frozenset(
+    {
+        "md",
+        "txt",
+        "pdf",
+        "csv",
+        "tsv",
+        "json",
+        "yaml",
+        "yml",
+        "html",
+        "htm",
+        "doc",
+        "docx",
+        "xls",
+        "xlsx",
+        "ppt",
+        "pptx",
+        "png",
+        "jpg",
+        "jpeg",
+        "gif",
+        "webp",
+        "zip",
+        "parquet",
+        "log",
+    }
+)
+
+
+def _rank_by_filename(
+    chunks: List[Dict[str, Any]],
+    query: str,
+    filename_of: Any,
+    *,
+    k: int = 10,
+) -> List[tuple[float, Dict[str, Any]]]:
+    """Chunks whose FILE NAME matches the query, for the no-body-hit case.
+
+    Scored by how much of the query the name accounts for, so a full
+    ``quarterly-report`` beats a bare ``report``. Ordered by that overlap and
+    then by ``ordinal``, so a matched file reads from its beginning rather
+    than from an arbitrary chunk.
+
+    Extensions are excluded (see ``_FILENAME_STOP_TOKENS``): ``md`` appears
+    in every markdown filename, so honouring it would answer "md" with the
+    entire corpus.
+    """
+    # The SAME content-word set the caller compares against: counting filler
+    # words here let files that share a "what"/"is"/"in" with the question
+    # outrank the file the question actually names, and the stricter filter
+    # downstream then had nothing left to accept. (Devin Review on #1267.)
+    q_terms = {t for t in _tokenize(query) if t not in _FILENAME_STOP_TOKENS and t not in _QUERY_STOP_TOKENS}
+    if not q_terms:
+        return []
+
+    scored: List[tuple[float, Dict[str, Any]]] = []
+    for ch in chunks:
+        name = filename_of(ch.get("file_id"))
+        if not name:
+            continue
+        name_terms = {t for t in _tokenize(name) if t not in _FILENAME_STOP_TOKENS}
+        overlap = q_terms & name_terms
+        if overlap:
+            scored.append((len(overlap) / len(q_terms), ch))
+
+    scored.sort(key=lambda pair: (-pair[0], pair[1].get("ordinal") or 0, str(pair[1].get("id"))))
+    # Uncapped: the caller filters this shortlist (a chunk whose own text
+    # explains as much as the name is not a name hit) and caps afterwards.
+    # Cutting to `k` first meant a large file's early chunks could fill the
+    # list, get filtered out, and leave the file unfound. (Devin Review on
+    # #1267.)
+    return scored
+
+
+
+#: The name pass is skipped only when some passage explains the WHOLE
+#: question. A lower bar looked cheaper but broke the case the pass exists
+#: for: a two-word question ("quarterly report") is half-covered by any
+#: passage containing either word, and the file named after both would never
+#: be considered. The cost argument does not survive contact with the line
+#: above it either — `search()` has already loaded every chunk row of every
+#: corpus in scope, next to which one file listing per corpus is a rounding
+#: error. (Devin Review on #1267, arguing both directions across two rounds.)
+_NAME_PASS_BODY_CEILING = 1.0
+
+
+def apply_filename_fallback(
+    chunks: List[Dict[str, Any]],
+    query: str,
+    filename_of: Any,
+    top: List[tuple[float, Dict[str, Any]]],
+    confidence: str,
+    *,
+    k: int = 10,
+    prepare: Any = None,
+) -> tuple[List[tuple[float, Dict[str, Any]]], str, set]:
+    """Let file NAMES answer when they explain the question better than any body.
+
+    Returns ``(top, confidence, filename_ids)``. Shared by the server's
+    ``search()`` and the offline ``src.search.local`` reader so the two cannot
+    drift — they are the online and offline halves of the same question.
+
+    The trigger is comparative, and it took three rounds of review to get
+    right. "No results at all" made the whole thing dead code wherever the
+    embeddings extra is installed, because every chunk then scores a non-zero
+    cosine. "No body contains ANY query word" was barely better: one stray
+    ``in`` or ``the`` disabled it, which is every question phrased as a
+    sentence. So both sides are scored the same way — the share of the query's
+    CONTENT words (function words and bare extensions excluded) that the
+    candidate accounts for — and a name only leads when it explains more of
+    the question than the best passage does.
+
+    Name hits lead; whatever the body pass found keeps the remaining slots,
+    rescaled UNDER the weakest name hit. The two raw scales are unrelated
+    (coverage ratios here, fused lexical/vector scores there), and a merged
+    list whose scores contradict its order misleads every consumer that reads
+    them. (Devin Review on #1267.)
+    """
+    q_terms = {t for t in _tokenize(query) if t not in _FILENAME_STOP_TOKENS and t not in _QUERY_STOP_TOKENS}
+    if not q_terms:
+        return top, confidence, set()
+
+    def _cover(text: str) -> float:
+        return len(q_terms & set(_tokenize(text or ""))) / len(q_terms)
+
+    # Over EVERY candidate, not just the `k` rows `rank_chunks` kept: a
+    # passage that explains the whole question but ranked k+1 would otherwise
+    # be invisible here and the pass would fire on a partial view.
+    # (Devin Review on #1267.)
+    best_body_cover = max((_cover(ch.get("text", "")) for ch in chunks), default=0.0)
+    if best_body_cover >= _NAME_PASS_BODY_CEILING:
+        # Some passage already explains the WHOLE question — no name can beat
+        # that, so neither the pass nor the file listing `prepare` loads is
+        # needed. A partially-explained question DOES pay for the listing, and
+        # that is the deliberate side of the trade: the two-word case is the
+        # one the feature exists for, and one listing per collection is a
+        # rounding error next to the chunk rows already loaded above.
+        # (Devin Review on #1267, arguing both directions across rounds.)
+        return top, confidence, set()
+    if prepare is not None:
+        prepare()
+    # The label goes to whichever explained more of the question. A passage
+    # that carries the searched words stays a body hit — relabelling it would
+    # misdescribe it and move it out of the order its own score earned — but
+    # only while its text accounts for at least as much as its file's NAME
+    # does. A chunk that happens to contain one word of a two-word question,
+    # inside the file named after both, is a name hit; treating any textual
+    # overlap as disqualifying let the named file lose to whichever chunk id
+    # sorted first. Keyed on the text rather than on presence in `top`,
+    # because with semantic scoring every chunk is in `top`.
+    # (Devin Review on #1267, three rounds on this trigger.)
+    name_hits = []
+    for pair in _rank_by_filename(chunks, query, filename_of, k=k):
+        name_cover = _cover(filename_of(pair[1].get("file_id")) or "")
+        if name_cover <= best_body_cover:
+            continue
+        if _cover(pair[1].get("text", "")) >= name_cover:
+            continue
+        name_hits.append(pair)
+        if len(name_hits) >= k:
+            break
+    if not name_hits:
+        return top, confidence, set()
+
+    filename_ids = {ch.get("id") for _s, ch in name_hits}
+    rest = [pair for pair in top if pair[1].get("id") not in filename_ids]
+    floor = min(s for s, _ch in name_hits)
+    top_rest = max((s for s, _ch in rest), default=0.0) or 1.0
+    rest = [(round(floor * 0.9 * (s / top_rest), 6), ch) for s, ch in rest]
+    # `confidence` stays the body pass's own judgement — the name rows are
+    # already marked by `matched_on`, and downgrading the whole response
+    # misdescribes the passages that did match. The caller labels per row.
+    # (Devin Review on #1267.)
+    return (name_hits + rest)[:k], confidence, filename_ids
+
+
 def search(
     corpus_ids: List[str],
     query: str,
@@ -219,15 +414,37 @@ def search(
 
     top, confidence = rank_chunks(chunks, query, k=k)
 
-    # Resolve filenames for citations (cache per file).
+    # Resolve filenames for citations, one file at a time and cached — a
+    # normal search cites at most `k` of them. The bulk listing below is
+    # loaded ONLY when the name pass actually runs, so an ordinary search
+    # never pays for every collection's file list. (Devin Review on #1267,
+    # both halves: the per-file loop was an N+1 for the name pass, and
+    # loading everything up front was a tax on the searches that do not need
+    # it.)
     cf_repo = corpus_files_repo()
     name_cache: Dict[str, Optional[str]] = {}
+    names_bulk_loaded = False
+
+    def _load_all_names() -> None:
+        nonlocal names_bulk_loaded
+        if names_bulk_loaded:
+            return
+        names_bulk_loaded = True
+        for cid in corpus_ids:
+            for row in cf_repo.list_for_corpus(cid):
+                name_cache.setdefault(row.get("id"), row.get("filename"))
 
     def _filename(file_id: str) -> Optional[str]:
         if file_id not in name_cache:
             row = cf_repo.get(file_id)
             name_cache[file_id] = row.get("filename") if row else None
         return name_cache[file_id]
+
+    # Names are only consulted when they beat the body — see
+    # `apply_filename_fallback`, which the offline reader shares.
+    top, confidence, filename_ids = apply_filename_fallback(
+        chunks, query, _filename, top, confidence, k=k, prepare=_load_all_names
+    )
 
     results: List[Dict[str, Any]] = []
     for score, ch in top:
@@ -241,7 +458,16 @@ def search(
                 "section_path": ch.get("section_path"),
                 "text": ch.get("text"),
                 "score": round(float(score), 4),
-                "confidence": confidence,
+                # A name match is a hint, not evidence — that row says so,
+                # while a passage that really matched keeps the body pass's
+                # own judgement. (Devin Review on #1267.)
+                "confidence": "low" if ch.get("id") in filename_ids else confidence,
+                # How THIS hit was found. The combined search caps a bucket of
+                # name-only hits (see `src/search/unified.py`): min-max
+                # normalization makes any bucket's top hit 1.0, so without the
+                # label a weak name match arrives looking exactly as strong as
+                # a document that genuinely contains the words.
+                "matched_on": "filename" if ch.get("id") in filename_ids else "body",
             }
         )
     return results

@@ -284,7 +284,7 @@ def register_foundation_tools(
 
     @tool()
     async def collections_search(query: str, k: int = 10, collection_id: str = "") -> dict:
-        """Hybrid search across your accessible file Collections (RBAC-filtered). Filenames are not indexed, matching is whole word, and there is no wildcard — so an empty result is a wording miss far more often than an access problem; read the response's ``hint`` before concluding anything from it.
+        """Hybrid search across your accessible file Collections (RBAC-filtered). Matching is whole word, there is no wildcard, and file names are a fallback, consulted only when no passage explains the question better — so an empty result is a wording miss far more often than an access problem; read the response's ``hint`` before concluding anything from it.
 
         Returns ranked chunks with citations (``filename``, ``ordinal``, ``text``,
         ``score``). Optionally restrict to one collection via ``collection_id``.
@@ -292,11 +292,14 @@ def register_foundation_tools(
         ``hybrid`` (lexical + semantic) or ``lexical_only`` — the degraded
         mode when the server has no embedding model installed.
 
-        Three behaviours that make a reasonable query miss — search the
-        document's TEXT, not its metadata:
+        Behaviours that make a reasonable query miss — search the
+        document's TEXT first:
 
-        * **filenames are not indexed.** Searching ``report`` will not find
-          ``report.md``; only the words inside it are matched.
+        * **file names are a fallback, not an index.** The words inside a
+          document are matched first; file names are tried only when no
+          passage explains more of the question than a name does, and such a hit comes back with
+          ``matched_on: "filename"`` and ``confidence: "low"``. Treat it as
+          "this file is probably the one you mean", not as a quote.
         * **matching is whole word.** ``test`` does not find ``Testovaci``.
         * **there is no wildcard.** ``*`` and an empty query return nothing,
           not everything — there is no "list all chunks" query. Use
@@ -335,7 +338,7 @@ def register_foundation_tools(
 
     @tool()
     async def knowledge_search(query: str, k: int = 10) -> dict:
-        """One query across documents, the knowledge base, and the data catalog. Filenames are not indexed, matching is whole word, and there is no wildcard — so an empty result is a wording miss far more often than an access problem; read the response's ``hint`` before concluding anything from it.
+        """One query across documents, the knowledge base, and the data catalog. Matching is whole word, there is no wildcard, and file names are a fallback, consulted only when no passage explains the question better — so an empty result is a wording miss far more often than an access problem; read the response's ``hint`` before concluding anything from it.
 
         Fans out server-side over Collections chunks (hybrid lexical+vector),
         corporate-memory knowledge items (fulltext), table catalog cards,
@@ -354,7 +357,7 @@ def register_foundation_tools(
         either — see ``collections_search``'s note.
 
         The chunk leg carries the same three surprises as
-        ``collections_search``: filenames are not indexed, matching is whole
+        ``collections_search``: matching is whole
         word, and there is no wildcard. An empty result is not evidence that
         you lack access — it carries ``searched_collections``,
         ``searched_tables`` and a ``hint`` saying which of the two it is;
