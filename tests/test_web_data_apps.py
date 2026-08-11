@@ -212,7 +212,9 @@ def test_detail_page_renders_for_owner_with_deploy_button(web_env):
     assert "Stop" in resp.text
     assert "/api/data-apps/" in resp.text
     assert "logs?tail=200" in resp.text
-    assert "/admin/access" in resp.text
+    # /admin/access was retired (308 -> /admin/groups); the detail page's
+    # grant hint now points at the group's Access tab.
+    assert "/admin/groups" in resp.text
 
 
 def test_detail_page_for_granted_non_owner_hides_deploy_and_logs(web_env):
