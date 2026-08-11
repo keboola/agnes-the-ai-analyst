@@ -187,11 +187,21 @@ _DEFAULTS = {
     # (default 0 = forever). Rollups are not pruned.
     "SCHEDULER_USAGE_PRUNE_INTERVAL": 86400,
     # Jira self-healing pair (parity with the legacy Data Broker
-    # jira-sla-poll.timer / jira-consistency.timer). Defaults match the
-    # systemd-unit cadence from connectors/jira/systemd/. Both endpoints
+    # jira-sla-poll.timer / jira-consistency.timer). Both endpoints
     # short-circuit when JIRA_* env vars are unset, so customers without
     # Jira ingest pay no cost for these jobs running on the default schedule.
-    "SCHEDULER_JIRA_SLA_POLL_INTERVAL": 15 * 60,
+    #
+    # Consistency still matches its systemd unit (30min); the SLA poll
+    # deliberately does not match its 15min one. The poll walks every open
+    # ticket serially (connectors/jira/scripts/poll_sla.py), so on a busy
+    # service desk one pass runs well past 15min. systemd tolerated that —
+    # it won't start a unit that is still active — but this scheduler
+    # abandons the HTTP call at the job's timeout, clears its in_flight
+    # guard, and re-fires on the next tick, stacking a second pass onto the
+    # unfinished first. The two then contend on the same per-issue and
+    # per-month advisory locks, doubling Jira API load for no fresher data.
+    # So the cadence must exceed a realistic pass, not the legacy timer.
+    "SCHEDULER_JIRA_SLA_POLL_INTERVAL": 45 * 60,
     "SCHEDULER_JIRA_CONSISTENCY_INTERVAL": 30 * 60,
     # K3 (#798) local knowledge packaging: rebuilds per-collection
     # knowledge.duckdb artifacts whose chunk content changed since the last
@@ -631,7 +641,14 @@ def build_jobs() -> list[JobRow | EnqueueJobRow]:
         # ``--max-age-days 30`` default in the endpoint matches the
         # cadence: 30 min cadence × 30-day window keeps the cost
         # bounded while catching realistic drift.
-        ("jira-sla-poll", _seconds_to_schedule(jirasla), "/api/admin/run-jira-sla-poll", "POST", 900),
+        # 3600s rather than the 900s its cadence class would suggest: the
+        # scheduler must not abandon a pass that is still running server-side.
+        # _run_job's finally releases in_flight on a timeout as readily as on
+        # success, and a sync handler is not cancelled when its client
+        # disconnects — so a short timeout is precisely what stacked a second
+        # pass onto the unfinished first. The cadence above keeps passes from
+        # running back-to-back; this keeps them from running concurrently.
+        ("jira-sla-poll", _seconds_to_schedule(jirasla), "/api/admin/run-jira-sla-poll", "POST", 3600),
         (
             "jira-consistency-check",
             _seconds_to_schedule(jiraconsis),

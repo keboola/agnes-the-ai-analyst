@@ -678,14 +678,38 @@ class TestJiraSelfHealingJobs:
         assert jobs["jira-sla-poll"][1] == "/api/admin/run-jira-sla-poll"
         assert jobs["jira-consistency-check"][1] == "/api/admin/run-jira-consistency-check"
 
-    def test_jira_default_cadences_match_legacy_systemd_units(self, monkeypatch) -> None:
-        """Defaults match connectors/jira/systemd/{jira-sla-poll,jira-consistency}.timer."""
+    def test_jira_default_cadences(self, monkeypatch) -> None:
+        """Consistency matches connectors/jira/systemd/jira-consistency.timer.
+
+        The SLA poll intentionally diverges from its 15min systemd unit: a
+        serial pass over every open ticket outruns that cadence, and unlike
+        systemd this scheduler re-fires an abandoned call onto the still
+        running pass. See the DEFAULTS comment in services/scheduler.
+        """
         _clear_scheduler_env(monkeypatch)
         from services.scheduler.__main__ import build_jobs
 
         jobs = {name: schedule for name, schedule, *_ in build_jobs()}
-        assert jobs["jira-sla-poll"] == "every 15m"
+        assert jobs["jira-sla-poll"] == "every 45m"
         assert jobs["jira-consistency-check"] == "every 30m"
+
+    def test_sla_poll_timeout_outlasts_a_pass(self, monkeypatch) -> None:
+        """The scheduler must not abandon an SLA pass that is still running.
+
+        _run_job's finally releases in_flight and advances last_run on a
+        timeout as readily as on success, and a sync handler is not cancelled
+        when its client disconnects. A timeout shorter than a real pass is
+        therefore what stacks a second pass onto the unfinished first — the
+        wide cadence alone only makes that unlikely, not impossible.
+        """
+        _clear_scheduler_env(monkeypatch)
+        from services.scheduler.__main__ import build_jobs
+
+        timeout = next(j for j in build_jobs() if j[0] == "jira-sla-poll")[4]
+        assert timeout == 3600
+        # Outlasts the default cadence, so the guard is still held at the tick
+        # that would otherwise find the job due again.
+        assert timeout > 45 * 60
 
     def test_jira_sla_env_override_changes_cadence(self, monkeypatch) -> None:
         _clear_scheduler_env(monkeypatch)
@@ -704,7 +728,7 @@ class TestJiraSelfHealingJobs:
 
         jobs = {name: schedule for name, schedule, *_ in build_jobs()}
         assert jobs["jira-consistency-check"] == "every 1h"
-        assert jobs["jira-sla-poll"] == "every 15m"
+        assert jobs["jira-sla-poll"] == "every 45m"
 
     @pytest.mark.parametrize("var", [
         "SCHEDULER_JIRA_SLA_POLL_INTERVAL",
