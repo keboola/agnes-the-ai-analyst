@@ -4,6 +4,7 @@ import logging
 import re
 import time
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse
@@ -18,6 +19,7 @@ from src.rbac import can_access_table
 from src.repositories import (
     audit_repo,
 )
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/data", tags=["data"])
@@ -59,6 +61,85 @@ def _resolve_part_path(extracts_dir: Path, table_id: str, part: str) -> Path | N
     return None
 
 
+# Distribution allowlist. A parquet may leave the server ONLY for these
+# query modes — the same pair the manifest treats as downloadable. Stated as an
+# allowlist rather than a denylist so a query mode added later is undistributable
+# until someone decides otherwise, which is the safe direction for a gate that
+# releases raw bytes.
+_DISTRIBUTABLE_QUERY_MODES = frozenset({"local", "materialized"})
+
+
+def _distribution_refusal(table_id: str) -> Optional[HTTPException]:
+    """Raise 403 unless ``table_id`` is a table Agnes actually distributes.
+
+    ``server_only`` and ``query_mode`` were **client-side advice**: `agnes pull`
+    honours them (`cli/lib/pull.py`), but nothing on the server did, so the
+    parquet of a table flagged "never leaves the server" was one authenticated
+    GET away. On Caddy deployments the gap is wider than the handler below —
+    `forward_auth` calls ``check-access`` and then `file_server` streams the
+    file, so the app never sees the download at all. That is why this runs in
+    ``check-access`` too, and why fixing that endpoint is what actually closes
+    the fast path.
+
+    This is **not** an authorization check and does not honour admin god-mode:
+    "this table is not distributed" is a property of the table, true for every
+    caller, exactly as the manifest reports it to every caller. Callers run
+    ``can_access_table`` first, so an unauthorized caller still gets the RBAC
+    403 and learns nothing about distribution from this one.
+
+    A table absent from the registry is left alone — the caller's own
+    existence handling (404) owns that case.
+
+    The manifest ORs this with a per-user "granted but not subscribed" flag
+    (`app/api/sync.py`); that half is deliberately NOT mirrored here. It is a
+    stack-subscription property, not a table property: such a caller passes
+    `can_access_table`, so what they skipped is subscribing to the package,
+    not the authorization. Mirroring it would turn this into a second RBAC
+    decision on top of the one that already ran, with two places to keep in
+    agreement. (Devin Review on #1265 asked; this is the answer.)
+    """
+    from src.repositories import table_registry_repo
+
+    repo = table_registry_repo()
+    # id-or-name: the download path is reached by either (master views are named
+    # by `name`, grants key on `id`), so resolve the same way the rest of the
+    # read surface does rather than assuming one of them.
+    row = repo.get(table_id) or repo.get_by_name(table_id)
+    if row is None:
+        return None
+    if row.get("server_only"):
+        return HTTPException(
+            status_code=403,
+            detail=(
+                f"table '{table_id}' is server_only — it is kept fresh on the server and "
+                "not distributed; query it with `agnes query` instead of downloading it"
+            ),
+        )
+    # A blank/NULL `query_mode` means `local`, because that is what every other
+    # surface makes of it: the manifest (`app/api/sync.py:1629`) and the
+    # distribution mirror (`app/worker/kinds.py`) both fall back to "local", so
+    # such a table IS advertised as downloadable. Refusing it here would leave
+    # it permanently listed and permanently un-fetchable. (Devin Review on
+    # #1265.) The allowlist keeps its job for every mode that is actually set.
+    mode = (row.get("query_mode") or "").strip().lower() or "local"
+    if mode not in _DISTRIBUTABLE_QUERY_MODES:
+        return HTTPException(
+            status_code=403,
+            detail=(
+                f"table '{table_id}' has query_mode='{mode}' and is not distributed; "
+                "query it with `agnes query` instead of downloading it"
+            ),
+        )
+    return None
+
+
+def _assert_distributable(table_id: str) -> None:
+    """``_distribution_refusal``, raised. For callers that audit afterwards."""
+    refusal = _distribution_refusal(table_id)
+    if refusal is not None:
+        raise refusal
+
+
 @router.get("/{table_id}/check-access")
 async def check_access(
     table_id: str,
@@ -90,9 +171,11 @@ async def check_access(
                 user_id=identity_for_audit(user)[0],
                 action="data.access_check",
                 resource=resource,
-                params={"granted": False,
-                        "duration_ms": int((time.monotonic() - t0) * 1000),
-                        "error": "invalid_table_id"},
+                params={
+                    "granted": False,
+                    "duration_ms": int((time.monotonic() - t0) * 1000),
+                    "error": "invalid_table_id",
+                },
                 result="error.404",
                 client_kind=client_kind_from_user(user),
             )
@@ -100,25 +183,66 @@ async def check_access(
             logger.exception("audit_log write failed for data.access_check (invalid id); continuing")
         raise HTTPException(status_code=404, detail="Table not found")
     granted = can_access_table(user, table_id, conn)
+    check_unavailable = False
+    # Authorized — but is this table distributed at all? On Caddy this probe is
+    # the ONLY hook before file_server streams the parquet, so the check has to
+    # live here and not only in the download handler below. Decided BEFORE the
+    # audit write: this probe answers 204 or 403, and an audit trail that
+    # records a refused probe as a granted success is worse than no record —
+    # an operator reading it sees an access check that never happened that way.
+    # (Devin Review on #1265.)
+    try:
+        refusal = _distribution_refusal(table_id) if granted else None
+    except HTTPException:
+        raise
+    except Exception:
+        # The registry read is a second DB touch after `can_access_table`, so a
+        # failure here means state went away mid-request. Answering 204 would
+        # release bytes this gate has not cleared; a 500 would tell the caller
+        # nothing. Say what happened and let them retry. (Devin Review on
+        # #1265.)
+        logger.exception("data.access_check: distribution check failed for %s", table_id)
+        check_unavailable = True
+        refusal = HTTPException(
+            status_code=503,
+            detail={
+                "code": "distribution_check_unavailable",
+                "hint": "Could not read the table registry to check whether this table is distributed. Retry.",
+            },
+        )
+    params = {
+        "granted": granted,
+        "duration_ms": int((time.monotonic() - t0) * 1000),
+    }
+    if refusal is not None:
+        # A registry the server could not read is not a refused table, and an
+        # operator reading this trail has to be able to tell a temporary
+        # outage from a deliberate denial. (Devin Review on #1265.)
+        params["refused"] = "check_unavailable" if check_unavailable else "not_distributed"
     try:
         audit_repo().log(
             user_id=identity_for_audit(user)[0],
             action="data.access_check",
             resource=resource,
-            params={
-                "granted": granted,
-                "duration_ms": int((time.monotonic() - t0) * 1000),
-            },
-            result="success" if granted else "error.403",
+            params=params,
+            result=(
+                "success"
+                if granted and refusal is None
+                else ("error.503" if check_unavailable else "error.403")
+            ),
             client_kind=client_kind_from_user(user),
         )
     except Exception:
         logger.exception("audit_log write failed for data.access_check; continuing")
     if not granted:
         from src.rbac import table_not_in_stack_message
+
         raise HTTPException(
-            status_code=403, detail=table_not_in_stack_message(table_id),
+            status_code=403,
+            detail=table_not_in_stack_message(table_id),
         )
+    if refusal is not None:
+        raise refusal
     return Response(status_code=204)
 
 
@@ -149,8 +273,28 @@ async def download_table(
     # Check access FIRST
     if not can_access_table(user, table_id, conn):
         from src.rbac import table_not_in_stack_message
+
         raise HTTPException(
-            status_code=403, detail=table_not_in_stack_message(table_id),
+            status_code=403,
+            detail=table_not_in_stack_message(table_id),
+        )
+    # ...then whether the table is distributed at all. Order matters: an
+    # unauthorized caller gets the RBAC refusal and learns nothing else.
+    try:
+        _assert_distributable(table_id)
+    except HTTPException:
+        raise
+    except Exception:
+        # Same reasoning as `check-access`: a registry read that fails leaves
+        # this gate uncleared, and the bytes stay put until it can be read.
+        # (Devin Review on #1265.)
+        logger.exception("data.download: distribution check failed for %s", table_id)
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "distribution_check_unavailable",
+                "hint": "Could not read the table registry to check whether this table is distributed. Retry.",
+            },
         )
 
     data_dir = _get_data_dir()
