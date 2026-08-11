@@ -253,3 +253,148 @@ class TestAuthMethodOptionsAreImplemented:
             f"admin UI offers auth methods with no branch in "
             f"connectors/mcp/client.py::_build_http_headers: {sorted(offered - implemented)}"
         )
+
+
+class TestDisableLeavesNothingBehind(TestChatToolsEndpoint):
+    """Turning chat tools off must revoke, not park.
+
+    Devin Review on this PR. `_remove_chat_tools` deleted the `mcp_sources`
+    row and the vault secret, but the tools discovered under that source live
+    in `tool_registry` and the per-group permissions live in `tool_grants` —
+    neither is keyed on the source row, so neither went. And because
+    `derived_source_id()` is a pure function of the connection id, a later
+    re-enable lands on the *same* id and adopts whatever was left: an admin
+    who disabled chat tools to revoke access and later re-enabled them got
+    the revoked grants back, silently.
+    """
+
+    def _seed_tool(self, source_id: str, *, group_id: str | None = None) -> str:
+        from src.repositories import tool_registry_repo
+
+        repo = tool_registry_repo()
+        tool_id = f"{source_id}__kbc_query"
+        repo.upsert(
+            tool_id=tool_id,
+            source_id=source_id,
+            original_name="kbc_query",
+            exposed_name="kbc_query",
+            mode="passthrough",
+            description="run a query",
+            input_schema={},
+        )
+        if group_id:
+            repo.add_grant(tool_id, group_id)
+        return tool_id
+
+    def test_disable_removes_the_discovered_tools(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-chat-orphans")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.repositories import tool_registry_repo
+
+        source_id = derived_source_id(conn_id)
+        self._seed_tool(source_id)
+        assert tool_registry_repo().list_for_source(source_id), "fixture seeded nothing"
+
+        assert c.delete(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 204
+        assert tool_registry_repo().list_for_source(source_id) == [], (
+            "tools survived the disable and will be adopted by the next enable"
+        )
+
+    def test_re_enabling_does_not_restore_revoked_grants(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-chat-regrant")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.repositories import tool_registry_repo, user_groups_repo
+
+        source_id = derived_source_id(conn_id)
+        group = user_groups_repo().get_by_name("Everyone")
+        tool_id = self._seed_tool(source_id, group_id=group["id"])
+        assert tool_registry_repo().grants_for_tool(tool_id), "fixture granted nothing"
+
+        assert c.delete(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 204
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        surviving = tool_registry_repo().list_for_source(source_id)
+        assert surviving == [], f"re-enable adopted orphaned tools: {surviving}"
+
+
+class TestAFailedResyncKeepsTheLiveSetupWorking(TestChatToolsEndpoint):
+    """Devin Review on this PR: the rollback was unconditional.
+
+    Re-running enable is how a rotated token is propagated, so on a re-sync
+    the vault slot being overwritten holds the credential the existing,
+    still-live setup authenticates with. Deleting it when the config write
+    failed left every tool call of a previously working project failing auth
+    — worse than the failed re-sync the admin came to fix.
+
+    The patching uses `pytest.MonkeyPatch.context()` rather than the
+    `monkeypatch` fixture: that fixture is ONE instance per test, shared with
+    the autouse `_stable_vault_key`, so an `undo()` here also unsets
+    `AGNES_VAULT_KEY` — the vault then fails to decrypt and every secret reads
+    back as `None`, which looks exactly like the bug under test and would have
+    made this test pass against the fixed code for the wrong reason.
+    """
+
+    @staticmethod
+    def _failing_sources_repo(mp):
+        """Make `mcp_sources_repo().upsert` raise; leave every other call real."""
+        import app.api.admin_source_connections as mod
+
+        real = mod.mcp_sources_repo
+
+        class _Boom:
+            def __getattr__(self, name):
+                def _fail(*a, **kw):
+                    raise RuntimeError("config write failed")
+
+                return _fail if name == "upsert" else getattr(real(), name)
+
+        mp.setattr(mod, "mcp_sources_repo", lambda: _Boom())
+
+    def test_failed_resync_restores_the_previous_credential(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-chat-resync")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.repositories import shared_secrets_repo
+
+        source_id = derived_source_id(conn_id)
+        working = shared_secrets_repo().get(source_id)
+        assert working, "fixture stored no credential"
+
+        # Rotate the connection's token, then make the config write fail.
+        assert (
+            c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "rotated-token-value"},
+                headers=_auth(token),
+            ).status_code
+            == 204
+        )
+        with pytest.MonkeyPatch.context() as mp:
+            self._failing_sources_repo(mp)
+            # TestClient re-raises server exceptions rather than rendering a
+            # 500; what is under test is what the handler leaves behind.
+            with pytest.raises(RuntimeError, match="config write failed"):
+                c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token))
+
+        assert shared_secrets_repo().get(source_id) == working, (
+            "a failed re-sync left the live setup unable to authenticate"
+        )
+
+    def test_failed_first_enable_still_leaves_no_orphaned_secret(self, seeded_app):
+        """The original guarantee must survive the fix."""
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-chat-firstfail")
+
+        with pytest.MonkeyPatch.context() as mp:
+            self._failing_sources_repo(mp)
+            with pytest.raises(RuntimeError, match="config write failed"):
+                c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token))
+
+        from src.repositories import shared_secrets_repo
+
+        assert shared_secrets_repo().get(derived_source_id(conn_id)) is None
