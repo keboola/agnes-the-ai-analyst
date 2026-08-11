@@ -163,6 +163,60 @@ class TestV2ClientStopsOnRedirect:
         assert "Not authorized" in str(exc.value)
 
 
+class TestTheRemedyStaysCopyPasteable:
+    """The whole point is a command the user can paste. It must survive rendering.
+
+    `cli.error_render` wraps `hint` at 80 columns, so handing it the entire
+    explanation reflowed the block and split the new hostname mid-token:
+
+        or set `server: https://agnes-analytics-
+        platform.example.com` in your agnes config.yaml
+
+    A hint that cannot be copied is not a remedy. Devin Review on #1266.
+    """
+
+    LONG = "https://agnes-analytics-platform.example.com"
+
+    def _rendered(self) -> str:
+        from cli.error_render import render_error
+        from cli.server_moved import redirect_body
+
+        resp = httpx.Response(
+            308,
+            headers={"Location": f"{self.LONG}/api/catalog"},
+            request=httpx.Request("GET", "https://old-hostname.example.com/api/catalog"),
+        )
+        return render_error(308, redirect_body(resp, "https://old-hostname.example.com"))
+
+    def test_the_env_var_command_survives_whole(self):
+        """The COMMAND, not just the URL — a paste that stops at the hostname
+        runs `AGNES_SERVER=...` with nothing after it."""
+        lines = self._rendered().splitlines()
+        assert any(f"AGNES_SERVER={self.LONG} agnes" in line for line in lines), (
+            "the one-off command is broken across lines"
+        )
+
+    def test_the_config_remedy_survives_whole(self):
+        """The occurrence that actually broke: `server: <url>` in config.yaml."""
+        lines = self._rendered().splitlines()
+        assert any(f"server: {self.LONG}" in line for line in lines), (
+            "the config value is split across lines — it cannot be copied"
+        )
+
+    def test_no_line_ends_mid_hostname(self):
+        """Catch the split wherever it lands, not only at the two known spots.
+
+        An earlier version of this test counted lines containing the full URL
+        and passed on occurrences that were not remedies at all.
+        """
+        host = self.LONG.removeprefix("https://")
+        for line in self._rendered().splitlines():
+            stripped = line.rstrip()
+            assert not (
+                stripped.endswith("-") and host.startswith(stripped.rsplit("/", 1)[-1].rstrip("-"))
+            ), f"hostname split at a hyphen: {line!r}"
+
+
 class TestBothClientsShareOneGuard:
     """A second client is the reason this bug existed; pin the pair."""
 
