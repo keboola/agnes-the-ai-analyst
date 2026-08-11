@@ -379,6 +379,13 @@ class _TextualProgress:
         self._last_emit_pct: dict[str, int] = {}
         self._last_emit_bytes: dict[str, int] = {}
         self._finished_idx: int = 0  # files whose `finish` line has been emitted
+        # Files the CALLER knows did not land. The byte counter cannot see
+        # this: on a persistent hash mismatch every byte arrives, so the
+        # counter reaches the manifest size and the finalizer would print
+        # "100% done" for a table that was never promoted to disk — the same
+        # green-line-for-a-failure this class exists to stop, on what is in
+        # fact the most common download failure. (Devin Review.)
+        self._failed: dict[str, str] = {}
 
     def advance(self, tid: str, n: int) -> None:
         """Add `n` bytes to the file's total. Emit a textual update if
@@ -414,6 +421,11 @@ class _TextualProgress:
             self._last_emit_at.pop(tid, None)
             self._last_emit_pct.pop(tid, None)
             self._last_emit_bytes.pop(tid, None)
+
+    def fail(self, tid: str, reason: str = "") -> None:
+        """Record that this file did not land, whatever the byte count says."""
+        with self._lock:
+            self._failed[tid] = reason or "download failed"
 
     def finish(self) -> None:
         """Emit a final `done` line for any file we never closed out."""
@@ -457,7 +469,15 @@ class _TextualProgress:
                 # in the opposite direction to the one this guard removes. So
                 # the short case reports what was observed and points at the
                 # error rather than asserting one exists. (Devin Review.)
-                if not bytes_:
+                if tid in self._failed:
+                    # The caller's verdict beats the byte count — see `fail`.
+                    line = (
+                        f"[{self._finished_idx}/{self._total_files} files] "
+                        f"{tid}: FAILED ({self._failed[tid]}"
+                        f" after {self._fmt_bytes(bytes_)} in {duration:.1f}s)"
+                        f" — see the error below\n"
+                    )
+                elif not bytes_:
                     # Checked FIRST, and phrased as a hard failure: nothing
                     # arrived, which is unambiguous whether or not a size was
                     # declared. (Ordered after the short-transfer branch it
@@ -989,6 +1009,7 @@ def run_pull(
             signed_url = info.get("signed_url") or ""
             cb = None
             reset_progress = None
+            fail_progress = None
             if progress is not None and tid in progress_tasks:
                 task_id = progress_tasks[tid]
 
@@ -1004,6 +1025,9 @@ def run_pull(
 
                 def reset_progress(_tid=tid):
                     textual.reset(_tid)
+
+                def fail_progress(reason: str, _tid=tid):
+                    textual.fail(_tid, reason)
 
             def _entry() -> dict:
                 return {
@@ -1048,7 +1072,11 @@ def run_pull(
                             time.sleep(_DOWNLOAD_RETRY_BACKOFFS_S[min(attempt, len(_DOWNLOAD_RETRY_BACKOFFS_S) - 1)])
                             continue
                         # Persistent mismatch: prior good target (if any)
-                        # is untouched; record + bail.
+                        # is untouched; record + bail. Tell the progress
+                        # printer too — every byte arrived, so its counter
+                        # says "done" and only this call knows better.
+                        if fail_progress is not None:
+                            fail_progress(last_err or "integrity check failed")
                         return tid, None, last_err, None
                     except Exception as exc:
                         last_err = str(exc)
@@ -1056,8 +1084,12 @@ def run_pull(
                         if attempt < _DOWNLOAD_RETRIES:
                             time.sleep(_DOWNLOAD_RETRY_BACKOFFS_S[min(attempt, len(_DOWNLOAD_RETRY_BACKOFFS_S) - 1)])
                             continue
+                        if fail_progress is not None:
+                            fail_progress(last_err or "download failed")
                         return tid, None, last_err, None
                 # Loop exhausted without an explicit return (defensive).
+                if fail_progress is not None:
+                    fail_progress(last_err or "download failed")
                 return tid, None, last_err or "download failed", None
             finally:
                 sidecar.unlink(missing_ok=True)
