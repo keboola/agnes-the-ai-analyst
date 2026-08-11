@@ -543,10 +543,17 @@ def access_denied_detail(resource_type: ResourceType, resource_id: str) -> str:
     user without the grant actually sees on a page whose banner advertises
     "AI-ASSISTED". For that shape, name the feature instead.
     """
-    if resource_id == resource_type.value:
-        from app.resource_types import RESOURCE_TYPES
+    from app.resource_types import RESOURCE_TYPES
 
-        spec = RESOURCE_TYPES.get(resource_type)
+    spec = RESOURCE_TYPES.get(resource_type)
+    # A whole-feature switch is one whose `id_format` is a LITERAL id rather
+    # than a shape (`"chat"`, not `"<table_id>"`). Keying on that instead of
+    # on the id happening to equal the type's own name means the friendlier
+    # wording follows the property that makes it true, and a feature switch
+    # whose id differs from its type name still gets it. (Devin Review on
+    # #1263.)
+    id_format = (getattr(spec, "id_format", "") or "").strip()
+    if id_format and "<" not in id_format and resource_id == id_format:
         label = getattr(spec, "display_name", None) or resource_type.value
         return f"Access denied to {label} — it is not enabled for your account."
     return f"Access denied to {resource_type.value} {resource_id!r}"
