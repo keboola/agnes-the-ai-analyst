@@ -1889,3 +1889,19 @@ def test_the_error_formatter_is_declared_once():
         pathlib.Path(__file__).resolve().parents[1] / "app" / "web" / "templates" / "admin_data_sources.html"
     ).read_text(encoding="utf-8")
     assert src.count("function detailMessage") == 1, "detailMessage is declared more than once"
+
+
+def test_the_wizard_rejects_http_the_way_the_server_does():
+    """Devin Review on #1249: the check and its own message disagreed.
+
+    It read `startsWith("http")` while telling the admin the URL must start
+    with `https://` — and the server rejects `http://`, so the form waved the
+    input through and the server bounced it.
+    """
+    import pathlib
+
+    src = (
+        pathlib.Path(__file__).resolve().parents[1] / "app" / "web" / "templates" / "admin_data_sources.html"
+    ).read_text(encoding="utf-8")
+    assert 'startsWith("https://")' in src
+    assert 'startsWith("http")' not in src.replace('startsWith("https://")', "")
