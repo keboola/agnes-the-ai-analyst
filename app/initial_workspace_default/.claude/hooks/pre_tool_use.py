@@ -66,7 +66,13 @@ def _agnes_host() -> str | None:
     import os
     from urllib.parse import urlparse
 
-    raw = (os.environ.get("AGNES_SERVER") or "").strip()
+    # `AGNES_REAL_SERVER` first: the runner starts a loopback relay and
+    # overwrites `AGNES_SERVER` with `http://127.0.0.1:<port>/agnes-api`
+    # before `claude` — and therefore this hook — ever runs, so reading
+    # `AGNES_SERVER` alone yielded the loopback host and the real Agnes host
+    # was never allowed. `AGNES_SERVER` stays as the fallback for contexts
+    # with no relay (tests, a directly-invoked workspace).
+    raw = (os.environ.get("AGNES_REAL_SERVER") or os.environ.get("AGNES_SERVER") or "").strip()
     if not raw:
         return None
     # A bare `host:port` parses with no hostname — accept both spellings.

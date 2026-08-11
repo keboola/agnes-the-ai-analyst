@@ -389,6 +389,15 @@ def _decrypt_secrets(row: dict) -> dict:
 
 
 def _revoke_service_token(row: dict) -> None:
+    """Revoke everything this app's container authenticates with.
+
+    Both credentials, because both callers (an explicit stop and a delete)
+    mean "this app is not coming back on its own". The container git token
+    used to be left behind here, and being expiry-less it then outlived the
+    app itself — a deleted app's repository stayed reachable with a live
+    credential. (Devin Review on this PR.)
+    """
+    _revoke_container_git_tokens_for_row(row)
     token_id = row.get("service_token_id")
     if not token_id:
         return
@@ -396,6 +405,21 @@ def _revoke_service_token(row: dict) -> None:
         access_token_repo().revoke(token_id)
     except Exception:
         logger.warning("failed to revoke previous service token %s for data app %s", token_id, row["slug"])
+
+
+def _revoke_container_git_tokens_for_row(row: dict) -> None:
+    """``_revoke_container_git_tokens`` with the slugs resolved off an app row.
+
+    A draft clones its PARENT's repo, so the scope half of the name is the
+    parent's slug — the same resolution `_deploy` does before minting.
+    """
+    repo_slug = row.get("slug") or ""
+    if row.get("is_draft") and row.get("parent_app_id"):
+        parent = data_apps_repo().get(row["parent_app_id"])
+        if parent:
+            repo_slug = parent["slug"]
+    if repo_slug and row.get("owner_user_id"):
+        _revoke_container_git_tokens(row["owner_user_id"], repo_slug, row.get("slug") or "")
 
 
 def _rmtree_config_dir(slug: str) -> None:
@@ -452,7 +476,7 @@ def _mint_service_token(slug: str, owner: dict) -> tuple[str, str]:
     return token_id, jwt_token
 
 
-def _mint_container_git_token(repo_slug: str, owner: dict) -> tuple[str, str]:
+def _mint_container_git_token(repo_slug: str, app_slug: str, owner: dict) -> tuple[str, str]:
     """Mint the credential the CONTAINER clones its repo with.
 
     This has to exist separately from `_mint_service_token`, and the deploy
@@ -493,12 +517,58 @@ def _mint_container_git_token(repo_slug: str, owner: dict) -> tuple[str, str]:
     access_token_repo().create(
         id=token_id,
         user_id=owner["id"],
-        name=f"data-app-git:{repo_slug} (container)",
+        name=_container_git_token_name(repo_slug, app_slug),
         token_hash=hashlib.sha256(jwt_token.encode()).hexdigest(),
         prefix=token_id.replace("-", "")[:8],
         expires_at=None,
     )
     return token_id, jwt_token
+
+
+def _container_git_token_name(repo_slug: str, app_slug: str) -> str:
+    """The name every container git token is created under.
+
+    One literal, because it is also the *key* these tokens are found by when
+    they have to be revoked: unlike the service token, whose id is kept on the
+    app row (`service_token_id`), this credential had nowhere to be recorded,
+    so nothing could revoke it. Keying the sweep on the name avoids a column,
+    a migration on both ladders and a parity sibling for a value only this
+    module reads.
+
+    It carries BOTH slugs on purpose. The *scope* follows the repo — a draft
+    clones its parent's repository, so its token must be minted against the
+    parent's slug — but the *ownership* follows the app: a parent and each of
+    its drafts hold distinct, simultaneously-live tokens against that one
+    repo. Keying only on `repo_slug` would make a draft's deploy revoke the
+    parent's live container credential, breaking the parent the next time it
+    woke and re-cloned.
+    """
+    return f"data-app-git:{repo_slug} (container {app_slug})"
+
+
+def _revoke_container_git_tokens(owner_id: str, repo_slug: str, app_slug: str, *, keep: str | None = None) -> None:
+    """Revoke this app's container git tokens, optionally sparing the newest.
+
+    These are minted with **no expiry** on purpose — a container re-clones
+    whenever it is recreated, including waking from `sleep_mode: recreate`
+    long after the deploy — so nothing ages them out. Every deploy minted
+    another and none was recorded anywhere, so they accumulated without bound
+    and stayed valid forever, including for apps that had since been deleted.
+    Each one grants read/write on the app's repository.
+
+    Best-effort per token: on the deploy path this runs after a deploy the
+    caller already considers successful, and a bookkeeping failure must not
+    turn it into an error. (Devin Review on this PR.)
+    """
+    name = _container_git_token_name(repo_slug, app_slug)
+    try:
+        tokens = access_token_repo().list_for_user(owner_id, include_revoked=False)
+    except Exception:  # noqa: BLE001
+        logger.warning("could not list tokens to revoke container git credentials for %s", app_slug, exc_info=True)
+        return
+    for token in tokens:
+        if token.get("name") == name and token.get("id") != keep:
+            _revoke_quietly(token["id"])
 
 
 _GIT_CREDENTIAL_TTL = timedelta(hours=24)
@@ -782,7 +852,7 @@ def redeploy_current(row: dict) -> None:
     # required` and the container crash-loop forever. Minted against
     # `repo_slug` — a draft clones its PARENT's repo, and the scope's slug is
     # pinned to the repo being requested. See `_mint_container_git_token`.
-    git_token_id, git_token = _mint_container_git_token(repo_slug, owner)
+    git_token_id, git_token = _mint_container_git_token(repo_slug, slug, owner)
 
     try:
         config_json = build_config_json(row, secrets=secrets, clone_url=clone_url, clone_token=git_token)
@@ -812,6 +882,12 @@ def redeploy_current(row: dict) -> None:
             access_token_repo().revoke(previous_token_id)
         except Exception:
             logger.warning("failed to revoke previous service token %s for data app %s", previous_token_id, slug)
+    # The container git token gets the same treatment, and for the same
+    # reason it has to happen *here* rather than before the runner call: the
+    # previously-deployed container may still be running or asleep and will
+    # re-clone with the old credential if it wakes. Sparing the one we just
+    # handed to the runner, everything older for this repo goes.
+    _revoke_container_git_tokens(owner["id"], repo_slug, slug, keep=git_token_id)
 
 
 class CreateDataAppRequest(BaseModel):

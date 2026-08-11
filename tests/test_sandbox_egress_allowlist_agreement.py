@@ -155,3 +155,58 @@ def test_ordinary_urls_still_decide_the_same_way():
     mod = _load_hook("https://agnes.example.com")
     assert _decide(mod, "curl https://api.github.com/repos")[0] == "allow"
     assert _decide(mod, "curl https://evil.example/x")[0] == "deny"
+
+
+def _load_hook_env(env: dict[str, str | None]):
+    """Import the bundled hook with an arbitrary env slice applied."""
+    prev = {k: os.environ.get(k) for k in env}
+    try:
+        for k, v in env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        spec = importlib.util.spec_from_file_location("bundled_hook_env", HOOK)
+        assert spec and spec.loader
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    finally:
+        for k, v in prev.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+class TestTheRelayRewriteDoesNotHideTheRealHost:
+    """Devin Review on this PR: the allowlist was reading the loopback relay.
+
+    `runner._start_relay()` overwrites `AGNES_SERVER` with
+    `http://127.0.0.1:<port>/agnes-api` *before* `claude` — and therefore this
+    hook — is spawned, so the real Agnes host was never added and a `git
+    clone` of a data-app repo from inside the sandbox stayed refused. The MCP
+    tools kept working throughout, because they go through that very relay on
+    loopback, which is what made it read as a git problem.
+    """
+
+    def test_the_real_host_wins_over_the_relay_rewrite(self):
+        mod = _load_hook_env(
+            {
+                "AGNES_SERVER": "http://127.0.0.1:41234/agnes-api",
+                "AGNES_REAL_SERVER": "https://agnes.example.com",
+            }
+        )
+        assert "agnes.example.com" in mod.ALLOWED_HOSTS, "the sandbox still cannot reach its own server"
+
+    def test_agnes_server_remains_the_fallback_without_a_relay(self):
+        """Tests and a directly-invoked workspace have no relay to rewrite."""
+        mod = _load_hook_env({"AGNES_SERVER": "https://agnes.example.com", "AGNES_REAL_SERVER": None})
+        assert "agnes.example.com" in mod.ALLOWED_HOSTS
+
+    def test_the_runner_records_the_real_server_before_overwriting_it(self):
+        """Written after the overwrite, it would record the relay's own URL."""
+        src = Path("app/chat/runner.py").read_text(encoding="utf-8")
+        set_at = src.index('os.environ["AGNES_REAL_SERVER"] = real_server')
+        overwrite_at = src.index('os.environ["AGNES_SERVER"] = f"http://127.0.0.1:{port}/agnes-api"')
+        assert set_at < overwrite_at
