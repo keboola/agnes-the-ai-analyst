@@ -58,3 +58,43 @@ def test_every_agnes_command_this_module_suggests_is_runnable():
             )
 
     assert checked, "the guard resolved no commands — it would pass against any hint"
+
+
+def test_a_registry_gap_is_not_reported_as_a_definition_defect():
+    """Devin Review on #1248: `foreign_alias_reference` covered two causes.
+
+    A metric whose joined table is simply not registered in Agnes was filed
+    under "blocked by their own definition", telling the admin that
+    registering a table would not help — when that is exactly the fix. The
+    registry-caused failures now carry their own reason, which is NOT in
+    `DEFINITION_BLOCKED_REASONS`.
+    """
+    from connectors.keboola.semantic_layer import DEFINITION_BLOCKED_REASONS
+
+    assert "unresolved_joined_table" not in DEFINITION_BLOCKED_REASONS
+    assert "foreign_alias_reference" in DEFINITION_BLOCKED_REASONS
+
+
+def test_the_new_reason_still_lands_in_the_published_counter():
+    """The per-source counters are a stable surface — the split must not add one."""
+    import inspect
+
+    from connectors.keboola import semantic_layer
+
+    src = inspect.getsource(semantic_layer)
+    assert 'skip_reason in ("foreign_alias_reference", "unresolved_joined_table")' in src
+    assert "skipped_unresolved_joined_table" not in src, "a new counter key leaked into the payload"
+
+
+def test_the_token_mismatch_strip_stays_hidden_when_empty():
+    """`display:flex` beats the UA sheet's `[hidden] { display: none }`, so an
+    empty orange band rendered under every Keboola connection card."""
+    import pathlib
+
+    src = (
+        pathlib.Path(__file__).resolve().parents[1] / "app" / "web" / "templates" / "admin_data_sources.html"
+    ).read_text(encoding="utf-8")
+    assert ".ds-token-mismatch[hidden]" in src
+    assert src.index(".ds-token-mismatch[hidden]") < src.index(".ds-token-mismatch {"), (
+        "the hidden rule must not be overridden by the later display:flex"
+    )
