@@ -7,6 +7,17 @@
    `dropdown` macro. #}
 <link rel="stylesheet" href="{{ static_url('css/ds_dropdown.css') }}">
 <style>
+  /* A stored auth method this build no longer offers. `[hidden]` first, so the
+     layout rule below cannot resurrect an empty strip. */
+  .auth-stale[hidden] { display: none; }
+  .auth-stale {
+    display: block; margin-top: 8px; padding: 8px 10px; border-radius: 8px;
+    font-size: 12px; line-height: 1.5;
+    background: var(--ds-accent-warn-bg);
+    border: 1px solid var(--ds-accent-warn-line);
+    color: var(--ds-accent-warn-ink);
+  }
+
   .src-toolbar {
     display: flex; justify-content: space-between; align-items: center;
     gap: 12px; margin-bottom: 18px; flex-wrap: wrap;
@@ -277,6 +288,8 @@
           ],
         ) }}
 
+        <div id="edit-auth-method-stale" class="auth-stale" hidden></div>
+
         <label for="edit-auth-secret-env" style="margin-top:16px;">Auth secret env var — Advanced (legacy)</label>
         <input id="edit-auth-secret-env" type="text" autocomplete="off">
         <div class="help" style="font-size:11px; color: var(--ds-text-muted); margin-top:4px;">Advanced/legacy: names a host env var holding the secret. Prefer the vault — set the secret value below so no host env var is needed.</div>
@@ -536,8 +549,32 @@ document.getElementById("edit-toggle-btn").addEventListener("click", () => {
   document.getElementById("edit-args").value = (source.args || []).join("\n");
   document.getElementById("edit-url-http").value = source.transport === "http" ? (source.url || "") : "";
   document.getElementById("edit-url-sse").value = source.transport === "sse" ? (source.url || "") : "";
-  document.getElementById("edit-auth-method").value = source.auth_method || "";
-  syncDropdown("edit-auth-method", source.auth_method || "");
+  // A stored value with no matching <option> silently selects the FIRST one
+  // ("none"), so opening and saving a server saved under the removed "custom
+  // header" method rewrote its auth to none without saying anything. Surface
+  // the stale value instead, as a disabled option the admin has to replace.
+  // (Devin Review on this PR.)
+  const authSel = document.getElementById("edit-auth-method");
+  const storedAuth = source.auth_method || "";
+  const knownAuth = Array.from(authSel.options).some(o => o.value === storedAuth);
+  const staleNote = document.getElementById("edit-auth-method-stale");
+  if (!knownAuth) {
+    const opt = document.createElement("option");
+    opt.value = storedAuth;
+    opt.textContent = `${storedAuth} — no longer supported, pick another`;
+    opt.disabled = true;
+    authSel.insertBefore(opt, authSel.firstChild);
+    if (staleNote) {
+      staleNote.textContent =
+        `This server is saved with auth method "${storedAuth}", which Agnes no longer implements — ` +
+        `it connects with no credential. Choose bearer, basic or oauth before saving.`;
+      staleNote.hidden = false;
+    }
+  } else if (staleNote) {
+    staleNote.hidden = true;
+  }
+  authSel.value = storedAuth;
+  syncDropdown("edit-auth-method", storedAuth);
   document.getElementById("edit-auth-secret-env").value = source.auth_secret_env || "";
   document.getElementById("edit-scope").value = source.scope || "shared";
   syncDropdown("edit-scope", source.scope || "shared");
