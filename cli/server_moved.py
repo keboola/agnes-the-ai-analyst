@@ -88,9 +88,14 @@ def _parse_target(location: str, configured: str) -> tuple[bool, str]:
             # Calling it "not a move" left the user with no remedy for the
             # one case they can fix in a second. (Devin Review on #1266.)
             current = httpx.URL(configured)
-            moved = bool(target.netloc) and (
-                target.netloc != current.netloc or target.scheme != current.scheme
-            )
+            same_host = target.netloc == current.netloc
+            # A scheme change counts as a move only UPWARD. `https` → `http`
+            # on the same host is a misconfigured proxy, not a relocation, and
+            # printing "point your CLI at http://…" would talk someone out of
+            # TLS on the strength of a redirect anyone on the path can forge.
+            # (Devin Review on #1266, after the upgrade case was added.)
+            upgraded = same_host and current.scheme == "http" and target.scheme == "https"
+            moved = bool(target.netloc) and (not same_host or upgraded)
             if moved:
                 new_base = str(target.copy_with(raw_path=b"/")).rstrip("/")
         except Exception:
