@@ -1019,3 +1019,38 @@ class TestARotationDoesNotReEnableADisabledServer(TestChatToolsEndpoint):
         from src.repositories import mcp_sources_repo
 
         assert mcp_sources_repo().get(derived_source_id(conn_id))["enabled"] is True
+
+
+class TestTheSwitchReflectsWhatTheSourceDoes(TestChatToolsEndpoint):
+    """Devin Review on this PR: `has_chat_tools` was row existence alone.
+
+    Both enable and the edit re-sync deliberately carry a previously-set
+    `enabled=False` over, so a disabled derived source kept reading "on" —
+    and toggling the switch off and on, the obvious remedy, does nothing
+    because the row was there the whole time.
+    """
+
+    def _disable(self, conn_id: str, name: str) -> None:
+        from src.keboola_chat_tools import build_stdio_spec
+        from src.repositories import mcp_sources_repo
+
+        spec = build_stdio_spec(
+            connection_id=conn_id, connection_name=name, stack_url="https://connection.example.com"
+        )
+        mcp_sources_repo().upsert(**{**spec, "enabled": False})
+
+    def test_a_disabled_source_reads_as_off(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-switch")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+        assert c.get(f"{BASE}/{conn_id}", headers=_auth(token)).json()["has_chat_tools"] is True
+
+        self._disable(conn_id, "kbc-switch")
+        assert c.get(f"{BASE}/{conn_id}", headers=_auth(token)).json()["has_chat_tools"] is False
+
+    def test_a_source_with_no_enabled_key_still_reads_as_on(self, seeded_app):
+        """Absent means enabled — an older row must not read as off."""
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-switch-legacy")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+        assert c.get(f"{BASE}/{conn_id}", headers=_auth(token)).json()["has_chat_tools"] is True
