@@ -332,3 +332,19 @@ class TestTheCodeNamesWhatHappened:
     def test_a_relative_redirect_is_not_either(self):
         detail = self._body("/api/v1/agents/")
         assert detail["code"] == "unexpected_redirect", detail
+
+
+class TestTheSetupExchangeNamesAFixThatWorks:
+    """Devin Review on #1266: `agnes init` reads neither `AGNES_SERVER` nor
+    `config.yaml` — it takes the address as an argument, so the generic
+    remedy pointed the reader at two things this command ignores."""
+
+    def test_the_fix_is_the_init_flag(self):
+        page = (ROOT / "cli" / "commands" / "init.py").read_text(encoding="utf-8")
+        assert 'f"agnes init --server-url {moved_to} …"' in page
+        assert "AGNES_SERVER=" not in page.split("is_redirect(exchange_resp.status_code)")[1][:1200]
+
+    def test_a_same_origin_redirect_is_not_reported_as_a_move(self):
+        page = (ROOT / "cli" / "commands" / "init.py").read_text(encoding="utf-8")
+        block = page.split("is_redirect(exchange_resp.status_code)")[1][:1200]
+        assert '"unexpected_redirect"' in block
