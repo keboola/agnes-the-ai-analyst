@@ -785,19 +785,24 @@ async def delete_connection_secret(
         try:
             derived = derived_source_id(connection_id)
             shared_secrets_repo().delete(derived)
-            # …and close the host-env fallback with it. `connectors/mcp/client.py`
-            # reads `os.environ[auth_secret_env]` when the vault has nothing, and
-            # the derived source names `KBC_STORAGE_TOKEN` — a variable a Keboola
-            # deployment plausibly has set. Deleting only the vault copy therefore
-            # left the agent authenticating from the host environment, so
-            # "cleared" did not cut it off at all. Re-enabling rebuilds the spec
-            # and restores the name. (Devin Review on this PR.)
+            # …and switch the derived source OFF with it. Deleting the vault
+            # copy alone is not enough: `connectors/mcp/client.py` falls back
+            # to `os.environ[auth_secret_env]`, and the derived source names
+            # `KBC_STORAGE_TOKEN` — a variable a Keboola deployment plausibly
+            # has set — so the agent kept working from the host environment.
+            # Clearing `auth_secret_env` instead was WRONG: for a stdio source
+            # that name is also how the vault value is injected into the
+            # subprocess, so it broke the working path rather than the
+            # fallback. Disabling is the honest expression of the admin's
+            # intent, and the switch then reads "off" because it is. Turning
+            # it back on is explicit, which is what `enable_chat_tools` is
+            # for. (Devin Review on this PR, three rounds.)
             source = mcp_sources_repo().get(derived)
-            if source is not None and source.get("auth_secret_env"):
+            if source is not None and source.get("enabled") is not False:
                 mcp_sources_repo().upsert(
                     **{
                         k: v
-                        for k, v in {**source, "auth_secret_env": None}.items()
+                        for k, v in {**source, "enabled": False}.items()
                         if k not in ("created_at", "updated_at")
                     }
                 )
