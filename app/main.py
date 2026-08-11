@@ -48,8 +48,10 @@ setup_logging("app")
 from app.version import APP_VERSION, MIN_COMPAT_CLI_VERSION, SERVER_CAPABILITIES
 
 from fastapi import Depends, FastAPI
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.gzip import GZipMiddleware
@@ -2742,6 +2744,30 @@ def create_app() -> FastAPI:
             request_id=request_id_var.get(),
         )
         return _web_templates.TemplateResponse(request, "error.html", ctx, status_code=code)
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_error_handler(request, exc: RequestValidationError):
+        """422 body without the rejected input echoed back.
+
+        FastAPI's default validation error puts the offending value in an
+        ``input`` key. On a request body that carries a credential that hands
+        the secret straight back to the caller — and into every access log,
+        proxy and error tracker on the way. Found live: a ``PUT
+        /api/admin/source-connections/{id}/secret`` sent with the wrong field
+        name answered 422 with the Keboola master token verbatim in the body.
+
+        Redaction is not field-name-based on purpose. An allowlist of
+        "secret-looking" names is a guess that silently misses the next
+        endpoint someone adds, and at least five request models already carry a
+        credential in a plain ``value`` / ``token`` field
+        (``admin_source_connections``, ``admin_datasource_secrets``,
+        ``admin_slack_secrets``, ``admin_mcp``, ``cli_auth``). Dropping
+        ``input`` outright cannot miss one. ``loc``, ``msg`` and ``type``
+        survive, which is what a client needs to fix the call — the wrong field
+        name in that live case is still named.
+        """
+        redacted = [{k: v for k, v in error.items() if k != "input"} for error in exc.errors()]
+        return JSONResponse(status_code=422, content=jsonable_encoder({"detail": redacted}))
 
     @app.exception_handler(StarletteHTTPException)
     async def _html_auth_redirect_handler(request, exc: StarletteHTTPException):
