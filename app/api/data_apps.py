@@ -855,7 +855,16 @@ def redeploy_current(row: dict) -> None:
     git_token_id, git_token = _mint_container_git_token(repo_slug, slug, owner)
 
     try:
-        config_json = build_config_json(row, secrets=secrets, clone_url=clone_url, clone_token=git_token)
+        config_json = build_config_json(
+            row,
+            secrets=secrets,
+            clone_url=clone_url,
+            clone_token=git_token,
+            # The RUNTIME credential, not the clone one: `AGNES_TOKEN` is what
+            # the app calls the Agnes API with, and a git-scoped token is
+            # refused by every data endpoint. (Devin Review on this PR.)
+            service_token=jwt_token,
+        )
         spec = build_container_spec(row, defaults=_effective_config(), data_dir=os.environ.get("DATA_DIR", "/data"))
     except ValueError:
         _rollback_new_service_token(repo, row["id"], new_token_id, previous_token_id)

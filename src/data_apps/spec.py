@@ -51,7 +51,29 @@ def _embed_credentials(url: str, username: str, password: str) -> str:
     return f"{scheme}{quote(username, safe='')}:{quote(password, safe='')}@{rest}"
 
 
-def build_config_json(app_row: dict, *, secrets: dict[str, str], clone_url: str, clone_token: str) -> dict:
+def build_config_json(
+    app_row: dict,
+    *,
+    secrets: dict[str, str],
+    clone_url: str,
+    clone_token: str,
+    service_token: str,
+) -> dict:
+    """The runtime `config.json` the apps-runner writes for a container.
+
+    ``clone_token`` and ``service_token`` are two different credentials and
+    must not be conflated. The clone token is `data-app-git:<slug>`-scoped and
+    admitted by exactly one surface — the internal git backend. The service
+    token is `data-app:<slug>`-scoped and is what the running app calls the
+    Agnes API with.
+
+    They used to share one parameter. When the deploy path was corrected to
+    pass the git-scoped token (so the first clone would stop failing), that
+    single parameter carried it into ``AGNES_TOKEN`` as well — so every hosted
+    app started successfully and was then refused by every data endpoint it
+    called. The failure is invisible from the outside: the container is
+    healthy, the app renders, and only its data calls 401.
+    """
     if app_row["repo_mode"] == "internal":
         branch = app_row["draft_branch"] if app_row.get("is_draft") else LIVE_BRANCH
         # Embed the push token into the repository URL: the runtime image won't
@@ -68,7 +90,7 @@ def build_config_json(app_row: dict, *, secrets: dict[str, str], clone_url: str,
     else:
         git = {"repository": app_row["repo_url"], "branch": app_row["repo_branch"] or "main"}
     out_secrets = {f"#{k}": v for k, v in secrets.items()}
-    out_secrets["AGNES_TOKEN"] = clone_token
+    out_secrets["AGNES_TOKEN"] = service_token
     out_secrets["AGNES_URL"] = AGNES_INTERNAL_URL
     return {"dataApp": {"git": git, "secrets": out_secrets}}
 
