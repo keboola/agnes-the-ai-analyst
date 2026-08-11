@@ -23256,7 +23256,7 @@
     },
     "/api/admin/run-jira-sla-poll": {
       "post": {
-        "description": "Refresh SLA + status fields for open Jira tickets.\n\nWebhooks update tickets on activity. Tickets that sit idle for hours\ndon't fire webhooks; their ``elapsed_millis`` ages out, and SLA\nbreaches go undetected. This job polls every open ticket with SLA\ndata and re-fetches the live values from the Jira API. Self-heals\nstale ``status`` / ``resolution`` fields on the same pass \u2014 tickets\nclosed during a webhook outage get corrected.\n\nCadence: every 15 min by default (SCHEDULER_JIRA_SLA_POLL_INTERVAL).\nSkipped gracefully when JIRA_SLA_* env vars aren't set.",
+        "description": "Refresh SLA + status fields for open Jira tickets.\n\nWebhooks update tickets on activity. Tickets that sit idle for hours\ndon't fire webhooks; their ``elapsed_millis`` ages out, and SLA\nbreaches go undetected. This job polls every open ticket with SLA\ndata and re-fetches the live values from the Jira API. Self-heals\nstale ``status`` / ``resolution`` fields on the same pass \u2014 tickets\nclosed during a webhook outage get corrected.\n\nCadence: every 45 min by default (SCHEDULER_JIRA_SLA_POLL_INTERVAL) \u2014\nlong enough that a serial pass over every open ticket finishes before\nthe next one is due; see the DEFAULTS comment in services/scheduler.\nSkipped gracefully when JIRA_SLA_* env vars aren't set.",
         "operationId": "run_jira_sla_poll_api_admin_run_jira_sla_poll_post",
         "parameters": [
           {
