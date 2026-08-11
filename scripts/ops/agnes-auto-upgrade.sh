@@ -277,6 +277,33 @@ if [ -f docker-compose.gcp-logging.yml ]; then
     esac
 fi
 
+# Docker GC. Deliberately OUTSIDE the drift block below, and ahead of the
+# pull: `docker image prune -f` used to be the last statement inside that
+# block, so a VM reclaimed disk only on a tick that happened to recreate
+# containers — never on a box already sitting on the current image, and
+# never when the recreate aborted (role-split) or was deferred. Garbage
+# accrues from more than upgrades, too: a manual `docker compose build` on
+# a dev VM, a tag pulled by hand. Nothing else on the host reclaims it —
+# agnes-watchdog.sh alerts on `/data`, while images and build cache live
+# on the BOOT disk under /var/lib/docker, which no probe watches, so the
+# first symptom is a failed pull or a wedged daemon. Running before the
+# pull is what makes this self-healing on an already-full disk: the tick
+# frees the superseded image, then fetches the new one.
+#
+# Scope is intentionally conservative:
+#   * `image prune -f` (no -a) removes DANGLING images only — the previous
+#     :stable that lost its tag when the new digest landed. Tagged images
+#     stay, including a data app's runtime image that happens to have no
+#     container running right now (src/data_apps/spec.py::build_container_spec).
+#   * `builder prune` reclaims BuildKit cache, which `image prune` cannot
+#     see at all; `until=168h` keeps a week of warm cache so a local
+#     rebuild on a dev VM stays fast.
+# Both are best-effort: `|| true` keeps a docker hiccup — or an older
+# daemon with no `builder` subcommand — from aborting the tick under
+# `set -e` and blocking the upgrade (and the self-update) behind it.
+docker image prune -f >/dev/null 2>&1 || true
+docker builder prune -f --filter until=168h >/dev/null 2>&1 || true
+
 # COMPOSE_FILE is exported above; docker compose picks it up automatically.
 # `|| …` so a pull failure (registry outage, transient network/auth blip)
 # doesn't abort the script under `set -e` BEFORE drift detection runs —
@@ -543,7 +570,9 @@ if [ "$IMAGE_DRIFT" = "1" ] || [ "$CONFIG_DRIFT" = "1" ]; then
     # Record the config hash that is now in effect — config drift is
     # declared against this marker on subsequent ticks.
     printf '%s\n' "$CONFIG_AFTER" > "$CONFIG_MARKER"
-    docker image prune -f >/dev/null 2>&1
+    # (The image this recreate just superseded is collected by the GC at the
+    # top of the next tick — 5 minutes, versus never on a box that stops
+    # drifting. See the prune block above the pull.)
 fi
 
 # Self-update: re-fetch *this* script too. Without this, the very fix
