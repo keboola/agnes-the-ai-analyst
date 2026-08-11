@@ -544,11 +544,28 @@ def init(
                         "the setup token is unchanged."
                     )
                 else:
-                    detail["hint"] = (
-                        f"{server_url} answered HTTP {exchange_resp.status_code} instead of exchanging the "
-                        "setup token, and the redirect stays on the same address. Check whether a proxy "
-                        "sits in front of the server."
-                    )
+                    # Say WHICH kind of no-move this is. A refused target (a
+                    # plaintext address we will not hand over) is not the same
+                    # as a redirect that stays put, and telling someone to
+                    # hunt for a proxy when their server actually moved to
+                    # `http://…` leaves them with no idea where it went.
+                    # (Devin Review on #1266.)
+                    location = exchange_resp.headers.get("Location", "") or ""
+                    refused_insecure = location.startswith("http://") and server_url.startswith("https://")
+                    if refused_insecure:
+                        detail["code"] = "insecure_redirect"
+                        detail["hint"] = (
+                            f"{server_url} answered HTTP {exchange_resp.status_code} pointing at "
+                            f"{location} — an unencrypted address. Setup will not send a token there. "
+                            "If the server really did move, re-run with an https address; if it did not, "
+                            "a proxy in front of it is rewriting the scheme."
+                        )
+                    else:
+                        detail["hint"] = (
+                            f"{server_url} answered HTTP {exchange_resp.status_code} instead of exchanging "
+                            "the setup token, and the redirect stays on the same address. Check whether a "
+                            "proxy sits in front of the server."
+                        )
                 typer.echo(render_error(exchange_resp.status_code, {"detail": detail}), err=True)
                 raise typer.Exit(1)
             if exchange_resp.status_code == 401:

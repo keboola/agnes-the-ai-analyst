@@ -397,3 +397,22 @@ def test_a_tls_downgrade_is_not_a_move():
     # …and a downgrade that ALSO changes host is still a downgrade: handing
     # over a new plaintext address is the thing not to do. (Devin Review.)
     assert server_moved.redirect_target("http://new.example.com/api", "https://old.example.com") == ""
+
+
+class TestTheWizardSaysWhichKindOfNoMoveItIs:
+    """Devin Review on #1266: a refused insecure target is not "it stayed put".
+
+    Telling someone to hunt for a proxy when their server actually moved to a
+    plaintext address leaves them with no idea where it went.
+    """
+
+    def test_an_insecure_target_is_named_rather_than_hidden(self):
+        page = (ROOT / "cli" / "commands" / "init.py").read_text(encoding="utf-8")
+        block = page.split("is_redirect(exchange_resp.status_code)")[1][:3200]
+        assert '"insecure_redirect"' in block
+        assert "will not send a token there" in block
+
+    def test_a_genuine_same_address_redirect_still_says_proxy(self):
+        page = (ROOT / "cli" / "commands" / "init.py").read_text(encoding="utf-8")
+        block = page.split("is_redirect(exchange_resp.status_code)")[1][:3200]
+        assert "stays on the same address" in block
