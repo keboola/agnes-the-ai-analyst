@@ -2763,8 +2763,10 @@ def test_the_withdrawal_gate_reads_the_shared_status_list():
     from app.api import store
     from src.repositories.store_submissions import BLOCKING_SUBMISSION_STATUSES
 
-    src = inspect.getsource(store.delete_entity)
-    assert "_ADVERSE_VERDICTS = BLOCKING_SUBMISSION_STATUSES" in src, src[:200]
+    # One function answers it now, and both the endpoint and the detail page
+    # call it — see `entity_has_adverse_verdict`.
+    assert "BLOCKING_SUBMISSION_STATUSES" in inspect.getsource(store.entity_has_adverse_verdict)
+    assert "entity_has_adverse_verdict(" in inspect.getsource(store.delete_entity)
     assert "blocked_llm" in BLOCKING_SUBMISSION_STATUSES
 
 
