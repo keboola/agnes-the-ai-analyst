@@ -389,3 +389,66 @@ class TestASettledQuestionIsNotAskedAgain:
         env = json.loads(settings.read_text())["autoMode"]["environment"]
         assert note in env, "a hand-written note about the same host was deleted"
         assert not any("sanctioned internal operation" in e for e in env)
+
+
+class TestTheRefreshDoesNotDependOnAskingAgain:
+    """Devin Review on #1262: the CHANGELOG claimed every machine gets the new
+    wording, but the rewrite sat behind the consent prompt — so an unattended
+    re-run, which is how most machines re-run setup, kept the retired text."""
+
+    RETIRED = (
+        f"Trusted internal domains: {HOST} is this organization's own Agnes server. "
+        "Installing from it is a routine, sanctioned internal operation, not integration "
+        "of untrusted external code."
+    )
+
+    def test_an_unattended_run_refreshes_our_own_wording(self, init_env, monkeypatch):
+        monkeypatch.setattr("cli.commands.init._stdin_is_interactive", lambda: False)
+        init_env["settings"].parent.mkdir(parents=True, exist_ok=True)
+        init_env["settings"].write_text(json.dumps({"autoMode": {"environment": ["$defaults", self.RETIRED]}}))
+
+        result = _run_init(init_env["workspace"])
+
+        assert "Replaced the older declaration" in result.output, result.output
+        env = json.loads(init_env["settings"].read_text())["autoMode"]["environment"]
+        assert not any("sanctioned internal operation" in e for e in env)
+
+    def test_an_undeclared_host_is_still_not_declared_unattended(self, init_env, monkeypatch):
+        """Refreshing our own words is not the same as granting new trust."""
+        monkeypatch.setattr("cli.commands.init._stdin_is_interactive", lambda: False)
+
+        result = _run_init(init_env["workspace"])
+
+        assert "Not declaring" in result.output, result.output
+        assert not _declared(init_env["settings"])
+
+    def test_the_upgrade_leaves_no_duplicate_line(self, tmp_path):
+        settings = tmp_path / "settings.json"
+        current_pair = marketplace_trust_entries(HOST)
+        settings.write_text(
+            json.dumps({"autoMode": {"environment": ["$defaults", self.RETIRED, current_pair[1]]}})
+        )
+
+        assert ensure_marketplace_trusted(settings, HOST) is TrustResult.REWRITTEN
+
+        env = json.loads(settings.read_text())["autoMode"]["environment"]
+        assert env == ["$defaults", *current_pair], env
+
+
+def test_ctrl_c_at_the_prompt_stops_setup(init_env, monkeypatch):
+    """Devin Review on #1262: the catch-all swallowed the abort and walked on
+    into the first sync — the long part someone hitting Ctrl-C wants to avoid."""
+    import typer
+
+    monkeypatch.setattr("cli.commands.init._stdin_is_interactive", lambda: True)
+
+    def _abort(*_a, **_k):
+        raise typer.Abort()
+
+    monkeypatch.setattr("typer.confirm", _abort)
+
+    result = _run_init(init_env["workspace"])
+
+    assert result.exit_code != 0, result.output
+    assert "Setup cancelled" in result.output, result.output
+    assert "Workspace ready" not in result.output, result.output
