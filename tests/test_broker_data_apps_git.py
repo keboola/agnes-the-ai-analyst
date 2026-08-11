@@ -128,15 +128,16 @@ def test_the_credential_is_attached_by_the_broker_not_held_by_the_sandbox():
     assert '"Authorization": f"Basic {basic}"' in body
 
 
-def test_the_per_request_credential_is_revoked_even_on_failure():
+def test_the_per_request_credential_is_cleaned_up_even_on_failure():
     """A token minted per request that outlives the request is a row for
     nothing — and a live git credential is not the kind of residue to leave
-    lying around."""
+    lying around. Deleted rather than revoked (Devin Review): revoking left a
+    permanent dead row per call in the owner's token list."""
     body = _route_body()
     assert "finally:" in body
-    revoke_at = body.index("access_token_repo().revoke(token_id)")
+    cleanup_at = body.index("access_token_repo().delete(token_id)")
     finally_at = body.index("finally:")
-    assert finally_at < revoke_at, "revocation must run on the failure path too"
+    assert finally_at < cleanup_at, "cleanup must run on the failure path too"
 
 
 def test_the_query_string_survives():
@@ -218,3 +219,24 @@ def test_the_proxy_still_forwards_no_other_client_headers():
     src = inspect.getsource(broker.data_apps_git_broker)
     assert "request.headers.items()" not in src, "blanket header forwarding would leak client headers"
     assert "dict(request.headers)" not in src
+
+
+def test_the_per_request_token_is_deleted_not_just_revoked():
+    """Devin Review on #1252: one dead row per git call, forever.
+
+    This token lives for a single brokered call and is minted on every one of
+    them — a clone is several — so revoking left a permanent entry in the
+    owner's token list, drowning the PATs they actually manage. Revocation is
+    for a credential someone might still hold; nobody holds this one but the
+    broker, and it is dead before the response returns.
+    """
+    import inspect
+
+    from app.api import broker
+
+    src = inspect.getsource(broker.data_apps_git_broker)
+    assert "access_token_repo().delete(token_id)" in src
+    assert "access_token_repo().revoke(token_id)" not in src
+    # …and it must still happen in `finally`, or an upstream error leaks it.
+    i = src.index("access_token_repo().delete(token_id)")
+    assert "finally:" in src[:i]

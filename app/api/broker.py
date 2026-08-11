@@ -556,9 +556,16 @@ async def data_apps_git_broker(
             )
     finally:
         try:
-            access_token_repo().revoke(token_id)
+            # DELETE, not revoke. This token lives for one git call and is
+            # minted on every one of them — a clone is several — so revoking
+            # left a permanent dead row per request in the owner's token list,
+            # drowning the PATs they actually manage. Revocation is for a
+            # credential someone might still hold; nobody ever held this one
+            # but the broker, and it is dead before the response returns.
+            # (Devin Review on this PR.)
+            access_token_repo().delete(token_id)
         except Exception:
-            logger.warning("could not revoke per-request git token %s", token_id, exc_info=True)
+            logger.warning("could not delete per-request git token %s", token_id, exc_info=True)
 
     return Response(
         content=upstream.content,
