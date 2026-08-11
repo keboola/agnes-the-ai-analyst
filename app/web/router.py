@@ -6391,11 +6391,17 @@ async def admin_semantic_layer_page(
     ctx["orphaned"] = orphaned
     ctx["connections_without_master"] = connections_without_master
     ctx["unresolved_tables"] = sorted(unresolved_tables)
-    # Per-source lists are capped; sum the reported totals so the page can say
-    # when it is showing a subset. Falls back to the listed count for an entry
-    # written before the total was recorded.
-    ctx["unresolved_tables_total"] = sum(
-        int(e.get("unresolved_tables_total") or len(e.get("unresolved_tables") or [])) for e in last_by_ref.values()
+    # Whether the list above is a SUBSET — deliberately a boolean, not a count.
+    # The list is de-duplicated across projects (two projects can report the
+    # same table) while any total would be summed per project, so the two do
+    # not measure the same thing: a table reported twice made the page claim
+    # tables were hidden when none were. And a true union total is not
+    # available, because each project's list is already capped before it gets
+    # here. So the page says a subset is shown, without a number it cannot
+    # compute honestly. (Devin Review on this PR.)
+    ctx["unresolved_tables_truncated"] = any(
+        int(e.get("unresolved_tables_total") or 0) > len(e.get("unresolved_tables") or [])
+        for e in last_by_ref.values()
     )
     ctx["skipped_unresolved_total"] = sum(int(e.get("skipped_unresolved_table") or 0) for e in last_by_ref.values())
     ctx["default_connection_id"] = default_id

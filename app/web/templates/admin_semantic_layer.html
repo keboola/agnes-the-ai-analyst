@@ -212,9 +212,9 @@
     <ul class="sl-empty-list">
       {% for t in unresolved_tables %}<li><code>{{ t }}</code></li>{% endfor %}
     </ul>
-    {% if unresolved_tables_total and unresolved_tables_total > unresolved_tables|length %}
-    <p class="sl-note">Showing {{ unresolved_tables|length }} of {{ unresolved_tables_total }}. Registering
-      only the tables listed here will not be enough — sync again after registering these to see the rest.</p>
+    {% if unresolved_tables_truncated %}
+    <p class="sl-note">This is the first {{ unresolved_tables|length }} — at least one project has more than
+      the list shows. Registering only the tables here will not be enough; sync again afterwards to see the rest.</p>
     {% endif %}
     {% endif %}
   </div>
