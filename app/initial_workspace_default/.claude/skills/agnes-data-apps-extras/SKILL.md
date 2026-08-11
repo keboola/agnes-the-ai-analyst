@@ -29,23 +29,7 @@ only when you want an iteration branch off a *deployed* app.
 
 For an app that already exists, skip this and go straight to §1.
 
-## 1. Scaffold-first, custom-code-second
-
-Never start from a blank repo. `cp -R` the baked scaffold at
-**`/work/scaffolds/nodejs-dashboard/`** — an absolute path, at the session
-workspace root. It is **not** inside this skill's own directory: watched
-live, "sibling of this skill's session workspace" was read as a path
-relative to the skill, and three `ls`/`cp` attempts against
-`.claude/skills/agnes-data-apps-extras/scaffolds/` all failed with "No such
-file or directory" before the run stalled. Copy it into the app's managed
-repo **before** writing a single line of real code,
-then immediately call `data_app_deploy(draft_slug, mode="dev")`. This boots
-the container and warms `npm install` while you write the real
-`src/App.tsx` / `server/index.ts` — HMR picks up your edits from there. Do
-not wait for "real" code before the first deploy; a cold first deploy racing
-`npm install` is exactly the failure mode this cadence avoids.
-
-## 1b. Cloning the repo: use the relay, not the credential URL
+## 0b. Cloning the repo: use the relay, not the credential URL
 
 From a chat sandbox, clone and push through the **relay**:
 
@@ -63,6 +47,22 @@ a sandbox cannot reach — its egress allowlist admits loopback, Anthropic and
 GitHub, nothing else. It is for an analyst laptop or an MCP client, not for
 you. Reaching for it inside the sandbox is what a run does right before it
 stalls, having tried the hostname, then the IP, then the sandbox bypass.
+
+## 1. Scaffold-first, custom-code-second
+
+Never start from a blank repo. `cp -R` the baked scaffold at
+**`/work/scaffolds/nodejs-dashboard/`** — an absolute path, at the session
+workspace root. It is **not** inside this skill's own directory: watched
+live, "sibling of this skill's session workspace" was read as a path
+relative to the skill, and three `ls`/`cp` attempts against
+`.claude/skills/agnes-data-apps-extras/scaffolds/` all failed with "No such
+file or directory" before the run stalled. Copy it into the app's managed
+repo **before** writing a single line of real code,
+then immediately call `data_app_deploy(draft_slug, mode="dev")`. This boots
+the container and warms `npm install` while you write the real
+`src/App.tsx` / `server/index.ts` — HMR picks up your edits from there. Do
+not wait for "real" code before the first deploy; a cold first deploy racing
+`npm install` is exactly the failure mode this cadence avoids.
 
 ## 2. Draft-branch discipline
 
