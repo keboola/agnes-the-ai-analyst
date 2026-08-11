@@ -869,8 +869,13 @@ async def mark_mandatory(
     pattern but no audience / reason fields — those stay on /admin/mandate.
     """
     repo = knowledge_repo()
-    _get_item_or_404(repo, item_id)
+    item = _get_item_or_404(repo, item_id)
     repo.set_is_required(item_id, True)
+    # Same channel, same report as `/admin/mandate` and the batch path: this
+    # is the endpoint the page calls, so fixing only its sibling would leave
+    # the surface admins actually use publishing silently.
+    # (Devin Review on #1258, once per endpoint.)
+    warnings = scan_item(item)
     # Best-effort like the sibling /admin/mandate — the flag flip has already
     # committed; an audit hiccup must not surface as a 500.
     try:
@@ -878,11 +883,16 @@ async def mark_mandatory(
             user_id=user["id"],
             action="memory_item.set_required",
             resource=f"knowledge_item:{item_id}",
-            params={"new_value": True},
+            params={"new_value": True, "delivery_warning_count": len(warnings)},
         )
     except Exception:
         pass
-    return {"id": item_id, "is_required": True}
+    return {
+        "id": item_id,
+        "is_required": True,
+        "delivery_warnings": warnings,
+        "delivery_notice": DELIVERY_NOTICE if warnings else None,
+    }
 
 
 @router.post("/items/{item_id}/mark-unmandatory")
