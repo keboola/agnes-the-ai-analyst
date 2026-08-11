@@ -41,6 +41,16 @@ without its `/agnes-api` path. No credential goes in that URL and none is
 needed: the relay attaches one server-side, which is the whole reason it
 exists.
 
+The relay's **port changes every time the runner starts**, so a URL recorded
+in `.git/config` goes stale the moment a paused sandbox resumes — the clone
+worked, and the next `git push` fails to connect. Re-point the remote from
+the environment before pushing, rather than trusting what the clone wrote:
+
+    git -C app-repo remote set-url origin "$AGNES_SERVER_BASE/data-apps.git/<slug>"
+
+`$AGNES_SERVER_BASE` is re-exported by every runner start, so it is always
+the live one.
+
 Do **not** use the URL from `data_app_git_credential(slug)` here. That one
 carries an embedded token and points at the deployment's public host, which
 a sandbox cannot reach — its egress allowlist admits loopback, Anthropic and
