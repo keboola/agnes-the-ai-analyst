@@ -42,9 +42,11 @@ from src.keboola_chat_tools import build_stdio_spec, derived_source_id
 from src.repositories import (
     connection_secrets_repo,
     mcp_sources_repo,
+    per_user_secrets_repo,
     shared_secrets_repo,
     source_connections_repo,
     table_registry_repo,
+    tool_registry_repo,
 )
 
 logger = logging.getLogger(__name__)
@@ -647,14 +649,33 @@ async def delete_connection_secret(
 
 
 def _remove_chat_tools(connection_id: str) -> None:
-    """Drop a connection's derived MCP source and its vault secret.
+    """Drop a connection's derived MCP source, its tools, grants and secrets.
 
     Shared by the explicit disable and by ``delete_connection`` — a deleted
     connection that left its derived source behind would keep a live Keboola
     credential in the vault and keep offering tools for a project the admin
     believes they disconnected.
+
+    Deliberately mirrors ``app.api.admin_mcp.delete_mcp_source`` rather than
+    deleting the ``mcp_sources`` row alone. The discovered tools live in
+    ``tool_registry`` keyed by source id, and the per-group permissions live
+    in ``tool_grants`` keyed by tool — neither is reached by deleting the
+    source. Because ``derived_source_id`` is a pure function of the connection
+    id, re-enabling later lands on the *same* source id, so orphaned tools and
+    their grants would be adopted by the new source: an admin who turned chat
+    tools off to revoke access, then turned them back on, would silently
+    restore the exact grants they revoked. ``delete_for_source`` drops the
+    grants per tool before the registry rows, which is the ordering that
+    leaves nothing addressable behind. Per-user secrets get the same treatment
+    for the same "no orphaned credential material" reason the canonical path
+    cites; the OAuth trio does not apply — the derived source is stdio.
+    (Devin Review on this PR.)
     """
     source_id = derived_source_id(connection_id)
+    try:
+        tool_registry_repo().delete_for_source(source_id)
+    except Exception:
+        logger.debug("no derived tools for connection %s (expected)", connection_id)
     try:
         mcp_sources_repo().delete(source_id)
     except Exception:
@@ -663,6 +684,12 @@ def _remove_chat_tools(connection_id: str) -> None:
         shared_secrets_repo().delete(source_id)
     except Exception:
         logger.debug("no derived MCP secret for connection %s (expected)", connection_id)
+    try:
+        pu_secrets = per_user_secrets_repo()
+        for uid in pu_secrets.list_for_source(source_id):
+            pu_secrets.delete(source_id, uid)
+    except Exception:
+        logger.debug("no per-user secrets for connection %s (expected)", connection_id)
 
 
 @router.post("/{connection_id}/chat-tools", status_code=201)
@@ -720,6 +747,14 @@ async def enable_chat_tools(
         connection_name=row.get("name") or connection_id,
         stack_url=stack_url,
     )
+    # What the vault held before this call decides how a failed write is undone.
+    # This endpoint is idempotent by design — re-running is how a rotated token
+    # is propagated — so on a re-sync the slot we are about to overwrite is the
+    # credential the existing, still-live setup authenticates with. Deleting it
+    # unconditionally on failure turned a working project's every tool call
+    # into an auth error, which is strictly worse than the failed re-sync the
+    # admin came to fix. (Devin Review on this PR.)
+    previous_secret = shared_secrets_repo().get(spec["id"])
     try:
         shared_secrets_repo().upsert(spec["id"], token)
     except VaultKeyNotConfiguredError as exc:
@@ -731,8 +766,12 @@ async def enable_chat_tools(
     try:
         mcp_sources_repo().upsert(**spec)
     except Exception:
-        # Never leave the token behind under a source id that does not exist.
-        shared_secrets_repo().delete(spec["id"])
+        # First enable: never leave the token behind under a source id that
+        # does not exist. Re-sync: put back what was working.
+        if previous_secret is None:
+            shared_secrets_repo().delete(spec["id"])
+        else:
+            shared_secrets_repo().upsert(spec["id"], previous_secret)
         raise
 
     logger.info(
