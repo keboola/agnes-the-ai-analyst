@@ -14,6 +14,7 @@ from app.auth.dependencies import get_current_user, _get_db
 from app.auth.access import require_admin, is_user_admin, can_access, can_access_session
 from app.auth.session_principal import PRINCIPAL_TYPES
 
+from src.knowledge_directive_scan import DELIVERY_NOTICE, scan_item
 from src.repositories import (
     audit_repo,
     knowledge_repo,
@@ -705,6 +706,26 @@ def _get_item_or_404(repo, item_id: str) -> dict:
     return item
 
 
+def _with_delivery_warnings(item: dict) -> dict:
+    """Annotate a row with the spans of it that read as orders to an agent.
+
+    Approving an item is not only a judgement about the content — ``agnes
+    pull`` writes approved and required items into every analyst's
+    ``.claude/rules/``, which Claude Code loads as project rules. A note
+    phrased as a next step therefore lands as a standing instruction. The
+    approval surfaces had no way to say so, so an ordinary session recap
+    ("type /exit and rerun claude … with recaps disabled") shipped fleet-wide
+    as a directive.
+
+    Advisory, never a gate: the field annotates the decision, and every
+    governance endpoint still does exactly what it is asked.
+    """
+    warnings = scan_item(item)
+    if not warnings:
+        return {**item, "delivery_warnings": []}
+    return {**item, "delivery_warnings": warnings}
+
+
 def _audit_action(conn, admin: dict, action: str, item_id: str, details: dict = None):
     """Write an admin governance audit row.
 
@@ -732,11 +753,25 @@ async def admin_approve(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
+    """Approve an item — status → approved.
+
+    The response echoes ``delivery_warnings`` because approval is the moment
+    the item enters the rules channel, and a caller that approves through the
+    API (or the CLI on top of it) never sees the review page's banner. The
+    count also lands on the audit row, so "who approved a note carrying agent
+    directives" is answerable after the fact.
+    """
     repo = knowledge_repo()
-    _get_item_or_404(repo, item_id)
+    item = _get_item_or_404(repo, item_id)
     repo.update_status(item_id, "approved")
-    _audit_action(conn, user, "approve", item_id)
-    return {"id": item_id, "status": "approved"}
+    warnings = scan_item(item)
+    _audit_action(conn, user, "approve", item_id, {"delivery_warning_count": len(warnings)})
+    return {
+        "id": item_id,
+        "status": "approved",
+        "delivery_warnings": warnings,
+        "delivery_notice": DELIVERY_NOTICE if warnings else None,
+    }
 
 
 @router.post("/admin/reject")
@@ -895,6 +930,13 @@ async def admin_batch(
 
     v49: ``mandate`` flips the new ``is_required`` boolean to TRUE (was
     ``status='mandatory'`` overload). Other actions still drive ``status``.
+
+    ``approve`` and ``mandate`` are the two actions that put an item into the
+    ``.claude/rules/`` delivery channel, so those responses carry
+    ``delivery_warnings`` per item — this endpoint backs ``agnes admin memory
+    approve``, where a batch of ids is exactly the path on which nobody reads
+    the content first. ``reject`` and ``revoke`` take items *out* of the
+    channel and report nothing.
     """
     repo = knowledge_repo()
     # mandate is special — it writes is_required, not status. All other
@@ -907,7 +949,9 @@ async def admin_batch(
     if request.action not in (*status_actions, "mandate"):
         raise HTTPException(status_code=400, detail=f"Invalid action: {request.action}")
 
-    results = {"success": [], "not_found": []}
+    delivers_to_rules = request.action in ("approve", "mandate")
+    results: dict = {"success": [], "not_found": []}
+    warnings_by_item: dict[str, list[dict]] = {}
     for item_id in request.item_ids:
         item = repo.get_by_id(item_id)
         if not item:
@@ -919,19 +963,28 @@ async def admin_batch(
                 repo.update(item_id, audience=request.audience)
         else:
             repo.update_status(item_id, status_actions[request.action])
+        details = {
+            "reason": request.reason,
+            "audience": request.audience,
+            "batch": True,
+        }
+        if delivers_to_rules:
+            found = scan_item(item)
+            if found:
+                warnings_by_item[item_id] = found
+            details["delivery_warning_count"] = len(found)
         _audit_action(
             conn,
             user,
             request.action,
             item_id,
-            {
-                "reason": request.reason,
-                "audience": request.audience,
-                "batch": True,
-            },
+            details,
         )
         results["success"].append(item_id)
 
+    if delivers_to_rules:
+        results["delivery_warnings"] = warnings_by_item
+        results["delivery_notice"] = DELIVERY_NOTICE if warnings_by_item else None
     return results
 
 
@@ -950,6 +1003,11 @@ async def admin_pending(
     backing the main list endpoint, pinned to ``status='pending'``) so an
     admin can find specific items inside a large review queue without
     paging through it.
+
+    Each row carries ``delivery_warnings`` — the spans that will read as
+    instructions once the item is approved and ``agnes pull`` writes it into
+    every analyst's ``.claude/rules/``. ``delivery_notice`` states what that
+    channel is, once per response rather than per row.
     """
     repo = knowledge_repo()
     page = max(page, 1)
@@ -964,7 +1022,8 @@ async def admin_pending(
         )
     else:
         items = repo.list_items(statuses=["pending"], category=category, limit=per_page, offset=offset)
-    return {"items": items, "count": len(items)}
+    items = [_with_delivery_warnings(it) for it in items]
+    return {"items": items, "count": len(items), "delivery_notice": DELIVERY_NOTICE}
 
 
 @router.get("/admin/audit")
@@ -1202,12 +1261,16 @@ async def admin_get_item(
     routes (pending, audit, contradictions, duplicate-candidates) so the
     catch-all ``{item_id}`` doesn't shadow them — FastAPI matches in
     declaration order.
+
+    Carries ``delivery_warnings`` for the same reason the pending queue does:
+    this is the row the edit modal reads, and an admin editing a note before
+    approving it should see which of its lines will read as an instruction.
     """
     repo = knowledge_repo()
     item = repo.get_by_id(item_id)
     if not item:
         raise HTTPException(status_code=404, detail="item_not_found")
-    return item
+    return _with_delivery_warnings(item)
 
 
 @router.patch("/admin/{item_id}")
