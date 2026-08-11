@@ -449,3 +449,97 @@ class TestSemanticLayerPageSources:
         # they just connected.
         assert "One row per Keboola project with a master token" not in body
         assert "No Master Token Project" in body
+
+
+class TestTheUnresolvedTableListSaysWhenItIsASubset:
+    """Devin Review on this PR: the list is capped at 20 per project.
+
+    The page presents it as the set to go and register, so an admin on a
+    project with many unregistered tables could register everything shown,
+    sync again, and still lose metrics with nothing naming the rest.
+    """
+
+    def test_a_truncated_list_says_how_many_there_are(self, seeded_app, vault_key):
+        from app.api import keboola_semantic_layer_refresh as endpoint_module
+
+        _make_master_connection(
+            "conn-a",
+            name="Production Project",
+            stack_url="https://connection.keboola.com",
+            token="master-tok",
+            is_default=True,
+        )
+        listed = [f"in.c-demo.t{i}" for i in range(20)]
+        endpoint_module._refresh_state["last_result"] = {
+            "status": "ok",
+            "sources": [
+                {
+                    "connection_id": "conn-a",
+                    "status": "ok",
+                    "created_or_updated": 0,
+                    "skipped_unresolved_table": 120,
+                    "unresolved_tables": listed,
+                    "unresolved_tables_total": 57,
+                }
+            ],
+        }
+
+        body = seeded_app["client"].get("/admin/semantic-layer", headers=_auth(seeded_app["admin_token"])).text
+
+        assert "Showing 20 of 57" in body, "the page presents a capped list as the complete set"
+        assert "will not be enough" in body
+
+    def test_a_complete_list_carries_no_subset_note(self, seeded_app, vault_key):
+        """The note must not appear when the list IS everything."""
+        from app.api import keboola_semantic_layer_refresh as endpoint_module
+
+        _make_master_connection(
+            "conn-b",
+            name="Small Project",
+            stack_url="https://connection.keboola.com",
+            token="master-tok",
+            is_default=True,
+        )
+        endpoint_module._refresh_state["last_result"] = {
+            "status": "ok",
+            "sources": [
+                {
+                    "connection_id": "conn-b",
+                    "status": "ok",
+                    "created_or_updated": 0,
+                    "skipped_unresolved_table": 3,
+                    "unresolved_tables": ["in.c-demo.a", "in.c-demo.b"],
+                    "unresolved_tables_total": 2,
+                }
+            ],
+        }
+
+        body = seeded_app["client"].get("/admin/semantic-layer", headers=_auth(seeded_app["admin_token"])).text
+
+        assert "in.c-demo.a" in body
+        assert "Showing" not in body or "of 2" not in body
+
+    def test_the_sync_result_reports_the_true_total(self):
+        """The payload must carry the count even though the list is cut."""
+        import pathlib
+
+        src = (
+            pathlib.Path(__file__).resolve().parents[1] / "connectors" / "keboola" / "semantic_layer.py"
+        ).read_text(encoding="utf-8")
+        assert '"unresolved_tables_total": len(unresolved_tables),' in src
+        cut = src.index('"unresolved_tables": unresolved_tables[:_MAX_REPORTED_UNRESOLVED_TABLES]')
+        tot = src.index('"unresolved_tables_total"')
+        assert tot > cut, "the total must sit alongside the truncated list"
+
+    def test_the_page_renders_the_subset_note(self):
+        import pathlib
+
+        src = (
+            pathlib.Path(__file__).resolve().parents[1]
+            / "app"
+            / "web"
+            / "templates"
+            / "admin_semantic_layer.html"
+        ).read_text(encoding="utf-8")
+        assert "unresolved_tables_total > unresolved_tables|length" in src
+        assert ".sl-note {" in src, "the note class must be styled, not bare"

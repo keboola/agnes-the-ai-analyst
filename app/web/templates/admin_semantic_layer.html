@@ -52,6 +52,7 @@
   {# No flex/alignment of its own: the list inherits text-align from whichever
      block hosts it (centred inside .sl-empty, left inside .sl-orphan-note). #}
   .sl-empty-list { list-style: none; margin: 10px 0; padding: 0; line-height: 1.7; }
+  .sl-note { margin: 8px 0 0; font-size: 13px; color: var(--ds-text-muted); }
   .sl-empty-list code {
     font-family: var(--font-mono, ui-monospace, monospace);
     font-size: 11px; color: var(--ds-text-primary);
@@ -211,6 +212,10 @@
     <ul class="sl-empty-list">
       {% for t in unresolved_tables %}<li><code>{{ t }}</code></li>{% endfor %}
     </ul>
+    {% if unresolved_tables_total and unresolved_tables_total > unresolved_tables|length %}
+    <p class="sl-note">Showing {{ unresolved_tables|length }} of {{ unresolved_tables_total }}. Registering
+      only the tables listed here will not be enough — sync again after registering these to see the rest.</p>
+    {% endif %}
     {% endif %}
   </div>
   {% endif %}
