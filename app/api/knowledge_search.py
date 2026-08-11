@@ -62,7 +62,7 @@ def _resolve_knowledge_grants(user) -> Tuple[Optional[List[str]], Optional[List[
     return groups, domains
 
 
-def _empty_combined_hint(collections: int, tables: int, metrics: int, knowledge: bool) -> str:
+def _empty_combined_hint(collections: int, tables: int, metrics: int) -> str:
     """Why the combined search is empty, in terms the caller can act on.
 
     The collections-only sibling (``app.api.collections._empty_search_hint``)
@@ -75,21 +75,33 @@ def _empty_combined_hint(collections: int, tables: int, metrics: int, knowledge:
     "Nothing was searched" is never literally true either: the **glossary** has
     no RBAC (``unified_search`` fetches it for any authenticated caller), so
     something always ran. The all-empty branch therefore says which sources
-    were empty rather than claiming the search did not happen — and it counts
-    the knowledge leg, which the first version of this hint ignored even though
-    a caller can hold memory-domain grants and no documents, tables or metrics
-    at all. (Devin Review on this PR.)
+    were empty rather than claiming the search did not happen.
+
+    The judgement rests only on the three **countable** sources, and the branch
+    is worded to fit both audiences it can reach: an ungranted user and an
+    admin of an instance with nothing loaded yet. For an admin the counts are
+    the whole instance, so "reachable from this account" is literally true of
+    both, where "shared with you" would have told an admin to ask themselves. An attempt to
+    fold the knowledge leg in as a fourth term made it worse, not better: the
+    only signal available here is the caller's group membership, and nearly
+    every account is auto-added to the built-in "Everyone" group — so the term
+    was true for essentially everyone and the branch below became unreachable,
+    telling a brand-new user with nothing shared at all to try different words.
+    Knowledge notes and the glossary are instead **named** in both branches, so
+    neither over-claims about a leg this endpoint cannot count.
+    (Devin Review on this PR, twice.)
     """
-    if collections == 0 and tables == 0 and metrics == 0 and not knowledge:
+    if collections == 0 and tables == 0 and metrics == 0:
         return (
-            "Only the public glossary was searched — no documents, tables, metrics or knowledge "
-            "notes are shared with you yet, and nothing in the glossary matched. This part is an "
-            "access question, not a query one — ask an admin for a grant, or call "
-            "collections_list / catalog to confirm what you can reach."
+            "No documents, tables or metrics are reachable from this account yet. Company "
+            "knowledge notes and the public glossary were searched and nothing matched there "
+            "either. If you expected a file or a table to be here, this is about what has been "
+            "shared or loaded — not about your wording: call collections_list / catalog to see "
+            "what is there, and ask an admin for a grant if it should be."
         )
-    scope = f"{collections} collection(s) and {tables} table(s)"
-    # (knowledge notes and the glossary ran too; the two counts are the ones a
-    # caller can check against `collections_list` / `catalog`.)
+    # Knowledge notes and the glossary ran too; these two counts are simply the
+    # ones a caller can check against `collections_list` / `catalog`.
+    scope = f"{collections} collection(s) and {tables} table(s), plus knowledge notes and the glossary,"
     return (
         f"Searched {scope} and found no match. You DO have access — this is a wording miss, "
         "not an access problem. Note: filenames are not indexed (search the text, not the file "
@@ -177,10 +189,7 @@ async def knowledge_search(
     if not results:
         payload["searched_collections"] = len(corpus_ids)
         payload["searched_tables"] = len(tables)
-        # `groups is None` is the admin short-circuit from
-        # `_resolve_knowledge_grants` — everything is reachable, not nothing.
-        knowledge_reachable = groups is None or bool(groups) or bool(domains)
-        payload["hint"] = _empty_combined_hint(len(corpus_ids), len(tables), len(metrics), knowledge_reachable)
+        payload["hint"] = _empty_combined_hint(len(corpus_ids), len(tables), len(metrics))
     return payload
 
 

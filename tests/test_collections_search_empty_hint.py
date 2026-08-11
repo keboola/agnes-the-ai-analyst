@@ -202,26 +202,55 @@ class TestTheCombinedHintCountsEverySearchedLeg:
     caller — so something always ran and the claim was never literally true.
     """
 
-    def test_the_admin_fan_out_is_never_reported_as_no_access(self, seeded_app):
+    def test_a_caller_who_can_reach_something_gets_the_wording_branch(self, seeded_app):
         tok = seeded_app["admin_token"]
+        _make_collection_with_file(seeded_app, tok, "Reachable", "alpha bravo")
         r = seeded_app["client"].get(
             "/api/knowledge/search", params={"q": "nosuchwordanywhere"}, headers=_auth(tok)
         )
         assert r.status_code == 200, r.text
-        hint = r.json().get("hint", "")
-        assert "ask an admin for a grant" not in hint, "an admin was told to ask themselves for access"
-        assert "DO have access" in hint
+        assert "DO have access" in r.json().get("hint", "")
 
-    def test_the_no_access_branch_admits_the_glossary_ran(self):
+    def test_the_empty_branch_reads_correctly_for_an_admin_too(self):
+        """An admin's counts ARE the whole instance, so the empty branch can
+        reach them — and telling an admin to ask an admin is nonsense. It must
+        describe what is loaded, not blame the caller's wording."""
+        from app.api.knowledge_search import _empty_combined_hint
+
+        hint = _empty_combined_hint(0, 0, 0)
+        assert "shared with you" not in hint
+        assert "reachable from this account" in hint
+        assert "not about your wording" in hint
+
+    def test_the_no_access_branch_admits_the_other_legs_ran(self):
         """Otherwise the sentence claims a search that did happen did not."""
         from app.api.knowledge_search import _empty_combined_hint
 
-        hint = _empty_combined_hint(0, 0, 0, False)
-        assert "glossary" in hint.lower()
-        assert "nothing was searched" not in hint.lower()
+        hint = _empty_combined_hint(0, 0, 0).lower()
+        assert "glossary" in hint
+        assert "knowledge notes" in hint
+        assert "nothing was searched" not in hint
 
-    def test_knowledge_grants_alone_are_enough_to_be_a_wording_miss(self):
+    def test_group_membership_is_not_treated_as_proof_of_access(self):
+        """Devin Review, second pass on this same hint.
+
+        Folding the knowledge leg in as a fourth term looked like a fix and
+        was worse: the only signal available is group membership, and nearly
+        every account is auto-added to the built-in "Everyone" group — so the
+        term was true for essentially everyone and the no-access branch became
+        unreachable. A brand-new user with nothing shared at all was told to
+        try different words.
+        """
+        import inspect
+
+        from app.api import knowledge_search as mod
+
+        assert "knowledge" not in inspect.signature(mod._empty_combined_hint).parameters, (
+            "the hint judges access from a term that is true for nearly every account"
+        )
+        assert "DO have access" not in mod._empty_combined_hint(0, 0, 0)
+
+    def test_a_caller_with_any_countable_source_is_a_wording_miss(self):
         from app.api.knowledge_search import _empty_combined_hint
 
-        hint = _empty_combined_hint(0, 0, 0, True)
-        assert "DO have access" in hint, "a caller with only knowledge grants was sent to an admin"
+        assert "DO have access" in _empty_combined_hint(0, 3, 0)
