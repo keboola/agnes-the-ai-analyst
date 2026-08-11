@@ -75,11 +75,16 @@ this cadence avoids.
 
 ## 2. Draft-branch discipline
 
-Every app-code change happens on the draft's pinned branch — **never** push
-to `main`. `main` only gains code at promote time (see
-`references/promote-flow.md`). If you need to resume work on an existing
-draft, mint a fresh credential with `data_app_git_credential(slug)` rather
-than reusing a stale one.
+Every app-code *iteration* happens on the draft's pinned branch. `main` gains
+code exactly twice: at bootstrap (§1, seeding the scaffold so a draft can
+branch off it) and at promote time (see `references/promote-flow.md`). If
+you are iterating and reaching for `main`, that is the mistake this rule is
+about.
+
+To resume work on an existing app, clone or fetch through the relay exactly
+as in §1 — the relay URL carries no credential and needs none. Do not mint
+one with `data_app_git_credential(slug)`: that is the laptop/MCP-client
+surface, and from a sandbox it hands you a URL you cannot use.
 
 ## 3. Preview cadence
 

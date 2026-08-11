@@ -362,3 +362,16 @@ def test_git_protocol_and_encoding_headers_reach_the_git_surface():
     body = _route_body()
     for name in ("content-type", "content-encoding", "git-protocol"):
         assert f'"{name}"' in body, f"{name} is dropped on the way to the git surface"
+
+
+def test_the_skill_does_not_contradict_itself_about_the_credential():
+    """The resume path used to send the agent to `data_app_git_credential`
+    while §1 forbade it, and to forbid pushing `main` while §1 required it.
+    A skill that says both is worse than one that says neither — watched
+    live, contradictory guidance is what the run loops on (Devin Review)."""
+    body = SKILL.read_text(encoding="utf-8")
+    assert "mint a fresh credential with `data_app_git_credential(slug)`" not in body
+    assert "**never** push\nto `main`" not in body
+    # The resume path must point at the same transport §1 does.
+    resume = body[body.index("## 2.") : body.index("## 3.")]
+    assert "relay" in resume, "the resume path needs the transport that works"
