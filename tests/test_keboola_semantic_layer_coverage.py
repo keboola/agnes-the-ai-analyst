@@ -318,3 +318,41 @@ class TestCoverageNoticesARefusedSync:
         msg = src[i : i + 700]
         assert "unbind" in msg
         assert "master token for the project it is bound to" in msg
+
+
+class TestCoverageAppliesTheSyncsMasterTokenPreflight:
+    """Devin Review on #1248: the sync aborts, the report did not say so.
+
+    `_sync_one_source` runs `check_master_token` and aborts with
+    `MasterTokenRequiredError` when the stored token has been downgraded;
+    the Metastore rejects it with an opaque "Failed to create project scope".
+    A coverage report that skips that check describes a sync that never runs.
+    """
+
+    def test_identity_lookup_reports_master_ness(self):
+        import inspect
+
+        from connectors.keboola import semantic_layer
+
+        src = inspect.getsource(semantic_layer._project_identity)
+        assert '"is_master"' in src, "the payload's isMasterToken is thrown away"
+        assert "verify_token()" in src, "…and it must stay one round-trip"
+
+    def test_a_downgraded_token_is_warned_about(self):
+        import inspect
+
+        from connectors.keboola import semantic_layer
+
+        src = inspect.getsource(semantic_layer.compute_semantic_coverage)
+        assert "master_token_downgraded" in src
+        i = src.index("master_token_downgraded")
+        assert "owner token again" in src[i : i + 600], "the warning must name the remedy"
+
+    def test_a_master_token_raises_no_such_warning(self):
+        """`is_master` absent (an older payload) must not read as downgraded."""
+        import inspect
+
+        from connectors.keboola import semantic_layer
+
+        src = inspect.getsource(semantic_layer.compute_semantic_coverage)
+        assert '.get("is_master") is False' in src, "a missing key would fire the warning"
