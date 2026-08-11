@@ -3781,7 +3781,12 @@ async def delete_entity(
     # prevent. `pending` / `review_error` are still not verdicts, so an upload
     # nothing ever objected to remains the author's to withdraw.
     # (Devin Review on #1263.)
-    _ADVERSE_VERDICTS = ("blocked_inline", "blocked_llm")
+    # The SHARED list, not a second copy: `_entity_review_blocked` and the
+    # install repo already decide "review rejected this" from
+    # `BLOCKING_SUBMISSION_STATUSES`, and two lists would silently disagree
+    # about the same upload the first time one of them gained a status.
+    # (Devin Review on #1263.)
+    _ADVERSE_VERDICTS = BLOCKING_SUBMISSION_STATUSES
     try:
         _subs = store_submissions_repo().list_for_entity(entity_id)
     except Exception:
