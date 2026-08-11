@@ -573,8 +573,12 @@ document.getElementById("edit-toggle-btn").addEventListener("click", () => {
     authSel.insertBefore(opt, authSel.firstChild);
     if (staleNote) {
       staleNote.textContent =
+        // The remedy names the options this form actually offers. It listed
+        // "basic", which the selector does not have, so an admin following
+        // the instruction went looking for a choice that is not there.
+        // (Devin Review on this PR.)
         `This server is saved with auth method "${storedAuth}", which Agnes no longer implements — ` +
-        `it connects with no credential. Choose bearer, basic or oauth before saving.`;
+        `it connects with no credential. Choose none, bearer or oauth before saving.`;
       staleNote.hidden = false;
     }
   } else if (staleNote) {
