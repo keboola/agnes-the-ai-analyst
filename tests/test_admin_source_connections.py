@@ -1776,6 +1776,13 @@ def test_the_add_project_wizard_reuses_its_connection_on_retry():
     create = src.index("const createResp = await fetch(API_CONNECTIONS,")
     assert reuse < create, "the reuse check must come before creating another connection"
     assert "this connection is reused, not duplicated" in src, "the failure message still implies a leftover"
+    # …and reuse must APPLY what the admin corrected. Without this the wizard
+    # told them to fix the URL and retry, then talked to the original address
+    # every time, failing identically with nothing saying the new value was
+    # ignored. (Devin Review, second pass.)
+    reuse_block = src[reuse : src.index("// 2. Store the token.")]
+    assert "stack_url: stack" in reuse_block, "a corrected URL is never saved on retry"
+    assert reuse_block.index("stack_url: stack") < reuse_block.index("await fetch(API_CONNECTIONS,") if "await fetch(API_CONNECTIONS," in reuse_block else True
 
     # The restructure moved a `return` inside a new block — parse the page's
     # script to be sure it is still valid JS, since nothing else here would.
