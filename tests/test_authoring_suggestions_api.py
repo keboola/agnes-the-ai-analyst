@@ -290,3 +290,20 @@ def test_a_slug_with_stray_whitespace_still_approves(seeded_app):
     items = [it for it in KnowledgeRepository(conn).list_items(limit=200) if it.get("domain") == "spaced-slug"]
     conn.close()
     assert items and items[0]["content"] == "knowledge here"
+
+
+def test_a_blank_name_or_slug_is_refused_rather_than_created(seeded_app):
+    """Devin Review on #1263: present-but-empty is as unusable as absent."""
+    c = seeded_app["client"]
+    for payload in (
+        {"name": "  ", "slug": "blank-name", "content": "x"},
+        {"name": "Blank slug", "slug": "   ", "content": "x"},
+    ):
+        sid = _submit(c, seeded_app["analyst_token"], domain="corporate-memory", payload=payload).json()["id"]
+        r = c.post(
+            f"/api/admin/authoring-suggestions/{sid}/approve",
+            headers=_auth(seeded_app["admin_token"]),
+            json={},
+        )
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"]["kind"] == "invalid_payload"
