@@ -304,3 +304,31 @@ class TestSeededItemsDoNotGrowATaxonomy:
         cats = {repo.get_by_id(i)["category"] for i in made}
         conn.close()
         assert cats == {SEEDED_ITEM_CATEGORY}, cats
+
+
+class TestAFailedSeedLeavesNoDomainOnThisPathEither:
+    """Devin Review on #1263: I fixed the queue path and left this one.
+
+    The admin endpoint commits the domain before saving the knowledge, so a
+    failure there returned a 500 with the empty domain still in place — and
+    every retry was refused for the duplicate slug.
+    """
+
+    def test_the_domain_is_rolled_back_and_the_retry_works(self, seeded_app):
+        from unittest.mock import patch
+
+        from src.repositories import memory_domains_repo
+
+        c = seeded_app["client"]
+        body = {"name": "Rollback admin", "slug": "rollback-admin", "content": "knowledge"}
+
+        # TestClient re-raises server exceptions rather than returning 500;
+        # what matters here is the state left behind either way.
+        with pytest.raises(RuntimeError):
+            with patch("app.api.memory_domains.seed_domain_item", side_effect=RuntimeError("boom")):
+                c.post("/api/admin/memory-domains", json=body, headers=_auth(seeded_app["admin_token"]))
+        assert not any(d["slug"] == "rollback-admin" for d in memory_domains_repo().list())
+
+        retry = c.post("/api/admin/memory-domains", json=body, headers=_auth(seeded_app["admin_token"]))
+        assert retry.status_code == 201, retry.text
+        assert retry.json()["item_id"]
