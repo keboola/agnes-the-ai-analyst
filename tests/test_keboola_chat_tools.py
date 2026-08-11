@@ -253,3 +253,26 @@ class TestAuthMethodOptionsAreImplemented:
             f"admin UI offers auth methods with no branch in "
             f"connectors/mcp/client.py::_build_http_headers: {sorted(offered - implemented)}"
         )
+
+
+class TestUvCacheLocation:
+    """The runtime image sets no ``HOME`` and its filesystem is replaced on
+    every upgrade, so uv's default cache path is both underivable and
+    ephemeral. Pin it onto the data volume instead."""
+
+    def test_cache_dir_follows_data_dir(self, monkeypatch):
+        from src.keboola_chat_tools import uv_cache_dir
+
+        monkeypatch.setenv("DATA_DIR", "/data")
+        assert uv_cache_dir() == "/data/cache/uv"
+
+    def test_spec_pins_the_cache_dir(self, monkeypatch):
+        monkeypatch.setenv("DATA_DIR", "/data")
+        spec = build_stdio_spec(
+            connection_id="c1",
+            connection_name="Demo",
+            stack_url="https://connection.example.com",
+        )
+        # Without this the first tool call after every auto-upgrade re-downloads
+        # the package, and a HOME-less container may not resolve a cache at all.
+        assert spec["env"]["UV_CACHE_DIR"] == "/data/cache/uv"

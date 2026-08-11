@@ -29,6 +29,8 @@ by running the thing (2026-08-10):
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import Any, Dict, List
 
 # Upstream package. Bump deliberately — the tool surface the agent sees is a
@@ -47,6 +49,22 @@ STACK_URL_ENV = "KBC_STORAGE_API_URL"
 # name resolves through the PATH the MCP SDK inherits (its
 # DEFAULT_INHERITED_ENV_VARS includes PATH and HOME).
 RUNNER_COMMAND = "uv"
+
+
+def uv_cache_dir() -> str:
+    """Where ``uv`` caches the downloaded package, pinned onto the data disk.
+
+    Two reasons not to leave this to uv's default (``$HOME/.cache/uv``):
+
+    * The runtime image never sets ``HOME`` (``python:3.13-slim`` doesn't, and
+      a ``USER`` directive alone doesn't either), and the MCP SDK forwards only
+      env vars that actually exist in the parent — so the subprocess can end up
+      with no ``HOME`` to derive a cache path from.
+    * The container's filesystem is thrown away on every upgrade. A cache
+      inside it means the first tool call after each auto-upgrade re-downloads
+      the package; on the data volume it survives.
+    """
+    return str(Path(os.environ.get("DATA_DIR", "./data")) / "cache" / "uv")
 
 
 def derived_source_id(connection_id: str) -> str:
@@ -100,7 +118,7 @@ def build_stdio_spec(
         "transport": "stdio",
         "command": RUNNER_COMMAND,
         "args": runner_args(version=version),
-        "env": {STACK_URL_ENV: stack_url.rstrip("/")},
+        "env": {STACK_URL_ENV: stack_url.rstrip("/"), "UV_CACHE_DIR": uv_cache_dir()},
         "auth_secret_env": TOKEN_ENV,
         "auth_method": None,
         "scope": "shared",
