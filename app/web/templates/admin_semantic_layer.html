@@ -243,7 +243,7 @@
              reason, not a bare UUID nobody can act on. #}
           {% if o.connection_exists %}
           <span class="sl-source-name">{{ o.label }}</span>
-          <br><span class="sl-source-detail">master token missing — add it at <a href="/admin/data-sources">Data sources</a> to adopt these rows again</span>
+          <br><span class="sl-source-detail">{{ o.reason }} <a href="/admin/data-sources">Data sources</a> to adopt these rows again</span>
           {% else %}
           <span class="sl-orphan-ref">{{ o.label }}</span>
           {% endif %}

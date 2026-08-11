@@ -580,3 +580,64 @@ class TestTheUnresolvedTableListSaysWhenItIsASubset:
         ).read_text(encoding="utf-8")
         assert "unresolved_tables_truncated" in src
         assert ".sl-note {" in src, "the note class must be styled, not bare"
+
+
+class TestAnOrphanedRowNamesItsRealCause:
+    """Devin Review on this PR: three causes, one message.
+
+    `_enumerate_master_sources()` skips a connection for three different
+    reasons — no stack URL, an unreadable master token, no master token — and
+    the page reported all of them as "master token missing". An admin whose
+    connection was missing a URL re-added a token that was never gone, and
+    the rows still did not refresh.
+    """
+
+    def test_a_missing_stack_url_is_not_reported_as_a_missing_token(self, seeded_app, vault_key):
+        from app.web.router import _orphan_reason
+        from src.repositories import source_connections_repo
+
+        source_connections_repo().create(
+            id="conn-nourl",
+            name="No URL",
+            source_type="keboola",
+            config={},
+            token_env=None,
+            is_default=False,
+            created_by=None,
+        )
+        reason = _orphan_reason("conn-nourl")
+        assert "connection URL" in reason
+        assert "master token missing" not in reason
+
+    def test_a_missing_token_still_says_so(self, seeded_app, vault_key):
+        from app.web.router import _orphan_reason
+        from src.repositories import source_connections_repo
+
+        source_connections_repo().create(
+            id="conn-notoken",
+            name="No token",
+            source_type="keboola",
+            config={"stack_url": "https://connection.keboola.com"},
+            token_env=None,
+            is_default=False,
+            created_by=None,
+        )
+        assert "master token missing" in _orphan_reason("conn-notoken")
+
+    def test_a_vanished_connection_says_so(self, seeded_app, vault_key):
+        from app.web.router import _orphan_reason
+
+        assert "no longer exists" in _orphan_reason("conn-does-not-exist")
+
+    def test_the_page_renders_the_computed_reason(self):
+        import pathlib
+
+        src = (
+            pathlib.Path(__file__).resolve().parents[1]
+            / "app"
+            / "web"
+            / "templates"
+            / "admin_semantic_layer.html"
+        ).read_text(encoding="utf-8")
+        assert "{{ o.reason }}" in src
+        assert "master token missing — add it at <a" not in src, "the hard-coded cause is back"
