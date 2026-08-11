@@ -824,6 +824,13 @@
             background: var(--error);
         }
 
+        /* A batch approval that shipped instruction-shaped text is neither a
+           plain success nor a failure — it went through, and the admin should
+           know what went with it (Devin Review on #1258). */
+        .toast.warning {
+            background: var(--warning);
+        }
+
         /* Keyboard shortcut hints */
         .shortcut-hint {
             display: none;
@@ -1239,6 +1246,9 @@
                     <option value="">All domains</option>
                 </select>
             </div>
+            <!-- The All Items tab approves too, so it carries the same notice
+                 the review queue does (Devin Review on #1258). -->
+            <div id="allDeliveryNotice" class="delivery-notice" style="display:none;"></div>
             <div id="allList" class="knowledge-list">
                 <div class="loading">Loading items...</div>
             </div>
@@ -3340,8 +3350,11 @@
     // The standing explainer. Shown whenever the queue has anything to act
     // on — an admin who only ever sees clean items should still know what
     // approving does, since that is the whole point of saying it here.
-    function renderDeliveryNotice(data) {
-        const el = document.getElementById('reviewDeliveryNotice');
+    // `elId` names the tab's notice slot: the same warning has to appear on
+    // every surface an approval can be issued from, and the All Items tab is
+    // one of them (Devin Review on #1258).
+    function renderDeliveryNotice(data, elId) {
+        const el = document.getElementById(elId || 'reviewDeliveryNotice');
         if (!el) return;
         const notice = data && data.delivery_notice;
         const hasItems = data && Array.isArray(data.items) && data.items.length > 0;
@@ -3387,6 +3400,7 @@
     // ─────────────────────────────────────────────────────────────
 
     function renderAllItems(data, list, paginationEl) {
+        renderDeliveryNotice(data, 'allDeliveryNotice');
         if (!data.items || data.items.length === 0) {
             list.innerHTML = `
                 <div class="empty-state">
@@ -3882,7 +3896,15 @@
                 const failCount = (result.failed || []).length + (result.not_found || []).length;
                 let msg = `${successCount} item${successCount !== 1 ? 's' : ''} ${doneLabel}`;
                 if (failCount > 0) msg += `, ${failCount} failed`;
-                showToast(msg, failCount > 0 ? 'error' : 'success');
+                // The batch endpoint answers with the spans that will read as
+                // orders once these items ship to `.claude/rules/`. Throwing
+                // that away made a batch approval the one path where the
+                // warning never reached anyone (Devin Review on #1258).
+                const warned = Object.keys(result.delivery_warnings || {}).length;
+                if (warned > 0) {
+                    msg += ` — ${warned} carr${warned === 1 ? 'ies' : 'y'} text that reads as an instruction`;
+                }
+                showToast(msg, failCount > 0 ? 'error' : (warned > 0 ? 'warning' : 'success'));
                 refreshCurrentTab();
             } else {
                 showToast(result.error || `Batch ${action} failed`, 'error');
