@@ -189,3 +189,32 @@ def test_a_draft_is_proxied_to_its_parents_repo():
     # Ownership must still be checked against the app the caller named, not
     # the parent it resolves to.
     assert src.index('app_row.get("owner_user_id")') < src.index('app_row.get("is_draft")')
+
+
+def test_the_git_protocol_header_is_forwarded():
+    """Devin Review on #1252: v2 negotiation never reached the backend.
+
+    Modern git sends `Git-Protocol: version=2` on the initial `info/refs`
+    GET, and the git surface turns it into `GIT_PROTOCOL` for `git
+    http-backend`. The proxy forwarded exactly two headers, so every brokered
+    clone silently fell back to v0 — correct output, but the entire ref
+    advertisement on every call instead of the filtered v2 one.
+    """
+    import inspect
+
+    from app.api import broker
+
+    src = inspect.getsource(broker.data_apps_git_broker)
+    assert 'request.headers.get("git-protocol")' in src
+    assert '"Git-Protocol"' in src
+
+
+def test_the_proxy_still_forwards_no_other_client_headers():
+    """The allowlist is the point — it must stay an allowlist."""
+    import inspect
+
+    from app.api import broker
+
+    src = inspect.getsource(broker.data_apps_git_broker)
+    assert "request.headers.items()" not in src, "blanket header forwarding would leak client headers"
+    assert "dict(request.headers)" not in src

@@ -532,6 +532,16 @@ async def data_apps_git_broker(
         ctype = request.headers.get("content-type")
         if ctype:
             headers["Content-Type"] = ctype
+        # Modern git sends `Git-Protocol: version=2` on the initial
+        # `info/refs` GET, and the git surface turns it into `GIT_PROTOCOL`
+        # for `git http-backend`. Dropping it silently downgraded every
+        # brokered clone and fetch to the v0 protocol — correct output, but
+        # the whole ref advertisement on every call instead of the filtered
+        # v2 one. Forwarded verbatim; the header carries no credential.
+        # (Devin Review on this PR.)
+        git_protocol = request.headers.get("git-protocol")
+        if git_protocol:
+            headers["Git-Protocol"] = git_protocol
         target = f"/data-apps.git/{repo_slug}/{path}"
         if request.url.query:
             target = f"{target}?{request.url.query}"
