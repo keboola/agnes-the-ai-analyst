@@ -1328,6 +1328,14 @@ async def _start_relay() -> int:
     if real_server:
         os.environ["AGNES_REAL_SERVER"] = real_server
     os.environ["AGNES_SERVER"] = f"http://127.0.0.1:{port}/agnes-api"
+    # The relay's ORIGIN, without the `/agnes-api` path. `data-apps.git` is
+    # served off the relay root, not under the API prefix, so the data-apps
+    # skill tells the agent to clone from `$AGNES_SERVER_BASE/data-apps.git/…`
+    # — and that variable existed only in the skill's prose: the command as
+    # printed expanded to an empty base and cloned from `/data-apps.git/<slug>`.
+    # Set here rather than derived in the skill so there is one definition of
+    # where the relay lives. (Devin Review on #1252.)
+    os.environ["AGNES_SERVER_BASE"] = f"http://127.0.0.1:{port}"
     os.environ["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{port}/anthropic"
     os.environ["ANTHROPIC_API_KEY"] = "sk-dummy-broker"
     return port
