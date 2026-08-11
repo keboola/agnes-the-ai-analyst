@@ -484,6 +484,14 @@ def _resolve_keboola_credentials_slot(
     except Exception:
         conn_token = ""
     if not conn_token:
+        # BEHAVIOUR CHANGE, stated rather than slipped in: this read was
+        # ungated, so an instance whose `token_env` names something outside
+        # `AGNES_REMOTE_ATTACH_TOKEN_ENVS` (default: KBC_TOKEN,
+        # KBC_STORAGE_TOKEN, KEBOOLA_STORAGE_TOKEN, …) stops syncing on
+        # upgrade until the name is added. That is the right side of the
+        # trade — the ungated read let an admin point a connection at any host
+        # env var and have its value sent to the stack as a token — and the
+        # remedy is one operator-set variable, logged by name when it bites.
         # Same gate as `_connection_storage_token` and as `/test` / `/tables`.
         # An admin can point `token_env` at any name, so an ungated read makes
         # a connection row a way to send an arbitrary host environment
@@ -1559,6 +1567,28 @@ def compute_semantic_coverage() -> dict:
         entry["project"] = _project_identity(stack_url, source["token"])
         conn = conns_by_id.get(conn_id) or {}
         entry["storage_project"] = _project_identity(stack_url, _connection_storage_token(conn))
+
+        # The connection's RECORDED project (#1242) is a third identity, and
+        # the one the sync actually enforces: a master token that opens a
+        # different project than the connection is locked to is refused
+        # outright, so the sync never runs. Comparing only storage-vs-master
+        # missed that entirely — the report gave a clean bill of health to a
+        # connection whose sync cannot start, which is the single most
+        # misleading thing this page can say.
+        bound_id = (conn.get("config") or {}).get("project_id")
+        if bound_id is not None and entry["project"] and str(entry["project"]["id"]) != str(bound_id):
+            entry["token_project_mismatch"] = True
+            entry["warnings"].append(
+                {
+                    "code": "master_token_project_mismatch",
+                    "message": (
+                        f"This connection is locked to project {bound_id}, but its master token "
+                        f"opens project {entry['project']['id']}. The sync refuses to run at all "
+                        f"until one of the two is corrected — unbind the connection on the Data "
+                        f"sources page, or store a master token for the project it is bound to."
+                    ),
+                }
+            )
 
         both = (entry["project"], entry["storage_project"])
         if all(both) and str(both[0]["id"]) != str(both[1]["id"]):
