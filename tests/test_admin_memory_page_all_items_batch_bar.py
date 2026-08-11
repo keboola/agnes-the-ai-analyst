@@ -96,3 +96,37 @@ class TestAllItemsBatchBar:
         # And renderItemCard's checkbox is gated on `mode === 'browse'` so
         # the input element is omitted entirely on that branch.
         assert "mode === 'browse' ? ''" in body
+
+
+class TestTheApprovalWarningReachesThisTabToo:
+    """Devin Review on #1258: All Items can approve but showed no warning.
+
+    The per-item strip and the notice were wired into the review render path
+    only, and `batchAction` threw away the batch response's own
+    `delivery_warnings` — so approving from here published instruction-shaped
+    text with nothing said about it, on either the way in or the way out.
+    """
+
+    def test_the_tab_has_its_own_notice_slot_and_renders_into_it(self, seeded_app):
+        body = seeded_app["client"].get(
+            "/admin/corporate-memory", headers=_auth(seeded_app["admin_token"])
+        ).text
+
+        assert 'id="allDeliveryNotice"' in body
+        assert "renderDeliveryNotice(data, 'allDeliveryNotice')" in body
+
+    def test_the_notice_renderer_is_not_pinned_to_the_review_slot(self, seeded_app):
+        body = seeded_app["client"].get(
+            "/admin/corporate-memory", headers=_auth(seeded_app["admin_token"])
+        ).text
+
+        assert "function renderDeliveryNotice(data, elId)" in body
+        assert "document.getElementById(elId || 'reviewDeliveryNotice')" in body
+
+    def test_a_batch_approval_reports_what_it_published(self, seeded_app):
+        body = seeded_app["client"].get(
+            "/admin/corporate-memory", headers=_auth(seeded_app["admin_token"])
+        ).text
+
+        assert "result.delivery_warnings" in body
+        assert "reads as an instruction" in body
