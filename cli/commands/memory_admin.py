@@ -211,6 +211,37 @@ def bulk_edit(
 # ----- lifecycle moderation (approve / reject / revoke / require) -----
 
 
+def _echo_delivery_warnings(data: dict) -> None:
+    """Report items whose text an agent will read as an instruction.
+
+    Approve and mandate put an item into ``.claude/rules/`` on every analyst's
+    laptop, where Claude Code loads it as a project rule rather than as
+    reference material. A batch of ids on the command line is the path where
+    nobody read the content first, so the consequence is stated here rather
+    than only on the review page. Advisory — the action already happened and
+    the exit code is unaffected.
+    """
+    by_item = data.get("delivery_warnings") or {}
+    if not by_item:
+        return
+    typer.echo("", err=True)
+    typer.echo(
+        f"warning: {len(by_item)} item(s) carry text an agent will read as an instruction:",
+        err=True,
+    )
+    for item_id, findings in by_item.items():
+        for f in findings:
+            typer.echo(f"  {item_id} [{f.get('kind')}] {f.get('excerpt')}", err=True)
+    notice = data.get("delivery_notice")
+    if notice:
+        typer.echo(f"{notice}", err=True)
+    typer.echo(
+        "Edit the wording or revoke the item if that is not what you intended "
+        "(`agnes admin memory edit <id> --content …`, `agnes admin memory revoke <id>`).",
+        err=True,
+    )
+
+
 def _moderate(
     action: str,
     item_ids: list[str],
@@ -248,6 +279,7 @@ def _moderate(
     else:
         for item_id in data.get("success") or []:
             typer.echo(f"{label}: {item_id}")
+        _echo_delivery_warnings(data)
     not_found = data.get("not_found") or []
     if not_found:
         typer.echo(
