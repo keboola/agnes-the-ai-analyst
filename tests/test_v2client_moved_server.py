@@ -77,6 +77,67 @@ class TestV2ClientStopsOnRedirect:
                 with pytest.raises(V2ClientError):
                     getattr(v2, fn)(*args)
 
+    def test_streaming_download_is_covered_too(self):
+        """`api_get_stream` guards inside a `with httpx.stream(...)` block.
+
+        Its check is indented differently from the others, which is exactly
+        how a mechanical sweep of the plain verbs left it behind — and it is
+        the helper `agnes pull`-style bundle downloads go through, so a
+        redirect there writes a redirect body to disk as if it were content.
+        """
+
+        class _FakeStream:
+            def __init__(self, response):
+                self._response = response
+
+            def __enter__(self):
+                return self._response
+
+            def __exit__(self, *exc):
+                return False
+
+        resp = _redirect()
+        resp.iter_bytes = lambda: iter([b""])  # type: ignore[method-assign]
+
+        with patch("cli.v2_client.get_server_url", return_value="https://old.example"):
+            with patch("cli.v2_client.httpx.stream", return_value=_FakeStream(resp)):
+                with pytest.raises(V2ClientError) as exc:
+                    v2.api_get_stream("/api/bundle.zip", "/dev/null")
+        assert exc.value.status_code == 308
+        assert "https://new.example" in str(exc.value)
+
+    def test_every_httpx_call_site_has_a_guard(self):
+        """Derive the call sites from the source instead of listing verbs.
+
+        The first version of this file enumerated five verbs by hand and so
+        missed `api_get_stream`. Counting the real call sites is what makes
+        a newly added helper fail this test instead of shipping unguarded.
+        """
+        import ast
+
+        tree = ast.parse((ROOT / "cli" / "v2_client.py").read_text(encoding="utf-8"))
+
+        def _calls(fn, pattern):
+            return any(isinstance(n, ast.Call) and pattern(n) for n in ast.walk(fn))
+
+        def _hits_httpx(node):
+            f = node.func
+            return isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and f.value.id == "httpx"
+
+        def _is_guard(node):
+            f = node.func
+            return isinstance(f, ast.Name) and f.id in {"_raise_for_status", "is_redirect"}
+
+        unguarded = [
+            fn.name
+            for fn in ast.walk(tree)
+            if isinstance(fn, ast.FunctionDef)
+            and fn.name != "_raise_for_status"
+            and _calls(fn, _hits_httpx)
+            and not _calls(fn, _is_guard)
+        ]
+        assert not unguarded, f"helpers reach httpx without a redirect guard: {unguarded}"
+
     def test_success_is_untouched(self):
         ok = httpx.Response(
             200,
