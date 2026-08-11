@@ -959,7 +959,10 @@ async function connectAndValidate() {
         const patch = await fetch(`${API_CONNECTIONS}/${connId}`, {
           method: "PUT", credentials: "include",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ config: { stack_url: stack } }),
+          // The NAME too: the admin may have corrected it on the retry, and
+          // sending only the URL threw that away while the success banner went
+          // on to claim the new name was used. (Devin Review.)
+          body: JSON.stringify(name ? { name, config: { stack_url: stack } } : { config: { stack_url: stack } }),
         });
         if (!patch.ok) {
           const pb = await patch.json().catch(() => ({}));

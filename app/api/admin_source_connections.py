@@ -699,7 +699,22 @@ async def test_connection(
                         _log_host(stack_url),
                     )
                     return {"ok": False, "error": mismatch}
-                _record_project_identity(connection_id, row, data)
+                # Recording the identity is BOOKKEEPING — it must not be able
+                # to turn a passing connectivity check into a failure report.
+                # It sat inside the same try/except that catches the outbound
+                # call's network errors, so a vault or DB fault surfaced to the
+                # admin as "connection test failed" with a database message,
+                # for a project that is in fact correctly configured.
+                # (Devin Review on this PR.)
+                try:
+                    _record_project_identity(connection_id, row, data)
+                except Exception:  # noqa: BLE001 — the check itself succeeded
+                    logger.warning(
+                        "connection test for %s (%s) passed but its project identity could not be recorded",
+                        connection_id,
+                        _log_host(stack_url),
+                        exc_info=True,
+                    )
             # project_name is response-body content — it goes to the caller
             # but deliberately NOT into the log line (see comment above).
             logger.info(
