@@ -107,6 +107,6 @@ def build_stdio_spec(
         "enabled": True,
         "connect_hint": (
             "Derived from the Keboola source connection of the same name. "
-            "Re-run enable after rotating the connection's storage token."
+            "Rotating that connection's storage token propagates here on its own."
         ),
     }

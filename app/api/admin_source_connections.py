@@ -499,13 +499,24 @@ def _resync_derived_chat_tools(connection_id: str) -> None:
             connection_name=row.get("name") or connection_id,
             stack_url=stack_url,
         )
-        # `build_stdio_spec` always describes an ENABLED source — it is written
-        # for the enable path. Upserting it wholesale on an unrelated edit
-        # silently switched a server the admin had deliberately disabled back
-        # on. The flag is state the admin owns, not something derived from the
-        # connection, so it is carried over. (Devin Review on this PR.)
-        if existing is not None and "enabled" in existing:
-            spec["enabled"] = existing["enabled"]
+        # Only what the CONNECTION determines is re-derived — its name and its
+        # stack URL, the two things that actually go stale when it is edited.
+        # `build_stdio_spec` describes a freshly enabled source, so upserting
+        # it wholesale on an unrelated save (flipping "set as default", a
+        # rename) discarded everything an admin had adjusted on that server
+        # entry: the enabled flag, extra environment values, launch arguments,
+        # the credential scope, the connect hint. None of those are derived
+        # from the connection, so they are carried over.
+        # (Devin Review on this PR — the `enabled` half first, then the rest.)
+        if existing is not None:
+            for field in ("enabled", "scope", "connect_hint", "command", "args", "auth_method", "auth_secret_env"):
+                if field in existing:
+                    spec[field] = existing[field]
+            # `env` is merged rather than replaced: the stack URL is ours, any
+            # other key the admin added is theirs.
+            merged_env = dict(existing.get("env") or {})
+            merged_env.update(spec.get("env") or {})
+            spec["env"] = merged_env
         # A rename onto a name another MCP source already holds cannot be
         # upserted — `mcp_sources.name` is unique. Skipping loudly beats
         # letting the upsert raise into the broad handler below, which would
