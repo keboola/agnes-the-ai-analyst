@@ -64,6 +64,25 @@ class TestChatToolsEndpoint:
         yield
         _reset_ephemeral_key_for_tests()
 
+    @pytest.fixture(autouse=True)
+    def _storage_api_is_reachable(self):
+        """`PUT /{id}/secret` runs a live `verify_token` preflight (#1242) and
+        records the project it opens, so storing a token now needs the stack
+        to answer. These tests are about the chat-tools pair, not about the
+        Storage API — one stable project for every store."""
+        from unittest.mock import patch
+
+        # `_validate_url_not_private` too: `/secret` re-validates the stack URL
+        # at use, DNS included, and `connection.example.com` does not resolve.
+        # That is validate-at-use doing its job, not something to weaken in the
+        # handler — so the fixture stands in for a reachable stack.
+        with (
+            patch("app.api.admin_source_connections.KeboolaStorageClient.verify_token") as verify,
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+        ):
+            verify.return_value = {"isMasterToken": False, "owner": {"id": 4242, "name": "Test Project"}}
+            yield verify
+
     def _create_keboola(self, c, token, *, name, with_secret=True):
         resp = c.post(
             BASE,
