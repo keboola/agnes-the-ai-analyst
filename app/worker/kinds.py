@@ -324,13 +324,57 @@ def _run_corporate_memory(payload: dict) -> None:
 
 
 def _run_jira_refresh(payload: dict) -> None:
-    """Wrap ``SyncOrchestrator().rebuild_source("jira")`` — previously
-    called inline from ``connectors/jira/service.py``'s
-    ``trigger_incremental_transform`` after every webhook-driven
-    incremental parquet transform. Now enqueued instead (see that
-    module), deduped via the ``"jira-refresh"`` idempotency key so a
-    burst of webhook events collapses into a single rebuild."""
-    from src.orchestrator import SyncOrchestrator
+    """Refresh Jira's ``_meta``, then rebuild the source's master views.
+
+    Wraps ``SyncOrchestrator().rebuild_source("jira")`` — previously called
+    inline from ``connectors/jira/service.py``'s
+    ``trigger_incremental_transform`` after every webhook-driven incremental
+    parquet transform. Now enqueued instead (see that module), deduped via the
+    ``"jira-refresh"`` idempotency key so a burst of webhook events collapses
+    into a single rebuild.
+
+    The ``update_meta`` pass moved here from the per-event transform. Two
+    reasons, one of them a live incident:
+
+    * **Correctness.** ``update_meta`` opens ``extract.duckdb`` for writing while
+      the rebuild ATTACHes the same file, and DuckDB is single-writer. Losing
+      that ATTACH is only logged, and the rebuild then swaps in a freshly built
+      analytics DB with no Jira views — so the tables disappear until some later
+      rebuild wins. Running both here puts them in one sequential process
+      instead of racing across a burst.
+    * **Cost.** Per event it was a write-open plus a full count over every
+      partition of all six tables. Per coalesced rebuild it is once.
+
+    Doing it *before* the rebuild matters on a fresh install: ``update_meta``
+    creates ``extract.duckdb`` when it is missing, and ``rebuild_source``
+    returns early when there is no such file to attach.
+
+    Data freshness does not depend on any of this — the views inside
+    ``extract.duckdb`` glob the parquet per query, so a written partition is
+    served immediately. ``_meta`` holds the catalog's row/size numbers only.
+    """
+    from connectors.jira.extract_init import get_default_output_dir, update_meta
+    from src.orchestrator import SyncOrchestrator, rebuild_mutex
+
+    try:
+        extract_dir = get_default_output_dir()
+        # Under the same mutex `rebuild()`/`rebuild_source()` take — the pattern
+        # `_run_ducklake_maintenance` below already follows. Running in the HEAVY
+        # lane (concurrency 1) serialises this against the rebuild on the next
+        # line, but NOT against the other processes that rebuild: API startup,
+        # the admin and sync endpoints, collections, tabular ingest. Those ATTACH
+        # this same file, and DuckDB is single-writer, so without the mutex a
+        # rebuild elsewhere can still collide with this loop.
+        #
+        # Held around the loop ONLY. `rebuild_source` acquires the same mutex
+        # itself, so keeping it across that call would deadlock.
+        with rebuild_mutex():
+            for table_name in ("issues", "comments", "attachments", "changelog", "issuelinks", "remote_links"):
+                update_meta(extract_dir, table_name)
+    except Exception as meta_err:
+        # Non-fatal, exactly as it was on the per-event path: stale catalog
+        # numbers must not cost us the rebuild that publishes the data.
+        logger.warning(f"Could not update Jira extract.duckdb _meta: {meta_err}")
 
     SyncOrchestrator().rebuild_source("jira")
 

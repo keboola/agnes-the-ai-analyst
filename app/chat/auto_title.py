@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,23 @@ _TITLE_MODEL = "claude-haiku-4-5-20251001"
 _TITLE_MAX_TOKENS = 24
 _MESSAGE_CLIP_CHARS = 600
 _TITLE_MAX_CHARS = 60
+
+# A reply that ANSWERS the first message instead of titling it. Haiku does this
+# occasionally when the message reads as a direct question ("What is in my
+# stack?") — and an answer-shaped title is worse than no title, because the
+# sidebar then reports an outcome the conversation never had. Seen in
+# production: a chat that read the user's stack and removed a plugin from it
+# was listed as "I don't have access to information about your stack or the…".
+# Both guards run on the normalized text, before the length cap, so a truncated
+# answer can't slip through looking like a terse title.
+_ANSWER_SHAPED = re.compile(
+    r"^(i|i'm|im|sorry|sure|certainly|of course|here|here's|hi|hello|"
+    r"as an|unfortunately|based on|it looks|there (is|are))\b",
+    re.IGNORECASE,
+)
+# The prompt asks for 2–6 words; this leaves headroom for a wordy-but-valid
+# title while still rejecting a sentence.
+_TITLE_MAX_WORDS = 10
 
 _SYSTEM_PROMPT = (
     "You produce a concise title (2–6 words, sentence case, no trailing "
@@ -68,6 +86,11 @@ def _strip_title(raw: str) -> Optional[str]:
         return None
     # Collapse internal whitespace runs (newlines, tabs) to single spaces.
     text = " ".join(text.split())
+    # Haiku answered the message instead of titling it — keep the honest
+    # default rather than labelling the chat with a reply it never gave.
+    if _ANSWER_SHAPED.match(text) or len(text.split()) > _TITLE_MAX_WORDS:
+        logger.info("auto-title: discarding answer-shaped reply %r", text[:80])
+        return None
     if len(text) > _TITLE_MAX_CHARS:
         text = text[: _TITLE_MAX_CHARS - 1].rstrip() + "…"
     return text

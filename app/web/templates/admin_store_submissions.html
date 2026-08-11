@@ -6,6 +6,7 @@
 {% set page_hero_subtitle = "Plugin / skill / agent submissions awaiting review." %}
 
 {% block head_extra %}
+<link rel="stylesheet" href="{{ static_url('css/ds_dropdown.css') }}">
 <style>
 
   .subs-form {
@@ -170,12 +171,26 @@
     {% if submitter_filter %}<input type="hidden" name="submitter" value="{{ submitter_filter }}">{% endif %}
     <div>
       <label for="f-type">Type</label>
-      <select id="f-type" name="type">
+      {# Real <select> stays the control this GET form submits — the custom
+         dropdown alongside is a visual replacement only, shown instead of
+         it under themes that claim it (paper-skin.css). See _components.html's
+         `dropdown` macro / stack_unified.html's `stk-sort` for the pattern. #}
+      <select id="f-type" name="type" class="ds-dropdown-native">
         <option value="" {% if not type_filter %}selected{% endif %}>All</option>
         <option value="skill"  {% if type_filter == 'skill'  %}selected{% endif %}>Skill</option>
         <option value="agent"  {% if type_filter == 'agent'  %}selected{% endif %}>Agent</option>
         <option value="plugin" {% if type_filter == 'plugin' %}selected{% endif %}>Plugin</option>
       </select>
+      {{ ds.dropdown(
+        id='f-type-dd', target='f-type',
+        aria_label='Type', selected=type_filter,
+        options=[
+          {'value': '', 'label': 'All'},
+          {'value': 'skill', 'label': 'Skill'},
+          {'value': 'agent', 'label': 'Agent'},
+          {'value': 'plugin', 'label': 'Plugin'},
+        ],
+      ) }}
     </div>
     <div>
       <label for="f-name">Name contains</label>
@@ -187,11 +202,21 @@
     </div>
     <div>
       <label for="f-limit">Per page</label>
-      <select id="f-limit" name="limit">
+      <select id="f-limit" name="limit" class="ds-dropdown-native">
         {% for n in [25, 50, 100, 200] %}
         <option value="{{ n }}" {% if limit == n %}selected{% endif %}>{{ n }}</option>
         {% endfor %}
       </select>
+      {{ ds.dropdown(
+        id='f-limit-dd', target='f-limit',
+        aria_label='Per page', selected=limit,
+        options=[
+          {'value': 25, 'label': '25'},
+          {'value': 50, 'label': '50'},
+          {'value': 100, 'label': '100'},
+          {'value': 200, 'label': '200'},
+        ],
+      ) }}
     </div>
     {{ ds.button('Apply', variant='primary', type='submit') }}
     {{ ds.button('Reset', variant='secondary',
@@ -341,4 +366,8 @@
   }
 })();
 </script>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ static_url('js/components/ds_dropdown.js') }}" defer></script>
 {% endblock %}

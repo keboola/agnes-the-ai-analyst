@@ -4,6 +4,7 @@ Every code path, log string, file name, and Python symbol cited in the
 runbook is verified to exist in the real codebase here.  A failing test
 means the runbook references something that has been renamed or removed.
 """
+
 from __future__ import annotations
 
 import ast
@@ -17,6 +18,7 @@ REPO_ROOT = Path(__file__).parent.parent
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _runbook_text() -> str:
     return (REPO_ROOT / "docs" / "runbooks" / "wal-recovery.md").read_text()
 
@@ -28,6 +30,7 @@ def _db_source() -> str:
 # ---------------------------------------------------------------------------
 # File-existence guards
 # ---------------------------------------------------------------------------
+
 
 def test_runbook_file_exists():
     assert (REPO_ROOT / "docs" / "runbooks" / "wal-recovery.md").is_file()
@@ -53,13 +56,12 @@ def test_state_dir_doc_exists():
 # Runbook cites real Python functions
 # ---------------------------------------------------------------------------
 
+
 def _defined_names_in_db_py() -> set[str]:
     """Return the set of all top-level function / class names defined in db.py."""
     tree = ast.parse(_db_source())
     return {
-        node.name
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        node.name for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
     }
 
 
@@ -91,32 +93,66 @@ def test_function_get_schema_version_exists():
 # SCHEMA_VERSION constant exists and is an integer
 # ---------------------------------------------------------------------------
 
+
 def test_schema_version_is_int():
-    import importlib.util
     # Parse without executing by searching the source text
     m = re.search(r"^SCHEMA_VERSION\s*=\s*(\d+)", _db_source(), re.MULTILINE)
     assert m is not None, "SCHEMA_VERSION constant not found in src/db.py"
     assert int(m.group(1)) > 0
 
 
+# Every shape a schema-version literal actually takes in the runbook prose
+# (as opposed to a dynamic `{SCHEMA_VERSION}` f-string placeholder, or a
+# template variable like `v<N>`, neither of which names a concrete version
+# and so cannot go stale). Anchored narrowly so this does not also match
+# unrelated numbers — line numbers in the cross-reference table, issue
+# numbers, etc.
+_SCHEMA_VERSION_LITERAL_PATTERNS = [
+    r"SCHEMA_VERSION\s*=\s*(\d+)",  # "land at `SCHEMA_VERSION=115`."
+    r"currently\s*`(\d+)`",  # "running binary's `SCHEMA_VERSION` (currently `115`, ...)"
+    r"schema_version:\s*(\d+)",  # "# Expected: schema_version: 115"
+    r'"current":\s*(\d+)',  # health-endpoint sample: {"current": 115, ...}
+    r'"expected":\s*(\d+)',  # health-endpoint sample: {..., "expected": 115, ...}
+]
+
+
 def test_runbook_schema_version_matches_source():
-    """The SCHEMA_VERSION value the runbook cites must match src/db.py."""
+    """Every schema-version literal the runbook writes out must match
+    src/db.py's SCHEMA_VERSION — not merely "the right value appears
+    somewhere in the file". A single stale occurrence (e.g. the runbook's
+    other three sections bumped but the §6 health-endpoint sample left
+    behind) must fail this test, not slip through because a different line
+    still has the current value.
+    """
     src_m = re.search(r"^SCHEMA_VERSION\s*=\s*(\d+)", _db_source(), re.MULTILINE)
     assert src_m, "SCHEMA_VERSION not found in src/db.py"
     src_ver = int(src_m.group(1))
 
     rb = _runbook_text()
-    # Runbook mentions SCHEMA_VERSION=76 (or whatever the current value is)
-    # in the detection section. Check the numeric value appears.
-    assert str(src_ver) in rb, (
-        f"Runbook does not mention SCHEMA_VERSION={src_ver}; "
+    found_any = False
+    stale: list[str] = []
+    for pattern in _SCHEMA_VERSION_LITERAL_PATTERNS:
+        for m in re.finditer(pattern, rb):
+            found_any = True
+            value = int(m.group(1))
+            if value != src_ver:
+                line_no = rb.count("\n", 0, m.start()) + 1
+                stale.append(f"line {line_no}: {m.group(0)!r} (expected {src_ver})")
+
+    assert found_any, (
+        f"Runbook does not mention SCHEMA_VERSION={src_ver} in any of its usual forms; "
         "update docs/runbooks/wal-recovery.md to match src/db.py"
+    )
+    assert not stale, (
+        "Runbook has schema-version literal(s) that disagree with src/db.py's "
+        f"SCHEMA_VERSION={src_ver} — update docs/runbooks/wal-recovery.md:\n" + "\n".join(stale)
     )
 
 
 # ---------------------------------------------------------------------------
 # Log strings cited in the runbook exist in src/db.py
 # ---------------------------------------------------------------------------
+
 
 def test_log_failure_while_replaying_wal_in_db_py():
     assert "Failure while replaying WAL" in _db_source()
@@ -150,6 +186,7 @@ def test_log_wal_salvage_could_not_move_in_db_py():
 # File naming patterns cited in the runbook exist in source
 # ---------------------------------------------------------------------------
 
+
 def test_broken_file_pattern_in_db_py():
     """src/db.py must construct the .broken.<ts> suffix."""
     assert ".broken." in _db_source()
@@ -168,6 +205,7 @@ def test_pre_migrate_snapshot_name_in_db_py():
 # ---------------------------------------------------------------------------
 # schema_version table shape cited in the runbook
 # ---------------------------------------------------------------------------
+
 
 def test_schema_version_table_has_version_column():
     assert "version INTEGER" in _db_source()

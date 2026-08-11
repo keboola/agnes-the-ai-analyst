@@ -183,6 +183,8 @@ Admin RBAC for auto-sync flows through data packages (per-table `resource_grants
 
 Standardized metric definitions live in DuckDB (`metric_definitions` table). Import the starter pack with `agnes admin metrics import docs/metrics/`.
 
+That import is upsert-only, so the registry grows but never shrinks. When a directory is the source of truth (a generated export rather than hand-authored files), `--prune` reconciles instead: it deletes the metrics this importer previously wrote that the directory no longer contains. The scope is keyed on the writer (`source='yaml_import'`, narrowed by `--source-ref <label>` when several exports share one instance), so a metric authored in the UI or created by a connector is out of reach by construction. Run `--dry-run` first — a rename is indistinguishable from delete + create at the id level.
+
 **For AI agents analyzing data:** before computing any business metric, look up the canonical definition — `agnes catalog --metrics` to find it, `agnes catalog --metrics --show revenue/mrr` to read the SQL and business rules. Use that SQL, adapted to the question. Never invent metric calculations.
 
 ## Querying Agnes data — agent rails

@@ -85,9 +85,9 @@ def test_golden_text_turn_exact_event_order_and_gap_free_ids():
     chat_id = "sess-golden-1"
     frames = [
         {"type": "ready"},
-        {"type": "token", "content": "Hel"},
-        {"type": "token", "content": "lo, "},
-        {"type": "token", "content": "world!"},
+        {"type": "token", "text": "Hel"},
+        {"type": "token", "text": "lo, "},
+        {"type": "token", "text": "world!"},
         {"type": "assistant_message", "content": "Hello, world!"},
         {"type": "done"},
     ]
@@ -146,7 +146,7 @@ def test_golden_tool_call_turn_exact_event_order_and_gap_free_ids():
     chat_id = "sess-golden-2"
     frames = [
         {"type": "ready"},
-        {"type": "token", "content": "Let me check."},
+        {"type": "token", "text": "Let me check."},
         {"type": "tool_call", "tool": "bash", "args": {"command": "ls"}},
         {"type": "tool_result", "result": "file.txt"},
         {"type": "assistant_message", "content": "Found file.txt"},
@@ -191,7 +191,7 @@ def test_error_terminates_stream_with_balanced_lifecycle_and_no_run_finished():
     chat_id = "sess-golden-err"
     frames = [
         {"type": "ready"},
-        {"type": "token", "content": "partial"},
+        {"type": "token", "text": "partial"},
         {"type": "error", "message": "upstream exploded"},
         # Never reached — the drain loop stops at the first terminal event.
         {"type": "done"},
@@ -233,7 +233,7 @@ def test_frame_types_with_no_agui_equivalent_are_dropped_without_breaking_monoto
     frames = [
         {"type": "ready"},
         {"type": "session_renamed", "title": "New title"},  # no AG-UI event
-        {"type": "token", "content": "hi"},
+        {"type": "token", "text": "hi"},
         {"type": "assistant_message", "content": "hi"},
         {"type": "done"},
     ]

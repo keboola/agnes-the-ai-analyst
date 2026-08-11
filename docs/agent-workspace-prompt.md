@@ -94,6 +94,7 @@ PUT validation time, so the admin is notified immediately.
 | `user.groups` | list[str] | User's group names |
 | `now` | datetime (UTC, tz-aware) | Server time at render |
 | `today` | string (`YYYY-MM-DD`) | Server date |
+| `is_sandbox` | bool | `True` when rendering for the ephemeral chat sandbox, `False` for a laptop workspace (`GET /api/welcome`, the default). Use this to branch wording that differs by surface — e.g. whether a saved file path is reachable by the user. |
 
 ## Example: iterating tables
 

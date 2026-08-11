@@ -158,7 +158,13 @@
   /* Theme-aware tint (not the light-only --ds-agnes-soft) so the greeting
      stays readable against the assistant bubble in dark mode too. */
   .ag-pv-bubble { background: color-mix(in srgb, var(--ds-agnes) 9%, var(--ds-surface)); border: 1px solid var(--ds-agnes-line); color: var(--ds-text-primary); border-radius: 12px 12px 12px 4px; padding: 10px 13px; font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; }
-  .ag-pv-input { margin-top: 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 1px solid var(--ds-border); border-radius: var(--ds-radius-pill); padding: 8px 8px 8px 14px; color: var(--ds-text-muted); font-size: 13px; }
+  /* A mock composer, not a control: it copies the real chat pill so the
+     preview reads as the app, which also made people click it and type into
+     nothing. `cursor: default` + `user-select: none` withdraw the two cues
+     that invite that; `aria-hidden` on the element keeps it out of the
+     accessibility tree, where a fake textbox is worse than useless. */
+  .ag-pv-input { margin-top: 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 1px solid var(--ds-border); border-radius: var(--ds-radius-pill); padding: 8px 8px 8px 14px; color: var(--ds-text-muted); font-size: 13px; cursor: default; user-select: none; }
+  .ag-pv-note { padding: 0 14px 12px; font-size: 11.5px; color: var(--ds-text-muted); }
   .ag-pv-send { width: 26px; height: 26px; border-radius: 50%; background: var(--ds-primary); color: var(--ds-text-inverse); display: grid; place-items: center; font-size: 14px; flex-shrink: 0; }
   .ag-pv-meta { margin-top: 12px; border: 1px solid var(--ds-border); border-radius: 10px; overflow: hidden; }
   .ag-pv-row { display: flex; justify-content: space-between; gap: 10px; padding: 8px 12px; font-size: 12.5px; border-bottom: 1px solid var(--ds-border); }
@@ -536,8 +542,9 @@
         '</div>' +
         '<div class="ag-pv-body">' +
           '<div class="ag-pv-bubble" id="ag-pv-greeting">' + (esc(a.greeting) || '…') + '</div>' +
-          '<div class="ag-pv-input"><span id="ag-pv-ph">Ask ' + (esc(a.name) || 'your agent') + '…</span><span class="ag-pv-send">↑</span></div>' +
+          '<div class="ag-pv-input" aria-hidden="true"><span id="ag-pv-ph">Ask ' + (esc(a.name) || 'your agent') + '…</span><span class="ag-pv-send">↑</span></div>' +
         '</div>' +
+        '<div class="ag-pv-note">Preview only — not a live chat.</div>' +
       '</div>' +
       '<div class="ag-pv-meta">' +
         '<div class="ag-pv-row"><span class="ag-pv-k">Grounded in</span><span class="ag-pv-v">' + kn + ' source' + (kn === 1 ? '' : 's') + '</span></div>' +

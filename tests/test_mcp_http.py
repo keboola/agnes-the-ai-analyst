@@ -252,6 +252,13 @@ class TestToolRegistration:
             "collections_list",
             "collection_get",
             "collections_search",
+            # Read ONE named file's extracted text, for the question search
+            # cannot serve ("what is in this file?" has no keywords). Thin
+            # wrapper over the existing preview endpoint, so its ~20k-char
+            # cap and `truncated` flag are the context guard. Triple-surface
+            # with GET /api/collections/{cid}/files/{fid}/preview +
+            # `agnes collections cat`.
+            "collection_file_read",
             # Unified knowledge search (K2, #797) — one query across
             # Collections chunks + knowledge items + table catalog cards.
             # Triple-surface with GET /api/knowledge/search + `agnes search`.

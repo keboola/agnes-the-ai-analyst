@@ -2058,6 +2058,15 @@ class TestDefaultContentParity:
         assert 'id="chat-plus-menu"' not in resp.text, "composer + upload menu leaked into topnav"
         assert 'id="chat-journey"' not in resp.text, "journey checklist leaked into topnav"
         assert "chat_row_menu.js" not in resp.text, "conversation row menu leaked into topnav"
+        assert 'id="chat-copy-transcript"' not in resp.text, "copy-transcript action leaked into topnav"
+        # Structural, not just this one id: `cloud-chat-thread-action` is the
+        # shared class every thread-header action button carries (it is what
+        # the positioning/pill CSS keys off), so this also catches a FUTURE
+        # ungated addition to the header that a hand-listed id check would
+        # miss until someone remembered to extend this list.
+        assert "cloud-chat-thread-action" not in resp.text, (
+            "a thread-header action button leaked into topnav — gate it behind ui_layout == 'rail'"
+        )
 
     def test_rail_chat_keeps_upload_menu_journey_and_row_menu(self, web_client, admin_cookie, monkeypatch):
         """Under rail the additions stay: the composer "+" menu and the row
@@ -2070,6 +2079,7 @@ class TestDefaultContentParity:
         assert 'id="chat-plus-menu"' in resp.text
         assert 'id="railGetStarted"' in resp.text
         assert "chat_row_menu.js" in resp.text
+        assert 'id="chat-copy-transcript"' in resp.text
 
     def test_topnav_composer_grid_keeps_two_columns(self):
         """The redesign widened `.cloud-chat-form`'s grid to three columns for

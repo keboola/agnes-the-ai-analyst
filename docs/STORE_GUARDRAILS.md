@@ -300,8 +300,12 @@ Download for as long as they're useful. The daily TTL job
 `POST /api/admin/run-blocked-purge`) removes the bundle bytes once
 the submission's `created_at` is older than
 `guardrails.blocked_bundle_ttl_days` (default 30) AND the status is
-still in `{blocked_inline, blocked_llm, review_error}`. Approved and
-overridden submissions are never purged.
+still in `{blocked_inline, blocked_llm}`. Approved and overridden
+submissions are never purged. `review_error` is deliberately excluded
+too: it isn't a verdict — it means the LLM call crashed or timed out
+before the submission was ever judged — and purging its bundle would
+make the documented Retry LLM path permanently unusable. An admin who
+wants those bytes gone can still use **Delete** by hand.
 
 What survives the purge:
 - The submission row (audit trail)

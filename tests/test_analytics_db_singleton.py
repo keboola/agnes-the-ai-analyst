@@ -33,6 +33,7 @@ def _reset_singleton(monkeypatch, tmp_path):
     """
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     import src.db as db_mod
+
     db_mod._analytics_db_conn = None
     db_mod._analytics_db_path = None
     yield
@@ -45,6 +46,7 @@ def test_get_analytics_db_caches_connection():
     connection object — not open a fresh one each time."""
     from src.db import get_analytics_db
     import src.db as db_mod
+
     cur1 = get_analytics_db()
     cur2 = get_analytics_db()
     # Cursors are different objects (DuckDB returns a fresh cursor each
@@ -65,6 +67,7 @@ def test_closing_cursor_does_not_close_connection():
     handle, the underlying connection stays usable for the next call."""
     from src.db import get_analytics_db
     import src.db as db_mod
+
     cur1 = get_analytics_db()
     cur1.execute("CREATE TABLE probe (x INTEGER)")
     cur1.close()  # caller is allowed to do this; mustn't break #2 call
@@ -82,6 +85,7 @@ def test_get_analytics_db_reopens_on_data_dir_change(tmp_path, monkeypatch):
     mid-process, but pytest fixtures do."""
     import src.db as db_mod
     from src.db import get_analytics_db
+
     cur1 = get_analytics_db()
     cur1.execute("CREATE TABLE marker_a (x INTEGER)")
     conn_a = db_mod._analytics_db_conn
@@ -138,6 +142,7 @@ def test_close_analytics_db_clears_singleton_and_reopen_works():
     re-init (test process keeps running) must reopen cleanly."""
     import src.db as db_mod
     from src.db import close_analytics_db, get_analytics_db
+
     cur1 = get_analytics_db()
     cur1.execute("CREATE TABLE probe (x INTEGER)")
     assert db_mod._analytics_db_conn is not None
@@ -151,3 +156,177 @@ def test_close_analytics_db_clears_singleton_and_reopen_works():
     cur2 = get_analytics_db()
     rows = cur2.execute("SELECT COUNT(*) FROM probe").fetchall()
     assert rows == [(0,)]
+
+
+class TestReadonlyOnFreshDataDir:
+    """`get_analytics_db_readonly()` must stay usable on a fresh install.
+
+    Regression: when ``analytics/server.duckdb`` did not exist yet, the
+    read-only factory created it with a **read-write** connection and
+    handed that back. The file then existed, so every later call took the
+    read-only branch — and DuckDB refuses to open a file read-only while a
+    read-write connection to it is alive in the same process:
+
+        ConnectionException: Can't open a connection to same database file
+        with a different configuration than existing connections
+
+    `app/api/query.py` never closes the handle, so on a fresh instance the
+    first request touching the query path poisoned every subsequent query
+    in that process until restart.
+    """
+
+    def test_second_call_on_fresh_data_dir_does_not_raise(self):
+        from src.db import get_analytics_db_readonly
+
+        first = get_analytics_db_readonly()
+        assert first.execute("SELECT 1").fetchone() == (1,)
+
+        # The poisoning call: file now exists → read-only branch.
+        second = get_analytics_db_readonly()
+        assert second.execute("SELECT 1").fetchone() == (1,)
+
+    def test_readonly_handle_cannot_write(self):
+        """The connection handed to the query path must be read-only even
+        on the very first call, when the factory had to create the file."""
+        import duckdb
+        from src.db import get_analytics_db_readonly
+
+        conn = get_analytics_db_readonly()
+        with pytest.raises(duckdb.Error):
+            conn.execute("CREATE TABLE writes_should_fail (x INTEGER)")
+
+
+class TestReadonlyFreshDataDirConcurrency:
+    """Unsynchronized create-then-reopen on a fresh data dir.
+
+    `get_analytics_db_readonly()` materializes `analytics/server.duckdb`
+    with a transient read-write handle when it doesn't exist yet, then
+    opens a read-only handle. Without a lock around that sequence, thread A
+    can be mid-materialization (read-write handle still alive) while
+    thread B — having observed the file already exists — reaches its own
+    read-only open first, and DuckDB raises "Can't open a connection to
+    same database file with a different configuration than existing
+    connections", 500-ing thread B's request.
+
+    This exercises real concurrent threads (not just an assertion that a
+    lock object is referenced): it widens the race window by delaying the
+    return of the read-write open, then fires several threads at a fresh
+    `DATA_DIR` and asserts none of them raise.
+    """
+
+    def test_concurrent_first_calls_do_not_raise(self, monkeypatch, tmp_path):
+        import time
+
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        import src.db as db_mod
+
+        real_open = db_mod._open_duckdb
+
+        def slow_open(path, **kwargs):
+            conn = real_open(path, **kwargs)
+            if kwargs.get("read_only") is False:
+                # Keep the transient read-write handle (materialization
+                # branch) alive a little longer so a concurrent thread's
+                # read-only open — if not properly serialized — reliably
+                # lands while it's still open, instead of only sometimes.
+                time.sleep(0.1)
+            return conn
+
+        monkeypatch.setattr(db_mod, "_open_duckdb", slow_open)
+
+        errors: list[BaseException] = []
+
+        def worker():
+            try:
+                conn = db_mod.get_analytics_db_readonly()
+                assert conn.execute("SELECT 1").fetchone() == (1,)
+                conn.close()
+            except BaseException as e:  # noqa: BLE001 - collecting for assertion below
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        assert errors == [], errors
+
+
+class TestReadonlySurvivesStrictTzFailureDuringMaterialization:
+    """`_open_duckdb`'s strict-mode timezone check can raise *after*
+    `duckdb.connect()` already succeeded and is holding the file's lock.
+
+    `get_analytics_db_readonly()`'s fresh-instance branch materializes the
+    file with ``_open_duckdb(str(db_path), read_only=False).close()`` — the
+    ``.close()`` is chained onto the call, so it only runs if the call
+    *returns*. With ``AGNES_DUCKDB_TZ_STRICT=1`` and a timezone pin that
+    didn't take, ``_open_duckdb`` instead raises ``RuntimeError`` from
+    inside its own body, after ``duckdb.connect()`` already succeeded —
+    so the connection never reaches the caller for the chained ``.close()``
+    to run on. The surrounding ``except Exception`` in
+    ``get_analytics_db_readonly()`` swallows that RuntimeError, execution
+    falls through to the read-only open right after, and DuckDB refuses
+    it — the exact poisoning this branch exists to prevent, now permanent
+    for the life of the process. Same defect class as
+    ``TestReadonlyOnFreshDataDir`` and ``TestReadonlyFreshDataDirConcurrency``
+    above, one step earlier in the same call chain.
+    """
+
+    def test_readonly_open_succeeds_after_strict_tz_failure(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("AGNES_DUCKDB_TZ_STRICT", "1")
+
+        import duckdb as duckdb_mod
+        from src.db import get_analytics_db_readonly
+
+        real_connect = duckdb_mod.connect
+
+        class _FakeTzConn:
+            """Wraps a real connection; forces the TimeZone probe query to
+            report a non-UTC reading so `_open_duckdb`'s strict-mode branch
+            raises, while delegating everything else — including
+            `.close()` — to the real connection, so a leaked handle here
+            really does hold the file's lock for the assertion below to
+            catch."""
+
+            def __init__(self, real):
+                self._real = real
+
+            def execute(self, sql, *args, **kwargs):
+                if "current_setting('TimeZone')" in sql:
+
+                    class _FakeRow:
+                        @staticmethod
+                        def fetchone():
+                            return ("America/New_York",)
+
+                    return _FakeRow()
+                return self._real.execute(sql, *args, **kwargs)
+
+            def close(self):
+                self._real.close()
+
+        def fake_connect(path, **kwargs):
+            real = real_connect(path, **kwargs)
+            # Only the materialization open (`read_only=False`) needs the
+            # faked timezone reading; the read-only open right after must
+            # go through unwrapped so it genuinely exercises DuckDB's
+            # same-file-different-configuration check against whatever the
+            # materialization step left behind.
+            if kwargs.get("read_only") is False:
+                return _FakeTzConn(real)
+            return real
+
+        monkeypatch.setattr(duckdb_mod, "connect", fake_connect)
+
+        # Fresh instance: the materialization branch hits the faked
+        # non-UTC reading, `_open_duckdb` raises, and
+        # `get_analytics_db_readonly()`'s own `except Exception` swallows
+        # it. This must not leave the write handle open for the read-only
+        # open that follows.
+        conn = get_analytics_db_readonly()
+        try:
+            assert conn.execute("SELECT 1").fetchone() == (1,)
+        finally:
+            conn.close()

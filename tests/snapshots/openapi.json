@@ -28092,7 +28092,7 @@
         ]
       },
       "patch": {
-        "description": "Patch an agent the caller owns. Only supplied fields change.",
+        "description": "Patch an agent the caller owns. Only supplied fields change.\n\nRenaming a draft also re-derives its slug, so the address it answers\non matches what it is called. Marking the agent ready freezes the\nslug \u2014 from then on it is an address other things may hold.",
         "operationId": "update_agent_api_agents__agent_id__patch",
         "parameters": [
           {
@@ -29854,7 +29854,7 @@
     },
     "/api/collections/search": {
       "get": {
-        "description": "Hybrid search across the caller's accessible collections.\n\nFail-closed: only the caller's granted collections are searched; an\noptional ``corpus_id`` narrows to one (ignored if not accessible). Declared\nbefore ``/{collection_id}`` so ``search`` isn't captured as a collection id.\n\nThe response carries ``retrieval`` (``hybrid | lexical_only``) so clients\ncan tell semantic-scored results from the lexical-only degradation that\nkicks in when the embeddings extra is not installed (#898).",
+        "description": "Hybrid search across the caller's accessible collections.\n\nFail-closed: only the caller's granted collections are searched; an\noptional ``corpus_id`` narrows to one (ignored if not accessible). Declared\nbefore ``/{collection_id}`` so ``search`` isn't captured as a collection id.\n\nThe response carries ``retrieval`` (``hybrid | lexical_only``) so clients\ncan tell semantic-scored results from the lexical-only degradation that\nkicks in when the embeddings extra is not installed (#898).\n\nAn empty result also carries ``searched_collections`` and a ``hint``.\nNothing in a bare ``[]`` separates \"you cannot see any collection\" from\n\"your words are not in the text\", and an agent handed that ambiguity\npicks the scarier reading: observed live, a chat agent searched six\nways, found nothing, and told the owner of the file \"I don't have\naccess to your files or collections\" \u2014 which then became the\nconversation's permanent title. The count is what makes the difference\ncheckable, and the hint names the three engine behaviours that make a\nreasonable query miss (see ``src.ingest.retrieval``).",
         "operationId": "search_collections_api_collections_search_get",
         "parameters": [
           {
@@ -32653,7 +32653,7 @@
     },
     "/api/kai/mcp": {
       "post": {
-        "description": "Forward the engine sandbox's MCP request to Agnes's own MCP server,\nunder the ticket's real identity.\n\nScope-gated on ``mcp``: an ``llm``-scoped ticket cannot reach the tool\nsurface, mirroring `_require_scope` on every other broker route.\n\nThe response streams. A Streamable-HTTP server answers either as JSON or\nas an SSE stream, and a tool that takes a while to produce its result\nwould otherwise be buffered whole \u2014 the same mistake the Anthropic proxy\nhad to fix for token deltas.",
+        "description": "Forward the engine sandbox's MCP request to Agnes's own MCP server,\nunder the ticket's real identity.\n\nScope-gated on ``mcp``: an ``llm``-scoped ticket cannot reach the tool\nsurface, mirroring `_require_scope` on every other broker route.\n\nThe response streams chunk by chunk. A Streamable-HTTP server answers\neither as JSON or as an SSE stream, and a tool that takes a while to\nproduce its result must not be buffered whole \u2014 the same mistake the\nAnthropic proxy had to fix for token deltas, and here it additionally\ncollides with the engine relay's time-to-headers bound (see\n`_mcp_internal_base` for why this is a real HTTP hop and not an in-process\nASGI dispatch).",
         "operationId": "kai_mcp_api_kai_mcp_post",
         "responses": {
           "200": {
@@ -32919,7 +32919,7 @@
     },
     "/api/knowledge/search": {
       "get": {
-        "description": "One query across documents, the knowledge base, and the table catalog.\n\nResults are typed (``chunk | knowledge | table | metric | glossary``); table hits carry a\npivot hint (query via SQL) instead of rows. Everything is filtered to the\ncaller's grants, fail-closed per source.\n\n``retrieval`` (``hybrid | lexical_only``) labels the chunk engine's mode:\n``lexical_only`` means the embeddings extra is absent and document chunks\nwere ranked without semantic scoring (#898). Knowledge and table hits are\nlexical by design and unaffected.",
+        "description": "One query across documents, the knowledge base, and the table catalog.\n\nResults are typed (``chunk | knowledge | table | metric | glossary``); table hits carry a\npivot hint (query via SQL) instead of rows. Everything is filtered to the\ncaller's grants, fail-closed per source.\n\n``retrieval`` (``hybrid | lexical_only``) labels the chunk engine's mode:\n``lexical_only`` means the embeddings extra is absent and document chunks\nwere ranked without semantic scoring (#898). Knowledge and table hits are\nlexical by design and unaffected.\n\nAn empty result carries ``searched_collections``, ``searched_tables`` and a\n``hint``, for the same reason ``/api/collections/search`` does: a bare\n``[]`` cannot be told apart from \"you may see nothing\", and an agent handed\nthat ambiguity picks the scarier reading and reports an access problem the\ncaller does not have. This is the *combined* leg, so the counts are what\nmake the difference checkable \u2014 an all-empty fan-out is a grant question,\nanything reachable is a wording one. The glossary is excluded from that\njudgement on purpose: it has no RBAC, so it runs for everyone and its\npresence would make every caller look like they had access.",
         "operationId": "knowledge_search_api_knowledge_search_get",
         "parameters": [
           {
@@ -35169,7 +35169,7 @@
     },
     "/api/mcp/query-table/{table_id}": {
       "post": {
-        "description": "Run a constrained filter+limit query against a registered table.\n\nPure SELECT \u2014 no aggregation, no projection control. AI clients\nthat need richer queries should use the generic ``query(sql)``\nsurface from the Agnes MCP foundation; this endpoint is the\n\"fast path\" for the common per-table lookup.",
+        "description": "Run a constrained filter+limit query against a registered table.\n\nPure SELECT \u2014 no aggregation, no projection control. AI clients\nthat need richer queries should use the generic ``query(sql)``\nsurface from the Agnes MCP foundation; this endpoint is the\n\"fast path\" for the common per-table lookup.\n\nPlain ``def`` (not ``async def``) so FastAPI auto-offloads the call to\nthe anyio thread pool \u2014 see ``execute_query`` in ``app/api/query.py``\nfor the same rationale. It didn't matter while this endpoint reused\nthe pooled read-write singleton (a cheap cursor), but\n``get_analytics_db_readonly()`` opens a fresh connection and\nre-ATTACHes every extract.duckdb file on each call; under ``async def``\nthat synchronous I/O would hold the single uvicorn event loop and\nstall every other in-flight request for its duration.",
         "operationId": "query_table_api_mcp_query_table__table_id__post",
         "parameters": [
           {
@@ -47038,7 +47038,7 @@
     },
     "/auth/password/reset": {
       "get": {
-        "description": "Render the 'set new password' form when arriving via reset link.",
+        "description": "Render the 'set new password' form when arriving via reset link.\n\n``reason=must_change`` marks the forced-rotation arrival (see\n``password_login_web``): the credentials were correct, but the password\nwas set by someone else and has to be replaced before a session is\nissued. Without it the page is indistinguishable from \"you forgot your\npassword\", and first-time users reasonably conclude their password was\nrejected.",
         "operationId": "reset_page_auth_password_reset_get",
         "parameters": [
           {
@@ -47058,6 +47058,16 @@
             "schema": {
               "default": "",
               "title": "Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "reason",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Reason",
               "type": "string"
             }
           }

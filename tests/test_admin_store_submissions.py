@@ -2383,7 +2383,7 @@ class TestSubmissionLifecycleMarking:
         from src.repositories.store_submissions import StoreSubmissionsRepository
         _, owner_cookies = _create_user(web_client, "owner@x.com")
         eid_arch = self._upload_clean(web_client, owner_cookies, name="lc-d-arch")
-        eid_keep = self._upload_clean(web_client, owner_cookies, name="lc-d-keep")
+        self._upload_clean(web_client, owner_cookies, name="lc-d-keep")
         web_client.delete(f"/api/store/entities/{eid_arch}", cookies=owner_cookies)
 
         _, admin_cookies = _create_admin(web_client)
@@ -2632,3 +2632,55 @@ class TestAuditLogResourcePrefix:
             "runner.py must emit prefixed store_submission:{id} so the "
             "timeline query resolves it — bare-id format is legacy only"
         )
+
+
+class TestListPageFilterDropdowns:
+    """Custom design-system dropdown on the list page's Type / Per page
+    filters (#1055). `#f-type` / `#f-limit` stay real `<select>`s in the DOM
+    (the GET form submits their `.value` unchanged) with a `ds.dropdown()`
+    custom button+menu alongside each. Visibility between the two is a CSS
+    theme decision (paper-skin.css), not a template one.
+    """
+
+    def test_native_selects_still_render_for_form_submission(self, web_client):
+        _, admin_cookies = _create_admin(web_client)
+        r = web_client.get("/admin/store/submissions", cookies=admin_cookies)
+        assert r.status_code == 200
+        text = r.text
+        assert '<select id="f-type" name="type" class="ds-dropdown-native">' in text
+        assert '<select id="f-limit" name="limit" class="ds-dropdown-native">' in text
+
+    def test_custom_dropdown_markup_present(self, web_client):
+        _, admin_cookies = _create_admin(web_client)
+        r = web_client.get("/admin/store/submissions", cookies=admin_cookies)
+        assert r.status_code == 200
+        text = r.text
+        assert 'data-ds-dropdown-target="f-type"' in text
+        assert 'data-ds-dropdown-target="f-limit"' in text
+        assert 'id="f-type-dd-btn"' in text
+        assert 'id="f-limit-dd-btn"' in text
+        assert 'role="menu"' in text
+        assert 'role="menuitemradio"' in text
+        for value in ("", "skill", "agent", "plugin"):
+            assert f'data-value="{value}"' in text
+        for value in ("25", "50", "100", "200"):
+            assert f'data-value="{value}"' in text
+
+    def test_dropdown_reflects_active_filters(self, web_client):
+        """When `?type=agent&limit=100` is bookmarked, both the native
+        select and the custom dropdown's initial state must agree."""
+        _, admin_cookies = _create_admin(web_client)
+        r = web_client.get(
+            "/admin/store/submissions?type=agent&limit=100",
+            cookies=admin_cookies,
+        )
+        assert r.status_code == 200
+        text = r.text
+        assert '<option value="agent"  selected>Agent</option>' in text
+        assert '<option value="100" selected>100</option>' in text
+
+    def test_dropdown_js_module_is_loaded(self, web_client):
+        _, admin_cookies = _create_admin(web_client)
+        r = web_client.get("/admin/store/submissions", cookies=admin_cookies)
+        assert r.status_code == 200
+        assert "js/components/ds_dropdown.js" in r.text

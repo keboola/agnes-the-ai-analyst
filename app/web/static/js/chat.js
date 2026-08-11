@@ -23,9 +23,30 @@ const $ = (id) => document.getElementById(id);
 // only then returns HTML for insertion. Never assign marked.parse() output to
 // innerHTML directly again.
 const _SAFE_URL_SCHEME_RE = /^(?:https?:|mailto:|tel:|#|\/|\.\/|\.\.\/|[^:]*$)/i;
+// SMIL animation elements defeat the two checks below by deferring them to
+// runtime: both operate on the attributes an element HAS, and SMIL sets an
+// attribute it does not have. Measured against this sanitizer, all three of
+// these survive it completely intact:
+//   <a href="#x"><animate attributeName="href" values="javascript:…"></a>
+//   <a><animate attributeName="xlink:href" to="javascript:…"></a>
+//   <set attributeName="onload" to="…">
+// The scheme allowlist never sees the first two — `values`/`to` are not
+// URL-bearing attribute NAMES — and the `on*` strip never sees the third,
+// because there the handler name is an attribute VALUE. `foreignObject` is
+// HTML-in-SVG; its `<script>` and `on*` payloads are removed today, but it is
+// the standard container in these chains and has no legitimate use in a chat
+// message. None of this is reachable by an honest chart: measured on real
+// matplotlib output, a figure contains zero SMIL elements and no
+// foreignObject, so blocking them costs the chart channel nothing.
+//
+// This predates the chart work — <svg> was always allowed through — but that
+// work makes inline SVG a routine, actively-instructed output shape, and the
+// threat model is not matplotlib: a co-presence peer's message renders through
+// this same path (see the header note above), and no prompt rule binds them.
 const _DANGEROUS_TAGS = new Set([
   "script", "iframe", "object", "embed", "link", "meta",
   "style", "base", "form", "frame", "frameset", "template",
+  "animate", "animatetransform", "animatemotion", "set", "foreignobject",
 ]);
 
 function _sanitizeFragment(root) {
@@ -230,6 +251,130 @@ function setThreadTitle(title) {
   // across in-page open-session / new-chat transitions. Absent on topnav — no-op.
   const railNewChat = document.getElementById("new-chat");
   if (railNewChat) railNewChat.classList.toggle("on", !title);
+}
+
+// ---------- Copy transcript ----------------------------------------------
+// A chat session is owner-only by design: GET /api/chat/sessions/{id}/messages
+// 404s for everyone else, admins included, and /admin/sessions browses the
+// JSONLs collected from the CLI, not web chat. So a user who hits a wrong or
+// broken answer has literally nothing to hand to whoever could look at it —
+// "can I report this session?" had no answer. This is that answer: the whole
+// thread on the clipboard as markdown.
+//
+// Read back from the API rather than scraped off the DOM. The rendered bubbles
+// have already been through markdown → HTML, and the endpoint's `tool_calls`
+// is the only provenance beyond raw prose. NOT "in order, as stored" for every
+// row, though: on the live agent path nothing persists real tool calls at all
+// (the runner streams them as separate frames the manager never re-attaches
+// to the final message), so the only rows that ever carry `tool_calls` here
+// are the cancelled/interrupted markers manager.py writes — which have no
+// `tool`/`args` keys. formatToolCall() below skips those rather than
+// rendering `tool: undefined` with an empty fence.
+
+/** One tool_calls[] entry as `{label, argsJson}`, or `null` for a row with no
+ *  `tool` name — the shape of manager.py's cancelled/interrupted markers
+ *  (`{"cancelled": true}`, `{"interrupted": true, "reason": …}`), which are
+ *  the only `tool_calls` a persisted message ever actually carries today.
+ *  Without this guard `tc.tool` is `undefined`, `JSON.stringify(undefined, …)`
+ *  is also `undefined`, and both render as the literal string "undefined" /
+ *  an empty fence. */
+function formatToolCall(tc) {
+  if (!tc || typeof tc.tool !== "string") return null;
+  return { label: tc.tool, argsJson: JSON.stringify(tc.args ?? {}, null, 2) };
+}
+
+/** Markdown transcript of one conversation. ``title`` must be captured by the
+ *  caller BEFORE the first await — reading it here (off the live DOM, after
+ *  the fetch below) let a conversation switch mid-export repaint
+ *  #chat-thread-title out from under this call, pairing the new
+ *  conversation's title with the old one's messages and session id. Throws
+ *  on a failed fetch so the caller can distinguish "couldn't read it" from
+ *  "couldn't copy it". */
+async function fetchTranscriptMarkdown(chatId, title) {
+  const res = await fetch(`/api/chat/sessions/${encodeURIComponent(chatId)}/messages`);
+  if (!res.ok) throw new Error(`messages → ${res.status}`);
+  const msgs = await res.json();
+  const out = [`# ${title}`, "", `Session: \`${chatId}\``, `Exported: ${new Date().toISOString()}`, ""];
+  for (const m of msgs) {
+    const who = m.role === "user" ? "You" : m.role === "assistant" ? "Agnes" : m.role;
+    out.push(`## ${who} · ${m.created_at}`, "", (m.content || "").trim(), "");
+    for (const tc of m.tool_calls || []) {
+      const call = formatToolCall(tc);
+      if (!call) continue;
+      // Fenced, not inline: an `agnes query` argument is multi-line SQL, and
+      // the point of carrying tool calls at all is that they stay readable.
+      out.push(`<details><summary>tool: ${call.label}</summary>`, "", "```json", call.argsJson, "```", "", "</details>", "");
+    }
+  }
+  return out.join("\n");
+}
+
+function wireCopyTranscript() {
+  const btn = $("chat-copy-transcript");
+  if (!btn) return;
+  btn.addEventListener("click", async () => {
+    if (!currentChatId) return;
+    const chatId = currentChatId;
+    // Snapshotted here, alongside chatId, for the same reason: this is the
+    // last point before any `await` where #chat-thread-title is guaranteed to
+    // still belong to the conversation being exported. Opening another chat
+    // during the fetch below repaints that heading via setThreadTitle(), so
+    // reading it any later would pair the new conversation's title with this
+    // one's messages and session id.
+    const title = ($("chat-thread-title")?.textContent || "Untitled chat").trim();
+    btn.disabled = true;
+    try {
+      if (window.ClipboardItem && navigator.clipboard?.write && window.isSecureContext) {
+        // `navigator.clipboard.write` has to be *called* synchronously inside
+        // the click handler — an `await` before it (the fetch below is a real
+        // network round-trip) drops the transient user-activation WebKit
+        // requires, and the button reports "Couldn't copy to clipboard" even
+        // though everything else worked. ClipboardItem lets the *value*
+        // resolve later while the write call itself starts right here.
+        const md = fetchTranscriptMarkdown(chatId, title);
+        // `new ClipboardItem({...: blob})` hands the constructor a *derived*
+        // promise. If the constructor or `.write()` throws synchronously
+        // before ever consuming it (a stricter implementation can refuse a
+        // promise-valued entry outright), nothing else has a handler on
+        // `blob` — a later `md` rejection would then surface as an
+        // unhandled rejection independent of the try/catch below. Attach a
+        // no-op handler unconditionally so that can never happen.
+        const blob = md.then((text) => new Blob([text], { type: "text/plain" }));
+        blob.catch(() => {});
+        try {
+          await navigator.clipboard.write([new ClipboardItem({ "text/plain": blob })]);
+          showToast("Transcript copied", "ok");
+          return;
+        } catch (writeErr) {
+          // The rejection could be the write itself (a NotAllowedError from
+          // the permission gate, or a synchronous constructor refusal) or
+          // `md` failing underneath it (the fetch itself failed) — only the
+          // first case has a working fallback, so tell them apart before
+          // reporting anything.
+          let text;
+          try {
+            text = await md;
+          } catch (_) {
+            showToast("Couldn't read this conversation", "error");
+            return;
+          }
+          const ok = await copyTextToClipboard(text);
+          showToast(ok ? "Transcript copied" : "Couldn't copy to clipboard", ok ? "ok" : "error");
+          return;
+        }
+      }
+      // ClipboardItem unavailable (older Firefox, non-secure context): fall
+      // back to the pre-fetch-then-copy path, which still works everywhere
+      // that got a real click but loses the gesture on stricter browsers.
+      const md = await fetchTranscriptMarkdown(chatId, title);
+      const ok = await copyTextToClipboard(md);
+      showToast(ok ? "Transcript copied" : "Couldn't copy to clipboard", ok ? "ok" : "error");
+    } catch (_) {
+      showToast("Couldn't read this conversation", "error");
+    } finally {
+      btn.disabled = false;
+    }
+  });
 }
 
 function readCapabilitySnapshot() {
@@ -1206,14 +1351,19 @@ function renderMessage(m) {
 
   if (m.tool_calls && m.tool_calls.length) {
     for (const tc of m.tool_calls) {
+      // A row can carry no `tool` name at all — the cancelled/interrupted
+      // markers manager.py stores in place of a real tool call. Rendering
+      // those unconditionally produced `tool: undefined` and an empty fence.
+      const call = formatToolCall(tc);
+      if (!call) continue;
       const det = document.createElement("details");
       // F3: build via textContent, not innerHTML — tc.tool / tc.args are
       // untrusted and were previously interpolated into innerHTML unescaped.
       const summary = document.createElement("summary");
-      summary.textContent = `tool: ${tc.tool}`;
+      summary.textContent = `tool: ${call.label}`;
       const pre = document.createElement("pre");
       const code = document.createElement("code");
-      code.textContent = JSON.stringify(tc.args, null, 2);
+      code.textContent = call.argsJson;
       pre.appendChild(code);
       det.appendChild(summary);
       det.appendChild(pre);
@@ -3591,6 +3741,7 @@ function renderCoPresence(host, participants) {
 (async () => {
   renderCapabilities();
   wireSuggestionButtons();
+  wireCopyTranscript();
   autosizeComposer();
   // Rail pre-conversation Dashboard (no-op on topnav): greeting fix-up +
   // suggested-next-actions wiring, handed submitUserMessage/openSession so

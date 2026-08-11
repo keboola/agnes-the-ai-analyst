@@ -142,7 +142,7 @@ def collection_get(collection_id: str) -> dict:
 
 @tool()
 def collections_search(query: str, k: int = 10, collection_id: str = "") -> dict:
-    """Hybrid search across your accessible file Collections (RBAC-filtered).
+    """Hybrid search across your accessible file Collections (RBAC-filtered). Filenames are not indexed, matching is whole word, and there is no wildcard — so an empty result is a wording miss far more often than an access problem; read the response's ``hint`` before concluding anything from it.
 
     Returns ranked chunks with citations (``filename``, ``ordinal``, ``text``,
     ``score``). Optionally restrict to one collection via ``collection_id``.
@@ -150,6 +150,21 @@ def collections_search(query: str, k: int = 10, collection_id: str = "") -> dict
     The response's ``retrieval`` field says how results were ranked:
     ``hybrid`` (lexical + semantic) or ``lexical_only`` — the degraded mode
     when the server has no embedding model installed.
+
+    Three behaviours that make a reasonable query miss — search the
+    document's TEXT, not its metadata:
+
+    * **filenames are not indexed.** Searching ``report`` will not find
+      ``report.md``; only the words inside it are matched.
+    * **matching is whole word.** ``test`` does not find ``Testovaci``.
+    * **there is no wildcard.** ``*`` and an empty query return nothing,
+      not everything — there is no "list all chunks" query. Use
+      ``collection_get`` to enumerate a collection's files.
+
+    An empty ``results`` therefore does NOT mean you lack access. The
+    response carries ``searched_collections`` and a ``hint`` saying which
+    case you are in; read them before concluding anything about
+    permissions.
     """
     params: dict = {"q": query, "k": k}
     if collection_id:
@@ -162,7 +177,7 @@ def collections_search(query: str, k: int = 10, collection_id: str = "") -> dict
 
 @tool()
 def knowledge_search(query: str, k: int = 10) -> dict:
-    """One query across documents, the knowledge base, and the data catalog.
+    """One query across documents, the knowledge base, and the data catalog. Filenames are not indexed, matching is whole word, and there is no wildcard — so an empty result is a wording miss far more often than an access problem; read the response's ``hint`` before concluding anything from it.
 
     Fans out server-side over Collections chunks (hybrid lexical+vector),
     corporate-memory knowledge items (fulltext), and table catalog cards —
@@ -173,6 +188,11 @@ def knowledge_search(query: str, k: int = 10) -> dict:
     The response's ``retrieval`` field labels the chunk engine's mode:
     ``hybrid`` (lexical + semantic) or ``lexical_only`` — the degraded mode
     when no embedding model is installed where the ranking ran.
+
+    The chunk leg carries the same three surprises as
+    ``collections_search``: filenames are not indexed, matching is whole
+    word, and there is no wildcard. An empty result is not evidence that
+    you lack access — check the ``hint`` before saying so.
 
     Offline fallback (K3, #798): if the server is unreachable (network/VPN
     down), falls back to `agnes pull`-shipped knowledge artifacts under
@@ -211,6 +231,38 @@ def knowledge_search(query: str, k: int = 10) -> dict:
             "source": "local",
             "note": "server unreachable — searched local knowledge artifacts (documents only)",
         }
+
+
+@tool()
+def collection_file_read(collection_id: str, file_id: str) -> dict:
+    """Read one file's text straight, without guessing search terms.
+
+    Use this when you know WHICH file you want — "what is in this
+    document?", "summarise this upload". ``collections_search`` is for when
+    you do not: it needs words that appear in the body, and it cannot
+    enumerate a collection (see its own note).
+
+    Returns ``kind`` plus, for readable files, ``text`` and ``truncated``.
+    The server caps the text (~20k characters), so ``truncated: true`` means
+    you are holding a PREFIX — do not summarise it as the whole document;
+    fall back to ``collections_search`` with a distinctive term to reach the
+    rest. Read ``text`` regardless of ``kind``: ``kind`` describes how a
+    BROWSER would show the file (``text`` / ``pdf`` / ``image``), and a PDF
+    comes back ``kind="pdf"`` while still carrying its ingested text. When
+    ``text`` is empty, ``reason`` says why (still ingesting, rejected, or
+    nothing extractable) — relay that rather than reporting an access error.
+
+    Do not loop this over a whole collection: reading many files to answer
+    one question is what retrieval is for.
+
+    Args:
+        collection_id: Collection id from ``collections_list`` (``col_...``).
+        file_id: File id from ``collection_get`` (``cf_...``).
+    """
+    try:
+        return api_get_json(f"/api/collections/{collection_id}/files/{file_id}/preview")
+    except V2ClientError as exc:
+        raise ValueError(_mcp_error("collection_file_read", exc)) from exc
 
 
 @tool()

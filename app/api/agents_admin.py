@@ -237,6 +237,20 @@ async def create_agent(
         # API-created agents default all four scope modes to 'selected'
         # (spec §1) — the repo's own defaults are 'all', which is only
         # correct for the seeded default agent, so pass them explicitly.
+        #
+        # status='ready': this route requires an explicit, caller-chosen
+        # slug and refuses to change it afterwards (`update_agent` 400s
+        # `slug_immutable`) — the agent is published by definition the
+        # moment it exists. Leaving `status` unset here left the row
+        # COALESCEd to 'draft' (both repositories' create() default), which
+        # is indistinguishable from a /agents builder placeholder that was
+        # never named. The builder's draft-rename rule
+        # (app/api/agents.py::_draft_slug_rename) only freezes a slug once
+        # it is 'ready', so a governance-created agent's deliberately-chosen
+        # slug — the one a PAT may already be minted against — stayed
+        # renameable forever through the builder's PATCH. See
+        # `_v114_to_v115` (src/db.py) for the one-time backfill this
+        # required for agents created before the fix.
         repo.create(
             id=agent_id,
             owner_user_id=user["id"],
@@ -250,6 +264,7 @@ async def create_agent(
             connections_mode="selected",
             tables_mode="selected",
             memory_mode="selected",
+            status="ready",
         )
     except (duckdb.ConstraintException, sa_exc.IntegrityError):
         # Covers the tombstoned-slug race the pre-check above can't see

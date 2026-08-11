@@ -32,6 +32,38 @@ _loaded_once: bool = False
 # `load_instance_config` returns early whenever it is not.
 _last_good_config: Optional[dict] = None
 
+# Why the static `CONFIG_DIR/instance.yaml` could not be loaded, if it could
+# not. A validation failure there is NOT fatal — the app boots on built-in
+# defaults — which is a footgun: one typo'd key and the instance runs under
+# the wrong name, with the wrong data source, and the only evidence is a log
+# line. `get_static_config_error()` exposes this for the admin UI to surface
+# — not wired up there yet.
+_static_config_error: Optional[str] = None
+
+
+def get_static_config_error() -> Optional[str]:
+    """Reason the static ``instance.yaml`` failed to load, or ``None``.
+
+    Non-``None`` means the running instance is serving built-in defaults for
+    every section the writable overlay does not cover.
+
+    This is a diagnostic accessor, so it must never itself raise — including
+    on the process state it exists to explain. ``load_instance_config()``'s
+    lenient fallback for an unreadable *overlay* only fires once a good
+    config has loaded at least once (``_last_good_config is not None``); on
+    a process where the overlay was unreadable from the very first call, it
+    raises ``InstanceConfigUnreadable`` instead of falling back. Catch that
+    (and any other loader failure) and report it the same way as a static-
+    config error rather than propagating — an admin-UI caller of this
+    accessor must get a string back on precisely the misconfigured instance
+    the page exists to explain.
+    """
+    try:
+        load_instance_config()
+    except InstanceConfigUnreadable as exc:
+        return str(exc)
+    return _static_config_error
+
 
 def reset_cache() -> None:
     """Drop the in-process instance.yaml cache; the next ``load_instance_config``
@@ -128,7 +160,7 @@ def load_instance_config(*, strict: bool = False) -> dict:
     consumer of static-only sections (corporate memory page, dataset
     list, OpenMetadata client) saw empty defaults. See PR #107.
     """
-    global _instance_config, _loaded_once, _last_good_config
+    global _instance_config, _loaded_once, _last_good_config, _static_config_error
     if _instance_config is not None:
         return _instance_config
 
@@ -140,9 +172,21 @@ def load_instance_config(*, strict: bool = False) -> dict:
         from config.loader import load_instance_config as _load
 
         base = _load() or {}
+        _static_config_error = None
         logger.info("Loaded instance.yaml base from config/")
     except Exception as e:
-        logger.warning(f"Could not load static instance.yaml: {e}")
+        # ERROR, not WARNING: the app keeps serving, but on built-in
+        # defaults — wrong instance name, wrong data source, wrong auth
+        # domain. That is a misconfigured instance, not a hiccup, and it
+        # is invisible in the UI unless we say so (see
+        # `get_static_config_error`, which exists for the admin UI to
+        # surface on /admin/server-config — not wired up there yet).
+        _static_config_error = str(e)
+        logger.error(
+            "Could not load static instance.yaml — serving BUILT-IN DEFAULTS for "
+            "every section the writable overlay does not cover: %s",
+            e,
+        )
 
     # Overlay patch from the writable volume. Best-effort — a corrupt
     # overlay shouldn't take the app offline (we'd rather serve stale/base

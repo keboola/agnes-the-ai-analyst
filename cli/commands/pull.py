@@ -193,6 +193,16 @@ def pull(
         )
         raise typer.Exit(1)
 
+    # Fold the stack-sync per-item failures into `result.errors` before ANY
+    # branch reads it. Printing them as a warn line on the human path was not
+    # enough: `result.errors` is what decides the exit code (#596), what the
+    # `--json` payload carries, and what the `--quiet` SessionStart path
+    # reports — so a data package, skill or memory domain that never landed
+    # left a scripted or hook-driven pull exiting 0 with an empty `errors`
+    # array. Same reasoning #596 already applied to a table that failed to
+    # land. (Devin Review on this PR.)
+    _fold_stack_sync_errors(result)
+
     if as_json:
         typer.echo(
             json.dumps(
@@ -247,7 +257,7 @@ def pull(
         # canonical `agnes init` template).
         if result.errors:
             for e in result.errors:
-                typer.echo(f"warn: {e}", err=True)
+                typer.echo(f"warn: {format_pull_error(e)}", err=True)
             # #596 — even in the silent SessionStart-hook path, a table that
             # failed to land must exit non-zero so the canonical hook's
             # trailing `|| true` is what swallows it (a deliberate operator
@@ -267,7 +277,6 @@ def pull(
     else:
         typer.echo(f"Updated {result.tables_updated} tables ({result.parquets_total} total).")
     typer.echo(f"Rules: {result.rules_count}.")
-
 
     # WF-4 (wave 2H) — provenance summary. Only printed once a
     # `signed_url` has actually been used (an instance with no object
@@ -310,11 +319,54 @@ def pull(
 
     if result.errors:
         for e in result.errors:
-            typer.echo(f"warn: {e}", err=True)
+            typer.echo(f"warn: {format_pull_error(e)}", err=True)
         # #596 — a partial pull (any table failed to land) must exit non-zero
         # so manual invocation and CI both see the failure instead of a
         # success-looking exit 0 that silently hides missing tables.
         raise typer.Exit(1)
+
+
+_ERROR_SUBJECT_KEYS = ("stack", "table", "name", "package", "slug", "digest", "corpus_id", "stage")
+
+
+def format_pull_error(entry) -> str:
+    """One readable line for an entry of ``PullResult.errors``.
+
+    The entries are dicts assembled at the failure site
+    (``{"table": ..., "error": ...}`` and friends). They used to be printed
+    with an f-string, so an analyst whose download 403'd got the repr:
+
+        warn: {'table': 'orders', 'error': "Client error '403 Forbidden' ..."}
+
+    Anything unrecognized falls back to ``str`` so this never renders less
+    than before.
+    """
+    if not isinstance(entry, dict):
+        return str(entry)
+    subject = " ".join(str(entry[k]) for k in _ERROR_SUBJECT_KEYS if entry.get(k) not in (None, ""))
+    message = str(entry.get("error") or "").strip()
+    if subject and message:
+        return f"{subject}: {message}"
+    return message or subject or str(entry)
+
+
+def _fold_stack_sync_errors(result) -> None:
+    """Move each ``TypeReport.errors`` entry onto ``result.errors``.
+
+    Tagged with the type it came from so the shared formatter names it. The
+    entries live on the per-type reports (``cli/lib/pull_sync.py``), a
+    different list from the one every exit path reads.
+    """
+    stack = getattr(result, "stack_sync", None)
+    if stack is None or not hasattr(result, "errors"):
+        return
+    for label in ("direct_tables", "data_packages", "memory_domains"):
+        rep = getattr(stack, label, None)
+        for entry in getattr(rep, "errors", []) or []:
+            if isinstance(entry, dict):
+                result.errors.append({"stack": label, **entry})
+            else:
+                result.errors.append({"stack": label, "error": str(entry)})
 
 
 def _emit_stack_sync_block(stack) -> None:
@@ -367,6 +419,13 @@ def _emit_stack_sync_block(stack) -> None:
         typer.echo(_line("data_packages:", pkgs))
     if mem is not None:
         typer.echo(_line("memory_domains:", mem))
+
+    # Per-item failures are NOT printed here: `_fold_stack_sync_errors` moves
+    # them onto `result.errors` before any exit path reads it, so they print
+    # through the same formatter as every other pull error AND count towards
+    # the exit code and the `--json` payload. Printing them here as well would
+    # simply double them. (Devin Review on this PR — first as "these reach no
+    # surface at all", then as "a warn line is not an exit code".)
 
     violations = getattr(stack, "invariant_violations", []) or []
     if violations:

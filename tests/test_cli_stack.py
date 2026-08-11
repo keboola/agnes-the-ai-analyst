@@ -120,6 +120,37 @@ class TestStackBrowse:
         assert "Sales" in result.output
         assert "✓" in result.output
 
+    def test_browse_prints_the_id_that_add_requires(self):
+        """`agnes stack add <type> <id>` takes an id the table never showed.
+
+        Live symptom (analyst persona): browse printed NAME / TYPE /
+        REQUIREMENT / IN STACK / DESCRIPTION, so the reader guessed the web
+        slug, got "Access denied: your groups have no grant on
+        data_package/northwind-orders. Ask an admin to grant it." — which was
+        false; the grant was there and the id was wrong. The real id came from
+        calling /api/stack/browse by hand. Names are display strings and the
+        one on that instance contained an em dash, so it was not even
+        retypeable.
+        """
+        body = {
+            "items": [
+                {
+                    "id": "pkg_1050485f3d7e",
+                    "name": "Sales — Northwind Orders",
+                    "description": "1200 order lines",
+                    "requirement": "available",
+                    "in_stack": False,
+                },
+            ]
+        }
+        with patch("cli.commands.stack.api_get", return_value=_resp(200, body)):
+            result = runner.invoke(app, ["stack", "browse", "--type", "data_package"])
+        assert result.exit_code == 0
+        assert "ID" in result.output
+        assert "pkg_1050485f3d7e" in result.output, (
+            "browse must print the id its sibling `stack add` demands"
+        )
+
     def test_browse_without_type_fetches_both(self):
         with patch(
             "cli.commands.stack.api_get",
