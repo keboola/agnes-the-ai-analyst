@@ -18,6 +18,7 @@ from typing import Any, Iterator, Optional
 import httpx
 
 from cli.config import _config_dir, get_server_url, get_token
+from cli.server_moved import is_redirect, moved_server_message
 from cli.update_check import _installed_version, _version_lt
 
 # User-Agent is invariant for the life of the process — installed
@@ -231,11 +232,6 @@ def _translate_transport_error(
     )
 
 
-#: Redirect statuses an API call can come back with. All of them mean the
-#: same thing here: the request never reached a handler.
-_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
-
-
 def _check_moved_server(response: "httpx.Response") -> None:
     """Hard-stop with an actionable message when the API answers a redirect.
 
@@ -255,53 +251,18 @@ def _check_moved_server(response: "httpx.Response") -> None:
     new address and stopping keeps the token on the host the user
     configured.
     """
-    if response.status_code not in _REDIRECT_STATUSES:
+    if not is_redirect(response.status_code):
         return
-    location = response.headers.get("Location", "")
-    configured = get_server_url().rstrip("/")
-    moved = False
-    new_base = ""
-    if location:
-        try:
-            target = httpx.URL(location)
-            if not target.scheme:
-                # Protocol-relative (`//host/path`): inherit the scheme we
-                # dialed with, so the hint is a URL the user can paste rather
-                # than `//host`. Must happen before the host test — the scheme
-                # is what makes the rendered `new_base` usable.
-                target = target.copy_with(scheme=httpx.URL(configured).scheme or "https")
-            # A move is "the target names a DIFFERENT host", decided on the
-            # parsed URL rather than on how the header is spelled. `Location`
-            # may be any URI-reference, so a path-relative `v2/agents` has no
-            # host at all — a textual "does not start with /" test read that
-            # as absolute and derived a hostless `AGNES_SERVER=https://`,
-            # telling the user to point at an address that cannot exist.
-            # No host means same origin, which falls through to the generic
-            # message below.
-            moved = bool(target.netloc) and target.netloc != httpx.URL(configured).netloc
-            if moved:
-                new_base = str(target.copy_with(raw_path=b"/")).rstrip("/")
-        except Exception:
-            moved = False
-    lines = [
-        f"error: {configured} answered HTTP {response.status_code} "
-        f"(redirect{f' to {location}' if location else ''}) instead of handling the request."
-    ]
-    if moved and new_base:
-        lines += [
-            "       That address has moved. Redirects are not followed automatically:",
-            "       your credentials are stripped on a cross-origin hop, so the retry",
-            "       would fail as 'not authenticated' rather than work.",
-            "       Point the CLI at the new address:",
-            f"         AGNES_SERVER={new_base} agnes <command>     (one-off)",
-            f"         or set `server: {new_base}` in {_config_dir() / 'config.yaml'}",
-        ]
-    else:
-        lines.append(
-            "       The CLI does not follow redirects on API calls. If this is "
-            "unexpected, check whether a proxy sits in front of the server."
-        )
-    sys.stderr.write("\n".join(lines) + "\n")
+    # The wording lives in `cli/server_moved.py` so this client and
+    # `cli/v2_client.py` cannot drift apart — teaching only one of them is
+    # exactly how ten command modules kept answering a redirect with
+    # `internal CLI error (JSONDecodeError)` after #1225.
+    message = moved_server_message(
+        response.status_code,
+        response.headers.get("Location", ""),
+        get_server_url(),
+    )
+    sys.stderr.write("error: " + message + "\n")
     sys.exit(2)
 
 
