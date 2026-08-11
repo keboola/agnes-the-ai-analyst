@@ -410,3 +410,44 @@ class TestFillerWordsDoNotDecideWhichFileWins:
         cid = _seed("filler-only", "what-is-this.md", [{"ordinal": 0, "text": "alpha bravo"}])
 
         assert search([cid], "what is this") == []
+
+
+class TestAPassageThatContainsTheWordsStaysABodyHit:
+    """Devin Review on #1267: every chunk of a name-matched file was folded
+    into the name list, including the ones that genuinely contain the search
+    terms — relabelled and reordered under a hit that explains less."""
+
+    def test_the_matching_passage_keeps_its_label_and_lead(self, e2e_env):
+        from src.ingest.retrieval import search
+
+        cid = _seed(
+            "mixed",
+            "quarterly-report.md",
+            [
+                {"ordinal": 0, "text": "cover page"},
+                {"ordinal": 1, "text": "the quarterly margin by region"},
+            ],
+        )
+
+        res = search([cid], "quarterly margin")
+
+        assert res[0]["matched_on"] == "body", res
+        assert res[0]["ordinal"] == 1
+
+    def test_a_two_word_question_still_reaches_the_named_file(self, e2e_env):
+        """The half-coverage short-circuit killed exactly this case: any
+        passage containing one of two content words hid the file named after
+        both. (Devin Review on #1267.)"""
+        from src.ingest.retrieval import search
+
+        cid = _seed(
+            "two-word",
+            "quarterly-report.md",
+            [{"ordinal": 0, "text": "the report was circulated on Monday"}],
+        )
+        other = _seed("two-word-other", "notes.md", [{"ordinal": 0, "text": "a report about nothing"}])
+
+        res = search([cid, other], "quarterly report")
+
+        assert res, "nothing at all came back"
+        assert res[0]["filename"] == "quarterly-report.md", [(r["filename"], r["matched_on"]) for r in res]

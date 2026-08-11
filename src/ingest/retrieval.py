@@ -289,11 +289,15 @@ def _rank_by_filename(
 
 
 
-#: The name pass is skipped when some passage already explains at least this
-#: much of the question. Below it, a file NAMED after the subject is a
-#: plausible better answer; at or above it, the body has the question covered
-#: and the extra file listing would be spent for nothing.
-_NAME_PASS_BODY_CEILING = 0.5
+#: The name pass is skipped only when some passage explains the WHOLE
+#: question. A lower bar looked cheaper but broke the case the pass exists
+#: for: a two-word question ("quarterly report") is half-covered by any
+#: passage containing either word, and the file named after both would never
+#: be considered. The cost argument does not survive contact with the line
+#: above it either — `search()` has already loaded every chunk row of every
+#: corpus in scope, next to which one file listing per corpus is a rounding
+#: error. (Devin Review on #1267, arguing both directions across two rounds.)
+_NAME_PASS_BODY_CEILING = 1.0
 
 
 def apply_filename_fallback(
@@ -347,10 +351,17 @@ def apply_filename_fallback(
         return top, confidence, set()
     if prepare is not None:
         prepare()
+    # A passage that CONTAINS the searched words is a body hit, even when its
+    # file is also named after them: relabelling it would misdescribe it and
+    # move it out of the order its own score earned. Keyed on the text, not on
+    # presence in `top` — with semantic scoring every chunk is in `top`, and
+    # excluding those would disable the name pass exactly where the previous
+    # round fixed it. (Devin Review on #1267.)
     name_hits = [
         pair
         for pair in _rank_by_filename(chunks, query, filename_of, k=k)
-        if _cover(filename_of(pair[1].get("file_id")) or "") > best_body_cover
+        if _cover(pair[1].get("text", "")) == 0.0
+        and _cover(filename_of(pair[1].get("file_id")) or "") > best_body_cover
     ]
     if not name_hits:
         return top, confidence, set()
