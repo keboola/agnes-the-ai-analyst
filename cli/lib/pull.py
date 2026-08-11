@@ -444,19 +444,37 @@ class _TextualProgress:
                 # least about, and they kept printing "100% done (0 B in
                 # 0.0s)". Receiving nothing at all is not a completed download
                 # under any size, known or not. (Devin Review on this PR.)
-                if total and bytes_ < total:
-                    line = (
-                        f"[{self._finished_idx}/{self._total_files} files] "
-                        f"{tid}: FAILED "
-                        f"({self._fmt_bytes(bytes_)} of {self._fmt_bytes(total)} "
-                        f"in {duration:.1f}s) — see the error below\n"
-                    )
-                elif not bytes_:
+                #
+                # Wording differs between the two because the CONFIDENCE does.
+                # Nothing received is unambiguous whatever the manifest says.
+                # A short-but-nonzero transfer is inferred from `size_bytes`,
+                # and this file already documents that the manifest and the
+                # streamed length can disagree — observed in the over-count
+                # direction ("174%" lines, compressed vs decompressed). Should
+                # it ever disagree the other way, a hash-verified parquet that
+                # promoted fine would print a hard "FAILED … see the error
+                # below" with no error below it and an exit code of 0 — a lie
+                # in the opposite direction to the one this guard removes. So
+                # the short case reports what was observed and points at the
+                # error rather than asserting one exists. (Devin Review.)
+                if not bytes_:
+                    # Checked FIRST, and phrased as a hard failure: nothing
+                    # arrived, which is unambiguous whether or not a size was
+                    # declared. (Ordered after the short-transfer branch it
+                    # would have been swallowed by it for any file that DID
+                    # declare a size — i.e. almost all of them.)
                     line = (
                         f"[{self._finished_idx}/{self._total_files} files] "
                         f"{tid}: FAILED (no data received"
                         f"{'' if total else ', expected size unknown'}"
                         f" in {duration:.1f}s) — see the error below\n"
+                    )
+                elif total and bytes_ < total:
+                    line = (
+                        f"[{self._finished_idx}/{self._total_files} files] "
+                        f"{tid}: INCOMPLETE "
+                        f"({self._fmt_bytes(bytes_)} of {self._fmt_bytes(total)} "
+                        f"in {duration:.1f}s) — check for an error below\n"
                     )
                 else:
                     line = (

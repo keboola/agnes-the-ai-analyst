@@ -88,7 +88,14 @@ def test_failed_transfer_is_not_reported_as_done():
 
 
 def test_partial_transfer_is_not_reported_as_done():
-    """Same guard for a transfer that started and then died mid-flight."""
+    """Same guard for a transfer that started and then died mid-flight.
+
+    Worded INCOMPLETE rather than FAILED: unlike the zero-byte case, this
+    verdict is inferred from the manifest's `size_bytes`, and this module
+    already documents that the manifest and the streamed length can disagree.
+    A hard "FAILED — see the error below" with no error below it would be a
+    lie in the opposite direction to the one the guard removes.
+    """
     from io import StringIO
 
     from cli.lib.pull import _TextualProgress
@@ -104,7 +111,8 @@ def test_partial_transfer_is_not_reported_as_done():
 
     output = stream.getvalue()
     assert "100% done" not in output, output
-    assert "FAILED" in output, output
+    assert "INCOMPLETE" in output, output
+    assert "see the error below" not in output, "asserts an error the pull may never print"
 
 
 def test_a_file_with_no_declared_size_is_not_reported_as_done_either():
