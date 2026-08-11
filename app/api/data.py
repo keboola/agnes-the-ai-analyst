@@ -190,7 +190,24 @@ async def check_access(
     # records a refused probe as a granted success is worse than no record —
     # an operator reading it sees an access check that never happened that way.
     # (Devin Review on #1265.)
-    refusal = _distribution_refusal(table_id) if granted else None
+    try:
+        refusal = _distribution_refusal(table_id) if granted else None
+    except HTTPException:
+        raise
+    except Exception:
+        # The registry read is a second DB touch after `can_access_table`, so a
+        # failure here means state went away mid-request. Answering 204 would
+        # release bytes this gate has not cleared; a 500 would tell the caller
+        # nothing. Say what happened and let them retry. (Devin Review on
+        # #1265.)
+        logger.exception("data.access_check: distribution check failed for %s", table_id)
+        refusal = HTTPException(
+            status_code=503,
+            detail={
+                "code": "distribution_check_unavailable",
+                "hint": "Could not read the table registry to check whether this table is distributed. Retry.",
+            },
+        )
     params = {
         "granted": granted,
         "duration_ms": int((time.monotonic() - t0) * 1000),
@@ -254,7 +271,22 @@ async def download_table(
         )
     # ...then whether the table is distributed at all. Order matters: an
     # unauthorized caller gets the RBAC refusal and learns nothing else.
-    _assert_distributable(table_id)
+    try:
+        _assert_distributable(table_id)
+    except HTTPException:
+        raise
+    except Exception:
+        # Same reasoning as `check-access`: a registry read that fails leaves
+        # this gate uncleared, and the bytes stay put until it can be read.
+        # (Devin Review on #1265.)
+        logger.exception("data.download: distribution check failed for %s", table_id)
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "distribution_check_unavailable",
+                "hint": "Could not read the table registry to check whether this table is distributed. Retry.",
+            },
+        )
 
     data_dir = _get_data_dir()
     extracts_dir = data_dir / "extracts"
