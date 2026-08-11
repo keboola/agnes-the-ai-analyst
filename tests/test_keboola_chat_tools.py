@@ -1214,3 +1214,25 @@ class TestClearingTheTokenDisablesTheDerivedSource(TestChatToolsEndpoint):
         assert mcp_sources_repo().get(source_id)["enabled"] is True
         assert mcp_sources_repo().get(source_id)["auth_secret_env"], "the injection name must survive"
         assert shared_secrets_repo().get(source_id) == "fresh"
+
+
+class TestTheAdviceMatchesTheBehaviour:
+    """Devin Review on this PR: two texts told admins the old truth.
+
+    Rotation propagates by itself since this PR, and the stale-auth notice
+    named an option the form does not offer.
+    """
+
+    def test_the_cli_help_does_not_ask_for_a_manual_re_run(self):
+        from cli.commands.admin_connection import chat_tools
+
+        doc = chat_tools.__doc__ or ""
+        assert "propagates to the copy on its own" in doc
+        assert "Re-run after rotating" not in doc
+
+    def test_the_stale_auth_notice_names_offered_options_only(self):
+        from pathlib import Path
+
+        page = (Path(__file__).resolve().parents[1] / "app/web/templates/admin_mcp_source_detail.html").read_text()
+        assert "Choose none, bearer or oauth" in page
+        assert "basic" not in page.split("no longer implements")[1][:400]
