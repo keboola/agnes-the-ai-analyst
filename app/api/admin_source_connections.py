@@ -486,13 +486,35 @@ def _resync_derived_chat_tools(connection_id: str) -> None:
         stack_url = ((row.get("config") or {}).get("stack_url") or "").rstrip("/")
         if not stack_url:
             return
-        mcp_sources_repo().upsert(
-            **build_stdio_spec(
-                connection_id=connection_id,
-                connection_name=row.get("name") or connection_id,
-                stack_url=stack_url,
-            )
+        existing = mcp_sources_repo().get(source_id)
+        spec = build_stdio_spec(
+            connection_id=connection_id,
+            connection_name=row.get("name") or connection_id,
+            stack_url=stack_url,
         )
+        # `build_stdio_spec` always describes an ENABLED source — it is written
+        # for the enable path. Upserting it wholesale on an unrelated edit
+        # silently switched a server the admin had deliberately disabled back
+        # on. The flag is state the admin owns, not something derived from the
+        # connection, so it is carried over. (Devin Review on this PR.)
+        if existing is not None and "enabled" in existing:
+            spec["enabled"] = existing["enabled"]
+        # A rename onto a name another MCP source already holds cannot be
+        # upserted — `mcp_sources.name` is unique. Skipping loudly beats
+        # letting the upsert raise into the broad handler below, which would
+        # log the same outcome as an unexpected failure and tell the admin
+        # nothing about the clash.
+        clash = mcp_sources_repo().get_by_name(spec["name"])
+        if clash is not None and clash["id"] != spec["id"]:
+            logger.warning(
+                "connection %s renamed, but an MCP source named %r already exists (id %s) — "
+                "its chat-tools source keeps the previous name and address",
+                connection_id,
+                spec["name"],
+                clash["id"],
+            )
+            return
+        mcp_sources_repo().upsert(**spec)
     except Exception:  # noqa: BLE001 — the connection edit already landed
         logger.warning(
             "updated connection %s but could not re-sync its chat-tools source",
@@ -695,7 +717,14 @@ async def set_connection_secret(
         # (Devin Review on this PR.)
         derived = derived_source_id(connection_id)
         try:
-            if shared_secrets_repo().has(derived):
+            # Keyed on the derived SOURCE, not on whether a copy happens to
+            # exist. Keying on the copy made clear-then-store a dead end: the
+            # clear deletes the copy, so the re-store found nothing to update
+            # and left the agent with no credential at all while the switch
+            # still read "on" — the two fixes in this PR cancelling each other
+            # out. The source is what says chat tools are on.
+            # (Devin Review on this PR.)
+            if mcp_sources_repo().get(derived) is not None:
                 shared_secrets_repo().upsert(derived, body.value)
         except Exception:  # noqa: BLE001 — the primary store already succeeded
             logger.warning(
