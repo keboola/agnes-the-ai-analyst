@@ -1753,3 +1753,41 @@ class TestOnlyKeboolaCarriesItsProjectForward:
         )
         assert r.status_code == 200, r.text
         assert r.json()["config"].get("project_id") == 1234
+
+
+def test_the_add_project_wizard_reuses_its_connection_on_retry():
+    """Devin Review on this PR: every failed attempt left a stray project.
+
+    The wizard creates the connection first, and every step after that can
+    fail — a mistyped token being the common one. It returned with the row
+    already saved, so a retry re-ran step 1 and minted another "Untitled
+    project" per attempt, leaving the admin to clean them up.
+    """
+    import pathlib
+    import re
+    import subprocess
+    import tempfile
+
+    page = pathlib.Path(__file__).resolve().parents[1] / "app" / "web" / "templates" / "admin_data_sources.html"
+    src = page.read_text(encoding="utf-8")
+
+    assert "if (_wizardConnId) {" in src, "the wizard does not reuse the connection it already created"
+    reuse = src.index("if (_wizardConnId) {")
+    create = src.index("const createResp = await fetch(API_CONNECTIONS,")
+    assert reuse < create, "the reuse check must come before creating another connection"
+    assert "this connection is reused, not duplicated" in src, "the failure message still implies a leftover"
+
+    # The restructure moved a `return` inside a new block — parse the page's
+    # script to be sure it is still valid JS, since nothing else here would.
+    blocks = re.findall(r"<script(?![^>]*src=)[^>]*>(.*?)</script>", src, re.S)
+    assert blocks, "no inline script found — re-point this guard"
+    js = re.sub(r"\{%.*?%\}", "", "\n".join(blocks), flags=re.S)
+    js = re.sub(r"\{\{.*?\}\}", '"JINJA"', js, flags=re.S)
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as f:
+        f.write(js)
+        path = f.name
+    proc = subprocess.run(["node", "--check", path], capture_output=True, text=True)
+    pathlib.Path(path).unlink(missing_ok=True)
+    if proc.returncode == 127:
+        return  # node unavailable
+    assert proc.returncode == 0, proc.stderr
