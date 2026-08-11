@@ -493,7 +493,10 @@ class TestTheUnresolvedTableListSaysWhenItIsASubset:
         # passes vacuously against any other wording, which is exactly how the
         # negative cases below would have gone green against the old code.
         assert 'class="sl-note"' in body, "the page presents a capped list as the complete set"
-        assert "at least one project has more" in body
+        assert "At least one project has more unregistered tables" in body
+        # No count: the list is de-duplicated ACROSS projects while the cap
+        # is per project, so any number here matches no real limit.
+        assert "This is the first" not in body
         assert "will not be enough" in body
 
     def test_a_complete_list_carries_no_subset_note(self, seeded_app, vault_key):
