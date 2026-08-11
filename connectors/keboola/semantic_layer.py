@@ -1498,9 +1498,17 @@ def _project_identity(url: str, token: str) -> Optional[dict]:
     }
 
 
-def compute_semantic_coverage() -> dict:
+def compute_semantic_coverage(*, warnings_only: bool = False) -> dict:
     """How much of each connected Keboola project's semantic layer actually
     lands in Agnes, computed live against the Metastore and the table registry.
+
+    ``warnings_only=True`` stops after the identity checks — the three token
+    comparisons, which are two `verify_token` calls per connection — and skips
+    the Metastore enumeration entirely. That is what the Data sources page
+    needs for its warning strip, and enumerating every project's whole
+    semantic model on every page view to draw it was work nobody asked for.
+    (Devin Review on this PR.) Counts come back zeroed in that mode; the
+    Semantic layer page still asks for the full report.
 
     Deliberately stateless: nothing is persisted and no counter from the last
     sync is read. The sync's own counters live in an in-memory dict that resets
@@ -1629,6 +1637,10 @@ def compute_semantic_coverage() -> dict:
                     ),
                 }
             )
+
+        if warnings_only:
+            sources.append(entry)
+            continue
 
         try:
             metastore = MetastoreClient(url=stack_url, token=source["token"])

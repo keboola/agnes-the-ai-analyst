@@ -356,3 +356,37 @@ class TestCoverageAppliesTheSyncsMasterTokenPreflight:
 
         src = inspect.getsource(semantic_layer.compute_semantic_coverage)
         assert '.get("is_master") is False' in src, "a missing key would fire the warning"
+
+
+class TestTheWarningStripDoesNotSweepEveryMetastore:
+    """Devin Review on #1248: drawing one line of text pulled every project's
+    whole semantic model, on every view of the Data sources page."""
+
+    def test_warnings_only_skips_the_metastore_enumeration(self):
+        import inspect
+
+        from connectors.keboola import semantic_layer
+
+        src = inspect.getsource(semantic_layer.compute_semantic_coverage)
+        i = src.index("if warnings_only:")
+        j = src.index("MetastoreClient(")
+        assert i < j, "the early exit must come before the Metastore is contacted"
+        assert "continue" in src[i : i + 120]
+
+    def test_the_endpoint_takes_the_flag(self):
+        import inspect
+
+        from app.api import keboola_semantic_layer_refresh as mod
+
+        src = inspect.getsource(mod.get_semantic_layer_coverage)
+        assert "warnings_only: bool = False" in src
+        assert "warnings_only=warnings_only" in src
+
+    def test_the_data_sources_page_asks_for_the_cheap_form(self):
+        from pathlib import Path
+
+        page = (Path(__file__).resolve().parents[1] / "app/web/templates/admin_data_sources.html").read_text()
+        assert "semantic-layer/coverage?warnings_only=true" in page
+        # …and the Semantic layer page still wants the full report.
+        full = (Path(__file__).resolve().parents[1] / "app/web/templates/admin_semantic_layer.html").read_text()
+        assert "warnings_only" not in full

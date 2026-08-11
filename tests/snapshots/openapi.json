@@ -23696,9 +23696,19 @@
     },
     "/api/admin/semantic-layer/coverage": {
       "get": {
-        "description": "How much of each connected Keboola project's semantic layer actually\nreaches Agnes, recomputed live (see\n``connectors.keboola.semantic_layer.compute_semantic_coverage``).\n\nRead-only and stateless \u2014 it does not touch metric_definitions and does not\nread the last sync's counters, which live in a process-local dict that\nempties on restart. Two conditions are worth acting on and are surfaced as\n``warnings[]``: a connection whose storage and master tokens point at\ndifferent projects, and a project none of whose metrics can bind to a\nregistered table. Tables the instance simply does not register are reported\nas a plain count, never as pending work.\n\nUpstream calls run off the event loop \u2014 one project's Metastore being slow\nmust not stall every other request in the process.",
+        "description": "How much of each connected Keboola project's semantic layer actually\nreaches Agnes, recomputed live (see\n``connectors.keboola.semantic_layer.compute_semantic_coverage``).\n\nRead-only and stateless \u2014 it does not touch metric_definitions and does not\nread the last sync's counters, which live in a process-local dict that\nempties on restart. Two conditions are worth acting on and are surfaced as\n``warnings[]``: a connection whose storage and master tokens point at\ndifferent projects, and a project none of whose metrics can bind to a\nregistered table. Tables the instance simply does not register are reported\nas a plain count, never as pending work.\n\n``?warnings_only=true`` answers with the token-identity checks alone and\nskips the Metastore enumeration \u2014 two `verify_token` calls per connection\ninstead of every project's whole semantic model. The Data sources page\ndraws its warning strip from that: it uses only the mismatch messages, and\npulling the full report on every page view was work nobody asked for.\nCounts are zeroed in that mode. (Devin Review on this PR.)\n\nUpstream calls run off the event loop \u2014 one project's Metastore being slow\nmust not stall every other request in the process.",
         "operationId": "get_semantic_layer_coverage_api_admin_semantic_layer_coverage_get",
         "parameters": [
+          {
+            "in": "query",
+            "name": "warnings_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Warnings Only",
+              "type": "boolean"
+            }
+          },
           {
             "in": "header",
             "name": "authorization",

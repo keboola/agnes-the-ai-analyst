@@ -593,7 +593,11 @@ function renderConnList() {
 async function loadTokenMismatchWarnings() {
   let sources;
   try {
-    const r = await fetch("/api/admin/semantic-layer/coverage", { credentials: "include" });
+    // `warnings_only`: this strip needs the token-identity checks, not every
+    // project's semantic model — the full report enumerates each Metastore,
+    // which is a heavy upstream sweep to draw one line of text.
+    // (Devin Review on this PR.)
+    const r = await fetch("/api/admin/semantic-layer/coverage?warnings_only=true", { credentials: "include" });
     if (!r.ok) return;
     sources = (await r.json()).sources || [];
   } catch (e) {

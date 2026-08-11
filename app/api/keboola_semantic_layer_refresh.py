@@ -163,6 +163,7 @@ async def run_keboola_semantic_layer_refresh(
 
 @router.get("/api/admin/semantic-layer/coverage")
 async def get_semantic_layer_coverage(
+    warnings_only: bool = False,
     user: dict = Depends(require_admin),
 ):
     """How much of each connected Keboola project's semantic layer actually
@@ -177,9 +178,16 @@ async def get_semantic_layer_coverage(
     registered table. Tables the instance simply does not register are reported
     as a plain count, never as pending work.
 
+    ``?warnings_only=true`` answers with the token-identity checks alone and
+    skips the Metastore enumeration — two `verify_token` calls per connection
+    instead of every project's whole semantic model. The Data sources page
+    draws its warning strip from that: it uses only the mismatch messages, and
+    pulling the full report on every page view was work nobody asked for.
+    Counts are zeroed in that mode. (Devin Review on this PR.)
+
     Upstream calls run off the event loop — one project's Metastore being slow
     must not stall every other request in the process.
     """
     from connectors.keboola.semantic_layer import compute_semantic_coverage
 
-    return await asyncio.to_thread(compute_semantic_coverage)
+    return await asyncio.to_thread(compute_semantic_coverage, warnings_only=warnings_only)
