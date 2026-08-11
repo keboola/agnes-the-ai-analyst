@@ -843,23 +843,41 @@ def _remove_chat_tools(connection_id: str) -> None:
     # it up from /admin/mcp — strictly worse than stopping.
     # (Devin Review on this PR.)
     _step("tools and their grants", lambda: tool_registry_repo().delete_for_source(source_id))
-    if not failed:
-        _step("the derived MCP source", lambda: mcp_sources_repo().delete(source_id))
-        _step("the copied credential", lambda: shared_secrets_repo().delete(source_id))
-        _step("per-user credentials", _drop_per_user_secrets)
-
     if failed:
+        # ONLY this step is fatal. The tools ARE the access, they outlive their
+        # source row, and nothing has been removed yet — so the caller can
+        # simply retry, and the message can honestly name the source to clean
+        # up by hand because it still exists.
         raise HTTPException(
             status_code=500,
             detail={
                 "error": "chat_tools_not_fully_removed",
                 "still_present": failed,
                 "message": (
-                    "Chat tools were not fully removed — the items listed are still live, "
-                    "so analyst access has NOT been revoked. Retry, or remove the derived "
-                    f"source {source_id} from /admin/mcp."
+                    "Chat tools were not fully removed — the tools and their grants are "
+                    "still live, so analyst access has NOT been revoked. Retry, or remove "
+                    f"the derived source {source_id} from /admin/mcp."
                 ),
             },
+        )
+
+    _step("the derived MCP source", lambda: mcp_sources_repo().delete(source_id))
+    _step("the copied credential", lambda: shared_secrets_repo().delete(source_id))
+    _step("per-user credentials", _drop_per_user_secrets)
+    if failed:
+        # Past the tools step, a failure leaves ORPHANED MATERIAL, not access:
+        # the grants are gone, so nothing reaches an analyst either way. Raising
+        # here made `delete_connection` — which runs this before dropping the
+        # row — permanently unfinishable on a persistent vault fault: the retry
+        # re-ran the same failing step forever and the connection could never
+        # be deleted, while the pre-PR behaviour simply logged it. Logged, with
+        # exactly what to clean up. (Devin Review on this PR.)
+        logger.warning(
+            "chat tools for connection %s were revoked, but these could not be removed and are "
+            "left orphaned: %s (source %s)",
+            connection_id,
+            ", ".join(failed),
+            source_id,
         )
 
 
