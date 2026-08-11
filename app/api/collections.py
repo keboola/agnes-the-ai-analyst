@@ -237,9 +237,6 @@ def _empty_search_hint(searched: int, corpus_id: Optional[str]) -> str:
       miss, so they are named explicitly rather than left to be inferred
       from a silent empty list:
 
-      - filenames are not indexed (``src.ingest.retrieval.rank_chunks``
-        scores chunk text; the filename is attached afterwards for the
-        citation), so searching for the file you are looking at fails;
       - matching is whole-word — ``test`` does not find ``Testovaci``;
       - there is no wildcard — ``*`` and ``""`` return nothing, not
         everything, so "show me what is in here" has no query form.
@@ -258,11 +255,11 @@ def _empty_search_hint(searched: int, corpus_id: Optional[str]) -> str:
     scope = "the selected collection" if corpus_id else f"{searched} accessible collection(s)"
     return (
         f"Searched {scope} and found no match. You DO have access — this is a wording "
-        "miss, not an access problem. Note: filenames are not indexed (search the text, "
-        "not the file name), matching is whole word (`test` will not find `Testovaci`), "
-        "and there is no wildcard (`*` and an empty query return nothing). Try a "
-        "distinctive word you expect inside the document, or call collection_get to list "
-        "the files first."
+        "miss, not an access problem. Note: matching is whole word (`test` will not find "
+        "`Testovaci`) and there is no wildcard (`*` and an empty query return nothing). "
+        "File names are searched too, as a fallback when no document body matches — so "
+        "nothing here matched either. Try a distinctive word you expect inside the "
+        "document, or call collection_get to list the files first."
     )
 
 

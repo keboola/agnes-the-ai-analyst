@@ -72,9 +72,23 @@ def local_search(query: str, *, workspace: Path, k: int = 10) -> List[Dict[str, 
     if not chunks:
         return []
 
-    from src.ingest.retrieval import rank_chunks
+    from src.ingest.retrieval import _rank_by_filename, rank_chunks
 
     top, confidence = rank_chunks(chunks, query, k=k)
+    matched_on = "body"
+    if not top:
+        # Same fallback as the server (`src.ingest.retrieval.search`): a query
+        # that matches only a FILE NAME must not answer "nothing" here while
+        # the server finds it — this module's docstring promises "the exact
+        # same ranking behavior", and `agnes search --local` and the stdio MCP
+        # fallback are the offline halves of the same question. The artifact
+        # denormalizes `filename` onto every chunk row, so the lookup is local.
+        # (Devin Review on #1267.)
+        by_id = {ch.get("file_id"): ch.get("filename") for ch in chunks}
+        top = _rank_by_filename(chunks, query, by_id.get, k=k)
+        if top:
+            confidence = "low"
+            matched_on = "filename"
     return [
         {
             "type": "chunk",
@@ -87,6 +101,7 @@ def local_search(query: str, *, workspace: Path, k: int = 10) -> List[Dict[str, 
             "text": ch.get("text"),
             "score": round(float(score), 4),
             "confidence": confidence,
+            "matched_on": matched_on,
         }
         for score, ch in top
     ]
