@@ -870,3 +870,86 @@ class TestMovingTheConnectionMovesTheAgentToo(TestChatToolsEndpoint):
         from src.repositories import mcp_sources_repo
 
         assert mcp_sources_repo().get(derived_source_id(conn_id)) is None
+
+
+class TestTheTwoPropagationFixesDoNotCancelEachOther(TestChatToolsEndpoint):
+    """Devin Review on this PR: clear-then-store was a dead end.
+
+    Clearing deletes the agent's copy; storing propagated only when a copy
+    already existed. Together that left the agent with NO credential while
+    the switch still read "on" — each fix correct alone, broken as a pair.
+    """
+
+    def test_clearing_then_storing_restores_the_agent_copy(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-clear-then-store")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.repositories import shared_secrets_repo
+
+        source_id = derived_source_id(conn_id)
+        assert c.delete(f"{BASE}/{conn_id}/secret", headers=_auth(token)).status_code == 204
+        assert shared_secrets_repo().get(source_id) is None
+
+        assert (
+            c.put(f"{BASE}/{conn_id}/secret", json={"value": "re-added"}, headers=_auth(token)).status_code
+            == 204
+        )
+        assert shared_secrets_repo().get(source_id) == "re-added", (
+            "the switch reads 'on' but the agent has no credential"
+        )
+
+
+class TestAnEditDoesNotResurrectADisabledServer(TestChatToolsEndpoint):
+    """Devin Review on this PR: `build_stdio_spec` always says enabled.
+
+    It is written for the enable path. Upserting it wholesale on an unrelated
+    edit switched a server the admin had deliberately disabled back on.
+    """
+
+    def test_a_disabled_derived_source_stays_disabled_across_an_edit(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-disabled")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.keboola_chat_tools import build_stdio_spec
+        from src.repositories import mcp_sources_repo
+
+        source_id = derived_source_id(conn_id)
+        # Disable it the way an admin would — re-upserting the spec with the
+        # flag off. (A fetched row carries `created_at`/`updated_at`, which
+        # are not upsert kwargs.)
+        spec = build_stdio_spec(
+            connection_id=conn_id, connection_name="kbc-disabled", stack_url="https://connection.example.com"
+        )
+        mcp_sources_repo().upsert(**{**spec, "enabled": False})
+        assert mcp_sources_repo().get(source_id)["enabled"] is False
+
+        assert (
+            c.put(f"{BASE}/{conn_id}", json={"name": "kbc-disabled-renamed"}, headers=_auth(token)).status_code
+            == 200
+        )
+
+        assert mcp_sources_repo().get(source_id)["enabled"] is False, (
+            "an unrelated edit switched a deliberately-disabled server back on"
+        )
+
+    def test_a_rename_onto_a_taken_name_leaves_the_source_alone(self, seeded_app):
+        """Skipping loudly beats raising into the broad handler, which would
+        log a clash as an unexpected failure and tell the admin nothing."""
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-rename-clash")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.keboola_chat_tools import build_stdio_spec
+        from src.repositories import mcp_sources_repo
+
+        taken = build_stdio_spec(
+            connection_id="other", connection_name="occupied", stack_url="https://connection.example.com"
+        )
+        mcp_sources_repo().upsert(**{**taken, "id": "squatter"})
+
+        source_id = derived_source_id(conn_id)
+        before = mcp_sources_repo().get(source_id)
+        assert c.put(f"{BASE}/{conn_id}", json={"name": "occupied"}, headers=_auth(token)).status_code == 200
+        assert mcp_sources_repo().get(source_id)["name"] == before["name"]
