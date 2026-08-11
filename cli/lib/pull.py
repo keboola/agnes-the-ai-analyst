@@ -379,6 +379,13 @@ class _TextualProgress:
         self._last_emit_pct: dict[str, int] = {}
         self._last_emit_bytes: dict[str, int] = {}
         self._finished_idx: int = 0  # files whose `finish` line has been emitted
+        # Files the CALLER knows did not land. The byte counter cannot see
+        # this: on a persistent hash mismatch every byte arrives, so the
+        # counter reaches the manifest size and the finalizer would print
+        # "100% done" for a table that was never promoted to disk — the same
+        # green-line-for-a-failure this class exists to stop, on what is in
+        # fact the most common download failure. (Devin Review.)
+        self._failed: dict[str, str] = {}
 
     def advance(self, tid: str, n: int) -> None:
         """Add `n` bytes to the file's total. Emit a textual update if
@@ -415,6 +422,11 @@ class _TextualProgress:
             self._last_emit_pct.pop(tid, None)
             self._last_emit_bytes.pop(tid, None)
 
+    def fail(self, tid: str, reason: str = "") -> None:
+        """Record that this file did not land, whatever the byte count says."""
+        with self._lock:
+            self._failed[tid] = reason or "download failed"
+
     def finish(self) -> None:
         """Emit a final `done` line for any file we never closed out."""
         with self._lock:
@@ -429,12 +441,68 @@ class _TextualProgress:
                 started = self._started_at.get(tid, now)
                 duration = max(0.001, now - started)
                 rate = bytes_ / duration
-                line = (
-                    f"[{self._finished_idx}/{self._total_files} files] "
-                    f"{tid}: 100% done "
-                    f"({self._fmt_bytes(bytes_)} in {duration:.1f}s, "
-                    f"{self._fmt_bytes(int(rate))}/s)\n"
-                )
+                # A file we never received all the bytes for did NOT finish.
+                # This line used to read "100% done (0 B in 0.0s, 0 B/s)" for a
+                # download that had 403'd — a green completion line for a
+                # failure, with the real error buried further down. The
+                # progress printer can't see the exception, but it can see that
+                # the transfer fell short of the manifest size, which is enough
+                # to stop claiming success.
+                #
+                # Two shapes of "did not finish", because the manifest does
+                # not always carry a size: `total` is 0 for a row the server
+                # reported without one, and `total and …` is inert there — so
+                # the guard above skipped exactly the files it could say the
+                # least about, and they kept printing "100% done (0 B in
+                # 0.0s)". Receiving nothing at all is not a completed download
+                # under any size, known or not. (Devin Review on this PR.)
+                #
+                # Wording differs between the two because the CONFIDENCE does.
+                # Nothing received is unambiguous whatever the manifest says.
+                # A short-but-nonzero transfer is inferred from `size_bytes`,
+                # and this file already documents that the manifest and the
+                # streamed length can disagree — observed in the over-count
+                # direction ("174%" lines, compressed vs decompressed). Should
+                # it ever disagree the other way, a hash-verified parquet that
+                # promoted fine would print a hard "FAILED … see the error
+                # below" with no error below it and an exit code of 0 — a lie
+                # in the opposite direction to the one this guard removes. So
+                # the short case reports what was observed and points at the
+                # error rather than asserting one exists. (Devin Review.)
+                if tid in self._failed:
+                    # The caller's verdict beats the byte count — see `fail`.
+                    line = (
+                        f"[{self._finished_idx}/{self._total_files} files] "
+                        f"{tid}: FAILED ({self._failed[tid]}"
+                        f" after {self._fmt_bytes(bytes_)} in {duration:.1f}s)"
+                        f" — see the error below\n"
+                    )
+                elif not bytes_:
+                    # Checked FIRST, and phrased as a hard failure: nothing
+                    # arrived, which is unambiguous whether or not a size was
+                    # declared. (Ordered after the short-transfer branch it
+                    # would have been swallowed by it for any file that DID
+                    # declare a size — i.e. almost all of them.)
+                    line = (
+                        f"[{self._finished_idx}/{self._total_files} files] "
+                        f"{tid}: FAILED (no data received"
+                        f"{'' if total else ', expected size unknown'}"
+                        f" in {duration:.1f}s) — see the error below\n"
+                    )
+                elif total and bytes_ < total:
+                    line = (
+                        f"[{self._finished_idx}/{self._total_files} files] "
+                        f"{tid}: INCOMPLETE "
+                        f"({self._fmt_bytes(bytes_)} of {self._fmt_bytes(total)} "
+                        f"in {duration:.1f}s) — check for an error below\n"
+                    )
+                else:
+                    line = (
+                        f"[{self._finished_idx}/{self._total_files} files] "
+                        f"{tid}: 100% done "
+                        f"({self._fmt_bytes(bytes_)} in {duration:.1f}s, "
+                        f"{self._fmt_bytes(int(rate))}/s)\n"
+                    )
                 self._stream.write(line)
             try:
                 self._stream.flush()
@@ -941,6 +1009,7 @@ def run_pull(
             signed_url = info.get("signed_url") or ""
             cb = None
             reset_progress = None
+            fail_progress = None
             if progress is not None and tid in progress_tasks:
                 task_id = progress_tasks[tid]
 
@@ -956,6 +1025,9 @@ def run_pull(
 
                 def reset_progress(_tid=tid):
                     textual.reset(_tid)
+
+                def fail_progress(reason: str, _tid=tid):
+                    textual.fail(_tid, reason)
 
             def _entry() -> dict:
                 return {
@@ -1000,7 +1072,11 @@ def run_pull(
                             time.sleep(_DOWNLOAD_RETRY_BACKOFFS_S[min(attempt, len(_DOWNLOAD_RETRY_BACKOFFS_S) - 1)])
                             continue
                         # Persistent mismatch: prior good target (if any)
-                        # is untouched; record + bail.
+                        # is untouched; record + bail. Tell the progress
+                        # printer too — every byte arrived, so its counter
+                        # says "done" and only this call knows better.
+                        if fail_progress is not None:
+                            fail_progress(last_err or "integrity check failed")
                         return tid, None, last_err, None
                     except Exception as exc:
                         last_err = str(exc)
@@ -1008,8 +1084,12 @@ def run_pull(
                         if attempt < _DOWNLOAD_RETRIES:
                             time.sleep(_DOWNLOAD_RETRY_BACKOFFS_S[min(attempt, len(_DOWNLOAD_RETRY_BACKOFFS_S) - 1)])
                             continue
+                        if fail_progress is not None:
+                            fail_progress(last_err or "download failed")
                         return tid, None, last_err, None
                 # Loop exhausted without an explicit return (defensive).
+                if fail_progress is not None:
+                    fail_progress(last_err or "download failed")
                 return tid, None, last_err or "download failed", None
             finally:
                 sidecar.unlink(missing_ok=True)
