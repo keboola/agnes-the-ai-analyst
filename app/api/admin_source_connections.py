@@ -673,9 +673,12 @@ async def enable_chat_tools(
     into the MCP shared vault, so the admin registers the project once rather
     than a second time under ``/admin/mcp``.
 
-    Idempotent: re-running re-syncs the token, which is how a rotation is
-    propagated. The derived source lands with **no** ``tool_grants``, so
-    enabling exposes nothing until an admin grants the tools to a group.
+    Idempotent, and it always leaves the source ENABLED — the page's switch
+    calls this to turn chat tools on, so a stored "off" must not survive it.
+    A rotated token no longer needs a re-run here: ``set_connection_secret``
+    copies a new token to the derived source on its own. The derived source
+    lands with **no** ``tool_grants``, so enabling exposes nothing until an
+    admin grants the tools to a group.
 
     400 if the connection isn't ``source_type='keboola'`` or has no resolvable
     token; 404 if the connection doesn't exist; 409 if the vault key is unset.
@@ -753,16 +756,17 @@ async def enable_chat_tools(
                 ),
             },
         )
-    # A RE-run keeps the flag the admin last set. `build_stdio_spec` always
-    # describes an enabled source, and re-running this endpoint is the
-    # documented way to propagate a rotated token — so refreshing the
-    # credential of a server the admin had deliberately switched off silently
-    # started serving that project's tools again, to every group still
-    # holding grants. A FIRST enable still enables, which is the whole point.
-    # (Devin Review on this PR — the sibling re-sync path had the same bug.)
-    existing_source = mcp_sources_repo().get(spec["id"])
-    if existing_source is not None and "enabled" in existing_source:
-        spec["enabled"] = existing_source["enabled"]
+    # This endpoint ENABLES — that is what it is for, and the page's switch
+    # calls it to turn chat tools on. An earlier revision carried a stored
+    # `enabled=False` over, so that a re-run to propagate a rotated token
+    # could not silently re-enable a server the admin had switched off; the
+    # cost was the opposite bug, that the switch could no longer turn it back
+    # ON. Both are gone now that a rotation propagates on its own path — see
+    # `set_connection_secret`, which copies a new token to the derived source
+    # directly, so re-running enable is no longer the way to refresh a
+    # credential. The unrelated-edit path (`_resync_derived_chat_tools`) still
+    # preserves the flag, because an edit is not a request to enable.
+    # (Devin Review on this PR, twice — once from each side.)
     try:
         mcp_sources_repo().upsert(**spec)
     except Exception:
