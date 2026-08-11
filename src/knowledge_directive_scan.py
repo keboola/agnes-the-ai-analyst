@@ -46,8 +46,14 @@ _UNAMBIGUOUS_SLASH = "exit|quit|clear|compact|permissions|resume|doctor|hooks|ag
 #: `_VERB_SLASH_RE` below already catches. (Devin Review on #1258.)
 _AMBIGUOUS_SLASH = "agents|status|cost|review|config|init|model|help|login|logout"
 
+# The trailing guard mirrors the leading one: `/hooks/setup` and
+# `/permissions/admin` are ordinary web addresses that merely BEGIN with a
+# command name, and flagging them puts false alarms in front of the approver
+# on plain documentation. A command mention ENDS the token — punctuation and
+# whitespace are fine, another path segment or a dotted suffix is not.
+# (Devin Review on #1258.)
 _KNOWN_SLASH_RE = re.compile(
-    rf"(?<![\w/])/(?:{_UNAMBIGUOUS_SLASH})\b",
+    rf"(?<![\w/])/(?:{_UNAMBIGUOUS_SLASH})\b(?![-/]|\.\w)",
     re.IGNORECASE,
 )
 

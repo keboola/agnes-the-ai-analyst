@@ -84,6 +84,11 @@ def test_harness_directed_text_is_flagged(text, expected_kind):
         "Sessions end when they hit /logout in the top-right menu.",
         # A file path that merely starts with the token.
         "The mapping lives in /config.md, not the UI, and tracing is disabled there.",
+        # Web addresses that merely BEGIN with a command name. (Devin Review.)
+        "The runbook lives at /hooks/setup in the wiki.",
+        "Grant it under /permissions/admin first.",
+        "See /hooks-guide for details.",
+        "Read /permissions.md before asking.",
         "Use /data/extracts/keboola/data for the raw files.",
         # Ordinary imperative knowledge: advice about the work, which is the
         # entire point of corporate memory.
