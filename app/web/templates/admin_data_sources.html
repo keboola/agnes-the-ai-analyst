@@ -1,4 +1,5 @@
 {% extends "base_ds.html" %}
+{% import "macros/_icon.html" as ico %}
 {% block title %}Data sources — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block head_extra %}
@@ -51,6 +52,21 @@
     color: var(--ds-accent-danger-ink);
   }
   .ds-semantic-summary a { color: inherit; font-weight: 600; text-decoration: underline; }
+
+  /* Storage token and master token resolving to different projects — the fix
+     belongs on this page, so the warning does too. */
+  /* `display:flex` beats the UA sheet's `[hidden] { display: none }`, so
+     without this the empty warning strip rendered under EVERY Keboola
+     connection card — an orange band warning about nothing. (Devin Review.) */
+  .ds-token-mismatch[hidden] { display: none; }
+  .ds-token-mismatch {
+    display: flex; gap: 8px; align-items: flex-start;
+    margin-top: 8px; padding: 8px 10px; border-radius: 8px;
+    font-size: 12px; line-height: 1.5;
+    background: var(--ds-accent-warn-bg);
+    border: 1px solid var(--ds-accent-warn-line);
+    color: var(--ds-accent-warn-ink);
+  }
 
   .ds-section-header {
     display: flex;
@@ -329,6 +345,10 @@
      an admin who hasn't synced yet, or whose last attempt failed, needs to
      see that state instead of nothing. #}
   {% set rs = semantic_refresh_summary or {} %}
+  {# Connection cards are built in JS; the mismatch warning's icon is rendered
+     once here by the shared macro and cloned, never assembled as markup. #}
+  <template id="ds-warn-icon">{{ ico.icon('warning', 16) }}</template>
+
   <div class="ds-semantic-summary {{ 'ds-semantic-summary--error' if rs.last_status == 'error' else ('ds-semantic-summary--pending' if not rs.last_status else '') }}">
     <span>
       <strong>Semantic layer:</strong>
@@ -475,7 +495,8 @@ function _masterTokenRowHtml(row) {
     <input type="password" id="ds-master-input-${id}" placeholder="paste master (owner) token" autocomplete="off">
     <button type="button" class="btn btn-primary" onclick="saveMasterToken('${id}')">Save token</button>
     <button type="button" class="btn btn-secondary" onclick="toggleMasterToken('${id}')">Cancel</button>
-  </div>`;
+  </div>
+  <div class="ds-token-mismatch" id="ds-mismatch-${id}" hidden></div>`;
 }
 
 function _connectionCardHtml(row) {
@@ -558,6 +579,50 @@ function renderConnList() {
     return;
   }
   list.innerHTML = _connections.map(_connectionCardHtml).join("");
+  loadTokenMismatchWarnings();
+}
+
+// A connection whose storage token and master token resolve to DIFFERENT
+// projects syncs tables from one project while reading the semantic layer of
+// another — so no imported metric can ever bind to a table. It looks like a
+// working connection from every other angle, which is exactly why it earns a
+// warning here, next to the two tokens that disagree.
+//
+// Coverage is computed server-side on demand; this runs after the cards paint
+// so a slow upstream never delays the list itself.
+async function loadTokenMismatchWarnings() {
+  let sources;
+  try {
+    // `warnings_only`: this strip needs the token-identity checks, not every
+    // project's semantic model — the full report enumerates each Metastore,
+    // which is a heavy upstream sweep to draw one line of text.
+    // (Devin Review on this PR.)
+    const r = await fetch("/api/admin/semantic-layer/coverage?warnings_only=true", { credentials: "include" });
+    if (!r.ok) return;
+    sources = (await r.json()).sources || [];
+  } catch (e) {
+    return; // Additive only — the page is fully usable without it.
+  }
+  for (const source of sources) {
+    const box = document.getElementById(`ds-mismatch-${source.connection_id}`);
+    if (!box) continue;
+    // BOTH mismatch codes. Matching only the storage-vs-master one filtered
+    // out the more serious warning — a master token that contradicts the
+    // project the connection is locked to, which stops the sync outright —
+    // on the very page its message tells the admin to visit. (Devin Review.)
+    const warning = (source.warnings || []).find(
+      (w) => w.code === "token_project_mismatch" || w.code === "master_token_project_mismatch",
+    );
+    box.hidden = !warning;
+    box.textContent = "";
+    if (!warning) continue;
+    // Upstream project names/ids — untrusted, so textContent, never innerHTML.
+    const iconTpl = document.getElementById("ds-warn-icon");
+    if (iconTpl) box.appendChild(iconTpl.content.cloneNode(true));
+    const text = document.createElement("span");
+    text.textContent = warning.message || "";
+    box.appendChild(text);
+  }
 }
 
 async function testConn(id) {

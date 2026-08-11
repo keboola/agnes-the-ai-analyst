@@ -140,8 +140,11 @@ class TestSemanticLayerPageSources:
 
         assert "Production Project" in body
         # 2 conn-a metrics + 1 NULL-ref legacy metric folded into the default row.
-        assert '<td class="num">3</td>' in body
-        assert '<td class="num">1</td>' in body
+        # Content, not the literal cell: the metric cell now also carries the
+        # coverage span this PR adds, so pinning the exact closing tag failed
+        # on a change that does not alter the number.
+        assert '<td class="num">3' in body
+        assert '<td class="num">1' in body
 
     def test_semantic_layer_page_renders_skipped_source_neutrally(self, seeded_app, vault_key):
         """A source whose last-sync entry has status='skipped' (the
@@ -641,3 +644,103 @@ class TestAnOrphanedRowNamesItsRealCause:
         ).read_text(encoding="utf-8")
         assert "{{ o.reason }}" in src
         assert "master token missing — add it at <a" not in src, "the hard-coded cause is back"
+
+
+class TestAGlossaryOnlySyncIsNotReportedAsEmpty:
+    """Devin Review on #1248: the cell looked only at metrics.
+
+    A project that publishes glossary terms and no metrics is a normal shape
+    — the sync itself documents it — and reading that run as "imported
+    nothing" sent admins looking for a fault that was not there.
+    """
+
+    def test_a_glossary_only_run_reads_as_a_success(self, seeded_app, vault_key):
+        from app.api import keboola_semantic_layer_refresh as endpoint_module
+
+        _make_master_connection(
+            "conn-gloss", name="Terms only", stack_url="https://connection.keboola.com", token="t", is_default=True
+        )
+        endpoint_module._refresh_state["last_result"] = {
+            "status": "ok",
+            "sources": [
+                {
+                    "connection_id": "conn-gloss",
+                    "status": "ok",
+                    "created_or_updated": 0,
+                    "glossary_created_or_updated": 9,
+                    "pruned": 0,
+                }
+            ],
+        }
+
+        body = seeded_app["client"].get("/admin/semantic-layer", headers=_auth(seeded_app["admin_token"])).text
+        assert "ran, imported nothing" not in body, "a glossary-only run was reported as empty"
+        assert "9 terms" in body
+
+    def test_a_genuinely_empty_run_still_says_so(self, seeded_app, vault_key):
+        from app.api import keboola_semantic_layer_refresh as endpoint_module
+
+        _make_master_connection(
+            "conn-empty", name="Nothing", stack_url="https://connection.keboola.com", token="t", is_default=True
+        )
+        endpoint_module._refresh_state["last_result"] = {
+            "status": "ok",
+            "sources": [
+                {
+                    "connection_id": "conn-empty",
+                    "status": "ok",
+                    "created_or_updated": 0,
+                    "glossary_created_or_updated": 0,
+                }
+            ],
+        }
+
+        body = seeded_app["client"].get("/admin/semantic-layer", headers=_auth(seeded_app["admin_token"])).text
+        assert "ran, imported nothing" in body
+
+
+class TestASyncThatOnlyPrunedIsNotReportedAsEmpty:
+    """Devin Review on #1248: the zero-check ignored removals.
+
+    A run that wrote nothing but removed stale rows did work, and hiding the
+    deletions is the one direction an admin cannot check by looking.
+    """
+
+    def test_a_prune_only_run_reads_as_a_success(self, seeded_app, vault_key):
+        from app.api import keboola_semantic_layer_refresh as endpoint_module
+
+        _make_master_connection(
+            "conn-pruned", name="Pruned", stack_url="https://connection.keboola.com", token="t", is_default=True
+        )
+        endpoint_module._refresh_state["last_result"] = {
+            "status": "ok",
+            "sources": [
+                {
+                    "connection_id": "conn-pruned",
+                    "status": "ok",
+                    "created_or_updated": 0,
+                    "glossary_created_or_updated": 0,
+                    "pruned": 7,
+                }
+            ],
+        }
+
+        body = seeded_app["client"].get("/admin/semantic-layer", headers=_auth(seeded_app["admin_token"])).text
+        assert "ran, imported nothing" not in body, "a prune-only run hid its deletions"
+        assert "7 pruned" in body
+
+
+def test_the_data_sources_page_shows_both_mismatch_codes():
+    """Devin Review on #1248: the more serious warning was filtered out.
+
+    A master token contradicting the project the connection is locked to
+    stops the sync outright — and the message tells the admin to go to this
+    page, which then did not show it.
+    """
+    import pathlib
+
+    src = (
+        pathlib.Path(__file__).resolve().parents[1] / "app" / "web" / "templates" / "admin_data_sources.html"
+    ).read_text(encoding="utf-8")
+    assert 'w.code === "master_token_project_mismatch"' in src
+    assert 'w.code === "token_project_mismatch"' in src

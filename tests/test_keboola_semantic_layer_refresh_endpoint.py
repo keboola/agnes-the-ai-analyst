@@ -352,3 +352,42 @@ def endpoint_module_state():
     from app.api import keboola_semantic_layer_refresh as endpoint_module
 
     return endpoint_module._refresh_state
+
+
+def test_coverage_endpoint_returns_computed_sources(seeded_app):
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    fake = {
+        "sources": [
+            {
+                "connection_id": "conn-1",
+                "name": "Demo project",
+                "metrics": {"upstream": 50, "importable": 0},
+                "glossary": {"upstream": 9},
+                "unregistered_tables": ["in.c-demo.subscriptions"],
+                "blocked": [],
+                "warnings": [{"code": "no_metrics_bound", "message": "…"}],
+            }
+        ]
+    }
+    with patch(
+        "connectors.keboola.semantic_layer.compute_semantic_coverage",
+        return_value=fake,
+    ):
+        r = c.get(
+            "/api/admin/semantic-layer/coverage",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert r.status_code == 200, r.text
+    source = r.json()["sources"][0]
+    assert source["metrics"] == {"upstream": 50, "importable": 0}
+    assert source["unregistered_tables"] == ["in.c-demo.subscriptions"]
+    assert [w["code"] for w in source["warnings"]] == ["no_metrics_bound"]
+
+
+def test_coverage_endpoint_requires_admin(seeded_app):
+    """Coverage names upstream project ids and dataset paths — admin-only, like
+    every other surface over a connection's configuration."""
+    c = seeded_app["client"]
+    r = c.get("/api/admin/semantic-layer/coverage")
+    assert r.status_code in (401, 403), r.text

@@ -1,4 +1,5 @@
 {% extends "base_page.html" %}
+{% import "macros/_icon.html" as ico %}
 {% block title %}Semantic layer — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% set page_hero_eyebrow = "Sources" %}
@@ -74,6 +75,23 @@
   .sl-last-skipped { color: var(--ds-text-secondary); }
   .sl-last-none { color: var(--ds-text-muted); }
 
+  /* Live coverage — filled from /api/admin/semantic-layer/coverage after load. */
+  .sl-cov { color: var(--ds-text-secondary); font-weight: 400; }
+  .sl-cov.sl-cov--none { color: var(--ds-accent-warn-ink); font-weight: 600; }
+
+  .sl-detail { display: grid; gap: 8px; padding: 4px 0 8px; }
+  .sl-warn {
+    display: flex; gap: 8px; align-items: flex-start;
+    font-size: 12px; line-height: 1.5;
+    background: var(--ds-accent-warn-bg);
+    border: 1px solid var(--ds-accent-warn-line);
+    color: var(--ds-accent-warn-ink);
+    border-radius: 8px; padding: 8px 10px;
+  }
+  .sl-note { font-size: 12px; color: var(--ds-text-secondary); line-height: 1.5; }
+  .sl-note b { color: var(--ds-text-primary); font-weight: 600; }
+  .sl-mono { font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px; }
+
   .sl-orphan-ref { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; }
   .sl-orphan-note {
     font-size: 12px; color: var(--ds-text-secondary); margin-bottom: 10px;
@@ -118,6 +136,11 @@
     <span><a href="/catalog/semantics">Browse it →</a></span>
   </div>
 
+  {# The warning rows are built in JS, but their icon is not: it is rendered
+     once here by the shared macro and cloned, so no markup string is assembled
+     client-side. #}
+  <template id="sl-warn-icon">{{ ico.icon('warning', 16) }}</template>
+
   <div class="sl-section-title">Sources</div>
   {% if not sources %}
   <div class="sl-empty">
@@ -147,7 +170,7 @@
     <thead>
       <tr>
         <th>Source</th>
-        <th class="num">Metrics</th>
+        <th class="num">Metrics <span class="sl-source-detail">stored / upstream</span></th>
         <th class="num">Glossary</th>
         <th>Last sync</th>
       </tr>
@@ -160,11 +183,23 @@
           {% if s.connection_id == default_connection_id %}<span class="sl-badge-default">default</span>{% endif %}
           <br><span class="sl-source-detail">{{ s.detail }}</span>
         </td>
-        <td class="num">{{ s.metric_count }}</td>
+        <td class="num">{{ s.metric_count }}<span class="sl-cov" data-conn="{{ s.connection_id }}"></span></td>
         <td class="num">{{ s.glossary_count }}</td>
         <td>
-          {% if s.last and s.last.status == 'ok' %}
-            <span class="sl-last-ok">✓ {{ s.last.created_or_updated | default(0) }} updated, {{ s.last.pruned | default(0) }} pruned</span>
+          {% if s.last and s.last.status == 'ok' and not (s.last.created_or_updated | default(0))
+                and not (s.last.glossary_created_or_updated | default(0))
+                and not (s.last.pruned | default(0)) %}
+            {# A healthy run re-upserts every upstream metric, so zero written is
+               not a quiet success — don't dress it as one. Glossary counts too:
+               a project that publishes terms but no metrics is a normal shape,
+               and reading it as "imported nothing" sent admins looking for a
+               fault that was not there. So does the prune count: a run that
+               wrote nothing but REMOVED stale rows did work, and hiding the
+               deletions is the one direction an admin cannot check by
+               looking. (Devin Review, twice.) #}
+            <span class="sl-last-none">— ran, imported nothing</span>
+          {% elif s.last and s.last.status == 'ok' %}
+            <span class="sl-last-ok">✓ {{ s.last.created_or_updated | default(0) }} updated{% if s.last.glossary_created_or_updated | default(0) %}, {{ s.last.glossary_created_or_updated }} terms{% endif %}, {{ s.last.pruned | default(0) }} pruned</span>
           {% elif s.last and s.last.status == 'skipped' %}
             <span class="sl-last-skipped">— skipped (duplicate project)</span>
           {% elif s.last %}
@@ -173,6 +208,9 @@
             <span class="sl-last-none">—</span>
           {% endif %}
         </td>
+      </tr>
+      <tr class="sl-detail-row" data-conn="{{ s.connection_id }}" hidden>
+        <td colspan="4"><div class="sl-detail"></div></td>
       </tr>
       {% endfor %}
     </tbody>
@@ -277,6 +315,104 @@ function showToast(msg, ok) {
 document.getElementById("sl-toast").addEventListener("click", (e) => {
   e.currentTarget.className = "sl-toast";
 });
+
+// Coverage is recomputed live server-side, so it is fetched after paint rather
+// than blocking the page on a round-trip to every connected project's Metastore.
+//
+// Every string below (metric names, dataset ids, upstream error text) comes from
+// a customer's Keboola project — untrusted. Nodes are built and filled with
+// textContent; nothing here goes near innerHTML.
+const REASON_LABELS = {
+  missing_name: "no name upstream",
+  embedded_sql_comment: "SQL comment in the expression swallows the FROM clause",
+  foreign_alias_reference: "references another dataset via an alias (needs a relationship)",
+  ambiguous_relationship: "more than one relationship touches this dataset",
+  unsupported_relationship_type: "relationship type is not supported",
+  unverified_relationship_direction: "dataset sits on the unverified side of the relationship",
+};
+const SAMPLE = 6;
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function renderCoverage(source) {
+  const conn = source.connection_id;
+  const covSpan = document.querySelector(`.sl-cov[data-conn="${CSS.escape(String(conn))}"]`);
+  const row = document.querySelector(`.sl-detail-row[data-conn="${CSS.escape(String(conn))}"]`);
+  if (!covSpan || !row) return;
+
+  const metrics = source.metrics || {};
+  const upstream = metrics.upstream || 0;
+  const importable = metrics.importable || 0;
+  if (upstream) {
+    covSpan.textContent = ` / ${upstream}`;
+    if (!importable) covSpan.classList.add("sl-cov--none");
+  }
+
+  const box = row.querySelector(".sl-detail");
+  box.textContent = "";
+  let any = false;
+
+  const iconTpl = document.getElementById("sl-warn-icon");
+  for (const w of source.warnings || []) {
+    const warn = el("div", "sl-warn");
+    if (iconTpl) warn.appendChild(iconTpl.content.cloneNode(true));
+    warn.appendChild(el("span", null, w.message || ""));
+    box.appendChild(warn);
+    any = true;
+  }
+
+  const blocked = source.blocked || [];
+  if (blocked.length) {
+    const note = el("div", "sl-note");
+    note.appendChild(el("b", null, `${blocked.length} metric(s) blocked by their own definition: `));
+    blocked.slice(0, SAMPLE).forEach((b, i) => {
+      if (i) note.appendChild(document.createTextNode("; "));
+      note.appendChild(el("span", "sl-mono", b.metric || ""));
+      note.appendChild(document.createTextNode(" — " + (REASON_LABELS[b.reason] || b.reason || "")));
+    });
+    if (blocked.length > SAMPLE) {
+      note.appendChild(document.createTextNode(` … and ${blocked.length - SAMPLE} more`));
+    }
+    box.appendChild(note);
+    any = true;
+  }
+
+  // Stated as fact, not as a queue: a semantic layer normally describes more of
+  // a project than an instance ever registers, and those metrics are meant to
+  // stay out.
+  const unregistered = source.unregistered_tables || [];
+  if (unregistered.length) {
+    const note = el("div", "sl-note");
+    note.appendChild(document.createTextNode(`No table registered here for ${unregistered.length} dataset(s): `));
+    unregistered.slice(0, SAMPLE).forEach((t, i) => {
+      if (i) note.appendChild(document.createTextNode(", "));
+      note.appendChild(el("span", "sl-mono", t));
+    });
+    if (unregistered.length > SAMPLE) {
+      note.appendChild(document.createTextNode(` … and ${unregistered.length - SAMPLE} more`));
+    }
+    box.appendChild(note);
+    any = true;
+  }
+
+  row.hidden = !any;
+}
+
+(async () => {
+  try {
+    const r = await fetch("/api/admin/semantic-layer/coverage", { credentials: "include" });
+    if (!r.ok) return;
+    const body = await r.json();
+    (body.sources || []).forEach(renderCoverage);
+  } catch (e) {
+    // Coverage is additive: the page is fully usable without it.
+  }
+})();
 
 document.getElementById("sl-refresh-btn").addEventListener("click", async () => {
   const btn = document.getElementById("sl-refresh-btn");
