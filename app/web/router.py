@@ -6221,6 +6221,33 @@ async def admin_data_sources_page(
     return templates.TemplateResponse(request, "admin_data_sources.html", ctx)
 
 
+def _orphan_reason(connection_id: str) -> str:
+    """Why this connection dropped out of the semantic-layer sync.
+
+    `_enumerate_master_sources()` skips a connection for THREE different
+    reasons, and the page reported all of them as "master token missing" — so
+    an admin whose connection was missing a stack URL, or whose token the
+    server could no longer decrypt, was sent to re-add a token that was
+    already there, and the rows still did not refresh.
+    (Devin Review on this PR.)
+    """
+    from app.api.admin_source_connections import master_secret_key
+    from src.repositories import connection_secrets_repo, source_connections_repo
+
+    row = source_connections_repo().get(connection_id)
+    if row is None:
+        return "the connection no longer exists"
+    if not ((row.get("config") or {}).get("stack_url") or ""):
+        return "no connection URL on this project — add one at"
+    try:
+        token = connection_secrets_repo().get(master_secret_key(connection_id)) or ""
+    except Exception:  # noqa: BLE001 — an unreadable secret is itself the answer
+        return "its master token cannot be read (vault key changed?) — re-add it at"
+    if not token:
+        return "master token missing — add it at"
+    return "it did not sync on the last run — check its status at"
+
+
 @router.get("/admin/semantic-layer", response_class=HTMLResponse)
 async def admin_semantic_layer_page(
     request: Request,
@@ -6241,6 +6268,7 @@ async def admin_semantic_layer_page(
     """
     from app.api.keboola_semantic_layer_refresh import get_last_refresh_summary
     from connectors.keboola.semantic_layer import _default_keboola_connection, _enumerate_master_sources
+    from src.repositories import source_connections_repo
 
     ctx = _build_context(request, user=user)
 
@@ -6274,11 +6302,22 @@ async def admin_semantic_layer_page(
             glossary_count += null_glossary_count
             null_absorbed = True
         stack_url = source["stack_url"]
+        # The stack host alone does not identify anything: several projects on
+        # one stack render as the same string, so a page listing two sources
+        # gave no way to tell which project each row's metrics came from. The
+        # project id is the only unambiguous handle Keboola offers.
+        host = urlsplit(stack_url).netloc or stack_url
+        project_id = source.get("project_id")
+        detail = host
+        if project_id is not None:
+            project_name = source.get("project_name") or "unnamed"
+            detail = f"{project_name} (project {project_id}) · {host}"
         sources.append(
             {
                 "connection_id": connection_id,
                 "label": source["name"],
-                "detail": urlsplit(stack_url).netloc or stack_url,
+                "detail": detail,
+                "project_id": project_id,
                 "metric_count": metric_count,
                 "glossary_count": glossary_count,
                 "last": last_by_ref.get(connection_id),
@@ -6286,6 +6325,43 @@ async def admin_semantic_layer_page(
         )
 
     known_ids = {s["connection_id"] for s in raw_sources}
+
+    # Every Keboola connection that exists but holds no master token. Without
+    # this the page could only say "no projects have a master token yet",
+    # which reads as "no project is connected" to an admin looking at a
+    # working Keboola connection — the state every wizard-connected instance
+    # starts in, since the master token is a SEPARATE slot from the storage
+    # token the wizard fills.
+    #
+    # Each carries WHY it isn't syncing, because "no master token" is only one
+    # of three reasons `_enumerate_master_sources()` skips a connection, and
+    # telling an admin to add a token they already added — while the real
+    # cause is a missing stack URL or a token no longer decryptable under the
+    # current AGNES_VAULT_KEY — sends them to fix the wrong thing entirely
+    # (Devin Review on #1242). `has()` is an existence check, so naming the
+    # reason costs no decrypt.
+    from app.api.admin_source_connections import master_secret_key
+    from src.repositories import connection_secrets_repo
+
+    keboola_connections = source_connections_repo().list(source_type="keboola")
+    secrets = connection_secrets_repo()
+    connections_without_master = []
+    for c in keboola_connections:
+        if c["id"] in known_ids:
+            continue
+        try:
+            has_master = secrets.has(master_secret_key(c["id"]))
+        except Exception:
+            has_master = False
+        if not has_master:
+            reason = "no master (owner) token"
+        elif not ((c.get("config") or {}).get("stack_url") or "").strip():
+            reason = "master token set, but the connection has no stack URL"
+        else:
+            reason = "master token set, but it cannot be read — AGNES_VAULT_KEY changed since it was stored"
+        connections_without_master.append({"id": c["id"], "name": c.get("name") or c["id"], "reason": reason})
+    connection_names = {c["id"]: (c.get("name") or c["id"]) for c in keboola_connections}
+
     all_refs = {
         m.get("source_ref") for m in metrics if m.get("source") == "keboola_semantic_layer" and m.get("source_ref")
     }
@@ -6295,8 +6371,19 @@ async def admin_semantic_layer_page(
     orphaned = []
     for ref in sorted(all_refs - known_ids):
         metric_count, glossary_count = _counts(ref)
+        # A ref that still names a live connection is not a mystery UUID — it
+        # is "this project lost its master token", which is both the common
+        # case and the one with an obvious next step. Only a ref with no
+        # connection left behind it stays an opaque id.
         orphaned.append(
-            {"source_ref": ref, "label": ref, "metric_count": metric_count, "glossary_count": glossary_count}
+            {
+                "source_ref": ref,
+                "label": connection_names.get(ref, ref),
+                "connection_exists": ref in connection_names,
+                "reason": _orphan_reason(ref) if ref in connection_names else None,
+                "metric_count": metric_count,
+                "glossary_count": glossary_count,
+            }
         )
 
     # NULL-source_ref rows (legacy, pre-provenance) normally fold into the
@@ -6317,8 +6404,34 @@ async def admin_semantic_layer_page(
                 }
             )
 
+    # Datasets whose Keboola table isn't registered here, deduped across
+    # sources. Every metric hanging off one is dropped as
+    # `skipped_unresolved_table`, and until now that count went nowhere the
+    # admin could see: a sync reporting "9 glossary, 0 metrics" gave no hint
+    # that 50 metrics died on 12 unregistered tables.
+    unresolved_tables: list[str] = []
+    for entry in last_by_ref.values():
+        for tid in entry.get("unresolved_tables") or []:
+            if tid not in unresolved_tables:
+                unresolved_tables.append(tid)
+
     ctx["sources"] = sources
     ctx["orphaned"] = orphaned
+    ctx["connections_without_master"] = connections_without_master
+    ctx["unresolved_tables"] = sorted(unresolved_tables)
+    # Whether the list above is a SUBSET — deliberately a boolean, not a count.
+    # The list is de-duplicated across projects (two projects can report the
+    # same table) while any total would be summed per project, so the two do
+    # not measure the same thing: a table reported twice made the page claim
+    # tables were hidden when none were. And a true union total is not
+    # available, because each project's list is already capped before it gets
+    # here. So the page says a subset is shown, without a number it cannot
+    # compute honestly. (Devin Review on this PR.)
+    ctx["unresolved_tables_truncated"] = any(
+        int(e.get("unresolved_tables_total") or 0) > len(e.get("unresolved_tables") or [])
+        for e in last_by_ref.values()
+    )
+    ctx["skipped_unresolved_total"] = sum(int(e.get("skipped_unresolved_table") or 0) for e in last_by_ref.values())
     ctx["default_connection_id"] = default_id
     ctx["semantic_refresh_summary"] = summary
     return templates.TemplateResponse(request, "admin_semantic_layer.html", ctx)

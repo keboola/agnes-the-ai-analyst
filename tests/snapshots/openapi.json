@@ -23310,7 +23310,7 @@
     },
     "/api/admin/run-keboola-semantic-layer-refresh": {
       "post": {
-        "description": "Sync the configured Keboola project's semantic layer into\nmetric_definitions. See connectors/keboola/semantic_layer.py for the\nmapping/prune logic.",
+        "description": "Sync the configured Keboola project's semantic layer into\nmetric_definitions. See connectors/keboola/semantic_layer.py for the\nmapping/prune logic.\n\n409 if a sync is already in flight. 400 when the sync fails for a reason\nthe admin controls \u2014 no Keboola credentials configured, or a token the\nStorage/Metastore API refuses (4xx). 502 only when the upstream is\nunreachable or answers 5xx.",
         "operationId": "run_keboola_semantic_layer_refresh_api_admin_run_keboola_semantic_layer_refresh_post",
         "parameters": [
           {
@@ -24749,7 +24749,7 @@
         ]
       },
       "put": {
-        "description": "Update name/config/token_env/is_default of an existing connection.\n\n404 if missing; 409 if renaming to a name already taken by a different\nconnection.",
+        "description": "Update name/config/token_env/is_default of an existing connection.\n\n404 if missing; 409 if renaming to a name already taken by a different\nconnection.\n\nMoving the connection to a different ``stack_url`` drops any recorded\nproject identity: a project id is only meaningful on the stack it came\nfrom, and keeping the old binding would make every token from the new\nstack fail ``project_mismatch`` with no way to clear it from the UI. This\nis also the supported way to re-point a bound connection \u2014 see the note\non :func:`project_mismatch_message`.",
         "operationId": "update_connection_api_admin_source_connections__connection_id__put",
         "parameters": [
           {
@@ -24888,7 +24888,7 @@
         ]
       },
       "put": {
-        "description": "Store (or rotate) the vault secret for a connection token.\n\n``kind=\"storage\"`` (default): the plain Storage API token used for pulls.\n``kind=\"master\"``: a *separate* slot for a Keboola master (owner) Storage\nAPI token, required by the semantic-layer sync (Metastore API rejects\nnon-master tokens). 400 if the connection isn't ``source_type=\"keboola\"``,\nor if the token fails a live ``verify_token`` preflight (not a master\ntoken). 502 if the Storage API preflight call itself fails.\n\n409 if AGNES_VAULT_KEY is not configured on the server.",
+        "description": "Store (or rotate) the vault secret for a connection token.\n\n``kind=\"storage\"`` (default): the plain Storage API token used for pulls.\nFor a Keboola connection it is preflighted like the master token, and the\nproject it opens (``owner.id``/``owner.name``) is recorded on the\nconnection \u2014 that identity is what later tokens are checked against.\n400 ``project_mismatch`` if the token opens a different project than the\none this connection is already bound to; a connection is one project.\n``kind=\"master\"``: a *separate* slot for a Keboola master (owner) Storage\nAPI token, required by the semantic-layer sync (Metastore API rejects\nnon-master tokens). 400 if the connection isn't ``source_type=\"keboola\"``,\nif the token fails a live ``verify_token`` preflight (not a master token),\nor if the Storage API refuses the token outright (4xx \u2014 an invalid or\nexpired token is the admin's to fix, not a gateway failure). 502 only when\nthe Storage API is unreachable or answers 5xx.\n\n409 if AGNES_VAULT_KEY is not configured on the server \u2014 checked FIRST, so\nan instance that cannot store secrets says so instead of spending an\nupstream round-trip and reporting a token problem it never had.",
         "operationId": "set_connection_secret_api_admin_source_connections__connection_id__secret_put",
         "parameters": [
           {
@@ -25019,7 +25019,7 @@
     },
     "/api/admin/source-connections/{connection_id}/test": {
       "post": {
-        "description": "Verify connectivity for the connection.\n\nResolves the stack URL and token from the connection row (token_env \u2192\nenvironment lookup, or vault secret), then calls\n``GET {stack_url}/v2/storage?exclude=components`` with a 10-second\ntimeout.\n\nReturns ``{ok: true, project_name: \"\u2026\"}`` on success or\n``{ok: false, error: \"\u2026\"}`` on failure.",
+        "description": "Verify connectivity for the connection.\n\nResolves the stack URL and token from the connection row (token_env \u2192\nenvironment lookup, or vault secret), then calls\n``GET {stack_url}/v2/storage/tokens/verify`` with a 10-second timeout.\n\nReturns ``{ok: true, project_name: \"\u2026\"}`` on success or\n``{ok: false, error: \"\u2026\"}`` on failure.\n\nIt used to probe ``/v2/storage?exclude=components``, which measured\nverified live (2026-08-10): that endpoint is the unauthenticated stack\nindex \u2014 it answers **200 with no token at all** and carries no ``owner``\nblock. So \"Test\" reported OK for any token, including a garbage one, and\nthe ``project_name`` it returned was always the empty string. Verifying\nthe token is the only probe that answers the question the button asks,\nand it is what makes the project identity below readable at all.",
         "operationId": "test_connection_api_admin_source_connections__connection_id__test_post",
         "parameters": [
           {

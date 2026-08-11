@@ -101,6 +101,15 @@
   }
   .ds-conn-header-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
   .ds-conn-name { font-size: 13px; font-weight: 600; color: var(--text-primary, var(--ds-text-primary)); }
+  /* Project identity sits between the connection's own name and the stack
+     host: it is what distinguishes two connections to the same stack. */
+  .ds-unbind { margin-left: 8px; padding: 0; border: 0; background: none; font-size: 11px;
+    color: var(--ds-text-muted); text-decoration: underline; cursor: pointer; }
+  .ds-conn-project {
+    font-size: 11px; color: var(--ds-text-secondary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    max-width: 260px;
+  }
   .ds-conn-stack {
     font-size: 11px; color: var(--text-secondary, var(--ds-text-secondary));
     font-family: var(--font-mono, ui-monospace, monospace);
@@ -281,9 +290,13 @@
     padding: 10px 16px; border-radius: 8px;
     font-size: 13px; font-weight: 500;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
-    z-index: 9999; display: none; align-items: center; gap: 8px; max-width: 360px;
+    z-index: 9999; display: none; align-items: center; gap: 8px; max-width: 520px;
+    /* The failure text carries the upstream reason ("HTTP 401: invalid token"),
+       so it has to stay readable and selectable rather than clipped. */
+    white-space: pre-wrap; user-select: text;
   }
   .ds-toast.show { display: flex; }
+  .ds-toast.toast-fail { cursor: pointer; }
   .ds-toast.toast-ok   { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); border: 1px solid var(--ds-accent-success-line); }
   .ds-toast.toast-fail { background: var(--ds-accent-danger-bg); color: var(--ds-accent-danger-ink); border: 1px solid var(--ds-accent-danger-line); }
 </style>
@@ -412,8 +425,18 @@ function showToast(msg, ok) {
   el.textContent = msg;
   el.className = "ds-toast show " + (ok ? "toast-ok" : "toast-fail");
   clearTimeout(el._t);
-  el._t = setTimeout(() => { el.className = "ds-toast"; }, 3500);
+  // Only successes auto-dismiss. A failed token save reports the upstream
+  // reason, and a 3.5s window meant it was gone before anyone read it — the
+  // error got relayed as "I get a 502" with the actual cause lost.
+  el.title = ok ? "" : "Click to dismiss";
+  if (ok) {
+    el._t = setTimeout(() => { el.className = "ds-toast"; }, 3500);
+  }
 }
+document.addEventListener("DOMContentLoaded", () => {
+  const el = document.getElementById("ds-toast");
+  if (el) el.addEventListener("click", () => { el.className = "ds-toast"; });
+});
 
 /* ── Connections list ─────────────────────────────────────────────────── */
 
@@ -462,6 +485,23 @@ function _connectionCardHtml(row) {
   const stackUrl = _esc((config.stack_url || "").replace(/\/$/, ""));
   const isDefault = row.is_default === true || row.is_default === 1;
   const defaultBadge = isDefault ? `<span class="ds-badge badge-default">default</span>` : "";
+  // Which Keboola project this connection actually opens, recorded from the
+  // token's own owner block. Several projects on one stack render as the same
+  // host, so the URL alone never told two connections apart — and the "master
+  // token: SET" badge said nothing about WHICH project that token unlocks.
+  // …and an explicit way OUT of that binding. The connection is locked to the
+  // first project it verified against, so a token for a different project on
+  // the same stack is refused — correct, and the whole point — but re-pointing
+  // an existing connection to another project then had no route at all from
+  // this page: an edit no longer clears the binding (it used to, silently, on
+  // every save, which is the bug that made the lock necessary). "Unbind" is
+  // that route. (Devin Review.)
+  const projectLine = config.project_id != null
+    ? `<div class="ds-conn-project">${_esc(config.project_name || "unnamed")} · project ${_esc(String(config.project_id))}
+        <button type="button" class="ds-unbind" onclick="unbindProject('${id}')"
+                title="Forget which project this connection is locked to, so a token for another project on the same stack can be stored">unbind</button>
+      </div>`
+    : "";
 
   return `
 <div class="ds-conn-card" id="ds-conn-${id}" data-id="${id}">
@@ -469,6 +509,7 @@ function _connectionCardHtml(row) {
     <div class="ds-conn-header-left">
       <div>
         <div class="ds-conn-name">${name}</div>
+        ${projectLine}
         <div class="ds-conn-stack">${stackUrl || "(no stack URL)"}</div>
       </div>
     </div>
@@ -478,7 +519,7 @@ function _connectionCardHtml(row) {
     </div>
   </div>
   <div class="ds-conn-actions">
-    <button type="button" class="btn btn-secondary" onclick="testConn('${id}')">Test</button>
+    <button type="button" class="btn btn-secondary" data-role="test" onclick="testConn('${id}')">Test</button>
     <button type="button" class="btn btn-secondary" onclick="toggleBrowse('${id}')">Browse &amp; register tables</button>
     ${!isDefault ? `<button type="button" class="btn btn-secondary" onclick="setDefaultConn('${id}')">Set as default</button>` : ""}
     <button type="button" class="btn btn-secondary" onclick="toggleRotate('${id}')">Rotate token</button>
@@ -522,8 +563,13 @@ function renderConnList() {
 async function testConn(id) {
   const resultEl = document.getElementById(`ds-test-${id}`);
   const card = document.getElementById(`ds-conn-${id}`);
-  const btn = card.querySelector("button");
-  btn.disabled = true;
+  // Explicitly the Test button. This was `querySelector("button")` — the
+  // FIRST button in the card — which stopped being Test the moment the unbind
+  // control landed in the header above the action row: the link greyed out
+  // instead, Test stayed live, and repeated presses fired duplicate requests
+  // with no sign anything was happening. (Devin Review.)
+  const btn = card.querySelector('button[data-role="test"]');
+  if (btn) btn.disabled = true;
   resultEl.className = "ds-conn-test-result";
   try {
     const r = await fetch(`${API_CONNECTIONS}/${id}/test`, { method: "POST", credentials: "include" });
@@ -538,7 +584,7 @@ async function testConn(id) {
   } catch (e) {
     resultEl.className = "ds-conn-test-result show fail";
     resultEl.textContent = "✗ Request failed";
-  } finally { btn.disabled = false; }
+  } finally { if (btn) btn.disabled = false; }
 }
 
 async function deleteConn(id) {
@@ -680,6 +726,34 @@ async function removeMasterToken(id) {
     } else {
       const body = await r.json().catch(() => ({}));
       showToast("Failed: " + (body.detail || "unknown error"), false);
+    }
+  } catch (_) {
+    showToast("Request failed.", false);
+  }
+}
+
+/* Clear a connection's recorded project identity.
+   Sends the keys explicitly as null rather than omitting them: `PUT /{id}`
+   replaces the stored config, and the handler carries `project_id` /
+   `project_name` FORWARD when they are absent (an admin form posts neither,
+   so an ordinary edit must not drop the binding). An explicit null is how
+   the caller says "clear it" — see `update_connection`. */
+async function unbindProject(id) {
+  const row = _connections.find(c => c.id === id);
+  if (!row) return;
+  if (!confirm("Forget which Keboola project this connection is locked to?\n\nThe next token you store will re-bind it to whichever project that token opens.")) return;
+  try {
+    const r = await fetch(`/api/admin/source-connections/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config: { ...(row.config || {}), project_id: null, project_name: null } }),
+    });
+    if (r.ok) {
+      showToast("Project binding cleared.", true);
+      await loadConnections();
+    } else {
+      const body = await r.json().catch(() => ({}));
+      showToast("Failed: " + (body.detail?.message || body.detail || `HTTP ${r.status}`), false);
     }
   } catch (_) {
     showToast("Request failed.", false);
@@ -866,6 +940,43 @@ async function connectAndValidate() {
     // 1. Create the connection (blank name gets a provisional placeholder;
     //    renamed to the detected project name below on success).
     const provisionalName = name || `Untitled project ${Date.now()}`;
+    // A retry reuses the connection this wizard already created. Every step
+    // after creation can fail — a mistyped token is the common one — and the
+    // wizard returns with the row already saved, so re-running step 1 minted
+    // another "Untitled project" per attempt and left the admin to clean them
+    // up. Reusing it also means the eventual success lands on the row the
+    // admin has been looking at. (Devin Review.)
+    let connId = null;
+    if (_wizardConnId) {
+      const still = await fetch(`${API_CONNECTIONS}/${_wizardConnId}`, { credentials: "include" });
+      if (still.ok) {
+        connId = _wizardConnId;
+        // Apply whatever the admin just corrected. Reuse without this made a
+        // mistyped URL unfixable: the wizard told them to correct it and
+        // retry, then talked to the original address every time, failing
+        // identically with nothing to say the new value was ignored.
+        // (Devin Review.)
+        const patch = await fetch(`${API_CONNECTIONS}/${connId}`, {
+          method: "PUT", credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          // The NAME too: the admin may have corrected it on the retry, and
+          // sending only the URL threw that away while the success banner went
+          // on to claim the new name was used. (Devin Review.)
+          body: JSON.stringify(name ? { name, config: { stack_url: stack } } : { config: { stack_url: stack } }),
+        });
+        if (!patch.ok) {
+          const pb = await patch.json().catch(() => ({}));
+          const pd = pb.detail;
+          errEl.textContent = "Failed to update the connection URL: " +
+            ((pd && typeof pd === "object" ? (pd.message || pd.error) : pd) || `HTTP ${patch.status}`);
+          errEl.style.display = "block";
+          return;
+        }
+      } else {
+        _wizardConnId = null; // deleted underneath us — re-create below
+      }
+    }
+    if (!connId) {
     const createResp = await fetch(API_CONNECTIONS, {
       method: "POST", credentials: "include",
       headers: { "Content-Type": "application/json" },
@@ -879,8 +990,9 @@ async function connectAndValidate() {
       errEl.style.display = "block";
       return;
     }
-    const connId = createBody.id;
+    connId = createBody.id;
     _wizardConnId = connId;
+    }
 
     // 2. Store the token.
     const secretResp = await fetch(`${API_CONNECTIONS}/${connId}/secret`, {
@@ -890,7 +1002,9 @@ async function connectAndValidate() {
     });
     if (!secretResp.ok && secretResp.status !== 204) {
       const sb = await secretResp.json().catch(() => ({}));
-      errEl.textContent = "Connection saved but storing the token failed: " + (sb.detail || "unknown error");
+      errEl.innerHTML = "Connection saved but storing the token failed: " + _esc(sb.detail || "unknown error") +
+        `. Fix the token and retry — this connection is reused, not duplicated — or ` +
+        `<a href="#" onclick="deleteConn('${connId}'); closeWizard(); return false;">discard it</a>.`;
       errEl.style.display = "block";
       return;
     }

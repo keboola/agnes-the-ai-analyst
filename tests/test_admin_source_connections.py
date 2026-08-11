@@ -301,7 +301,7 @@ class TestSourceConnectionsDelete:
 
 
 class TestSourceConnectionsSecret:
-    def test_set_secret_without_vault_key_returns_409(self, seeded_app):
+    def test_set_secret_without_vault_key_returns_409(self, seeded_app, monkeypatch):
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
         # Create connection
@@ -316,15 +316,26 @@ class TestSourceConnectionsSecret:
         )
         assert resp.status_code == 201
         conn_id = resp.json()["id"]
-        # Try to set secret without vault key configured
-        # Test env doesn't have AGNES_VAULT_KEY → should 409
-        resp2 = c.put(
-            f"{BASE}/{conn_id}/secret",
-            json={"value": "test-storage-token"},
-            headers=_auth(token),
-        )
-        # Either 409 (no vault key) or 204 (vault key present in env)
-        assert resp2.status_code in (204, 409)
+
+        # Pin BOTH halves of the intent rather than accepting whatever the
+        # ambient env produces. The old `status in (204, 409)` passed either
+        # way, and once storing a Keboola storage token gained an upstream
+        # preflight, the 204 branch could only be reached by a real HTTPS call
+        # to connection.example.com — so the test stayed hermetic purely
+        # because AGNES_VAULT_KEY happens to be unset in the suite. Devin
+        # Review on #1242.
+        monkeypatch.delenv("AGNES_VAULT_KEY", raising=False)
+        monkeypatch.setenv("LOCAL_DEV_MODE", "0")
+        _reset_ephemeral_key_for_tests()
+
+        with patch("app.api.admin_source_connections.KeboolaStorageClient.verify_token") as verify:
+            resp2 = c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "test-storage-token"},
+                headers=_auth(token),
+            )
+        assert resp2.status_code == 409, resp2.text
+        verify.assert_not_called()
 
     def test_delete_secret_returns_204(self, seeded_app):
         c = seeded_app["client"]
@@ -364,12 +375,22 @@ class TestSourceConnectionsTest:
         assert resp.status_code == 201
         conn_id = resp.json()["id"]
 
-        # Mock httpx to return fake project info. The endpoint uses an async
-        # client (`async with httpx.AsyncClient(...)` + `await client.get`), so
-        # the mock must honor the async context-manager + awaitable-get protocol.
+        # Mock httpx to return a real `GET /v2/storage/tokens/verify` body —
+        # project name and id live under `owner`. The previous fixture here
+        # was `{"id": "123", "name": "Test Project"}`, a shape the Storage API
+        # does not return from the endpoint this handler called: measured on a
+        # live stack, `/v2/storage?exclude=components` is the unauthenticated
+        # index (200 with NO token, no `owner` block at all), so the probe
+        # validated nothing and `project_name` was always "".
+        # The endpoint uses an async client (`async with httpx.AsyncClient(...)`
+        # + `await client.get`), so the mock must honor the async
+        # context-manager + awaitable-get protocol.
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.json.return_value = {"id": "123", "name": "Test Project"}
+        mock_response.json.return_value = {
+            "isMasterToken": True,
+            "owner": {"id": 123, "name": "Test Project"},
+        }
 
         mock_client = MagicMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
@@ -389,6 +410,14 @@ class TestSourceConnectionsTest:
         data = resp2.json()
         assert data["ok"] is True
         assert data["project_name"] == "Test Project"
+        # Pin the endpoint actually verifying the token, not pinging an index
+        # that answers 200 for anyone.
+        called_url = mock_client.get.call_args[0][0]
+        assert called_url.endswith("/v2/storage/tokens/verify"), called_url
+        # ...and that a successful test binds the connection to its project.
+        row = c.get(f"{BASE}/{conn_id}", headers=_auth(token)).json()
+        assert row["config"]["project_id"] == 123
+        assert row["config"]["project_name"] == "Test Project"
 
     def test_test_endpoint_rejects_private_stack_url(self, seeded_app):
         # SSRF guard: a stack_url pointing at the cloud metadata endpoint (or any
@@ -453,7 +482,14 @@ class TestSourceConnectionsTest:
 
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.json.return_value = {"id": "123", "name": "Test Project"}
+        # The `owner` shape the handler actually reads. With the pre-#1242
+        # `{"id", "name"}` shape left here, `project_name` resolved to "" and
+        # the redaction assertion below passed trivially — the string never
+        # entered the handler at all. (Devin Review on this PR.)
+        mock_response.json.return_value = {
+            "id": "123",
+            "owner": {"id": 987, "name": "Test Project"},
+        }
 
         mock_client = MagicMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
@@ -1122,6 +1158,85 @@ class TestSourceConnectionsMasterSecret:
         assert "<redacted-storage-token>" in caplog.text
         assert "super-secret-master-token" not in caplog.text
 
+    def test_master_secret_rejected_token_is_a_400_not_a_gateway_error(self, seeded_app):
+        """A 4xx from the Storage API means the pasted token is wrong — an
+        admin-fixable mistake, not a gateway failure.
+
+        Reported from a live instance: pasting a non-Storage token returned
+        502, the operator read "Bad Gateway", and the incident was chased as
+        an Agnes outage for a day. The detail still carries the upstream
+        reason; only the status changes.
+        """
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="test-master-bad-token")
+
+        from connectors.keboola.storage_api import StorageApiError
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                side_effect=StorageApiError(
+                    "GET https://connection.example.com/v2/storage/tokens/verify -> HTTP 401: "
+                    '{"error": "Invalid access token", "code": "storage.tokenInvalid"}',
+                    status=401,
+                ),
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+        ):
+            resp = c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "wrong-kind-of-token", "kind": "master"},
+                headers=_auth(token),
+            )
+        assert resp.status_code == 400, resp.text
+        assert "storage.tokenInvalid" in resp.json()["detail"]
+
+    def test_master_secret_upstream_5xx_is_still_a_502(self, seeded_app):
+        """The gateway status survives for what it actually means."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="test-master-upstream-5xx")
+
+        from connectors.keboola.storage_api import StorageApiError
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                side_effect=StorageApiError("HTTP 503: upstream unavailable", status=503),
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+        ):
+            resp = c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "a-real-master-token", "kind": "master"},
+                headers=_auth(token),
+            )
+        assert resp.status_code == 502, resp.text
+
+    def test_master_secret_network_failure_is_still_a_502(self, seeded_app):
+        """A transport error has no status at all — it must not be mistaken
+        for a client error just because the classifier found no 4xx."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="test-master-netfail")
+
+        import requests
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                side_effect=requests.ConnectionError("name resolution failed"),
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+        ):
+            resp = c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "a-real-master-token", "kind": "master"},
+                headers=_auth(token),
+            )
+        assert resp.status_code == 502, resp.text
+
     def test_connection_delete_clears_master_secret(self, seeded_app):
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
@@ -1150,3 +1265,612 @@ class TestSourceConnectionsMasterSecret:
         assert resp2.status_code == 204
 
         assert connection_secrets_repo().has(master_secret_key(conn_id)) is False
+
+
+class TestProjectIdentityBinding:
+    """A connection is ONE Keboola project, and which one must be knowable.
+
+    Reported from an instance running several Keboola projects: the connections
+    looked identical (same stack host, a "master token: SET" badge on each) and
+    nothing recorded which project any token actually opened. A master token
+    pasted onto the wrong connection stored happily, and the semantic layer then
+    synced that other project's metrics under this connection's name.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _stable_vault_key(self, monkeypatch):
+        monkeypatch.setenv("AGNES_VAULT_KEY", Fernet.generate_key().decode())
+        _reset_ephemeral_key_for_tests()
+        yield
+        _reset_ephemeral_key_for_tests()
+
+    def _create_keboola(self, c, token, *, name):
+        resp = c.post(
+            BASE,
+            json={
+                "name": name,
+                "source_type": "keboola",
+                "config": {"stack_url": "https://connection.example.com"},
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 201, resp.text
+        return resp.json()["id"]
+
+    def _verify(self, *, project_id, project_name="Acme Analytics", master=True):
+        return {"isMasterToken": master, "owner": {"id": project_id, "name": project_name}}
+
+    def test_storage_token_binds_the_connection_to_its_project(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="test-identity-bind")
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                return_value=self._verify(project_id=1234, master=False),
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+        ):
+            resp = c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "storage-token", "kind": "storage"},
+                headers=_auth(token),
+            )
+        assert resp.status_code == 204, resp.text
+
+        row = c.get(f"{BASE}/{conn_id}", headers=_auth(token)).json()
+        assert row["config"]["project_id"] == 1234
+        assert row["config"]["project_name"] == "Acme Analytics"
+
+    def test_master_token_from_another_project_is_refused(self, seeded_app):
+        """The core failure: it used to store fine and badge "SET"."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="test-identity-mismatch")
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                return_value=self._verify(project_id=1234, master=False),
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+        ):
+            c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "storage-token", "kind": "storage"},
+                headers=_auth(token),
+            )
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                return_value=self._verify(project_id=9999, project_name="Other Project"),
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+        ):
+            resp = c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "master-token-of-another-project", "kind": "master"},
+                headers=_auth(token),
+            )
+        assert resp.status_code == 400, resp.text
+        detail = resp.json()["detail"]
+        assert "project_mismatch" in detail
+        # Both sides named: which project the token opens, and which one the
+        # connection expects. Either alone leaves the admin guessing.
+        assert "9999" in detail and "1234" in detail
+        assert "Other Project" in detail and "Acme Analytics" in detail
+
+        # ...and nothing was stored, so the badge cannot claim otherwise.
+        row = c.get(f"{BASE}/{conn_id}", headers=_auth(token)).json()
+        assert row["has_master_secret"] is False
+
+    def test_master_token_from_the_bound_project_is_accepted(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="test-identity-match")
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                return_value=self._verify(project_id=1234, master=False),
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+        ):
+            c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "storage-token", "kind": "storage"},
+                headers=_auth(token),
+            )
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                return_value=self._verify(project_id=1234),
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+        ):
+            resp = c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "the-right-master-token", "kind": "master"},
+                headers=_auth(token),
+            )
+        assert resp.status_code == 204, resp.text
+        row = c.get(f"{BASE}/{conn_id}", headers=_auth(token)).json()
+        assert row["has_master_secret"] is True
+
+    def test_unbound_connection_records_identity_from_the_master_token(self, seeded_app):
+        """Connections that predate identity recording have nothing to
+        contradict — the first verified token binds them rather than being
+        rejected against a hole."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="test-identity-legacy")
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                return_value=self._verify(project_id=4242, project_name="Legacy Project"),
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+        ):
+            resp = c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "master-token", "kind": "master"},
+                headers=_auth(token),
+            )
+        assert resp.status_code == 204, resp.text
+        row = c.get(f"{BASE}/{conn_id}", headers=_auth(token)).json()
+        assert row["config"]["project_id"] == 4242
+
+    def test_missing_vault_key_is_reported_before_any_upstream_call(self, seeded_app, monkeypatch):
+        """Ordering, not just status: the storage-token preflight added here
+        would otherwise ask Keboola to validate a secret this instance cannot
+        store, then report a token error for what is really an unconfigured
+        vault."""
+        monkeypatch.delenv("AGNES_VAULT_KEY", raising=False)
+        monkeypatch.setenv("LOCAL_DEV_MODE", "0")
+        _reset_ephemeral_key_for_tests()
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="test-identity-novault")
+
+        with patch(
+            "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+        ) as verify:
+            resp = c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "storage-token", "kind": "storage"},
+                headers=_auth(token),
+            )
+        assert resp.status_code == 409, resp.text
+        verify.assert_not_called()
+
+    def test_test_endpoint_reports_a_disagreement_instead_of_re_binding(self, seeded_app):
+        """/test must not quietly re-point a bound connection.
+
+        The token /test resolves is not necessarily the one that established
+        the binding (`_resolve_token` falls back to `token_env`), so
+        overwriting on a probe would leave the stored master token failing a
+        mismatch nobody caused. Devin Review on #1242.
+        """
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="test-identity-probe")
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                return_value=self._verify(project_id=1234, master=False),
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+        ):
+            c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "storage-token", "kind": "storage"},
+                headers=_auth(token),
+            )
+
+        probe = MagicMock()
+        probe.status_code = 200
+        probe.json.return_value = {"owner": {"id": 9999, "name": "Other Project"}}
+        with (
+            patch("httpx.AsyncClient.get", AsyncMock(return_value=probe)),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+        ):
+            resp = c.post(f"{BASE}/{conn_id}/test", json={}, headers=_auth(token))
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["ok"] is False
+        assert "project_mismatch" in body["error"]
+
+        # The binding is untouched — this is the whole point.
+        row = c.get(f"{BASE}/{conn_id}", headers=_auth(token)).json()
+        assert row["config"]["project_id"] == 1234
+
+    def test_storage_token_still_saves_before_a_stack_url_exists(self, seeded_app):
+        """The wizard creates the row before the config is complete, so
+        requiring a stack_url to store the token broke half-built connections.
+        Devin Review on #1242."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            BASE,
+            json={"name": "test-identity-nostack", "source_type": "keboola", "config": {}},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 201, resp.text
+        conn_id = resp.json()["id"]
+
+        with patch("app.api.admin_source_connections.KeboolaStorageClient.verify_token") as verify:
+            r = c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "storage-token", "kind": "storage"},
+                headers=_auth(token),
+            )
+        assert r.status_code == 204, r.text
+        # Nothing to preflight against, so nothing was asked and nothing bound.
+        verify.assert_not_called()
+        row = c.get(f"{BASE}/{conn_id}", headers=_auth(token)).json()
+        assert "project_id" not in (row["config"] or {})
+
+    def test_moving_to_another_stack_clears_the_binding(self, seeded_app):
+        """The escape hatch: a project id is only meaningful on its own stack,
+        and without this a re-pointed connection would fail project_mismatch
+        forever with no way to clear it. Devin Review on #1242."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="test-identity-restack")
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                return_value=self._verify(project_id=1234, master=False),
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+        ):
+            c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "storage-token", "kind": "storage"},
+                headers=_auth(token),
+            )
+        assert c.get(f"{BASE}/{conn_id}", headers=_auth(token)).json()["config"]["project_id"] == 1234
+
+        r = c.put(
+            f"{BASE}/{conn_id}",
+            json={"config": {"stack_url": "https://connection.other-stack.example.com"}},
+            headers=_auth(token),
+        )
+        assert r.status_code == 200, r.text
+        config = c.get(f"{BASE}/{conn_id}", headers=_auth(token)).json()["config"]
+        assert "project_id" not in config
+        assert config["stack_url"] == "https://connection.other-stack.example.com"
+
+    def test_owner_without_an_id_is_not_recorded_as_an_identity(self, seeded_app):
+        """An identity we cannot read must not be persisted as a known one —
+        otherwise the mismatch check compares against a hole and passes
+        anything."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="test-identity-noowner")
+
+        with (
+            patch(
+                "app.api.admin_source_connections.KeboolaStorageClient.verify_token",
+                return_value={"isMasterToken": True, "owner": {}},
+            ),
+            patch("app.api.admin._validate_url_not_private", return_value=None),
+        ):
+            resp = c.put(
+                f"{BASE}/{conn_id}/secret",
+                json={"value": "master-token", "kind": "master"},
+                headers=_auth(token),
+            )
+        assert resp.status_code == 204, resp.text
+        row = c.get(f"{BASE}/{conn_id}", headers=_auth(token)).json()
+        assert "project_id" not in (row["config"] or {})
+
+
+class TestAnOrdinaryEditKeepsTheProjectBinding:
+    """Devin Review on this PR: the safeguard was removable through the UI.
+
+    `PUT /{id}` REPLACES the stored config, and the admin form posts only the
+    fields it renders — `project_id`/`project_name` are recorded by the
+    connection itself, not typed, so they are never in the payload. Every
+    ordinary edit (a rename, a token_env change, re-saving the same form)
+    therefore dropped the binding, and the next token from any project was
+    accepted again. The deliberate clear on a stack move must survive.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _stable_vault_key(self, monkeypatch):
+        monkeypatch.setenv("AGNES_VAULT_KEY", Fernet.generate_key().decode())
+        _reset_ephemeral_key_for_tests()
+        yield
+        _reset_ephemeral_key_for_tests()
+
+    def _bound(self, c, token, *, name):
+        resp = c.post(
+            BASE,
+            json={
+                "name": name,
+                "source_type": "keboola",
+                "config": {
+                    "stack_url": "https://connection.example.com",
+                    "project_id": 1234,
+                    "project_name": "Acme Analytics",
+                },
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 201, resp.text
+        return resp.json()["id"]
+
+    def test_editing_the_name_keeps_the_binding(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._bound(c, token, name="edit-keeps-binding")
+
+        r = c.put(
+            f"{BASE}/{conn_id}",
+            json={"name": "renamed", "config": {"stack_url": "https://connection.example.com"}},
+            headers=_auth(token),
+        )
+        assert r.status_code == 200, r.text
+        cfg = r.json()["config"]
+        assert cfg.get("project_id") == 1234, "an ordinary edit disabled the wrong-token safeguard"
+        assert cfg.get("project_name") == "Acme Analytics"
+
+    def test_moving_to_another_stack_still_clears_it(self, seeded_app):
+        """A project id means nothing on a different stack."""
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._bound(c, token, name="edit-moves-stack")
+
+        r = c.put(
+            f"{BASE}/{conn_id}",
+            json={"config": {"stack_url": "https://other.example.com"}},
+            headers=_auth(token),
+        )
+        assert r.status_code == 200, r.text
+        cfg = r.json()["config"]
+        assert "project_id" not in cfg
+        assert "project_name" not in cfg
+
+    def test_an_explicit_null_clears_it_without_moving_stack(self, seeded_app):
+        """How a mis-recorded binding is reset from the UI."""
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._bound(c, token, name="edit-explicit-clear")
+
+        r = c.put(
+            f"{BASE}/{conn_id}",
+            json={
+                "config": {
+                    "stack_url": "https://connection.example.com",
+                    "project_id": None,
+                    "project_name": None,
+                }
+            },
+            headers=_auth(token),
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["config"].get("project_id") is None
+
+
+def test_the_admin_page_offers_a_way_out_of_a_project_binding():
+    """Devin Review on this PR: the lock had no release.
+
+    Making the binding survive an ordinary edit (its own fix) turned it into a
+    one-way door: a connection is refused a token for any other project, and
+    the page offered no control to clear the recorded identity — so
+    re-pointing an existing connection at another project on the same stack
+    became impossible from the UI.
+    """
+    import pathlib
+
+    src = (
+        pathlib.Path(__file__).resolve().parents[1] / "app" / "web" / "templates" / "admin_data_sources.html"
+    ).read_text(encoding="utf-8")
+
+    assert "function unbindProject(" in src
+    assert 'onclick="unbindProject(' in src, "the control is defined but never rendered"
+    assert ".ds-unbind {" in src, "the control must be styled, not bare"
+    # It has to send explicit nulls: the handler carries the keys forward when
+    # they are ABSENT, which is what stops an ordinary edit dropping them.
+    assert "project_id: null" in src and "project_name: null" in src
+
+
+def test_the_test_button_is_targeted_explicitly_not_by_position():
+    """Devin Review on this PR: adding the unbind control moved the target.
+
+    `testConn` disabled `card.querySelector("button")` — the FIRST button in
+    the card — which stopped being Test the moment a control landed in the
+    header above the action row. The link greyed out, Test stayed live, and
+    repeated presses fired duplicate requests with no sign of progress.
+    """
+    import pathlib
+
+    src = (
+        pathlib.Path(__file__).resolve().parents[1] / "app" / "web" / "templates" / "admin_data_sources.html"
+    ).read_text(encoding="utf-8")
+
+    assert 'data-role="test"' in src, "the Test button carries no stable handle"
+    assert 'card.querySelector("button")' not in src, "still selecting by position"
+    assert "card.querySelector('button[data-role=\"test\"]')" in src
+
+
+class TestOnlyKeboolaCarriesItsProjectForward:
+    """Devin Review on this PR: the carry-forward was type-blind.
+
+    On Keboola, `project_id`/`project_name` are RECORDED — written from the
+    token's own owner block, never typed — so an absent key must mean
+    "unchanged". On BigQuery, `project_id` is an ordinary field the admin
+    types, and carrying it forward made it unclearable: emptying the field
+    brought it straight back.
+    """
+
+    def test_a_bigquery_project_id_can_be_cleared(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        created = c.post(
+            BASE,
+            json={
+                "name": "bq-clearable",
+                "source_type": "bigquery",
+                "config": {"project_id": "my-gcp-project", "dataset": "analytics"},
+            },
+            headers=_auth(token),
+        )
+        assert created.status_code == 201, created.text
+        conn_id = created.json()["id"]
+
+        r = c.put(f"{BASE}/{conn_id}", json={"config": {"dataset": "analytics"}}, headers=_auth(token))
+        assert r.status_code == 200, r.text
+        assert "project_id" not in r.json()["config"], "a typed BigQuery field could not be cleared"
+
+    def test_a_keboola_binding_is_still_carried_forward(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        created = c.post(
+            BASE,
+            json={
+                "name": "kbc-still-bound",
+                "source_type": "keboola",
+                "config": {
+                    "stack_url": "https://connection.example.com",
+                    "project_id": 1234,
+                    "project_name": "Acme",
+                },
+            },
+            headers=_auth(token),
+        )
+        assert created.status_code == 201, created.text
+        conn_id = created.json()["id"]
+
+        r = c.put(
+            f"{BASE}/{conn_id}",
+            json={"name": "renamed", "config": {"stack_url": "https://connection.example.com"}},
+            headers=_auth(token),
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["config"].get("project_id") == 1234
+
+
+def test_the_add_project_wizard_reuses_its_connection_on_retry():
+    """Devin Review on this PR: every failed attempt left a stray project.
+
+    The wizard creates the connection first, and every step after that can
+    fail — a mistyped token being the common one. It returned with the row
+    already saved, so a retry re-ran step 1 and minted another "Untitled
+    project" per attempt, leaving the admin to clean them up.
+    """
+    import pathlib
+    import re
+    import subprocess
+    import tempfile
+
+    page = pathlib.Path(__file__).resolve().parents[1] / "app" / "web" / "templates" / "admin_data_sources.html"
+    src = page.read_text(encoding="utf-8")
+
+    assert "if (_wizardConnId) {" in src, "the wizard does not reuse the connection it already created"
+    reuse = src.index("if (_wizardConnId) {")
+    create = src.index("const createResp = await fetch(API_CONNECTIONS,")
+    assert reuse < create, "the reuse check must come before creating another connection"
+    assert "this connection is reused, not duplicated" in src, "the failure message still implies a leftover"
+    # …and reuse must APPLY what the admin corrected. Without this the wizard
+    # told them to fix the URL and retry, then talked to the original address
+    # every time, failing identically with nothing saying the new value was
+    # ignored. (Devin Review, second pass.)
+    reuse_block = src[reuse : src.index("// 2. Store the token.")]
+    assert "stack_url: stack" in reuse_block, "a corrected URL is never saved on retry"
+    assert reuse_block.index("stack_url: stack") < reuse_block.index("await fetch(API_CONNECTIONS,") if "await fetch(API_CONNECTIONS," in reuse_block else True
+
+    # The restructure moved a `return` inside a new block — parse the page's
+    # script to be sure it is still valid JS, since nothing else here would.
+    blocks = re.findall(r"<script(?![^>]*src=)[^>]*>(.*?)</script>", src, re.S)
+    assert blocks, "no inline script found — re-point this guard"
+    js = re.sub(r"\{%.*?%\}", "", "\n".join(blocks), flags=re.S)
+    js = re.sub(r"\{\{.*?\}\}", '"JINJA"', js, flags=re.S)
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as f:
+        f.write(js)
+        path = f.name
+    proc = subprocess.run(["node", "--check", path], capture_output=True, text=True)
+    pathlib.Path(path).unlink(missing_ok=True)
+    if proc.returncode == 127:
+        return  # node unavailable
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_the_wizard_retry_also_applies_a_corrected_name():
+    """Devin Review on this PR: only the URL was re-saved.
+
+    A name the admin fixed on the retry was thrown away while the success
+    banner went on to claim that name was used.
+    """
+    import pathlib
+
+    src = (
+        pathlib.Path(__file__).resolve().parents[1] / "app" / "web" / "templates" / "admin_data_sources.html"
+    ).read_text(encoding="utf-8")
+    reuse = src.index("if (_wizardConnId) {")
+    block = src[reuse : src.index("// 2. Store the token.")]
+    assert "name ? { name, config:" in block, "a corrected name is still discarded on retry"
+
+
+class TestBookkeepingCannotFailAPassingConnectionTest:
+    """Devin Review on this PR: `_record_project_identity` sat inside the
+    network try/except, so a vault or DB fault surfaced to the admin as
+    "connection test failed" — with a database message — for a project that
+    is in fact correctly configured."""
+
+    def test_the_identity_write_is_isolated(self):
+        import inspect
+
+        from app.api import admin_source_connections as mod
+
+        src = inspect.getsource(mod.test_connection)
+        i = src.index("_record_project_identity(connection_id, row, data)")
+        preceding = src[:i]
+        assert preceding.rstrip().endswith("try:"), (
+            "the identity write is not wrapped in its own try — a bookkeeping "
+            "failure still reports as a failed connectivity check"
+        )
+        after = src[i:]
+        assert "passed but its project identity could not be recorded" in after
+
+
+def test_the_secret_path_bookkeeping_is_isolated_too():
+    """Devin Review on this PR: I fixed `/test` and left `PUT /secret`.
+
+    The token is safely stored before `_record_project_identity` runs, so a
+    vault or DB fault there turned an already-successful save into an error
+    response — the admin retries a store that already worked.
+    """
+    import inspect
+
+    from app.api import admin_source_connections as mod
+
+    src = inspect.getsource(mod.set_connection_secret)
+    i = src.index("_record_project_identity(connection_id, row, info)")
+    assert src[:i].rstrip().endswith("try:"), "the identity write is not isolated on the secret path"
+    assert "could not record its project identity" in src[i:]
+
+
+def test_a_failed_sync_reports_one_project_s_reason_and_code():
+    """Devin Review on this PR: two independent `next(...)` scans.
+
+    With several projects failing, the message could come from one and the
+    failure type from another — the worst pairing when only one of them is
+    the project the admin is debugging.
+    """
+    from connectors.keboola.semantic_layer import _aggregate_sources
+
+    sources = [
+        {"connection_id": "a", "status": "error", "error": "bad token for A", "code": "invalid_token"},
+        {"connection_id": "b", "status": "error", "error": "stack unreachable for B", "code": "upstream_down"},
+    ]
+    out = _aggregate_sources(sources)
+    assert out["status"] == "error"
+    assert (out["error"], out["code"]) in (
+        ("bad token for A", "invalid_token"),
+        ("stack unreachable for B", "upstream_down"),
+    ), (out["error"], out.get("code"))

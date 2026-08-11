@@ -49,6 +49,14 @@
     border-radius: 10px;
   }
   .sl-empty a { color: var(--ds-primary); }
+  {# No flex/alignment of its own: the list inherits text-align from whichever
+     block hosts it (centred inside .sl-empty, left inside .sl-orphan-note). #}
+  .sl-empty-list { list-style: none; margin: 10px 0; padding: 0; line-height: 1.7; }
+  .sl-note { margin: 8px 0 0; font-size: 13px; color: var(--ds-text-muted); }
+  .sl-empty-list code {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 11px; color: var(--ds-text-primary);
+  }
 
   .sl-source-name { font-weight: 600; color: var(--ds-text-primary); }
   .sl-source-detail {
@@ -77,9 +85,13 @@
     padding: 10px 16px; border-radius: 8px;
     font-size: 13px; font-weight: 500;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
-    z-index: 9999; display: none; align-items: center; gap: 8px; max-width: 360px;
+    z-index: 9999; display: none; align-items: center; gap: 8px; max-width: 520px;
+    /* Failure text is the whole point of the toast — it must be readable and
+       copy-pasteable, so no ellipsis and no wrapping-forbidden single line. */
+    white-space: pre-wrap; user-select: text;
   }
   .sl-toast.show { display: flex; }
+  .sl-toast.toast-fail { cursor: pointer; }
   .sl-toast.toast-ok   { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); border: 1px solid var(--ds-accent-success-line); }
   .sl-toast.toast-fail { background: var(--ds-accent-danger-bg); color: var(--ds-accent-danger-ink); border: 1px solid var(--ds-accent-danger-line); }
 </style>
@@ -109,8 +121,25 @@
   <div class="sl-section-title">Sources</div>
   {% if not sources %}
   <div class="sl-empty">
-    No Keboola projects have a master (owner) token configured yet. Connect one at
+    {% if connections_without_master %}
+    {# Name the connections instead of saying "no projects". The master token is
+       a SEPARATE vault slot from the storage token the "Add Keboola project"
+       wizard fills, so a fully working, table-syncing connection still shows up
+       here as "nothing configured" — which reads as "your project isn't
+       connected" and sends admins looking for a problem that isn't there. #}
+    These Keboola projects are connected but the semantic layer can't sync them:
+    <ul class="sl-empty-list">
+      {% for c in connections_without_master %}
+      <li><strong>{{ c.name }}</strong> — {{ c.reason }}</li>
+      {% endfor %}
+    </ul>
+    A master token is set in the <em>Master token (semantic layer)</em> row at
+    <a href="/admin/data-sources">Data sources</a> — it is a separate token from the
+    storage token used to pull tables, and it must be the project owner's.
+    {% else %}
+    No Keboola projects are connected yet. Connect one at
     <a href="/admin/data-sources">Data sources</a> to enable the semantic-layer sync.
+    {% endif %}
   </div>
   {% else %}
   <div class="sl-section-desc">One row per Keboola project with a master token. Legacy rows with no recorded project (synced before per-project tracking) fold into the default project's counts.</div>
@@ -148,6 +177,47 @@
       {% endfor %}
     </tbody>
   </table>
+  {# The tokenless connections again, for the MIXED case. Listing them only in
+     the empty state hid them the moment any one project got a master token:
+     such a connection is not a Sources row and is not orphaned either (unless
+     it happens to own previously-imported rows), so it appeared nowhere at
+     all — the same silent state one level up. Devin Review on #1242. #}
+  {% if connections_without_master %}
+  <div class="sl-orphan-note">
+    Also connected, but not syncing:
+    <ul class="sl-empty-list">
+      {% for c in connections_without_master %}
+      <li><strong>{{ c.name }}</strong> — {{ c.reason }}</li>
+      {% endfor %}
+    </ul>
+    Fix these at <a href="/admin/data-sources">Data sources</a>.
+  </div>
+  {% endif %}
+  {% endif %}
+
+  {% if skipped_unresolved_total %}
+  {# The counter existed in the API response all along but never reached a
+     human: a run reporting "9 glossary terms, 0 metrics" looked like a broken
+     import when it was 50 metrics dropped on 12 unregistered tables. Say the
+     number, name the tables, and give the one action that fixes it. #}
+  <div class="sl-section-title">Skipped metrics</div>
+  <div class="sl-orphan-note">
+    {{ skipped_unresolved_total }} metric definition{{ 's' if skipped_unresolved_total != 1 else '' }}
+    from the last sync {{ 'were' if skipped_unresolved_total != 1 else 'was' }} skipped: the Keboola
+    tables their datasets point at are not registered in Agnes. Register them with
+    <em>Browse &amp; register tables</em> at <a href="/admin/data-sources">Data sources</a> and sync
+    again. Glossary terms don't reference tables, which is why a project can import terms while
+    importing no metrics at all.
+    {% if unresolved_tables %}
+    <ul class="sl-empty-list">
+      {% for t in unresolved_tables %}<li><code>{{ t }}</code></li>{% endfor %}
+    </ul>
+    {% if unresolved_tables_truncated %}
+    <p class="sl-note">At least one project has more unregistered tables than the list shows — it is capped
+      per project. Registering only the tables here will not be enough; sync again afterwards to see the rest.</p>
+    {% endif %}
+    {% endif %}
+  </div>
   {% endif %}
 
   {% if orphaned %}
@@ -168,7 +238,16 @@
     <tbody>
       {% for o in orphaned %}
       <tr>
-        <td><span class="sl-orphan-ref">{{ o.label }}</span></td>
+        <td>
+          {# A ref that still names a live connection gets that name and the
+             reason, not a bare UUID nobody can act on. #}
+          {% if o.connection_exists %}
+          <span class="sl-source-name">{{ o.label }}</span>
+          <br><span class="sl-source-detail">{{ o.reason }} <a href="/admin/data-sources">Data sources</a> to adopt these rows again</span>
+          {% else %}
+          <span class="sl-orphan-ref">{{ o.label }}</span>
+          {% endif %}
+        </td>
         <td class="num">{{ o.metric_count }}</td>
         <td class="num">{{ o.glossary_count }}</td>
       </tr>
@@ -186,8 +265,18 @@ function showToast(msg, ok) {
   el.textContent = msg;
   el.className = "sl-toast show " + (ok ? "toast-ok" : "toast-fail");
   clearTimeout(el._t);
-  el._t = setTimeout(() => { el.className = "sl-toast"; }, 3500);
+  // Successes may auto-dismiss; failures must NOT. A sync error here is a long,
+  // actionable line from the Keboola API, and hiding it after 3.5s is why these
+  // failures got reported as a bare status code with the reason lost. It stays
+  // until the admin clicks it away.
+  el.title = ok ? "" : "Click to dismiss";
+  if (ok) {
+    el._t = setTimeout(() => { el.className = "sl-toast"; }, 3500);
+  }
 }
+document.getElementById("sl-toast").addEventListener("click", (e) => {
+  e.currentTarget.className = "sl-toast";
+});
 
 document.getElementById("sl-refresh-btn").addEventListener("click", async () => {
   const btn = document.getElementById("sl-refresh-btn");

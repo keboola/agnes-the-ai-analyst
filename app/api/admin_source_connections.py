@@ -35,9 +35,9 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from app.auth.access import require_admin
-from app.secrets_vault import VaultKeyNotConfiguredError
+from app.secrets_vault import VaultKeyNotConfiguredError, can_store_secrets
 from connectors.keboola.semantic_layer import MasterTokenRequiredError, require_master_token
-from connectors.keboola.storage_api import KeboolaStorageClient, StorageApiError
+from connectors.keboola.storage_api import KeboolaStorageClient, StorageApiError, is_upstream_client_error
 from src.repositories import (
     connection_secrets_repo,
     source_connections_repo,
@@ -171,6 +171,105 @@ def _reject_disallowed_token_env(token_env: Optional[str]) -> None:
         )
 
 
+def project_identity(payload: Optional[Dict[str, Any]]) -> tuple[Optional[Any], str]:
+    """``(project_id, project_name)`` from a Storage API payload that carries
+    an ``owner`` block — both ``GET /tokens/verify`` and ``GET /v2/storage``
+    do, so one reader serves the token preflights and the /test probe.
+
+    Returns ``(None, "")`` when the payload has no owner id: an identity we
+    cannot read must never be persisted as a *known* identity, or the
+    cross-token check below would compare against a hole and pass anything.
+    """
+    owner = (payload or {}).get("owner") or {}
+    owner_id = owner.get("id")
+    if owner_id is None:
+        return None, ""
+    return owner_id, owner.get("name") or ""
+
+
+def _record_project_identity(connection_id: str, row: Dict[str, Any], payload: Dict[str, Any]) -> None:
+    """Persist the upstream project's id + name onto the connection config.
+
+    A connection is one Keboola project, but nothing used to record WHICH —
+    so an instance with several projects showed several identical-looking
+    connections and a "master token: SET" badge that said nothing about
+    which project the token actually opened. Recording the identity at every
+    point a token verifies is what makes :func:`_reject_project_mismatch`
+    possible at all.
+    """
+    project_id, project_name = project_identity(payload)
+    if project_id is None:
+        return
+    config = dict(row.get("config") or {})
+    known_id = config.get("project_id")
+    if known_id is not None and str(known_id) != str(project_id):
+        # NEVER silently re-bind. Callers are expected to detect the
+        # disagreement and report it, but this is the backstop: a caller that
+        # forgets would rewrite the binding under a stored master token that
+        # still matches the ORIGINAL project, and that token then starts
+        # failing a mismatch check nobody triggered (Devin Review on #1242).
+        logger.warning(
+            "connection %s is bound to Keboola project %s but a token for project %s verified; "
+            "leaving the binding alone",
+            connection_id,
+            known_id,
+            project_id,
+        )
+        return
+    if known_id == project_id and config.get("project_name") == project_name:
+        return
+    config["project_id"] = project_id
+    config["project_name"] = project_name
+    source_connections_repo().update(connection_id, config=config)
+
+
+def project_mismatch_message(row: Dict[str, Any], payload: Dict[str, Any], *, what: str) -> Optional[str]:
+    """Why this token disagrees with the connection's recorded project, or
+    ``None`` when there is no disagreement.
+
+    The failure this closes: a master token pasted onto the wrong connection
+    was stored happily and badged "SET", and the semantic layer then synced
+    a *different* project's metrics under this connection's name — with no
+    surface anywhere showing the two tokens disagreed. Silent, and only
+    visible as metrics that make no sense for the project you thought you
+    were looking at.
+
+    Returns ``None`` when the connection has no recorded identity yet
+    (nothing to contradict — the caller records it instead).
+
+    Separate from the raising wrapper because ``/test`` reports failures as
+    ``{"ok": false, "error": …}`` rather than an HTTP error, and it must be
+    able to say the same thing in its own shape.
+    """
+    config = row.get("config") or {}
+    known_id = config.get("project_id")
+    if known_id is None:
+        return None
+    token_id, token_name = project_identity(payload)
+    # Compared as strings: the id round-trips through a JSON config column on
+    # two different backends (DuckDB JSON, PG JSONB), and a 5947 that comes
+    # back as "5947" would otherwise read as a permanent, unfixable mismatch
+    # on a correctly-configured connection. Devin Review on #1242 raised the
+    # same risk across endpoints.
+    if token_id is None or str(token_id) == str(known_id):
+        return None
+    known_name = config.get("project_name") or "unnamed"
+    return (
+        f"project_mismatch: this {what} belongs to Keboola project "
+        f"{token_id} ({token_name or 'unnamed'}), but the connection is bound to project "
+        f"{known_id} ({known_name}). Use a token from that project, or create a separate "
+        f"connection for project {token_id}."
+    )
+
+
+def _reject_project_mismatch(row: Dict[str, Any], payload: Dict[str, Any], *, what: str) -> None:
+    """400 if this token opens a different Keboola project than the one the
+    connection is already bound to. See :func:`project_mismatch_message`."""
+    message = project_mismatch_message(row, payload, what=what)
+    if message is not None:
+        raise HTTPException(status_code=400, detail=message)
+
+
 class _VerifiedTokenInfo:
     """Adapts an already-fetched ``verify_token()`` response so it can be
     passed to ``connectors.keboola.semantic_layer.require_master_token``
@@ -267,19 +366,63 @@ async def update_connection(
 
     404 if missing; 409 if renaming to a name already taken by a different
     connection.
+
+    Moving the connection to a different ``stack_url`` drops any recorded
+    project identity: a project id is only meaningful on the stack it came
+    from, and keeping the old binding would make every token from the new
+    stack fail ``project_mismatch`` with no way to clear it from the UI. This
+    is also the supported way to re-point a bound connection — see the note
+    on :func:`project_mismatch_message`.
     """
     repo = source_connections_repo()
-    if repo.get(connection_id) is None:
+    existing_row = repo.get(connection_id)
+    if existing_row is None:
         raise HTTPException(status_code=404, detail="connection_not_found")
     if body.name is not None:
         existing = repo.get_by_name(body.name)
         if existing is not None and existing["id"] != connection_id:
             raise HTTPException(status_code=409, detail="connection_name_exists")
     _reject_disallowed_token_env(body.token_env)
+    config = body.config
+    if config is not None:
+        old_config = existing_row.get("config") or {}
+        old_stack = (old_config.get("stack_url") or "").rstrip("/")
+        new_stack = (config.get("stack_url") or "").rstrip("/")
+        if old_stack and new_stack and old_stack != new_stack:
+            config = {k: v for k, v in config.items() if k not in ("project_id", "project_name")}
+            logger.info(
+                "connection %s moved to a different stack; clearing its recorded project identity",
+                connection_id,
+            )
+        else:
+            # `config` REPLACES the stored dict, and the admin form posts only
+            # the fields it renders — `project_id`/`project_name` are not among
+            # them, because they are recorded by the connection itself rather
+            # than typed. So every ordinary edit (a rename, a token_env change,
+            # re-saving the same form) silently dropped the binding, and the
+            # next token from any project was accepted again: the safeguard
+            # this change set exists to add, removed by using the UI. Carried
+            # forward unless the caller explicitly supplies the key — an
+            # explicit `null` still clears it, which is how a mis-recorded
+            # binding is reset without moving the stack. The branch above stays
+            # the one deliberate clear: a project id means nothing on a
+            # different stack. (Devin Review on this PR.)
+            # Keboola only. `project_id`/`project_name` are *recorded* there —
+            # written by the connection from its own token's owner block, never
+            # typed — which is why an absent key must mean "unchanged". On a
+            # BigQuery connection `project_id` is an ordinary configuration
+            # field the admin DOES type, so carrying it forward would make it
+            # unclearable: an admin who empties the field would see it come
+            # straight back. (Devin Review on this PR.)
+            if existing_row.get("source_type") == "keboola":
+                config = {
+                    **{k: v for k, v in old_config.items() if k in ("project_id", "project_name")},
+                    **config,
+                }
     repo.update(
         connection_id,
         name=body.name,
-        config=body.config,
+        config=config,
         token_env=body.token_env,
         is_default=body.is_default,
     )
@@ -328,13 +471,22 @@ async def set_connection_secret(
     """Store (or rotate) the vault secret for a connection token.
 
     ``kind="storage"`` (default): the plain Storage API token used for pulls.
+    For a Keboola connection it is preflighted like the master token, and the
+    project it opens (``owner.id``/``owner.name``) is recorded on the
+    connection — that identity is what later tokens are checked against.
+    400 ``project_mismatch`` if the token opens a different project than the
+    one this connection is already bound to; a connection is one project.
     ``kind="master"``: a *separate* slot for a Keboola master (owner) Storage
     API token, required by the semantic-layer sync (Metastore API rejects
     non-master tokens). 400 if the connection isn't ``source_type="keboola"``,
-    or if the token fails a live ``verify_token`` preflight (not a master
-    token). 502 if the Storage API preflight call itself fails.
+    if the token fails a live ``verify_token`` preflight (not a master token),
+    or if the Storage API refuses the token outright (4xx — an invalid or
+    expired token is the admin's to fix, not a gateway failure). 502 only when
+    the Storage API is unreachable or answers 5xx.
 
-    409 if AGNES_VAULT_KEY is not configured on the server.
+    409 if AGNES_VAULT_KEY is not configured on the server — checked FIRST, so
+    an instance that cannot store secrets says so instead of spending an
+    upstream round-trip and reporting a token problem it never had.
     """
     row = source_connections_repo().get(connection_id)
     if row is None:
@@ -343,6 +495,20 @@ async def set_connection_secret(
         raise HTTPException(status_code=400, detail="secret value required")
     if body.kind not in ("storage", "master"):
         raise HTTPException(status_code=400, detail="invalid_kind")
+
+    # Refuse a doomed write before asking Keboola anything. Both branches below
+    # now preflight the token upstream, and a round-trip to validate a secret
+    # this instance cannot store is both wasted and actively misleading — the
+    # admin would get a token error for what is really an unconfigured vault.
+    if not can_store_secrets():
+        raise HTTPException(
+            status_code=409,
+            detail="vault_key_not_configured: set AGNES_VAULT_KEY on the server before storing secrets",
+        )
+
+    # Stays None for a non-Keboola connection (no Storage API to ask), which
+    # is what the identity-recording step below keys off.
+    info: Optional[Dict[str, Any]] = None
 
     if body.kind == "master":
         if row.get("source_type") != "keboola":
@@ -358,9 +524,15 @@ async def set_connection_secret(
         except (StorageApiError, requests.RequestException) as exc:
             # A freshly typed token is in flight — never surface bare str(exc);
             # route through the client's own token-aware redaction. Only these
-            # two named types map to a 502 storage_api_error; an unrelated
+            # two named types map to an upstream error at all; an unrelated
             # programming error should surface as a 500, not be mistaken for
             # an upstream outage.
+            #
+            # A 4xx means the Storage API understood us and said no — the
+            # pasted token is invalid, expired, or belongs to another stack.
+            # That is the admin's to fix, so it must not come back as 502:
+            # a Bad Gateway reads as "Agnes is broken" and sends people
+            # hunting infrastructure instead of re-reading the error.
             redacted = client._redact(exc)
             logger.warning(
                 "master-token preflight failed for connection %s (%s): %s",
@@ -368,7 +540,8 @@ async def set_connection_secret(
                 _log_host(stack_url),
                 redacted,
             )
-            raise HTTPException(status_code=502, detail=f"storage_api_error: {redacted}") from exc
+            status = 400 if is_upstream_client_error(exc) else 502
+            raise HTTPException(status_code=status, detail=f"storage_api_error: {redacted}") from exc
         if not info.get("isMasterToken"):
             # Reuse require_master_token's exact message rather than duplicating
             # it — it already fetched isMasterToken, so hand it the cached
@@ -377,8 +550,47 @@ async def set_connection_secret(
                 require_master_token(_VerifiedTokenInfo(info))
             except MasterTokenRequiredError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # A master token is only "the" master token for THIS connection if it
+        # opens the same project the connection is bound to. Without this, a
+        # token pasted onto the wrong row stored fine, badged "SET", and the
+        # semantic layer synced another project's metrics under this name.
+        _reject_project_mismatch(row, info, what="master token")
         key = master_secret_key(connection_id)
     else:
+        if row.get("source_type") == "keboola":
+            config = row.get("config") or {}
+            # Keboola storage tokens get the same preflight as master tokens.
+            # It is what makes the project identity knowable at all — the
+            # storage token is the one the wizard fills, so it is where a
+            # connection's project comes from. The cost is real and worth
+            # naming: a Storage API outage now blocks storing a storage token
+            # instead of accepting one nobody has checked.
+            #
+            # No stack_url yet → nothing to preflight AGAINST, so the token is
+            # stored unverified and unbound rather than refused. The wizard
+            # creates the row before the config is complete (create validates
+            # stack_url with required=False for exactly that reason), so
+            # demanding one here would have broken storing a token on a
+            # half-built connection — a regression this change introduced and
+            # Devin Review on #1242 caught. Identity gets recorded later, at
+            # /test or when a master token is stored.
+            if (config.get("stack_url") or "").strip():
+                _validate_stack_url(config, required=True)
+                stack_url = (config.get("stack_url") or "").rstrip("/")
+                client = KeboolaStorageClient(url=stack_url, token=body.value)
+                try:
+                    info = await run_in_threadpool(client.verify_token)
+                except (StorageApiError, requests.RequestException) as exc:
+                    redacted = client._redact(exc)
+                    logger.warning(
+                        "storage-token preflight failed for connection %s (%s): %s",
+                        connection_id,
+                        _log_host(stack_url),
+                        redacted,
+                    )
+                    status = 400 if is_upstream_client_error(exc) else 502
+                    raise HTTPException(status_code=status, detail=f"storage_api_error: {redacted}") from exc
+                _reject_project_mismatch(row, info, what="storage token")
         key = connection_id
 
     try:
@@ -388,6 +600,21 @@ async def set_connection_secret(
             status_code=409,
             detail="vault_key_not_configured: set AGNES_VAULT_KEY on the server before storing secrets",
         ) from exc
+
+    # Only after the secret is safely stored: a recorded identity whose token
+    # failed to persist would bind the connection to a project it cannot open.
+    if row.get("source_type") == "keboola" and info is not None:
+        # Bookkeeping, same as on `/test`: the token is already safely
+        # stored by this point, so a vault or DB fault here must not turn a
+        # successful save into an error response. (Devin Review.)
+        try:
+            _record_project_identity(connection_id, row, info)
+        except Exception:  # noqa: BLE001 — the secret itself landed
+            logger.warning(
+                "stored the token for connection %s but could not record its project identity",
+                connection_id,
+                exc_info=True,
+            )
 
 
 @router.delete("/{connection_id}/secret", status_code=204)
@@ -417,11 +644,18 @@ async def test_connection(
 
     Resolves the stack URL and token from the connection row (token_env →
     environment lookup, or vault secret), then calls
-    ``GET {stack_url}/v2/storage?exclude=components`` with a 10-second
-    timeout.
+    ``GET {stack_url}/v2/storage/tokens/verify`` with a 10-second timeout.
 
     Returns ``{ok: true, project_name: "…"}`` on success or
     ``{ok: false, error: "…"}`` on failure.
+
+    It used to probe ``/v2/storage?exclude=components``, which measured
+    verified live (2026-08-10): that endpoint is the unauthenticated stack
+    index — it answers **200 with no token at all** and carries no ``owner``
+    block. So "Test" reported OK for any token, including a garbage one, and
+    the ``project_name`` it returned was always the empty string. Verifying
+    the token is the only probe that answers the question the button asks,
+    and it is what makes the project identity below readable at all.
     """
     row = source_connections_repo().get(connection_id)
     if row is None:
@@ -447,7 +681,7 @@ async def test_connection(
         )
         return {"ok": False, "error": "no token available (vault empty, token_env unset)"}
 
-    url = f"{stack_url}/v2/storage?exclude=components"
+    url = f"{stack_url}/v2/storage/tokens/verify"
     # Outcome log lines carry the status/reason but never the response body —
     # a proxy-echoed token must not land in server logs (the body still goes
     # to the admin client, same as before).
@@ -456,7 +690,41 @@ async def test_connection(
             resp = await client.get(url, headers={"X-StorageApi-Token": token})
         if resp.status_code == 200:
             data = resp.json()
-            project_name = data.get("owner", {}).get("name") or data.get("name") or ""
+            project_name = (data.get("owner") or {}).get("name") or ""
+            # This is the wizard's own last step, so verifying here is what
+            # binds a connection to its project the moment it is created.
+            #
+            # A disagreement is a FAILED test, not a re-binding: the token this
+            # probe resolves is not necessarily the one that established the
+            # binding (`_resolve_token` falls back to `token_env`), so
+            # overwriting here would quietly re-point the connection and leave
+            # the stored master token failing a mismatch nobody caused
+            # (Devin Review on #1242).
+            if row.get("source_type") == "keboola":
+                mismatch = project_mismatch_message(row, data, what="connection's token")
+                if mismatch:
+                    logger.warning(
+                        "connection test for %s (%s): project mismatch",
+                        connection_id,
+                        _log_host(stack_url),
+                    )
+                    return {"ok": False, "error": mismatch}
+                # Recording the identity is BOOKKEEPING — it must not be able
+                # to turn a passing connectivity check into a failure report.
+                # It sat inside the same try/except that catches the outbound
+                # call's network errors, so a vault or DB fault surfaced to the
+                # admin as "connection test failed" with a database message,
+                # for a project that is in fact correctly configured.
+                # (Devin Review on this PR.)
+                try:
+                    _record_project_identity(connection_id, row, data)
+                except Exception:  # noqa: BLE001 — the check itself succeeded
+                    logger.warning(
+                        "connection test for %s (%s) passed but its project identity could not be recorded",
+                        connection_id,
+                        _log_host(stack_url),
+                        exc_info=True,
+                    )
             # project_name is response-body content — it goes to the caller
             # but deliberately NOT into the log line (see comment above).
             logger.info(
