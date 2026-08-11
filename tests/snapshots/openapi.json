@@ -10477,7 +10477,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.82.0"
+    "version": "0.83.3"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -29830,7 +29830,7 @@
     },
     "/api/collections/search": {
       "get": {
-        "description": "Hybrid search across the caller's accessible collections.\n\nFail-closed: only the caller's granted collections are searched; an\noptional ``corpus_id`` narrows to one (ignored if not accessible). Declared\nbefore ``/{collection_id}`` so ``search`` isn't captured as a collection id.\n\nThe response carries ``retrieval`` (``hybrid | lexical_only``) so clients\ncan tell semantic-scored results from the lexical-only degradation that\nkicks in when the embeddings extra is not installed (#898).",
+        "description": "Hybrid search across the caller's accessible collections.\n\nFail-closed: only the caller's granted collections are searched; an\noptional ``corpus_id`` narrows to one (ignored if not accessible). Declared\nbefore ``/{collection_id}`` so ``search`` isn't captured as a collection id.\n\nThe response carries ``retrieval`` (``hybrid | lexical_only``) so clients\ncan tell semantic-scored results from the lexical-only degradation that\nkicks in when the embeddings extra is not installed (#898).\n\nAn empty result also carries ``searched_collections`` and a ``hint``.\nNothing in a bare ``[]`` separates \"you cannot see any collection\" from\n\"your words are not in the text\", and an agent handed that ambiguity\npicks the scarier reading: observed live, a chat agent searched six\nways, found nothing, and told the owner of the file \"I don't have\naccess to your files or collections\" \u2014 which then became the\nconversation's permanent title. The count is what makes the difference\ncheckable, and the hint names the three engine behaviours that make a\nreasonable query miss (see ``src.ingest.retrieval``).",
         "operationId": "search_collections_api_collections_search_get",
         "parameters": [
           {
@@ -32755,7 +32755,7 @@
     },
     "/api/knowledge/search": {
       "get": {
-        "description": "One query across documents, the knowledge base, and the table catalog.\n\nResults are typed (``chunk | knowledge | table | metric | glossary``); table hits carry a\npivot hint (query via SQL) instead of rows. Everything is filtered to the\ncaller's grants, fail-closed per source.\n\n``retrieval`` (``hybrid | lexical_only``) labels the chunk engine's mode:\n``lexical_only`` means the embeddings extra is absent and document chunks\nwere ranked without semantic scoring (#898). Knowledge and table hits are\nlexical by design and unaffected.",
+        "description": "One query across documents, the knowledge base, and the table catalog.\n\nResults are typed (``chunk | knowledge | table | metric | glossary``); table hits carry a\npivot hint (query via SQL) instead of rows. Everything is filtered to the\ncaller's grants, fail-closed per source.\n\n``retrieval`` (``hybrid | lexical_only``) labels the chunk engine's mode:\n``lexical_only`` means the embeddings extra is absent and document chunks\nwere ranked without semantic scoring (#898). Knowledge and table hits are\nlexical by design and unaffected.\n\nAn empty result carries ``searched_collections``, ``searched_tables`` and a\n``hint``, for the same reason ``/api/collections/search`` does: a bare\n``[]`` cannot be told apart from \"you may see nothing\", and an agent handed\nthat ambiguity picks the scarier reading and reports an access problem the\ncaller does not have. This is the *combined* leg, so the counts are what\nmake the difference checkable \u2014 an all-empty fan-out is a grant question,\nanything reachable is a wording one. The glossary is excluded from that\njudgement on purpose: it has no RBAC, so it runs for everyone and its\npresence would make every caller look like they had access.",
         "operationId": "knowledge_search_api_knowledge_search_get",
         "parameters": [
           {
