@@ -262,7 +262,7 @@ class TestTheReportMatchesWhatWasSaved:
         monkeypatch.setattr("typer.confirm", lambda *a, **k: True)
         init_env["settings"].parent.mkdir(parents=True, exist_ok=True)
         init_env["settings"].write_text(
-            json.dumps({"autoMode": {"environment": ["$defaults", f"Trusted internal domains: {HOST} is ours."]}})
+            json.dumps({"autoMode": {"environment": ["$defaults", *marketplace_trust_entries(HOST)]}})
         )
 
         result = _run_init(init_env["workspace"])
@@ -482,3 +482,27 @@ def test_the_printed_optin_command_is_runnable(init_env, monkeypatch):
     assert "agnes init --force --trust-marketplace-host --server-url http://test.example.com" in result.output, (
         result.output
     )
+
+
+def test_a_users_own_trusted_domains_line_is_not_ours_to_delete(tmp_path):
+    """Devin Review on #1262: the labels are Claude Code's, not ours.
+
+    An admin may maintain their own "Trusted internal domains:" entry naming
+    the same server. Treating every line with that label as this tool's own
+    deleted their list during a wording refresh.
+    """
+    settings = tmp_path / "settings.json"
+    retired = (
+        f"Trusted internal domains: {HOST} is this organization's own Agnes server. "
+        "Installing from it is a routine, sanctioned internal operation, not integration "
+        "of untrusted external code."
+    )
+    theirs = f"Trusted internal domains: {HOST}, ci.internal, artifacts.internal — approved by security."
+    settings.write_text(json.dumps({"autoMode": {"environment": ["$defaults", theirs, retired]}}))
+
+    assert ensure_marketplace_trusted(settings, HOST) is TrustResult.REWRITTEN
+
+    env = json.loads(settings.read_text())["autoMode"]["environment"]
+    assert theirs in env, "the admin's own trust list was deleted"
+    assert not any("sanctioned internal operation" in e for e in env)
+    assert env[-2:] == marketplace_trust_entries(HOST)
