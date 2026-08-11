@@ -118,7 +118,14 @@ def _with_secret_status(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any
     except Exception:
         row["has_master_secret"] = False
     try:
-        row["has_chat_tools"] = mcp_sources_repo().get(derived_source_id(row["id"])) is not None
+        # The switch must read what the source DOES, not merely that a row
+        # exists. Both `enable_chat_tools` and `_resync_derived_chat_tools`
+        # deliberately carry a previously-set `enabled=False` over, so a
+        # disabled source kept showing "on" — and turning the switch off then
+        # on again is exactly how an admin would try to fix that, which does
+        # nothing because the row was there all along. (Devin Review.)
+        derived = mcp_sources_repo().get(derived_source_id(row["id"]))
+        row["has_chat_tools"] = bool(derived) and derived.get("enabled", True) is not False
     except Exception:
         row["has_chat_tools"] = False
     return row
