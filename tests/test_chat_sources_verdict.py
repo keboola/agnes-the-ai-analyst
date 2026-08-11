@@ -134,3 +134,49 @@ def test_claim_is_immutable():
     to 'fix' one in place and diverge from what the tool calls say."""
     with pytest.raises(Exception):
         SourceClaim(kind="table", ref="mrr").ref = "other"  # type: ignore[misc]
+
+
+class TestTheManagerFeedsTheVerdictRealToolCalls:
+    """Devin Review on this PR: the pair was always half-empty.
+
+    `ChatManager` stamped `frame["sources"]` from `frame.get("tool_calls")`,
+    but the runner emits each call as its own `tool_call` frame and its final
+    `assistant_message` carries only content/tokens/model — so the haystack
+    was empty and every verifiable claim came back `verified=False`. An amber
+    UNVERIFIED badge on correct answers is worse than no badge: it teaches
+    the reader to ignore it.
+
+    The reload path (`GET /sessions/{id}/messages`) recomputed the same
+    verdict from the persisted `tool_calls`, which was being stored as `None`
+    for the same reason — so both surfaces agreed, and both were wrong.
+    Source-level, because standing up a live manager turn to assert one
+    stamped field is far more machinery than the invariant is worth.
+    """
+
+    import pathlib
+
+    SOURCE = pathlib.Path(__file__).resolve().parents[1] / "app" / "chat" / "manager.py"
+
+    def _stamp_block(self) -> str:
+        src = self.SOURCE.read_text(encoding="utf-8")
+        i = src.index('if frame.get("type") == "assistant_message":')
+        return src[i : i + 2000]
+
+    def test_the_verdict_is_fed_from_the_turn_buffer(self):
+        block = self._stamp_block()
+        assert 'live.turn_buffer if f.get("type") == "tool_call"' in block, (
+            "the verdict is computed against a field the runner never sets"
+        )
+
+    def test_the_calls_are_attached_before_the_verdict_is_computed(self):
+        """Order is the whole fix — a stamp computed first sees nothing."""
+        block = self._stamp_block()
+        assert block.index('frame["tool_calls"] =') < block.index('frame["sources"] ='), (
+            "tool_calls must be attached before sources_verdict reads them"
+        )
+
+    def test_the_same_calls_reach_the_persisted_message(self):
+        """Otherwise a reload disagrees with the live turn."""
+        src = self.SOURCE.read_text(encoding="utf-8")
+        assert 'tool_calls=frame.get("tool_calls")' in src
+        assert src.index('frame["tool_calls"] =') < src.index('tool_calls=frame.get("tool_calls")')
