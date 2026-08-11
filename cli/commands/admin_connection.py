@@ -149,8 +149,9 @@ def chat_tools(
     """Expose a Keboola project's own MCP tools to the chat agent.
 
     Derives an MCP source from the connection and copies its storage token
-    into the MCP vault. Re-run after rotating that token — the copy does not
-    follow the connection automatically.
+    into the MCP vault. Rotating that token propagates to the copy on its own
+    — storing a new secret on the connection updates both — so this does not
+    have to be re-run for a rotation.
 
     The derived source lands with no tool grants: run
     ``agnes admin grant`` before analysts see anything.
