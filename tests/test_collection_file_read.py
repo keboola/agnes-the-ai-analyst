@@ -217,6 +217,12 @@ class TestAPdfWhoseBytesAreGoneStillReads:
         body = r.json()
         assert body["text"] == "Quarterly revenue was 4.2M."
         assert body["raw_url"] is None, "a URL that would 404 must not be handed to the modal"
+        # `kind` is what file_preview.js switches on — NOT `raw_url`. Leaving
+        # it "pdf" builds an <iframe> and assigns the URL unconditionally, so
+        # a null URL renders a blank frame with no error handler: the broken
+        # embed the 404 existed to prevent, reached another way.
+        assert body["kind"] == "text", "the modal would draw an embed it has no source for"
+        assert body["source"] == "extracted", "the modal's provenance note keys on this"
 
     def test_missing_blob_without_text_still_404s(self, seeded_app, monkeypatch):
         """The case the 404 was written for must not regress."""
