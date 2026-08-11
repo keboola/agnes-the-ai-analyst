@@ -27,7 +27,7 @@
         the ACTIVE section is always forced open by the JS on load too — it
         must never end up hidden just because a stale stored value says so.
 
-     2. Whole-SIDEBAR collapse, to a ~52px icon strip (one icon per
+     2. Whole-SIDEBAR collapse, to a ~56px icon strip (one icon per
         section — `.admin-nav__rail`) — collapsed state itself has no
         server-side signal (it's pure per-device chrome, like the rail's own
         nav collapse), so it starts expanded on a cold load and the tiny
@@ -70,7 +70,7 @@
                     aria-expanded="{{ 'true' if _sec_open else 'false' }}"
                     aria-controls="admin-nav-body-{{ section['key'] }}">
                 <span class="admin-nav__group-txt">{{ section['label'] }}</span>
-                {{ ico.icon('chevron', 14, 'admin-nav__group-chev') }}
+                {{ ico.icon('chevron', 13, 'admin-nav__group-chev') }}
             </button>
             <div class="admin-nav__group-body" id="admin-nav-body-{{ section['key'] }}"{% if not _sec_open %} hidden{% endif %}>
                 {% for item in section['items'] %}

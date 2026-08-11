@@ -1089,56 +1089,95 @@ html[data-ui-layout="rail"] .rail-user-menu .app-user-menu-panel {
     box-shadow: 0 12px 34px rgba(0, 0, 0, 0.14);
 }
 
-/* ── Onboarding card + its popover ────────────────────────────────────
-   A compact tinted card closing the bottom zone — under Admin, directly above
-   the profile — replacing the "Finish setup · N/5" text row that was too easy
-   to read past. Title + progress sentence + bar + chevron, three tight lines.
-   .rail-nav-bottom above it keeps the auto margin that pins the zone to the
-   foot of the column, so the card simply rides along at its end. */
+/* ── Onboarding row + its popover ─────────────────────────────────────
+   SAME anatomy as every other rail destination now (an icon + a label,
+   `.rail-i`'s own treatment — hover wash, no standing tint, no card chrome):
+   the only thing that sets it apart from Library/Agents is what the icon
+   IS — a circular progress ring rather than a fixed glyph. That also means
+   its height never differs between icon mode's collapsed/expanded states:
+   the ring is a fixed size in both (collapsed, it's the whole row's
+   content; expanded, it's the row's leading icon, same as any other row's
+   svg), and only the LABEL appears/disappears — through the exact
+   mechanism every other row's label does (`.rail-i-label`'s sibling in the
+   shared show/hide list further down this file).
+
+   It no longer retires at 5/5 either (`.is-complete` used to set
+   `display: none` on the whole thing) — the ring reads full and its glyph
+   swaps to a checkmark instead; see the glyph rules below. The profile
+   menu's "Start over onboarding" is still the way back to 0/5.
+
+   `.rail-nav-bottom`'s auto margin (default IA) or the icon-mode flex
+   spacer (admin pages) is what pins this row above the profile foot — see
+   each respectively; this rule only carries its own vertical rhythm. */
 html[data-ui-layout="rail"] .rail-getstarted {
     position: relative;
     flex-shrink: 0;
     margin-top: 10px;
 }
 
-/* Completed → the card leaves the rail for good. Nothing to dismiss, nothing to
-   re-read; chat_onboarding.js sets `.is-complete` on the wrapper as soon as the
-   last step lands. Also drops the popover with it (it's a descendant). The
-   profile menu's "Start over onboarding" is the way back. */
-html[data-ui-layout="rail"] .rail-getstarted.is-complete {
-    display: none;
-}
-
+/* Nothing beyond `.rail-i` (reused directly on the button in the markup)
+   plus the popover's own position:relative anchor above — kept as a class
+   hook for the ring/body children's selectors and any future onboarding-
+   specific tweak, not because the row needs its own chrome. */
 html[data-ui-layout="rail"] .rail-getstarted-btn {
-    display: flex;
-    align-items: center;
-    gap: 10px;
+    gap: 11px;
+}
+
+/* The row's icon — a circular progress meter, nothing inside it. Sized
+   larger than the plain 18px nav icons (an arc needs diameter to be read as
+   an arc) but otherwise just this row's `.rail-i` leading icon — always
+   visible, collapsed or expanded, at a CONSTANT size, which is what keeps
+   the row's own height from changing between icon mode's two states. */
+html[data-ui-layout="rail"] .rail-getstarted-ring {
+    position: relative;
+    width: 28px;
+    height: 28px;
+    flex-shrink: 0;
+    display: grid;
+    place-items: center;
+}
+
+html[data-ui-layout="rail"] .rail-getstarted-ring-svg {
+    grid-area: 1 / 1;
     width: 100%;
-    padding: 9px 11px;
-    border: none;
-    border-radius: 11px;
-    /* The DS's informational blue, not the brand accent: `--ds-primary` stays
-       reserved for the active destination, and a primary-tinted card would read
-       as "you are here". Blue under every palette theme. */
-    background: var(--ds-accent-info-bg);
-    font-family: inherit;
-    text-align: left;
-    cursor: pointer;
-    transition: box-shadow var(--ds-motion-fast, 0.12s) var(--ds-ease-standard, ease);
+    height: 100%;
+    /* Starts the arc at 12 o'clock instead of SVG's default 3 o'clock. */
+    transform: rotate(-90deg);
 }
 
-/* Elevation only on hover — no colour change. The tint IS the card's identity;
-   deepening it under the pointer reads as a state change rather than as the
-   card answering. (Same treatment the Library grid cards settled on.) */
-html[data-ui-layout="rail"] .rail-getstarted-btn:hover,
-html[data-ui-layout="rail"] .rail-getstarted.is-open .rail-getstarted-btn {
-    box-shadow: var(--ds-shadow-sm, 0 1px 3px rgba(0, 0, 0, 0.08));
+/* Stroke width is in viewBox units (36 wide, rendered at 28px), so 4 here is
+   ~3.1 real px — deliberately heavy relative to the 28px diameter. A hairline
+   ring at this size reads as a decorative circle; a thick one reads as a
+   meter, which is the whole job of this element. */
+html[data-ui-layout="rail"] .rail-getstarted-ring-track {
+    fill: none;
+    stroke: var(--ds-border);
+    stroke-width: 4;
 }
 
-html[data-ui-layout="rail"] .rail-getstarted-btn:focus-visible {
-    outline: var(--ds-focus-outline);
-    outline-offset: var(--ds-focus-outline-offset);
+/* `stroke-dasharray` is written by chat_onboarding.js's
+   `updateGetStartedIndicator` — "<filled length> <circumference>". r=15 on
+   the 36×36 viewBox above, so the circumference (2πr ≈ 94.2) is the
+   constant that write uses. */
+html[data-ui-layout="rail"] .rail-getstarted-ring-fill {
+    fill: none;
+    stroke: var(--ds-primary);
+    stroke-width: 4;
+    stroke-linecap: round;
+    stroke-dasharray: 0 94.2;
+    transition: stroke-dasharray var(--ds-motion-med, 0.24s) var(--ds-ease-standard, ease);
 }
+
+@media (prefers-reduced-motion: reduce) {
+    html[data-ui-layout="rail"] .rail-getstarted-ring-fill {
+        transition: none;
+    }
+}
+
+/* No `.is-complete` styling for the ring: at 5/5 the arc is a full lap of
+   `--ds-primary`, which reads as done on its own. The class is still toggled
+   by chat_onboarding.js and still meaningful to other consumers — it just
+   doesn't need to swap a glyph any more, because there is no glyph. */
 
 html[data-ui-layout="rail"] .rail-getstarted-body {
     display: flex;
@@ -1173,38 +1212,6 @@ html[data-ui-layout="rail"] .rail-getstarted-sub {
 
 html[data-ui-layout="rail"] .rail-getstarted-sub:empty {
     display: none;
-}
-
-/* Progress track — the same blue as the fill at low strength, so the bar reads
-   as one object on the card's tint rather than as a grey slot cut into it. */
-html[data-ui-layout="rail"] .rail-getstarted-bar {
-    display: block;
-    height: 4px;
-    margin-top: 2px;
-    border-radius: var(--ds-radius-pill, 999px);
-    background: color-mix(in srgb, var(--ds-accent-info-line) 22%, transparent);
-    overflow: hidden;
-}
-
-html[data-ui-layout="rail"] .rail-getstarted-bar-fill {
-    display: block;
-    height: 100%;
-    width: 0;
-    border-radius: inherit;
-    background: var(--ds-accent-info-line);
-    transition: width var(--ds-motion-med, 0.24s) var(--ds-ease-standard, ease);
-}
-
-html[data-ui-layout="rail"] .rail-getstarted-chev {
-    width: 16px;
-    height: 16px;
-    flex-shrink: 0;
-    color: var(--ds-accent-info-ink);
-    transition: transform var(--ds-motion-fast, 0.12s) var(--ds-ease-standard, ease);
-}
-
-html[data-ui-layout="rail"] .rail-getstarted-btn:hover .rail-getstarted-chev {
-    transform: translateX(2px);
 }
 
 /* Dropdown card — opens UP from the launcher on hover / focus, and stays
@@ -1508,6 +1515,237 @@ html[data-ui-layout="rail"] .cloud-chat-journey-finish:hover {
 html[data-ui-layout="rail"] .cloud-chat-journey-finish:focus-visible {
     outline: var(--ds-focus-outline);
     outline-offset: var(--ds-focus-outline-offset);
+}
+
+/* ── Icon-only rail (/admin/* pages) ─────────────────────────────────────
+ * On rail-layout instances, /admin/* pages already carry a second, 190px
+ * sidebar of their own (_admin_nav.html) — the grouped admin IA that
+ * replaced the rail's Admin flyout there (see the `_admin_page` branch in
+ * _app_rail.html). Two permanent 240px+190px columns left ~39% of a 1100px
+ * viewport as chrome and duplicated the same admin areas twice. Here the
+ * global rail collapses to a ~56px icon strip and the admin sidebar becomes
+ * the primary nav. Hovering (or focusing into, or tapping the pin toggle)
+ * widens it back to 240px as an OVERLAY and reveals the label text beside
+ * each icon — but the ROW SET is identical collapsed or expanded: nothing
+ * here may add or remove a row, only change its width/label. The
+ * conversation region is not rendered at all on an admin page (see
+ * `_app_rail.html`) — its rows are text and cannot shrink to 56px, and
+ * showing it only on hover would shift every row below it (the bottom zone
+ * — Library, Agents, Admin, the onboarding row, the profile — keeps its
+ * documented position either way; see the "Collapsed contents" comment
+ * below). The onboarding row's own icon IS a circular progress ring (see
+ * the "Onboarding row + its popover" section above) — a fixed size in both
+ * states, same as any other row's icon, so unlike the conversation region
+ * it needs no special handling here at all beyond the shared label
+ * show/hide every row gets.
+ *
+ * Gated to `.rail-icon-mode` (stamped server-side from the request path —
+ * no first-paint flash) AND to `min-width: 1025px`, deliberately never
+ * touching anything inside the `max-width: 1024px` query below: that query
+ * already turns the rail into a wrapping top bar with its own collapse
+ * story, and letting icon-mode's rules leak in there — even harmlessly —
+ * is exactly the kind of interaction CLAUDE.md's design-system contract
+ * warns against ("don't let icon mode fight the narrow-screen reflow").
+ * Keeping the two breakpoints mutually exclusive sidesteps any need to
+ * reason about which one wins on specificity. */
+@media (min-width: 1025px) {
+    html[data-ui-layout="rail"] body:has(.rail.rail-icon-mode) {
+        /* Overrides the plain `body:has(.rail)` 240px reservation above —
+           `:has(.rail.rail-icon-mode)` carries the extra class in its
+           argument, so it is unconditionally more specific and wins
+           regardless of source order. Constant regardless of hover/pin: the
+           expanded state below is an overlay, so the page's own clearance
+           never has to change. */
+        padding-left: 56px;
+    }
+
+    html[data-ui-layout="rail"] .rail.rail-icon-mode {
+        width: 56px;
+        padding: 16px 8px;
+        transition: width var(--ds-motion-fast, .16s) var(--ds-ease-standard, ease),
+                    box-shadow var(--ds-motion-fast, .16s) var(--ds-ease-standard, ease);
+    }
+
+    /* Collapsed contents: brand mark, the destination rows (onboarding
+       included — its icon is a progress ring rather than a fixed glyph, see
+       the dedicated section below, but it is otherwise an ordinary row) and
+       the profile avatar — the label TEXT beside each icon is what this
+       hides, nothing that needs text width to read. It comes back the
+       instant the rail expands (see the `:is()` rule below).
+       `.rail-getstarted-body` is this row's label (title + "N of 5 steps
+       complete", two lines rather than `.rail-i-label`'s one) — same
+       mechanism, its own selector because it isn't `.rail-i-label` itself.
+       The conversation region is not covered here at all — on an admin page
+       `_app_rail.html` does not render it in the first place, in EITHER
+       state (collapsed or hover-expanded): a block that materialized on
+       hover would shift every row below it each time the pointer arrived or
+       left. The bottom zone (Library · Agents · Admin · onboarding ·
+       profile) keeps its documented position either way — `.rail-nav-
+       bottom`'s own `margin-top: auto` already floats it to the column's
+       foot whenever nothing grows above it (the same fallback a caller
+       without a chat grant hits today), so an admin page simply takes that
+       existing path rather than needing one of its own. See the template
+       comment on the conversation region for the full mechanics. */
+    html[data-ui-layout="rail"] .rail.rail-icon-mode .rail-logo-txt,
+    html[data-ui-layout="rail"] .rail.rail-icon-mode .rail-i-label,
+    html[data-ui-layout="rail"] .rail.rail-icon-mode .rail-getstarted-body,
+    html[data-ui-layout="rail"] .rail.rail-icon-mode .rail-user-txt {
+        display: none;
+    }
+
+    /* Centre the icon in the narrow column now that its label is gone. */
+    html[data-ui-layout="rail"] .rail.rail-icon-mode .rail-logo,
+    html[data-ui-layout="rail"] .rail.rail-icon-mode .rail-i,
+    html[data-ui-layout="rail"] .rail.rail-icon-mode .rail-user {
+        justify-content: center;
+        gap: 0;
+        padding-left: 0;
+        padding-right: 0;
+    }
+
+    /* Hold the onboarding row at the height its two-line label gives it, in
+       BOTH states. Everything else in the bottom zone is a single 34px line
+       whose height can't change when its label hides, but this row's label is
+       two lines (title + "N of 5 steps complete") and therefore TALLER than
+       the 28px ring it sits beside — so letting the row size to its content
+       made it 40px collapsed and 46px expanded, and because the bottom zone
+       is pinned to the foot, those 6px slid Library / Agents / Admin upward on
+       every hover. Measured, not theorised: library 639 -> 633, agents
+       676 -> 670, admin 729 -> 723.
+
+       Pinned to the taller (expanded) value rather than the shorter one so
+       the label never has to compress. The cost is 6px of extra breathing
+       room around the ring while collapsed, which is invisible — the ring is
+       centred in it and no border or fill marks the row's bounds. */
+    html[data-ui-layout="rail"] .rail.rail-icon-mode .rail-getstarted-btn {
+        min-height: 46px;
+    }
+
+    /* Expand — hover, keyboard `:focus-within` (a caller tabbing into the
+       rail needs the labels back), or `.rail-pinned-open` (the click/tap
+       affordance in `#rail-icon-toggle`, wired by rail_icon_mode.js, for
+       touch — which has no hover event to reach any of this otherwise).
+       Width only: `.rail` is `position: fixed`, so growing it floats OVER
+       the page instead of pushing it — the admin sidebar and its content
+       keep the position/size they got from the 56px `body` clearance above,
+       so nothing reflows on an accidental hover. */
+    html[data-ui-layout="rail"] .rail.rail-icon-mode:is(:hover, :focus-within, .rail-pinned-open) {
+        width: 240px;
+        box-shadow: var(--ds-shadow-lg);
+    }
+
+    html[data-ui-layout="rail"] .rail.rail-icon-mode:is(:hover, :focus-within, .rail-pinned-open) .rail-logo-txt,
+    html[data-ui-layout="rail"] .rail.rail-icon-mode:is(:hover, :focus-within, .rail-pinned-open) .rail-i-label {
+        display: inline;
+    }
+
+    html[data-ui-layout="rail"] .rail.rail-icon-mode:is(:hover, :focus-within, .rail-pinned-open) .rail-getstarted-body,
+    html[data-ui-layout="rail"] .rail.rail-icon-mode:is(:hover, :focus-within, .rail-pinned-open) .rail-user-txt {
+        display: flex;
+    }
+
+    html[data-ui-layout="rail"] .rail.rail-icon-mode:is(:hover, :focus-within, .rail-pinned-open) .rail-logo,
+    html[data-ui-layout="rail"] .rail.rail-icon-mode:is(:hover, :focus-within, .rail-pinned-open) .rail-i,
+    html[data-ui-layout="rail"] .rail.rail-icon-mode:is(:hover, :focus-within, .rail-pinned-open) .rail-user {
+        justify-content: flex-start;
+    }
+
+    html[data-ui-layout="rail"] .rail.rail-icon-mode:is(:hover, :focus-within, .rail-pinned-open) .rail-logo {
+        gap: 9px;
+        padding-left: 8px;
+        padding-right: 8px;
+    }
+
+    html[data-ui-layout="rail"] .rail.rail-icon-mode:is(:hover, :focus-within, .rail-pinned-open) .rail-i {
+        gap: 11px;
+        padding-left: 11px;
+        padding-right: 11px;
+    }
+
+    html[data-ui-layout="rail"] .rail.rail-icon-mode:is(:hover, :focus-within, .rail-pinned-open) .rail-user {
+        gap: 10px;
+        padding-left: 8px;
+        padding-right: 8px;
+    }
+
+    /* The tap/click pin toggle (touch parity — see the comment on
+       `#rail-icon-toggle` in _app_rail.html). Hidden outside icon mode by
+       the unscoped rule below, and hidden AGAIN on hover-capable/fine-pointer
+       devices by the `(hover: hover) and (pointer: fine)` query further down
+       — a mouse already has hover-to-expand, and keyboard already has
+       `:focus-within`, so a visible button next to the brand mark would be
+       a control with nothing left to do for either of them. Touch has
+       neither, so that query never matches there and this rule (shown by
+       default) is what a touch caller actually sees. Positioned here as a
+       small circular control in the top-right corner of the brand row. */
+    html[data-ui-layout="rail"] .rail.rail-icon-mode .rail-icon-toggle {
+        display: flex;
+        position: absolute;
+        top: 14px;
+        right: 8px;
+        align-items: center;
+        justify-content: center;
+        width: 22px;
+        height: 22px;
+        border: 1px solid var(--ds-border);
+        border-radius: var(--ds-radius-pill, 999px);
+        background: var(--ds-surface);
+        color: var(--ds-text-secondary);
+        cursor: pointer;
+        z-index: 41;
+    }
+
+    html[data-ui-layout="rail"] .rail.rail-icon-mode .rail-icon-toggle svg {
+        width: 13px;
+        height: 13px;
+        transition: transform var(--ds-motion-fast, .16s) var(--ds-ease-standard, ease);
+    }
+
+    html[data-ui-layout="rail"] .rail.rail-icon-mode:is(:hover, :focus-within, .rail-pinned-open) .rail-icon-toggle svg {
+        transform: rotate(180deg);
+    }
+
+    html[data-ui-layout="rail"] .rail.rail-icon-mode .rail-icon-toggle:hover {
+        background: var(--rail-hover-bg);
+        color: var(--ds-text-primary);
+    }
+
+    html[data-ui-layout="rail"] .rail.rail-icon-mode .rail-icon-toggle:focus-visible {
+        outline: var(--ds-focus-outline);
+        outline-offset: var(--ds-focus-outline-offset);
+    }
+}
+
+/* No transition, full stop — combined (not nested) with the desktop-only
+   gate above so this can't accidentally apply inside the ≤1024px query. */
+@media (min-width: 1025px) and (prefers-reduced-motion: reduce) {
+    html[data-ui-layout="rail"] .rail.rail-icon-mode,
+    html[data-ui-layout="rail"] .rail.rail-icon-mode .rail-icon-toggle svg {
+        transition: none;
+    }
+}
+
+/* Hover-capable + fine-pointer devices (i.e. a mouse) already expand the
+   rail on `:hover`, and a keyboard caller already gets `:focus-within` — so
+   the visible tap button next to the brand mark would be a second control
+   for a job either one already does for free, sitting right beside the
+   identity mark. Withdrawn here rather than never rendered: a coarse or
+   hover-less pointer (touch) never matches this query, so the base rule
+   above (`display: flex`) is what it actually sees — no JS/UA sniffing,
+   and nothing to flash on first paint either way. Same desktop-only gate,
+   combined rather than nested for the reason noted above. */
+@media (min-width: 1025px) and (hover: hover) and (pointer: fine) {
+    html[data-ui-layout="rail"] .rail.rail-icon-mode .rail-icon-toggle {
+        display: none;
+    }
+}
+
+/* Present in the DOM on every rail page that renders icon mode (see
+   `_admin_page` in _app_rail.html) but inert outside it — same
+   invisible-until-relevant contract as `.rail-collapse-toggle` above, just
+   the opposite breakpoint. */
+html[data-ui-layout="rail"] .rail-icon-toggle {
+    display: none;
 }
 
 /* Small + tablet screens: the fixed column becomes a normal top block so

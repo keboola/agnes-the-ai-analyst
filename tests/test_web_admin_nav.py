@@ -30,6 +30,8 @@ import re
 from app.web.admin_nav import ADMIN_NAV_SECTIONS, resolve_active_href, resolve_active_section_key
 
 ROUTER_SRC = Path("app/web/router.py").read_text(encoding="utf-8")
+RAIL_CSS = Path("app/web/static/css/rail.css").read_text(encoding="utf-8")
+RAIL_HTML = Path("app/web/templates/_app_rail.html").read_text(encoding="utf-8")
 
 # Routes deliberately outside the sidebar's scope — see admin_nav.py's module
 # docstring for why each is excluded.
@@ -296,3 +298,336 @@ class TestAdminNavGating:
         assert resp.status_code == 200
         assert 'class="admin-nav"' in resp.text
         assert 'class="admin-nav__title"' in resp.text
+
+
+class TestRailIconModeOnAdminPages:
+    """On rail-layout instances, /admin/* pages now carry TWO nav columns —
+    the admin sidebar above plus the global rail (`_app_rail.html`). The
+    rail collapses to a ~56px icon strip there (`_admin_page` in
+    _app_rail.html) so the admin sidebar can be the primary nav instead of
+    two permanent full-width columns; see the CHANGELOG's admin-sidebar
+    bullet. Markup-level assertions live here; the CSS contract that makes
+    the collapse/expand/overlay behaviour actually work lives in
+    TestRailIconModeCss below."""
+
+    def _auth(self, token: str) -> dict:
+        return {"Authorization": f"Bearer {token}"}
+
+    def _enable_chat(self, seeded_app) -> None:
+        """New chat / the conversation region / the onboarding row are all
+        `can_chat`-gated (`_compute_can_chat`, app/web/router.py), which
+        needs BOTH an explicit resource grant on a group the caller actually
+        belongs to AND `app.state.chat_config.enabled` — admin god-mode
+        covers neither (`has_explicit_grant` deliberately does not
+        short-circuit for Admin), and with chat disabled (the default with
+        no instance.yaml) every test below asserting on those blocks,
+        present or absent, would pass vacuously regardless of the
+        `_admin_page` branch it means to exercise. Granted to the Admin
+        group rather than Everyone: new users are no longer auto-added to
+        Everyone (src/repositories/users.py), so the seeded admin (a member
+        of Admin only) would not pick up a grant made there. Sets
+        `chat_config` directly on the already-built app (same pattern as
+        test_admin_chat.py) rather than `AGNES_CHAT_ENABLED`, which would
+        re-run the full startup provider/key validation cascade in
+        app/main.py for a check that only reads `.enabled`."""
+        from app.chat.config import ChatConfig
+        from src.db import SYSTEM_ADMIN_GROUP, get_system_db
+        from src.repositories import resource_grants_repo, user_groups_repo
+
+        conn = get_system_db()
+        admin_group = user_groups_repo().get_by_name(SYSTEM_ADMIN_GROUP)
+        resource_grants_repo().create(admin_group["id"], "chat", "chat")
+        conn.close()
+        seeded_app["client"].app.state.chat_config = ChatConfig(enabled=True)
+
+    def test_rail_renders_icon_mode_alongside_the_admin_sidebar(self, seeded_app, monkeypatch) -> None:
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        c = seeded_app["client"]
+        resp = c.get("/admin/users", headers=self._auth(seeded_app["admin_token"]))
+        assert resp.status_code == 200, resp.text
+        text = resp.text
+        assert 'class="rail rail-icon-mode"' in text
+        assert 'class="admin-nav"' in text
+
+    def test_rail_admin_entry_is_a_plain_active_link_not_a_flyout(self, seeded_app, monkeypatch) -> None:
+        """The admin sidebar already carries the seven-area IA — the rail's
+        own Admin flyout would just be the same tree twice, so on an admin
+        page it collapses to a plain link back to the hub."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        c = seeded_app["client"]
+        resp = c.get("/admin/users", headers=self._auth(seeded_app["admin_token"]))
+        text = resp.text
+        nav = text.split('<nav class="rail rail-icon-mode"', 1)[1].split("</nav>", 1)[0]
+        assert "rail-admin-summary" not in nav
+        assert "rail-admin-flyout" not in nav
+        assert 'rail-i on" href="/admin"' in nav
+
+    def test_rail_keeps_destinations_and_profile_in_icon_mode(self, seeded_app, monkeypatch) -> None:
+        """Icon mode still SHOWS the brand mark, the destination rows
+        (including New chat, once chat is granted) and the profile avatar."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        self._enable_chat(seeded_app)
+        c = seeded_app["client"]
+        resp = c.get("/admin/users", headers=self._auth(seeded_app["admin_token"]))
+        text = resp.text
+        for anchor in ('class="rail-orb"', 'id="new-chat"', 'href="/library"', 'id="userMenuTrigger"'):
+            assert anchor in text, f"icon-mode rail is missing {anchor}"
+
+    def test_conversation_region_is_never_rendered_in_icon_mode(self, seeded_app, monkeypatch) -> None:
+        """Regression guard for the reflow bug: a block that materializes
+        only on hover shifts every row below it (`.rail-nav-bottom`'s
+        `margin-top: auto` re-anchors the bottom zone to whatever height the
+        column above it has), so the rail's row set must be identical
+        collapsed and hover-expanded. The conversation region's rows are
+        text and cannot shrink to 56px, so — unlike the onboarding card,
+        which gets a fixed-height ring instead (see the next test) — it is
+        absent from the response ENTIRELY on an admin page: there's no hover
+        state for a static HTML fetch to toggle, so total absence is what a
+        `:hover` CSS rule can never accidentally undo. Chat is explicitly
+        enabled+granted (`_enable_chat`) so this is a real assertion about
+        the `_admin_page` branch and not a vacuous pass from `can_chat`
+        being False anyway — the non-admin comparison page below proves the
+        same grant DOES render it when `_admin_page` isn't in play."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        self._enable_chat(seeded_app)
+        c = seeded_app["client"]
+        admin_text = c.get("/admin/users", headers=self._auth(seeded_app["admin_token"])).text
+        assert 'id="rail-history"' not in admin_text
+        # The JS that fills the conversation list has nothing to bind to on
+        # an admin page's chat rows, but it also wires the onboarding card's
+        # popover (which DOES render there — see the next test), so it stays
+        # loaded; only the row-menu script (Pin/Rename/Delete, conversation
+        # rows only) is skipped.
+        assert "js/components/chat_row_menu.js" not in admin_text
+
+        # Same caller, same grant, a non-admin rail page: the region DOES
+        # render — proving the assertion above tests `_admin_page`, not an
+        # unrelated `can_chat` gate.
+        stack_text = c.get("/stack", headers=self._auth(seeded_app["admin_token"])).text
+        assert 'id="rail-history"' in stack_text
+
+    def test_onboarding_row_stays_in_icon_mode_same_anatomy_as_other_rows(self, seeded_app, monkeypatch) -> None:
+        """Unlike the conversation region, the onboarding row is NOT removed
+        in icon mode — hiding then materializing it on hover would shift the
+        profile row exactly as the conversation region would. It doesn't
+        need special-casing to avoid that any more, though: its icon IS the
+        progress ring (a fixed size in both icon-mode states, same as any
+        other row's icon), so only its label — same mechanism as every other
+        row's — appears/disappears, never the row itself."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        self._enable_chat(seeded_app)
+        c = seeded_app["client"]
+        text = c.get("/admin/users", headers=self._auth(seeded_app["admin_token"])).text
+        assert 'id="railGetStarted"' in text
+        assert 'id="rail-getstarted-toggle"' in text
+        assert 'id="rail-getstarted-ring-fill"' in text
+        assert 'id="rail-getstarted-title"' in text
+        assert 'id="rail-getstarted-count"' in text
+        # Retired anatomy stays retired here too — no bar, no chevron.
+        assert "rail-getstarted-bar" not in text
+        assert "rail-getstarted-chev" not in text
+        # The JS that writes its progress (title/count/ring) is loaded on an
+        # admin page, same as everywhere else.
+        assert "js/rail_history.js" in text
+        assert "js/chat_onboarding.js" in text
+
+    def test_tap_expand_affordance_exists_in_icon_mode(self, seeded_app, monkeypatch) -> None:
+        """The click/tap pin toggle must exist in the markup for a touch
+        caller to reach — CSS (not this test) decides that a hover-capable
+        mouse never sees it. See TestRailIconModeCss for that half."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        c = seeded_app["client"]
+        resp = c.get("/admin/users", headers=self._auth(seeded_app["admin_token"]))
+        text = resp.text
+        assert 'id="rail-icon-toggle"' in text
+        assert "js/rail_icon_mode.js" in text
+
+    def test_tap_expand_affordance_absent_outside_icon_mode(self, seeded_app, monkeypatch) -> None:
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        c = seeded_app["client"]
+        resp = c.get("/stack", headers=self._auth(seeded_app["admin_token"]))
+        assert resp.status_code == 200, resp.text
+        text = resp.text
+        assert 'id="rail-icon-toggle"' not in text
+        assert "js/rail_icon_mode.js" not in text
+
+    def test_non_admin_rail_page_keeps_the_full_rail_and_its_admin_flyout(self, seeded_app, monkeypatch) -> None:
+        """A rail page outside /admin/* must render byte-for-byte as before
+        this follow-up: full-width rail, conversation region, and the
+        data-driven Admin flyout (not the plain link)."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        self._enable_chat(seeded_app)
+        c = seeded_app["client"]
+        resp = c.get("/stack", headers=self._auth(seeded_app["admin_token"]))
+        assert resp.status_code == 200, resp.text
+        text = resp.text
+        assert 'class="rail-icon-mode"' not in text
+        assert 'class="rail"' in text
+        nav = text.split('<nav class="rail"', 1)[1].split("</nav>", 1)[0]
+        assert "rail-admin-summary" in nav
+        assert "rail-admin-flyout" in nav
+        assert 'id="rail-history"' in nav
+
+    def test_topnav_default_is_unaffected_on_admin_and_non_admin_pages(self, seeded_app, monkeypatch) -> None:
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        c = seeded_app["client"]
+        for path in ("/admin/users", "/stack"):
+            resp = c.get(path, headers=self._auth(seeded_app["admin_token"]))
+            assert resp.status_code == 200, (path, resp.text)
+            assert "rail-icon-mode" not in resp.text
+            assert 'class="rail"' not in resp.text
+            assert "js/rail_icon_mode.js" not in resp.text
+
+
+class TestRailIconModeCss:
+    """CSS contract for the icon-mode rail — everything the markup-level
+    tests above can't see (hover/focus/pin expansion, the overlay-not-reflow
+    body clearance, the ≤1024px reflow staying untouched, reduced motion,
+    and the hover-capable/touch split on the tap toggle)."""
+
+    def _desktop_block(self) -> str:
+        """The `@media (min-width: 1025px)` block's body — every icon-mode
+        rule must live inside this (or a sibling desktop-only query), never
+        inside the `@media (max-width: 1024px)` block below it."""
+        start = RAIL_CSS.index("@media (min-width: 1025px) {")
+        end = RAIL_CSS.index("@media (max-width: 1024px)")
+        return RAIL_CSS[start:end]
+
+    def test_icon_mode_rules_are_gated_to_desktop_only(self) -> None:
+        """Guards against icon mode fighting the narrow-screen rail reflow
+        (CLAUDE.md's design-system contract): every occurrence of
+        `.rail-icon-mode` in a sizing/behavioural rule sits above the
+        `max-width: 1024px` query, never inside it."""
+        narrow = RAIL_CSS[RAIL_CSS.index("@media (max-width: 1024px)") :]
+        assert "rail-icon-mode" not in narrow, (
+            "icon-mode rules leaked into the ≤1024px reflow — that query must win outright at narrow widths"
+        )
+
+    def test_collapsed_width_and_expand_triggers(self) -> None:
+        block = self._desktop_block()
+        assert 'html[data-ui-layout="rail"] .rail.rail-icon-mode {' in block
+        assert "width: 56px;" in block
+        # Hover, keyboard :focus-within, and the click/tap pin all expand it.
+        assert ":is(:hover, :focus-within, .rail-pinned-open) {" in block
+        assert "width: 240px;" in block
+
+    def test_body_clearance_is_the_icon_width_and_constant(self) -> None:
+        """The 56px reservation must NOT change on hover/focus/pin — the
+        expanded rail is an overlay, so the page's own layout never moves."""
+        block = self._desktop_block()
+        assert "body:has(.rail.rail-icon-mode) {" in block
+        assert "padding-left: 56px;" in block
+        # No hover/focus/pin-conditioned body rule anywhere in the file.
+        assert re.search(r"body:has\(\.rail\.rail-icon-mode[^)]*\)\s*:is\(", RAIL_CSS) is None
+        assert "hover, .rail-icon-mode" not in RAIL_CSS  # no accidental body-level hover selector
+
+    def test_css_never_toggles_the_conversation_region(self) -> None:
+        """Regression guard for the reflow bug: the conversation region must
+        not be addressed by ANY icon-mode CSS rule (hide-on-collapse,
+        restore-on-expand, or otherwise) — `_app_rail.html` simply never
+        renders it on an admin page, in either state, which is the only way
+        to guarantee the row set can't differ between hover and rest. A CSS
+        rule that hides it on `.rail-icon-mode` and shows it again on
+        `:hover`/`:focus-within`/`.rail-pinned-open` is exactly the pattern
+        that shifted every row below it and must never come back."""
+        icon_mode_section = RAIL_CSS.split("── Icon-only rail")[1].split("Small + tablet screens")[0]
+        assert "rail-history" not in icon_mode_section
+
+    def test_onboarding_row_never_needs_a_height_override_in_icon_mode(self) -> None:
+        """The onboarding row's icon IS the progress ring, a fixed size in
+        both icon-mode states — unlike the conversation region it needed no
+        bespoke height/reservation rule to keep it from shifting other rows,
+        and none should reappear. Its label instead rides the SAME shared
+        show/hide list every other row's label does (see the next test)."""
+        assert not re.search(r"\.rail-icon-mode \.rail-getstarted\s*\{[^}]*height:", RAIL_CSS)
+        assert not re.search(r":is\([^)]*\)\s*\.rail-getstarted\s*\{[^}]*height:", RAIL_CSS)
+
+    def test_onboarding_row_label_hides_via_the_shared_label_mechanism(self) -> None:
+        """`.rail-getstarted-body` (the row's two-line label) must sit in the
+        SAME collapse/expand selector lists as `.rail-i-label` — same
+        mechanism as every other row, not a bespoke rule of its own."""
+        block = self._desktop_block()
+        collapsed = re.search(r"\.rail-icon-mode \.rail-logo-txt,.*?\{\s*display: none;\s*\}", block, re.S)
+        assert collapsed and "rail-getstarted-body" in collapsed.group(0)
+        expanded = re.search(
+            r":is\(:hover, :focus-within, \.rail-pinned-open\) \.rail-getstarted-body,.*?\{\s*display: flex;\s*\}",
+            block,
+            re.S,
+        )
+        assert expanded is not None
+
+    def test_onboarding_row_icon_is_a_constant_size_ring_in_both_states(self) -> None:
+        """The ring's own box (`.rail-getstarted-ring`) must be an unconditional
+        rule, not one that changes width/height between collapsed and
+        hover-expanded — that constancy is what keeps the row's own height
+        from ever differing between the two."""
+        assert not re.search(r":is\([^)]*\)\s*\.rail-getstarted-ring\s*\{[^}]*(width|height):", RAIL_CSS)
+        ring = RAIL_CSS.split('html[data-ui-layout="rail"] .rail-getstarted-ring {', 1)[1].split("}", 1)[0]
+        assert "width: 28px" in ring
+        assert "height: 28px" in ring
+
+    def test_completed_onboarding_is_not_retired_from_the_rail(self) -> None:
+        """`.is-complete` never sets `display: none` — the row stays on every
+        rail page at 5/5 too, where the arc simply reads a full lap."""
+        assert ".rail-getstarted.is-complete {" not in RAIL_CSS
+
+    def test_the_ring_is_a_bare_progress_meter(self) -> None:
+        """Track + arc and NOTHING inside.
+
+        A glyph centred in the ring was tried and rejected: at 28px an icon
+        and an arc compete for the same pixels, the icon wins, and the row
+        reads as "a checklist icon" instead of "you are N of M done". This
+        guards against it creeping back — the meter's legibility is the whole
+        reason the element exists.
+        """
+        assert "rail-getstarted-ring-glyph" not in RAIL_CSS
+        assert "rail-getstarted-ring-glyph" not in RAIL_HTML
+
+        # Both strokes present, equal, and heavy enough to read as a meter
+        # rather than as a decorative circle at this diameter.
+        track = RAIL_CSS.split(".rail-getstarted-ring-track {", 1)[1].split("}", 1)[0]
+        fill = RAIL_CSS.split(".rail-getstarted-ring-fill {", 1)[1].split("}", 1)[0]
+        assert "stroke-width: 4" in track
+        assert "stroke-width: 4" in fill
+        assert "stroke-linecap: round" in fill
+        # The arc is the brand action colour, never Kai's identity accent.
+        assert "stroke: var(--ds-primary)" in fill
+        assert "--ds-kai" not in fill
+
+    def test_onboarding_row_height_is_pinned_in_icon_mode(self) -> None:
+        """The row's label is two lines and therefore taller than its 28px
+        ring, so letting the row size to its content made it 40px collapsed
+        and 46px hover-expanded — and because the bottom zone is pinned to
+        the foot, those 6px slid Library/Agents/Admin upward on every hover.
+        One pinned height in both states is what stops that.
+        """
+        btn = RAIL_CSS.split('html[data-ui-layout="rail"] .rail.rail-icon-mode .rail-getstarted-btn {', 1)[1].split(
+            "}", 1
+        )[0]
+        assert "min-height" in btn
+
+    def test_reduced_motion_disables_the_width_transition(self) -> None:
+        assert "@media (min-width: 1025px) and (prefers-reduced-motion: reduce)" in RAIL_CSS
+        reduced = RAIL_CSS[RAIL_CSS.index("@media (min-width: 1025px) and (prefers-reduced-motion: reduce)") :]
+        reduced = reduced[: reduced.index("\n}") + 2]
+        assert "rail-icon-mode" in reduced
+        assert "transition: none;" in reduced
+
+    def test_tap_toggle_hidden_for_hover_capable_fine_pointer_devices(self) -> None:
+        """A mouse already expands the rail on hover, and a keyboard caller
+        already gets `:focus-within` — the visible tap button is withdrawn
+        there (not simply left unrendered), and touch (no hover, no fine
+        pointer) never matches this query, so it keeps seeing the base
+        `display: flex` rule instead."""
+        assert "@media (min-width: 1025px) and (hover: hover) and (pointer: fine)" in RAIL_CSS
+        hover_capable = RAIL_CSS[RAIL_CSS.index("@media (min-width: 1025px) and (hover: hover) and (pointer: fine)") :]
+        hover_capable = hover_capable[: hover_capable.index("\n}") + 2]
+        assert ".rail-icon-toggle" in hover_capable
+        assert "display: none;" in hover_capable
+
+    def test_tap_toggle_base_rule_shows_it_by_default_in_icon_mode(self) -> None:
+        """The un-narrowed rule (no hover/pointer condition) is what a touch
+        caller actually sees — it must default to visible so withdrawing it
+        for mouse/keyboard is an override, not the only rule."""
+        block = self._desktop_block()
+        assert re.search(r"\.rail-icon-mode \.rail-icon-toggle\s*\{\s*display: flex;", block)

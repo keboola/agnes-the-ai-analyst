@@ -37,7 +37,16 @@
    to work over a list. `| trim` at the call site turns it into a boolean. #}
 {% macro _admin_hit(path, prefixes) %}{% for p in prefixes %}{% if path.startswith(p) %}1{% endif %}{% endfor %}{% endmacro %}
 {% if session.user %}
-<nav class="rail" aria-label="Primary">
+{% set _path = request.url.path %}
+{# Icon-only rail signal — /admin/* pages under the rail layout. The admin
+   sidebar (_admin_nav.html) is the primary IA there, so the global rail
+   collapses to a ~56px icon strip rather than keeping BOTH its own 240px
+   and the admin sidebar's 190px permanently on screen. Server-rendered off
+   the request path — the same mechanism _admin_nav.html already uses for its
+   own active-state — so there is no first-paint flash waiting on client JS,
+   and it needs no extra context wired in from the routers. #}
+{% set _admin_page = _path == '/admin' or _path.startswith('/admin/') %}
+<nav class="rail{% if _admin_page %} rail-icon-mode{% endif %}" aria-label="Primary">
     {# Brand row — the wordmark alone. "How {brand} works" was briefly an icon
        here and it was wrong: the lockup is an identity element, not a control
        surface, and a help glyph welded to the wordmark reads as an annotation on
@@ -49,6 +58,22 @@
         <span class="rail-logo-txt">{{ instance_brand or config.INSTANCE_NAME or 'Agnes' }}</span>
         {% endif %}
     </a>
+
+    {% if _admin_page %}
+    {# Touch has no hover event, so icon mode needs a real tap affordance —
+       but a mouse already expands the rail on hover and a keyboard caller
+       already gets `:focus-within` (rail.css), so this button is CSS-hidden
+       again on `(hover: hover) and (pointer: fine)` devices — visible
+       only where hover genuinely can't fire. Always rendered here
+       regardless (no JS/UA sniffing, nothing to flash on first paint);
+       rail.css decides who actually sees it. Click/tap pins it open
+       (`.rail-pinned-open`, wired in rail_icon_mode.js); tapping outside or
+       Escape un-pins it. #}
+    <button type="button" class="rail-icon-toggle" id="rail-icon-toggle"
+            aria-expanded="false" aria-label="Expand navigation">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    {% endif %}
 
     {# Below 1024px the rail becomes a wrapping top bar (rail.css) with nowhere
        to collapse to — every nav item, the recent-chats list, and Admin stayed
@@ -63,7 +88,6 @@
 
     <div class="rail-collapsible" id="rail-collapsible">
 
-    {% set _path = request.url.path %}
     {% set _home = home_route or '/dashboard' %}
     {# /catalog/semantics counts as Library here: under the rail the Library's
        Definitions block is the only way in, and the page carries no rail entry
@@ -127,6 +151,20 @@
         </a>
     </div>
 
+    {% if not _admin_page %}
+    {# Absent entirely on an admin page — not merely CSS-hidden and restored
+       on hover. Icon mode's governing rule is that the rail's ITEM SET is
+       IDENTICAL collapsed and hover-expanded; hover/focus only widen the
+       column and reveal label text already sitting beside each icon. A
+       block that materializes on hover shifts every row below it (Library,
+       Agents, Admin, the profile) each time the pointer arrives or leaves —
+       exactly the kind of layout shift `.rail-nav-bottom`'s
+       `margin-top: auto` (which anchors the bottom zone to whichever
+       height the column above it turns out to have) would otherwise
+       reintroduce. Leaving this out of the render altogether removes the
+       block from that computation for the page's entire lifetime, so it
+       cannot vary between the two states. It returns unconditionally the
+       moment the caller leaves /admin. #}
     {# Conversations — the caller's chats in TWO collapsible sections, Pinned
        above Recent, with "View all chats" under them. The rail is a WORKING SET
        now, not the whole history: what you have pinned, the handful you touched
@@ -263,6 +301,7 @@
             </a>
         </div>
     </section>
+    {% endif %}{# /not _admin_page — the conversation region #}
     {% endif %}{# /can_chat — end of zone 1 #}
 
     {# ── Zone 2 (bottom): browse destinations, then Admin behind a divider ──
@@ -302,6 +341,21 @@
 
     {% if session.user.is_admin %}
     {% set _admin_active = _path.startswith('/admin/') or _path.startswith('/documentation') %}
+    {% if _admin_page %}
+    {# On an admin page the sidebar (_admin_nav.html) already carries the
+       seven-section IA — re-offering the same tree in a hover flyout here
+       would just be the duplication this icon-mode follow-up removes. Admin
+       collapses to a plain, always-active link back to the hub instead; the
+       data-driven flyout below (the non-admin-page branch) never renders on
+       these pages. Same wrapper class as that branch so the divider/spacing
+       rules in rail.css (`.rail-admin`) apply unchanged. #}
+    <div class="rail-admin">
+        <a class="rail-i on" href="/admin">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M10.3 2.4a2 2 0 0 1 3.4 0l.6 1a2 2 0 0 0 2.2.9l1.1-.3a2 2 0 0 1 2.4 2.4l-.3 1.1a2 2 0 0 0 .9 2.2l1 .6a2 2 0 0 1 0 3.4l-1 .6a2 2 0 0 0-.9 2.2l.3 1.1a2 2 0 0 1-2.4 2.4l-1.1-.3a2 2 0 0 0-2.2.9l-.6 1a2 2 0 0 1-3.4 0l-.6-1a2 2 0 0 0-2.2-.9l-1.1.3a2 2 0 0 1-2.4-2.4l.3-1.1a2 2 0 0 0-.9-2.2l-1-.6a2 2 0 0 1 0-3.4l1-.6a2 2 0 0 0 .9-2.2l-.3-1.1a2 2 0 0 1 2.4-2.4l1.1.3a2 2 0 0 0 2.2-.9l.6-1Z" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.5"/></svg>
+            <span class="rail-i-label">Admin</span>
+        </a>
+    </div>
+    {% else %}
     {# Admin — the last thing in the bottom zone, behind the nav's only divider
        (rail.css): a different KIND of destination from Library/Agents
        (operating the instance vs. using it).
@@ -409,58 +463,81 @@
             {% endfor %}
         </div>
     </details>
-    {% endif %}
+    {% endif %}{# /_admin_page #}
+    {% endif %}{# /session.user.is_admin #}
 
     {# "How {brand} works" is no longer a row here — it is a `.rail-meta` row in
        the foot, below the rule that marks off the account zone. See the note on
        it there for why it is not a `.rail-i` destination. #}
 
     {% if can_chat %}
-    {# Onboarding card — the last thing in the bottom zone, under Admin and
-       directly above the profile. It replaces the "Finish setup · N/5" text
-       row: a row in a column of rows is easy to read past, and onboarding has
-       to be noticed before it can be finished. A card can carry what a row
-       can't —
-       what it is ("Set up Agnes"), how far along you are in words ("0 of 5
-       steps complete") and at a glance (the bar), and that it goes somewhere
-       (the chevron) — inside one tinted block that reads as a distinct object
-       rather than a fourth destination. It stays deliberately small: three
-       tight lines, no illustration, no dismiss control.
-
-       Blue, not the brand accent: `--ds-accent-info-*` is the design system's
-       informational vocabulary, and the active destination keeps sole use of
-       `--ds-primary` (a primary-tinted card here would read as "you are on this
-       page"). Blue in every palette theme, including paper's emerald primary.
+    {# Onboarding row — the last thing in the bottom zone, under Admin and
+       directly above the profile; that zone's position/order is unchanged
+       by icon mode — see the note on the conversation region above for what
+       IS different there. SAME anatomy as every other rail destination
+       (`.rail-i`: an icon + a label), not a bespoke card — the only thing
+       that sets it apart is what the icon IS: a circular progress meter
+       (steps_complete / steps_total, same fraction chat_onboarding.js wrote
+       into the retired progress bar until this change). The
+       ring is a FIXED size in both icon-mode states — collapsed, it's the
+       whole row's content; expanded, it's the row's leading icon exactly
+       like Library's or Agents' — so this row's own height never changes
+       between the two, which is what keeps the whole bottom zone (and
+       everything in it) from shifting on hover. The label (title + "N of 5
+       steps complete") hides in icon mode through the exact mechanism every
+       other row's label does (`.rail-i-label`'s sibling in that shared list
+       — see rail.css).
 
        Title flips to "Continue setup" once the first step lands
-       (chat_onboarding.js): "Set up Agnes" names the job for someone who hasn't
-       started, and "Continue" is the accurate word for everyone else. At 5/5
-       the card retires itself entirely (`.is-complete`, rail.css) — the profile
-       menu's "Start over onboarding" is the way back.
+       (chat_onboarding.js): "Set up Agnes" names the job for someone who
+       hasn't started, and "Continue" is the accurate word for everyone
+       else. It no longer retires itself at 5/5 (the ring simply reads a full
+       lap) — the profile menu's "Start over onboarding" is still the way
+       back to 0/5.
 
        Same ids as the row it replaces (`railGetStarted`,
        `rail-getstarted-toggle`, `-panel`, `-count`): they are the seam
        chat_onboarding.js and rail_history.js bind to, so the popover, its
        hover/click/Escape handling and the progress writes are unchanged. #}
     <div class="rail-getstarted" id="railGetStarted">
-        <button type="button" class="rail-getstarted-btn"
+        <button type="button" class="rail-i rail-getstarted-btn"
                 id="rail-getstarted-toggle"
                 aria-expanded="false"
                 aria-controls="rail-getstarted-panel">
+            {# A circular progress meter: grey track for the whole journey,
+               one primary-coloured arc for the part that's done, and
+               NOTHING inside it. An icon in the middle was tried and
+               removed — at 28px a glyph plus an arc is two things fighting
+               for the same 28px, and the glyph won, so the row read as "a
+               checklist icon" rather than "you are N of M done".
+
+               The arc is the only moving part: `stroke-dasharray` is
+               written by chat_onboarding.js's `updateGetStartedIndicator`
+               once /api/chat/journey resolves. It renders at zero length
+               here rather than guessing a fraction server-side — the same
+               reason the sub-line's count text renders empty — so a user
+               at 4/5 never sees a wrong arc flash first; the track alone
+               is the honest pre-resolve state.
+
+               aria-hidden because the button's accessible name is the
+               row's own sentence, written to `aria-label`/`title` by that
+               same function ("Continue setup — 4 of 5 steps complete"), so
+               the meaning survives in icon mode where the label beside it
+               is hidden, and for screen readers on every rail page. #}
+            <span class="rail-getstarted-ring" aria-hidden="true">
+                <svg viewBox="0 0 36 36" class="rail-getstarted-ring-svg" id="rail-getstarted-ring-svg">
+                    <circle class="rail-getstarted-ring-track" cx="18" cy="18" r="15"></circle>
+                    <circle class="rail-getstarted-ring-fill" id="rail-getstarted-ring-fill"
+                            cx="18" cy="18" r="15"></circle>
+                </svg>
+            </span>
             <span class="rail-getstarted-body">
                 <span class="rail-getstarted-title" id="rail-getstarted-title">Set up Agnes</span>
                 {# Rendered EMPTY and written whole ("3 of 5 steps complete") by
                    chat_onboarding.js once /api/chat/journey resolves — a static
                    "0 of 5" would flash the wrong number at anyone mid-way. #}
                 <span class="rail-getstarted-sub" id="rail-getstarted-count"></span>
-                {# Decorative: the sub line above already states the progress in
-                   words, and a progressbar role inside a <button> is flattened
-                   out of the accessible name anyway. #}
-                <span class="rail-getstarted-bar" aria-hidden="true">
-                    <span class="rail-getstarted-bar-fill" id="rail-getstarted-bar"></span>
-                </span>
             </span>
-            <svg class="rail-getstarted-chev" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
         </button>
         <div class="rail-getstarted-panel" id="rail-getstarted-panel"
              role="region" aria-label="Set up Agnes">
@@ -582,21 +659,33 @@
    chromes. Defer keeps it non-blocking. #}
 <script src="{{ static_url('app.js') }}" defer></script>
 <script src="{{ static_url('js/global_search.js') }}" defer></script>
+{# Icon-mode rail (/admin/* pages): hover and `:focus-within` expand it via
+   CSS alone (rail.css) — this only wires what CSS can't do on its own, the
+   tap/click pin for touch and an Escape that releases `:focus-within`
+   before collapsing. See js/rail_icon_mode.js. #}
+{% if _admin_page %}<script src="{{ static_url('js/rail_icon_mode.js') }}" defer></script>{% endif %}
 {# Fills the Pinned + Chats lists on every page EXCEPT /chat (where chat.js owns
    the rows), and owns the two sections' collapse state + counts on ALL rail
-   pages, /chat included. Self-guards on body.chat-page-body, so loading it
+   pages, /chat included — AND the onboarding card's popover open/click/Escape
+   wiring (see the "Onboarding card popover" block in rail_history.js), which
+   still applies on an admin page even though the conversation list itself
+   does not render there. Self-guards on body.chat-page-body, so loading it
    globally is safe. Only needed when the caller can chat. #}
 {# window.chatRowMenu — the shared "⋮" row menu (Pin/Unpin · Rename · Delete)
    both history renderers use. Must be defined before a row is BUILT, not before
    this file's scripts parse: rows are built after an async sessions fetch, so
    `defer` is enough regardless of tag order. Self-guards against the duplicate
-   load on a rail /chat page (chat.html loads it too). #}
-{% if can_chat %}<script src="{{ static_url('js/components/chat_row_menu.js') }}" defer></script>
-<script src="{{ static_url('js/rail_history.js') }}" defer></script>{% endif %}
+   load on a rail /chat page (chat.html loads it too). Skipped on an admin
+   page — there are no conversation rows there for it to menu. #}
+{% if can_chat %}
+{% if not _admin_page %}<script src="{{ static_url('js/components/chat_row_menu.js') }}" defer></script>{% endif %}
+<script src="{{ static_url('js/rail_history.js') }}" defer></script>
+{% endif %}
 {# Mounts the onboarding checklist into the card's popover on rail pages
    OTHER than /chat (there chat.js's initChatOnboarding already renders it, with
    the full chat hooks). Same module either way, so #chat-journey has one owner
-   per page. #}
+   per page. Still loaded on an admin page — the card (and its ring) needs its
+   progress writes there too. #}
 {% if can_chat %}
 <script type="module">
   if (!document.body.classList.contains("chat-page-body")) {

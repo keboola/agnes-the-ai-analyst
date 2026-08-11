@@ -624,12 +624,15 @@ class TestRailChatHistory:
         # The loader that fills the list off /chat is wired in.
         assert "js/rail_history.js" in text
 
-    def test_rail_onboarding_card_hosts_the_panel(self, web_client, admin_cookie, monkeypatch):
-        """Onboarding's rail presence is ONE compact card at the head of the
-        bottom zone, opening the checklist as a popover. It replaces the
+    def test_rail_onboarding_row_hosts_the_panel(self, web_client, admin_cookie, monkeypatch):
+        """Onboarding's rail presence is ONE row — the same `.rail-i` anatomy
+        as every other destination, icon + label — at the head of the bottom
+        zone, opening the checklist as a popover. It replaces the
         "Finish setup · N/5" text row (and, before that, the "Your journey"
         checklist inline at the bottom of the chat list): a row in a column of
-        rows is easy to read past."""
+        rows is easy to read past. Its own icon is a circular progress ring
+        rather than a fixed glyph — no separate bar, no chevron (sibling rows
+        don't carry one either, and it navigates rather than expands)."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         self._enable_chat(web_client, monkeypatch)
         resp = web_client.get("/stack", cookies=admin_cookie)
@@ -637,27 +640,31 @@ class TestRailChatHistory:
         # Asserted against the rail chrome slice, not the whole document — the
         # page body is free to say "Get started" in its own copy.
         text = resp.text.split('<nav class="rail"', 1)[1].split("</nav>", 1)[0]
-        # The card + its popover. The ids are the JS contract chat_onboarding.js
+        # The row + its popover. The ids are the JS contract chat_onboarding.js
         # and rail_history.js bind to, so they outlive the relabelling.
         assert 'id="rail-getstarted-toggle"' in text
         assert 'id="rail-getstarted-panel"' in text
-        # Card anatomy: title, progress sentence, bar, chevron.
+        # Row anatomy: the ring (icon) + title + progress sentence.
+        assert 'id="rail-getstarted-ring-fill"' in text
         assert 'id="rail-getstarted-title"' in text
         assert ">Set up Agnes<" in text
         assert 'id="rail-getstarted-count"' in text
-        assert 'id="rail-getstarted-bar"' in text
-        assert "rail-getstarted-chev" in text
         # The progress line renders EMPTY — a static "0 of 5" would flash the
         # wrong number at anyone mid-way through.
         assert '<span class="rail-getstarted-sub" id="rail-getstarted-count"></span>' in text
+        # Retired anatomy: the horizontal bar and the chevron are gone — the
+        # ring carries progress now, and this row navigates via the same
+        # click as always rather than "expanding".
+        assert "rail-getstarted-bar" not in text
+        assert "rail-getstarted-chev" not in text
         # Retired labels.
         assert "Your Journey" not in text
         assert "Get started" not in text
         assert "rail-getstarted-check" not in text
-        # The card CLOSES the bottom zone: under Admin, above the profile.
-        card_pos = text.find('class="rail-getstarted"')
-        assert text.find('class="rail-admin"') < card_pos < text.find('class="rail-foot"'), (
-            "the onboarding card belongs under Admin, above the profile"
+        # The row CLOSES the bottom zone: under Admin, above the profile.
+        row_pos = text.find('class="rail-getstarted"')
+        assert text.find('class="rail-admin"') < row_pos < text.find('class="rail-foot"'), (
+            "the onboarding row belongs under Admin, above the profile"
         )
         # ...and the foot below it is the profile alone.
         foot = text.split('class="rail-foot"', 1)[1]
@@ -666,7 +673,7 @@ class TestRailChatHistory:
         journey_pos = text.find('id="chat-journey"')
         panel_pos = text.find('id="rail-getstarted-panel"')
         assert journey_pos != -1 and panel_pos != -1
-        assert journey_pos > panel_pos, "#chat-journey must render inside the card's popover"
+        assert journey_pos > panel_pos, "#chat-journey must render inside the row's popover"
         assert text.find('id="chat-journey"', text.find('class="rail-history"'), panel_pos) == -1, (
             "#chat-journey must no longer sit in the chat-history section"
         )
@@ -674,33 +681,37 @@ class TestRailChatHistory:
         # rail chrome, so this one is checked against the whole document).
         assert "mountJourneyPanel" in resp.text
 
-    def test_onboarding_card_styling_contract(self, web_client, admin_cookie, monkeypatch):
-        """Subtle blue (the DS's informational family, NOT the brand primary —
-        that stays reserved for the active destination), and gone entirely at
-        5/5."""
+    def test_onboarding_row_styling_contract(self, web_client, admin_cookie, monkeypatch):
+        """Same `.rail-i` treatment as every other row (hover wash, no
+        standing tint) — the progress ring carries the DS's brand accent for
+        its filled arc, and the row no longer disappears at 5/5."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         css = web_client.get("/static/css/rail.css").text
+        # No card chrome left on the button — it relies on `.rail-i` (added
+        # directly in the markup) for its background/padding/hover treatment.
         btn = css.split('html[data-ui-layout="rail"] .rail-getstarted-btn {', 1)[1].split("}", 1)[0]
-        assert "background: var(--ds-accent-info-bg)" in btn
-        # Declarations only — the block's comment explains why the brand accent
-        # is NOT used here, so a naive substring check would trip on itself.
-        decls = re.sub(r"/\*.*?\*/", "", btn, flags=re.S)
-        assert "--ds-primary" not in decls
-        fill = css.split('html[data-ui-layout="rail"] .rail-getstarted-bar-fill {', 1)[1].split("}", 1)[0]
-        assert "background: var(--ds-accent-info-line)" in fill
-        assert "width: 0" in fill  # server renders empty; JS sets the real width
-        complete = css.split('html[data-ui-layout="rail"] .rail-getstarted.is-complete {', 1)[1].split("}", 1)[0]
-        assert "display: none" in complete
+        assert "background" not in btn
+        assert "--ds-accent-info-bg" not in btn
+        fill = css.split('html[data-ui-layout="rail"] .rail-getstarted-ring-fill {', 1)[1].split("}", 1)[0]
+        assert "stroke: var(--ds-primary)" in fill
+        track = css.split('html[data-ui-layout="rail"] .rail-getstarted-ring-track {', 1)[1].split("}", 1)[0]
+        assert "stroke: var(--ds-border)" in track
+        # The row must NOT retire itself at 5/5 any more.
+        assert (
+            ".rail-getstarted.is-complete {" not in css
+            or "display: none" not in css.split(".rail-getstarted.is-complete {", 1)[1].split("}", 1)[0]
+        )
 
-    def test_onboarding_card_title_and_progress_are_js_driven(self, web_client, admin_cookie, monkeypatch):
+    def test_onboarding_row_title_and_progress_are_js_driven(self, web_client, admin_cookie, monkeypatch):
         """ "Set up Agnes" until the first step lands, "Continue setup" after —
-        and the bar width follows the same count."""
+        and the ring's arc follows the same count."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         js = web_client.get("/static/js/chat_onboarding.js").text
         body = js.split("function updateGetStartedIndicator(", 1)[1].split("\n}", 1)[0]
         assert 'done > 0 ? "Continue setup" : "Set up Agnes"' in body
         assert "${done} of ${total} steps complete" in body
         assert "(done / total) * 100" in body
+        assert "strokeDasharray" in body
         assert 'classList.toggle("is-complete"' in body
 
     def test_new_token_button_cancels_the_summary_toggle(self, web_client, admin_cookie, monkeypatch):
@@ -1207,22 +1218,28 @@ class TestRailAdminSubitems:
         assert 'html[data-ui-layout="rail"] .rail-admin-sub:focus-within > .rail-admin-flyout' in css
 
     def test_active_admin_page_marks_the_link_and_traces_its_area(self, web_client, admin_cookie, monkeypatch):
-        """On an admin page: the LINK takes the primary tint (`is-active`), and
-        its area row only gets the quiet `has-active` trace — the active
-        destination stays the one tinted row."""
+        """On a page the flyout covers that is NOT itself under `/admin/*`
+        (`/documentation/api` — the Documentation area's links are
+        `/documentation`, `/docs`, `/redoc`, none `/admin`-prefixed): the
+        LINK takes the primary tint (`is-active`), and its area row only
+        gets the quiet `has-active` trace — the active destination stays the
+        one tinted row. A real `/admin/*` page no longer renders this flyout
+        at all — see `_app_rail.html`'s `_admin_page` branch and
+        tests/test_web_admin_nav.py::TestRailIconModeOnAdminPages for that
+        replacement (a plain, always-active link to `/admin`)."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
-        resp = web_client.get("/admin/tables", cookies=admin_cookie)
+        resp = web_client.get("/documentation/api", cookies=admin_cookie)
         assert resp.status_code == 200
         rail = resp.text.split('<nav class="rail"', 1)[1].split("</nav>", 1)[0]
-        # Admin auto-opens on its own pages.
+        # Admin auto-opens when the current page is one of its own areas.
         assert '<details class="rail-admin" open>' in rail
-        # The Tables link is the active destination (class attr precedes href).
-        tables_link = rail.split('href="/admin/tables"', 1)[0].rsplit("<a ", 1)[1]
-        assert "rail-admin-flyout-item is-active" in tables_link
-        # Exactly one area row carries the trace (Data Packages).
+        # The API Guide link is the active destination (class attr precedes href).
+        api_link = rail.split('href="/documentation/api"', 1)[0].rsplit("<a ", 1)[1]
+        assert "rail-admin-flyout-item is-active" in api_link
+        # Exactly one area row carries the trace (Documentation).
         assert rail.count("has-active") == 1
-        dp = rail.split("Data Packages", 1)[0].rsplit('class="rail-admin-sub-row', 1)[1]
-        assert "has-active" in dp
+        doc = rail.split("Documentation", 1)[0].rsplit('class="rail-admin-sub-row', 1)[1]
+        assert "has-active" in doc
         # ...and area rows never take the `.on` destination tint.
         for row in rail.split('class="rail-admin-sub-row')[1:]:
             assert ' on"' not in row.split(">", 1)[0]
