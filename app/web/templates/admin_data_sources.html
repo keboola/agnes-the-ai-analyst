@@ -940,6 +940,19 @@ async function connectAndValidate() {
     // 1. Create the connection (blank name gets a provisional placeholder;
     //    renamed to the detected project name below on success).
     const provisionalName = name || `Untitled project ${Date.now()}`;
+    // A retry reuses the connection this wizard already created. Every step
+    // after creation can fail — a mistyped token is the common one — and the
+    // wizard returns with the row already saved, so re-running step 1 minted
+    // another "Untitled project" per attempt and left the admin to clean them
+    // up. Reusing it also means the eventual success lands on the row the
+    // admin has been looking at. (Devin Review.)
+    let connId = null;
+    if (_wizardConnId) {
+      const still = await fetch(`${API_CONNECTIONS}/${_wizardConnId}`, { credentials: "include" });
+      if (still.ok) connId = _wizardConnId;
+      else _wizardConnId = null; // deleted underneath us — re-create below
+    }
+    if (!connId) {
     const createResp = await fetch(API_CONNECTIONS, {
       method: "POST", credentials: "include",
       headers: { "Content-Type": "application/json" },
@@ -953,8 +966,9 @@ async function connectAndValidate() {
       errEl.style.display = "block";
       return;
     }
-    const connId = createBody.id;
+    connId = createBody.id;
     _wizardConnId = connId;
+    }
 
     // 2. Store the token.
     const secretResp = await fetch(`${API_CONNECTIONS}/${connId}/secret`, {
@@ -964,7 +978,9 @@ async function connectAndValidate() {
     });
     if (!secretResp.ok && secretResp.status !== 204) {
       const sb = await secretResp.json().catch(() => ({}));
-      errEl.textContent = "Connection saved but storing the token failed: " + (sb.detail || "unknown error");
+      errEl.innerHTML = "Connection saved but storing the token failed: " + _esc(sb.detail || "unknown error") +
+        `. Fix the token and retry — this connection is reused, not duplicated — or ` +
+        `<a href="#" onclick="deleteConn('${connId}'); closeWizard(); return false;">discard it</a>.`;
       errEl.style.display = "block";
       return;
     }
