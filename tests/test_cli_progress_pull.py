@@ -152,3 +152,62 @@ def test_a_completed_transfer_of_unknown_size_still_reads_as_done():
     output = stream.getvalue()
     assert "100% done" in output, output
     assert "FAILED" not in output, output
+
+
+def test_a_corrupted_download_is_not_announced_as_complete():
+    """Devin Review on this PR: the byte counter cannot see the real failure.
+
+    A hash mismatch is the most common download failure, and on it every byte
+    DOES arrive — the counter reaches the manifest size, the file is never
+    promoted to disk, and the finalizer printed "100% done". That is the exact
+    green-line-for-a-failure this change set removes, surviving on the path it
+    matters most.
+    """
+    from io import StringIO
+
+    from cli.lib.pull import _TextualProgress
+
+    stream = StringIO()
+    emitter = _TextualProgress(stream=stream, total_files=1, file_sizes={"orders": 1_000_000})
+    emitter.advance("orders", 1_000_000)  # every byte arrived …
+    emitter.fail("orders", "integrity check failed")  # … and it still did not land
+    emitter.finish()
+
+    output = stream.getvalue()
+    assert "100% done" not in output, output
+    assert "FAILED" in output, output
+    assert "integrity check failed" in output, output
+
+
+def test_the_caller_verdict_beats_a_complete_byte_count():
+    """Ordering: the explicit failure must be checked before the count."""
+    import inspect
+
+    from cli.lib.pull import _TextualProgress
+
+    src = inspect.getsource(_TextualProgress.finish)
+    assert src.index("self._failed") < src.index("if not bytes_"), (
+        "a fully-counted transfer would take the done branch before the failure is seen"
+    )
+
+
+def test_every_download_failure_path_tells_the_progress_printer():
+    """A failure return that skips `fail_progress` prints a green line.
+
+    Checked per return statement rather than by counting: each `return tid,
+    None, ...` (the failure shape — no manifest entry) must have announced
+    itself in the lines immediately before it.
+    """
+    from cli.lib import pull as mod
+
+    src = open(mod.__file__).read()
+    start = src.index("def _download_one")
+    end = src.index("if workers <= 1:", start)
+    body = src[start:end]
+
+    chunks = body.split("return tid, None,")
+    assert len(chunks) - 1 == 3, f"expected 3 failure returns, found {len(chunks) - 1}"
+    for n, preceding in enumerate(chunks[:-1], start=1):
+        assert "fail_progress(" in preceding[-400:], (
+            f"failure return #{n} does not tell the progress printer - it will print a done line"
+        )
