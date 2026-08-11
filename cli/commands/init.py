@@ -264,6 +264,22 @@ def _maybe_declare_marketplace_trust(host: str, decision: Optional[bool]) -> Non
         typer.echo(f"{host} was already declared in {settings_path} (autoMode.environment).")
         return
 
+    # A machine carrying OUR retired wording is refreshed without asking, in
+    # every path including the unattended one. That is not a new declaration:
+    # the host is already declared, the trust already granted; only the words
+    # this tool wrote about itself change, and leaving an agent-facing claim
+    # in place that an agent flagged is the worse of the two. Asking for
+    # consent to declare something already declared is also the nag the check
+    # above removes. (Devin Review on #1262.)
+    if marketplace_trust_state(settings_path, host) is TrustResult.REWRITTEN:
+        result = ensure_marketplace_trusted(settings_path, host)
+        if result is TrustResult.REWRITTEN:
+            typer.echo(
+                f"Replaced the older declaration of {host} in {settings_path} (autoMode.environment) — "
+                "the previous wording argued for a conclusion instead of describing the host."
+            )
+            return
+
     if decision is None:
         if not _stdin_is_interactive():
             typer.echo(
@@ -1010,6 +1026,13 @@ def init(
         marketplace_host = configured_marketplace_host()
         if marketplace_host:
             _maybe_declare_marketplace_trust(marketplace_host, trust_marketplace_host)
+    except (KeyboardInterrupt, typer.Abort):
+        # Ctrl-C at the consent prompt means "stop", not "carry on without
+        # declaring". Swallowing it here printed a warning and walked straight
+        # into the first sync, which is the long part someone hitting Ctrl-C
+        # is usually trying to avoid. (Devin Review on #1262.)
+        typer.echo("\nSetup cancelled.")
+        raise typer.Exit(code=130)
     except Exception as exc:  # noqa: BLE001 — best-effort, never break init
         typer.echo(f"warn: could not declare auto-mode trust: {exc}", err=True)
 
