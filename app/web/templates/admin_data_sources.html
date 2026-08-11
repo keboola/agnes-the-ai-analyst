@@ -1052,7 +1052,10 @@ async function connectAndValidate() {
   const btn = document.getElementById("ds-wizard-connect-btn");
   errEl.style.display = "none";
 
-  if (!stack || !stack.startsWith("http")) {
+  // `https://` specifically — the message already said so, but the check
+  // accepted `http://` and the server rejects it, so the admin got a server
+  // error for input the form had told them was fine. (Devin Review.)
+  if (!stack || !stack.toLowerCase().startsWith("https://")) {
     errEl.textContent = "Enter a valid connection URL (starts with https://).";
     errEl.style.display = "block";
     return;
