@@ -193,7 +193,7 @@ class _VerifiedTokenInfo:
         return self._info
 
 
-def _validate_stack_url(config: Optional[Dict[str, Any]], *, required: bool) -> None:
+def _validate_stack_url(config: Optional[Dict[str, Any]], *, required: bool, resolve: bool = True) -> None:
     """SSRF guard for a connection's stack_url. Rejects non-https and
     private/reserved/link-local hosts (e.g. the cloud metadata endpoint).
 
@@ -202,6 +202,17 @@ def _validate_stack_url(config: Optional[Dict[str, Any]], *, required: bool) -> 
     ``required=True`` (test/tables): a stack_url must be present AND is
     re-validated immediately before the outbound request — validate-at-use
     closes the DNS-rebind window between store-time and fetch-time.
+
+    ``resolve=False`` (create/update): check the SCHEME only, no DNS. The
+    private-range half needs DNS, and at store time DNS is the wrong
+    dependency — a stack that does not resolve from the Agnes host yet (a
+    fresh deployment, split-horizon DNS, a momentary outage) is a legitimate
+    thing to save, and refusing it would make configuring a connection fail
+    for a reason that has nothing to do with the connection. The resolving
+    half stays where it belongs: at use, on every outbound call, which is
+    also the only placement that closes DNS rebinding. Before this split the
+    create/update branch had **no caller at all**, so a stored ``stack_url``
+    was never checked even for its scheme. (Devin Review on this PR.)
     """
     stack_url = ((config or {}).get("stack_url") or "").rstrip("/")
     if not stack_url:
@@ -210,6 +221,8 @@ def _validate_stack_url(config: Optional[Dict[str, Any]], *, required: bool) -> 
         return
     if not stack_url.lower().startswith("https://"):
         raise HTTPException(status_code=400, detail="stack_url must be an https:// URL")
+    if not resolve:
+        return
     # Reuse the shared SSRF validator (honors the operator SSRF-allowed-hosts
     # opt-out) rather than duplicating the private-range checks.
     from app.api.admin import _validate_url_not_private
@@ -241,6 +254,15 @@ async def create_connection(
     if repo.get_by_name(body.name) is not None:
         raise HTTPException(status_code=409, detail="connection_name_exists")
     _reject_disallowed_token_env(body.token_env)
+    # The `required=False` branch of the SSRF guard exists for exactly this
+    # call and its sibling in `update_connection`, and neither was wired — so
+    # the branch had no caller at all and an admin-supplied `stack_url` was
+    # stored unvalidated. `/test`, `/tables` and `/secret` re-validate at use,
+    # which is what closes the DNS-rebind window and is NOT replaced by this;
+    # but nothing checked the value on the way IN, and the chat-tools enable
+    # path skips validation on the stated premise that the stored URL was
+    # already checked here. Now it is. (Devin Review on this PR.)
+    _validate_stack_url(body.config, required=False, resolve=False)
     conn_id = str(uuid4())
     repo.create(
         id=conn_id,
@@ -285,6 +307,7 @@ async def update_connection(
         if existing is not None and existing["id"] != connection_id:
             raise HTTPException(status_code=409, detail="connection_name_exists")
     _reject_disallowed_token_env(body.token_env)
+    _validate_stack_url(body.config, required=False, resolve=False)  # see create_connection
     repo.update(
         connection_id,
         name=body.name,
@@ -529,9 +552,11 @@ async def enable_chat_tools(
     # used by /test and /tables: those validate-at-use because they are about
     # to make the outbound call themselves, and DNS is the rebind window they
     # are closing. This endpoint makes no request — it stores a config row —
-    # and the URL it stores is the connection's own, already SSRF-validated on
-    # create/update. Resolving here would only make enabling fail whenever DNS
-    # is unavailable, without narrowing any window.
+    # and the URL it stores is the connection's own, whose SCHEME was checked
+    # on create/update (`resolve=False`) — the private-range half needs DNS and
+    # lives at use, on `/test`, `/tables` and `/secret`, which is the only
+    # placement that closes rebinding anyway. Resolving here would only make
+    # enabling fail whenever DNS is unavailable, without narrowing any window.
     if not stack_url:
         raise HTTPException(status_code=400, detail="no stack_url in connection config")
     if not stack_url.lower().startswith("https://"):
