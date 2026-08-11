@@ -8,8 +8,19 @@ Configure the data source type in `config/instance.yaml`:
 
 ```yaml
 data_source:
-  type: "keboola"  # Options: keboola, bigquery, csv
+  type: "keboola"  # Options: keboola | bigquery | local
 ```
+
+| Value | What it means |
+|---|---|
+| `keboola` | Pulls tables from the Keboola Storage API (configure `stack_url` + token). |
+| `bigquery` | Queries BigQuery remotely via the DuckDB BQ extension (configure the `bigquery` block). |
+| `local` | No external source — CSV/parquet placed in the data directory, plus the tables that file uploads under `/library` create. This is the value for an instance with no warehouse behind it. |
+
+`csv` is accepted as an alias for `local`; `local` is the canonical name. There
+is no separate CSV *connector* — nothing under `connectors/` handles it — so
+choosing `csv` expecting a Keboola-style pull configures an instance with no
+external source at all.
 
 Table definitions are stored in the DuckDB `table_registry` table (not in config files). Register tables via the admin API, CLI, or web UI.
 
