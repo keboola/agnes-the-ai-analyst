@@ -90,9 +90,15 @@ def test_chips_come_from_the_server_verdict_only():
 
 def test_an_answer_that_declared_nothing_and_claimed_nothing_stays_silent():
     """'No source declared' under a greeting is noise. The guard is the early
-    return; without it every non-answer grows a provenance row."""
+    return; without it every non-answer grows a provenance row.
+
+    Refined after Devin Review: the exemption is now conditioned on the answer
+    having rendered no FIGURE. A greeting still gets nothing; a table or chart
+    with no declared source is exactly what the row exists to surface, and it
+    was being shown as an ordinary answer.
+    """
     js = _read(CHAT_JS)
-    assert "if (!verdict.declared && claims.length === 0) return;" in js
+    assert "if (!verdict.declared && claims.length === 0 && !_bubbleHasFigure(bubble)) return;" in js
 
 
 # ── mermaid ─────────────────────────────────────────────────────────────────
@@ -212,3 +218,62 @@ def test_the_fence_regex_removes_the_block_and_nothing_else():
     assert res["no_block"] == "MRR is $1."
     assert "```sql" in res["code_block_kept"], "an ordinary code block must survive"
     assert "table: mrr" not in res["code_block_kept"]
+
+
+def _chat_js() -> str:
+    import pathlib
+
+    return (
+        pathlib.Path(__file__).resolve().parents[1] / "app" / "web" / "static" / "js" / "chat.js"
+    ).read_text(encoding="utf-8")
+
+
+class TestEveryProvenanceBlockIsRemoved:
+    """Devin Review on #1239: the pattern was not global.
+
+    An answer that emits two provenance blocks had only the first removed,
+    leaving the second on screen as a raw code fence — the wire format shown
+    to the reader, which is the one thing `stripSourcesFence` exists to
+    prevent.
+    """
+
+    def test_the_fence_pattern_is_global(self):
+        import re
+
+        js = _chat_js()
+        decl = re.search(r"const _SOURCES_FENCE_RE = /.*?/([a-z]*);", js)
+        assert decl, "_SOURCES_FENCE_RE moved — re-point this guard"
+        assert "g" in decl.group(1), "only the first provenance block is stripped"
+
+    def test_the_pattern_is_not_reused_with_test(self):
+        """A `g` regex carries `lastIndex` across `.test()` calls — alternating
+        true/false on identical input. `String.replace` resets it, so the one
+        current use is safe; a future `.test()` would not be."""
+        js = _chat_js()
+        assert "_SOURCES_FENCE_RE.test(" not in js
+
+
+class TestAnUnsourcedFigureIsNotSilent:
+    """Devin Review on #1239: the chip row bailed on the case it exists for.
+
+    Staying silent when nothing is declared is right for a greeting — but the
+    server cannot tell a figure from a sentence, which is why the row was
+    silent for both. This runs after the body is in the DOM, so the client
+    can tell.
+    """
+
+    def test_the_bail_out_is_conditioned_on_there_being_no_figure(self):
+        js = _chat_js()
+        assert "_bubbleHasFigure(bubble)" in js
+        bail = [ln for ln in js.splitlines() if "!verdict.declared && claims.length === 0" in ln]
+        assert bail, "the bail-out moved — re-point this guard"
+        assert all("_bubbleHasFigure" in ln for ln in bail), (
+            "an answer that rendered a figure with no declared source is shown as an ordinary answer"
+        )
+
+    def test_the_figure_check_covers_both_mermaid_forms(self):
+        """Mermaid rendering is async — at chip time it may still be its <pre>."""
+        js = _chat_js()
+        fn = js[js.index("function _bubbleHasFigure") : js.index("function renderSourcesChips")]
+        for sel in ("table", "svg", "pre.mermaid"):
+            assert sel in fn, f"figure check misses {sel}"

@@ -64,6 +64,41 @@ def skill_disabled_on_this_instance(skill_name: str) -> bool:
     return not feature_enabled(section, key, env_var=env_var, default=False)
 
 
+def _reconcile_feature_gated_skills(ws: Path, bundled_template_dir: Path) -> None:
+    """Make the workspace's gated skills agree with the instance's flags.
+
+    Both directions, because pruning alone is a one-way door: a skill removed
+    while its feature was off was never put back when the operator turned the
+    feature on again, so the assistant lost it permanently on every workspace
+    that had already converged (the template copy that would restore it only
+    runs on a reinit, and a feature flag is not something ``needs_reinit``
+    compares). Restoring is the same shape as the prune — copy the directory
+    back from the bundled tree, which is the source this only ever subtracted
+    from. (Devin Review on this PR.)
+    """
+    import shutil
+
+    _prune_disabled_feature_skills(ws)
+
+    skills_root = ws / ".claude" / "skills"
+    src_root = bundled_template_dir / ".claude" / "skills"
+    if not src_root.is_dir():
+        return
+    for skill_name in _FEATURE_GATED_SKILLS:
+        if skill_disabled_on_this_instance(skill_name):
+            continue
+        src = src_root / skill_name
+        target = skills_root / skill_name
+        if not src.is_dir() or target.exists():
+            continue
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(src, target)
+            logger.info("workdir: restored skill %s (its feature is on again)", skill_name)
+        except OSError:
+            logger.warning("workdir: could not restore skill %s", skill_name, exc_info=True)
+
+
 def _prune_disabled_feature_skills(ws: Path) -> None:
     """Remove bundled skills whose feature is off on THIS instance.
 
@@ -199,11 +234,11 @@ class WorkdirManager:
             # nothing until an unrelated upgrade happened to force a reinit.
             # Cheap enough to run on every convergence: one `is_dir()` per
             # gated skill on the common path. (Devin Review on this PR.)
-            _prune_disabled_feature_skills(ws)
+            _reconcile_feature_gated_skills(ws, self._bundled_template_dir)
             return ws
 
         self.run_init(user_email, ws)
-        _prune_disabled_feature_skills(ws)
+        _reconcile_feature_gated_skills(ws, self._bundled_template_dir)
         return ws
 
     def run_init(self, user_email: str, workspace: Optional[Path] = None) -> None:

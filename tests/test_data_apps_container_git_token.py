@@ -167,3 +167,33 @@ def test_teardown_revokes_the_container_token_too():
     src = SOURCE.read_text(encoding="utf-8")
     body = src[src.index("def _revoke_service_token(") : src.index("def _revoke_container_git_tokens_for_row(")]
     assert "_revoke_container_git_tokens_for_row(row)" in body
+
+
+def test_a_schemeless_base_still_yields_a_credentialed_clone_url():
+    """Devin Review on #1239: `.replace("://", …)` is a no-op without a scheme.
+
+    Compose files do carry `SERVER_URL` as a bare `host:port`. The fallback
+    then produced `host:port/data-apps.git/<slug>` with no `agnes:<jwt>@` at
+    all — a clone URL that authenticates as nobody, which is the failure the
+    fallback was added to prevent, one step further along.
+    """
+    from app.api.data_apps import _clone_url_with_credential
+
+    url = _clone_url_with_credential("agnes.example.com:8000", "JWT", "sales")
+    assert url == "https://agnes:JWT@agnes.example.com:8000/data-apps.git/sales", url
+
+
+def test_a_schemed_base_is_left_alone():
+    from app.api.data_apps import _clone_url_with_credential
+
+    assert (
+        _clone_url_with_credential("http://agnes.example.com:8000", "JWT", "sales")
+        == "http://agnes:JWT@agnes.example.com:8000/data-apps.git/sales"
+    )
+    assert _clone_url_with_credential("https://a.example.com", "JWT", "s").startswith("https://agnes:JWT@")
+
+
+def test_the_mint_path_goes_through_the_helper():
+    """Otherwise the guard sits in a function nothing calls."""
+    src = SOURCE.read_text(encoding="utf-8")
+    assert "return _clone_url_with_credential(base, jwt_token, slug)" in src

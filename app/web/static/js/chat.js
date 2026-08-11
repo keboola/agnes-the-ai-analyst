@@ -341,11 +341,17 @@ function renderMermaidBlocks(root) {
 // block when copying, because suggestions are chrome. Provenance is not: a
 // transcript that dropped it would be exactly the report someone needs when
 // they doubt a number, minus the part that answers them.
-const _SOURCES_FENCE_RE = /```sources[ \t]*\r?\n[\s\S]*?```/i;
+const _SOURCES_FENCE_RE = /```sources[ \t]*\r?\n[\s\S]*?```/gi;
 
-/** Remove the raw fence from rendered markdown. The block is a wire format
+/** Remove the raw fence(s) from rendered markdown. The block is a wire format
  *  between the agent and this renderer — showing it as a code block would put
- *  the machinery on screen next to the thing it produced. */
+ *  the machinery on screen next to the thing it produced.
+ *
+ *  The pattern is `g`: an answer that emits two provenance blocks used to
+ *  have only its first removed, leaving the second on screen as raw
+ *  machinery. (Devin Review.) Note `g` regexes carry `lastIndex` state across
+ *  calls — safe here because `String.replace` with a `g` pattern resets it,
+ *  but do not reuse this constant with `.test()`. */
 function stripSourcesFence(markdown) {
   return (markdown || "").replace(_SOURCES_FENCE_RE, "").trimEnd();
 }
@@ -355,6 +361,14 @@ const _CLAIM_LABEL = { table: "table", metric: "metric", assumption: "assumes" }
 /** Chips under an assistant turn. `verdict` is the server's, never recomputed
  *  here — the client has no record of what actually ran, and a second opinion
  *  derived from less information would be worse than none. */
+/** Did this answer render something a reader would want a source for?
+ *  Checked in the DOM after rendering — mermaid may still be its `<pre>` at
+ *  this point (rendering is async), so both forms count. */
+function _bubbleHasFigure(bubble) {
+  if (!bubble) return false;
+  return !!bubble.querySelector("table, svg, img, pre.mermaid, .mermaid");
+}
+
 function renderSourcesChips(bubble, verdict) {
   if (!verdict) return;
   const claims = verdict.claims || [];
@@ -362,7 +376,13 @@ function renderSourcesChips(bubble, verdict) {
   // under a greeting or a clarifying question is noise, and the server cannot
   // tell a figure from a sentence. The honest signal is the one below —
   // shown only once an answer has claimed something, or has been asked to.
-  if (!verdict.declared && claims.length === 0) return;
+  // Nothing declared: normally silent, EXCEPT when the answer rendered a
+  // figure. The comment above is right that the server cannot tell a figure
+  // from a sentence — but this runs after the body is in the DOM, so the
+  // client can: a table, a chart or an image is exactly the case this feature
+  // exists to expose, and staying quiet there showed an unsourced figure as
+  // an ordinary answer. A greeting still gets nothing. (Devin Review.)
+  if (!verdict.declared && claims.length === 0 && !_bubbleHasFigure(bubble)) return;
 
   const wrap = document.createElement("div");
   wrap.className = "msg-sources";
