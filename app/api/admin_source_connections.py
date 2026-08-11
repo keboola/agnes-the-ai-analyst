@@ -459,6 +459,17 @@ async def delete_connection(
                 "tables": referencing,
             },
         )
+    # BEFORE the row goes, not after. A derived chat-tools source outlives its
+    # connection otherwise, keeping a live Keboola credential in the vault and
+    # still offering the project's tools to the agent — and since this step now
+    # raises on a genuine failure rather than swallowing it, doing it after the
+    # delete would answer "delete failed" for a connection that is already
+    # gone: the admin cannot retry (the retry 404s), the leftover tools have no
+    # obvious route to removal, and the list still shows the row until a
+    # reload. Running first makes the failure honest and the operation
+    # repeatable — nothing has been removed yet, so "retry" is the right
+    # advice. (Devin Review on this PR.)
+    _remove_chat_tools(connection_id)
     repo.delete(connection_id)
     # Best-effort: clear any vault secret — ignore if none exists.
     try:
@@ -469,10 +480,6 @@ async def delete_connection(
         connection_secrets_repo().delete(master_secret_key(connection_id))
     except Exception:
         logger.debug("no master vault secret for connection %s (expected)", connection_id)
-    # A derived chat-tools source outlives its connection otherwise, keeping a
-    # live Keboola credential in the vault and still offering the project's
-    # tools to the agent.
-    _remove_chat_tools(connection_id)
 
 
 @router.put("/{connection_id}/secret", status_code=204)
