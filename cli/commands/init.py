@@ -50,7 +50,7 @@ import typer
 from cli.client import api_get
 from cli.config import _config_dir, save_config, save_token
 from cli.error_render import render_error
-from cli.lib.automode import ensure_marketplace_trusted, marketplace_trust_entries
+from cli.lib.automode import TrustResult, ensure_marketplace_trusted, marketplace_trust_entries
 from cli.lib.commands import install_claude_commands
 from cli.lib.hooks import install_claude_hooks
 from cli.lib.initial_workspace import apply_override, probe_status
@@ -272,10 +272,20 @@ def _maybe_declare_marketplace_trust(host: str, decision: Optional[bool]) -> Non
             typer.echo("Skipped. Approve the marketplace bootstrap when auto mode asks.")
             return
 
-    if ensure_marketplace_trusted(settings_path, host):
+    result = ensure_marketplace_trusted(settings_path, host)
+    if result is TrustResult.WRITTEN:
         typer.echo(f"Declared {host} in {settings_path} (autoMode.environment). Delete those two entries to undo.")
-    else:
+    elif result is TrustResult.ALREADY_PRESENT:
         typer.echo(f"{host} was already declared in {settings_path} (autoMode.environment).")
+    else:
+        # Someone who just said yes must not be told the change is in place: a
+        # settings file that could not be read is the case where they later
+        # wonder why auto mode keeps asking. The reason is on stderr above.
+        typer.echo(
+            f"Could not declare {host} in {settings_path} — nothing was saved (see the warning above). "
+            "Approve the marketplace bootstrap when auto mode asks, or fix that file and re-run "
+            "`agnes init --force --trust-marketplace-host`."
+        )
 
 
 init_app = typer.Typer(help="Bootstrap an analyst workspace in this directory")

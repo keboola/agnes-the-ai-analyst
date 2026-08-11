@@ -24,7 +24,7 @@ from unittest.mock import MagicMock
 import pytest
 from typer.testing import CliRunner
 
-from cli.lib.automode import ensure_marketplace_trusted, marketplace_trust_entries
+from cli.lib.automode import TrustResult, ensure_marketplace_trusted, marketplace_trust_entries
 
 runner = CliRunner()
 
@@ -72,7 +72,7 @@ class TestWording:
 class TestMergeBehaviour:
     def test_writes_entries_and_keeps_defaults(self, tmp_path):
         settings = tmp_path / "settings.json"
-        assert ensure_marketplace_trusted(settings, HOST) is True
+        assert ensure_marketplace_trusted(settings, HOST) is TrustResult.WRITTEN
         data = json.loads(settings.read_text())
         # "$defaults" must survive — dropping it replaces the whole built-in
         # rule list for that section.
@@ -89,19 +89,19 @@ class TestMergeBehaviour:
 
     def test_idempotent(self, tmp_path):
         settings = tmp_path / "settings.json"
-        assert ensure_marketplace_trusted(settings, HOST) is True
-        assert ensure_marketplace_trusted(settings, HOST) is False
+        assert ensure_marketplace_trusted(settings, HOST) is TrustResult.WRITTEN
+        assert ensure_marketplace_trusted(settings, HOST) is TrustResult.ALREADY_PRESENT
         assert len(json.loads(settings.read_text())["autoMode"]["environment"]) == 3
 
     def test_corrupt_settings_are_never_overwritten(self, tmp_path):
         settings = tmp_path / "settings.json"
         settings.write_text("{not json")
-        assert ensure_marketplace_trusted(settings, HOST) is False
+        assert ensure_marketplace_trusted(settings, HOST) is TrustResult.NOT_WRITTEN
         assert settings.read_text() == "{not json"
 
     def test_empty_host_is_a_noop(self, tmp_path):
         settings = tmp_path / "settings.json"
-        assert ensure_marketplace_trusted(settings, "") is False
+        assert ensure_marketplace_trusted(settings, "") is TrustResult.NOT_WRITTEN
         assert not settings.exists()
 
 
@@ -234,3 +234,47 @@ class TestConsent:
         result = _run_init(init_env["workspace"])
         assert result.exit_code == 0
         assert (init_env["workspace"] / "CLAUDE.md").exists()
+
+
+class TestTheReportMatchesWhatWasSaved:
+    """Devin Review on #1262: one `False` covered two opposite outcomes.
+
+    "Already declared" and "could not write anything" were reported with the
+    same sentence, so an operator who explicitly opted in and hit a malformed
+    settings file walked away believing the entries were in place — and later
+    wondered why auto mode kept asking.
+    """
+
+    def test_a_failed_write_is_not_reported_as_already_declared(self, init_env, monkeypatch):
+        monkeypatch.setattr("cli.commands.init._stdin_is_interactive", lambda: True)
+        monkeypatch.setattr("typer.confirm", lambda *a, **k: True)
+        init_env["settings"].parent.mkdir(parents=True, exist_ok=True)
+        init_env["settings"].write_text("{not json")
+
+        result = _run_init(init_env["workspace"])
+
+        assert "was already declared" not in result.output, result.output
+        assert "nothing was saved" in result.output, result.output
+        assert init_env["settings"].read_text() == "{not json"
+
+    def test_an_entry_that_is_really_there_still_reads_as_already_declared(self, init_env, monkeypatch):
+        monkeypatch.setattr("cli.commands.init._stdin_is_interactive", lambda: True)
+        monkeypatch.setattr("typer.confirm", lambda *a, **k: True)
+        init_env["settings"].parent.mkdir(parents=True, exist_ok=True)
+        init_env["settings"].write_text(
+            json.dumps({"autoMode": {"environment": ["$defaults", f"Trusted internal domains: {HOST} is ours."]}})
+        )
+
+        result = _run_init(init_env["workspace"])
+
+        assert "was already declared" in result.output, result.output
+        assert "nothing was saved" not in result.output, result.output
+
+    def test_a_fresh_write_still_reads_as_declared(self, init_env, monkeypatch):
+        monkeypatch.setattr("cli.commands.init._stdin_is_interactive", lambda: True)
+        monkeypatch.setattr("typer.confirm", lambda *a, **k: True)
+
+        result = _run_init(init_env["workspace"])
+
+        assert "Declared" in result.output, result.output
+        assert _declared(init_env["settings"])
