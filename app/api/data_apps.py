@@ -593,7 +593,7 @@ def _revoke_container_git_tokens(owner_id: str, repo_slug: str, app_slug: str, *
 _GIT_CREDENTIAL_TTL = timedelta(hours=24)
 
 
-def mint_git_token(row: dict) -> tuple[str, str]:
+def mint_git_token(row: dict, as_user: dict | None = None) -> tuple[str, str]:
     """Mint the raw `data-app-git:<slug>` PAT that `_mint_git_credential`
     embeds, and return ``(token_id, jwt)``.
 
@@ -603,8 +603,18 @@ def mint_git_token(row: dict) -> tuple[str, str]:
     `app/api/broker.py::data_apps_git_broker`). The token id comes back so
     that caller can revoke it the moment the request is done — a per-request
     credential that outlived the request would pile up rows for nothing.
+
+    ``as_user`` mints under someone other than the app's owner. The broker
+    admits admins as well as the owner, and a token minted under the owner
+    makes the git surface report the **owner's** email in ``REMOTE_USER`` for
+    a push an admin made — the same "nobody to attribute a commit to" problem
+    that makes `_ticket_owner_for_git` refuse co-sessions outright (Devin
+    Review on this PR). Authorization is unchanged either way: the scope still
+    pins the repo, and the git surface still runs its own owner-or-admin
+    check against whoever the token resolves to. Only the attribution moves,
+    from wrong to right.
     """
-    owner = users_repo().get_by_id(row["owner_user_id"])
+    owner = as_user or users_repo().get_by_id(row["owner_user_id"])
     if not owner:
         raise OwnerNotFoundError(row["owner_user_id"])
     slug = row["slug"]

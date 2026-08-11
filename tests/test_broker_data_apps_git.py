@@ -29,6 +29,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 BROKER = Path("app/api/broker.py")
 RELAY = Path("app/chat/relay.py")
 
@@ -90,7 +92,7 @@ def test_the_slug_is_pinned_to_an_app_the_ticket_owner_may_reach():
     """Without this a `data_apps` ticket reaches ANY app's repo — and this
     route can push, so it would be a write to someone else's code."""
     body = _route_body()
-    assert "data_apps_repo().get_by_slug(slug)" in body
+    assert "data_apps_repo().get_by_slug" in body
     assert 'app_row.get("owner_user_id") != user["id"]' in body
     assert "is_user_admin" in body
     assert '"forbidden"' in body
@@ -119,22 +121,50 @@ def test_co_sessions_and_scoped_agents_are_refused():
 def test_the_credential_is_attached_by_the_broker_not_held_by_the_sandbox():
     """The whole point of the relay is that the sandbox never holds a real
     credential. This route mints one on the server side and puts it in basic
-    auth, which is the only thing the git surface authenticates."""
+    auth, which is the only thing the git surface authenticates.
+
+    That the credential actually *works* is proved by
+    `test_owner_reaches_the_git_surface_through_the_broker` below — the git
+    surface accepts nothing else, so a 200 from it is the real assertion.
+    This one only pins the shape."""
     body = _route_body()
-    assert "mint_git_token(app_row)" in body
+    assert "mint_git_token" in body
     assert 'base64.b64encode(f"agnes:{token}".encode())' in body
     assert '"Authorization": f"Basic {basic}"' in body
 
 
 def test_the_per_request_credential_is_revoked_even_on_failure():
-    """A token minted per request that outlives the request is a row for
-    nothing — and a live git credential is not the kind of residue to leave
-    lying around."""
+    """The happy path is covered behaviourally by
+    `test_the_per_request_credential_does_not_outlive_the_call`; what a test
+    cannot easily provoke is an upstream that raises, so the ordering is
+    pinned here instead."""
     body = _route_body()
     assert "finally:" in body
-    revoke_at = body.index("access_token_repo().revoke(token_id)")
-    finally_at = body.index("finally:")
-    assert finally_at < revoke_at, "revocation must run on the failure path too"
+    assert body.index("finally:") < body.index("access_token_repo().revoke")
+
+
+def test_the_route_keeps_its_database_work_off_the_event_loop():
+    """`async def` handler + synchronous repo calls = the single uvicorn loop
+    blocked for every other user while a sandbox clones. The module already
+    treats this as a known hazard (`require_broker_ticket` is a plain `def`
+    for exactly this reason), and this route does several reads and two
+    writes (Devin Review on this PR)."""
+    body = _route_body()
+    for call in (
+        "run_in_threadpool(_ticket_owner_for_git",
+        "run_in_threadpool(data_apps_repo().get_by_slug",
+        "run_in_threadpool(is_user_admin",
+        "run_in_threadpool(mint_git_token",
+        "run_in_threadpool(access_token_repo().revoke",
+    ):
+        assert call in body, f"missing: {call} — that repo call runs inline on the event loop"
+
+
+def test_the_token_is_minted_for_the_requesting_user():
+    """An admin proxying for someone else's app would otherwise have the push
+    attributed to the owner in `REMOTE_USER` — the same "nobody to attribute a
+    commit to" problem that makes co-sessions a hard refusal."""
+    assert "mint_git_token, app_row, user" in _route_body()
 
 
 def test_the_query_string_survives():
@@ -149,7 +179,7 @@ def test_the_minter_is_reusable_and_returns_the_token_id():
     needs the raw token plus the id to revoke. Both callers now share one
     minter so the scope and TTL cannot drift apart."""
     src = _read(Path("app/api/data_apps.py"))
-    assert "def mint_git_token(row: dict) -> tuple[str, str]:" in src
+    assert "def mint_git_token(row: dict, as_user: dict | None = None) -> tuple[str, str]:" in src
     cred = src[src.index("def _mint_git_credential(") : src.index("# Cookie carrying a")]
     assert "mint_git_token(row)" in cred, "the URL builder must delegate, not duplicate the mint"
 
@@ -186,3 +216,130 @@ def test_the_skill_names_the_two_errors_a_missing_push_produces():
     body = SKILL.read_text(encoding="utf-8")
     assert "parent_has_no_main" in body
     assert "dev_requires_draft" in body
+
+
+# --- Behavioural coverage -------------------------------------------------
+#
+# The guards above assert on the *text* of broker.py/relay.py, which will keep
+# passing if behaviour regresses while the source reads the same (Devin Review
+# on this PR). These drive the route itself.
+
+
+@pytest.fixture
+def git_broker_env(e2e_env):
+    """A real app repo + owner + non-owner, each with a `data_apps` ticket."""
+    import hashlib
+    import uuid
+
+    import yaml
+    from fastapi.testclient import TestClient
+
+    import app.instance_config as instance_config
+    from app.chat.types import Surface
+    from app.main import create_app
+    from src.data_apps.git_repos import init_app_repo
+    from src.db import get_system_db
+    from src.repositories import chat_session_repo, ticket_repo
+    from src.repositories.data_apps import DataAppsRepository
+    from src.repositories.users import UserRepository
+
+    state = e2e_env["data_dir"] / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "instance.yaml").write_text(yaml.dump({"data_apps": {"enabled": True}}))
+    instance_config._instance_config = None
+
+    conn = get_system_db()
+    users = UserRepository(conn)
+    users.create(id="gbowner", email="gbowner@test.local", name="Owner")
+    users.create(id="gbother", email="gbother@test.local", name="Other")
+    DataAppsRepository(conn).create(slug="gbapp", name="GB App", owner_user_id="gbowner")
+    conn.close()
+    init_app_repo("gbapp")
+
+    owner_sess = chat_session_repo().create_session(user_email="gbowner@test.local", surface=Surface.WEB)
+    other_sess = chat_session_repo().create_session(user_email="gbother@test.local", surface=Surface.WEB)
+    return {
+        "client": TestClient(create_app()),
+        "owner_ticket": ticket_repo().mint(owner_sess.id, "data_apps"),
+        "other_ticket": ticket_repo().mint(other_sess.id, "data_apps"),
+        "main_ticket": ticket_repo().mint(owner_sess.id, "main"),
+        "hashlib": hashlib,
+        "uuid": uuid,
+    }
+
+
+_REFS = "info/refs?service=git-upload-pack"
+
+
+def test_owner_reaches_the_git_surface_through_the_broker(git_broker_env):
+    """The whole point: a sandbox ticket, no credential of its own, gets the
+    packfile advertisement back from the app's real repo."""
+    env = git_broker_env
+    r = env["client"].get(
+        f"/api/broker/data-apps.git/gbapp/{_REFS}",
+        headers={"Authorization": f"Bearer {env['owner_ticket']}"},
+    )
+    assert r.status_code == 200, r.text
+    # The query string has to survive the hop — git refuses a bare /info/refs.
+    assert b"service=git-upload-pack" in r.content
+
+
+def test_non_owner_is_refused(git_broker_env):
+    env = git_broker_env
+    r = env["client"].get(
+        f"/api/broker/data-apps.git/gbapp/{_REFS}",
+        headers={"Authorization": f"Bearer {env['other_ticket']}"},
+    )
+    assert r.status_code == 403, r.text
+
+
+def test_wrong_scope_ticket_cannot_authenticate(git_broker_env):
+    env = git_broker_env
+    r = env["client"].get(
+        f"/api/broker/data-apps.git/gbapp/{_REFS}",
+        headers={"Authorization": f"Bearer {env['main_ticket']}"},
+    )
+    assert r.status_code == 401, r.text
+
+
+def test_dot_dot_in_the_path_is_refused(git_broker_env):
+    """Confinement to the `/data-apps.git/<slug>` prefix, the property the
+    sibling route's `_normalize_broker_path` exists to guarantee."""
+    env = git_broker_env
+    r = env["client"].get(
+        "/api/broker/data-apps.git/gbapp/../../api/admin/users",
+        headers={"Authorization": f"Bearer {env['owner_ticket']}"},
+    )
+    assert r.status_code in (400, 404), r.text
+    assert r.status_code != 200
+
+
+def test_unknown_slug_is_404(git_broker_env):
+    env = git_broker_env
+    r = env["client"].get(
+        f"/api/broker/data-apps.git/nosuchapp/{_REFS}",
+        headers={"Authorization": f"Bearer {env['owner_ticket']}"},
+    )
+    assert r.status_code == 404, r.text
+
+
+def test_the_per_request_credential_does_not_outlive_the_call(git_broker_env):
+    """A per-request token that survives the request is a credential leak —
+    the same class as the container tokens that piled up unrevoked."""
+    from src.db import get_system_db
+
+    env = git_broker_env
+    r = env["client"].get(
+        f"/api/broker/data-apps.git/gbapp/{_REFS}",
+        headers={"Authorization": f"Bearer {env['owner_ticket']}"},
+    )
+    assert r.status_code == 200, r.text
+
+    conn = get_system_db()
+    try:
+        live = conn.execute(
+            "SELECT COUNT(*) FROM personal_access_tokens WHERE name = 'data-app-git:gbapp' AND revoked_at IS NULL"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert live == 0, f"{live} per-request git token(s) left live after the call"

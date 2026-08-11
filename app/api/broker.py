@@ -34,6 +34,7 @@ from urllib.parse import unquote, urlsplit
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from fastapi.routing import APIRoute
 
@@ -487,28 +488,52 @@ async def data_apps_git_broker(
     owner-or-admin check and its own scope-vs-slug pin. Bodies are buffered
     (an app repo is a scaffold, not a monorepo); a genuinely large push is a
     reason to revisit, not a reason to stream today.
+
+    Every repository read and both token writes go through
+    ``run_in_threadpool``. They are synchronous DB calls and this is an
+    ``async def``, so running them inline would occupy the single uvicorn
+    event loop for the whole of each one and stall every other request on the
+    instance — a burst of sandbox git traffic would read as "Agnes is slow"
+    to unrelated users. The module already treats this as a known hazard:
+    ``require_broker_ticket`` is deliberately a plain ``def`` so FastAPI
+    offloads it, and the git surface this proxies to wraps its own DB work
+    the same way (Devin Review on this PR).
     """
     _require_scope(row, "data_apps")
 
     from app.api.data_apps import mint_git_token
 
-    user = _ticket_owner_for_git(row["session_id"])
-    app_row = data_apps_repo().get_by_slug(slug)
+    # `{path:path}` arrives percent-decoded from Starlette. Every sibling
+    # broker route canonicalizes before it dispatches, for the reason
+    # `_normalize_broker_path` documents at length: the gate and the dispatch
+    # must agree on one path, or a string that reads as confined here escapes
+    # the prefix once httpx merges it. `..` cannot appear in a legitimate git
+    # request, so it is refused outright rather than resolved (Devin Review).
+    if any(seg == ".." for seg in path.split("/")):
+        raise HTTPException(status_code=400, detail="broker_path_must_be_local")
+
+    user = await run_in_threadpool(_ticket_owner_for_git, row["session_id"])
+    app_row = await run_in_threadpool(data_apps_repo().get_by_slug, slug)
     if app_row is None:
         raise HTTPException(status_code=404, detail="data_app_not_found")
-    if app_row.get("owner_user_id") != user["id"] and not is_user_admin(user["id"]):
+    if app_row.get("owner_user_id") != user["id"] and not await run_in_threadpool(is_user_admin, user["id"]):
         try:
-            audit_repo().log(
-                action="broker_data_apps_git_rejected",
-                params={"slug": slug, "session_id": row.get("session_id")},
-                result="denied",
-                client_kind="broker",
+            await run_in_threadpool(
+                lambda: audit_repo().log(
+                    action="broker_data_apps_git_rejected",
+                    params={"slug": slug, "session_id": row.get("session_id")},
+                    result="denied",
+                    client_kind="broker",
+                )
             )
         except Exception:
             pass
         raise HTTPException(status_code=403, detail="forbidden")
 
-    token_id, token = mint_git_token(app_row)
+    # Minted under the *requesting* user, not the app's owner: an admin
+    # proxying for someone else's app would otherwise have their push
+    # attributed to the owner in `REMOTE_USER`.
+    token_id, token = await run_in_threadpool(mint_git_token, app_row, user)
     try:
         basic = base64.b64encode(f"agnes:{token}".encode()).decode()
         headers = {"Authorization": f"Basic {basic}"}
@@ -529,7 +554,7 @@ async def data_apps_git_broker(
             )
     finally:
         try:
-            access_token_repo().revoke(token_id)
+            await run_in_threadpool(access_token_repo().revoke, token_id)
         except Exception:
             logger.warning("could not revoke per-request git token %s", token_id, exc_info=True)
 

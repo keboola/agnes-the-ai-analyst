@@ -186,3 +186,27 @@ def test_find_pattern_argument_is_not_read_as_a_target(tmp_path):
         tmp_path,
     )
     assert out.get("permissionDecision") in (None, "allow"), out.get("permissionDecisionReason")
+
+
+def test_find_with_a_leading_global_option_still_cannot_escape(tmp_path):
+    """`find`'s global options precede the path list, so stopping at the first
+    dash meant one leading flag skipped the check entirely (Devin Review)."""
+    for cmd in (
+        "find -L /etc -name passwd",
+        "find -H /etc -name passwd",
+        "find -P /etc -name passwd",
+        "find -O2 /etc -name passwd",
+        "find -D search /etc -name passwd",
+    ):
+        out = _run_in({"tool_name": "Bash", "tool_input": {"command": cmd}}, tmp_path)
+        assert out.get("permissionDecision") == "deny", f"escaped via: {cmd}"
+
+
+def test_find_with_a_leading_global_option_inside_the_workspace_is_allowed(tmp_path):
+    """The globals must not turn into a blanket deny either."""
+    (tmp_path / "scaffolds").mkdir()
+    out = _run_in(
+        {"tool_name": "Bash", "tool_input": {"command": f"find -L {tmp_path}/scaffolds -name '*.json'"}},
+        tmp_path,
+    )
+    assert out.get("permissionDecision") in (None, "allow"), out.get("permissionDecisionReason")

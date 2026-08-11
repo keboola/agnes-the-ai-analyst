@@ -117,8 +117,16 @@ def _find_escapes_workspace(toks: list[str]) -> bool:
     agent looking for a scaffold under its workspace was refused twice and
     spent the next several turns guessing at paths instead.
 
-    Only the leading path operands are examined: the first `-option` ends
-    find's path list, so a later `-path /etc/*` is a pattern, not a target.
+    Only the path operands are examined, and finding where they start is the
+    fiddly part: find's *global* options (`-H`, `-L`, `-P`, `-D debugopts`,
+    `-O level`) come BEFORE the paths, while the expression (`-name`, …)
+    comes after. A first draft simply stopped at the first `-`-prefixed
+    token, which meant `find -L /etc -name passwd` never had `/etc` examined
+    at all — the guard was bypassed by one leading flag (Devin Review on this
+    PR). Leading globals are therefore skipped explicitly, and only then does
+    the first `-option` end the path list — so a later `-path '/etc/*'` is
+    read as the pattern it is, not as a target.
+
     Resolution goes through realpath, which keeps the failure direction safe
     — a symlink inside the workspace that points at `/etc` resolves to `/etc`
     and is denied.
@@ -128,7 +136,19 @@ def _find_escapes_workspace(toks: list[str]) -> bool:
     if not toks or toks[0] != "find":
         return False
     root = _workspace_root()
-    for t in toks[1:]:
+    args = toks[1:]
+    i = 0
+    while i < len(args):
+        t = args[i]
+        if t in ("-H", "-L", "-P"):
+            i += 1
+        elif t in ("-D", "-O"):
+            i += 2  # takes a value in the following token
+        elif len(t) > 2 and (t.startswith("-D") or t.startswith("-O")):
+            i += 1  # attached form: -O2, -Dsearch
+        else:
+            break
+    for t in args[i:]:
         if t.startswith("-"):
             break
         if not t.startswith("/"):
