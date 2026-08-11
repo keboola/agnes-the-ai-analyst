@@ -213,41 +213,71 @@ def test_every_download_failure_path_tells_the_progress_printer():
         )
 
 
-def test_a_failed_stack_sync_item_is_printed():
-    """Devin Review on #1241: per-item sync failures printed nothing.
+def test_a_failed_stack_sync_item_reaches_the_pull_error_list():
+    """Devin Review on #1241, twice.
 
-    They land on each `TypeReport.errors` — a different list from the one the
-    pull block reads — while the summary line above still counted the items
-    that worked. `format_pull_error` already knew these key shapes
-    (`package`, `slug`, `name`); it was never handed them.
+    First: per-item sync failures reached no surface at all — they land on
+    each `TypeReport.errors`, a different list from `PullResult.errors`.
+    Then: printing them as a warn line still left a scripted pull exiting 0
+    with an empty `errors` array, because `result.errors` is what decides the
+    exit code (#596), what `--json` carries, and what `--quiet` reports.
     """
-    from cli.commands.pull import _emit_stack_sync_block
+    from types import SimpleNamespace
+
+    from cli.commands.pull import _fold_stack_sync_errors
     from cli.lib.pull_sync import SyncReport, TypeReport
 
-    report = SyncReport(
-        data_packages=TypeReport(added=2, errors=[{"package": "finance", "error": "403 Forbidden"}]),
-        memory_domains=TypeReport(errors=[{"slug": "playbooks", "error": "checksum mismatch"}]),
+    result = SimpleNamespace(
+        errors=[],
+        stack_sync=SyncReport(
+            data_packages=TypeReport(added=2, errors=[{"package": "finance", "error": "403 Forbidden"}]),
+            memory_domains=TypeReport(errors=[{"slug": "playbooks", "error": "checksum mismatch"}]),
+        ),
     )
 
-    import io
-    from contextlib import redirect_stderr
+    _fold_stack_sync_errors(result)
 
-    buf = io.StringIO()
-    with redirect_stderr(buf):
-        _emit_stack_sync_block(report)
-    out = buf.getvalue()
-
-    assert "finance: 403 Forbidden" in out, out
-    assert "playbooks: checksum mismatch" in out, out
-    assert "data_packages" in out and "memory_domains" in out
+    assert len(result.errors) == 2, result.errors
+    assert {"stack": "data_packages", "package": "finance", "error": "403 Forbidden"} in result.errors
+    assert {"stack": "memory_domains", "slug": "playbooks", "error": "checksum mismatch"} in result.errors
 
 
-def test_the_errors_are_read_off_the_per_type_reports():
-    """Reading `errors` off the SyncReport container would print nothing."""
+def test_the_folded_error_renders_with_its_type():
+    from cli.commands.pull import format_pull_error
+
+    line = format_pull_error({"stack": "data_packages", "package": "finance", "error": "403 Forbidden"})
+    assert "data_packages" in line and "finance" in line and "403 Forbidden" in line
+
+
+def test_a_clean_sync_folds_nothing():
+    from types import SimpleNamespace
+
+    from cli.commands.pull import _fold_stack_sync_errors
+    from cli.lib.pull_sync import SyncReport, TypeReport
+
+    result = SimpleNamespace(errors=[], stack_sync=SyncReport(data_packages=TypeReport(added=3)))
+    _fold_stack_sync_errors(result)
+    assert result.errors == []
+
+
+def test_the_fold_runs_before_every_exit_path():
+    """Placed after the `--json` branch it would miss the machine path; after
+    the `--quiet` branch it would miss the hook path."""
+    import inspect
+
+    from cli.commands import pull as mod
+
+    src = inspect.getsource(mod)
+    fold = src.index("_fold_stack_sync_errors(result)\n")
+    assert fold < src.index("if as_json:")
+    assert fold < src.index("if quiet:")
+
+
+def test_the_block_does_not_also_print_them():
+    """Otherwise every stack-sync failure appears twice."""
     import inspect
 
     from cli.commands.pull import _emit_stack_sync_block
 
     src = inspect.getsource(_emit_stack_sync_block)
-    assert 'getattr(rep, "errors"' in src
-    assert 'getattr(stack, "errors"' not in src
+    assert "format_pull_error" not in src
