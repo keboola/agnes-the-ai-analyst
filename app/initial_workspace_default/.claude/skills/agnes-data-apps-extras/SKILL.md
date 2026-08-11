@@ -29,40 +29,49 @@ only when you want an iteration branch off a *deployed* app.
 
 For an app that already exists, skip this and go straight to §1.
 
-## 1. Scaffold-first, custom-code-second
+## 1. Clone the repo, scaffold into it, push `main`
 
-Never start from a blank repo. `cp -R` the baked scaffold at
-**`/work/scaffolds/nodejs-dashboard/`** — an absolute path, at the session
-workspace root. It is **not** inside this skill's own directory: watched
-live, "sibling of this skill's session workspace" was read as a path
-relative to the skill, and three `ls`/`cp` attempts against
-`.claude/skills/agnes-data-apps-extras/scaffolds/` all failed with "No such
-file or directory" before the run stalled. Copy it into the app's managed
-repo **before** writing a single line of real code,
-then immediately call `data_app_deploy(draft_slug, mode="dev")`. This boots
-the container and warms `npm install` while you write the real
-`src/App.tsx` / `server/index.ts` — HMR picks up your edits from there. Do
-not wait for "real" code before the first deploy; a cold first deploy racing
-`npm install` is exactly the failure mode this cadence avoids.
+These three happen in this order, and the order is the whole point: there is
+nowhere to put a scaffold until the repo is on disk, and no draft can exist
+until that repo has a `main`.
 
-## 1b. Cloning the repo: use the relay, not the credential URL
-
-From a chat sandbox, clone and push through the **relay**:
+**First, clone through the relay:**
 
     git clone "$AGNES_SERVER_BASE/data-apps.git/<slug>" app-repo
 
-where `$AGNES_SERVER_BASE` is the loopback origin the `agnes` CLI already
-talks to (`http://127.0.0.1:<port>`) — the host part of `AGNES_SERVER`,
-without its `/agnes-api` path. No credential goes in that URL and none is
-needed: the relay attaches one server-side, which is the whole reason it
-exists.
+`$AGNES_SERVER_BASE` is the loopback origin the `agnes` CLI already talks to
+(`http://127.0.0.1:<port>`) — the host part of `AGNES_SERVER`, without its
+`/agnes-api` path. That whole string is a **URL**, not a directory: watched
+live, a run read `/data-apps.git/<slug>` as a filesystem path, `cd`'d into it,
+got "No such file or directory", and then ran `git init && git commit` in the
+workspace it was already standing in — committing 27 files of session
+scaffolding into a repo nobody would ever push. Clone to a named directory
+(`app-repo` above) and `cd` into **that**.
 
-Do **not** use the URL from `data_app_git_credential(slug)` here. That one
-carries an embedded token and points at the deployment's public host, which
-a sandbox cannot reach — its egress allowlist admits loopback, Anthropic and
-GitHub, nothing else. It is for an analyst laptop or an MCP client, not for
-you. Reaching for it inside the sandbox is what a run does right before it
-stalls, having tried the hostname, then the IP, then the sandbox bypass.
+No credential goes in the URL and none is needed: the relay attaches one
+server-side, which is the whole reason it exists. Do **not** use the URL from
+`data_app_git_credential(slug)` here — it carries an embedded token and points
+at the deployment's public host. It is for an analyst laptop or an MCP client,
+not for you.
+
+**Then scaffold into the clone.** Never start from a blank repo: `cp -R` the
+baked scaffold at **`/work/scaffolds/nodejs-dashboard/`** — an absolute path,
+at the session workspace root. It is **not** inside this skill's own
+directory: watched live, a run spent roughly twenty-five turns hunting
+`.claude/skills/agnes-data-apps-extras/scaffolds/` before finding the real
+one.
+
+**Then commit and push `main`.** A draft branches off the parent's `main`, so
+until you push it `data_app_create_draft` returns `409 parent_has_no_main`,
+and `data_app_deploy(..., mode="dev")` then returns `400 dev_requires_draft`.
+Watched live, a run read those two errors as unrelated bugs and retried them
+in a loop; they are one missing push.
+
+Only now write real code — and call `data_app_deploy(draft_slug, mode="dev")`
+**before** you do. That boots the container and warms `npm install` while you
+write the real `src/App.tsx` / `server/index.ts`; HMR picks up your edits from
+there. A cold first deploy racing `npm install` is exactly the failure mode
+this cadence avoids.
 
 ## 2. Draft-branch discipline
 

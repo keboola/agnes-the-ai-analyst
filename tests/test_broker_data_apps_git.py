@@ -154,12 +154,35 @@ def test_the_minter_is_reusable_and_returns_the_token_id():
     assert "mint_git_token(row)" in cred, "the URL builder must delegate, not duplicate the mint"
 
 
+SKILL = Path("app/initial_workspace_default/.claude/skills/agnes-data-apps-extras/SKILL.md")
+
+
 def test_the_skill_sends_the_agent_through_the_relay():
     """A transport nobody is told about is not a transport. The skill has to
     name the relay URL AND warn off `data_app_git_credential`'s URL, which is
     the one an agent reaches for and the one that cannot work from a sandbox."""
-    skill = Path("app/initial_workspace_default/.claude/skills/agnes-data-apps-extras/SKILL.md")
-    body = skill.read_text(encoding="utf-8")
+    body = SKILL.read_text(encoding="utf-8")
     assert "/data-apps.git/<slug>" in body
     assert "127.0.0.1" in body, "the loopback relay is the reachable origin"
-    assert "Do **not** use the URL from `data_app_git_credential(slug)` here" in body
+    assert "data_app_git_credential" in body
+    warn = body[body.index("data_app_git_credential") - 400 : body.index("data_app_git_credential") + 400]
+    assert "not" in warn.lower(), "the credential URL has to be warned off, not merely mentioned"
+
+
+def test_the_skill_orders_clone_before_scaffold():
+    """Watched live: the skill said to copy the scaffold "into the app's
+    managed repo" *before* it said how to obtain that repo, so the run never
+    cloned — it read the clone URL as a directory and committed the session
+    workspace instead. Order is the fix, so order is what this pins."""
+    body = SKILL.read_text(encoding="utf-8")
+    assert body.index("git clone") < body.index("/work/scaffolds/nodejs-dashboard/"), (
+        "the clone step must come before the scaffold copy that depends on it"
+    )
+
+
+def test_the_skill_names_the_two_errors_a_missing_push_produces():
+    """`parent_has_no_main` and `dev_requires_draft` are one missing push seen
+    twice; a run that does not know that retries them as separate bugs."""
+    body = SKILL.read_text(encoding="utf-8")
+    assert "parent_has_no_main" in body
+    assert "dev_requires_draft" in body

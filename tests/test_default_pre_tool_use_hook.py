@@ -132,3 +132,57 @@ def test_hook_is_invoked_through_an_explicit_interpreter():
     assert hook_cmds, "no PreToolUse hook command registered"
     for c in hook_cmds:
         assert c.split()[0] == "python3", f"hook must run through an explicit interpreter: {c}"
+
+
+def _run_in(payload: dict, workspace: Path) -> dict:
+    """Run the hook with an explicit workspace root, as the sandbox does."""
+    proc = subprocess.run(
+        [sys.executable, str(HOOK.resolve())],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        timeout=5,
+        cwd=str(workspace),
+        env={"PATH": "/usr/bin:/bin", "CLAUDE_PROJECT_DIR": str(workspace)},
+    )
+    return json.loads(proc.stdout or "{}")
+
+
+def test_find_inside_the_workspace_is_allowed(tmp_path):
+    """`find` aimed at the agent's own workspace must not be refused.
+
+    The rule was a blanket `find /` prefix, so every absolute-path find was
+    denied as "outside the working directory" — including paths that were
+    plainly inside it.
+    """
+    (tmp_path / "scaffolds").mkdir()
+    out = _run_in(
+        {"tool_name": "Bash", "tool_input": {"command": f"find {tmp_path}/scaffolds -name '*.json'"}},
+        tmp_path,
+    )
+    assert out.get("permissionDecision") in (None, "allow"), out.get("permissionDecisionReason")
+
+
+def test_find_outside_the_workspace_is_still_denied(tmp_path):
+    out = _run_in({"tool_name": "Bash", "tool_input": {"command": "find /etc -name passwd"}}, tmp_path)
+    assert out.get("permissionDecision") == "deny"
+    assert "enumerate" in out.get("permissionDecisionReason", "").lower()
+
+
+def test_find_via_symlink_out_of_the_workspace_is_denied(tmp_path):
+    """realpath, not the spelling, decides — a link out is still a way out."""
+    (tmp_path / "escape").symlink_to("/etc")
+    out = _run_in(
+        {"tool_name": "Bash", "tool_input": {"command": f"find {tmp_path}/escape -name passwd"}},
+        tmp_path,
+    )
+    assert out.get("permissionDecision") == "deny"
+
+
+def test_find_pattern_argument_is_not_read_as_a_target(tmp_path):
+    """`-path /etc/*` is a pattern; find's path list ends at the first option."""
+    out = _run_in(
+        {"tool_name": "Bash", "tool_input": {"command": f"find {tmp_path} -path '/etc/*' -prune"}},
+        tmp_path,
+    )
+    assert out.get("permissionDecision") in (None, "allow"), out.get("permissionDecisionReason")

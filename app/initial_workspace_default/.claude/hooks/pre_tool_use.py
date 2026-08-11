@@ -93,7 +93,53 @@ ADMIN_PROMPT_PREFIXES = (
     "agnes admin user",
 )
 
-_ENUM_PREFIXES = ("find /", "ls /home", "ls /etc", "cat /etc/", "cat /proc/")
+_ENUM_PREFIXES = ("ls /home", "ls /etc", "cat /etc/", "cat /proc/")
+
+
+def _workspace_root() -> str:
+    """Absolute, symlink-resolved root of the session's own workspace."""
+    import os
+
+    raw = (os.environ.get("CLAUDE_PROJECT_DIR") or "").strip() or os.getcwd()
+    try:
+        return os.path.realpath(raw)
+    except OSError:
+        return raw
+
+
+def _find_escapes_workspace(toks: list[str]) -> bool:
+    """True when `find` is aimed at an absolute path outside the workspace.
+
+    This replaces a blanket `find /` prefix match. That prefix denied every
+    absolute-path `find` — including `find /work/...`, the agent's *own*
+    workspace — while reporting "outside the working directory", so the
+    message asserted the one thing the rule never checked. Watched live, an
+    agent looking for a scaffold under its workspace was refused twice and
+    spent the next several turns guessing at paths instead.
+
+    Only the leading path operands are examined: the first `-option` ends
+    find's path list, so a later `-path /etc/*` is a pattern, not a target.
+    Resolution goes through realpath, which keeps the failure direction safe
+    — a symlink inside the workspace that points at `/etc` resolves to `/etc`
+    and is denied.
+    """
+    import os
+
+    if not toks or toks[0] != "find":
+        return False
+    root = _workspace_root()
+    for t in toks[1:]:
+        if t.startswith("-"):
+            break
+        if not t.startswith("/"):
+            continue
+        try:
+            target = os.path.realpath(t)
+        except OSError:
+            return True
+        if target != root and not target.startswith(root + os.sep):
+            return True
+    return False
 
 
 # curl/wget flags that consume the FOLLOWING token as their value (so that
@@ -868,7 +914,7 @@ def _scan(cmd: str) -> list[tuple[str, str]]:
             )
 
         # Filesystem enumeration outside the workspace
-        if any(unwrapped_lower.startswith(p) for p in _ENUM_PREFIXES):
+        if any(unwrapped_lower.startswith(p) for p in _ENUM_PREFIXES) or _find_escapes_workspace(toks):
             verdicts.append(("deny", "Refusing to enumerate outside the working directory."))
 
         # Floor: irreversible destruction
