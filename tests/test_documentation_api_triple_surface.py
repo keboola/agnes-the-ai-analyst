@@ -28,6 +28,13 @@ from pathlib import Path
 # (the policy is a ratchet, not a sweep). Tuple of (cli_cmd, mcp_tool).
 _COHORT: dict[str, tuple[str, str]] = {
     "/documentation/api": ("docs api", "documentation_api"),
+    # Reading one collection file's text (#1240). The endpoint's path is
+    # browser-shaped — the Library's preview modal fetches it directly — but
+    # its contract is now agent-facing: an agent shown a file it could not
+    # open was the complaint that produced `collection_file_read` / `agnes
+    # collections cat`. In the cohort rather than exempt so the structural
+    # gate notices if either surface is ever removed. (Devin Review on #1240.)
+    "/api/collections/{collection_id}/files/{file_id}/preview": ("collections cat", "collection_file_read"),
     # Unified knowledge search (K2, #797): one query across Collections
     # chunks + knowledge items + table catalog cards. CLI is the top-level
     # `agnes search` (callback-style single command, like `agnes pull`).
@@ -258,21 +265,18 @@ _COLLECTIONS_FILES_REASON = (
     "show`; file deletion is a maintenance mutation with no analyst CLI/MCP "
     "analogue. The collection read surfaces carry the triple-surface contract."
 )
-_LIBRARY_PREVIEW_REASON = (
-    "`…/raw` streams image/PDF bytes for the BROWSER to draw and has no "
-    "JSON/MCP analogue — that half is exempt for the reason it always was. "
-    "`…/preview` is NO LONGER exempt on the old ground that it is a viewer "
-    "hint no agent should rely on: it now backs `collection_file_read` (both "
-    "MCP servers) and `agnes collections cat`, because an agent being shown a "
-    "file it cannot open was the actual complaint. It stays listed here only "
-    "because the endpoint PATH is browser-shaped (the modal fetches it "
-    "directly) while the contract is carried by the tool and command named "
-    "above, which `tests/test_collection_file_read.py` pins on all three "
-    "surfaces. The cap (_PREVIEW_MAX_CHARS) is still real and still means "
-    "this is a glance, not a whole-file read — callers are told so via "
-    "`truncated`, and an uncapped paginated reader would still be its own "
-    "feature."
+_LIBRARY_RAW_REASON = (
+    "`…/raw` streams image/PDF bytes for the BROWSER to draw — there is no "
+    "JSON or MCP analogue of a byte stream, and an agent that wants the file's "
+    "content has `collection_file_read` / `agnes collections cat`, which read "
+    "the sibling `…/preview` endpoint. That endpoint is NOT exempt: it carries "
+    "the triple-surface contract in _COHORT above, so removing either surface "
+    "fails this test rather than passing silently. `…/preview` is capped "
+    "(_PREVIEW_MAX_CHARS) and says so via `truncated`; an uncapped paginated "
+    "whole-file reader would still be its own feature."
 )
+
+
 _AUTHORING_SUGGESTIONS_REASON = (
     "Authoring-studio suggestion queue (v80) — web-form/admin-moderation flow. "
     "Non-admins submit a proposed create payload from the /admin/studio/{domain} "
@@ -559,8 +563,7 @@ _EXEMPT: dict[str, str] = {
     ),
     "/api/collections/{collection_id}/files": _COLLECTIONS_FILES_REASON,
     "/api/collections/{collection_id}/files/{file_id}": _COLLECTIONS_FILES_REASON,
-    "/api/collections/{collection_id}/files/{file_id}/preview": _LIBRARY_PREVIEW_REASON,
-    "/api/collections/{collection_id}/files/{file_id}/raw": _LIBRARY_PREVIEW_REASON,
+    "/api/collections/{collection_id}/files/{file_id}/raw": _LIBRARY_RAW_REASON,
     "/api/studio/memory-mining/consent": _MEMORY_MINING_REASON,
     "/api/admin/memory-mining/run": _MEMORY_MINING_REASON,
     "/api/studio/suggestions": _AUTHORING_SUGGESTIONS_REASON,
