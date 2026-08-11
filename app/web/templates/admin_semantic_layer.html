@@ -213,8 +213,8 @@
       {% for t in unresolved_tables %}<li><code>{{ t }}</code></li>{% endfor %}
     </ul>
     {% if unresolved_tables_truncated %}
-    <p class="sl-note">This is the first {{ unresolved_tables|length }} — at least one project has more than
-      the list shows. Registering only the tables here will not be enough; sync again afterwards to see the rest.</p>
+    <p class="sl-note">At least one project has more unregistered tables than the list shows — it is capped
+      per project. Registering only the tables here will not be enough; sync again afterwards to see the rest.</p>
     {% endif %}
     {% endif %}
   </div>
