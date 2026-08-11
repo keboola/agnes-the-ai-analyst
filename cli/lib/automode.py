@@ -70,7 +70,21 @@ _OUR_LABELS = ("Trusted internal domains:", "Internal package registry:")
 
 
 def _is_ours(entry: str, host: str) -> bool:
-    return host in entry and entry.strip().startswith(_OUR_LABELS)
+    """True only for text THIS tool wrote for *host*.
+
+    Not "starts with one of the labels and mentions the host": those labels
+    are Claude Code's own trust-slot names, so an admin may well maintain
+    their own "Trusted internal domains: …" line naming the same server, and
+    deleting it during a refresh would take their list with it. An entry
+    counts as ours when it is byte-for-byte one of the entries we generate,
+    or one of the retired ones we used to. (Devin Review on #1262, twice —
+    the first fix widened this too far.)
+    """
+    if not host or host not in entry:
+        return False
+    if entry in marketplace_trust_entries(host):
+        return True
+    return _is_retired(entry) and entry.strip().startswith(_OUR_LABELS)
 
 
 def _is_retired(entry: str) -> bool:
