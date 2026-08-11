@@ -121,7 +121,9 @@ def test_the_credential_is_attached_by_the_broker_not_held_by_the_sandbox():
     credential. This route mints one on the server side and puts it in basic
     auth, which is the only thing the git surface authenticates."""
     body = _route_body()
-    assert "mint_git_token(app_row)" in body
+    # `repo_row`, not `app_row`: a draft resolves to its parent's repo
+    # before the mint — see the draft test below.
+    assert "mint_git_token(repo_row)" in body
     assert 'base64.b64encode(f"agnes:{token}".encode())' in body
     assert '"Authorization": f"Basic {basic}"' in body
 
@@ -163,3 +165,27 @@ def test_the_skill_sends_the_agent_through_the_relay():
     assert "/data-apps.git/<slug>" in body
     assert "127.0.0.1" in body, "the loopback relay is the reachable origin"
     assert "Do **not** use the URL from `data_app_git_credential(slug)` here" in body
+
+
+def test_a_draft_is_proxied_to_its_parents_repo():
+    """Devin Review on #1252: a draft has no repo of its own.
+
+    `create_draft` never gives one — a draft shares its PARENT's repository.
+    Minting the token for the draft slug and aiming the proxy at
+    `/data-apps.git/<draft_slug>` therefore fails twice over: the git
+    surface refuses a token whose scope names a different repo than the one
+    requested, and `repo_path(<draft_slug>)` has no HEAD. That is the path
+    the data-apps skill actually walks — it tells the agent to work on a
+    draft.
+    """
+    import inspect
+
+    from app.api import broker
+
+    src = inspect.getsource(broker.data_apps_git_broker)
+    assert 'app_row.get("is_draft")' in src, "a draft is still proxied to its own slug"
+    assert "mint_git_token(repo_row)" in src, "the token is still scoped to the draft"
+    assert 'f"/data-apps.git/{repo_slug}/{path}"' in src, "the target still names the draft"
+    # Ownership must still be checked against the app the caller named, not
+    # the parent it resolves to.
+    assert src.index('app_row.get("owner_user_id")') < src.index('app_row.get("is_draft")')
