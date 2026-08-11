@@ -71,7 +71,7 @@ logger = logging.getLogger(__name__)
 # a stdio ``command`` / git ``url`` past the admin) is mitigated because the
 # moderation UI renders the COMPLETE payload before the admin clicks approve:
 # approval is informed consent, not a silent replay.
-def _replay_data_package(payload: dict, by: str) -> str:
+def _replay_data_package(payload: dict, by: str, submitted_by: Optional[str] = None) -> str:
     return data_packages_repo().create(
         name=payload["name"],
         slug=payload["slug"],
@@ -82,8 +82,18 @@ def _replay_data_package(payload: dict, by: str) -> str:
     )
 
 
-def _replay_corporate_memory(payload: dict, by: str) -> str:
-    return memory_domains_repo().create(
+def _replay_corporate_memory(payload: dict, by: str, submitted_by: Optional[str] = None) -> str:
+    """Create the domain AND the knowledge the author wrote.
+
+    Copying only name/slug/description silently dropped the whole point of a
+    corporate-memory submission: the author filled in the knowledge, saw
+    "Submitted for approval", and approval produced an empty domain. The
+    seeding is shared with the admin endpoint so the two creation paths cannot
+    diverge again. (Devin Review on #1263.)
+    """
+    from app.api.memory_domains import seed_domain_item
+
+    domain_id = memory_domains_repo().create(
         name=payload["name"],
         slug=payload["slug"],
         description=payload.get("description"),
@@ -91,9 +101,20 @@ def _replay_corporate_memory(payload: dict, by: str) -> str:
         color=None,
         created_by=by,
     )
+    seed_domain_item(
+        slug=payload["slug"],
+        name=payload["name"],
+        content=payload.get("content"),
+        content_title=payload.get("content_title"),
+        # The SUBMITTER, not the approver — `by` is the admin who approved,
+        # and attributing someone else's knowledge to them would be wrong in
+        # the one field corporate memory uses to say who knows this.
+        source_user=submitted_by or by,
+    )
+    return domain_id
 
 
-def _replay_mcp(payload: dict, by: str) -> str:
+def _replay_mcp(payload: dict, by: str, submitted_by: Optional[str] = None) -> str:
     # Re-validate transport/shape via the endpoint's own request model.
     from app.api.admin_mcp import CreateMCPSourceRequest, _require_safe_source_name
     from src.repositories import mcp_sources_repo
@@ -121,7 +142,7 @@ def _replay_mcp(payload: dict, by: str) -> str:
     return source_id
 
 
-def _replay_marketplace(payload: dict, by: str) -> str:
+def _replay_marketplace(payload: dict, by: str, submitted_by: Optional[str] = None) -> str:
     from app.api.marketplaces import CreateMarketplaceRequest
     from src.repositories import marketplace_registry_repo
 
@@ -228,7 +249,7 @@ async def approve_suggestion(
     replay = _SAFE_REPLAY.get(sug["domain"])
     if replay is not None:
         try:
-            created_resource_id = replay(sug.get("payload") or {}, admin["email"])
+            created_resource_id = replay(sug.get("payload") or {}, admin["email"], sug.get("created_by"))
         except KeyError as exc:
             repo.reopen(sid)
             raise HTTPException(status_code=400, detail={"kind": "invalid_payload", "hint": str(exc)})
