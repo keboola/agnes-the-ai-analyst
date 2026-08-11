@@ -508,14 +508,31 @@ async def data_apps_git_broker(
             pass
         raise HTTPException(status_code=403, detail="forbidden")
 
-    token_id, token = mint_git_token(app_row)
+    # A DRAFT shares its parent's repository — `create_draft` never gives it
+    # one of its own — so both the token's scope and the target path must name
+    # the PARENT. Minted and aimed at the draft's own slug, the git surface
+    # refuses the token (its scope pins the slug to the repo being requested)
+    # and `repo_path(<draft_slug>)` has no HEAD to serve. That is the path the
+    # data-apps skill actually walks: it tells the agent to work on a draft.
+    # Ownership was already checked against `app_row` above — the parent is
+    # the same owner by construction (`create_draft` copies `owner_user_id`).
+    # (Devin Review on this PR.)
+    repo_row = app_row
+    if app_row.get("is_draft") and app_row.get("parent_app_id"):
+        parent = data_apps_repo().get(app_row["parent_app_id"])
+        if parent is None:
+            raise HTTPException(status_code=404, detail="draft_parent_not_found")
+        repo_row = parent
+    repo_slug = repo_row["slug"]
+
+    token_id, token = mint_git_token(repo_row)
     try:
         basic = base64.b64encode(f"agnes:{token}".encode()).decode()
         headers = {"Authorization": f"Basic {basic}"}
         ctype = request.headers.get("content-type")
         if ctype:
             headers["Content-Type"] = ctype
-        target = f"/data-apps.git/{slug}/{path}"
+        target = f"/data-apps.git/{repo_slug}/{path}"
         if request.url.query:
             target = f"{target}?{request.url.query}"
         transport = httpx.ASGITransport(app=request.app)
