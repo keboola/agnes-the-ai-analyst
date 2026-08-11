@@ -4,6 +4,7 @@ import logging
 import re
 import time
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse
@@ -68,7 +69,7 @@ def _resolve_part_path(extracts_dir: Path, table_id: str, part: str) -> Path | N
 _DISTRIBUTABLE_QUERY_MODES = frozenset({"local", "materialized"})
 
 
-def _assert_distributable(table_id: str) -> None:
+def _distribution_refusal(table_id: str) -> Optional[HTTPException]:
     """Raise 403 unless ``table_id`` is a table Agnes actually distributes.
 
     ``server_only`` and ``query_mode`` were **client-side advice**: `agnes pull`
@@ -97,24 +98,38 @@ def _assert_distributable(table_id: str) -> None:
     # read surface does rather than assuming one of them.
     row = repo.get(table_id) or repo.get_by_name(table_id)
     if row is None:
-        return
+        return None
     if row.get("server_only"):
-        raise HTTPException(
+        return HTTPException(
             status_code=403,
             detail=(
                 f"table '{table_id}' is server_only — it is kept fresh on the server and "
                 "not distributed; query it with `agnes query` instead of downloading it"
             ),
         )
-    mode = (row.get("query_mode") or "").strip().lower()
+    # A blank/NULL `query_mode` means `local`, because that is what every other
+    # surface makes of it: the manifest (`app/api/sync.py:1629`) and the
+    # distribution mirror (`app/worker/kinds.py`) both fall back to "local", so
+    # such a table IS advertised as downloadable. Refusing it here would leave
+    # it permanently listed and permanently un-fetchable. (Devin Review on
+    # #1265.) The allowlist keeps its job for every mode that is actually set.
+    mode = (row.get("query_mode") or "").strip().lower() or "local"
     if mode not in _DISTRIBUTABLE_QUERY_MODES:
-        raise HTTPException(
+        return HTTPException(
             status_code=403,
             detail=(
-                f"table '{table_id}' has query_mode='{mode or 'unknown'}' and is not distributed; "
+                f"table '{table_id}' has query_mode='{mode}' and is not distributed; "
                 "query it with `agnes query` instead of downloading it"
             ),
         )
+    return None
+
+
+def _assert_distributable(table_id: str) -> None:
+    """``_distribution_refusal``, raised. For callers that audit afterwards."""
+    refusal = _distribution_refusal(table_id)
+    if refusal is not None:
+        raise refusal
 
 
 @router.get("/{table_id}/check-access")
@@ -160,16 +175,27 @@ async def check_access(
             logger.exception("audit_log write failed for data.access_check (invalid id); continuing")
         raise HTTPException(status_code=404, detail="Table not found")
     granted = can_access_table(user, table_id, conn)
+    # Authorized — but is this table distributed at all? On Caddy this probe is
+    # the ONLY hook before file_server streams the parquet, so the check has to
+    # live here and not only in the download handler below. Decided BEFORE the
+    # audit write: this probe answers 204 or 403, and an audit trail that
+    # records a refused probe as a granted success is worse than no record —
+    # an operator reading it sees an access check that never happened that way.
+    # (Devin Review on #1265.)
+    refusal = _distribution_refusal(table_id) if granted else None
+    params = {
+        "granted": granted,
+        "duration_ms": int((time.monotonic() - t0) * 1000),
+    }
+    if refusal is not None:
+        params["refused"] = "not_distributed"
     try:
         audit_repo().log(
             user_id=identity_for_audit(user)[0],
             action="data.access_check",
             resource=resource,
-            params={
-                "granted": granted,
-                "duration_ms": int((time.monotonic() - t0) * 1000),
-            },
-            result="success" if granted else "error.403",
+            params=params,
+            result="success" if granted and refusal is None else "error.403",
             client_kind=client_kind_from_user(user),
         )
     except Exception:
@@ -181,10 +207,8 @@ async def check_access(
             status_code=403,
             detail=table_not_in_stack_message(table_id),
         )
-    # Authorized — but is this table distributed at all? On Caddy this probe is
-    # the ONLY hook before file_server streams the parquet, so the check has to
-    # live here and not only in the download handler below.
-    _assert_distributable(table_id)
+    if refusal is not None:
+        raise refusal
     return Response(status_code=204)
 
 
