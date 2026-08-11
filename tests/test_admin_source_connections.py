@@ -1798,3 +1798,41 @@ def test_the_add_project_wizard_reuses_its_connection_on_retry():
     if proc.returncode == 127:
         return  # node unavailable
     assert proc.returncode == 0, proc.stderr
+
+
+def test_the_wizard_retry_also_applies_a_corrected_name():
+    """Devin Review on this PR: only the URL was re-saved.
+
+    A name the admin fixed on the retry was thrown away while the success
+    banner went on to claim that name was used.
+    """
+    import pathlib
+
+    src = (
+        pathlib.Path(__file__).resolve().parents[1] / "app" / "web" / "templates" / "admin_data_sources.html"
+    ).read_text(encoding="utf-8")
+    reuse = src.index("if (_wizardConnId) {")
+    block = src[reuse : src.index("// 2. Store the token.")]
+    assert "name ? { name, config:" in block, "a corrected name is still discarded on retry"
+
+
+class TestBookkeepingCannotFailAPassingConnectionTest:
+    """Devin Review on this PR: `_record_project_identity` sat inside the
+    network try/except, so a vault or DB fault surfaced to the admin as
+    "connection test failed" — with a database message — for a project that
+    is in fact correctly configured."""
+
+    def test_the_identity_write_is_isolated(self):
+        import inspect
+
+        from app.api import admin_source_connections as mod
+
+        src = inspect.getsource(mod.test_connection)
+        i = src.index("_record_project_identity(connection_id, row, data)")
+        preceding = src[:i]
+        assert preceding.rstrip().endswith("try:"), (
+            "the identity write is not wrapped in its own try — a bookkeeping "
+            "failure still reports as a failed connectivity check"
+        )
+        after = src[i:]
+        assert "passed but its project identity could not be recorded" in after
