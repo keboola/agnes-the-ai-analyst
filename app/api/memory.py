@@ -420,9 +420,12 @@ async def list_knowledge(
     # for a scan they cannot act on. (Devin Review on #1258.)
     if _is_privileged_viewer(user, conn):
         payload["items"] = [_with_delivery_warnings(it) for it in payload["items"]]
-        payload["delivery_notice"] = (
-            DELIVERY_NOTICE if any(it.get("delivery_warnings") for it in payload["items"]) else None
-        )
+        # Sent whenever the tab has anything to act on, not only when
+        # something is flagged — the review queue always sends it, and an
+        # admin approving from a clean page should still know what approving
+        # does. That is the whole point of a standing explainer.
+        # (Devin Review on #1258.)
+        payload["delivery_notice"] = DELIVERY_NOTICE if payload["items"] else None
     return payload
 
 
@@ -813,10 +816,15 @@ async def admin_mandate(
     shape now surfaces ``is_required: True`` instead of ``status: 'mandatory'``.
     """
     repo = knowledge_repo()
-    _get_item_or_404(repo, item_id)
+    item = _get_item_or_404(repo, item_id)
     repo.set_is_required(item_id, True)
     if request.audience is not None:
         repo.update(item_id, audience=request.audience)
+    # Marking required puts the item into `.claude/rules/` exactly as approval
+    # does — the batch endpoint reports the instruction-shaped spans for this
+    # action and this one did not, so the single-item path published them
+    # silently and left no count on the audit row. (Devin Review on #1258.)
+    warnings = scan_item(item)
     _audit_action(
         conn,
         user,
@@ -825,6 +833,7 @@ async def admin_mandate(
         {
             "reason": request.reason,
             "audience": request.audience,
+            "delivery_warning_count": len(warnings),
         },
     )
     # v49 Section 9.1 — spec table maps both mark-mandatory and the legacy
@@ -839,7 +848,13 @@ async def admin_mandate(
         )
     except Exception:
         pass
-    return {"id": item_id, "is_required": True, "status": "mandatory"}
+    return {
+        "id": item_id,
+        "is_required": True,
+        "status": "mandatory",
+        "delivery_warnings": warnings,
+        "delivery_notice": DELIVERY_NOTICE if warnings else None,
+    }
 
 
 @router.post("/items/{item_id}/mark-mandatory")
@@ -1619,11 +1634,9 @@ async def get_tree(
     # (Devin Review on #1258.)
     payload_notice = None
     if _is_privileged_viewer(user, conn):
-        flagged = False
         for group in paged:
             group["items"] = [_with_delivery_warnings(it) for it in group["items"]]
-            flagged = flagged or any(it.get("delivery_warnings") for it in group["items"])
-        payload_notice = DELIVERY_NOTICE if flagged else None
+        payload_notice = DELIVERY_NOTICE if any(g["items"] for g in paged) else None
 
     return {
         "axis": axis,
