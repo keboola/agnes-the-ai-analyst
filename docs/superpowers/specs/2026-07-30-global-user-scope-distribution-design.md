@@ -72,10 +72,15 @@ Two facts the design builds on:
   transcripts **only** from the anchored workspace's session folder — never
   from foreign repos. The anchoring pattern exists; it is just not applied
   to the data-read commands.
-- `agnes init` already writes one user-scope Claude Code setting
+- `agnes init` can write one user-scope Claude Code setting
   (`cli/lib/automode.py::ensure_marketplace_trusted` →
   `~/.claude/settings.json`), so the merge-safely-into-user-settings
-  discipline has a precedent to generalise.
+  discipline has a precedent to generalise. Note what that precedent now
+  includes, since #1262: the write is **opt-in** (a flag, or an interactive
+  prompt showing the exact lines; never unattended), it merges rather than
+  rebuilds, and it only ever touches the lines this tool itself wrote —
+  a user's own entries in that file are not ours to edit. A design that
+  generalises the mechanism has to generalise the consent with it.
 
 ## 3. Claude Code user-scope surface (verified)
 

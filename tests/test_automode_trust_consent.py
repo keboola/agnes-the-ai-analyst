@@ -452,3 +452,21 @@ def test_ctrl_c_at_the_prompt_stops_setup(init_env, monkeypatch):
     assert result.exit_code != 0, result.output
     assert "Setup cancelled" in result.output, result.output
     assert "Workspace ready" not in result.output, result.output
+
+
+def test_a_user_note_is_not_mistaken_for_a_declaration(tmp_path):
+    """Devin Review on #1262: any line mentioning the host counted as ours.
+
+    A hand-written note naming the Agnes host reported the trust as already
+    declared and stopped the write, so the entries the classifier actually
+    reads never landed.
+    """
+    settings = tmp_path / "settings.json"
+    note = f"Reminder: {HOST} is the analytics box; ask Petra before restarting it."
+    settings.write_text(json.dumps({"autoMode": {"environment": ["$defaults", note]}}))
+
+    assert ensure_marketplace_trusted(settings, HOST) is TrustResult.WRITTEN
+
+    env = json.loads(settings.read_text())["autoMode"]["environment"]
+    assert note in env
+    assert env[-2:] == marketplace_trust_entries(HOST)
