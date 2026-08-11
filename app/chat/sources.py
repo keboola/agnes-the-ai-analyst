@@ -97,6 +97,27 @@ def extract_block(content: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+def strip_block(content: str) -> str:
+    """The answer without its machine-readable ``sources`` fence.
+
+    For the sinks that cannot render the block as anything better than a code
+    block. The web client strips it too (``stripSourcesFence`` in
+    ``chat.js``) and draws chips from the server's verdict instead; a push
+    sink has no chips, so where the answer used to end in a readable
+    ``Sources:`` line it would now end in a fenced block of machinery.
+
+    Deliberately NOT applied before persistence, and not to the AG-UI/SSE
+    surface. The verdict is *derived* rather than stored — `GET
+    /sessions/{id}/messages` re-parses it out of the saved content — so
+    stripping it on the way to the database would silently drop the chips on
+    every reload. And a programmatic consumer of the agent API is exactly the
+    caller the machine-readable form exists for. (Devin Review on this PR.)
+    """
+    if not content:
+        return content
+    return _BLOCK_RE.sub("", content).rstrip()
+
+
 def parse_claims(block_body: str) -> list[SourceClaim]:
     """Claims in the order written, deduplicated on (kind, ref).
 
