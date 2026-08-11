@@ -30,7 +30,26 @@ from __future__ import annotations
 import json
 import os
 import sys
+from enum import StrEnum
 from pathlib import Path
+
+
+class TrustResult(StrEnum):
+    """What actually happened to the settings file.
+
+    A bool could not tell "the entries were already there" from "nothing was
+    saved because the file could not be read", and the caller reported both as
+    already-declared — so someone who opted in and hit a malformed settings
+    file was told the change existed. (Devin Review on #1262.)
+    """
+
+    #: The entries were appended and the file was replaced.
+    WRITTEN = "written"
+    #: An entry naming this host was already present; nothing to do.
+    ALREADY_PRESENT = "already_present"
+    #: Nothing was saved — unreadable/corrupt JSON, an unexpected shape, or no
+    #: host to declare. The reason is on stderr; the file is untouched.
+    NOT_WRITTEN = "not_written"
 
 
 def marketplace_trust_entries(host: str) -> list[str]:
@@ -53,19 +72,22 @@ def marketplace_trust_entries(host: str) -> list[str]:
     ]
 
 
-def ensure_marketplace_trusted(settings_path: Path, host: str) -> bool:
+def ensure_marketplace_trusted(settings_path: Path, host: str) -> TrustResult:
     """Merge ``autoMode.environment`` trust entries for *host* into
-    *settings_path*, returning True iff the file was actually written.
+    *settings_path*, reporting which of the three outcomes happened.
 
-    - ``host`` empty/None -> no-op, return False.
+    - ``host`` empty/None -> no-op, ``NOT_WRITTEN``.
     - Merge-preserving: load the existing JSON and PRESERVE every other key.
     - Corrupt JSON, non-dict top level, non-dict ``autoMode``, or non-list
-      ``autoMode.environment`` -> warn on stderr and return False; NEVER
-      overwrite/rebuild the user's settings file.
+      ``autoMode.environment`` -> warn on stderr and return ``NOT_WRITTEN``;
+      NEVER overwrite/rebuild the user's settings file. The caller must be able
+      to tell this apart from an entry that was already there, or it reports a
+      failed save as a success.
     - Create ``autoMode.environment`` as ``["$defaults"]`` only when absent;
       ``"$defaults"`` MUST be kept, otherwise the whole built-in rule list for
       that section is replaced.
-    - Idempotent: if any existing entry already mentions ``host``, return False.
+    - Idempotent: if any existing entry already mentions ``host``, return
+      ``ALREADY_PRESENT``.
     - The entries use recognized Environment trust-slot labels ("Trusted
       internal domains:", "Internal package registry:") so the classifier
       registers ``host`` as inside the trust boundary rather than as free-form
@@ -81,7 +103,7 @@ def ensure_marketplace_trusted(settings_path: Path, host: str) -> bool:
     """
     host = (host or "").strip()
     if not host:
-        return False
+        return TrustResult.NOT_WRITTEN
 
     settings: dict[str, object]
     if settings_path.exists():
@@ -89,10 +111,10 @@ def ensure_marketplace_trusted(settings_path: Path, host: str) -> bool:
             loaded = json.loads(settings_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             print(f"warn: could not read Claude Code settings for auto-mode trust: {exc}", file=sys.stderr)
-            return False
+            return TrustResult.NOT_WRITTEN
         if not isinstance(loaded, dict):
             print("warn: Claude Code settings top level is not an object; leaving it unchanged", file=sys.stderr)
-            return False
+            return TrustResult.NOT_WRITTEN
         settings = loaded
     else:
         settings = {}
@@ -103,7 +125,7 @@ def ensure_marketplace_trusted(settings_path: Path, host: str) -> bool:
         settings["autoMode"] = auto_mode
     elif not isinstance(auto_mode, dict):
         print("warn: Claude Code settings autoMode is not an object; leaving it unchanged", file=sys.stderr)
-        return False
+        return TrustResult.NOT_WRITTEN
 
     environment = auto_mode.get("environment")
     if environment is None:
@@ -114,10 +136,10 @@ def ensure_marketplace_trusted(settings_path: Path, host: str) -> bool:
             "warn: Claude Code settings autoMode.environment is not a list; leaving it unchanged",
             file=sys.stderr,
         )
-        return False
+        return TrustResult.NOT_WRITTEN
 
     if any(isinstance(entry, str) and host in entry for entry in environment):
-        return False
+        return TrustResult.ALREADY_PRESENT
 
     environment.extend(marketplace_trust_entries(host))
 
@@ -125,4 +147,4 @@ def ensure_marketplace_trusted(settings_path: Path, host: str) -> bool:
     tmp_path = settings_path.with_name(settings_path.name + ".tmp")
     tmp_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
     os.replace(tmp_path, settings_path)
-    return True
+    return TrustResult.WRITTEN
