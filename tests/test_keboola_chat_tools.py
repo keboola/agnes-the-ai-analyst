@@ -463,3 +463,64 @@ class TestDisableDoesNotClaimSuccessItCannotVouchFor(TestChatToolsEndpoint):
 
         assert c.delete(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 204
         assert c.delete(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 204
+
+
+class TestDeletingTheConnectionStaysRetryable(TestChatToolsEndpoint):
+    """Devin Review on this PR: the teardown ran after the row was gone.
+
+    `_remove_chat_tools` now raises on a genuine failure instead of swallowing
+    it, so ordering started to matter: run after `repo.delete`, a hiccup
+    answered "delete failed" for a connection that no longer existed — the
+    retry 404s, the leftover tools have no obvious route to removal, and the
+    list still shows the row until a reload.
+    """
+
+    def test_a_failed_teardown_leaves_the_connection_deletable(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-chat-delorder")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        import app.api.admin_source_connections as mod
+
+        real = mod.tool_registry_repo
+
+        class _Boom:
+            def __getattr__(self, name):
+                def _fail(*a, **kw):
+                    raise RuntimeError("registry unavailable")
+
+                return _fail if name == "delete_for_source" else getattr(real(), name)
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(mod, "tool_registry_repo", lambda: _Boom())
+            assert c.delete(f"{BASE}/{conn_id}", headers=_auth(token)).status_code == 500
+
+        # The connection must still be there, so the admin can simply retry.
+        assert c.get(f"{BASE}/{conn_id}", headers=_auth(token)).status_code == 200
+        assert c.delete(f"{BASE}/{conn_id}", headers=_auth(token)).status_code == 204
+
+    def test_the_teardown_runs_before_the_row_is_deleted(self):
+        import pathlib
+
+        src = (pathlib.Path(__file__).resolve().parents[1] / "app" / "api" / "admin_source_connections.py").read_text(
+            encoding="utf-8"
+        )
+        block = src[src.index("def delete_connection") :][:3000]
+        assert block.index("_remove_chat_tools(connection_id)") < block.index("repo.delete(connection_id)")
+
+
+def test_the_admin_page_renders_a_structured_error_detail():
+    """A FastAPI `detail` is a string on some paths and an object on others.
+
+    Pasting it into a template literal renders "[object Object]" and throws
+    away the one thing the admin needs — which is what the chat-tools toast
+    did with the partial-teardown report. (Devin Review on this PR.)
+    """
+    import pathlib
+
+    src = (
+        pathlib.Path(__file__).resolve().parents[1] / "app" / "web" / "templates" / "admin_data_sources.html"
+    ).read_text(encoding="utf-8")
+    assert "function detailMessage(" in src
+    assert "still_present" in src, "the partial-teardown list is never shown"
+    assert 'showToast("Failed: " + (body.detail' not in src, "the chat-tools toast still stringifies an object"

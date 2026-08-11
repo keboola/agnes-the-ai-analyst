@@ -584,15 +584,7 @@ async function deleteConn(id) {
       renderConnList();
     } else {
       const body = await r.json().catch(() => ({}));
-      const detail = body.detail;
-      let msg = "unknown error";
-      if (detail && typeof detail === "object") {
-        msg = detail.message || detail.error || msg;
-        if (Array.isArray(detail.tables) && detail.tables.length) msg += " (" + detail.tables.join(", ") + ")";
-      } else if (detail) {
-        msg = detail;
-      }
-      showToast("Delete failed: " + msg, false);
+      showToast("Delete failed: " + detailMessage(body, "unknown error"), false);
     }
   } catch (_) {
     showToast("Request failed.", false);
@@ -611,7 +603,7 @@ async function setDefaultConn(id) {
       await loadConnections();
     } else {
       const body = await r.json().catch(() => ({}));
-      showToast("Failed: " + (body.detail || "unknown error"), false);
+      showToast("Failed: " + detailMessage(body, "unknown error"), false);
     }
   } catch (_) {
     showToast("Request failed.", false);
@@ -705,7 +697,7 @@ async function removeMasterToken(id) {
       await loadConnections();
     } else {
       const body = await r.json().catch(() => ({}));
-      showToast("Failed: " + (body.detail || "unknown error"), false);
+      showToast("Failed: " + detailMessage(body, "unknown error"), false);
     }
   } catch (_) {
     showToast("Request failed.", false);
@@ -731,14 +723,33 @@ async function toggleChatTools(id, isOn, resync) {
       await loadConnections();
     } else {
       const body = await r.json().catch(() => ({}));
-      showToast("Failed: " + (body.detail || `HTTP ${r.status}`), false);
+      showToast("Failed: " + detailMessage(body, `HTTP ${r.status}`), false);
     }
   } catch (_) {
     showToast("Request failed.", false);
   }
 }
 
-/* ── Browse & register (inline, per existing connection) ─────────────────── */
+/* A FastAPI `detail` is a string on some paths and a structured object on
+   others (`{error, message, …}` plus a path-specific list: `tables` for a
+   connection still in use, `still_present` for a partial chat-tools
+   teardown). Pasting it into a template literal renders "[object Object]"
+   and throws away the one thing the admin needs — which is what the chat-
+   tools toast did. One reader for every caller. (Devin Review.) */
+function detailMessage(body, fallback) {
+  const detail = body && body.detail;
+  if (detail && typeof detail === "object") {
+    let msg = detail.message || detail.error || fallback;
+    for (const key of ["tables", "still_present"]) {
+      const list = detail[key];
+      if (Array.isArray(list) && list.length) msg += " (" + list.join(", ") + ")";
+    }
+    return msg;
+  }
+  return detail || fallback;
+}
+
+/* ── Browse & register (inline, per existing connection) ─────────────────────── */
 
 async function toggleBrowse(id) {
   const panel = document.getElementById(`ds-browse-${id}`);
