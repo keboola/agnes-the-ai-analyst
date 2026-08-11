@@ -130,3 +130,13 @@ class TestTheApprovalWarningReachesThisTabToo:
 
         assert "result.delivery_warnings" in body
         assert "reads as an instruction" in body
+
+
+class TestTheBrowseTabRendersTheNoticeToo:
+    def test_browse_has_its_own_slot_and_renders_into_it(self, seeded_app):
+        body = seeded_app["client"].get(
+            "/admin/corporate-memory", headers=_auth(seeded_app["admin_token"])
+        ).text
+
+        assert 'id="browseDeliveryNotice"' in body
+        assert "'browseDeliveryNotice'" in body
