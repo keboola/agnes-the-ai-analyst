@@ -39,6 +39,13 @@ _SCOPE_FOR_PREFIX = {
     "/agnes-api": "main",
     "/agnes-mcp": "mcp",
     "/data-apps": "data_apps",
+    # Git smart-HTTP for a hosted app's repo. Shares the `data_apps` ticket
+    # but is deliberately NOT an envelope route: git speaks raw HTTP with
+    # binary bodies and its own content types, which the {method, path, body}
+    # JSON envelope cannot carry. It rides the transparent leg instead, like
+    # `/anthropic` — the broker attaches the real git credential on the
+    # outbound side, so the sandbox never holds one.
+    "/data-apps.git": "data_apps",
 }
 
 # Prefixes whose broker route replays a ``{method, path, body}`` envelope
@@ -189,9 +196,13 @@ class Relay:
                 headers = {"Authorization": f"Bearer {ticket}"}
                 return await client.post(url, json=envelope, headers=headers)
 
-            # Transparent proxy (``/anthropic``): raw body + SDK headers.
+            # Transparent proxy (``/anthropic``, ``/data-apps.git``): raw body
+            # + caller headers. The METHOD has to pass through: git's very
+            # first call is `GET /info/refs?service=git-upload-pack`, and a
+            # hardcoded POST turned it into a 405 before the repo was ever
+            # reached. `/anthropic` is unaffected — it only ever POSTs.
             url, headers = self._transparent_request(path, inbound_headers)
-            return await client.post(url, content=body, headers=headers)
+            return await client.request(method.upper(), url, content=body, headers=headers)
         finally:
             if owns_client:
                 await client.aclose()
