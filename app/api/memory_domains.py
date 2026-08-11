@@ -156,6 +156,11 @@ async def list_memory_domains_admin(
     return [_serialize(r) for r in rows]
 
 
+#: Category for items the domain builder seeds. One value, not one per
+#: domain — see the note at the `category=` argument below.
+SEEDED_ITEM_CATEGORY = "corporate-memory"
+
+
 def seed_domain_item(
     *,
     slug: str,
@@ -190,9 +195,13 @@ def seed_domain_item(
         title=(content_title or name).strip(),
         content=content.strip(),
         # `category` is required on the knowledge repo and the builder form
-        # does not ask for one — the domain is the categorisation here, so
-        # its slug is the honest value rather than an invented constant.
-        category=slug.strip(),
+        # does not ask for one. NOT the domain slug: categories are
+        # enumerated with `SELECT DISTINCT category` to fill the admin page's
+        # dropdowns (`app/web/router.py`), so a slug per domain would grow a
+        # long tail of one-item categories there. The domain is already
+        # recorded in `domain`; one stable label says where the item came
+        # from without inventing a taxonomy. (Devin Review on #1263.)
+        category=SEEDED_ITEM_CATEGORY,
         source_user=source_user,
         tags=None,
         domain=slug.strip(),
