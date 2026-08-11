@@ -156,6 +156,51 @@ async def list_memory_domains_admin(
     return [_serialize(r) for r in rows]
 
 
+def seed_domain_item(
+    *,
+    slug: str,
+    name: str,
+    content: Optional[str],
+    content_title: Optional[str],
+    source_user: Optional[str],
+) -> Optional[str]:
+    """Create the domain's first knowledge item, or ``None`` when there is none.
+
+    Shared with the suggestion-queue replay in
+    ``app/api/authoring_suggestions.py``: a non-admin's submission is created
+    later, by a different code path, and that path copied only name/slug/
+    description — so the knowledge the author actually wrote was dropped on
+    approval and an empty domain appeared instead. One function, so the two
+    ways a domain gets created cannot drift again. (Devin Review on #1263.)
+
+    The item lands ``pending`` like every other route into corporate memory
+    (`POST /api/memory`): approval is what publishes an item into every
+    analyst's `.claude/rules/`, and authoring it is not approving it.
+    """
+    if not content or not content.strip():
+        return None
+
+    import uuid as _uuid
+
+    from src.repositories import knowledge_repo
+
+    item_id = str(_uuid.uuid4())
+    knowledge_repo().create(
+        id=item_id,
+        title=(content_title or name).strip(),
+        content=content.strip(),
+        # `category` is required on the knowledge repo and the builder form
+        # does not ask for one — the domain is the categorisation here, so
+        # its slug is the honest value rather than an invented constant.
+        category=slug.strip(),
+        source_user=source_user,
+        tags=None,
+        domain=slug.strip(),
+        confidence=0.50,
+    )
+    return item_id
+
+
 @router.post("", status_code=201)
 async def create_memory_domain(
     payload: CreateMemoryDomainRequest,
@@ -192,26 +237,14 @@ async def create_memory_domain(
     # domain is the exact failure this field exists to remove. The domain
     # itself is already created and audited, so the 500 is honest — retrying
     # the item is possible, and re-POSTing the domain 409s on the slug.
-    item_id: Optional[str] = None
-    if payload.content and payload.content.strip():
-        import uuid as _uuid
-
-        from src.repositories import knowledge_repo
-
-        item_id = str(_uuid.uuid4())
-        knowledge_repo().create(
-            id=item_id,
-            title=(payload.content_title or payload.name).strip(),
-            content=payload.content.strip(),
-            # `category` is required on the knowledge repo and the builder form
-            # does not ask for one — the domain is the categorisation here, so
-            # its slug is the honest value rather than an invented constant.
-            category=payload.slug.strip(),
-            source_user=user.get("email"),
-            tags=None,
-            domain=payload.slug.strip(),
-            confidence=0.50,
-        )
+    item_id: Optional[str] = seed_domain_item(
+        slug=payload.slug,
+        name=payload.name,
+        content=payload.content,
+        content_title=payload.content_title,
+        source_user=user.get("email"),
+    )
+    if item_id:
         _audit(
             conn,
             user["id"],
@@ -220,7 +253,13 @@ async def create_memory_domain(
             {"item_id": item_id, "slug": payload.slug},
         )
 
-    return {"id": domain_id, "item_id": item_id}
+    # `item_status` is stated rather than implied: the seeded item lands
+    # `pending` like every other route into corporate memory, because approval
+    # is what publishes an item into every analyst's `.claude/rules/` and
+    # authoring is not approving. An admin who wrote it still has to approve
+    # it, and the builder now says so instead of leaving them to notice.
+    # (Devin Review on #1263 asked whether pending was intended — it is.)
+    return {"id": domain_id, "item_id": item_id, "item_status": "pending" if item_id else None}
 
 
 @router.get("/{domain_id}")
