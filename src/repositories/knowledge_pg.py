@@ -239,6 +239,29 @@ class KnowledgePgRepository:
                 sa.text(f"UPDATE knowledge_items SET {', '.join(sets)} WHERE id = :item_id"),
                 params,
             )
+            # Keep the junction in step with the inline column, the way
+            # `create` now does — two sources of truth for an item's domain
+            # is how a moved item ends up listed under its old domain by one
+            # query and its new one by another. Replace semantics, matching
+            # the DuckDB sibling. (Devin Review on #1263.)
+            if "domain" in safe:
+                conn.execute(
+                    sa.text("DELETE FROM knowledge_item_domains WHERE item_id = :item"),
+                    {"item": item_id},
+                )
+                if safe["domain"]:
+                    row = conn.execute(
+                        sa.text("SELECT id FROM memory_domains WHERE slug = :slug"), {"slug": safe["domain"]}
+                    ).fetchone()
+                    if not row:
+                        raise ValueError(f"Unknown memory domain slug: {safe['domain']}")
+                    conn.execute(
+                        sa.text(
+                            "INSERT INTO knowledge_item_domains(item_id, domain_id, added_by) "
+                            "VALUES (:item, :dom, :by) ON CONFLICT DO NOTHING"
+                        ),
+                        {"item": item_id, "dom": row[0], "by": "system"},
+                    )
 
     def update_status(self, item_id: str, status: str) -> None:
         now = datetime.now(timezone.utc)
