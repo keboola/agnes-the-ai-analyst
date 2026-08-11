@@ -1027,6 +1027,21 @@ async def enable_chat_tools(
     # credential. The unrelated-edit path (`_resync_derived_chat_tools`) still
     # preserves the flag, because an edit is not a request to enable.
     # (Devin Review on this PR, twice — once from each side.)
+    #
+    # Everything ELSE the admin adjusted on that server entry is carried over,
+    # the same way the edit path does it: this endpoint also backs the page's
+    # "Re-sync token" button, and rebuilding the row wholesale threw away
+    # extra environment values, launch arguments, the credential scope and the
+    # connect hint. Only `enabled` is forced, because turning it on is what
+    # this endpoint is for. (Devin Review on this PR, third round.)
+    existing_row = mcp_sources_repo().get(spec["id"])
+    if existing_row is not None:
+        for field in ("scope", "connect_hint", "command", "args", "auth_method", "auth_secret_env"):
+            if field in existing_row:
+                spec[field] = existing_row[field]
+        merged_env = dict(existing_row.get("env") or {})
+        merged_env.update(spec.get("env") or {})
+        spec["env"] = merged_env
     try:
         mcp_sources_repo().upsert(**spec)
     except Exception:

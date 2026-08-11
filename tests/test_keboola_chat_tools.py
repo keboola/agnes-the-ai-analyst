@@ -1089,6 +1089,47 @@ class TestEnableTurnsADisabledServerBackOn(TestChatToolsEndpoint):
         assert mcp_sources_repo().get(source_id)["enabled"] is False
 
 
+class TestResyncKeepsWhatTheAdminAdjusted(TestChatToolsEndpoint):
+    """Devin Review on this PR, third round: the enable path rebuilt the row.
+
+    It also backs the page's "Re-sync token" button, so pressing that button
+    discarded every setting an admin had changed on the derived server —
+    exactly the bug fixed on the edit path, on the other endpoint.
+    """
+
+    def test_a_resync_preserves_customisations_but_still_enables(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-resync")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.repositories import mcp_sources_repo
+
+        source_id = derived_source_id(conn_id)
+        before = mcp_sources_repo().get(source_id)
+        keep = {
+            k: before[k]
+            for k in ("id", "name", "transport", "command", "url", "auth_method", "auth_secret_env")
+            if k in before
+        }
+        mcp_sources_repo().upsert(
+            **keep,
+            enabled=False,
+            scope="per_user",
+            connect_hint="Ask the data team first.",
+            args=["--pinned", "1.2.3"],
+            env={**(before.get("env") or {}), "KBC_EXTRA": "keep-me"},
+        )
+
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        after = mcp_sources_repo().get(source_id)
+        assert after["enabled"] is True, "the switch must still turn it on"
+        assert after["scope"] == "per_user"
+        assert after["connect_hint"] == "Ask the data team first."
+        assert list(after["args"]) == ["--pinned", "1.2.3"]
+        assert (after.get("env") or {}).get("KBC_EXTRA") == "keep-me"
+
+
 class TestAnEditKeepsWhatTheAdminAdjusted(TestChatToolsEndpoint):
     """Devin Review on this PR: the resync rebuilt the whole row.
 
