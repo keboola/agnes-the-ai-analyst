@@ -2749,3 +2749,20 @@ class TestListPageFilterDropdowns:
         r = web_client.get("/admin/store/submissions", cookies=admin_cookies)
         assert r.status_code == 200
         assert "js/components/ds_dropdown.js" in r.text
+
+
+def test_the_withdrawal_gate_reads_the_shared_status_list():
+    """Devin Review on #1263: two copies of "review rejected it" would drift.
+
+    `_entity_review_blocked` and `user_store_installs.list_for_user` both
+    decide from `BLOCKING_SUBMISSION_STATUSES`; the withdrawal gate must not
+    keep its own.
+    """
+    import inspect
+
+    from app.api import store
+    from src.repositories.store_submissions import BLOCKING_SUBMISSION_STATUSES
+
+    src = inspect.getsource(store.delete_entity)
+    assert "_ADVERSE_VERDICTS = BLOCKING_SUBMISSION_STATUSES" in src, src[:200]
+    assert "blocked_llm" in BLOCKING_SUBMISSION_STATUSES
