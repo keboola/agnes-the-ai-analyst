@@ -465,7 +465,11 @@ function _chatToolsRowHtml(row) {
   const badgeClass = on ? "badge-vault" : "badge-unset";
   const badgeLabel = on ? "on" : "off";
   const hint = on
-    ? "Tools are registered. Grant them to a group under Access to make them visible to analysts."
+    // Enabling registers the SOURCE, not its tools: the tool_registry rows the
+    // Access screen grants from are created by Introspect on the source detail
+    // page. The old wording ("Tools are registered. Grant them…") sent the
+    // admin straight to a grant screen with nothing on it. (Devin Review.)
+    ? "Connected. Open it under Admin -> MCP sources and run Introspect to list its tools, then grant them to a group under Access."
     : "Give the chat agent this project's own Keboola tools.";
   return `
   <div class="ds-master-row">
