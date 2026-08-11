@@ -108,6 +108,10 @@ class TestMemoryDomainsCreate:
         assert resp.status_code == 201, resp.text
         body = resp.json()
         assert body["item_id"], "the seeded item's id must come back"
+        # Authoring is not approving: the item lands pending like every other
+        # route into corporate memory, and the response says which state it is
+        # in so the builder can tell the author. (Devin Review on #1263.)
+        assert body["item_status"] == "pending"
 
         conn = get_system_db()
         item = KnowledgeRepository(conn).get_by_id(body["item_id"])

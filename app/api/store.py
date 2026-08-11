@@ -3773,11 +3773,24 @@ async def delete_entity(
     # crashed" are the author's own not-yet-public upload to withdraw. The
     # submission row, its sha256 and its size survive a withdrawal either way
     # (see src/store_guardrails/purge.py), so forensic correlation is intact.
+    # Every submission, not just the latest — the sibling predicate
+    # `_entity_review_blocked` scans the whole chain for exactly this reason.
+    # Reading only the newest row let an author clear an adverse verdict by
+    # re-uploading: the fresh, unjudged submission becomes "latest" and the
+    # objection stops counting, which is the withdrawal this gate exists to
+    # prevent. `pending` / `review_error` are still not verdicts, so an upload
+    # nothing ever objected to remains the author's to withdraw.
+    # (Devin Review on #1263.)
     _ADVERSE_VERDICTS = ("blocked_inline", "blocked_llm")
-    latest_verdict = (store_submissions_repo().latest_for_entity(entity_id) or {}).get("status")
+    try:
+        _subs = store_submissions_repo().list_for_entity(entity_id)
+    except Exception:
+        logger.exception("store: could not read submissions for entity %s", entity_id)
+        _subs = None  # unreadable history → refuse, never fail open
+    ever_adverse = True if _subs is None else any((s.get("status") or "") in _ADVERSE_VERDICTS for s in _subs)
     if (
         entity.get("visibility_status") not in ("approved", "archived")
-        and latest_verdict in _ADVERSE_VERDICTS
+        and ever_adverse
         and not is_admin_caller
         and not is_own_unflagged_private(entity, user["id"])
     ):
