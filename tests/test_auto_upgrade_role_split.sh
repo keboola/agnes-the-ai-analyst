@@ -471,4 +471,45 @@ grep -q "ABORTED role-split rolling recreate — worker/gateway recreate failed"
 echo "OK: G — worker/gateway recreate failure aborts the rollout, alerts, and never touches api replicas"
 rm -rf "$tmp"
 
+# =====================================================================
+# Scenario H: docker GC on a NO-DRIFT tick. The prune used to be the last
+# statement inside the drift block, so a VM only ever reclaimed disk on a
+# tick that happened to recreate containers — and never at all on a box
+# sitting on the current image. Both prunes must now run on every tick,
+# BEFORE the pull (so a nearly-full boot disk has room for the new image),
+# without recreating anything.
+# =====================================================================
+run_scenario H
+rc=0
+TRANSCRIPT="$transcript" CURL_CALLED="$curl_called_file" \
+    READYZ_STATE_DIR="$readyz_state_dir" \
+    FAKE_TOPOLOGY=single \
+    FAKE_TAG_ID=sha256:sameimage000 \
+    FAKE_RUNNING_IMAGE_ID=sha256:sameimage000 \
+    WEBHOOK_URL="" \
+    PATH="$fake_bin:$PATH" \
+    bash "$sandboxed" || rc=$?
+[ "$rc" -eq 0 ] || fail "H: a no-drift tick must exit 0 (got $rc)"
+
+grep -qF "docker compose up -d" "$transcript" \
+    && fail "H: nothing may be recreated when the running image already matches the tag"
+grep -qF "docker image prune -f" "$transcript" \
+    || fail "H: dangling images must be pruned even when no upgrade happened"
+grep -qF "docker builder prune" "$transcript" \
+    || fail "H: the BuildKit cache must be pruned even when no upgrade happened"
+l_img_prune=$(line_num "docker image prune -f")
+l_bld_prune=$(line_num "docker builder prune")
+l_pull=$(line_num "docker compose pull")
+[ -n "$l_pull" ] || fail "H: the pull line is missing from the transcript"
+[ "$l_img_prune" -lt "$l_pull" ] \
+    || fail "H: image prune must run BEFORE the pull, so a full boot disk gets room first"
+[ "$l_bld_prune" -lt "$l_pull" ] \
+    || fail "H: builder prune must run BEFORE the pull, so a full boot disk gets room first"
+grep -qF -- "--filter until=" "$transcript" \
+    || fail "H: builder prune must keep a retention window rather than dropping the whole cache"
+grep -qE "docker image prune( -f)? -a| --all" "$transcript" \
+    && fail "H: image prune must stay dangling-only — -a would drop tagged images a data app still needs"
+echo "OK: H — both prunes run on a no-drift tick, before the pull, dangling-only"
+rm -rf "$tmp"
+
 echo "OK"
