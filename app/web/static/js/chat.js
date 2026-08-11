@@ -341,7 +341,8 @@ function renderMermaidBlocks(root) {
 // block when copying, because suggestions are chrome. Provenance is not: a
 // transcript that dropped it would be exactly the report someone needs when
 // they doubt a number, minus the part that answers them.
-const _SOURCES_FENCE_RE = /```sources[ \t]*\r?\n[\s\S]*?```/gi;
+const _SOURCES_OPEN_RE = /```sources[ \t]*\r?\n/i;
+const _SOURCES_CLOSE = "```";
 
 /** Remove the raw fence(s) from rendered markdown. The block is a wire format
  *  between the agent and this renderer — showing it as a code block would put
@@ -353,7 +354,23 @@ const _SOURCES_FENCE_RE = /```sources[ \t]*\r?\n[\s\S]*?```/gi;
  *  calls — safe here because `String.replace` with a `g` pattern resets it,
  *  but do not reuse this constant with `.test()`. */
 function stripSourcesFence(markdown) {
-  return (markdown || "").replace(_SOURCES_FENCE_RE, "").trimEnd();
+  // `indexOf` for the body, not a non-greedy pattern. `[\s\S]*?```` rescans
+  // to end-of-string for every unterminated opener, so a long reply full of
+  // half-written markers cost work proportional to openers x length — the
+  // same trap fixed server-side in `app/chat/sources.py`, and this is the
+  // half that runs in the reader's browser on every message. An unterminated
+  // opener is not a block: stopping there keeps a truncated answer from
+  // swallowing everything after it. (Devin Review.)
+  let out = markdown || "";
+  for (;;) {
+    const open = _SOURCES_OPEN_RE.exec(out);
+    if (!open) break;
+    const bodyStart = open.index + open[0].length;
+    const close = out.indexOf(_SOURCES_CLOSE, bodyStart);
+    if (close === -1) break;
+    out = out.slice(0, open.index) + out.slice(close + _SOURCES_CLOSE.length);
+  }
+  return out.trimEnd();
 }
 
 const _CLAIM_LABEL = { table: "table", metric: "metric", assumption: "assumes" };

@@ -197,13 +197,20 @@ def test_the_fence_regex_removes_the_block_and_nothing_else():
     if not node:
         pytest.skip("node not available")
     js = _read(CHAT_JS)
-    decl = re.search(r"const _SOURCES_FENCE_RE = .*?;", js)
-    assert decl, "_SOURCES_FENCE_RE moved — re-point this guard"
+    open_decl = re.search(r"const _SOURCES_OPEN_RE = .*?;", js)
+    close_decl = re.search(r'const _SOURCES_CLOSE = .*?;', js)
+    assert open_decl and close_decl, "the fence constants moved — re-point this guard"
+    decl = type("D", (), {"group": lambda self, _n: open_decl.group(0) + "\n" + close_decl.group(0)})()
     fn = js[js.index("function stripSourcesFence") : js.index("const _CLAIM_LABEL")]
     cases = {
         "with_block": "MRR is $1.\n\n```sources\ntable: mrr\n```\n",
         "no_block": "MRR is $1.",
         "code_block_kept": "See:\n\n```sql\nSELECT 1\n```\n\n```sources\ntable: mrr\n```\n",
+        # Two blocks: the earlier non-global pattern left the second on screen.
+        "two_blocks": "a\n\n```sources\ntable: x\n```\n\nb\n\n```sources\ntable: y\n```\n",
+        # Unterminated: not a block. Stripping to end-of-string would eat the
+        # answer, and the loop must terminate.
+        "unterminated_kept": "MRR is $1.\n\n```sources\ntable: mrr",
     }
     script = (
         decl.group(0)
@@ -218,6 +225,11 @@ def test_the_fence_regex_removes_the_block_and_nothing_else():
     assert res["no_block"] == "MRR is $1."
     assert "```sql" in res["code_block_kept"], "an ordinary code block must survive"
     assert "table: mrr" not in res["code_block_kept"]
+    assert res["two_blocks"] == "a\n\n\n\nb", res["two_blocks"]
+    assert "```sources" not in res["two_blocks"], "a second block stayed on screen"
+    assert res["unterminated_kept"] == "MRR is $1.\n\n```sources\ntable: mrr", (
+        "an unterminated opener is not a block — stripping it would eat the answer"
+    )
 
 
 def _chat_js() -> str:
@@ -237,20 +249,30 @@ class TestEveryProvenanceBlockIsRemoved:
     prevent.
     """
 
-    def test_the_fence_pattern_is_global(self):
-        import re
+    def test_the_body_is_not_matched_with_a_regex(self):
+        """The browser half of the linear-time fix.
 
+        `[\\s\\S]*?```` rescans to end-of-string for every unterminated
+        opener, so a long reply full of half-written markers cost work
+        proportional to openers x length — in the reader's browser, on every
+        message. Same trap fixed server-side in `app/chat/sources.py`.
+        """
         js = _chat_js()
-        decl = re.search(r"const _SOURCES_FENCE_RE = /.*?/([a-z]*);", js)
-        assert decl, "_SOURCES_FENCE_RE moved — re-point this guard"
-        assert "g" in decl.group(1), "only the first provenance block is stripped"
+        assert "_SOURCES_FENCE_RE" not in js, "the non-greedy fence pattern is back"
+        assert "_SOURCES_OPEN_RE" in js and "indexOf(_SOURCES_CLOSE" in js
 
-    def test_the_pattern_is_not_reused_with_test(self):
-        """A `g` regex carries `lastIndex` across `.test()` calls — alternating
-        true/false on identical input. `String.replace` resets it, so the one
-        current use is safe; a future `.test()` would not be."""
+    def test_every_block_is_still_removed(self):
+        """The loop must not stop after the first — that was the earlier bug."""
         js = _chat_js()
-        assert "_SOURCES_FENCE_RE.test(" not in js
+        fn = js[js.index("function stripSourcesFence") : js.index("const _CLAIM_LABEL")]
+        assert "for (;;)" in fn or "while" in fn, "only one block would be stripped"
+
+    def test_an_unterminated_opener_stops_the_loop(self):
+        """Otherwise a truncated answer swallows everything after it — and the
+        loop would never terminate."""
+        js = _chat_js()
+        fn = js[js.index("function stripSourcesFence") : js.index("const _CLAIM_LABEL")]
+        assert "=== -1) break" in fn
 
 
 class TestAnUnsourcedFigureIsNotSilent:

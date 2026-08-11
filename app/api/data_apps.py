@@ -512,7 +512,13 @@ def _mint_container_git_token(repo_slug: str, app_slug: str, owner: dict) -> tup
         email=owner["email"],
         token_id=token_id,
         typ="pat",
-        extra_claims={"scope": f"data-app-git:{repo_slug}"},
+        # Clone-only. The scope encodes WHICH repo, never what may be done to
+        # it, and this credential is minted for the app's OWNER — so without
+        # this claim the git surface saw an owner and allowed pushes, making
+        # "the clone token" a non-expiring read/write credential sitting in
+        # every hosted container's `config.json`. Enforced in
+        # `app/api/data_apps_git.py`. (agnes-reviewer-rbac on this PR.)
+        extra_claims={"scope": f"data-app-git:{repo_slug}", "git_write": False},
     )
     access_token_repo().create(
         id=token_id,

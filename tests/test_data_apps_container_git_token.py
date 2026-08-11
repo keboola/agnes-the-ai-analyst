@@ -197,3 +197,55 @@ def test_the_mint_path_goes_through_the_helper():
     """Otherwise the guard sits in a function nothing calls."""
     src = SOURCE.read_text(encoding="utf-8")
     assert "return _clone_url_with_credential(base, jwt_token, slug)" in src
+
+
+# ---------------------------------------------------------------------------
+# The container's credential must be clone-ONLY (agnes-reviewer-rbac on #1239)
+# ---------------------------------------------------------------------------
+
+
+def test_the_container_token_is_marked_clone_only():
+    """The scope says WHICH repo, never what may be done to it.
+
+    `data-app-git:<slug>` is the same scope the analyst's 24-hour authoring
+    PAT carries, and the container's credential is minted for the app's
+    OWNER — so the git surface saw an owner and allowed pushes. "The clone
+    token" was in fact a non-expiring read/write credential, sitting in every
+    hosted container's `config.json` where any code in the app can read it.
+    """
+    src = SOURCE.read_text(encoding="utf-8")
+    body = src[src.index("def _mint_container_git_token") : src.index("def _container_git_token_name")]
+    assert '"git_write": False' in body, "the container credential is still push-capable"
+
+
+def test_the_analyst_authoring_credential_is_not_marked_clone_only():
+    """It exists to push. Absent claim = writable, so it and every token
+    minted before this release are unaffected."""
+    src = SOURCE.read_text(encoding="utf-8")
+    body = src[src.index("def _mint_git_credential") : src.index("def _clone_url_with_credential")]
+    assert "git_write" not in body
+
+
+def test_the_git_surface_denies_a_push_from_a_clone_only_token():
+    import pathlib
+
+    git_src = (
+        pathlib.Path(__file__).resolve().parents[1] / "app" / "api" / "data_apps_git.py"
+    ).read_text(encoding="utf-8")
+
+    block = git_src[git_src.index("is_push = _is_push_request") : git_src.index("return user, app_row, allowed")]
+    assert 'payload.get("git_write") is False' in block, "nothing enforces the clone-only claim"
+    # …and it must be checked BEFORE ownership, or an owner-minted token passes.
+    assert block.index('payload.get("git_write")') < block.index("allowed = is_owner or admin")
+
+
+def test_absent_claim_still_allows_a_push():
+    """`is False`, not falsy: a token with no claim must keep working."""
+    import pathlib
+
+    git_src = (
+        pathlib.Path(__file__).resolve().parents[1] / "app" / "api" / "data_apps_git.py"
+    ).read_text(encoding="utf-8")
+    assert 'not payload.get("git_write")' not in git_src, (
+        "a falsy check would revoke push for every pre-existing token"
+    )
