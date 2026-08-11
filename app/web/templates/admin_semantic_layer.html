@@ -157,12 +157,16 @@
         <td class="num">{{ s.metric_count }}<span class="sl-cov" data-conn="{{ s.connection_id }}"></span></td>
         <td class="num">{{ s.glossary_count }}</td>
         <td>
-          {% if s.last and s.last.status == 'ok' and not (s.last.created_or_updated | default(0)) %}
+          {% if s.last and s.last.status == 'ok' and not (s.last.created_or_updated | default(0))
+                and not (s.last.glossary_created_or_updated | default(0)) %}
             {# A healthy run re-upserts every upstream metric, so zero written is
-               not a quiet success — don't dress it as one. #}
+               not a quiet success — don't dress it as one. Glossary counts too:
+               a project that publishes terms but no metrics is a normal shape,
+               and reading it as "imported nothing" sent admins looking for a
+               fault that was not there. (Devin Review.) #}
             <span class="sl-last-none">— ran, imported nothing</span>
           {% elif s.last and s.last.status == 'ok' %}
-            <span class="sl-last-ok">✓ {{ s.last.created_or_updated | default(0) }} updated, {{ s.last.pruned | default(0) }} pruned</span>
+            <span class="sl-last-ok">✓ {{ s.last.created_or_updated | default(0) }} updated{% if s.last.glossary_created_or_updated | default(0) %}, {{ s.last.glossary_created_or_updated }} terms{% endif %}, {{ s.last.pruned | default(0) }} pruned</span>
           {% elif s.last and s.last.status == 'skipped' %}
             <span class="sl-last-skipped">— skipped (duplicate project)</span>
           {% elif s.last %}
