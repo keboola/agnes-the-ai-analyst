@@ -1031,13 +1031,16 @@ def _aggregate_sources(sources: list[dict]) -> dict:
     any_ok = any(s.get("status") == "ok" for s in sources)
     result: dict[str, Any] = {"status": "ok" if any_ok else "error", **totals, "sources": sources}
     if not any_ok:
-        result["error"] = next(
-            (s.get("error") for s in sources if s.get("error")),
-            "Keboola semantic layer sync failed",
-        )
-        code = next((s.get("code") for s in sources if s.get("code")), None)
-        if code:
-            result["code"] = code
+        # BOTH from the same source. Two independent `next(...)` scans could
+        # take the message from one failing project and the code from another,
+        # so an admin read a reason that did not belong to the failure type
+        # they were shown — the worst possible pairing when several projects
+        # fail at once and only one of them is the one they are debugging.
+        # (Devin Review on this PR.)
+        first_failed = next((s for s in sources if s.get("error") or s.get("code")), None) or {}
+        result["error"] = first_failed.get("error") or "Keboola semantic layer sync failed"
+        if first_failed.get("code"):
+            result["code"] = first_failed["code"]
     return result
 
 

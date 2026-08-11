@@ -604,7 +604,17 @@ async def set_connection_secret(
     # Only after the secret is safely stored: a recorded identity whose token
     # failed to persist would bind the connection to a project it cannot open.
     if row.get("source_type") == "keboola" and info is not None:
-        _record_project_identity(connection_id, row, info)
+        # Bookkeeping, same as on `/test`: the token is already safely
+        # stored by this point, so a vault or DB fault here must not turn a
+        # successful save into an error response. (Devin Review.)
+        try:
+            _record_project_identity(connection_id, row, info)
+        except Exception:  # noqa: BLE001 — the secret itself landed
+            logger.warning(
+                "stored the token for connection %s but could not record its project identity",
+                connection_id,
+                exc_info=True,
+            )
 
 
 @router.delete("/{connection_id}/secret", status_code=204)
