@@ -284,3 +284,37 @@ class TestNameConflicts:
         assert source["metrics"] == {"upstream": 1, "importable": 1}
         assert source["conflicts"] == []
         assert "name_conflict" not in _warning_codes(source)
+
+
+class TestCoverageNoticesARefusedSync:
+    """Devin Review on #1248: the report compared only storage vs master.
+
+    The connection's RECORDED project (#1242) is a third identity, and the
+    one the sync enforces — a master token opening a different project than
+    the connection is locked to is refused outright, so the sync never runs.
+    Reporting coverage as healthy for such a connection is the single most
+    misleading thing this page can say.
+    """
+
+    def test_a_master_token_for_the_wrong_project_is_warned_about(self):
+        import inspect
+
+        from connectors.keboola import semantic_layer
+
+        src = inspect.getsource(semantic_layer.compute_semantic_coverage)
+        assert 'config") or {}).get("project_id")' in src, "the recorded binding is never consulted"
+        assert "master_token_project_mismatch" in src
+        # …and it must set the same flag the page already renders on.
+        i = src.index("master_token_project_mismatch")
+        assert 'entry["token_project_mismatch"] = True' in src[:i]
+
+    def test_the_message_names_both_ways_out(self):
+        import inspect
+
+        from connectors.keboola import semantic_layer
+
+        src = inspect.getsource(semantic_layer.compute_semantic_coverage)
+        i = src.index("master_token_project_mismatch")
+        msg = src[i : i + 700]
+        assert "unbind" in msg
+        assert "master token for the project it is bound to" in msg
