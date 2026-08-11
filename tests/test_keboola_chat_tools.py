@@ -1124,10 +1124,20 @@ class TestResyncKeepsWhatTheAdminAdjusted(TestChatToolsEndpoint):
 
         after = mcp_sources_repo().get(source_id)
         assert after["enabled"] is True, "the switch must still turn it on"
-        assert after["scope"] == "per_user"
         assert after["connect_hint"] == "Ask the data team first."
-        assert list(after["args"]) == ["--pinned", "1.2.3"]
         assert (after.get("env") or {}).get("KBC_EXTRA") == "keep-me"
+        # …but the runner spec and the credential scope are RE-DERIVED: this
+        # endpoint is the "make it current" action, an upgraded runner has to
+        # reach projects that already have chat tools on, and the token it
+        # writes lives in the SHARED vault, so a preserved `per_user` scope
+        # would leave that credential unreachable.
+        from src.keboola_chat_tools import build_stdio_spec
+
+        fresh = build_stdio_spec(
+            connection_id=conn_id, connection_name="kbc-resync", stack_url="https://connection.example.com"
+        )
+        assert list(after["args"]) == list(fresh["args"]), "a runner upgrade must reach this project"
+        assert after["scope"] == "shared"
 
 
 class TestAnEditKeepsWhatTheAdminAdjusted(TestChatToolsEndpoint):

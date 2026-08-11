@@ -1036,9 +1036,17 @@ async def enable_chat_tools(
     # this endpoint is for. (Devin Review on this PR, third round.)
     existing_row = mcp_sources_repo().get(spec["id"])
     if existing_row is not None:
-        for field in ("scope", "connect_hint", "command", "args", "auth_method", "auth_secret_env"):
-            if field in existing_row:
-                spec[field] = existing_row[field]
+        # Only the fields that are the ADMIN's. `command`, `args` (the pinned
+        # runner version) and `auth_*` are derived from this release, and this
+        # endpoint is the "make it current" action — carrying them over meant
+        # an upgraded runner never reached a project that already had chat
+        # tools on. `scope` is derived too, and for a harder reason: this
+        # endpoint writes the token into the SHARED vault, so a preserved
+        # `per_user` scope would leave that credential unreachable. The
+        # unrelated-edit path preserves all of them, because an edit is not a
+        # request to re-derive anything. (Devin Review on this PR, both sides.)
+        if "connect_hint" in existing_row:
+            spec["connect_hint"] = existing_row["connect_hint"]
         merged_env = dict(existing_row.get("env") or {})
         merged_env.update(spec.get("env") or {})
         spec["env"] = merged_env
