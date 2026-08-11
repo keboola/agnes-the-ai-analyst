@@ -1069,7 +1069,24 @@ async def preview_file(
     }
 
     if ext in _PREVIEW_INLINE_MEDIA:
-        _blob_path_or_404(row)  # 404 now beats a broken <img> in the modal
+        # A present blob is still the normal case, and a *text-less* inline
+        # medium with no bytes must keep 404ing — a broken <img> in the modal
+        # is worse than an honest error, which is why this check was here.
+        #
+        # But the 404 used to come first unconditionally, and that trade-off
+        # stopped being symmetric once non-browser readers existed: `agnes
+        # collections cat` and the `collection_file_read` MCP tool cannot draw
+        # anything, so for a PDF whose bytes are gone but whose ingested text
+        # is sitting in `corpus_chunks` they reported a hard error instead of
+        # the answer. The textual branch below already degrades in exactly
+        # this situation. So: degrade when there IS text, 404 when there is
+        # not. `raw_url` is withheld in the degraded case rather than pointing
+        # at an endpoint that would 404 — that is what keeps the modal from
+        # rendering the broken embed this check exists to prevent.
+        # (Devin Review on this PR.)
+        media_blob = _blob_path_or_none(row)
+        if media_blob is None and not _extracted_text(file_id):
+            _blob_path_or_404(row)  # raises 404 file_blob_missing
         # The modal draws these from `raw_url` and ignores `text` — but a
         # non-browser reader (`agnes collections cat`, the
         # `collection_file_read` MCP tool) cannot draw anything, and a PDF
@@ -1082,7 +1099,7 @@ async def preview_file(
         return {
             **base,
             "kind": "image" if ext != "pdf" else "pdf",
-            "raw_url": f"/api/collections/{collection_id}/files/{file_id}/raw",
+            "raw_url": (f"/api/collections/{collection_id}/files/{file_id}/raw" if media_blob is not None else None),
             "text": media_text[:_PREVIEW_MAX_CHARS] or None,
             "truncated": len(media_text) > _PREVIEW_MAX_CHARS,
             "source": "extracted" if media_text else None,
