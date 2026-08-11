@@ -3758,8 +3758,26 @@ async def delete_entity(
     # ever delete a plugin nobody else can even see (#1177). Genuinely
     # quarantined rows (guardrails rejected a submission) still refuse, which
     # is the evidence-preservation the gate exists for.
+    # The gate exists to stop an author erasing a *flagged* upload before
+    # triage — but `visibility_status` cannot tell "flagged" from "not judged
+    # yet": the runner writes `hidden` for a blocked verdict AND for a
+    # review_error, and `pending` while the verdict is still in flight. Keying
+    # the refusal on visibility alone therefore trapped submissions nothing
+    # had ever objected to. Observed in production: a skill whose inline
+    # checks all passed sat in `review_error` (the LLM call crashed) for a
+    # month, un-deletable and un-editable, while re-uploading 409'd with
+    # "delete the existing entity first". The owner had no exit at all.
+    #
+    # So read the verdict, not the visibility. An adverse verdict keeps the
+    # evidence-preservation refusal; "no verdict yet" and "the reviewer
+    # crashed" are the author's own not-yet-public upload to withdraw. The
+    # submission row, its sha256 and its size survive a withdrawal either way
+    # (see src/store_guardrails/purge.py), so forensic correlation is intact.
+    _ADVERSE_VERDICTS = ("blocked_inline", "blocked_llm")
+    latest_verdict = (store_submissions_repo().latest_for_entity(entity_id) or {}).get("status")
     if (
         entity.get("visibility_status") not in ("approved", "archived")
+        and latest_verdict in _ADVERSE_VERDICTS
         and not is_admin_caller
         and not is_own_unflagged_private(entity, user["id"])
     ):
@@ -3767,9 +3785,9 @@ async def delete_entity(
             status_code=403,
             detail={
                 "code": "quarantined_owner_cannot_delete",
-                "hint": "This submission is under quarantine while admins "
-                "review it. Edit and re-upload to fix the issues, "
-                "or wait for an admin to resolve the quarantine.",
+                "hint": "Review flagged this submission, so it stays until an "
+                "admin resolves the quarantine. Edit and re-upload to "
+                "fix the issues.",
             },
         )
 
