@@ -86,6 +86,61 @@ class TestMemoryDomainsCreate:
         actions = [r["action"] for r in rows]
         assert "memory_domain.create" in actions
 
+    def test_create_seeds_first_knowledge_item(self, seeded_app):
+        """The builder can finally carry the knowledge itself.
+
+        `/admin/studio/corporate-memory` posts here, and the endpoint used to
+        accept only name/slug/description — so a page whose subtitle promises
+        "Distill reusable knowledge into a memory domain" produced an empty
+        container every time, and the content had to be added by an admin
+        through a different surface.
+        """
+        c = seeded_app["client"]
+        resp = c.post(
+            "/api/admin/memory-domains",
+            json={
+                "name": "Month-end close",
+                "slug": "month-end-close",
+                "content": "Never report the latest month before the FX rate lands.",
+            },
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body["item_id"], "the seeded item's id must come back"
+
+        conn = get_system_db()
+        item = KnowledgeRepository(conn).get_by_id(body["item_id"])
+        assert item is not None, "the seeded item must exist"
+        assert item["content"] == "Never report the latest month before the FX rate lands."
+        assert item["domain"] == "month-end-close", "item must land in the new domain"
+
+        rows = _audit_actions_for_resource(f"memory_domain:{body['id']}")
+        assert "memory_domain.seed_item" in [r["action"] for r in rows]
+
+    def test_create_without_content_still_makes_an_empty_domain(self, seeded_app):
+        """Seeding is opt-in — the old shape must keep working untouched."""
+        c = seeded_app["client"]
+        resp = c.post(
+            "/api/admin/memory-domains",
+            json={"name": "Empty", "slug": "empty-on-purpose"},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert resp.status_code == 201
+        assert resp.json()["item_id"] is None
+
+    def test_blank_content_is_not_an_item(self, seeded_app):
+        """Whitespace is not knowledge — a textarea the author tabbed through
+        must not produce an empty memory item."""
+        c = seeded_app["client"]
+        resp = c.post(
+            "/api/admin/memory-domains",
+            json={"name": "Blank", "slug": "blank-content", "content": "   \n  "},
+            headers=_auth(seeded_app["admin_token"]),
+        )
+        assert resp.status_code == 201
+        assert resp.json()["item_id"] is None
+
     def test_duplicate_slug_409(self, seeded_app):
         c = seeded_app["client"]
         c.post(
