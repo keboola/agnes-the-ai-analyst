@@ -393,3 +393,7 @@ def test_a_tls_downgrade_is_not_a_move():
         308, "http://agnes.example.com/api/v1/agents", "https://agnes.example.com"
     )
     assert "AGNES_SERVER=http://" not in msg
+
+    # …and a downgrade that ALSO changes host is still a downgrade: handing
+    # over a new plaintext address is the thing not to do. (Devin Review.)
+    assert server_moved.redirect_target("http://new.example.com/api", "https://old.example.com") == ""
