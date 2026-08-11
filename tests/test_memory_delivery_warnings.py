@@ -229,14 +229,16 @@ class TestTheAllItemsTabSeesThemToo:
         assert {"slash_command", "session_control", "harness_config"} <= kinds, rows[0]
         assert data.get("delivery_notice")
 
-    def test_a_clean_list_carries_no_notice(self, seeded_app):
+    def test_a_clean_list_still_explains_what_approval_does(self, seeded_app):
+        """The notice is a standing explainer, not an alarm — the review queue
+        always sends it, and this tab approves too. (Devin Review on #1258.)"""
         _create_item(CLEAN_CONTENT, status="approved", title="Clean")
 
         data = seeded_app["client"].get("/api/memory", headers=_auth(seeded_app["admin_token"])).json()
 
         rows = [it for it in data["items"] if it.get("title") == "Clean"]
         assert rows and rows[0]["delivery_warnings"] == []
-        assert data.get("delivery_notice") is None
+        assert data.get("delivery_notice")
 
     def test_a_non_admin_pays_for_no_scan(self, seeded_app):
         """Nobody else can approve, so nobody else needs the annotation."""
@@ -268,14 +270,16 @@ class TestTheBrowseTabSeesThemToo:
         assert {w["kind"] for w in rows[0]["delivery_warnings"]} >= {"slash_command"}
         assert data.get("delivery_notice")
 
-    def test_a_clean_tree_carries_no_notice(self, seeded_app):
+    def test_a_clean_tree_still_explains_what_approval_does(self, seeded_app):
+        """A standing explainer, not an alarm — the review queue always sends
+        it, and this tab approves too. (Devin Review on #1258.)"""
         _create_item(CLEAN_CONTENT, status="approved", title="Clean")
 
         data = seeded_app["client"].get("/api/memory/tree", headers=_auth(seeded_app["admin_token"])).json()
 
         rows = [it for g in data["groups"] for it in g["items"] if it.get("title") == "Clean"]
         assert rows and rows[0]["delivery_warnings"] == []
-        assert data.get("delivery_notice") is None
+        assert data.get("delivery_notice")
 
     def test_a_non_admin_pays_for_no_scan(self, seeded_app):
         _create_item(DIRECTIVE_CONTENT, status="approved", title="Recap")
@@ -285,3 +289,37 @@ class TestTheBrowseTabSeesThemToo:
         rows = [it for g in data["groups"] for it in g["items"]]
         assert all("delivery_warnings" not in it for it in rows)
         assert data.get("delivery_notice") is None
+
+
+class TestMarkingRequiredSaysWhatItPublishes:
+    """Devin Review on #1258: `mandate` publishes to `.claude/rules/` exactly
+    as approval does, and the batch endpoint already reported it — the
+    single-item path did not, so the web page's "mark as required" shipped
+    instruction-shaped text silently and left no count on the audit row."""
+
+    def test_the_response_carries_the_spans(self, seeded_app):
+        item_id = _create_item(DIRECTIVE_CONTENT, status="approved", title="Recap")
+
+        resp = seeded_app["client"].post(
+            f"/api/memory/admin/mandate?item_id={item_id}",
+            headers=_auth(seeded_app["admin_token"]),
+            json={},
+        )
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["is_required"] is True
+        assert {w["kind"] for w in body["delivery_warnings"]} >= {"slash_command"}
+        assert body["delivery_notice"]
+
+    def test_a_clean_item_reports_none(self, seeded_app):
+        item_id = _create_item(CLEAN_CONTENT, status="approved", title="Clean")
+
+        body = seeded_app["client"].post(
+            f"/api/memory/admin/mandate?item_id={item_id}",
+            headers=_auth(seeded_app["admin_token"]),
+            json={},
+        ).json()
+
+        assert body["delivery_warnings"] == []
+        assert body["delivery_notice"] is None
