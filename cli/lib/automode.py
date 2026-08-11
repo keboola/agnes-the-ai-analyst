@@ -96,6 +96,39 @@ def marketplace_trust_entries(host: str) -> list[str]:
     ]
 
 
+def marketplace_trust_state(settings_path: Path, host: str) -> "TrustResult":
+    """What ``ensure_marketplace_trusted`` WOULD do, without writing anything.
+
+    Lets the caller skip a question that is already settled: re-running setup
+    on a machine that already carries the current declaration asked again
+    every time, and an unattended run announced it was not declaring
+    something that had been declared long ago. (Devin Review on #1262.)
+
+    ``WRITTEN`` here means "would write"; the file is never touched.
+    """
+    host = (host or "").strip()
+    if not host or not settings_path.exists():
+        return TrustResult.WRITTEN if host else TrustResult.NOT_WRITTEN
+    try:
+        loaded = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return TrustResult.NOT_WRITTEN
+    if not isinstance(loaded, dict):
+        return TrustResult.NOT_WRITTEN
+    auto_mode = loaded.get("autoMode")
+    if auto_mode is not None and not isinstance(auto_mode, dict):
+        return TrustResult.NOT_WRITTEN
+    environment = (auto_mode or {}).get("environment")
+    if environment is None:
+        return TrustResult.WRITTEN
+    if not isinstance(environment, list):
+        return TrustResult.NOT_WRITTEN
+    mine = [e for e in environment if isinstance(e, str) and host in e]
+    if not mine:
+        return TrustResult.WRITTEN
+    return TrustResult.REWRITTEN if any(_is_retired(e) for e in mine) else TrustResult.ALREADY_PRESENT
+
+
 def ensure_marketplace_trusted(settings_path: Path, host: str) -> TrustResult:
     """Merge ``autoMode.environment`` trust entries for *host* into
     *settings_path*, reporting which of the three outcomes happened.
@@ -163,6 +196,7 @@ def ensure_marketplace_trusted(settings_path: Path, host: str) -> TrustResult:
         return TrustResult.NOT_WRITTEN
 
     mine = [i for i, e in enumerate(environment) if isinstance(e, str) and host in e]
+    retired = [i for i in mine if _is_retired(environment[i])]
     if mine:
         # A machine that ran an older `agnes init` carries the RETIRED wording
         # — the sentence that told the reading agent installing from this host
@@ -173,9 +207,14 @@ def ensure_marketplace_trusted(settings_path: Path, host: str) -> TrustResult:
         # flagged, with no way to replace it. Retired entries are rewritten in
         # place; entries that already say the current thing are left alone.
         # (Devin Review on #1262.)
-        if not any(_is_retired(environment[i]) for i in mine):
+        if not retired:
             return TrustResult.ALREADY_PRESENT
-        for i in reversed(mine):
+        # Only OUR retired lines are replaced. A user may have written their
+        # own notes about this same host — this file is their user-scope
+        # settings, not ours — and deleting every line that merely mentions
+        # the hostname would take those with it, silently. (Devin Review on
+        # #1262.)
+        for i in reversed(retired):
             del environment[i]
         environment.extend(marketplace_trust_entries(host))
         _atomic_write(settings_path, settings)
