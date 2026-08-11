@@ -442,14 +442,14 @@ class TestDisableDoesNotClaimSuccessItCannotVouchFor(TestChatToolsEndpoint):
         assert detail["error"] == "chat_tools_not_fully_removed"
         assert "tools and their grants" in detail["still_present"]
 
-    def test_the_later_steps_still_run_when_a_LATER_one_fails(self, seeded_app):
-        """A partial teardown beats stopping — except after the tools step.
+    def test_a_failure_past_the_tools_step_does_not_block_the_operation(self, seeded_app):
+        """Only the TOOLS step is fatal — it is the one that is access.
 
-        Failing to remove the tools is the one failure that must stop, because
-        the tools ARE the access and they outlive their source row (see
-        `TestAFailedToolRemovalStopsTheTeardown`). A failure further down —
-        the credential, the per-user rows — leaves nothing addressable, so
-        continuing is strictly better than stopping.
+        Past it the grants are already gone, so a failure leaves orphaned
+        material that reaches nobody. Raising there made `delete_connection`
+        (which runs this before dropping the row) permanently unfinishable on
+        a persistent vault fault: the retry re-ran the same failing step
+        forever and the connection could never be deleted.
         """
         c, token = seeded_app["client"], seeded_app["admin_token"]
         conn_id = self._create_keboola(c, token, name="kbc-chat-partial")
@@ -470,13 +470,33 @@ class TestDisableDoesNotClaimSuccessItCannotVouchFor(TestChatToolsEndpoint):
 
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(mod, "shared_secrets_repo", lambda: _Boom())
-            r = c.delete(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token))
+            assert c.delete(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 204
 
-        assert r.status_code == 500
-        assert r.json()["detail"]["still_present"] == ["the copied credential"]
-        # The steps before AND after the failing one ran.
+        # The access IS gone — which is what the operation is for.
         assert tool_registry_repo().list_for_source(source_id) == []
         assert mcp_sources_repo().get(source_id) is None
+
+    def test_a_persistently_failing_vault_does_not_make_the_connection_undeletable(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-undeletable")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        import app.api.admin_source_connections as mod
+
+        real = mod.shared_secrets_repo
+
+        class _Boom:
+            def __getattr__(self, name):
+                def _fail(*a, **kw):
+                    raise RuntimeError("vault unavailable")
+
+                return _fail if name == "delete" else getattr(real(), name)
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(mod, "shared_secrets_repo", lambda: _Boom())
+            assert c.delete(f"{BASE}/{conn_id}", headers=_auth(token)).status_code == 204
+
+        assert c.get(f"{BASE}/{conn_id}", headers=_auth(token)).status_code == 404
 
     def test_a_clean_disable_is_still_204_and_idempotent(self, seeded_app):
         """The broad catch was load-bearing for nothing — deletes are no-ops."""
