@@ -2766,3 +2766,28 @@ def test_the_withdrawal_gate_reads_the_shared_status_list():
     src = inspect.getsource(store.delete_entity)
     assert "_ADVERSE_VERDICTS = BLOCKING_SUBMISSION_STATUSES" in src, src[:200]
     assert "blocked_llm" in BLOCKING_SUBMISSION_STATUSES
+
+
+class TestTheArchiveButtonAgreesWithTheEndpoint:
+    """Devin Review on #1263: the API allowed the withdrawal, the page did not.
+
+    The author only ever sees the button, so an endpoint that permits what the
+    template hides is the same trap in a different place — and this change set
+    exists to give the author an exit.
+    """
+
+    def test_the_owner_sees_archive_on_an_unjudged_upload(self, web_client):
+        user_id, cookies = _create_user(web_client, "exit@x.com")
+        entity_id, _ = _seed_quarantined_entity(user_id, "exit@x.com", "unjudged", status="review_error")
+
+        page = web_client.get(f"/marketplace/flea/{entity_id}", cookies=cookies)
+        assert page.status_code == 200, page.text[:200]
+        assert 'id="owner-archive-btn"' in page.text, "the author has no visible way out"
+
+    def test_a_flagged_upload_keeps_the_button_locked(self, web_client):
+        user_id, cookies = _create_user(web_client, "flagged@x.com")
+        entity_id, _ = _seed_quarantined_entity(user_id, "flagged@x.com", "flagged")
+
+        page = web_client.get(f"/marketplace/flea/{entity_id}", cookies=cookies)
+        assert page.status_code == 200
+        assert 'id="owner-archive-btn"' not in page.text, "review objected; the button must stay locked"

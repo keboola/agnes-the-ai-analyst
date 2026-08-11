@@ -767,7 +767,7 @@
        'hidden' forever, so gating on 'approved' alone locked the author out of
        deleting their own skill/agent (#1177). Carried over from the live
        template this file freezes, which a default instance no longer renders. #}
-    {% elif entity.visibility_status == 'approved' or own_private %}
+    {% elif entity.visibility_status == 'approved' or own_private or owner_may_withdraw %}
       {{ ds.button('Archive', variant='danger', size='sm', type='button',
                    id='owner-archive-btn',
                    attrs='title="Soft delete: hides from browse + blocks new installs. Existing user_store_installs continue serving the bundle."') }}

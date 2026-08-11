@@ -5662,6 +5662,19 @@ async def marketplace_flea_detail(
 
     own_private = is_own_unflagged_private(entity, user.get("id") or "")
 
+    # The same verdict the DELETE endpoint reaches: an owner may withdraw an
+    # upload that review has not objected to (`pending`, `review_error`).
+    # Leaving the button disabled while the API allows the call is the same
+    # bug one layer up — and the button is the only surface the author sees.
+    # (Devin Review on #1263.)
+    from app.api.store import entity_has_adverse_verdict
+
+    owner_may_withdraw = (
+        bool(entity.get("owner_user_id") and entity.get("owner_user_id") == (user.get("id") or ""))
+        and entity.get("visibility_status") not in ("approved", "archived")
+        and not entity_has_adverse_verdict(entity.get("id") or "")
+    )
+
     # v104 trust strip. `entity_owner_label` resolves the byline the same way
     # the card does (display name → email → username) so the detail page never
     # shows a kebab-case username where the grid showed a real name.
@@ -5691,6 +5704,7 @@ async def marketplace_flea_detail(
         quarantine_sub=quarantine_sub,
         edit_in_flight=edit_in_flight,
         own_private=own_private,
+        owner_may_withdraw=owner_may_withdraw,
         # Where the visitor came from, so the detail page's back link can point
         # home to the right surface (e.g. ?from=skills → the Skill builder).
         from_source=from_source,

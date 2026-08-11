@@ -812,7 +812,7 @@
                         attrs='title="Hard delete: drops the bundle + removes existing installs. Use only for legal / privacy removals. Visible only to admins — analysts won\'t see this button."') %}
         Hard delete <span class="admin-only-hint">admin-only</span>
       {% endcall %}
-    {% elif entity.visibility_status == 'approved' or own_private %}
+    {% elif entity.visibility_status == 'approved' or own_private or owner_may_withdraw %}
       {# own_private — see the plugin detail template; a Private row sits at
          'hidden' forever, so gating on 'approved' alone locked the author
          out of deleting their own skill/agent (#1177). #}
