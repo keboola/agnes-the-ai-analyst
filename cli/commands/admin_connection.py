@@ -166,7 +166,15 @@ def chat_tools(
         _fail(resp)
     body = resp.json() if resp.content else {}
     typer.echo(f"Chat tools enabled for {connection_id} (MCP source {body.get('source_id', '?')})")
-    typer.echo("Next: grant the tools to a group — agnes admin grant --help")
+    # Enabling registers the SOURCE, not its tools: the tool_registry rows a
+    # grant needs are created by Introspect on the source detail page. The old
+    # line sent the admin to grant tools that do not exist yet, and named a
+    # command that cannot grant them either — `agnes admin grant` works on
+    # resource grants, not on MCP tool grants. (Devin Review on this PR.)
+    typer.echo(
+        "Next: open /admin/mcp-sources and run Introspect on this source to list its tools, "
+        "then grant them to a group under Access."
+    )
 
 
 @admin_connection_app.command("test")
