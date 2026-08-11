@@ -9,7 +9,9 @@ Full documentation index: [`docs/README.md`](docs/README.md).
 When a user opens this project for the first time, guide them through interactive setup. Ask for:
 
 1. Company domain (e.g. `acme.com`) — used for Google OAuth
-2. Data source type — `keboola` / `bigquery` / `csv`
+2. Data source type — `keboola` / `bigquery` / `local` (`csv` is an accepted
+   alias for `local`; there is no CSV *connector*, so it means "no external
+   source" — see [`docs/DATA_SOURCES.md`](docs/DATA_SOURCES.md))
 3. Instance name (e.g. `Acme Data Analyst`)
 
 Then: copy `config/instance.yaml.example` → `config/instance.yaml` and fill it in, copy `config/.env.template` → `.env` and add data-source credentials, and register tables via the admin API (`POST /api/admin/register-table`) or the web UI at `/admin/tables`.
