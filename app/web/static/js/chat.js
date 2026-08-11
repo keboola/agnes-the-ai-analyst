@@ -365,8 +365,19 @@ const _CLAIM_LABEL = { table: "table", metric: "metric", assumption: "assumes" }
  *  Checked in the DOM after rendering — mermaid may still be its `<pre>` at
  *  this point (rendering is async), so both forms count. */
 function _bubbleHasFigure(bubble) {
-  if (!bubble) return false;
-  return !!bubble.querySelector("table, svg, img, pre.mermaid, .mermaid");
+  const body = bubble && bubble.querySelector(".msg-body");
+  if (!body) return false;
+  // Scoped to `.msg-body`, and CHROME is excluded: every code block gets a
+  // copy button with an icon, so a bare `svg, img` query matched a plain
+  // answer that merely contained a snippet — including greetings — and hung
+  // "Sources — none declared" under it. Only marks that came from the
+  // answer's own markdown count. (Devin Review.)
+  const candidates = body.querySelectorAll("table, svg, img, pre.mermaid, .mermaid");
+  for (const el of candidates) {
+    if (el.closest("button, .msg-actions, .code-actions, .tool-block")) continue;
+    return true;
+  }
+  return false;
 }
 
 function renderSourcesChips(bubble, verdict) {

@@ -50,7 +50,15 @@ from typing import Any, Iterable, Optional
 #: Windows-side paste can introduce, still parses. Non-greedy so an answer that
 #: (wrongly) carries two blocks yields the first rather than swallowing the
 #: prose between them.
-_BLOCK_RE = re.compile(r"```sources[ \t]*\r?\n(.*?)```", re.DOTALL | re.IGNORECASE)
+#: Opening fence only. The BODY is located with `str.find`, never with a
+#: non-greedy regex body: `` ```sources…(.*?)``` `` rescans to end-of-string
+#: for every unterminated opening fence, so cost was O(occurrences x length)
+#: over model output — which `verdict()` now walks on every assistant message
+#: of every history read. The repo's rule is that regexes over untrusted text
+#: stay linear; `find` is linear by construction and needs no reasoning about
+#: backtracking. (Devin Review on this PR.)
+_OPEN_RE = re.compile(r"```sources[ \t]*\r?\n", re.IGNORECASE)
+_CLOSE = "```"
 
 #: One claim per line: `kind: ref`. Anything else in the block is ignored
 #: rather than treated as an error — a stray blank line or a comment must not
@@ -89,12 +97,29 @@ class SourcesVerdict:
         }
 
 
+def _first_block_span(content: str):
+    """``(start, body_start, body_end, end)`` of the first complete block.
+
+    ``None`` when there is no opening fence, or when an opening fence is never
+    closed — an unterminated block is not a block, and treating it as one
+    would let a truncated answer swallow everything after it.
+    """
+    m = _OPEN_RE.search(content)
+    if not m:
+        return None
+    body_start = m.end()
+    body_end = content.find(_CLOSE, body_start)
+    if body_end == -1:
+        return None
+    return (m.start(), body_start, body_end, body_end + len(_CLOSE))
+
+
 def extract_block(content: str) -> Optional[str]:
     """The raw body of the first `sources` block, or None."""
     if not content:
         return None
-    m = _BLOCK_RE.search(content)
-    return m.group(1) if m else None
+    span = _first_block_span(content)
+    return content[span[1] : span[2]] if span else None
 
 
 def strip_block(content: str) -> str:
@@ -115,7 +140,13 @@ def strip_block(content: str) -> str:
     """
     if not content:
         return content
-    return _BLOCK_RE.sub("", content).rstrip()
+    out = content
+    while True:
+        span = _first_block_span(out)
+        if span is None:
+            return out.rstrip()
+        start, _body_start, _body_end, end = span
+        out = out[:start] + out[end:]
 
 
 def parse_claims(block_body: str) -> list[SourceClaim]:

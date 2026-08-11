@@ -271,6 +271,15 @@ class TestAnUnsourcedFigureIsNotSilent:
             "an answer that rendered a figure with no declared source is shown as an ordinary answer"
         )
 
+    def test_chrome_does_not_count_as_a_figure(self):
+        """Every code block gets a copy BUTTON with an icon in it. A bare
+        `svg, img` query matched that, so a plain answer containing a snippet
+        — a greeting included — grew a "none declared" row. (Devin Review.)"""
+        js = _chat_js()
+        fn = js[js.index("function _bubbleHasFigure") : js.index("function renderSourcesChips")]
+        assert '.msg-body' in fn, "the query must be scoped to the rendered answer"
+        assert 'closest("button' in fn, "an icon inside a control still counts as a figure"
+
     def test_the_figure_check_covers_both_mermaid_forms(self):
         """Mermaid rendering is async — at chip time it may still be its <pre>."""
         js = _chat_js()
