@@ -391,6 +391,20 @@ def _emit_stack_sync_block(stack) -> None:
     if mem is not None:
         typer.echo(_line("memory_domains:", mem))
 
+    # Per-item failures, through the same formatter as `PullResult.errors`.
+    # These land on `SyncReport.errors` (`cli/lib/pull_sync.py`), a different
+    # list from the one the pull block reads — so a package, skill or memory
+    # domain that failed to sync printed NOTHING at all, while the summary
+    # line above still counted the ones that worked. `format_pull_error`
+    # already knew these entries' key shapes (`package`, `slug`, `name`); it
+    # was simply never handed them. (Devin Review on this PR.)
+    # NOTE: `errors` lives on each per-type `TypeReport`, not on the
+    # `SyncReport` container — reading it off `stack` would silently print
+    # nothing, which is the failure being fixed, reintroduced.
+    for label, rep in (("direct_tables", direct), ("data_packages", pkgs), ("memory_domains", mem)):
+        for entry in getattr(rep, "errors", []) or []:
+            typer.echo(f"warn: {label}: {format_pull_error(entry)}", err=True)
+
     violations = getattr(stack, "invariant_violations", []) or []
     if violations:
         typer.echo(

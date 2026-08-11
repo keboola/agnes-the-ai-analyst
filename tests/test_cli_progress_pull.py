@@ -211,3 +211,43 @@ def test_every_download_failure_path_tells_the_progress_printer():
         assert "fail_progress(" in preceding[-400:], (
             f"failure return #{n} does not tell the progress printer - it will print a done line"
         )
+
+
+def test_a_failed_stack_sync_item_is_printed():
+    """Devin Review on #1241: per-item sync failures printed nothing.
+
+    They land on each `TypeReport.errors` — a different list from the one the
+    pull block reads — while the summary line above still counted the items
+    that worked. `format_pull_error` already knew these key shapes
+    (`package`, `slug`, `name`); it was never handed them.
+    """
+    from cli.commands.pull import _emit_stack_sync_block
+    from cli.lib.pull_sync import SyncReport, TypeReport
+
+    report = SyncReport(
+        data_packages=TypeReport(added=2, errors=[{"package": "finance", "error": "403 Forbidden"}]),
+        memory_domains=TypeReport(errors=[{"slug": "playbooks", "error": "checksum mismatch"}]),
+    )
+
+    import io
+    from contextlib import redirect_stderr
+
+    buf = io.StringIO()
+    with redirect_stderr(buf):
+        _emit_stack_sync_block(report)
+    out = buf.getvalue()
+
+    assert "finance: 403 Forbidden" in out, out
+    assert "playbooks: checksum mismatch" in out, out
+    assert "data_packages" in out and "memory_domains" in out
+
+
+def test_the_errors_are_read_off_the_per_type_reports():
+    """Reading `errors` off the SyncReport container would print nothing."""
+    import inspect
+
+    from cli.commands.pull import _emit_stack_sync_block
+
+    src = inspect.getsource(_emit_stack_sync_block)
+    assert 'getattr(rep, "errors"' in src
+    assert 'getattr(stack, "errors"' not in src
