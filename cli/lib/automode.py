@@ -63,6 +63,16 @@ _RETIRED_FRAGMENTS = (
 )
 
 
+#: Labels this tool writes. An entry starting with one of them and naming the
+#: host is OURS — that is what makes it replaceable. Anything else mentioning
+#: the same host is the user's own note and is never touched.
+_OUR_LABELS = ("Trusted internal domains:", "Internal package registry:")
+
+
+def _is_ours(entry: str, host: str) -> bool:
+    return host in entry and entry.strip().startswith(_OUR_LABELS)
+
+
 def _is_retired(entry: str) -> bool:
     lowered = entry.lower()
     return any(fragment in lowered for fragment in _RETIRED_FRAGMENTS)
@@ -196,6 +206,7 @@ def ensure_marketplace_trusted(settings_path: Path, host: str) -> TrustResult:
         return TrustResult.NOT_WRITTEN
 
     mine = [i for i, e in enumerate(environment) if isinstance(e, str) and host in e]
+    ours = [i for i in mine if _is_ours(environment[i], host)]
     retired = [i for i in mine if _is_retired(environment[i])]
     if mine:
         # A machine that ran an older `agnes init` carries the RETIRED wording
@@ -209,12 +220,12 @@ def ensure_marketplace_trusted(settings_path: Path, host: str) -> TrustResult:
         # (Devin Review on #1262.)
         if not retired:
             return TrustResult.ALREADY_PRESENT
-        # Only OUR retired lines are replaced. A user may have written their
-        # own notes about this same host — this file is their user-scope
-        # settings, not ours — and deleting every line that merely mentions
-        # the hostname would take those with it, silently. (Devin Review on
-        # #1262.)
-        for i in reversed(retired):
+        # Every line WE wrote for this host goes, not just the retired one:
+        # the declaration is a pair, and removing only the sentence carrying
+        # the old phrasing left its still-current sibling in place next to the
+        # freshly appended twin. A user's own note about the same host is not
+        # ours and stays. (Devin Review on #1262, both halves.)
+        for i in reversed(ours):
             del environment[i]
         environment.extend(marketplace_trust_entries(host))
         _atomic_write(settings_path, settings)
