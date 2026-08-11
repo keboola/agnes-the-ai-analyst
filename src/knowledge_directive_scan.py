@@ -182,13 +182,18 @@ def scan_for_agent_directives(content: str) -> list[DirectiveFinding]:
     if not content:
         return []
 
-    seen: set[tuple[str, int]] = set()
+    seen: set[tuple[str, str]] = set()
     findings: list[DirectiveFinding] = []
     for kind, pattern, reason in _PATTERNS:
         for match in pattern.finditer(content):
-            # Two patterns can hit the same clause (a sentence that names a
-            # slash command *and* tells you to run it). Report the clause once.
-            key = (kind, content.count("\n", 0, match.start()))
+            # Two patterns can hit the same CLAUSE (a sentence that names a
+            # slash command *and* tells you to run it). Report the clause
+            # once — keyed on the sentence, not on the line: a note written as
+            # one paragraph is one line, so a line key collapsed every later
+            # finding in it and an approver saw only the first.
+            # (Devin Review on #1258.)
+            excerpt = _sentence_around(content, match.start(), match.end())
+            key = (kind, excerpt)
             if key in seen:
                 continue
             seen.add(key)
@@ -196,7 +201,7 @@ def scan_for_agent_directives(content: str) -> list[DirectiveFinding]:
                 DirectiveFinding(
                     kind=kind,
                     reason=reason,
-                    excerpt=_sentence_around(content, match.start(), match.end()),
+                    excerpt=excerpt,
                     line=content.count("\n", 0, match.start()) + 1,
                 )
             )
