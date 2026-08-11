@@ -1059,6 +1059,25 @@ def _blob_path_or_404(row: dict):
     return path
 
 
+def _no_text_reason(row: dict) -> str:
+    """Why this file has no text to show, in a sentence worth relaying.
+
+    Shared by the two branches that can come up empty: a format with no
+    extractable text, and an image/PDF whose ingest has not produced chunks
+    yet. Non-browser readers (`agnes collections cat`, the
+    ``collection_file_read`` MCP tool) print this instead of inventing an
+    explanation — "not indexed yet" and "rejected" are very different
+    answers to "why can't I read this?".
+    """
+    status = row.get("processing_status") or "pending"
+    return {
+        "pending": "This file hasn't been indexed yet — its text preview appears once ingestion runs.",
+        "processing": "Indexing is running — its text preview appears when it finishes.",
+        "rejected": "This file was rejected during ingestion, so there is no text to preview.",
+        "needs_review": "This file needs review before its text can be previewed.",
+    }.get(status, "No preview is available for this format.")
+
+
 def _extracted_text(file_id: str) -> str:
     """Joined chunk text for a file — the only text a docx/xlsx/pdf-scan has."""
     chunks = corpus_chunks_repo().list_for_file(file_id)
@@ -1114,11 +1133,64 @@ async def preview_file(
     }
 
     if ext in _PREVIEW_INLINE_MEDIA:
-        _blob_path_or_404(row)  # 404 now beats a broken <img> in the modal
+        # A present blob is still the normal case, and a *text-less* inline
+        # medium with no bytes must keep 404ing — a broken <img> in the modal
+        # is worse than an honest error, which is why this check was here.
+        #
+        # But the 404 used to come first unconditionally, and that trade-off
+        # stopped being symmetric once non-browser readers existed: `agnes
+        # collections cat` and the `collection_file_read` MCP tool cannot draw
+        # anything, so for a PDF whose bytes are gone but whose ingested text
+        # is sitting in `corpus_chunks` they reported a hard error instead of
+        # the answer. The textual branch below already degrades in exactly
+        # this situation. So: degrade when there IS text, 404 when there is
+        # not. `raw_url` is withheld in the degraded case rather than pointing
+        # at an endpoint that would 404 — that is what keeps the modal from
+        # rendering the broken embed this check exists to prevent.
+        # (Devin Review on this PR.)
+        media_blob = _blob_path_or_none(row)
+        media_text = _extracted_text(file_id)
+        if media_blob is None and not media_text:
+            _blob_path_or_404(row)  # raises 404 file_blob_missing
+        # The modal draws these from `raw_url` and ignores `text` — but a
+        # non-browser reader (`agnes collections cat`, the
+        # `collection_file_read` MCP tool) cannot draw anything, and a PDF
+        # usually DOES have ingested text. Returning here before the
+        # `_extracted_text` branch below made "what is in this PDF?" answer
+        # "no text preview is available" while the text sat in corpus_chunks.
+        # Attaching it costs the modal one unused field and keeps `kind`
+        # (its actual switch) untouched.
+        #
+        # …untouched EXCEPT when the bytes are gone. `kind` is what the modal
+        # switches on (`file_preview.js`), not `raw_url`: `kind: "pdf"` builds
+        # an <iframe> and assigns the URL unconditionally, so withholding the
+        # URL alone left it pointing at `null` — a blank frame with no error
+        # handler, which is the broken embed the 404 existed to prevent, now
+        # reached by a different route. (`kind: "image"` degrades better, its
+        # <img> has an onerror, but it still throws the text away.) So the
+        # degraded case reports what it actually has: `kind: "text"`, which
+        # renders the extracted text and the "extracted during indexing" note
+        # the textual branch already uses. One server-side decision rather
+        # than a second one in the client, so the CLI and MCP readers see the
+        # same shape. (Devin Review on this PR, twice.)
+        if media_blob is None:
+            return {
+                **base,
+                "kind": "text",
+                "text": media_text[:_PREVIEW_MAX_CHARS],
+                "truncated": len(media_text) > _PREVIEW_MAX_CHARS,
+                "source": "extracted",
+            }
         return {
             **base,
             "kind": "image" if ext != "pdf" else "pdf",
             "raw_url": f"/api/collections/{collection_id}/files/{file_id}/raw",
+            "text": media_text[:_PREVIEW_MAX_CHARS] or None,
+            "truncated": len(media_text) > _PREVIEW_MAX_CHARS,
+            "source": "extracted" if media_text else None,
+            # A text-less image/PDF must still say why: a bare `text: null`
+            # gives a non-browser caller nothing to relay.
+            "reason": None if media_text else _no_text_reason(row),
         }
 
     # Textual formats read their own bytes when they have them. A missing blob
@@ -1155,14 +1227,7 @@ async def preview_file(
             "source": "extracted",
         }
 
-    status = row.get("processing_status") or "pending"
-    reason = {
-        "pending": "This file hasn't been indexed yet — its text preview appears once ingestion runs.",
-        "processing": "Indexing is running — its text preview appears when it finishes.",
-        "rejected": "This file was rejected during ingestion, so there is no text to preview.",
-        "needs_review": "This file needs review before its text can be previewed.",
-    }.get(status, "No preview is available for this format.")
-    return {**base, "kind": "none", "reason": reason}
+    return {**base, "kind": "none", "reason": _no_text_reason(row)}
 
 
 @router.get("/{collection_id}/files/{file_id}/raw")
