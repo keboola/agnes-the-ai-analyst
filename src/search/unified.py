@@ -161,7 +161,17 @@ def unified_search(
 
     buckets: List[List[Dict[str, Any]]] = []
 
+    # Cap for buckets whose top hit is strong only relative to itself. Defined
+    # here because the chunk bucket needs it too: `_minmax` maps any bucket's
+    # best hit to 1.0, so a fallback that matched only FILE NAMES would arrive
+    # indistinguishable from a document that actually contains the words and
+    # could take every slot from knowledge, glossary and tables that genuinely
+    # matched. (Devin Review on #1267.)
+    _sem_cap = max(2, k // 5)
+
     chunk_hits = [dict(h, type="chunk") for h in _chunk_search(corpus_ids, query, k=k)] if corpus_ids else []
+    if chunk_hits and all(h.get("matched_on") == "filename" for h in chunk_hits):
+        chunk_hits = chunk_hits[:_sem_cap]
     buckets.append(chunk_hits)
 
     knowledge_hits: List[Dict[str, Any]] = []
@@ -193,11 +203,10 @@ def unified_search(
     buckets.append(knowledge_hits)
     buckets.append(_table_scores(query, tables)[:k] if tables else [])
 
-    # Cap the new semantic buckets so their _minmax-normalized top-1 hit
-    # (score=1.0) cannot crowd out more than a proportional share of the
-    # final k slots.  max(2, k//5) gives 2 slots at k=10 and scales up
-    # with larger k values.  The three legacy buckets keep their [:k] cap.
-    _sem_cap = max(2, k // 5)
+    # Same cap, same reason, for the semantic buckets: a _minmax-normalized
+    # top-1 hit (score=1.0) must not crowd out more than a proportional share
+    # of the final k slots. 2 slots at k=10, scaling with k. The legacy buckets
+    # keep their [:k] cap.
     buckets.append(_metric_scores(query, metrics or [])[:_sem_cap] if metrics else [])
 
     # Glossary is public — fetched inside, not caller-prefiltered. BM25 score is
