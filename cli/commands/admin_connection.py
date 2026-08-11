@@ -141,6 +141,43 @@ def set_secret(
     typer.echo(f"Stored {kind} secret for {connection_id}")
 
 
+@admin_connection_app.command("chat-tools")
+def chat_tools(
+    connection_id: str = typer.Argument(..., help="Connection id"),
+    disable: bool = typer.Option(False, "--disable", help="Remove the derived MCP source instead"),
+):
+    """Expose a Keboola project's own MCP tools to the chat agent.
+
+    Derives an MCP source from the connection and copies its storage token
+    into the MCP vault. Rotating that token propagates to the copy on its own
+    — storing a new secret on the connection updates both — so this does not
+    have to be re-run for a rotation.
+
+    The derived source lands with no tool grants: run
+    ``agnes admin grant`` before analysts see anything.
+    """
+    if disable:
+        resp = api_delete(f"/api/admin/source-connections/{connection_id}/chat-tools")
+        if resp.status_code not in (200, 204):
+            _fail(resp)
+        typer.echo(f"Chat tools disabled for {connection_id}")
+        return
+    resp = api_post(f"/api/admin/source-connections/{connection_id}/chat-tools", json={})
+    if resp.status_code not in (200, 201):
+        _fail(resp)
+    body = resp.json() if resp.content else {}
+    typer.echo(f"Chat tools enabled for {connection_id} (MCP source {body.get('source_id', '?')})")
+    # Enabling registers the SOURCE, not its tools: the tool_registry rows a
+    # grant needs are created by Introspect on the source detail page. The old
+    # line sent the admin to grant tools that do not exist yet, and named a
+    # command that cannot grant them either — `agnes admin grant` works on
+    # resource grants, not on MCP tool grants. (Devin Review on this PR.)
+    typer.echo(
+        "Next: open /admin/mcp-sources and run Introspect on this source to list its tools, "
+        "then grant them to a group under Access."
+    )
+
+
 @admin_connection_app.command("test")
 def test_connection(
     connection_id: str = typer.Argument(..., help="Connection id"),

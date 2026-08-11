@@ -38,10 +38,15 @@ from app.auth.access import require_admin
 from app.secrets_vault import VaultKeyNotConfiguredError, can_store_secrets
 from connectors.keboola.semantic_layer import MasterTokenRequiredError, require_master_token
 from connectors.keboola.storage_api import KeboolaStorageClient, StorageApiError, is_upstream_client_error
+from src.keboola_chat_tools import build_stdio_spec, derived_source_id
 from src.repositories import (
     connection_secrets_repo,
+    mcp_sources_repo,
+    per_user_secrets_repo,
+    shared_secrets_repo,
     source_connections_repo,
     table_registry_repo,
+    tool_registry_repo,
 )
 
 logger = logging.getLogger(__name__)
@@ -112,6 +117,17 @@ def _with_secret_status(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any
         row["has_master_secret"] = bool(connection_secrets_repo().has(master_secret_key(row["id"])))
     except Exception:
         row["has_master_secret"] = False
+    try:
+        # The switch must read what the source DOES, not merely that a row
+        # exists. Both `enable_chat_tools` and `_resync_derived_chat_tools`
+        # deliberately carry a previously-set `enabled=False` over, so a
+        # disabled source kept showing "on" — and turning the switch off then
+        # on again is exactly how an admin would try to fix that, which does
+        # nothing because the row was there all along. (Devin Review.)
+        derived = mcp_sources_repo().get(derived_source_id(row["id"]))
+        row["has_chat_tools"] = bool(derived) and derived.get("enabled", True) is not False
+    except Exception:
+        row["has_chat_tools"] = False
     return row
 
 
@@ -283,7 +299,7 @@ class _VerifiedTokenInfo:
         return self._info
 
 
-def _validate_stack_url(config: Optional[Dict[str, Any]], *, required: bool) -> None:
+def _validate_stack_url(config: Optional[Dict[str, Any]], *, required: bool, resolve: bool = True) -> None:
     """SSRF guard for a connection's stack_url. Rejects non-https and
     private/reserved/link-local hosts (e.g. the cloud metadata endpoint).
 
@@ -292,6 +308,17 @@ def _validate_stack_url(config: Optional[Dict[str, Any]], *, required: bool) -> 
     ``required=True`` (test/tables): a stack_url must be present AND is
     re-validated immediately before the outbound request — validate-at-use
     closes the DNS-rebind window between store-time and fetch-time.
+
+    ``resolve=False`` (create/update): check the SCHEME only, no DNS. The
+    private-range half needs DNS, and at store time DNS is the wrong
+    dependency — a stack that does not resolve from the Agnes host yet (a
+    fresh deployment, split-horizon DNS, a momentary outage) is a legitimate
+    thing to save, and refusing it would make configuring a connection fail
+    for a reason that has nothing to do with the connection. The resolving
+    half stays where it belongs: at use, on every outbound call, which is
+    also the only placement that closes DNS rebinding. Before this split the
+    create/update branch had **no caller at all**, so a stored ``stack_url``
+    was never checked even for its scheme. (Devin Review on this PR.)
     """
     stack_url = ((config or {}).get("stack_url") or "").rstrip("/")
     if not stack_url:
@@ -300,6 +327,8 @@ def _validate_stack_url(config: Optional[Dict[str, Any]], *, required: bool) -> 
         return
     if not stack_url.lower().startswith("https://"):
         raise HTTPException(status_code=400, detail="stack_url must be an https:// URL")
+    if not resolve:
+        return
     # Reuse the shared SSRF validator (honors the operator SSRF-allowed-hosts
     # opt-out) rather than duplicating the private-range checks.
     from app.api.admin import _validate_url_not_private
@@ -331,6 +360,15 @@ async def create_connection(
     if repo.get_by_name(body.name) is not None:
         raise HTTPException(status_code=409, detail="connection_name_exists")
     _reject_disallowed_token_env(body.token_env)
+    # The `required=False` branch of the SSRF guard exists for exactly this
+    # call and its sibling in `update_connection`, and neither was wired — so
+    # the branch had no caller at all and an admin-supplied `stack_url` was
+    # stored unvalidated. `/test`, `/tables` and `/secret` re-validate at use,
+    # which is what closes the DNS-rebind window and is NOT replaced by this;
+    # but nothing checked the value on the way IN, and the chat-tools enable
+    # path skips validation on the stated premise that the stored URL was
+    # already checked here. Now it is. (Devin Review on this PR.)
+    _validate_stack_url(body.config, required=False, resolve=False)
     conn_id = str(uuid4())
     repo.create(
         id=conn_id,
@@ -383,6 +421,7 @@ async def update_connection(
         if existing is not None and existing["id"] != connection_id:
             raise HTTPException(status_code=409, detail="connection_name_exists")
     _reject_disallowed_token_env(body.token_env)
+    _validate_stack_url(body.config, required=False, resolve=False)  # see create_connection
     config = body.config
     if config is not None:
         old_config = existing_row.get("config") or {}
@@ -426,7 +465,80 @@ async def update_connection(
         token_env=body.token_env,
         is_default=body.is_default,
     )
+    _resync_derived_chat_tools(connection_id)
     return _with_secret_status(repo.get(connection_id))
+
+
+def _resync_derived_chat_tools(connection_id: str) -> None:
+    """Rebuild the derived MCP source's spec from the connection's row.
+
+    The spec embeds the connection's NAME and `stack_url` (see
+    ``src.keboola_chat_tools.build_stdio_spec``), so an edit that moved the
+    project to a new stack left the agent talking to the old one — and, since
+    storing a token now propagates to the derived copy, a freshly rotated
+    credential was being copied to a source still pointed at the previous
+    address. A rename left the agent's source under the old label for the same
+    reason. Only an EXISTING derived source is touched, so this never enables
+    chat tools; the token slot is not written here at all. Best-effort: the
+    connection update itself already succeeded, and this must not turn a good
+    edit into a `500`. (Devin Review on this PR.)
+    """
+    source_id = derived_source_id(connection_id)
+    try:
+        if mcp_sources_repo().get(source_id) is None:
+            return
+        row = source_connections_repo().get(connection_id)
+        if row is None or row.get("source_type") != "keboola":
+            return
+        stack_url = ((row.get("config") or {}).get("stack_url") or "").rstrip("/")
+        if not stack_url:
+            return
+        existing = mcp_sources_repo().get(source_id)
+        spec = build_stdio_spec(
+            connection_id=connection_id,
+            connection_name=row.get("name") or connection_id,
+            stack_url=stack_url,
+        )
+        # Only what the CONNECTION determines is re-derived — its name and its
+        # stack URL, the two things that actually go stale when it is edited.
+        # `build_stdio_spec` describes a freshly enabled source, so upserting
+        # it wholesale on an unrelated save (flipping "set as default", a
+        # rename) discarded everything an admin had adjusted on that server
+        # entry: the enabled flag, extra environment values, launch arguments,
+        # the credential scope, the connect hint. None of those are derived
+        # from the connection, so they are carried over.
+        # (Devin Review on this PR — the `enabled` half first, then the rest.)
+        if existing is not None:
+            for field in ("enabled", "scope", "connect_hint", "command", "args", "auth_method", "auth_secret_env"):
+                if field in existing:
+                    spec[field] = existing[field]
+            # `env` is merged rather than replaced: the stack URL is ours, any
+            # other key the admin added is theirs.
+            merged_env = dict(existing.get("env") or {})
+            merged_env.update(spec.get("env") or {})
+            spec["env"] = merged_env
+        # A rename onto a name another MCP source already holds cannot be
+        # upserted — `mcp_sources.name` is unique. Skipping loudly beats
+        # letting the upsert raise into the broad handler below, which would
+        # log the same outcome as an unexpected failure and tell the admin
+        # nothing about the clash.
+        clash = mcp_sources_repo().get_by_name(spec["name"])
+        if clash is not None and clash["id"] != spec["id"]:
+            logger.warning(
+                "connection %s renamed, but an MCP source named %r already exists (id %s) — "
+                "its chat-tools source keeps the previous name and address",
+                connection_id,
+                spec["name"],
+                clash["id"],
+            )
+            return
+        mcp_sources_repo().upsert(**spec)
+    except Exception:  # noqa: BLE001 — the connection edit already landed
+        logger.warning(
+            "updated connection %s but could not re-sync its chat-tools source",
+            connection_id,
+            exc_info=True,
+        )
 
 
 @router.delete("/{connection_id}", status_code=204)
@@ -450,6 +562,17 @@ async def delete_connection(
                 "tables": referencing,
             },
         )
+    # BEFORE the row goes, not after. A derived chat-tools source outlives its
+    # connection otherwise, keeping a live Keboola credential in the vault and
+    # still offering the project's tools to the agent — and since this step now
+    # raises on a genuine failure rather than swallowing it, doing it after the
+    # delete would answer "delete failed" for a connection that is already
+    # gone: the admin cannot retry (the retry 404s), the leftover tools have no
+    # obvious route to removal, and the list still shows the row until a
+    # reload. Running first makes the failure honest and the operation
+    # repeatable — nothing has been removed yet, so "retry" is the right
+    # advice. (Devin Review on this PR.)
+    _remove_chat_tools(connection_id)
     repo.delete(connection_id)
     # Best-effort: clear any vault secret — ignore if none exists.
     try:
@@ -600,6 +723,33 @@ async def set_connection_secret(
             status_code=409,
             detail="vault_key_not_configured: set AGNES_VAULT_KEY on the server before storing secrets",
         ) from exc
+    if body.kind != "master":
+        # Rotation propagates to the agent's copy, symmetrically with the
+        # clear above. Copy-not-reference is a deliberate design, but it made
+        # the two halves of the same admin intent behave differently: clearing
+        # cut the agent off while rotating left the OLD value live in the MCP
+        # vault — so rotating a leaked token left the leak working, and the
+        # agent kept authenticating with a credential that may already have
+        # been revoked upstream. Only an EXISTING copy is updated; this does
+        # not enable chat tools for a connection that never had them.
+        # (Devin Review on this PR.)
+        derived = derived_source_id(connection_id)
+        try:
+            # Keyed on the derived SOURCE, not on whether a copy happens to
+            # exist. Keying on the copy made clear-then-store a dead end: the
+            # clear deletes the copy, so the re-store found nothing to update
+            # and left the agent with no credential at all while the switch
+            # still read "on" — the two fixes in this PR cancelling each other
+            # out. The source is what says chat tools are on.
+            # (Devin Review on this PR.)
+            if mcp_sources_repo().get(derived) is not None:
+                shared_secrets_repo().upsert(derived, body.value)
+        except Exception:  # noqa: BLE001 — the primary store already succeeded
+            logger.warning(
+                "stored a new token for connection %s but could not re-sync the chat-tools copy",
+                connection_id,
+                exc_info=True,
+            )
 
     # Only after the secret is safely stored: a recorded identity whose token
     # failed to persist would bind the connection to a project it cannot open.
@@ -633,6 +783,301 @@ async def delete_connection_secret(
         raise HTTPException(status_code=400, detail="invalid_kind")
     key = master_secret_key(connection_id) if kind == "master" else connection_id
     connection_secrets_repo().delete(key)
+    if kind != "master":
+        # The chat-tools source holds a COPY of the storage token, taken at
+        # enable time. Clearing the connection's token is how an admin cuts a
+        # project off, and leaving the copy behind meant the agent kept
+        # querying that project with a credential the admin believed they had
+        # removed — until they separately noticed the chat-tools switch. The
+        # derived source and its tools stay (so the admin still sees the
+        # switch is on and can turn it off deliberately); what goes is the
+        # credential, which is what "cleared" has to mean.
+        # (Devin Review on this PR.)
+        try:
+            derived = derived_source_id(connection_id)
+            shared_secrets_repo().delete(derived)
+            # …and switch the derived source OFF with it. Deleting the vault
+            # copy alone is not enough: `connectors/mcp/client.py` falls back
+            # to `os.environ[auth_secret_env]`, and the derived source names
+            # `KBC_STORAGE_TOKEN` — a variable a Keboola deployment plausibly
+            # has set — so the agent kept working from the host environment.
+            # Clearing `auth_secret_env` instead was WRONG: for a stdio source
+            # that name is also how the vault value is injected into the
+            # subprocess, so it broke the working path rather than the
+            # fallback. Disabling is the honest expression of the admin's
+            # intent, and the switch then reads "off" because it is. Turning
+            # it back on is explicit, which is what `enable_chat_tools` is
+            # for. (Devin Review on this PR, three rounds.)
+            source = mcp_sources_repo().get(derived)
+            if source is not None and source.get("enabled") is not False:
+                mcp_sources_repo().upsert(
+                    **{
+                        k: v
+                        for k, v in {**source, "enabled": False}.items()
+                        if k not in ("created_at", "updated_at")
+                    }
+                )
+        except Exception:  # noqa: BLE001 — best-effort; the primary delete already succeeded
+            logger.warning(
+                "cleared the token for connection %s but could not clear the chat-tools copy",
+                connection_id,
+                exc_info=True,
+            )
+
+
+def _remove_chat_tools(connection_id: str) -> None:
+    """Drop a connection's derived MCP source, its tools, grants and secrets.
+
+    Shared by the explicit disable and by ``delete_connection`` — a deleted
+    connection that left its derived source behind would keep a live Keboola
+    credential in the vault and keep offering tools for a project the admin
+    believes they disconnected.
+
+    Deliberately mirrors ``app.api.admin_mcp.delete_mcp_source`` rather than
+    deleting the ``mcp_sources`` row alone. The discovered tools live in
+    ``tool_registry`` keyed by source id, and the per-group permissions live
+    in ``tool_grants`` keyed by tool — neither is reached by deleting the
+    source. Because ``derived_source_id`` is a pure function of the connection
+    id, re-enabling later lands on the *same* source id, so orphaned tools and
+    their grants would be adopted by the new source: an admin who turned chat
+    tools off to revoke access, then turned them back on, would silently
+    restore the exact grants they revoked. ``delete_for_source`` drops the
+    grants per tool before the registry rows, which is the ordering that
+    leaves nothing addressable behind. Per-user secrets get the same treatment
+    for the same "no orphaned credential material" reason the canonical path
+    cites; the OAuth trio does not apply — the derived source is stdio.
+    (Devin Review on this PR.)
+
+    A step that FAILS is reported, not swallowed. Every removal used to sit
+    under `except Exception: logger.debug(…)`, which cannot tell "there was
+    nothing to delete" from "the delete did not work" — so an admin cutting
+    access could be answered `204` while the tools, the grants and the copied
+    credential were all still live, which is the one outcome this endpoint
+    exists to prevent. Idempotency does not need the broad catch anyway: each
+    repository's `delete` is a `DELETE … WHERE id = ?`, a no-op on a row that
+    is not there. (Devin Review on this PR.)
+    """
+    source_id = derived_source_id(connection_id)
+    failed: list[str] = []
+
+    def _step(what: str, fn) -> None:
+        try:
+            fn()
+        except Exception:  # noqa: BLE001 — every step runs; the caller is told which failed
+            logger.warning("could not remove %s for connection %s", what, connection_id, exc_info=True)
+            failed.append(what)
+
+    def _drop_per_user_secrets() -> None:
+        pu_secrets = per_user_secrets_repo()
+        for uid in pu_secrets.list_for_source(source_id):
+            pu_secrets.delete(source_id, uid)
+
+    # Tools and grants FIRST, and a failure there stops the teardown. The
+    # remaining steps are attempted after any *other* failure, because a
+    # partial teardown that removes three of four things beats stopping at the
+    # first — but that reasoning inverts here: `list_passthrough_for_groups`
+    # joins `tool_registry` to `tool_grants` and never to `mcp_sources`, so a
+    # tool whose parent source is gone is STILL served to any granted group.
+    # Deleting the source after failing to remove the tools would therefore
+    # leave the access live while removing the row an admin would use to clean
+    # it up from /admin/mcp — strictly worse than stopping.
+    # (Devin Review on this PR.)
+    _step("tools and their grants", lambda: tool_registry_repo().delete_for_source(source_id))
+    if failed:
+        # ONLY this step is fatal. The tools ARE the access, they outlive their
+        # source row, and nothing has been removed yet — so the caller can
+        # simply retry, and the message can honestly name the source to clean
+        # up by hand because it still exists.
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "chat_tools_not_fully_removed",
+                "still_present": failed,
+                "message": (
+                    "Chat tools were not fully removed — the tools and their grants are "
+                    "still live, so analyst access has NOT been revoked. Retry, or remove "
+                    f"the derived source {source_id} from /admin/mcp."
+                ),
+            },
+        )
+
+    _step("the derived MCP source", lambda: mcp_sources_repo().delete(source_id))
+    _step("the copied credential", lambda: shared_secrets_repo().delete(source_id))
+    _step("per-user credentials", _drop_per_user_secrets)
+    if failed:
+        # Past the tools step, a failure leaves ORPHANED MATERIAL, not access:
+        # the grants are gone, so nothing reaches an analyst either way. Raising
+        # here made `delete_connection` — which runs this before dropping the
+        # row — permanently unfinishable on a persistent vault fault: the retry
+        # re-ran the same failing step forever and the connection could never
+        # be deleted, while the pre-PR behaviour simply logged it. Logged, with
+        # exactly what to clean up. (Devin Review on this PR.)
+        logger.warning(
+            "chat tools for connection %s were revoked, but these could not be removed and are "
+            "left orphaned: %s (source %s)",
+            connection_id,
+            ", ".join(failed),
+            source_id,
+        )
+
+
+@router.post("/{connection_id}/chat-tools", status_code=201)
+async def enable_chat_tools(
+    connection_id: str,
+    _user: dict = Depends(require_admin),
+):
+    """Expose this Keboola project's own MCP tools to the chat agent.
+
+    Derives an ``mcp_sources`` stdio row from the connection (see
+    ``src/keboola_chat_tools.py``) and copies the connection's storage token
+    into the MCP shared vault, so the admin registers the project once rather
+    than a second time under ``/admin/mcp``.
+
+    Idempotent, and it always leaves the source ENABLED — the page's switch
+    calls this to turn chat tools on, so a stored "off" must not survive it.
+    A rotated token no longer needs a re-run here: ``set_connection_secret``
+    copies a new token to the derived source on its own. The derived source
+    lands with **no** ``tool_grants``, so enabling exposes nothing until an
+    admin grants the tools to a group.
+
+    400 if the connection isn't ``source_type='keboola'`` or has no resolvable
+    token; 404 if the connection doesn't exist; 409 if the vault key is unset.
+    """
+    row = source_connections_repo().get(connection_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="connection_not_found")
+    if row.get("source_type") != "keboola":
+        raise HTTPException(status_code=400, detail="chat_tools_only_for_keboola")
+
+    config = row.get("config") or {}
+    stack_url = (config.get("stack_url") or "").rstrip("/")
+    # Deliberately NOT the DNS-resolving `_validate_stack_url(required=True)`
+    # used by /test and /tables: those validate-at-use because they are about
+    # to make the outbound call themselves, and DNS is the rebind window they
+    # are closing. This endpoint makes no request — it stores a config row —
+    # and the URL it stores is the connection's own, whose SCHEME was checked
+    # on create/update (`resolve=False`) — the private-range half needs DNS and
+    # lives at use, on `/test`, `/tables` and `/secret`, which is the only
+    # placement that closes rebinding anyway. Resolving here would only make
+    # enabling fail whenever DNS is unavailable, without narrowing any window.
+    if not stack_url:
+        raise HTTPException(status_code=400, detail="no stack_url in connection config")
+    if not stack_url.lower().startswith("https://"):
+        raise HTTPException(status_code=400, detail="stack_url must be an https:// URL")
+
+    token = _resolve_token(connection_id, row)
+    if not token:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "connection has no storage token — store one via "
+                f"PUT {router.prefix}/{connection_id}/secret first. Without it the "
+                "MCP server would start and fail every tool call at the far end."
+            ),
+        )
+
+    spec = build_stdio_spec(
+        connection_id=connection_id,
+        connection_name=row.get("name") or connection_id,
+        stack_url=stack_url,
+    )
+    # What the vault held before this call decides how a failed write is undone.
+    # This endpoint is idempotent by design — re-running is how a rotated token
+    # is propagated — so on a re-sync the slot we are about to overwrite is the
+    # credential the existing, still-live setup authenticates with. Deleting it
+    # unconditionally on failure turned a working project's every tool call
+    # into an auth error, which is strictly worse than the failed re-sync the
+    # admin came to fix. (Devin Review on this PR.)
+    previous_secret = shared_secrets_repo().get(spec["id"])
+    try:
+        shared_secrets_repo().upsert(spec["id"], token)
+    except VaultKeyNotConfiguredError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="vault_key_not_configured: set AGNES_VAULT_KEY on the server before storing secrets",
+        ) from exc
+
+    # A derived source is named after the connection, and `mcp_sources.name` is
+    # unique — so a hand-registered source that already owns that name made the
+    # upsert die with an opaque 500 and no hint at what clashed.
+    # (Devin Review on this PR.)
+    clashing = mcp_sources_repo().get_by_name(spec["name"])
+    if clashing is not None and clashing["id"] != spec["id"]:
+        if previous_secret is None:
+            shared_secrets_repo().delete(spec["id"])
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "mcp_source_name_taken",
+                "name": spec["name"],
+                "message": (
+                    f"An MCP source named {spec['name']!r} already exists (id {clashing['id']}). "
+                    "Rename this connection, or remove that source under /admin/mcp, then try again."
+                ),
+            },
+        )
+    # This endpoint ENABLES — that is what it is for, and the page's switch
+    # calls it to turn chat tools on. An earlier revision carried a stored
+    # `enabled=False` over, so that a re-run to propagate a rotated token
+    # could not silently re-enable a server the admin had switched off; the
+    # cost was the opposite bug, that the switch could no longer turn it back
+    # ON. Both are gone now that a rotation propagates on its own path — see
+    # `set_connection_secret`, which copies a new token to the derived source
+    # directly, so re-running enable is no longer the way to refresh a
+    # credential. The unrelated-edit path (`_resync_derived_chat_tools`) still
+    # preserves the flag, because an edit is not a request to enable.
+    # (Devin Review on this PR, twice — once from each side.)
+    #
+    # Everything ELSE the admin adjusted on that server entry is carried over,
+    # the same way the edit path does it: this endpoint also backs the page's
+    # "Re-sync token" button, and rebuilding the row wholesale threw away
+    # extra environment values, launch arguments, the credential scope and the
+    # connect hint. Only `enabled` is forced, because turning it on is what
+    # this endpoint is for. (Devin Review on this PR, third round.)
+    existing_row = mcp_sources_repo().get(spec["id"])
+    if existing_row is not None:
+        # Only the fields that are the ADMIN's. `command`, `args` (the pinned
+        # runner version) and `auth_*` are derived from this release, and this
+        # endpoint is the "make it current" action — carrying them over meant
+        # an upgraded runner never reached a project that already had chat
+        # tools on. `scope` is derived too, and for a harder reason: this
+        # endpoint writes the token into the SHARED vault, so a preserved
+        # `per_user` scope would leave that credential unreachable. The
+        # unrelated-edit path preserves all of them, because an edit is not a
+        # request to re-derive anything. (Devin Review on this PR, both sides.)
+        if "connect_hint" in existing_row:
+            spec["connect_hint"] = existing_row["connect_hint"]
+        merged_env = dict(existing_row.get("env") or {})
+        merged_env.update(spec.get("env") or {})
+        spec["env"] = merged_env
+    try:
+        mcp_sources_repo().upsert(**spec)
+    except Exception:
+        # First enable: never leave the token behind under a source id that
+        # does not exist. Re-sync: put back what was working.
+        if previous_secret is None:
+            shared_secrets_repo().delete(spec["id"])
+        else:
+            shared_secrets_repo().upsert(spec["id"], previous_secret)
+        raise
+
+    logger.info(
+        "chat tools enabled for connection %s (source %s)",
+        connection_id,
+        spec["id"],
+    )
+    return {"source_id": spec["id"], "name": spec["name"], "granted_to_groups": 0}
+
+
+@router.delete("/{connection_id}/chat-tools", status_code=204)
+async def disable_chat_tools(
+    connection_id: str,
+    _user: dict = Depends(require_admin),
+):
+    """Remove the derived MCP source and its copy of the token (idempotent)."""
+    if source_connections_repo().get(connection_id) is None:
+        raise HTTPException(status_code=404, detail="connection_not_found")
+    _remove_chat_tools(connection_id)
 
 
 @router.post("/{connection_id}/test")

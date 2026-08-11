@@ -906,6 +906,19 @@ discovery helper for the /admin/data-sources add-project wizard, #755).
 - /api/admin/source-connections/{connection_id}/secret
 - /api/admin/source-connections/{connection_id}/test
 - /api/admin/source-connections/{connection_id}/tables
+- /api/admin/source-connections/{connection_id}/chat-tools
+
+`POST …/{connection_id}/chat-tools` lends the chat agent the connected project's
+own upstream MCP tools (SQL, buckets/tables, search, semantic context): it derives
+an `mcp_sources` stdio row from the connection and copies the connection's storage
+token into the MCP vault, so the project is registered once rather than twice.
+`DELETE` removes both (idempotent), and deleting the connection itself does the
+same. Keboola-only; 400 without a resolvable token — a source that connected
+anonymously would fail every call at the far end instead. Enabling is idempotent
+and re-running is how a rotated token reaches the derived source. The derived
+source lands with **no** `tool_grants`, so nothing is exposed until an admin
+grants the tools to a group. CLI: `agnes admin connection chat-tools [--disable]`.
+Deliberately not MCP-exposed (credential-provisioning exemption, `CONTRIBUTING.md`).
 
 ### `/api/admin/contributed-skills` — Contributed skill management
 
