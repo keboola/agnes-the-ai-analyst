@@ -47,6 +47,15 @@ class CreateMemoryDomainRequest(BaseModel):
     color: Optional[str] = None
     cover_image_url: Optional[str] = None
     status: Optional[str] = None  # v51
+    # Optional first knowledge item, seeded into the new domain in the same
+    # call. Without it this endpoint only ever produced an empty container —
+    # which is what the Studio "Corporate Memory Builder" posts to, so a page
+    # whose subtitle promises "Distill reusable knowledge into a memory
+    # domain" had nowhere to put the knowledge. The item is created through
+    # the same repository the regular knowledge endpoint uses, carrying this
+    # domain's slug, so it is indistinguishable from one added later.
+    content: Optional[str] = None
+    content_title: Optional[str] = None
 
     @field_validator("color")
     @classmethod
@@ -176,7 +185,42 @@ async def create_memory_domain(
         f"memory_domain:{domain_id}",
         {"slug": payload.slug, "name": payload.name},
     )
-    return {"id": domain_id}
+
+    # Seed the first knowledge item when the caller supplied one. Deliberately
+    # after the audit row and best-effort in nothing: a failure here must be
+    # visible, because the caller asked for content and a silently empty
+    # domain is the exact failure this field exists to remove. The domain
+    # itself is already created and audited, so the 500 is honest — retrying
+    # the item is possible, and re-POSTing the domain 409s on the slug.
+    item_id: Optional[str] = None
+    if payload.content and payload.content.strip():
+        import uuid as _uuid
+
+        from src.repositories import knowledge_repo
+
+        item_id = str(_uuid.uuid4())
+        knowledge_repo().create(
+            id=item_id,
+            title=(payload.content_title or payload.name).strip(),
+            content=payload.content.strip(),
+            # `category` is required on the knowledge repo and the builder form
+            # does not ask for one — the domain is the categorisation here, so
+            # its slug is the honest value rather than an invented constant.
+            category=payload.slug.strip(),
+            source_user=user.get("email"),
+            tags=None,
+            domain=payload.slug.strip(),
+            confidence=0.50,
+        )
+        _audit(
+            conn,
+            user["id"],
+            "memory_domain.seed_item",
+            f"memory_domain:{domain_id}",
+            {"item_id": item_id, "slug": payload.slug},
+        )
+
+    return {"id": domain_id, "item_id": item_id}
 
 
 @router.get("/{domain_id}")
