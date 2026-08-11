@@ -170,7 +170,12 @@ def unified_search(
     _sem_cap = max(2, k // 5)
 
     chunk_hits = [dict(h, type="chunk") for h in _chunk_search(corpus_ids, query, k=k)] if corpus_ids else []
-    name_only_chunks = bool(chunk_hits) and all(h.get("matched_on") == "filename" for h in chunk_hits)
+    # Cap the NAME-matched hits inside the bucket, rather than only capping a
+    # bucket that is entirely name hits: since the fallback keeps body hits
+    # and merely rescales them, an all-filename bucket is now rare and an
+    # all-or-nothing test would almost never fire. Body hits are untouched.
+    # (Devin Review on #1267.)
+    named = [h for h in chunk_hits if h.get("matched_on") == "filename"]
     buckets.append(chunk_hits)
 
     knowledge_hits: List[Dict[str, Any]] = []
@@ -236,8 +241,9 @@ def unified_search(
     # the answer to the query that motivated the fallback — "what is in
     # quarterly-report.md?" deserves more than two chunks of that file when
     # nothing else in the instance matched. (Devin Review on #1267.)
-    if name_only_chunks and any(bucket for bucket in buckets[1:]):
-        buckets[0] = buckets[0][:_sem_cap]
+    if named and any(bucket for bucket in buckets[1:]):
+        keep = {id(h) for h in named[:_sem_cap]}
+        buckets[0] = [h for h in buckets[0] if h.get("matched_on") != "filename" or id(h) in keep]
 
     merged: List[Dict[str, Any]] = []
     for bucket in buckets:

@@ -285,7 +285,12 @@ def _rank_by_filename(
             scored.append((len(overlap) / len(q_terms), ch))
 
     scored.sort(key=lambda pair: (-pair[0], pair[1].get("ordinal") or 0, str(pair[1].get("id"))))
-    return scored[:k]
+    # Uncapped: the caller filters this shortlist (a chunk whose own text
+    # explains as much as the name is not a name hit) and caps afterwards.
+    # Cutting to `k` first meant a large file's early chunks could fill the
+    # list, get filtered out, and leave the file unfound. (Devin Review on
+    # #1267.)
+    return scored
 
 
 
@@ -341,13 +346,13 @@ def apply_filename_fallback(
 
     best_body_cover = max((_cover(ch.get("text", "")) for _s, ch in top), default=0.0)
     if best_body_cover >= _NAME_PASS_BODY_CEILING:
-        # Some passage already explains most of the question. Skipping here
-        # is what keeps an ordinary search from paying for the file listing
-        # `prepare` loads: requiring FULL coverage before skipping meant the
-        # common multi-word query loaded it anyway. A file name that beats a
-        # half-explained question is possible in principle; it is not worth a
-        # listing per collection on every search that finds real matches.
-        # (Devin Review on #1267, twice.)
+        # Some passage already explains the WHOLE question — no name can beat
+        # that, so neither the pass nor the file listing `prepare` loads is
+        # needed. A partially-explained question DOES pay for the listing, and
+        # that is the deliberate side of the trade: the two-word case is the
+        # one the feature exists for, and one listing per collection is a
+        # rounding error next to the chunk rows already loaded above.
+        # (Devin Review on #1267, arguing both directions across rounds.)
         return top, confidence, set()
     if prepare is not None:
         prepare()
@@ -369,6 +374,8 @@ def apply_filename_fallback(
         if _cover(pair[1].get("text", "")) >= name_cover:
             continue
         name_hits.append(pair)
+        if len(name_hits) >= k:
+            break
     if not name_hits:
         return top, confidence, set()
 
