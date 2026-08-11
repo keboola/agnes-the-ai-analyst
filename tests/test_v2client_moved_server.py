@@ -416,3 +416,15 @@ class TestTheWizardSaysWhichKindOfNoMoveItIs:
         page = (ROOT / "cli" / "commands" / "init.py").read_text(encoding="utf-8")
         block = page.split("is_redirect(exchange_resp.status_code)")[1][:3200]
         assert "stays on the same address" in block
+
+
+def test_the_clients_name_an_insecure_move_rather_than_blaming_a_proxy():
+    """Devin Review on #1266: refusing the target is not the same as saying
+    nothing moved. Both HTTP clients render this message."""
+    msg = server_moved.moved_server_message(
+        308, "http://new.example.com/api/v1/agents", "https://old.example.com"
+    )
+    assert "unencrypted" in msg
+    assert "http://new.example.com/api/v1/agents" in msg
+    assert "proxy" in msg  # …offered as the alternative explanation, not the only one
+    assert "AGNES_SERVER=http://" not in msg
