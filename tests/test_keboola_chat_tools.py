@@ -13,6 +13,7 @@ import pytest
 from cryptography.fernet import Fernet
 
 from app.secrets_vault import _reset_ephemeral_key_for_tests
+from connectors.mcp.client import ToolInfo
 from src.keboola_chat_tools import (
     KEBOOLA_MCP_VERSION,
     build_stdio_spec,
@@ -56,6 +57,14 @@ class TestSpecBuilder:
         assert derived_source_id("abc") != derived_source_id("abd")
 
 
+FAKE_TOOLS = [
+    ToolInfo(name="query_data", description="run SQL", input_schema={"type": "object"}, read_only=True),
+    ToolInfo(name="run_job", description="run a job", input_schema=None, read_only=False),
+    # An upstream that annotates nothing at all: must NOT be taken for read-only.
+    ToolInfo(name="mystery", description=None, input_schema=None, read_only=None),
+]
+
+
 class TestChatToolsEndpoint:
     @pytest.fixture(autouse=True)
     def _stable_vault_key(self, monkeypatch):
@@ -63,6 +72,20 @@ class TestChatToolsEndpoint:
         _reset_ephemeral_key_for_tests()
         yield
         _reset_ephemeral_key_for_tests()
+
+    @pytest.fixture(autouse=True)
+    def _fake_upstream(self, monkeypatch):
+        """Stand in for the real Keboola MCP server.
+
+        Enabling genuinely dials the upstream now (that is the point — a source
+        with no registered tools gives the agent nothing), so without this the
+        suite would spawn `uv` and reach the network.
+        """
+
+        async def _fake_list_tools(source, *, caller_user_id=None):
+            return list(FAKE_TOOLS)
+
+        monkeypatch.setattr("connectors.mcp.client.list_tools_async", _fake_list_tools)
 
     def _create_keboola(self, c, token, *, name, with_secret=True):
         resp = c.post(
@@ -243,9 +266,7 @@ class TestAuthMethodOptionsAreImplemented:
         offered: set[str] = set()
         for rel in self.TEMPLATES:
             text = pathlib.Path(rel).read_text(encoding="utf-8")
-            for match in re.finditer(
-                r"""id=["'](?:new|edit)-auth-method["'].*?</select>""", text, re.S
-            ):
+            for match in re.finditer(r"""id=["'](?:new|edit)-auth-method["'].*?</select>""", text, re.S):
                 offered.update(re.findall(r"""<option value=["']([^"']*)["']""", match.group(0)))
 
         assert offered, "auth-method selects not found — did the templates move?"
@@ -317,8 +338,17 @@ class TestDisableLeavesNothingBehind(TestChatToolsEndpoint):
         assert c.delete(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 204
         assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
 
+        # Re-enabling registers the upstream's tools again — that is the point
+        # of the switch. What must NOT come back is the revoked grant: the
+        # hand-seeded tool is gone entirely, and nothing the re-enable
+        # registered carries a grant.
         surviving = tool_registry_repo().list_for_source(source_id)
-        assert surviving == [], f"re-enable adopted orphaned tools: {surviving}"
+        assert tool_id not in {t["tool_id"] for t in surviving}, "re-enable adopted the orphaned tool"
+        assert tool_registry_repo().grants_for_tool(tool_id) == [], "revoked grant came back"
+        assert surviving, "re-enable registered nothing — the agent would have no tools"
+        assert all(tool_registry_repo().grants_for_tool(t["tool_id"]) == [] for t in surviving), (
+            "a freshly registered tool must start with no grants"
+        )
 
 
 class TestAFailedResyncKeepsTheLiveSetupWorking(TestChatToolsEndpoint):
@@ -486,3 +516,140 @@ class TestUvCacheLocation:
         # Without this the first tool call after every auto-upgrade re-downloads
         # the package, and a HOME-less container may not resolve a cache at all.
         assert spec["env"]["UV_CACHE_DIR"] == "/data/cache/uv"
+
+
+class TestToolRegistration:
+    """Enabling must leave the agent with actual tools.
+
+    The passthrough surface an agent sees is built from ``tool_registry``, and
+    those rows are otherwise written only by an admin curating each tool by
+    hand. A switch that created the source and stopped would look like it had
+    worked and give the agent nothing — the exact shape of dead end this
+    feature exists to avoid.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _env(self, monkeypatch):
+        monkeypatch.setenv("AGNES_VAULT_KEY", Fernet.generate_key().decode())
+        _reset_ephemeral_key_for_tests()
+
+        async def _fake_list_tools(source, *, caller_user_id=None):
+            return list(FAKE_TOOLS)
+
+        monkeypatch.setattr("connectors.mcp.client.list_tools_async", _fake_list_tools)
+        yield
+        _reset_ephemeral_key_for_tests()
+
+    def _enable(self, c, token, name):
+        r = c.post(
+            BASE,
+            json={
+                "name": name,
+                "source_type": "keboola",
+                "config": {"stack_url": "https://connection.example.com"},
+            },
+            headers=_auth(token),
+        )
+        conn_id = r.json()["id"]
+        c.put(f"{BASE}/{conn_id}/secret", json={"value": "tok"}, headers=_auth(token))
+        resp = c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token))
+        return conn_id, resp
+
+    def test_enable_registers_every_upstream_tool(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id, resp = self._enable(c, token, "kbc-reg-all")
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["tools_registered"] == len(FAKE_TOOLS)
+
+        from src.repositories import tool_registry_repo
+
+        rows = tool_registry_repo().list_for_source(derived_source_id(conn_id))
+        assert {r["original_name"] for r in rows} == {t.name for t in FAKE_TOOLS}
+        assert all(r["mode"] == "passthrough" for r in rows)
+
+    def test_unannotated_tools_are_not_taken_for_read_only(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id, _ = self._enable(c, token, "kbc-reg-mutating")
+
+        from src.repositories import tool_registry_repo
+
+        by_name = {r["original_name"]: r for r in tool_registry_repo().list_for_source(derived_source_id(conn_id))}
+        assert bool(by_name["query_data"]["mutating"]) is False
+        assert bool(by_name["run_job"]["mutating"]) is True
+        # readOnlyHint absent -> must be treated as mutating, not as safe.
+        assert bool(by_name["mystery"]["mutating"]) is True
+
+    def test_exposed_names_keep_two_projects_apart(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        first, _ = self._enable(c, token, "kbc-proj-one")
+        second, _ = self._enable(c, token, "kbc-proj-two")
+
+        from src.repositories import tool_registry_repo
+
+        repo = tool_registry_repo()
+        names_a = {r["exposed_name"] for r in repo.list_for_source(derived_source_id(first))}
+        names_b = {r["exposed_name"] for r in repo.list_for_source(derived_source_id(second))}
+        # Every project exposes query_data; the agent picks by name alone.
+        assert not (names_a & names_b)
+
+    def test_disable_removes_the_tools_and_their_grants(self, seeded_app):
+        """Re-enabling must start from no grants. The derived source id is
+        deterministic, so grants left behind would silently reapply."""
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id, _ = self._enable(c, token, "kbc-reg-grants")
+
+        from src.repositories import tool_registry_repo
+
+        repo = tool_registry_repo()
+        rows = repo.list_for_source(derived_source_id(conn_id))
+        repo.add_grant(rows[0]["tool_id"], "some-group")
+        assert repo.grants_for_tool(rows[0]["tool_id"]) == ["some-group"]
+
+        assert c.delete(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 204
+
+        assert repo.list_for_source(derived_source_id(conn_id)) == []
+        assert repo.grants_for_tool(rows[0]["tool_id"]) == []
+
+    def test_a_failed_enable_leaves_a_working_setup_untouched(self, seeded_app, monkeypatch):
+        """Re-running enable on a live setup must not be able to break it."""
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id, _ = self._enable(c, token, "kbc-reg-rollback")
+
+        from src.repositories import shared_secrets_repo
+
+        async def _boom(source, *, caller_user_id=None):
+            raise RuntimeError("upstream down")
+
+        monkeypatch.setattr("connectors.mcp.client.list_tools_async", _boom)
+        c.put(f"{BASE}/{conn_id}/secret", json={"value": "rotated"}, headers=_auth(token))
+        resp = c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token))
+
+        assert resp.status_code == 502
+        assert "retry" in resp.text.lower()
+        # The credential that was serving a second ago is still there.
+        assert shared_secrets_repo().get(derived_source_id(conn_id)) == "tok"
+
+    def test_a_failed_first_enable_leaves_nothing_behind(self, seeded_app, monkeypatch):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        r = c.post(
+            BASE,
+            json={
+                "name": "kbc-reg-firstfail",
+                "source_type": "keboola",
+                "config": {"stack_url": "https://connection.example.com"},
+            },
+            headers=_auth(token),
+        )
+        conn_id = r.json()["id"]
+        c.put(f"{BASE}/{conn_id}/secret", json={"value": "tok"}, headers=_auth(token))
+
+        async def _boom(source, *, caller_user_id=None):
+            raise RuntimeError("upstream down")
+
+        monkeypatch.setattr("connectors.mcp.client.list_tools_async", _boom)
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 502
+
+        from src.repositories import mcp_sources_repo, shared_secrets_repo
+
+        assert mcp_sources_repo().get(derived_source_id(conn_id)) is None
+        assert shared_secrets_repo().get(derived_source_id(conn_id)) is None

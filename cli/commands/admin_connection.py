@@ -165,8 +165,12 @@ def chat_tools(
     if resp.status_code not in (200, 201):
         _fail(resp)
     body = resp.json() if resp.content else {}
-    typer.echo(f"Chat tools enabled for {connection_id} (MCP source {body.get('source_id', '?')})")
-    typer.echo("Next: grant the tools to a group — agnes admin grant --help")
+    count = body.get("tools_registered", 0)
+    typer.echo(
+        f"Chat tools enabled for {connection_id}: {count} tools registered "
+        f"(MCP source {body.get('source_id', '?')})"
+    )
+    typer.echo("Registered is not reachable — grant them to a group next: agnes admin grant --help")
 
 
 @admin_connection_app.command("test")
