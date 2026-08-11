@@ -140,8 +140,11 @@ class TestSemanticLayerPageSources:
 
         assert "Production Project" in body
         # 2 conn-a metrics + 1 NULL-ref legacy metric folded into the default row.
-        assert '<td class="num">3</td>' in body
-        assert '<td class="num">1</td>' in body
+        # Content, not the literal cell: the metric cell now also carries the
+        # coverage span this PR adds, so pinning the exact closing tag failed
+        # on a change that does not alter the number.
+        assert '<td class="num">3' in body
+        assert '<td class="num">1' in body
 
     def test_semantic_layer_page_renders_skipped_source_neutrally(self, seeded_app, vault_key):
         """A source whose last-sync entry has status='skipped' (the
