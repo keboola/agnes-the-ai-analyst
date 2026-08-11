@@ -955,6 +955,16 @@ async def enable_chat_tools(
                 ),
             },
         )
+    # A RE-run keeps the flag the admin last set. `build_stdio_spec` always
+    # describes an enabled source, and re-running this endpoint is the
+    # documented way to propagate a rotated token — so refreshing the
+    # credential of a server the admin had deliberately switched off silently
+    # started serving that project's tools again, to every group still
+    # holding grants. A FIRST enable still enables, which is the whole point.
+    # (Devin Review on this PR — the sibling re-sync path had the same bug.)
+    existing_source = mcp_sources_repo().get(spec["id"])
+    if existing_source is not None and "enabled" in existing_source:
+        spec["enabled"] = existing_source["enabled"]
     try:
         mcp_sources_repo().upsert(**spec)
     except Exception:
