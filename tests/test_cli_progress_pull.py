@@ -105,3 +105,42 @@ def test_partial_transfer_is_not_reported_as_done():
     output = stream.getvalue()
     assert "100% done" not in output, output
     assert "FAILED" in output, output
+
+
+def test_a_file_with_no_declared_size_is_not_reported_as_done_either():
+    """Devin Review on this PR: the guard was inert without a manifest size.
+
+    `if total and bytes_ < total` skips every row the server reported without
+    a size — precisely the files the printer can say the least about — so a
+    failed download of one still printed "100% done (0 B in 0.0s, 0 B/s)",
+    which is the exact line this change set exists to remove.
+    """
+    from io import StringIO
+
+    from cli.lib.pull import _TextualProgress
+
+    stream = StringIO()
+    # `cli/lib/pull.py` builds this as `int(row.get("size_bytes") or 0)`, so a
+    # manifest row without a size lands here as 0 — NOT as a missing key.
+    emitter = _TextualProgress(stream=stream, total_files=1, file_sizes={"orders": 0})
+    emitter.finish()
+
+    output = stream.getvalue()
+    assert "100% done" not in output, output
+    assert "FAILED" in output, output
+
+
+def test_a_completed_transfer_of_unknown_size_still_reads_as_done():
+    """The guard must not turn every size-less row into a false failure."""
+    from io import StringIO
+
+    from cli.lib.pull import _TextualProgress
+
+    stream = StringIO()
+    emitter = _TextualProgress(stream=stream, total_files=1, file_sizes={"orders": 0})
+    emitter.advance("orders", 250_000)
+    emitter.finish()
+
+    output = stream.getvalue()
+    assert "100% done" in output, output
+    assert "FAILED" not in output, output

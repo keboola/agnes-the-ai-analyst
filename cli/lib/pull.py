@@ -436,12 +436,27 @@ class _TextualProgress:
                 # progress printer can't see the exception, but it can see that
                 # the transfer fell short of the manifest size, which is enough
                 # to stop claiming success.
+                #
+                # Two shapes of "did not finish", because the manifest does
+                # not always carry a size: `total` is 0 for a row the server
+                # reported without one, and `total and …` is inert there — so
+                # the guard above skipped exactly the files it could say the
+                # least about, and they kept printing "100% done (0 B in
+                # 0.0s)". Receiving nothing at all is not a completed download
+                # under any size, known or not. (Devin Review on this PR.)
                 if total and bytes_ < total:
                     line = (
                         f"[{self._finished_idx}/{self._total_files} files] "
                         f"{tid}: FAILED "
                         f"({self._fmt_bytes(bytes_)} of {self._fmt_bytes(total)} "
                         f"in {duration:.1f}s) — see the error below\n"
+                    )
+                elif not bytes_:
+                    line = (
+                        f"[{self._finished_idx}/{self._total_files} files] "
+                        f"{tid}: FAILED (no data received"
+                        f"{'' if total else ', expected size unknown'}"
+                        f" in {duration:.1f}s) — see the error below\n"
                     )
                 else:
                     line = (
