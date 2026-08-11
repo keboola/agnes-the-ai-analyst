@@ -913,6 +913,70 @@ def _has_file_table_source(sql: str) -> bool:
     return False
 
 
+# Table functions whose target is SQL (or a table name) passed as a STRING.
+# They are invisible to every name-matching gate in this module: the non-admin
+# RBAC denylist below decides access by regex-matching view names in the SQL
+# text, so `query('select * from ' || 'x')` names nothing it can match while
+# still executing against the analytics catalog, where every view resolves.
+# `query_table` and `bigquery_query` are also on `_BLOCKED_SQL_TOKENS`; that
+# list cannot cover the concatenated form (nor bare `query(`, which it never
+# had), so this parse-level guard is the real boundary and the tokens stay as
+# defense-in-depth.
+_SQL_STRING_TABLE_FUNCTIONS = frozenset(
+    {
+        "query",
+        "query_table",
+        "bigquery_query",
+        "postgres_query",
+        "sqlite_query",
+        "mysql_query",
+    }
+)
+
+# Fallback ONLY for unparseable SQL, mirroring `_FROM_STRING_LITERAL_RE`: the
+# function name followed by its opening paren. Over-matching is acceptable on
+# SQL that does not parse — it is almost certainly invalid anyway.
+_SQL_STRING_FN_RE = re.compile(r"\b(?:" + "|".join(sorted(_SQL_STRING_TABLE_FUNCTIONS)) + r")\s*\(")
+
+
+def _has_sql_string_table_function(sql: str) -> bool:
+    """True if the SQL calls a table function that takes SQL/table-name as a
+    string (see ``_SQL_STRING_TABLE_FUNCTIONS``).
+
+    Detection is on the parsed tree and keys on the function NAME, which is
+    what makes the evasion detectable: the argument may be computed
+    (``'a' || 'b'``, ``chr(105)``) but the call itself is always an
+    ``exp.Anonymous`` node carrying the literal name. Inspecting names — not
+    literals — also keeps a string that merely contains the name (``WHERE note
+    = 'query(1)'``) from tripping it, and leaves an identifier such as
+    ``query_id`` or ``saved_queries`` alone.
+
+    Falls back to a text scan when sqlglot cannot parse the statement, so an
+    unparseable query cannot fail open. Tripwire:
+    ``test_sqlglot_models_sql_string_table_function_as_anonymous``."""
+    try:
+        import sqlglot
+        from sqlglot import exp
+
+        statements = sqlglot.parse(sql, read="duckdb")
+    except Exception:
+        return bool(_SQL_STRING_FN_RE.search(sql.lower()))
+    found_statement = False
+    for statement in statements:
+        if statement is None:
+            continue
+        found_statement = True
+        for node in statement.find_all(exp.Anonymous):
+            name = node.this
+            if isinstance(name, str) and name.lower() in _SQL_STRING_TABLE_FUNCTIONS:
+                return True
+    if not found_statement:
+        # sqlglot returned nothing parseable (e.g. all-None statements) —
+        # treat as unparseable rather than clean.
+        return bool(_SQL_STRING_FN_RE.search(sql.lower()))
+    return False
+
+
 def _assert_select_only(sql_lower: str) -> None:
     """Raise HTTPException(400) unless ``sql_lower`` is a single SELECT/WITH
     query free of the blocked keywords/functions. ``sql_lower`` MUST already
@@ -927,6 +991,16 @@ def _assert_select_only(sql_lower: str) -> None:
         raise HTTPException(
             status_code=400,
             detail="File-path table sources are not allowed; query registered views by name",
+        )
+    # SQL-as-a-string table functions (query/query_table/…): their target never
+    # appears as a matchable token, so the RBAC name denylist cannot see it.
+    if _has_sql_string_table_function(sql_lower):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Table functions that take SQL as a string (query, query_table, "
+                "bigquery_query, …) are not allowed; query registered views by name"
+            ),
         )
     # Accept any whitespace (newline, tab, space) after the keyword so
     # multi-line SQL doesn't 400 on `SELECT\n  col, ...`. Strip leading `--`
