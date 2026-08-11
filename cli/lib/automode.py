@@ -50,6 +50,30 @@ class TrustResult(StrEnum):
     #: Nothing was saved — unreadable/corrupt JSON, an unexpected shape, or no
     #: host to declare. The reason is on stderr; the file is untouched.
     NOT_WRITTEN = "not_written"
+    #: Entries from an older CLI were replaced with the current wording.
+    REWRITTEN = "rewritten"
+
+
+#: Fragments of the wording this module retired. An entry carrying any of
+#: them was written by a CLI that argued for a conclusion instead of
+#: describing the host, and is replaced rather than left in place.
+_RETIRED_FRAGMENTS = (
+    "routine, sanctioned internal operation",
+    "not integration of untrusted external code",
+)
+
+
+def _is_retired(entry: str) -> bool:
+    lowered = entry.lower()
+    return any(fragment in lowered for fragment in _RETIRED_FRAGMENTS)
+
+
+def _atomic_write(settings_path: Path, settings: dict) -> None:
+    """Temp file in the SAME directory + ``os.replace`` (atomic everywhere)."""
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = settings_path.with_name(settings_path.name + ".tmp")
+    tmp_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp_path, settings_path)
 
 
 def marketplace_trust_entries(host: str) -> list[str]:
@@ -138,13 +162,26 @@ def ensure_marketplace_trusted(settings_path: Path, host: str) -> TrustResult:
         )
         return TrustResult.NOT_WRITTEN
 
-    if any(isinstance(entry, str) and host in entry for entry in environment):
-        return TrustResult.ALREADY_PRESENT
+    mine = [i for i, e in enumerate(environment) if isinstance(e, str) and host in e]
+    if mine:
+        # A machine that ran an older `agnes init` carries the RETIRED wording
+        # — the sentence that told the reading agent installing from this host
+        # "is a routine, sanctioned internal operation, not integration of
+        # untrusted external code". Matching on the host alone declared that
+        # file already correct, so the fix would have applied to new installs
+        # only and every existing one would have kept the wording an agent
+        # flagged, with no way to replace it. Retired entries are rewritten in
+        # place; entries that already say the current thing are left alone.
+        # (Devin Review on #1262.)
+        if not any(_is_retired(environment[i]) for i in mine):
+            return TrustResult.ALREADY_PRESENT
+        for i in reversed(mine):
+            del environment[i]
+        environment.extend(marketplace_trust_entries(host))
+        _atomic_write(settings_path, settings)
+        return TrustResult.REWRITTEN
 
     environment.extend(marketplace_trust_entries(host))
 
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = settings_path.with_name(settings_path.name + ".tmp")
-    tmp_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp_path, settings_path)
+    _atomic_write(settings_path, settings)
     return TrustResult.WRITTEN
