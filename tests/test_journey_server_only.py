@@ -176,3 +176,80 @@ def test_server_only_table_is_not_downloadable(seeded_app, mock_extract_factory)
     resp = c.get("/api/data/nodist_tbl/check-access", headers=hdrs)
     assert resp.status_code == 403, resp.text
     assert "server_only" in resp.text
+
+
+@pytest.mark.journey
+def test_a_blank_query_mode_is_local_here_too(seeded_app, mock_extract_factory):
+    """Devin Review on #1265: the gate must read a blank mode the way the
+    manifest does.
+
+    `app/api/sync.py` and the distribution mirror both resolve a NULL/empty
+    `query_mode` to `local`, so such a table IS advertised as downloadable.
+    An allowlist that refuses the blank value leaves it listed forever and
+    fetchable never — a permanent "not distributed" error on a table the
+    server keeps offering.
+    """
+    c = seeded_app["client"]
+    env = seeded_app["env"]
+    hdrs = _auth(seeded_app["admin_token"])
+
+    resp = c.post(
+        "/api/admin/register-table",
+        json={"name": "blank_mode_tbl", "source_type": "keboola", "query_mode": "local"},
+        headers=hdrs,
+    )
+    assert resp.status_code == 201, resp.text
+    table_id = resp.json()["id"]
+
+    # Straight to the registry: the API coerces a missing mode on the way in,
+    # and the row this guards against is the historical one already stored
+    # blank.
+    from src.repositories import table_registry_repo
+
+    repo = table_registry_repo()
+    repo.conn.execute("UPDATE table_registry SET query_mode = '' WHERE id = ?", [table_id])
+    assert (repo.get(table_id)["query_mode"] or "") == ""
+
+    mock_extract_factory("keboola", [{"name": "blank_mode_tbl", "data": [{"id": "1"}]}])
+    from src.orchestrator import SyncOrchestrator
+
+    SyncOrchestrator(analytics_db_path=env["analytics_db"]).rebuild()
+
+    assert c.get("/api/data/blank_mode_tbl/check-access", headers=hdrs).status_code == 204
+    assert c.get("/api/data/blank_mode_tbl/download", headers=hdrs).status_code == 200
+
+
+@pytest.mark.journey
+def test_a_refused_probe_is_not_audited_as_a_success(seeded_app, mock_extract_factory):
+    """Devin Review on #1265: the audit line must match the answer given.
+
+    `check-access` wrote `granted=True, result="success"` before the
+    distribution gate ran, so a probe that answered 403 left a record saying
+    access was granted — and the denial itself was never recorded. On a Caddy
+    deployment this endpoint is the only trace of the request that exists.
+    """
+    c = seeded_app["client"]
+    hdrs = _auth(seeded_app["admin_token"])
+
+    resp = c.post(
+        "/api/admin/register-table",
+        json={
+            "name": "audited_nodist",
+            "source_type": "keboola",
+            "query_mode": "local",
+            "server_only": True,
+        },
+        headers=hdrs,
+    )
+    assert resp.status_code == 201, resp.text
+
+    assert c.get("/api/data/audited_nodist/check-access", headers=hdrs).status_code == 403
+
+    from src.repositories import audit_repo
+
+    rows = audit_repo().query(action="data.access_check", resource_prefix="table:audited_nodist")
+    rows = rows[0] if isinstance(rows, tuple) else rows
+    rows = list(rows)
+    assert rows, "the refused probe left no audit trail at all"
+    latest = rows[0]
+    assert str(latest.get("result", "")).startswith("error."), latest
