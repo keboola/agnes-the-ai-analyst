@@ -677,6 +677,7 @@ def _clone_url_with_credential(base: str, jwt_token: str, slug: str) -> str:
     """
     if "://" not in base:
         base = f"https://{base}"
+    return f"{base.replace('://', f'://agnes:{jwt_token}@')}/data-apps.git/{slug}"
 
 
 # Cookie carrying a `data-app-preview:<slug>` token — see `_mint_preview_token`.

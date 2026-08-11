@@ -733,6 +733,17 @@ _EXEMPT: dict[str, str] = {
         "the agent calls the real /api/data-apps* endpoints through this "
         "relay, which already carry their own triple-surface contract."
     ),
+    "/api/broker/data-apps.git/{slug}/{path}": (
+        "git smart-HTTP transport for the sandboxed authoring agent; not a "
+        "user-facing API — internal sandbox->server route, ticket-gated (not "
+        "user auth) like the other /api/broker/* routes. Its consumer is the "
+        "`git` binary inside the sandbox, not a person: a CLI or MCP wrapper "
+        "would have nothing to wrap, since the client speaks the git wire "
+        "protocol end to end. An analyst on a laptop clones the same repo "
+        "directly from /data-apps.git/<slug> with the credential "
+        "`agnes app git-credential` / `data_app_git_credential` mints, and "
+        "THAT pair carries the triple-surface contract."
+    ),
     # reap-idle is a scheduler-triggered admin maintenance op (Task 9) —
     # mirrors the run-knowledge-digests/run-corporate-memory exemptions
     # regardless of the CLI/MCP question above; no analyst CLI/MCP analogue.
