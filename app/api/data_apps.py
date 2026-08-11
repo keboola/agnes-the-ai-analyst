@@ -633,6 +633,25 @@ def _mint_git_credential(row: dict) -> str:
     # remote sandbox; SERVER_URL is the missing link in that chain, and it is
     # the same value the sandbox itself is handed as AGNES_SERVER.
     base = get_public_url() or (os.environ.get("SERVER_URL") or "").strip().rstrip("/") or AGNES_INTERNAL_URL
+    return _clone_url_with_credential(base, jwt_token, slug)
+
+
+def _clone_url_with_credential(base: str, jwt_token: str, slug: str) -> str:
+    """`<scheme>://agnes:<jwt>@<host>/data-apps.git/<slug>`.
+
+    Its own function so the assembly can be tested without minting a token
+    against a real owner. The scheme guard is the reason it needs testing: a
+    schemeless base (`host:port`, which compose files do carry in
+    ``SERVER_URL``) has nothing for the credential to be injected after, so
+    the `replace("://", …)` was a silent no-op and the clone URL went out
+    authenticating as nobody — the failure the ``SERVER_URL`` fallback exists
+    to prevent, one step further along. Defaulted to https rather than
+    rejected: this is a fallback for a value the operator set for something
+    else, and refusing it would take away the only working address on that
+    box. (Devin Review on this PR.)
+    """
+    if "://" not in base:
+        base = f"https://{base}"
     return f"{base.replace('://', f'://agnes:{jwt_token}@')}/data-apps.git/{slug}"
 
 
