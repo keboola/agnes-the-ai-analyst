@@ -33,10 +33,17 @@ STDIO_TOOLS = ROOT / "cli" / "mcp" / "server.py"
 #: Patterns tolerate line wrapping (``\s+``) — a docstring reflows, and a
 #: guard that fails on where the line broke would be noise, not signal.
 CAVEATS = (
-    ("filenames are not indexed", r"filename[s]?\s+are\s+not\s+indexed"),
+    # File names ARE searched now, as a fallback when no body matches. The
+    # caveat that mattered is the one about what a name hit is worth, so the
+    # guard pins the fallback wording — an agent told "not indexed" would be
+    # steered away from a query that works. (#1267)
+    ("file names are a fallback", r"file\s+names?\s+are\s+a\s+fallback"),
     ("whole-word matching", r"whole[\s-]+word"),
     ("no wildcard", r"wildcard"),
 )
+
+#: Wording that must NOT survive anywhere in either server's tool docs.
+STALE = (("filenames are not indexed", r"filename[s]?\s+are\s+not\s+indexed"),)
 
 SEARCH_TOOLS = ("collections_search", "knowledge_search")
 
@@ -130,3 +137,11 @@ def test_the_wire_extractor_is_not_silently_returning_everything():
         for tool in SEARCH_TOOLS:
             src = source.read_text(encoding="utf-8")
             assert len(_wire_description(src, tool)) < len(_docstring(src, tool))
+
+
+@pytest.mark.parametrize(("label", "pattern"), STALE, ids=[s[0] for s in STALE])
+def test_neither_server_still_ships_the_stale_caveat(label, pattern):
+    """The advice and the engine have to agree — on BOTH surfaces, since a
+    fix applied to one of them is the recurring shape of this bug."""
+    for path in (HTTP_TOOLS, STDIO_TOOLS):
+        assert not re.search(pattern, path.read_text(encoding="utf-8"), re.I), f"{path.name} still says: {label}"
