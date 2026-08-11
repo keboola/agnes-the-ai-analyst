@@ -200,6 +200,75 @@ def rank_chunks(
     return scored[:k], confidence
 
 
+#: Filename tokens too generic to identify a file. An extension is shared by
+#: every file of that type, so matching on it returns the whole corpus as
+#: "hits" — noise dressed as a result.
+_FILENAME_STOP_TOKENS = frozenset(
+    {
+        "md",
+        "txt",
+        "pdf",
+        "csv",
+        "tsv",
+        "json",
+        "yaml",
+        "yml",
+        "html",
+        "htm",
+        "doc",
+        "docx",
+        "xls",
+        "xlsx",
+        "ppt",
+        "pptx",
+        "png",
+        "jpg",
+        "jpeg",
+        "gif",
+        "webp",
+        "zip",
+        "parquet",
+        "log",
+    }
+)
+
+
+def _rank_by_filename(
+    chunks: List[Dict[str, Any]],
+    query: str,
+    filename_of: Any,
+    *,
+    k: int = 10,
+) -> List[tuple[float, Dict[str, Any]]]:
+    """Chunks whose FILE NAME matches the query, for the no-body-hit case.
+
+    Scored by how much of the query the name accounts for, so a full
+    ``quarterly-report`` beats a bare ``report``. Ordered by that overlap and
+    then by ``ordinal``, so a matched file reads from its beginning rather
+    than from an arbitrary chunk.
+
+    Extensions are excluded (see ``_FILENAME_STOP_TOKENS``): ``md`` appears
+    in every markdown filename, so honouring it would answer "md" with the
+    entire corpus.
+    """
+    q_terms = {t for t in _tokenize(query) if t not in _FILENAME_STOP_TOKENS}
+    if not q_terms:
+        return []
+
+    scored: List[tuple[float, Dict[str, Any]]] = []
+    for ch in chunks:
+        name = filename_of(ch.get("file_id"))
+        if not name:
+            continue
+        name_terms = {t for t in _tokenize(name) if t not in _FILENAME_STOP_TOKENS}
+        overlap = q_terms & name_terms
+        if overlap:
+            scored.append((len(overlap) / len(q_terms), ch))
+
+    scored.sort(key=lambda pair: (-pair[0], pair[1].get("ordinal") or 0, str(pair[1].get("id"))))
+    return scored[:k]
+
+
 def search(
     corpus_ids: List[str],
     query: str,
@@ -228,6 +297,22 @@ def search(
             row = cf_repo.get(file_id)
             name_cache[file_id] = row.get("filename") if row else None
         return name_cache[file_id]
+
+    if not top:
+        # Nothing in any BODY matched — try the file NAMES before giving up.
+        # `rank_chunks` scores text only (its docstring: "no filename
+        # resolution"), so "what is in quarterly-report.md?" — the most
+        # natural way to ask about a file you are looking at — matched
+        # nothing, and an agent read that empty result as missing access.
+        #
+        # A fallback rather than a scoring input on purpose: a filename is
+        # weak evidence next to the words actually in the document, so it
+        # must never reorder a search that already worked. Runs only on the
+        # empty case, so the cost lands where there is nothing to lose.
+        top = _rank_by_filename(chunks, query, _filename, k=k)
+        if top:
+            # A name match is a hint, not evidence — never claim more.
+            confidence = "low"
 
     results: List[Dict[str, Any]] = []
     for score, ch in top:
