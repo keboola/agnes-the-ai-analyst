@@ -287,6 +287,7 @@ def search(
         return []
 
     top, confidence = rank_chunks(chunks, query, k=k)
+    match_kind = "content"
 
     # Resolve filenames for citations (cache per file).
     cf_repo = corpus_files_repo()
@@ -313,6 +314,7 @@ def search(
         if top:
             # A name match is a hint, not evidence — never claim more.
             confidence = "low"
+            match_kind = "filename"
 
     results: List[Dict[str, Any]] = []
     for score, ch in top:
@@ -327,6 +329,15 @@ def search(
                 "text": ch.get("text"),
                 "score": round(float(score), 4),
                 "confidence": confidence,
+                # Which signal produced this hit. Consumers that mix chunk
+                # results with other kinds need it: `unified_search`
+                # min-max normalizes each bucket alone, so whatever tops a
+                # bucket scores 1.0 no matter how weak it was — and a
+                # filename match is the weakest signal here (the query
+                # appeared in no document body at all). Without the label,
+                # a name match outranked glossary, knowledge and table hits
+                # that matched real words.
+                "match": match_kind,
             }
         )
     return results

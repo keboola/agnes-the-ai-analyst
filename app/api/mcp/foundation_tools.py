@@ -291,8 +291,12 @@ def register_foundation_tools(
         Three behaviours that make a reasonable query miss — search the
         document's TEXT, not its metadata:
 
-        * **filenames are not indexed.** Searching ``report`` will not find
-          ``report.md``; only the words inside it are matched.
+        * **file names are a FALLBACK, not an index.** When nothing in any
+          body matches, names are matched as a last resort — so
+          ``report`` does find ``report.md`` if no document text matched,
+          but a real content hit always wins, and an extension alone
+          (``md``) matches nothing. Such hits carry ``match: "filename"``
+          and ``confidence: "low"``.
         * **matching is whole word.** ``test`` does not find ``Testovaci``.
         * **there is no wildcard.** ``*`` and an empty query return nothing,
           not everything — there is no "list all chunks" query. Use
@@ -350,8 +354,9 @@ def register_foundation_tools(
         either — see ``collections_search``'s note.
 
         The chunk leg carries the same three surprises as
-        ``collections_search``: filenames are not indexed, matching is whole
-        word, and there is no wildcard. An empty result is not evidence that
+        ``collections_search``: file names are matched only as a fallback
+        when no body matched, matching is whole word, and there is no
+        wildcard. An empty result is not evidence that
         you lack access — it carries ``searched_collections``,
         ``searched_tables`` and a ``hint`` saying which of the two it is;
         read the hint before telling anyone they have no access.

@@ -14,8 +14,9 @@ Nothing in an empty result distinguishes "you cannot see any collection"
 from "your words are not in the text", so the model picks the scarier
 reading. Three properties of the engine make the wrong guesses easy:
 
-  - filenames are NOT indexed (`src/ingest/retrieval.py` ranks chunk text
-    only — the filename is attached afterwards, for citations);
+  - file names are matched only as a FALLBACK, when nothing in any body
+    matched (#1267) — so a name never outranks a real content hit, and an
+    extension alone matches nothing;
   - matching is whole-word, so `test` does not find `Testovaci`;
   - there is no wildcard: `*` and `""` return nothing rather than everything.
 
@@ -76,7 +77,7 @@ class TestEmptyResultCarriesAHint:
         _make_collection_with_file(seeded_app, tok, "Notes", "alpha bravo charlie")
 
         hint = _search(seeded_app, tok, "nosuchwordanywhere")["hint"].lower()
-        assert "filename" in hint, "must say filenames are not indexed"
+        assert "file name" in hint, "must say how file names are matched"
         assert "whole word" in hint or "whole-word" in hint, "must say matching is whole-word"
         assert "wildcard" in hint or "*" in hint, "must say there is no wildcard"
 
@@ -146,7 +147,7 @@ class TestCombinedKnowledgeSearchCarriesTheSameHint:
         hint = body.get("hint", "")
         assert hint, "the docstring promises a hint; the response must carry one"
         assert "DO have access" in hint
-        for caveat in ("filenames are not indexed", "whole word", "wildcard"):
+        for caveat in ("file names are matched only as a fallback", "whole word", "wildcard"):
             assert caveat in hint, f"hint does not name: {caveat}"
 
     def test_a_non_empty_result_carries_no_hint(self, seeded_app):

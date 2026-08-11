@@ -72,9 +72,23 @@ def local_search(query: str, *, workspace: Path, k: int = 10) -> List[Dict[str, 
     if not chunks:
         return []
 
-    from src.ingest.retrieval import rank_chunks
+    from src.ingest.retrieval import _rank_by_filename, rank_chunks
 
     top, confidence = rank_chunks(chunks, query, k=k)
+    match_kind = "content"
+    if not top:
+        # Same fallback as the server's `search()`: when no BODY matched, try
+        # the file NAMES. Without it `agnes search --local` and the stdio MCP
+        # fallback answered `[]` for a query the server resolves — the two
+        # surfaces have to agree, which is what `test_rank_parity_with_
+        # server_engine` above exists to hold. The artifact schema
+        # denormalizes `filename` onto the chunk rows, so the lookup is a
+        # dict rather than the server's repo call.
+        names = {ch.get("file_id"): ch.get("filename") for ch in chunks}
+        top = _rank_by_filename(chunks, query, names.get, k=k)
+        if top:
+            confidence = "low"
+            match_kind = "filename"
     return [
         {
             "type": "chunk",
@@ -87,6 +101,7 @@ def local_search(query: str, *, workspace: Path, k: int = 10) -> List[Dict[str, 
             "text": ch.get("text"),
             "score": round(float(score), 4),
             "confidence": confidence,
+            "match": match_kind,
         }
         for score, ch in top
     ]
