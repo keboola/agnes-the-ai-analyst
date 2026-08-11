@@ -166,3 +166,59 @@ def test_suggestion_api_403_when_studio_disabled(seeded_app, monkeypatch):
         json={},
     )
     assert a.status_code == 403
+
+
+def test_an_approved_corporate_memory_submission_keeps_the_knowledge(seeded_app):
+    """Devin Review on #1263: the replay dropped the whole submission.
+
+    A non-admin fills in the knowledge on the Corporate Memory builder, sees
+    "Submitted for approval", and the admin approves — and the replay copied
+    only name/slug/description, so what appeared was an empty domain and the
+    text was gone. Nothing warned anybody, on either side.
+    """
+    from src.db import get_system_db
+    from src.repositories.knowledge import KnowledgeRepository
+
+    c = seeded_app["client"]
+    content = "Never report the latest month before the FX rate lands."
+    sid = _submit(
+        c,
+        seeded_app["analyst_token"],
+        domain="corporate-memory",
+        payload={"name": "Month-end close", "slug": "month-end-close", "content": content},
+    ).json()["id"]
+
+    a = c.post(
+        f"/api/admin/authoring-suggestions/{sid}/approve",
+        headers=_auth(seeded_app["admin_token"]),
+        json={"note": "lgtm"},
+    )
+    assert a.status_code == 200, a.text
+
+    conn = get_system_db()
+    items = [
+        it for it in KnowledgeRepository(conn).list_items(limit=200) if it.get("domain") == "month-end-close"
+    ]
+    conn.close()
+    assert items, "the knowledge the author wrote did not survive approval"
+    assert items[0]["content"] == content
+    # The submitter's knowledge, not the approver's.
+    assert items[0]["source_user"] == "analyst@test.com", items[0]
+
+
+def test_a_corporate_memory_submission_without_content_still_creates_the_domain(seeded_app):
+    c = seeded_app["client"]
+    sid = _submit(
+        c,
+        seeded_app["analyst_token"],
+        domain="corporate-memory",
+        payload={"name": "Empty on purpose", "slug": "empty-on-purpose"},
+    ).json()["id"]
+
+    a = c.post(
+        f"/api/admin/authoring-suggestions/{sid}/approve",
+        headers=_auth(seeded_app["admin_token"]),
+        json={},
+    )
+    assert a.status_code == 200, a.text
+    assert a.json()["created_resource_id"]
