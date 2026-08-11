@@ -266,7 +266,11 @@ def _rank_by_filename(
     in every markdown filename, so honouring it would answer "md" with the
     entire corpus.
     """
-    q_terms = {t for t in _tokenize(query) if t not in _FILENAME_STOP_TOKENS}
+    # The SAME content-word set the caller compares against: counting filler
+    # words here let files that share a "what"/"is"/"in" with the question
+    # outrank the file the question actually names, and the stricter filter
+    # downstream then had nothing left to accept. (Devin Review on #1267.)
+    q_terms = {t for t in _tokenize(query) if t not in _FILENAME_STOP_TOKENS and t not in _QUERY_STOP_TOKENS}
     if not q_terms:
         return []
 
@@ -283,6 +287,13 @@ def _rank_by_filename(
     scored.sort(key=lambda pair: (-pair[0], pair[1].get("ordinal") or 0, str(pair[1].get("id"))))
     return scored[:k]
 
+
+
+#: The name pass is skipped when some passage already explains at least this
+#: much of the question. Below it, a file NAMED after the subject is a
+#: plausible better answer; at or above it, the body has the question covered
+#: and the extra file listing would be spent for nothing.
+_NAME_PASS_BODY_CEILING = 0.5
 
 
 def apply_filename_fallback(
@@ -325,12 +336,14 @@ def apply_filename_fallback(
         return len(q_terms & set(_tokenize(text or ""))) / len(q_terms)
 
     best_body_cover = max((_cover(ch.get("text", "")) for _s, ch in top), default=0.0)
-    if best_body_cover >= 1.0:
-        # Some passage already accounts for every content word in the
-        # question. No name can beat that, so the name pass — and the file
-        # listing `prepare` loads for it — is skipped entirely: an ordinary
-        # search must not pay for a fallback it cannot use. (Devin Review on
-        # #1267.)
+    if best_body_cover >= _NAME_PASS_BODY_CEILING:
+        # Some passage already explains most of the question. Skipping here
+        # is what keeps an ordinary search from paying for the file listing
+        # `prepare` loads: requiring FULL coverage before skipping meant the
+        # common multi-word query loaded it anyway. A file name that beats a
+        # half-explained question is possible in principle; it is not worth a
+        # listing per collection on every search that finds real matches.
+        # (Devin Review on #1267, twice.)
         return top, confidence, set()
     if prepare is not None:
         prepare()
