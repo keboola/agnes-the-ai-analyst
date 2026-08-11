@@ -229,3 +229,58 @@ class TestUpstreamFailure:
         source = result["sources"][0]
         assert source["error"] is not None
         assert "fetch_failed" in _warning_codes(source)
+
+
+class TestNameConflicts:
+    """Mapping cleanly is not the same as landing. The sync refuses a name
+    another source already holds, and that check runs AFTER the mapper — so
+    counting mapped rows alone overstates coverage.
+
+    Found live: a Keboola `mrr` never landed because the bundled yaml starter
+    pack already owned that name, while every skip counter the sync reports
+    read 0.
+    """
+
+    def _seed_foreign_metric(self, name: str):
+        from src.repositories import metric_repo
+
+        metric_repo().create(
+            id=f"sales_revenue/{name}",
+            name=name,
+            display_name=name,
+            category="sales",
+            description="",
+            sql="SELECT 1",
+            source="yaml_import",
+        )
+
+    def test_a_name_another_source_holds_is_not_counted_importable(self, e2e_env):
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+        self._seed_foreign_metric("mrr")
+
+        source = _run(
+            [
+                _metric_item("mrr", 'SUM("amount")', "in.c-example_source.orders"),
+                _metric_item("order_count", "COUNT(*)", "in.c-example_source.orders"),
+            ],
+            datasets=[_dataset_item("in.c-example_source.orders")],
+        )
+
+        assert source["metrics"] == {"upstream": 2, "importable": 1}
+        assert [c["metric"] for c in source["conflicts"]] == ["mrr"]
+        assert source["conflicts"][0]["held_by"] == "yaml_import"
+        assert "name_conflict" in _warning_codes(source)
+        # Not a table problem — registering something must not be the hint.
+        assert source["unregistered_tables"] == []
+        assert source["blocked"] == []
+
+    def test_no_conflict_when_the_name_is_free(self, e2e_env):
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+        source = _run(
+            [_metric_item("mrr", 'SUM("amount")', "in.c-example_source.orders")],
+            datasets=[_dataset_item("in.c-example_source.orders")],
+        )
+
+        assert source["metrics"] == {"upstream": 1, "importable": 1}
+        assert source["conflicts"] == []
+        assert "name_conflict" not in _warning_codes(source)
