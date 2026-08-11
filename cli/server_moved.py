@@ -95,7 +95,12 @@ def _parse_target(location: str, configured: str) -> tuple[bool, str]:
             # TLS on the strength of a redirect anyone on the path can forge.
             # (Devin Review on #1266, after the upgrade case was added.)
             upgraded = same_host and current.scheme == "http" and target.scheme == "https"
-            moved = bool(target.netloc) and (not same_host or upgraded)
+            # A downgrade is never followed, whether or not the host changes:
+            # `https://old` → `http://new` would otherwise be handed over as a
+            # new address in plaintext. (Devin Review on #1266, twice — the
+            # first version only covered the same-host case.)
+            downgrade = current.scheme == "https" and target.scheme == "http"
+            moved = bool(target.netloc) and not downgrade and (not same_host or upgraded)
             if moved:
                 new_base = str(target.copy_with(raw_path=b"/")).rstrip("/")
         except Exception:
