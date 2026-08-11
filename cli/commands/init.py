@@ -50,7 +50,12 @@ import typer
 from cli.client import api_get
 from cli.config import _config_dir, save_config, save_token
 from cli.error_render import render_error
-from cli.lib.automode import TrustResult, ensure_marketplace_trusted, marketplace_trust_entries
+from cli.lib.automode import (
+    TrustResult,
+    ensure_marketplace_trusted,
+    marketplace_trust_entries,
+    marketplace_trust_state,
+)
 from cli.lib.commands import install_claude_commands
 from cli.lib.hooks import install_claude_hooks
 from cli.lib.initial_workspace import apply_override, probe_status
@@ -249,6 +254,14 @@ def _maybe_declare_marketplace_trust(host: str, decision: Optional[bool]) -> Non
 
     if decision is False:
         typer.echo(f"Skipping the auto-mode trust declaration for {host} (--no-trust-marketplace-host).")
+        return
+
+    # Nothing to decide when the declaration is already in place and current:
+    # asking again on every re-run nags about a settled question, and the
+    # unattended branch announced it was "not declaring" something that had
+    # been declared long ago. (Devin Review on #1262.)
+    if marketplace_trust_state(settings_path, host) is TrustResult.ALREADY_PRESENT:
+        typer.echo(f"{host} was already declared in {settings_path} (autoMode.environment).")
         return
 
     if decision is None:
