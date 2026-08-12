@@ -801,6 +801,31 @@ def _grant(group_id: str, resource_type: str, resource_id: str) -> None:
         grants.create(group_id=group_id, resource_type=resource_type, resource_id=resource_id, assigned_by="admin")
 
 
+def _stock_domain(domain_id: str, item_id: str) -> None:
+    """Put one approved item into a memory domain. The Library hides empty
+    optional domains (the /corporate-memory _has_content rule moved in with
+    the merge), so a domain that should LIST must have content."""
+    from src.db import get_system_db
+    from src.repositories.knowledge import KnowledgeRepository
+
+    conn = get_system_db()
+    try:
+        KnowledgeRepository(conn).create(
+            id=item_id,
+            title="Stock item",
+            content="body",
+            category="workflow",
+            status="approved",
+            source_user="contrib@example.com",
+        )
+        conn.execute(
+            "INSERT INTO knowledge_item_domains(item_id, domain_id, added_by) VALUES (?, ?, 'test')",
+            [item_id, domain_id],
+        )
+    finally:
+        conn.close()
+
+
 def test_library_lists_granted_resources_of_every_kind(seeded_app):
     """The Library answers "what do I have?" across kinds: the caller's own
     artefacts PLUS the governed data packages, memory domains and recipes
@@ -837,6 +862,7 @@ def test_library_lists_granted_resources_of_every_kind(seeded_app):
     _grant(gid, "data_package", pkg)
     _grant(gid, "memory_domain", dom)
     _grant(gid, "recipe", rec)
+    _stock_domain(dom, "lib_pricing_item")
 
     text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
     assert "Sales Data" in text
@@ -876,6 +902,7 @@ def test_granted_rows_link_to_the_individual_item(seeded_app):
     )
     _grant(gid, "data_package", pkg)
     _grant(gid, "memory_domain", dom)
+    _stock_domain(dom, "lib_drill_item")
 
     text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
     assert "/catalog/p/lib-drill-data" in text

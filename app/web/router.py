@@ -3262,6 +3262,18 @@ async def library_page(
         dom_slugs = {r["id"]: r.get("slug") for r in memory_domains_repo().list(limit=100000)}
     except Exception:
         dom_slugs = {}
+    # Per-domain item/required counts — the same numbers the standalone
+    # /corporate-memory cards carry (that page 302s here under rail, so the
+    # band inherits its duties). Read by the memory rows' meta and by the
+    # empty-domain rule below.
+    dom_counts: dict[str, tuple[int, int]] = {}
+    try:
+        _dom_repo = memory_domains_repo()
+        for _did in dom_slugs:
+            _sums = _dom_repo.list_items_of_domain(_did, limit=10000)
+            dom_counts[_did] = (len(_sums), sum(1 for s in _sums if s.get("is_required")))
+    except Exception as e:
+        logger.warning("/library: could not count memory-domain items: %s", e)
     for rt, type_key, type_label, glyph in (
         (ResourceType.DATA_PACKAGE, "data_package", "Data package", "data"),
         (ResourceType.MEMORY_DOMAIN, "memory_domain", "Memory", "memory"),
@@ -3271,12 +3283,23 @@ async def library_page(
                 if type_key == "data_package":
                     slug = pkg_slugs.get(e.id)
                     href = f"/catalog/p/{slug}" if slug else "/catalog"
+                    row_meta = e.category or ""
                 else:
                     slug = dom_slugs.get(e.id)
                     # ?source=library so the drill-down's back link returns
                     # HERE instead of to the memory listing the caller never
                     # visited (also feeds the memory_domain.view event).
                     href = f"/memory/d/{slug}?source=library" if slug else f"/corporate-memory#{e.id}"
+                    n_items, n_required = dom_counts.get(e.id, (0, 0))
+                    # A domain with nothing in it has nothing to opt into —
+                    # same rule as the standalone page (_has_content): hidden
+                    # unless the mandate itself is required. Admins manage
+                    # empty placeholders at /admin/corporate-memory#domains.
+                    if n_items == 0 and e.requirement != "required":
+                        continue
+                    row_meta = f"{n_items} item{'s' if n_items != 1 else ''}"
+                    if n_required:
+                        row_meta += f" · {n_required} required"
                 _add_shared_row(
                     item_id=e.id,
                     title=e.name,
@@ -3288,7 +3311,7 @@ async def library_page(
                     origin="granted",
                     origin_label="Shared with you",
                     added=None,
-                    meta_text=e.category or "",
+                    meta_text=row_meta,
                     owner_label=e.owner_name or "Your workspace",
                     # StackResolver's non-required tier is "available";
                     # collapse it into "optional" so the facet has exactly two
