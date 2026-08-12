@@ -956,19 +956,22 @@ async def login_page(request: Request):
     if not next_path.startswith("/") or next_path.startswith("//"):
         next_path = ""
 
+    from app.auth.provider_registry import provider_allowed
+
     providers = []
     try:
         from app.auth.providers.google import is_available as google_available
 
-        if google_available():
+        if google_available() and provider_allowed("google"):
             providers.append({"name": "google", "display_name": "Google", "icon": "google"})
     except Exception:
         pass
-    providers.append({"name": "password", "display_name": "Email & Password", "icon": "key"})
+    if provider_allowed("password"):
+        providers.append({"name": "password", "display_name": "Email & Password", "icon": "key"})
     try:
         from app.auth.providers.email import is_available as email_available
 
-        if email_available():
+        if email_available() and provider_allowed("email"):
             providers.append({"name": "email", "display_name": "Email Link", "icon": "mail"})
     except Exception:
         pass
@@ -1005,6 +1008,10 @@ async def login_page(request: Request):
 @router.get("/login/password", response_class=HTMLResponse)
 async def login_password_page(request: Request):
     """Password login form (email + password)."""
+    from app.auth.provider_registry import provider_allowed
+
+    if not provider_allowed("password"):
+        raise HTTPException(status_code=404, detail="Not Found")
     next_path = request.query_params.get("next", "")
     if not next_path.startswith("/") or next_path.startswith("//"):
         next_path = ""
@@ -1012,7 +1019,7 @@ async def login_password_page(request: Request):
     try:
         from app.auth.providers.google import is_available as google_available
 
-        google_ok = google_available()
+        google_ok = google_available() and provider_allowed("google")
     except Exception:
         pass
     ctx = _build_context(request, google_available=google_ok, next_path=next_path)
@@ -1022,6 +1029,10 @@ async def login_password_page(request: Request):
 @router.get("/login/email", response_class=HTMLResponse)
 async def login_email_page(request: Request):
     """Email magic link login form."""
+    from app.auth.provider_registry import provider_allowed
+
+    if not provider_allowed("email"):
+        raise HTTPException(status_code=404, detail="Not Found")
     next_path = request.query_params.get("next", "")
     if not next_path.startswith("/") or next_path.startswith("//"):
         next_path = ""
@@ -1029,7 +1040,7 @@ async def login_email_page(request: Request):
     try:
         from app.auth.providers.google import is_available as google_available
 
-        google_ok = google_available()
+        google_ok = google_available() and provider_allowed("google")
     except Exception:
         pass
     ctx = _build_context(request, google_available=google_ok, next_path=next_path)

@@ -247,6 +247,22 @@ def _validate_urls_in_patch(sections: Dict[str, Dict[str, Any]]) -> None:
                 _validate_url_not_private(value, field_name=".".join(path))
 
 
+def _validate_auth_providers_in_patch(sections: Dict[str, Dict[str, Any]]) -> None:
+    """Reject an explicitly empty auth.providers — one overlay write must
+    never be able to lock every user out (spec: empty list is a config error)."""
+    auth = sections.get("auth")
+    if not isinstance(auth, dict) or "providers" not in auth:
+        return
+    value = auth["providers"]
+    if value is None:
+        return
+    if not isinstance(value, list) or not value:
+        raise HTTPException(
+            status_code=422,
+            detail="auth.providers must be a non-empty list of provider names (or omitted entirely)",
+        )
+
+
 _LOCK_TTL_MIN = 60
 _LOCK_TTL_MAX = 7 * 24 * 3600  # 604800 — one week
 
@@ -1643,6 +1659,7 @@ async def update_server_config(
     # keboola_url, but here it covers any URL-bearing field reachable via
     # the per-section patch (e.g. data_source.keboola.stack_url).
     _validate_urls_in_patch(request.sections)
+    _validate_auth_providers_in_patch(request.sections)
 
     # Field-level constraints for sections whose values have documented ranges.
     _validate_materialize_section(request.sections)

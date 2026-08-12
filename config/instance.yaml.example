@@ -226,8 +226,12 @@ auth:
   #
   # username_strip_domain: false
   # username_prefix: ""
-  # disabled_providers:            # Hide auth methods from login page
-  #   - "email"                    # Disable email magic link (use when Google OAuth is configured)
+  # providers: [google, email, password, keboola]
+  #                                 # Which login methods this instance offers.
+  #                                 # Unset = every configured provider (default).
+  #                                 # Explicit empty list is rejected. Excluded
+  #                                 # providers' endpoints return 404. Env
+  #                                 # override: AGNES_AUTH_PROVIDERS (comma-sep).
 
 # --- Security (optional) ---
 # security:

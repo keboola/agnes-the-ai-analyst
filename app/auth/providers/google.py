@@ -13,17 +13,22 @@ import os
 import logging
 
 from authlib.integrations.starlette_client import OAuth
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse
 
 from app.auth.jwt import create_access_token, SESSION_COOKIE_MAX_AGE_SECONDS
 from app.auth._common import safe_next_path
+from app.auth.provider_registry import require_provider
 from app.instance_config import get_allowed_domains
 
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/auth/google", tags=["auth"])
+router = APIRouter(
+    prefix="/auth/google",
+    tags=["auth"],
+    dependencies=[Depends(require_provider("google"))],
+)
 
 oauth = OAuth()
 

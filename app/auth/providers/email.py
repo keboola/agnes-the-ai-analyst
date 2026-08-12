@@ -15,6 +15,7 @@ from app.auth.jwt import create_access_token, SESSION_COOKIE_MAX_AGE_SECONDS
 from app.auth.token_hash import hash_token
 from app.auth.access import is_user_admin
 from app.auth.dependencies import _get_db, is_local_dev_mode
+from app.auth.provider_registry import require_provider
 from app.auth.rate_limit import limiter as _rate_limiter
 
 
@@ -31,7 +32,11 @@ def _role_label(user: dict, conn: duckdb.DuckDBPyConnection) -> str:
 
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/auth/email", tags=["auth"])
+router = APIRouter(
+    prefix="/auth/email",
+    tags=["auth"],
+    dependencies=[Depends(require_provider("email"))],
+)
 
 MAGIC_LINK_EXPIRY = 3600  # 1 hour
 

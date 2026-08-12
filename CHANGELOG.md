@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **`auth.providers` lets an instance narrow which login methods it offers** (`instance.yaml`, env override `AGNES_AUTH_PROVIDERS`, comma-separated). Unset keeps today's behavior — every available provider — byte-for-byte; an excluded provider's routes (including the shared `POST /auth/token` password grant and its `/login/*` sub-pages) return 404, not 403, so a disabled method doesn't advertise its own existence. An explicitly empty list is rejected by the admin server-config API (422) and, if it ever reaches runtime some other way, is treated as unset with a loud error log — one bad overlay write can't lock every user out of the instance.
+
 ## [0.83.7] - 2026-08-12
 
 ### Fixed
