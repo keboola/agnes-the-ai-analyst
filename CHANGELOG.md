@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **`agnes chat <slug> --once` no longer prints "(no answer)" on a turn that actually answered.** It assembled the answer only from streamed `TEXT_MESSAGE_CONTENT` deltas, but a turn that answers without incremental streaming — the test/dev fake-agent runner's `echo:` reply, and the real runner's idle-watchdog partial-save — carries its text solely on the trailing `TEXT_MESSAGE_END` event. `_send_turn` now falls back to that event's content (and prints it live) whenever no deltas arrived. Same fix covers the interactive REPL for the same event shape.
+
 ## [0.83.7] - 2026-08-12
 
 ### Fixed

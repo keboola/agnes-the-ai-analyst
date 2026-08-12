@@ -68,6 +68,18 @@ EVENTS_ERROR = [
     {"type": "RUN_ERROR", "message": "tool exploded", "code": "tool_failed"},
 ]
 
+#: A turn with NO `TEXT_MESSAGE_CONTENT` deltas — only the trailing
+#: `TEXT_MESSAGE_END` carries the answer. Real shape whenever the backend
+#: doesn't stream incrementally (the `AGNES_RUNNER_FAKE_AGENT=1` test/dev
+#: runner's `echo:` reply, or the real runner's idle-watchdog partial-save)
+#: — see `tests/test_agent_stream_end_to_end.py` for the frame-level proof
+#: this is what the server actually emits, not a hand-invented shape.
+EVENTS_NO_DELTA = [
+    {"type": "RUN_STARTED"},
+    {"type": "TEXT_MESSAGE_END", "content": "echo: hi"},
+    {"type": "RUN_FINISHED"},
+]
+
 
 class TestOnce:
     def test_once_prints_assembled_answer_and_exits_zero(self):
@@ -88,6 +100,22 @@ class TestOnce:
         assert mock_sse.call_args.kwargs["json"] == {"input": "hi"}
         # /exit-equivalent cleanup: --once best-effort deletes the session too.
         assert mock_delete.call_args.args[0] == "/api/v1/sessions/sess-1"
+
+    def test_once_prints_the_answer_even_when_nothing_streamed_incrementally(self):
+        """HIGH: `--once` against a backend that answers without
+        incremental streaming (only a trailing `TEXT_MESSAGE_END`, no
+        `TEXT_MESSAGE_CONTENT` deltas — see `EVENTS_NO_DELTA`) must still
+        print the real answer, not "(no answer)"."""
+        with (
+            patch("cli.commands.chat.api_post", return_value=_resp(201, {"session_id": "sess-1"})),
+            patch("cli.commands.chat.api_post_sse", return_value=iter(EVENTS_NO_DELTA)),
+            patch("cli.commands.chat.api_delete", return_value=_resp(204)),
+        ):
+            result = runner.invoke(app, ["chat", "myagent", "--once", "hi"])
+
+        assert result.exit_code == 0
+        assert "echo: hi" in result.output
+        assert "(no answer)" not in result.output
 
     def test_run_error_event_exits_nonzero_with_rendered_message(self):
         with (
@@ -147,6 +175,18 @@ class TestInteractive:
         assert mock_sse.call_args.kwargs["json"] == {"input": "hello"}
         # /exit best-effort deletes the session.
         assert mock_delete.call_args.args[0] == "/api/v1/sessions/sess-1"
+
+    def test_interactive_prints_the_answer_even_when_nothing_streamed_incrementally(self):
+        with (
+            patch("cli.commands.chat.api_post", return_value=_resp(201, {"session_id": "sess-1"})),
+            patch("cli.commands.chat.api_post_sse", return_value=iter(EVENTS_NO_DELTA)),
+            patch("cli.commands.chat.api_delete", return_value=_resp(204)),
+        ):
+            result = runner.invoke(app, ["chat", "myagent"], input="hi\n/exit\n")
+
+        assert result.exit_code == 0
+        assert "echo: hi" in result.output
+        assert "(no answer)" not in result.output
 
     def test_eof_also_quits_and_cleans_up(self):
         with (
