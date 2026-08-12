@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.8] - 2026-08-12
+
 ### Fixed
 
 - **`agnes self-upgrade` went silent against a moved server — the one command run to repair a stale install.** Measured against the real relocated hostname: the plain form printed nothing and exited 0, so the caller could not tell the upgrade had not happened, and `--force` reported `cannot reach <old>/cli/latest` for a server that answers `308` with a `Location` header. `cli/update_check.py::_fetch_latest` calls `raise_for_status()`, which does not treat 3xx as an error, then `.json()` on a redirect's empty body; the exception is swallowed into `None`, and `_resolve_info` maps that to "probe failed". #1266 taught both HTTP clients and the setup-token exchange to name the new address, but this path reaches the server through neither. A redirect is now its own verdict, diagnosed by a re-probe that runs **only** after the normal probe already came back empty — so the happy path pays nothing — and worded by the same `cli/server_moved.py` the other callers use, so the three cannot drift. Every redirect counts, not only a cross-host move: a same-origin bounce (an SSO proxy answering `302 /login`) is equally a check that did not happen, and `cannot reach` is equally untrue of it — what differs is the remedy, which the shared classifier already picks. `--check-only` reports it too and exits 1, where it swallows every other transport verdict into exit 0; its help text now names that second case rather than promising exit 1 means `outdated` alone.
