@@ -190,3 +190,139 @@ def project_from_keboola_connection(
         len(keep),
     )
     return project(connection_id, records, repo=repo, keep_external_ids=keep)
+
+
+# NOTE: `project_from_keboola_connection` above adopts EVERYTHING it finds.
+# It stays for a whole-project link ("Add all") and for non-interactive use,
+# but the admin surface drives the three functions below instead: discovery
+# writes nothing, adoption is explicit, and the refresh touches only what was
+# already adopted. The distinction matters for pruning — see
+# `sync_adopted_keboola_apps`.
+
+
+@dataclass(frozen=True)
+class DiscoveredApp:
+    """One app as it exists upstream, plus whether Agnes has adopted it."""
+
+    external_app_id: str
+    name: str
+    description: str
+    external_url: str
+    adopted: bool
+    slug: str
+
+
+def discover_keboola_apps(connection_id: str, *, repo: Optional[Any] = None) -> List[DiscoveredApp]:
+    """List what a Keboola connection has upstream — WITHOUT writing anything.
+
+    The read half of the split that `project_from_keboola_connection` used to
+    conflate: that function adopts everything it finds, which is the wrong
+    default for an admin surface. Discovery answers "what is there, and which
+    of it is already in Agnes"; adoption is a separate, explicit act.
+    """
+    if repo is None:
+        from src.repositories import data_apps_repo
+
+        repo = data_apps_repo()
+
+    conn_row, token, stack_url = _keboola_connection(connection_id)
+    _ = conn_row
+    records, _keep = adapter.fetch_records(stack_url, token)
+
+    adopted = {
+        row.get("source_ref")
+        for row in repo.list_linked(source_ref_prefix=adapter.source_ref_prefix(connection_id))
+    }
+    out: List[DiscoveredApp] = []
+    for rec in records:
+        ref = adapter.source_ref(connection_id, rec.external_app_id)
+        out.append(
+            DiscoveredApp(
+                external_app_id=rec.external_app_id,
+                name=rec.name,
+                description=rec.description,
+                external_url=rec.external_url,
+                adopted=ref in adopted,
+                slug=adapter.slug_for(connection_id, rec.external_app_id),
+            )
+        )
+    return out
+
+
+def adopt_keboola_apps(
+    connection_id: str,
+    external_app_ids: Sequence[str],
+    *,
+    repo: Optional[Any] = None,
+) -> int:
+    """Link the named upstream apps into the registry. Returns rows written.
+
+    Only the ids asked for are touched — nothing is pruned here, because an
+    app the admin has not adopted is not "missing", it is simply not theirs
+    yet. Pruning belongs to :func:`sync_adopted_keboola_apps`.
+    """
+    if repo is None:
+        from src.repositories import data_apps_repo
+
+        repo = data_apps_repo()
+
+    wanted = {str(a) for a in external_app_ids}
+    if not wanted:
+        return 0
+    _conn_row, token, stack_url = _keboola_connection(connection_id)
+    records, _keep = adapter.fetch_records(stack_url, token)
+
+    written = 0
+    for rec in records:
+        if rec.external_app_id not in wanted:
+            continue
+        repo.upsert_linked(
+            slug=adapter.slug_for(connection_id, rec.external_app_id),
+            source_ref=adapter.source_ref(connection_id, rec.external_app_id),
+            name=rec.name,
+            description=rec.description,
+            external_url=rec.external_url,
+        )
+        written += 1
+    logger.info("linked adopt [%s]: %d of %d requested app(s) written", connection_id, written, len(wanted))
+    return written
+
+
+def sync_adopted_keboola_apps(connection_id: str, *, repo: Optional[Any] = None) -> ProjectionResult:
+    """Refresh the apps this connection has ALREADY adopted, and hide the gone.
+
+    The distinction that makes opt-in adoption safe: an upstream app the admin
+    never adopted must not be created by a refresh, and an adopted app that
+    vanished upstream must still be hidden. Reconciling against the full
+    upstream list would do the first; reconciling against nothing would skip
+    the second.
+    """
+    if repo is None:
+        from src.repositories import data_apps_repo
+
+        repo = data_apps_repo()
+
+    adopted_refs = {
+        row.get("source_ref")
+        for row in repo.list_linked(source_ref_prefix=adapter.source_ref_prefix(connection_id))
+    }
+    if not adopted_refs:
+        return ProjectionResult(created=0, updated=0, hidden=0)
+
+    _conn_row, token, stack_url = _keboola_connection(connection_id)
+    records, keep = adapter.fetch_records(stack_url, token)
+    mine = [r for r in records if adapter.source_ref(connection_id, r.external_app_id) in adopted_refs]
+    return project(connection_id, mine, repo=repo, keep_external_ids=keep)
+
+
+def _keboola_connection(connection_id: str) -> tuple[dict, str, str]:
+    from src.repositories import connection_secrets_repo, source_connections_repo
+
+    conn_row = source_connections_repo().get(connection_id)
+    if not conn_row:
+        raise ValueError(f"unknown source connection: {connection_id}")
+    stack_url = ((conn_row.get("config") or {}) or {}).get("stack_url") or ""
+    token = connection_secrets_repo().get(connection_id)
+    if not token:
+        raise ValueError(f"source connection {connection_id} has no stored token")
+    return conn_row, token, stack_url

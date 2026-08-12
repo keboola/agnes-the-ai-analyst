@@ -55,12 +55,13 @@ import subprocess
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy import exc as sa_exc
 
 from app.auth.access import can_access, is_user_admin, require_admin
@@ -1738,3 +1739,97 @@ async def reap_idle_data_apps(
         {"reaped": reaped, "timed_out": timed_out, "recovered": recovered},
     )
     return {"reaped": reaped, "timed_out": timed_out, "recovered": recovered}
+
+
+# ---------------------------------------------------------------------------
+# Keboola linked apps — discovery / adoption (admin only)
+# ---------------------------------------------------------------------------
+#
+# Three verbs, deliberately separate. Discovery writes nothing, so an admin can
+# look at a project without changing anything; adoption is explicit per app;
+# and the refresh touches only what was already adopted. Collapsing them (the
+# earlier `project_from_keboola_connection`, which adopts everything it finds)
+# is what makes "rescan" a destructive-feeling verb.
+
+
+class AdoptAppsRequest(BaseModel):
+    external_app_ids: List[str]
+
+
+@router.get("/keboola/{connection_id}/discover")
+async def discover_keboola_linked_apps(connection_id: str, user: dict = Depends(require_admin)):
+    """What this Keboola connection has upstream, and what Agnes already has.
+
+    Read-only: nothing is linked as a side effect of looking.
+    """
+    _feature_gate()
+    from src.data_apps.linked_projection import discover_keboola_apps
+
+    try:
+        found = await run_in_threadpool(discover_keboola_apps, connection_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {
+        "connection_id": connection_id,
+        "apps": [
+            {
+                "external_app_id": a.external_app_id,
+                "name": a.name,
+                "description": a.description,
+                "external_url": a.external_url,
+                "adopted": a.adopted,
+                "slug": a.slug,
+            }
+            for a in found
+        ],
+    }
+
+
+@router.post("/keboola/{connection_id}/adopt")
+async def adopt_keboola_linked_apps(
+    connection_id: str,
+    payload: AdoptAppsRequest,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Link the named upstream apps. Nothing is pruned — see the module note."""
+    _feature_gate()
+    from src.data_apps.linked_projection import adopt_keboola_apps
+
+    try:
+        written = await run_in_threadpool(adopt_keboola_apps, connection_id, payload.external_app_ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    _audit(
+        conn,
+        user["id"],
+        "data_app.link_keboola",
+        f"source_connection:{connection_id}",
+        {"count": written, "ids": payload.external_app_ids[:20]},
+    )
+    return {"linked": written}
+
+
+@router.post("/keboola/{connection_id}/refresh")
+async def refresh_keboola_linked_apps(
+    connection_id: str,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Re-read metadata for the apps already adopted from this connection, and
+    hide the ones that no longer exist upstream. Never adopts anything new."""
+    _feature_gate()
+    from src.data_apps.linked_projection import sync_adopted_keboola_apps
+
+    try:
+        res = await run_in_threadpool(sync_adopted_keboola_apps, connection_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    _audit(
+        conn,
+        user["id"],
+        "data_app.refresh_keboola",
+        f"source_connection:{connection_id}",
+        {"updated": res.updated, "hidden": res.hidden},
+    )
+    return {"created": res.created, "updated": res.updated, "hidden": res.hidden}

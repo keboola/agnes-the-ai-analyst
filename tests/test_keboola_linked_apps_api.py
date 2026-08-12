@@ -113,3 +113,121 @@ def test_the_data_science_host_is_derived_from_the_stack():
 def test_an_empty_apps_payload_yields_no_records_rather_than_guesses():
     assert records_from_apis([], CONFIGS) == ([], [])
     assert records_from_apis(None, None) == ([], [])
+
+
+# ── discovery vs adoption ───────────────────────────────────────────────────
+#
+# The admin surface must be able to SHOW what a project has without linking
+# it. That split changes what pruning means, which is the subtle part: an app
+# nobody adopted is not "missing", and an adopted app that vanished upstream
+# still has to disappear.
+
+
+class _FakeRepo:
+    def __init__(self, linked=()):
+        self.rows = {r: dict(source_ref=r) for r in linked}
+        self.upserts = []
+        self.pruned = []
+
+    def list_linked(self, *, source_ref_prefix):
+        return [v for k, v in self.rows.items() if k.startswith(source_ref_prefix)]
+
+    def get_by_source_ref(self, ref):
+        return self.rows.get(ref)
+
+    def upsert_linked(self, *, slug, source_ref, name, description, external_url):
+        self.upserts.append(source_ref)
+        self.rows[source_ref] = dict(source_ref=source_ref)
+
+    def soft_delete_missing_linked(self, *, source_ref_prefix, keep_source_refs):
+        gone = [
+            k for k in self.rows
+            if k.startswith(source_ref_prefix) and k not in set(keep_source_refs)
+        ]
+        self.pruned.extend(gone)
+        for k in gone:
+            del self.rows[k]
+        return len(gone)
+
+
+CID = "conn-1"
+
+
+def _patch_fetch(monkeypatch, records):
+    from src.data_apps import linked_projection as lp
+
+    monkeypatch.setattr(lp, "_keboola_connection", lambda cid: ({}, "tok", "https://connection.x.keboola.com"))
+    monkeypatch.setattr(lp.adapter, "fetch_records", lambda *a, **k: (records, []))
+
+
+def _recs(*ids):
+    from src.data_apps.keboola_adapter import LinkedAppRecord
+
+    return [LinkedAppRecord(external_app_id=i, name=f"App {i}", description="", external_url=f"https://{i}.example") for i in ids]
+
+
+def test_discovery_writes_nothing(monkeypatch):
+    from src.data_apps.linked_projection import discover_keboola_apps
+
+    repo = _FakeRepo()
+    _patch_fetch(monkeypatch, _recs("1", "2"))
+    found = discover_keboola_apps(CID, repo=repo)
+    assert [f.external_app_id for f in found] == ["1", "2"]
+    assert all(not f.adopted for f in found)
+    assert repo.upserts == [], "discovery must not link anything"
+
+
+def test_discovery_marks_what_is_already_adopted(monkeypatch):
+    from src.data_apps.keboola_adapter import source_ref
+    from src.data_apps.linked_projection import discover_keboola_apps
+
+    repo = _FakeRepo(linked=[source_ref(CID, "2")])
+    _patch_fetch(monkeypatch, _recs("1", "2"))
+    got = {f.external_app_id: f.adopted for f in discover_keboola_apps(CID, repo=repo)}
+    assert got == {"1": False, "2": True}
+
+
+def test_adoption_touches_only_the_ids_asked_for(monkeypatch):
+    from src.data_apps.keboola_adapter import source_ref
+    from src.data_apps.linked_projection import adopt_keboola_apps
+
+    repo = _FakeRepo()
+    _patch_fetch(monkeypatch, _recs("1", "2", "3"))
+    assert adopt_keboola_apps(CID, ["2"], repo=repo) == 1
+    assert repo.upserts == [source_ref(CID, "2")]
+    assert repo.pruned == [], "adoption must never prune"
+
+
+def test_refresh_never_adopts_something_new(monkeypatch):
+    """The whole point of opt-in: a rescan must not drag in apps the admin
+    deliberately left out."""
+    from src.data_apps.keboola_adapter import source_ref
+    from src.data_apps.linked_projection import sync_adopted_keboola_apps
+
+    repo = _FakeRepo(linked=[source_ref(CID, "1")])
+    _patch_fetch(monkeypatch, _recs("1", "2", "3"))
+    sync_adopted_keboola_apps(CID, repo=repo)
+    assert repo.upserts == [source_ref(CID, "1")]
+    assert source_ref(CID, "2") not in repo.rows
+
+
+def test_refresh_still_hides_an_adopted_app_that_vanished(monkeypatch):
+    """The other half — otherwise a deleted app lingers forever."""
+    from src.data_apps.keboola_adapter import source_ref
+    from src.data_apps.linked_projection import sync_adopted_keboola_apps
+
+    repo = _FakeRepo(linked=[source_ref(CID, "1"), source_ref(CID, "9")])
+    _patch_fetch(monkeypatch, _recs("1"))
+    res = sync_adopted_keboola_apps(CID, repo=repo)
+    assert res.hidden == 1
+    assert repo.pruned == [source_ref(CID, "9")]
+
+
+def test_refresh_on_a_connection_with_nothing_adopted_is_a_no_op(monkeypatch):
+    from src.data_apps.linked_projection import sync_adopted_keboola_apps
+
+    repo = _FakeRepo()
+    _patch_fetch(monkeypatch, _recs("1", "2"))
+    res = sync_adopted_keboola_apps(CID, repo=repo)
+    assert (res.created, res.updated, res.hidden) == (0, 0, 0)
+    assert repo.upserts == []
