@@ -3644,6 +3644,23 @@ async def update_table(
         ):
             merged.pop(_docs_key, None)
 
+        # v116 — table access policies (access_policy_sql/_note/_updated_at/
+        # _updated_by + policy_mapping) live on table_registry but, like the
+        # docs fields above, are written through their own dedicated setters
+        # (``table_registry_repo().set_access_policy`` /
+        # ``.set_policy_mapping``), not ``register()``. Strip them from the
+        # read-modify-write loop for the same reason: ``existing`` came back
+        # from a `SELECT *`, so every PUT would otherwise TypeError once a
+        # policy is attached.
+        for _policy_key in (
+            "access_policy_sql",
+            "access_policy_note",
+            "access_policy_updated_at",
+            "access_policy_updated_by",
+            "policy_mapping",
+        ):
+            merged.pop(_policy_key, None)
+
         # v74 (#607) — validate the server_only ↔ query_mode invariant
         # against the *merged* record (the PUT body may toggle either field
         # independently). server_only=true is only coherent for a row with a
