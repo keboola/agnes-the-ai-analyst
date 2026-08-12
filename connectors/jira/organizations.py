@@ -69,6 +69,18 @@ REQUEST_DELAY_SEC = 0.2
 # a human should look — and `--force` is the escape hatch.
 MAX_REMOVED_FRACTION = 0.5
 
+# `skipped_reason` values that mean the run did not publish what it should have.
+#
+# Single source of truth for both surfaces: the CLI turns these into a non-zero exit,
+# and the worker handler raises so the job is retried and the refusal is visible in job
+# history. They previously disagreed — the CLI exited 1 on a total outage while the
+# scheduled path logged and finalized `done`, so a broken dimension looked healthy every
+# day and only an ERROR log line said otherwise (Devin Review on #1274).
+#
+# `jira_not_configured` is deliberately NOT here: an instance without Jira ingest is
+# expected to skip this job, not to fail it every night.
+FAILURE_REASONS = frozenset({"all_fetches_failed", "mass_removal_guard"})
+
 
 def _read_existing(table_dir: Path) -> dict[str, dict]:
     """Existing rows keyed by ``org_id``, or ``{}`` when there is no parquet yet.
@@ -186,32 +198,47 @@ def refresh_organizations(
             records.append(transform_organization(raw_org))
             stats["written"] += 1
 
-    if not records:
-        logger.warning(
-            "No organization rows resolved (%d failed) — leaving %s untouched",
+    # Nothing fresh resolved. Two shapes: a first run where everything failed (no
+    # records at all) and an outage on an existing table, where every row in `records`
+    # is a preserved copy of what is already on disk. Both are total failures, and the
+    # second one used to fall through and republish a byte-identical parquet, refresh
+    # `_meta` and enqueue a rebuild — work that publishes nothing, on the one code path
+    # where the API is known to be down (Devin Review on #1274).
+    if not stats["written"] and not stats["removed"]:
+        logger.error(
+            "No organization rows resolved (%d failed, %d preserved) — leaving %s untouched",
             stats["failed"],
+            stats["preserved"],
             TABLE_NAME,
         )
+        stats["skipped_reason"] = "all_fetches_failed"
         stats["elapsed_sec"] = round(time.time() - start, 1)
         return stats
 
     # Mass-deletion guard. See MAX_REMOVED_FRACTION: rows vanish both by 404 and by
     # simple omission from a short enumeration, and neither shows up in `failed`.
+    #
+    # Counted as an actual removal set, not as a net size change. Comparing totals
+    # (`len(existing) - len(records)`) lets organizations added in the same sweep cancel
+    # out ones that disappeared, so on any growing site the guard could not fire at all:
+    # 10 existing, 10 new, 6 of the old ones unreadable gives a net of -4 while 60% of
+    # the table is being deleted (Devin Review on #1274).
     if existing and not force:
-        dropped = len(existing) - len(records)
-        if dropped > 0 and dropped / len(existing) > MAX_REMOVED_FRACTION:
+        resolved_ids = {str(r.get("org_id")) for r in records if r.get("org_id") is not None}
+        dropped = sum(1 for org_id in existing if org_id not in resolved_ids)
+        if dropped / len(existing) > MAX_REMOVED_FRACTION:
             logger.error(
-                "Refusing to publish %s: the sweep resolved %d rows against %d existing, "
-                "dropping %d (%.0f%%, over the %.0f%% limit). Enumeration returned %d ids "
-                "and %d of them 404'd — check JIRA_CLOUD_ID and that the account has "
-                "Customer Service Management access. Re-run with --force if the removals "
-                "are real.",
+                "Refusing to publish %s: %d of %d existing organizations would be removed "
+                "(%.0f%%, over the %.0f%% limit) — the sweep resolved %d rows from %d "
+                "enumerated ids, %d of which 404'd. Check JIRA_CLOUD_ID and that the "
+                "account has Customer Service Management access. Re-run with --force if "
+                "the removals are real.",
                 TABLE_NAME,
-                len(records),
-                len(existing),
                 dropped,
+                len(existing),
                 100 * dropped / len(existing),
                 100 * MAX_REMOVED_FRACTION,
+                len(records),
                 len(org_ids),
                 stats["removed"],
             )
@@ -308,18 +335,23 @@ def main() -> None:
     # run exits 0 reporting "Jira is not configured" (Devin Review on #1274).
     from connectors.jira.scripts.backfill_sla import load_config
 
-    load_config()
+    try:
+        load_config()
+    except ValueError as e:
+        # `load_config` validates JIRA_DOMAIN/EMAIL/API_TOKEN and raises when any is
+        # missing. It is called here only for its load_dotenv() side effect, so that
+        # validation would turn the documented run — `--dry-run` included — into an
+        # unhandled traceback on an instance without Jira configured, instead of the
+        # clean "not configured" skip refresh_organizations already reports (Devin
+        # Review on #1274). The dotenv load has already happened by the time it raises.
+        logger.debug("Jira env validation failed while loading .env: %s", e)
     reload_config_from_env()
 
     stats = refresh_organizations(dry_run=args.dry_run, force=args.force)
-    if stats.get("skipped_reason") == "mass_removal_guard":
-        sys.exit(1)
-    # Non-zero when the run resolved nothing fresh, so a cron/CI caller notices.
-    # Deliberately keyed on `written`, not on whether a parquet was produced: a sweep
-    # where every fetch failed still rewrites the table from preserved rows, and
-    # reporting that as success would hide a total outage. A partial failure IS
-    # success — those rows resolved, and the rest kept their previous values.
-    if stats.get("failed") and not stats.get("written"):
+    # Non-zero on the outcomes FAILURE_REASONS names, so a cron/CI caller notices. A
+    # *partial* failure is success: those rows resolved and the rest kept their previous
+    # values, which is the contract this module exists to honour.
+    if stats.get("skipped_reason") in FAILURE_REASONS:
         sys.exit(1)
 
 

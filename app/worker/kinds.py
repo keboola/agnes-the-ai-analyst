@@ -408,12 +408,28 @@ def _run_jira_org_refresh(payload: dict) -> None:
     row/size numbers. Failures propagate so the job retries rather than silently
     leaving the dimension stale.
     """
-    from connectors.jira.organizations import refresh_organizations
+    from connectors.jira.organizations import FAILURE_REASONS, refresh_organizations
 
     stats = refresh_organizations()
-    if stats.get("skipped_reason"):
-        logger.info(f"Jira organization refresh skipped: {stats['skipped_reason']}")
+    reason = stats.get("skipped_reason")
+
+    # A run that published nothing it should have must not finalize `done`. Raising puts
+    # the refusal in job history and gets the job retried; returning quietly meant a
+    # total outage — or the mass-removal guard, which deliberately never self-clears —
+    # looked like a healthy nightly run indefinitely, with one ERROR log line as the only
+    # signal (Devin Review on #1274). `FAILURE_REASONS` is shared with the CLI so the two
+    # surfaces cannot drift on what counts as failure.
+    if reason in FAILURE_REASONS:
+        raise RuntimeError(
+            f"Jira organization refresh did not publish: {reason} "
+            f"({stats.get('written')} written, {stats.get('preserved')} preserved, "
+            f"{stats.get('removed')} removed, {stats.get('failed')} failed)"
+        )
+
+    if reason:
+        logger.info(f"Jira organization refresh skipped: {reason}")
         return
+
     logger.info(
         "Jira organization refresh: %s written, %s preserved, %s removed, %s failed",
         stats.get("written"),

@@ -875,3 +875,117 @@ class TestDevinReviewFindings:
 
         assert "skipped_reason" not in stats
         assert _read_table(tmp_path)["org_id"].tolist() == ["1"]
+
+
+class TestDevinReviewRoundTwo:
+    """Regressions for the second review round on PR #1274."""
+
+    def test_guard_counts_removals_not_net_size(self, tmp_path: Path, org_env: None) -> None:
+        """Organizations added in the same sweep must not cancel out ones that vanished.
+
+        Net arithmetic (`len(existing) - len(records)`) makes the guard unfireable on any
+        growing site: 10 existing, 10 new, 6 old ones unreadable is a net of -4 while 60%
+        of the table is being deleted.
+        """
+        from connectors.jira import organizations as orgs
+
+        ten = [_org(str(i), f"Org {i}", f"ACC-{i}") for i in range(1, 11)]
+        svc = _fake_service([str(i) for i in range(1, 11)], ten)
+        with (
+            patch.object(orgs, "get_jira_service", return_value=svc),
+            patch.object(orgs, "update_meta"),
+            patch.object(orgs.time, "sleep"),
+        ):
+            orgs.refresh_organizations(extract_dir=tmp_path)
+        assert len(_read_table(tmp_path)) == 10
+
+        # 4 of the original 10 survive, 6 are 404 — and 10 brand-new orgs appear.
+        ids = [str(i) for i in range(1, 11)] + [f"new{i}" for i in range(10)]
+        results = [_org(str(i), f"Org {i}", f"ACC-{i}") for i in range(1, 5)]
+        results += [None] * 6
+        results += [_org(f"new{i}", f"New {i}", f"NEW-{i}") for i in range(10)]
+        svc2 = _fake_service(ids, results)
+        with (
+            patch.object(orgs, "get_jira_service", return_value=svc2),
+            patch.object(orgs, "update_meta"),
+            patch.object(orgs.time, "sleep"),
+        ):
+            stats = orgs.refresh_organizations(extract_dir=tmp_path)
+
+        assert stats["skipped_reason"] == "mass_removal_guard", "growth must not mask removals"
+        assert len(_read_table(tmp_path)) == 10, "the existing table must survive untouched"
+
+    def test_total_outage_does_not_republish(self, tmp_path: Path, org_env: None) -> None:
+        """Every fetch failing on an existing table is a total failure, not a no-op run.
+
+        It used to fall through on the preserved rows and rewrite a byte-identical
+        parquet, refresh `_meta` and enqueue a rebuild — publishing nothing, on the one
+        path where the API is known to be down.
+        """
+        from connectors.jira import organizations as orgs
+
+        two = [_org("1", "Org 1", "ACC-1"), _org("2", "Org 2", "ACC-2")]
+        svc = _fake_service(["1", "2"], two)
+        with (
+            patch.object(orgs, "get_jira_service", return_value=svc),
+            patch.object(orgs, "update_meta"),
+            patch.object(orgs.time, "sleep"),
+        ):
+            orgs.refresh_organizations(extract_dir=tmp_path)
+        before = (tmp_path / "data" / "organizations" / "data.parquet").stat().st_mtime_ns
+
+        svc2 = _fake_service(["1", "2"], [JiraFetchError("503"), JiraFetchError("503")])
+        with (
+            patch.object(orgs, "get_jira_service", return_value=svc2),
+            patch.object(orgs, "update_meta") as meta,
+            patch.object(orgs.time, "sleep"),
+        ):
+            stats = orgs.refresh_organizations(extract_dir=tmp_path)
+
+        assert stats["skipped_reason"] == "all_fetches_failed"
+        assert stats["failed"] == 2 and stats["written"] == 0
+        meta.assert_not_called()
+        after = (tmp_path / "data" / "organizations" / "data.parquet").stat().st_mtime_ns
+        assert after == before, "the parquet must not be rewritten"
+
+    def test_cli_and_worker_agree_on_what_counts_as_failure(self) -> None:
+        """The two surfaces read the same set, so they cannot drift again."""
+        from connectors.jira.organizations import FAILURE_REASONS
+
+        assert FAILURE_REASONS == {"all_fetches_failed", "mass_removal_guard"}
+        # An unconfigured instance skips this job; it does not fail it every night.
+        assert "jira_not_configured" not in FAILURE_REASONS
+
+    @pytest.mark.parametrize("reason", ["all_fetches_failed", "mass_removal_guard"])
+    def test_worker_handler_raises_so_the_job_retries(self, reason: str) -> None:
+        from app.worker import kinds
+
+        with patch("connectors.jira.organizations.refresh_organizations", return_value={"skipped_reason": reason}):
+            with pytest.raises(RuntimeError, match=reason):
+                kinds._run_jira_org_refresh({})
+
+    def test_worker_handler_stays_quiet_when_jira_is_unconfigured(self) -> None:
+        from app.worker import kinds
+
+        stats = {"skipped_reason": "jira_not_configured"}
+        with patch("connectors.jira.organizations.refresh_organizations", return_value=stats):
+            kinds._run_jira_org_refresh({})  # must not raise
+
+    def test_cli_survives_missing_credentials(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """`load_config` validates creds and raises; the documented run must still report
+        the clean 'not configured' skip rather than an unhandled traceback."""
+        from connectors.jira import organizations as orgs
+
+        for var in ("JIRA_DOMAIN", "JIRA_EMAIL", "JIRA_API_TOKEN"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(sys, "argv", ["organizations", "--dry-run"])
+
+        called = {}
+
+        def _fake_refresh(**kwargs):
+            called.update(kwargs)
+            return {"skipped_reason": "jira_not_configured"}
+
+        monkeypatch.setattr(orgs, "refresh_organizations", _fake_refresh)
+        orgs.main()  # must not raise SystemExit or ValueError
+        assert called == {"dry_run": True, "force": False}
