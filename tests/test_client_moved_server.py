@@ -18,7 +18,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from cli.client import AgnesHardStop
+from cli.client import RedirectHardStop
 
 
 def _redirect_response(status: int, location: str, requested: str) -> httpx.Response:
@@ -40,7 +40,7 @@ class TestMovedServerHook:
             "https://agnes.old.example/api/v1/agents",
         )
         with patch("cli.client.get_server_url", return_value="https://agnes.old.example"):
-            with pytest.raises(AgnesHardStop) as exc:
+            with pytest.raises(RedirectHardStop) as exc:
                 _check_moved_server(resp)
         assert exc.value.exit_code == 2
         err = exc.value.user_message
@@ -73,7 +73,7 @@ class TestMovedServerHook:
 
         resp = _redirect_response(307, "/api/v1/agents/", "https://agnes.example/api/v1/agents")
         with patch("cli.client.get_server_url", return_value="https://agnes.example"):
-            with pytest.raises(AgnesHardStop) as exc:
+            with pytest.raises(RedirectHardStop) as exc:
                 _check_moved_server(resp)
         assert exc.value.exit_code == 2
         err = exc.value.user_message
@@ -91,7 +91,7 @@ class TestMovedServerHook:
 
         resp = _redirect_response(308, "v2/agents", "https://agnes.example/api/v1/agents")
         with patch("cli.client.get_server_url", return_value="https://agnes.example"):
-            with pytest.raises(AgnesHardStop) as exc:
+            with pytest.raises(RedirectHardStop) as exc:
                 _check_moved_server(resp)
         assert exc.value.exit_code == 2
         err = exc.value.user_message
@@ -108,7 +108,7 @@ class TestMovedServerHook:
 
         resp = _redirect_response(308, "//new.example/api/v1/agents", "https://old.example/api/v1/agents")
         with patch("cli.client.get_server_url", return_value="https://old.example"):
-            with pytest.raises(AgnesHardStop) as exc:
+            with pytest.raises(RedirectHardStop) as exc:
                 _check_moved_server(resp)
         err = exc.value.user_message
         assert "AGNES_SERVER" in err
@@ -122,7 +122,7 @@ class TestMovedServerHook:
             308, "https://new.example:8443/api/v1/agents?x=1", "https://old.example/api/v1/agents"
         )
         with patch("cli.client.get_server_url", return_value="https://old.example"):
-            with pytest.raises(AgnesHardStop) as exc:
+            with pytest.raises(RedirectHardStop) as exc:
                 _check_moved_server(resp)
         err = exc.value.user_message
         assert "AGNES_SERVER=https://new.example:8443" in err
@@ -133,7 +133,7 @@ class TestMovedServerHook:
 
         resp = _redirect_response(308, "", "https://agnes.example/api/v1/agents")
         with patch("cli.client.get_server_url", return_value="https://agnes.example"):
-            with pytest.raises(AgnesHardStop) as exc:
+            with pytest.raises(RedirectHardStop) as exc:
                 _check_moved_server(resp)
         assert exc.value.exit_code == 2
         assert "308" in exc.value.user_message

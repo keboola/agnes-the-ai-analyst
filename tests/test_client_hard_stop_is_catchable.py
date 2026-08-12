@@ -1,14 +1,11 @@
-"""A hard stop must not kill callers that handle their own failures.
+"""A redirect must not kill the callers that handle their own failures.
 
-`cli/client.py` detects two conditions in an httpx *response event hook* —
-a redirect the CLI will not follow, and a version floor the server refuses
-to serve. Both used to end the process from inside the hook with
-`sys.stderr.write` + `sys.exit(2)`, deep inside somebody else's
-`api_get(...)`.
-
-`SystemExit` derives from `BaseException`, so it walks straight through
-`except Exception`. Two callers are built precisely to survive a failed
-request, and both were silently voided:
+`cli/client.py` refuses to follow a redirect, from an httpx *response event
+hook* that runs deep inside somebody else's `api_get(...)`. It used to end
+the process there with `sys.stderr.write` + `sys.exit(2)`. `SystemExit`
+derives from `BaseException`, so it walked straight through `except
+Exception` — voiding the two callers built precisely to survive a failed
+request:
 
 - `agnes diagnose` records a row per failed check. Measured against the real
   relocated hostname on 2026-08-12 — an unreachable server gives exit 0 and
@@ -18,11 +15,21 @@ request, and both were silently voided:
   `_run_step` did not contain it either, so the process died before the
   report was written.
 
-The fix raises `AgnesHardStop` instead. The user-visible contract is
-unchanged — `cli/main.py` prints the same `error: …` line to stderr and
-exits with the same code — which the last class here pins, because a
-"catchable now" change that quietly reworded or renumbered the failure
-would break scripts to fix aggregators.
+It now raises `RedirectHardStop`, which **also derives from
+`BaseException`** — deliberately. The first draft of this made it an
+ordinary `Exception`, which fixed those two by exposing the stop to every
+broad `except Exception` in the CLI. Devin Review on #1277 listed the
+damage, and `TestCommandsThatDidNotOptInAreUntouched` below is that list
+turned into tests: `agnes diagnose system` printed `Cannot reach server:
+<…answered HTTP 308…>` — a heading contradicting its own body, the very lie
+this line of work exists to remove — while `query`, `pull` and `chat`
+relabelled it and exited 1 instead of 2.
+
+So the rule is opt-in by name: a caller that wants to survive a redirect
+writes `except RedirectHardStop`, and everything else behaves exactly as it
+did. The version floor next door stays an unconditional `sys.exit` — a
+server refusing this CLI version must stop the run, not become one row in a
+report while the remaining steps keep talking to it.
 """
 
 from __future__ import annotations
@@ -33,7 +40,7 @@ import httpx
 import pytest
 from typer.testing import CliRunner
 
-from cli.client import AgnesHardStop, _check_moved_server
+from cli.client import RedirectHardStop, _check_moved_server
 
 runner = CliRunner()
 
@@ -72,20 +79,29 @@ def moved_server(monkeypatch):
     return _raise
 
 
-class TestOrdinaryExceptionHandlingSeesIt:
-    def test_it_does_not_escape_as_a_baseexception(self):
-        """`SystemExit` was the whole defect: it bypasses `except Exception`."""
+class TestOnlyAnOptInHandlerSeesIt:
+    def test_a_broad_except_exception_does_not_swallow_it(self):
+        """The property the whole design rests on.
+
+        If this ever starts catching, every broad handler in the CLI starts
+        relabelling a moved server as its own kind of failure again.
+        """
+        with pytest.raises(RedirectHardStop):
+            try:
+                _check_moved_server(_redirect())
+            except Exception as exc:  # noqa: BLE001 — the point is that it does not fire
+                pytest.fail(f"a broad handler swallowed it as {type(exc).__name__}")
+
+    def test_naming_it_explicitly_does_catch_it(self):
         caught = None
         try:
             _check_moved_server(_redirect())
-        except Exception as exc:
+        except RedirectHardStop as exc:
             caught = exc
-        except BaseException as exc:  # noqa: B036 — asserting it does NOT land here
-            pytest.fail(f"still escapes ordinary handling as {type(exc).__name__}")
-        assert isinstance(caught, AgnesHardStop)
+        assert caught is not None, "an aggregator cannot opt in at all"
 
     def test_the_message_still_carries_the_remedy(self):
-        with pytest.raises(AgnesHardStop) as exc:
+        with pytest.raises(RedirectHardStop) as exc:
             _check_moved_server(_redirect())
         assert "new.example" in exc.value.user_message
         assert "AGNES_SERVER" in exc.value.user_message
@@ -129,11 +145,118 @@ class TestUpdateStepIsolationHolds:
         assert report[0]["status"] == "error"
 
 
+class TestCommandsThatDidNotOptInAreUntouched:
+    """Devin Review's list from the first draft, turned into assertions.
+
+    Each of these wraps its API call in a broad `except Exception` and
+    relabels the failure. None of them opted into handling a redirect, so
+    none of them may see one — otherwise the PR's central claim ("nothing
+    changes for the commands this was written for") is false, which is
+    exactly how it was false the first time.
+    """
+
+    def _redirect_reaches(self, handler_body) -> bool:
+        """True when a handler shaped like the command's own catches it."""
+        try:
+            handler_body()
+        except RedirectHardStop:
+            return False
+        return True
+
+    def test_a_diagnose_system_style_handler_cannot_relabel_it(self):
+        """It printed `Cannot reach server: …answered HTTP 308…` — a heading
+        that contradicts its own body, and the precise lie this whole line of
+        work exists to remove."""
+
+        def like_diagnose_system():
+            try:
+                _check_moved_server(_redirect())
+            except Exception as e:  # noqa: BLE001 — mirrors cli/commands/diagnose.py
+                raise AssertionError(f"relabelled as 'Cannot reach server: {e}'") from None
+
+        assert not self._redirect_reaches(like_diagnose_system)
+
+    def test_a_query_style_handler_cannot_relabel_it(self):
+        def like_query():
+            try:
+                _check_moved_server(_redirect())
+            except Exception as e:  # noqa: BLE001 — mirrors cli/commands/query.py
+                raise AssertionError(f"relabelled as 'Query error: {e}'") from None
+
+        assert not self._redirect_reaches(like_query)
+
+    def test_a_chat_style_handler_cannot_turn_it_into_a_per_turn_error(self):
+        """chat catches `AgnesTransportError` to keep the REPL alive. If a
+        redirect lands there, every following turn hits it again and the user
+        is told forever instead of once."""
+        from cli.client import AgnesTransportError
+
+        def like_chat():
+            try:
+                _check_moved_server(_redirect())
+            except AgnesTransportError:
+                raise AssertionError("became a per-turn transport error; the REPL survives") from None
+
+        assert not self._redirect_reaches(like_chat)
+
+    def test_it_is_not_an_agnes_transport_error_at_all(self):
+        """The subclassing is what made chat and the renderer swallow it."""
+        from cli.client import AgnesTransportError
+
+        with pytest.raises(RedirectHardStop) as exc:
+            _check_moved_server(_redirect())
+        assert not isinstance(exc.value, AgnesTransportError)
+
+
+class TestTheVersionFloorStaysUnconditional:
+    """A server that refuses this CLI must stop the run, not file a row.
+
+    Making the floor catchable alongside the redirect was the other half of
+    the first draft. `_run_step` then recorded it as one error row and kept
+    running every remaining convergence step against a server that had just
+    declared this binary too old.
+    """
+
+    def test_it_still_exits_the_process(self):
+        from unittest.mock import patch
+
+        from cli.client import _check_version_headers
+
+        resp = httpx.Response(
+            status_code=200,
+            headers={"X-Agnes-Latest-Version": "0.40.0", "X-Agnes-Min-Version": "0.35.0"},
+            content=b"{}",
+            request=httpx.Request("GET", "https://x/"),
+        )
+        with patch("cli.client._installed_version", return_value="0.30.0"):
+            with pytest.raises(SystemExit) as exc:
+                _check_version_headers(resp)
+        assert exc.value.code == 2
+
+    def test_update_step_isolation_does_not_contain_it(self):
+        from unittest.mock import patch
+
+        from cli.commands.update import _run_step
+        from cli.client import _check_version_headers
+
+        resp = httpx.Response(
+            status_code=200,
+            headers={"X-Agnes-Latest-Version": "0.40.0", "X-Agnes-Min-Version": "0.35.0"},
+            content=b"{}",
+            request=httpx.Request("GET", "https://x/"),
+        )
+        report: list[dict] = []
+        with patch("cli.client._installed_version", return_value="0.30.0"):
+            with pytest.raises(SystemExit):
+                _run_step("probe", lambda: _check_version_headers(resp), report)
+        assert report == [], "the run carried on against a server that refused this CLI"
+
+
 class TestTheUserFacingContractIsUnchanged:
     """Catchable is the only thing that changed. Not the text, not the code."""
 
     def test_it_still_exits_2(self):
-        with pytest.raises(AgnesHardStop) as exc:
+        with pytest.raises(RedirectHardStop) as exc:
             _check_moved_server(_redirect())
         assert exc.value.exit_code == 2
 
@@ -146,7 +269,7 @@ class TestTheUserFacingContractIsUnchanged:
         import cli.main as m
 
         def boom():
-            raise AgnesHardStop("old.example answered HTTP 308 (redirect to https://new.example/x)")
+            raise RedirectHardStop("old.example answered HTTP 308 (redirect to https://new.example/x)")
 
         monkeypatch.setattr(m, "app", boom)
         with pytest.raises(SystemExit) as exit_exc:
@@ -166,7 +289,7 @@ class TestTheUserFacingContractIsUnchanged:
 
         captured: list = []
         monkeypatch.setattr(m, "_capture_cli_exception", lambda *a, **k: captured.append(a))
-        monkeypatch.setattr(m, "app", lambda: (_ for _ in ()).throw(AgnesHardStop("moved")))
+        monkeypatch.setattr(m, "app", lambda: (_ for _ in ()).throw(RedirectHardStop("moved")))
         with pytest.raises(SystemExit):
             m.main()
         assert captured == [], "a structural fix quietly started reporting to telemetry"

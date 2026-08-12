@@ -380,17 +380,18 @@ def main() -> None:
     traceback to the analyst's terminal. Now: one clean line + a hint,
     return code 1.
     """
-    from cli.client import AgnesHardStop, AgnesTransportError, _log_traceback
+    from cli.client import AgnesTransportError, RedirectHardStop, _log_traceback
 
     try:
         app()
-    except AgnesHardStop as exc:
-        # A redirect or a version floor. These used to print here-and-now
-        # from inside the response hook and call `sys.exit(2)`; rendering
-        # them at the top level instead is what makes them catchable by a
-        # command with its own error handling. Both halves of the old
-        # output are reproduced exactly — the lowercase `error: ` prefix
-        # and the exit code — so nothing downstream sees a change.
+    except RedirectHardStop as exc:
+        # A redirect the CLI will not follow. It used to print here-and-now
+        # from inside the response hook and call `sys.exit(2)`; rendering it
+        # at the top level instead is what lets a command opt into handling
+        # it (`agnes diagnose`, `agnes update`'s `_run_step`). Both halves of
+        # the old output are reproduced exactly — the lowercase `error: `
+        # prefix and the exit code — so a command that has NOT opted in
+        # behaves identically to before, which is the claim this rests on.
         #
         # Deliberately NOT forwarded to telemetry. The old form raised
         # `SystemExit`, which this wrapper explicitly never reports, so

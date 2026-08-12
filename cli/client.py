@@ -152,16 +152,15 @@ class AgnesTransportError(Exception):
         self.logfile_path = logfile_path
 
 
-class AgnesHardStop(AgnesTransportError):
-    """A response the CLI refuses to proceed past: a redirect, or a version floor.
+class RedirectHardStop(BaseException):
+    """A redirect the CLI will not follow. Ends the command unless caught BY NAME.
 
-    Both conditions are detected in an httpx *response event hook*, which
-    runs deep inside somebody else's `api_get(...)` call. They used to end
-    the process there and then, with ``sys.stderr.write`` + ``sys.exit(2)``.
-    That works for a command built around a single request, and silently
-    voids any caller built to survive a failed one, because ``SystemExit``
-    derives from ``BaseException`` and so walks straight through
-    ``except Exception``:
+    Detected in an httpx *response event hook*, which runs deep inside
+    somebody else's ``api_get(...)`` call. It used to end the process there
+    and then, with ``sys.stderr.write`` + ``sys.exit(2)``. That works for a
+    command built around a single request, and silently voids the two
+    callers built to survive a failed one, because ``SystemExit`` derives
+    from ``BaseException`` and so walks straight through ``except Exception``:
 
     - ``agnes diagnose`` runs many checks and records a row per failure. On
       an unreachable server it prints its full checklist and exits 0. On a
@@ -172,13 +171,35 @@ class AgnesHardStop(AgnesTransportError):
       run. The hard stop punched through ``_run_step`` too, ending the
       process before the report was ever written.
 
-    Raising instead keeps the user-visible contract identical for the
-    single-request commands — the top-level handler in ``cli/main.py``
-    prints the same text to stderr and exits with the same code — while
-    letting a caller that has its own error handling actually use it.
+    **Deriving from ``BaseException`` is the whole design**, not an oversight.
+    A first version of this subclassed ``AgnesTransportError`` — an ordinary
+    ``Exception`` — which fixed those two callers by making the stop visible
+    to *every* ``except Exception`` in the CLI. Devin Review on #1277 listed
+    what that cost: ``agnes diagnose system`` printed ``Cannot reach server:
+    <…answered HTTP 308…>``, a heading contradicting its own body and the
+    exact lie this line of work exists to remove; ``agnes query`` relabelled
+    it ``Query error:``; ``agnes pull`` filed it as a manifest row; and
+    ``agnes chat`` kept the REPL alive so every following turn hit it again.
+    All of them exited 1 where they had exited 2.
+
+    Keeping it off the ``Exception`` branch inverts that: nothing catches it
+    by accident, so every command that has not opted in behaves exactly as
+    before, and an aggregator opts in with an explicit ``except
+    RedirectHardStop``. A broad handler added later cannot silently
+    reintroduce the swallowing, either.
+
+    The version floor next door stays an unconditional ``sys.exit`` — see
+    ``_check_version_headers``.
     """
 
+    #: Process exit code the top-level handler uses — the code this
+    #: condition exited with when it called ``sys.exit`` itself.
     exit_code = 2
+
+    def __init__(self, user_message: str, *, hint: str = ""):
+        super().__init__(user_message)
+        self.user_message = user_message
+        self.hint = hint
 
 
 def _log_traceback(exc: BaseException, *, context: str) -> Path:
@@ -297,7 +318,7 @@ def _check_moved_server(response: "httpx.Response") -> None:
         response.headers.get("Location", ""),
         get_server_url(),
     )
-    raise AgnesHardStop(message)
+    raise RedirectHardStop(message)
 
 
 def _check_version_headers(response: "httpx.Response") -> None:
@@ -322,9 +343,20 @@ def _check_version_headers(response: "httpx.Response") -> None:
     if local == "unknown":
         return
     if _version_lt(local, minv):
-        raise AgnesHardStop(
-            f"agnes {local} is incompatible with server {latest} (min required: {minv}). Run: agnes self-upgrade"
+        # Deliberately still an unconditional exit, unlike the redirect above.
+        # An earlier draft of #1277 made this catchable too, on the grounds
+        # that it is "the same defect one line over". It is not: a redirect
+        # means this request went nowhere, while a version floor means the
+        # SERVER has refused this CLI outright. Devin Review on #1277 pointed
+        # at the consequence — `agnes update`'s `_run_step` recorded the floor
+        # as one error row and carried on running every remaining convergence
+        # step against a server that had just declared this binary too old.
+        # Refusing to proceed is the entire point of the check.
+        sys.stderr.write(
+            f"error: agnes {local} is incompatible with server {latest} "
+            f"(min required: {minv}). Run: agnes self-upgrade\n"
         )
+        sys.exit(2)
 
 
 def get_client(timeout: float = 30.0) -> httpx.Client:
