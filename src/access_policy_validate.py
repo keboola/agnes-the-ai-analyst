@@ -1,0 +1,418 @@
+"""Save-time validator for table access-policy SQL.
+
+An access policy (table access policies design doc, §14) is an admin-authored
+``SELECT`` that Agnes substitutes for a table on every server-side read, with
+the caller's identity available as bound ``$user_email`` / ``$user_id`` /
+``$user_groups`` parameters. Because that SQL then runs on the server's
+analytics connection on every analyst request (§14's closing paragraph), it
+is validated once here, at save time -- never at query time, where a
+rejection would be a live outage instead of a blocked write.
+
+Allowlist-shaped throughout, never denylist -- the same choice §5.2 rule 5
+makes for analyst SQL, and the one the internal connector already made for
+its own filter clauses: a table reference, function, or node type that is
+not explicitly recognized is rejected, whether or not it is *known* to be
+dangerous. That is what keeps the boundary meaningful once §1.2's (currently
+out of scope) non-admin authoring arrives.
+
+``probe_policy`` -- the live ``LIMIT 0`` execution probe of §14.6 -- needs a
+connection and lives in a later task; this module is pure static analysis
+over the parsed SQL text and never executes anything.
+"""
+
+from __future__ import annotations
+
+import logging
+
+import sqlglot
+from sqlglot import exp
+
+logger = logging.getLogger(__name__)
+
+
+class PolicyValidationError(ValueError):
+    """Raised by :func:`validate_policy_sql` for any rule violation.
+
+    ``reason`` is a stable, machine-matchable code (rendered by the admin
+    API/CLI/UI per §16); ``detail`` is the human-readable explanation, which
+    names the offending table/variable/construct so a retry -- human or
+    agent -- has something concrete to fix rather than a bare rejection.
+    """
+
+    def __init__(self, reason: str, detail: str) -> None:
+        self.reason = reason
+        self.detail = detail
+        super().__init__(f"[{reason}] {detail}")
+
+
+# --------------------------------------------------------------------------
+# Rule 2 -- DDL/DML and ATTACH-family statements are never a policy body.
+# ATTACH/DETACH/INSTALL/PRAGMA each have a dedicated sqlglot node; LOAD and
+# CALL have none and fall back to the generic ``exp.Command`` -- and since a
+# legitimate SELECT never produces a Command node, treating every Command as
+# forbidden is safe, not merely convenient.
+_FORBIDDEN_STATEMENT_TYPES: tuple[type[exp.Expression], ...] = (
+    exp.Insert,
+    exp.Update,
+    exp.Delete,
+    exp.Create,
+    exp.Drop,
+    exp.Copy,
+    exp.Merge,
+    exp.Alter,
+    exp.Command,
+    exp.Attach,
+    exp.Detach,
+    exp.Install,
+    exp.Pragma,
+)
+
+# --------------------------------------------------------------------------
+# Rule 3 -- the closed set of structural node types a policy body may use.
+# Function calls (``exp.Func`` -- this also covers ``exp.And``/``exp.Or``/
+# ``exp.Xor``, which sqlglot models as functions, and the ``exp.Case``/
+# ``exp.If`` pair behind CASE/IF/IIF) are deliberately NOT listed here; they
+# are checked by NAME in ``_ALLOWED_FUNCTION_NAMES`` instead -- the same
+# split ``app/api/where_validator.py::_walk_functions`` uses, because there
+# is no closed set of *classes* for "every function sqlglot might parse".
+_PERMITTED_NODE_TYPES: tuple[type[exp.Expression], ...] = (
+    # statement shape
+    exp.Select,
+    exp.From,
+    exp.Where,
+    exp.Group,
+    exp.Having,
+    exp.Order,
+    exp.Ordered,
+    exp.Limit,
+    exp.Offset,
+    exp.With,
+    exp.CTE,
+    # table sources
+    exp.Table,
+    exp.TableAlias,
+    exp.Join,
+    exp.Subquery,
+    # projection
+    exp.Star,
+    exp.Column,
+    exp.Identifier,
+    exp.Alias,
+    # values
+    exp.Literal,
+    exp.Placeholder,
+    exp.Boolean,
+    exp.Null,
+    exp.Paren,
+    exp.Tuple,
+    exp.DataType,
+    # operators that are NOT exp.Func subclasses
+    exp.Not,
+    exp.Neg,
+    exp.Distinct,
+    exp.EQ,
+    exp.NEQ,
+    exp.GT,
+    exp.GTE,
+    exp.LT,
+    exp.LTE,
+    exp.Is,
+    exp.In,
+    exp.Between,
+    exp.Like,
+    exp.ILike,
+    exp.SimilarTo,
+)
+
+# Function names (sqlglot's canonical ``sql_name()`` / ``exp.Anonymous``
+# name, upper-cased) a policy body may call. Deliberately narrow: the
+# masking/pseudonymization and group-membership primitives the design names
+# explicitly (§1, §6.5), logical connectors, ordinary conditionals, and a
+# small set of everyday value functions. Extend deliberately, not by
+# precedent creep -- every addition widens what an admin's arbitrary SQL can
+# do on every analyst request (§14's closing paragraph).
+_ALLOWED_FUNCTION_NAMES: frozenset[str] = frozenset(
+    {
+        # logical connectors -- sqlglot parses AND/OR/XOR as exp.Func subclasses.
+        "AND",
+        "OR",
+        "XOR",
+        # masking / pseudonymization (§1, §21 -- md5 is a pseudonym, not a
+        # mask, but it is the design doc's own documented example).
+        "MD5",
+        # group-membership idiom (§6.5) -- list_contains() parses to ArrayContains.
+        "ARRAY_CONTAINS",
+        # the discouraged-but-still-valid unnest idiom (§6.5), warned about
+        # rather than rejected -- see _warn_group_membership_idiom.
+        "EXPLODE",
+        # pattern-matching functions -- allowed for LITERAL patterns; rule 5
+        # separately rejects an identity variable used as their pattern arg.
+        "REGEXP_LIKE",
+        "REGEXP_FULL_MATCH",
+        "REGEXP_EXTRACT",
+        "REGEXP_REPLACE",
+        # conditionals -- §13.1 explicitly discusses CASE-shaped policies
+        # with a missing branch as the permissive-bug shape the preview
+        # matrix exists to catch, so CASE must be authorable in the first place.
+        "CASE",
+        "IF",
+        "COALESCE",
+        "NULLIF",
+        # everyday value functions safe in a row/column policy.
+        "CAST",
+        "LOWER",
+        "UPPER",
+        "TRIM",
+        "LENGTH",
+        "CONCAT",
+        "SUBSTRING",
+    }
+)
+
+# The only three identity values a policy may bind (§6.2).
+_KNOWN_VARIABLES = frozenset({"user_email", "user_id", "user_groups"})
+
+# Node types whose ``expression`` argument is a pattern that a LIKE-family
+# operator or regex function matches against (§6.3). ``this`` on all of
+# these is the subject being matched, never the pattern.
+_PATTERN_NODES: tuple[type[exp.Expression], ...] = (
+    exp.Like,
+    exp.ILike,
+    exp.SimilarTo,
+    exp.RegexpLike,
+    exp.RegexpFullMatch,
+    exp.RegexpExtract,
+    exp.RegexpReplace,
+)
+
+
+def validate_policy_sql(
+    sql: str,
+    *,
+    table_id: str,
+    table_name: str,
+    mapping_table_names: set[str],
+    for_remote: bool,
+) -> None:
+    """Validate an admin-authored access-policy SQL body (design doc §14).
+
+    Raises :class:`PolicyValidationError` on the first rule violation found;
+    returns ``None`` if ``sql`` is a valid policy for ``table_name`` (plus
+    any ``mapping_table_names``, §15). Never executes ``sql`` -- this is
+    static analysis over the parsed tree only.
+    """
+    statement = _parse_as_select(sql)
+    _reject_sql_string_table_functions(sql)
+    _reject_disallowed_constructs(statement)
+    _reject_bad_table_references(statement, table_name=table_name, mapping_table_names=mapping_table_names)
+    _reject_bad_variables(statement)
+    if for_remote:
+        _reject_untranspilable(sql)
+        _warn_group_membership_idiom(statement, table_id=table_id)
+
+
+def _parse_as_select(sql: str) -> exp.Select:
+    """Rules 1 + 2: exactly one statement, no DDL/DML/ATTACH-family node
+    anywhere in it, and the statement itself is a SELECT.
+
+    The forbidden-statement-type walk runs before the "is it a SELECT" check
+    so a DROP/INSERT/ATTACH/... gets the more specific, more actionable
+    ``policy_forbidden_statement`` reason instead of the generic
+    "not a SELECT" -- an agent retrying a rejected write benefits from
+    knowing *which* rule it hit (§16).
+    """
+    try:
+        statements = sqlglot.parse(sql, read="duckdb")
+    except Exception as exc:
+        raise PolicyValidationError("policy_not_single_select", f"could not parse as SQL: {exc}") from exc
+    statements = [s for s in (statements or []) if s is not None]
+    if len(statements) != 1:
+        raise PolicyValidationError(
+            "policy_not_single_select",
+            f"a policy must be exactly one SELECT statement; found {len(statements)}",
+        )
+    statement = statements[0]
+    for node in statement.walk():
+        if isinstance(node, _FORBIDDEN_STATEMENT_TYPES):
+            raise PolicyValidationError(
+                "policy_forbidden_statement",
+                f"{type(node).__name__} is not allowed in an access policy (a policy is a single read-only SELECT)",
+            )
+    if not isinstance(statement, exp.Select):
+        raise PolicyValidationError(
+            "policy_not_single_select",
+            f"a policy must be a single SELECT statement, got {type(statement).__name__}",
+        )
+    return statement
+
+
+def _reject_sql_string_table_functions(sql: str) -> None:
+    """Rule 3, part 1: reject SQL-as-string table functions.
+
+    Reuses the #1264 guard (``query``/``query_table``/``bigquery_query``/...
+    rejected globally on ``/api/query``) so a policy body cannot depend on
+    that denylist staying complete independently of this one (§5.2 rule 5).
+    """
+    from app.api.query import _has_sql_string_table_function
+
+    if _has_sql_string_table_function(sql):
+        raise PolicyValidationError(
+            "policy_sql_string_function",
+            "table functions that take SQL as a string (query, query_table, "
+            "bigquery_query, ...) are not allowed in an access policy",
+        )
+
+
+def _reject_disallowed_constructs(statement: exp.Select) -> None:
+    """Rule 3, part 2: every node is either a recognized function call (by
+    NAME, ``_ALLOWED_FUNCTION_NAMES``) or one of the structural node types in
+    ``_PERMITTED_NODE_TYPES``. Allowlist, not denylist (§14 rule 2) -- an
+    unrecognized construct is rejected even when it is not individually
+    known to be dangerous.
+    """
+    from app.api.query import _anonymous_name
+
+    for node in statement.walk():
+        if isinstance(node, exp.Func):
+            if isinstance(node, exp.Anonymous):
+                name = (_anonymous_name(node) or "").upper()
+            else:
+                try:
+                    name = (node.sql_name() or "").upper()
+                except Exception:
+                    name = ""
+            if not name or name not in _ALLOWED_FUNCTION_NAMES:
+                raise PolicyValidationError(
+                    "policy_disallowed_construct",
+                    f"function not allowed in an access policy: {name or type(node).__name__}",
+                )
+            continue
+        if not isinstance(node, _PERMITTED_NODE_TYPES):
+            raise PolicyValidationError(
+                "policy_disallowed_construct",
+                f"construct not allowed in an access policy: {type(node).__name__}",
+            )
+
+
+def _reject_bad_table_references(statement: exp.Select, *, table_name: str, mapping_table_names: set[str]) -> None:
+    """Rule 4: every table reference is the policy's own table or an
+    explicitly marked mapping table (§15).
+
+    CTE aliases defined by the policy's own ``WITH`` clause are local names,
+    not table references, and are excluded -- collected tree-wide rather than
+    only from the outer statement's ``WITH``, which is a deliberate v1
+    simplification for admin-authored SQL (see the module docstring on the
+    allowlist-not-denylist stance): the physical tables actually touched are
+    still checked wherever they appear, CTE-nested or not.
+    """
+    cte_names = {c.alias_or_name.lower() for c in statement.find_all(exp.CTE) if c.alias_or_name}
+    allowed = {table_name.lower()} | {n.lower() for n in mapping_table_names}
+    for table in statement.find_all(exp.Table):
+        if not isinstance(table.this, exp.Identifier):
+            # A $variable in table position (`FROM $t`) has no static name
+            # to check here -- rule 5's identifier-position check rejects it.
+            continue
+        name = table.name
+        if name.lower() in cte_names:
+            continue
+        if name.lower() not in allowed:
+            raise PolicyValidationError(
+                "policy_unlisted_table_reference",
+                f"policy references table {name!r}, which is neither this "
+                f"table ({table_name!r}) nor a table marked policy_mapping=true",
+            )
+
+
+def _reject_bad_variables(statement: exp.Select) -> None:
+    """Rule 5: every ``$variable`` is a known identity variable, stands only
+    in value position, and is never the pattern side of LIKE/ILIKE/SIMILAR TO
+    or a regex function (§6.1, §6.3).
+    """
+    for placeholder in statement.find_all(exp.Placeholder):
+        name = placeholder.name
+        if _is_identifier_position(placeholder):
+            raise PolicyValidationError(
+                "policy_var_in_identifier_position",
+                f"${name} cannot stand in an identifier position (table, alias, "
+                "or excluded/replaced column name) -- a variable may only stand "
+                "where a value stands (§6.2)",
+            )
+        if name not in _KNOWN_VARIABLES:
+            raise PolicyValidationError(
+                "policy_unknown_variable",
+                f"${name} is not a recognized policy variable (known: {', '.join(sorted(_KNOWN_VARIABLES))})",
+            )
+        if _is_pattern_position(placeholder):
+            raise PolicyValidationError(
+                "policy_var_in_pattern_position",
+                f"${name} cannot be used as a LIKE/ILIKE/SIMILAR TO or regex "
+                "pattern -- group and user names are not validated against "
+                "pattern metacharacters (§6.3)",
+            )
+
+
+def _is_identifier_position(node: exp.Placeholder) -> bool:
+    """True if ``node`` sits where SQL expects a NAME rather than a VALUE:
+    a table name, a table alias, a projection alias (which also covers
+    ``REPLACE (expr AS $col)``'s existing-column-name slot), or a bare
+    ``EXCLUDE ($col)`` entry. Every one of these positions holds a raw
+    ``Placeholder`` directly -- DuckDB's grammar does not accept an
+    arbitrary expression there, only a simple name -- so a direct
+    parent/arg-key check is sufficient; it never needs to look deeper.
+    """
+    parent = node.parent
+    key = node.arg_key
+    if isinstance(parent, exp.Table) and key in ("this", "db", "catalog"):
+        return True
+    if isinstance(parent, exp.TableAlias) and key == "this":
+        return True
+    if isinstance(parent, exp.Alias) and key == "alias":
+        return True
+    if isinstance(parent, exp.Star) and key == "except_":
+        return True
+    return False
+
+
+def _is_pattern_position(node: exp.Placeholder) -> bool:
+    """True if ``node`` is anywhere inside the pattern (``expression``) side
+    of a LIKE-family or regex node -- walking up the ancestor chain instead
+    of checking only the direct parent, so a wrapped form such as
+    ``owner LIKE CONCAT('%', $user_email)`` is caught too, not just the bare
+    ``owner LIKE $user_email`` form.
+    """
+    child, parent = node, node.parent
+    while parent is not None:
+        if isinstance(parent, _PATTERN_NODES) and parent.args.get("expression") is child:
+            return True
+        child, parent = parent, parent.parent
+    return False
+
+
+def _reject_untranspilable(sql: str) -> None:
+    """Rule 6, part 1: a remote-table policy must transpile to BigQuery
+    without error (§7.2) -- the admin authors DuckDB SQL once, and sqlglot
+    produces the BigQuery form actually run against the source.
+    """
+    try:
+        sqlglot.transpile(sql, read="duckdb", write="bigquery")
+    except Exception as exc:
+        raise PolicyValidationError("policy_untranspilable", f"could not transpile to BigQuery SQL: {exc}") from exc
+
+
+def _warn_group_membership_idiom(statement: exp.Select, *, table_id: str) -> None:
+    """Rule 6, part 2: warn, don't reject, when ``$user_groups`` membership
+    uses the ``IN (SELECT unnest($user_groups))`` idiom instead of
+    ``list_contains`` (§6.5) -- both execute correctly; the unnest form just
+    transpiles into a much longer GENERATE_ARRAY/CROSS JOIN construct on
+    BigQuery.
+    """
+    for explode in statement.find_all(exp.Explode):
+        for placeholder in explode.find_all(exp.Placeholder):
+            if placeholder.name == "user_groups":
+                logger.warning(
+                    "access policy on table %s uses `IN (SELECT unnest($user_groups))` for "
+                    "group membership; `list_contains($user_groups, <column>)` is equivalent "
+                    "and transpiles to much simpler BigQuery SQL",
+                    table_id,
+                )
+                return
