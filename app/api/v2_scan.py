@@ -17,6 +17,12 @@ from src.db import _open_duckdb
 from app.instance_config import get_value
 from src.audit_helpers import identity_for_audit, client_kind_from_user
 from src.rbac import can_access_table
+from src.access_policy import (
+    PolicyError,
+    PolicyIdentityUnresolvable,
+    policied_from_sql,
+    policied_relation,
+)
 from app.api.where_validator import (
     safe_where_predicate,
     WhereValidationError,
@@ -202,6 +208,9 @@ def _build_bq_sql(
 
     select_sql = ", ".join(f"`{c}`" for c in req.select) if req.select else "*"
     table_ref = f"`{project_id}.{bucket}.{src_table}`"
+    # Task 10: BigQuery policy enforcement is not wired yet — a policied
+    # `query_mode='remote'` BigQuery table keeps today's unfiltered
+    # behavior on this branch (used by both `estimate()` and `run_scan()`).
     sql = f"SELECT {select_sql} FROM {table_ref}"
     if safe_where:
         sql += f" WHERE {safe_where}"
@@ -506,10 +515,40 @@ def run_scan(
             parquet = resolve_local_parquet_glob(req.table_id, source_type)
             if parquet is None:
                 raise FileNotFoundError(req.table_id)
+
+            # Table access policies (§5): this connection is a throwaway
+            # :memory: DB with nothing but the parquet attached — no
+            # analytics catalog, so the policy body's own `FROM <name>` has
+            # nothing to bind against unless we wrap it. The inert (not
+            # policied) branch below stays byte-identical to the
+            # pre-existing code.
+            try:
+                relation = policied_relation(req.table_id, user)
+            except PolicyIdentityUnresolvable:
+                raise HTTPException(status_code=403, detail={"reason": "policy_identity_unresolvable"})
+            except PolicyError as exc:
+                raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": exc.table_id})
+
             local = _open_duckdb(":memory:")
             try:
                 projection = ", ".join(quote_ident(c) for c in req.select) if req.select else "*"
-                sql = f"SELECT {projection} FROM {LOCAL_PARQUET_READ_EXPR}"
+                if relation.policied:
+                    # The parquet path is server-resolved, never user
+                    # input, so it is safe to splice as an escaped literal
+                    # — it must NOT be a `?` placeholder: the policy binds
+                    # named `$user_*` parameters, and DuckDB refuses to mix
+                    # positional and named parameters in one statement.
+                    escaped_parquet = parquet.replace("'", "''")
+                    from_sql = policied_from_sql(
+                        relation,
+                        table_name=row["name"],
+                        source_sql=f"read_parquet('{escaped_parquet}', union_by_name=true, hive_partitioning=true)",
+                    )
+                    sql = f"SELECT {projection} FROM {from_sql}"
+                    bind_params: dict | list = dict(relation.params)
+                else:
+                    sql = f"SELECT {projection} FROM {LOCAL_PARQUET_READ_EXPR}"
+                    bind_params = [parquet]
                 if safe_where:
                     sql += f" WHERE {safe_where}"
                 if req.order_by:
@@ -517,7 +556,7 @@ def run_scan(
                 if req.limit:
                     sql += f" LIMIT {int(req.limit)}"
                 try:
-                    table = local.execute(sql, [parquet]).arrow()
+                    table = local.execute(sql, bind_params).arrow()
                 except duckdb.InvalidInputException:
                     # Corrupt/unreadable parquet ("No magic bytes found…").
                     # duckdb files it under ProgrammingError, but it is an

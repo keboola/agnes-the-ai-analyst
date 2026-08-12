@@ -11,6 +11,12 @@ from app.auth.dependencies import get_current_user, _get_db
 from src.db import _open_duckdb
 from src.audit_helpers import identity_for_audit, client_kind_from_user
 from src.rbac import can_access_table
+from src.access_policy import (
+    PolicyError,
+    PolicyIdentityUnresolvable,
+    policied_from_sql,
+    policied_relation,
+)
 from app.api.v2_cache import TTLCache
 from connectors.bigquery.access import BqAccess, BqAccessError, get_bq_access
 
@@ -152,6 +158,10 @@ def _fetch_bq_sample(bq, dataset: str, table: str, n: int) -> list[dict]:
     ):
         raise ValueError("unsafe BQ identifier in registry — refusing to query")
 
+    # Task 10: BigQuery policy enforcement (transpile + named params via
+    # `policied_relation(..., dialect="bigquery")`) is not wired yet — a
+    # policied `query_mode='remote'` BigQuery table keeps today's
+    # unfiltered behavior on this branch.
     bq_sql = f"SELECT * FROM `{bq.projects.data}.{dataset}.{table}` LIMIT {int(n)}"
     with bq.duckdb_session() as conn:
         try:
@@ -222,10 +232,19 @@ def build_sample(
         rows = sample_internal_rows(internal_def, where_clause, n)
         return {"table_id": table_id, "rows": _sanitize_for_json(rows), "source": source_type}
 
+    # A policied table's sample is caller-scoped the same way an internal
+    # source's is (§9) — row filtering + column masking both depend on the
+    # caller's identity, so a shared cache would serve team A's rows to
+    # team B on the next request. Skip the cache entirely for now (mirrors
+    # the internal-source trade-off above); Task 12 owns keying it by
+    # caller identity instead of bypassing it outright.
+    has_access_policy = bool(row.get("access_policy_sql"))
+
     cache_key = f"{table_id}|{n}"
-    cached = _sample_cache.get(cache_key)
-    if cached is not None:
-        return cached
+    if not has_access_policy:
+        cached = _sample_cache.get(cache_key)
+        if cached is not None:
+            return cached
 
     if source_type == "bigquery" and (row.get("query_mode") or "") != "materialized":
         rows = _fetch_bq_sample(bq, row.get("bucket") or "", row.get("source_table") or table_id, n)
@@ -252,19 +271,48 @@ def build_sample(
                 raise TableNotPreviewableError(table_id, _not_previewable_detail(table_id, query_mode=query_mode))
             # Genuinely "no data has landed yet" — including for server_only.
             raise TableNotSyncedError(table_id, _not_synced_detail(table_id))
+
+        # Table access policies (§5): this connection is a throwaway
+        # :memory: DB with nothing but the parquet attached — no analytics
+        # catalog, so the policy body's own `FROM <name>` has nothing to
+        # bind against unless we wrap it. Resolve first; the inert (not
+        # policied) branch below stays byte-identical to the pre-existing
+        # code.
+        try:
+            relation = policied_relation(table_id, user)
+        except PolicyIdentityUnresolvable:
+            raise HTTPException(status_code=403, detail={"reason": "policy_identity_unresolvable"})
+        except PolicyError as exc:
+            raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": exc.table_id})
+
         c = _open_duckdb(":memory:")
         try:
-            df = c.execute(
-                f"SELECT * FROM {LOCAL_PARQUET_READ_EXPR} LIMIT {n}",
-                [parquet],
-            ).fetchdf()
+            if relation.policied:
+                # The parquet path is server-resolved, never user input, so
+                # it is safe to splice as an escaped literal — it must NOT
+                # be a `?` placeholder: the policy binds named `$user_*`
+                # parameters, and DuckDB refuses to mix positional and
+                # named parameters in one statement.
+                escaped_parquet = parquet.replace("'", "''")
+                from_sql = policied_from_sql(
+                    relation,
+                    table_name=row["name"],
+                    source_sql=f"read_parquet('{escaped_parquet}', union_by_name=true, hive_partitioning=true)",
+                )
+                df = c.execute(f"SELECT * FROM {from_sql} LIMIT {n}", relation.params).fetchdf()
+            else:
+                df = c.execute(
+                    f"SELECT * FROM {LOCAL_PARQUET_READ_EXPR} LIMIT {n}",
+                    [parquet],
+                ).fetchdf()
             rows = df.to_dict(orient="records")
         finally:
             c.close()
 
     rows = _sanitize_for_json(rows)
     payload = {"table_id": table_id, "rows": rows, "source": source_type}
-    _sample_cache.set(cache_key, payload)
+    if not has_access_policy:
+        _sample_cache.set(cache_key, payload)
     return payload
 
 

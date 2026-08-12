@@ -450,3 +450,50 @@ def rewrite_sql(
         rewritten_sql = rewritten_sql.replace(sentinel, relation_sql)
 
     return rewritten_sql, merged_params, policied_table_ids
+
+
+# ---------------------------------------------------------------------------
+# Task 8 -- shared FROM builder for `table_id`-shaped surfaces (§5).
+# `/api/v2/sample`, `/api/v2/scan`'s local branch, and
+# `mcp_per_table`'s `_build_select` have no caller SQL tree to substitute a
+# policied table into -- unlike the SQL surfaces above (`rewrite_sql`), each
+# builds its own `FROM <source>` from scratch: a throwaway `read_parquet(...)`
+# in a fresh `:memory:` connection with nothing else attached, or a bare view
+# reference on an already-open analytics connection. Neither has the base
+# table's registry NAME resolvable as a relation the way the AST rewrite's
+# target connection does, so a policy body's own `FROM <name>` would bind to
+# nothing (or the wrong thing) without this wrap. These surfaces call
+# `policied_relation` directly and hand the result here instead of going
+# anywhere near `rewrite_sql`.
+# ---------------------------------------------------------------------------
+
+
+def policied_from_sql(relation: PoliciedRelation, *, table_name: str, source_sql: str) -> str:
+    """Wrap a policied relation so its own ``FROM <table_name>`` resolves
+    against ``source_sql`` -- the calling surface's OWN read of its physical
+    source -- instead of the analytics-catalog master view none of these
+    surfaces has open.
+
+    Only call this when ``relation.policied``: the passthrough relation
+    (``SELECT * FROM <name>``) names a catalog entry these surfaces don't
+    have, so callers keep their pre-existing ``source_sql``-only execution
+    path for that case completely untouched -- the inert case must stay
+    byte-identical to what ran before this feature existed, not merely
+    produce an equivalent result through this function.
+
+    ``source_sql`` MUST be a FROM-able fragment carrying no ``?`` placeholder
+    of its own -- a policy body binds named ``$user_email`` / ``$user_id`` /
+    ``$user_groups`` parameters (§6.2), and DuckDB 1.5.2 refuses to mix
+    positional and named parameters in one statement (verified empirically).
+    A caller-controlled value that would otherwise be a bind parameter (a
+    parquet path) must already be embedded as an escaped string literal;
+    every caller here only ever passes a server-resolved path or a
+    ``quote_ident``ed registry/view name, never request-controlled text.
+
+    Returns a parenthesized derived-table expression, directly usable as a
+    ``FROM {result}`` target or a ``DESCRIBE {result}`` subject (both
+    verified against a parenthesized ``WITH ... SELECT ...`` body).
+    """
+    if not relation.policied:
+        raise ValueError("policied_from_sql() called on a non-policied relation -- use source_sql directly instead")
+    return f"(WITH {quote_ident(table_name)} AS (SELECT * FROM {source_sql}) {relation.relation_sql})"
