@@ -380,16 +380,32 @@ def main() -> None:
     traceback to the analyst's terminal. Now: one clean line + a hint,
     return code 1.
     """
-    from cli.client import AgnesTransportError, _log_traceback
+    from cli.client import AgnesHardStop, AgnesTransportError, _log_traceback
 
     try:
         app()
+    except AgnesHardStop as exc:
+        # A redirect or a version floor. These used to print here-and-now
+        # from inside the response hook and call `sys.exit(2)`; rendering
+        # them at the top level instead is what makes them catchable by a
+        # command with its own error handling. Both halves of the old
+        # output are reproduced exactly — the lowercase `error: ` prefix
+        # and the exit code — so nothing downstream sees a change.
+        #
+        # Deliberately NOT forwarded to telemetry. The old form raised
+        # `SystemExit`, which this wrapper explicitly never reports, so
+        # capturing here would quietly open a new telemetry stream as a
+        # side effect of a structural fix. That is a separate decision.
+        typer.echo(f"error: {exc.user_message}", err=True)
+        if exc.hint:
+            typer.echo(exc.hint, err=True)
+        sys.exit(exc.exit_code)
     except AgnesTransportError as exc:
         _capture_cli_exception(exc, kind="transport")
         typer.echo(f"Error: {exc.user_message}", err=True)
         if exc.hint:
             typer.echo(exc.hint, err=True)
-        sys.exit(1)
+        sys.exit(exc.exit_code)
     except typer.Exit:
         raise
     except (KeyboardInterrupt, SystemExit):

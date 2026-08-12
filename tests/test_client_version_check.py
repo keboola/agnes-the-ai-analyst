@@ -5,6 +5,8 @@ from unittest.mock import patch
 import httpx
 import pytest
 
+from cli.client import AgnesHardStop
+
 
 def _fake_response(headers: dict) -> httpx.Response:
     return httpx.Response(status_code=200, headers=headers, content=b"{}", request=httpx.Request("GET", "http://x/"))
@@ -17,9 +19,9 @@ def test_local_below_min_exits_with_code_2():
             "X-Agnes-Latest-Version": "0.40.0",
             "X-Agnes-Min-Version": "0.35.0",
         })
-        with pytest.raises(SystemExit) as exc:
+        with pytest.raises(AgnesHardStop) as exc:
             _check_version_headers(resp)
-        assert exc.value.code == 2
+        assert exc.value.exit_code == 2
 
 
 def test_local_at_or_above_min_does_not_exit():

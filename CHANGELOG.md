@@ -10,6 +10,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **A redirect no longer kills `agnes diagnose` — the command whose whole job is to tell you what is wrong.** Measured against a real relocated deployment: an unreachable server produces exit 0 and the full JSON checklist with an `api: error` row, while a server answering `308` produced exit 2, empty stdout and not a single check. The shared HTTP client detects a redirect (and a version floor) in an httpx *response event hook* and ended the process right there with `sys.exit(2)`, deep inside somebody else's `api_get(...)`. `SystemExit` derives from `BaseException`, so it walks straight through `except Exception` — which is how it voided the two callers built precisely to survive a failed request: `diagnose`, which records a row per failed check, and `agnes update`, whose `_run_step` exists so one bad step cannot abort a convergence run and which therefore died before writing its report. Both hooks now raise `AgnesHardStop`, rendered by the existing top-level handler in `cli/main.py`.
+
+  Nothing changes for the single-request commands this hard stop was written for: same `error: …` text on stderr, same exit code 2, both pinned by tests that drive the real `main()` rather than a copy of its handler. Hard stops are deliberately still **not** forwarded to telemetry — the old form raised `SystemExit`, which that wrapper never reported, and a structural fix must not quietly open a new reporting stream. Found while verifying the moved-server work end to end, not by the unit tests: the suite asserted that the hook exits, which is the mechanism, and never that a caller could survive it.
+
 ## [0.83.7] - 2026-08-12
 
 ### Fixed

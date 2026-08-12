@@ -139,11 +139,46 @@ class AgnesTransportError(Exception):
     error.log`` so an operator can recover it for support.
     """
 
+    #: Process exit code the top-level handler uses for this error. The
+    #: transport default is 1; the two response hooks below raise with 2,
+    #: which is the code they exited with when they still called
+    #: ``sys.exit`` themselves.
+    exit_code = 1
+
     def __init__(self, user_message: str, *, hint: str = "", logfile_path: Path | None = None):
         super().__init__(user_message)
         self.user_message = user_message
         self.hint = hint
         self.logfile_path = logfile_path
+
+
+class AgnesHardStop(AgnesTransportError):
+    """A response the CLI refuses to proceed past: a redirect, or a version floor.
+
+    Both conditions are detected in an httpx *response event hook*, which
+    runs deep inside somebody else's `api_get(...)` call. They used to end
+    the process there and then, with ``sys.stderr.write`` + ``sys.exit(2)``.
+    That works for a command built around a single request, and silently
+    voids any caller built to survive a failed one, because ``SystemExit``
+    derives from ``BaseException`` and so walks straight through
+    ``except Exception``:
+
+    - ``agnes diagnose`` runs many checks and records a row per failure. On
+      an unreachable server it prints its full checklist and exits 0. On a
+      redirect it printed nothing at all — no checks, empty ``--json``
+      stdout, exit 2 — from the one command whose purpose is to tell you
+      what is wrong.
+    - ``agnes update`` wraps every step so one failure cannot abort the
+      run. The hard stop punched through ``_run_step`` too, ending the
+      process before the report was ever written.
+
+    Raising instead keeps the user-visible contract identical for the
+    single-request commands — the top-level handler in ``cli/main.py``
+    prints the same text to stderr and exits with the same code — while
+    letting a caller that has its own error handling actually use it.
+    """
+
+    exit_code = 2
 
 
 def _log_traceback(exc: BaseException, *, context: str) -> Path:
@@ -262,8 +297,7 @@ def _check_moved_server(response: "httpx.Response") -> None:
         response.headers.get("Location", ""),
         get_server_url(),
     )
-    sys.stderr.write("error: " + message + "\n")
-    sys.exit(2)
+    raise AgnesHardStop(message)
 
 
 def _check_version_headers(response: "httpx.Response") -> None:
@@ -288,11 +322,9 @@ def _check_version_headers(response: "httpx.Response") -> None:
     if local == "unknown":
         return
     if _version_lt(local, minv):
-        sys.stderr.write(
-            f"error: agnes {local} is incompatible with server {latest} "
-            f"(min required: {minv}). Run: agnes self-upgrade\n"
+        raise AgnesHardStop(
+            f"agnes {local} is incompatible with server {latest} (min required: {minv}). Run: agnes self-upgrade"
         )
-        sys.exit(2)
 
 
 def get_client(timeout: float = 30.0) -> httpx.Client:
