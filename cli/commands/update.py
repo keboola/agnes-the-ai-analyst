@@ -207,8 +207,26 @@ def _run_step(name: str, fn: Callable[[], None], report: list[dict]) -> None:
 def _step_cli(*, quiet: bool, report: list[dict]) -> None:
     from cli.commands import self_upgrade as su
     from cli.update_check import UpdateInfo
+    from cli.upgrade_status import record_outcome
 
     info = su._resolve_info(force=False)
+    if isinstance(info, su._Redirected):
+        # THIS is the unattended path: `agnes init` installs one detached
+        # `agnes update --quiet` as the SessionStart hook, not
+        # `agnes self-upgrade`. Folding a redirect into "already current /
+        # offline" below would keep the falsely reassuring no-op alive on the
+        # only path that runs by itself — and skip `record_outcome`, so the
+        # #478 counter (the sole channel a silent path has) would never move.
+        # (Devin Review on #1275.)
+        record_outcome(success=False, reason=info.reason)
+        report.append(
+            {
+                "stage": "cli",
+                "status": "error",
+                "detail": f"{info.reason}; run `agnes self-upgrade` for the remedy",
+            }
+        )
+        return
     if not isinstance(info, UpdateInfo):
         # CLI already current, offline, or unreachable — nothing to swap.
         report.append({"stage": "cli", "status": "ok", "detail": "already current / offline"})

@@ -214,6 +214,49 @@ class TestTheQuietPathIsNotInvisibleForever:
         assert consecutive_failures() == 1
 
 
+class TestTheCommandTheHookActuallyRuns:
+    """`agnes init` installs `agnes update --quiet`, NOT `agnes self-upgrade`.
+
+    So every claim this fix makes about "the unattended path" is a claim about
+    `cli/commands/update.py::_step_cli`, which reaches `_resolve_info` and then
+    tests only `isinstance(info, UpdateInfo)`. A redirect fell into the generic
+    `already current / offline` line: the falsely reassuring no-op this change
+    exists to end, surviving on the one path that runs on every session start.
+    Every test above drives `self-upgrade` — a command a person types.
+    (Devin Review on #1275.)
+    """
+
+    def _cli_step(self, quiet: bool = True) -> dict:
+        from cli.commands.update import _step_cli
+
+        report: list[dict] = []
+        _step_cli(quiet=quiet, report=report)
+        return next(r for r in report if r["stage"] == "cli")
+
+    def test_the_report_does_not_call_a_moved_server_current(self, moved_server):
+        step = self._cli_step()
+        assert step["status"] == "error", f"reported as {step['status']}: {step['detail']}"
+        assert "already current" not in step["detail"]
+
+    def test_the_report_names_where_the_server_went(self, moved_server):
+        assert "new.example" in self._cli_step()["detail"]
+
+    def test_the_unattended_path_records_the_failure(self, moved_server):
+        """Otherwise the #478 counter — the only channel it has — never moves."""
+        self._cli_step()
+        assert consecutive_failures() == 1
+
+
+class TestForcedUpgradeNeverReportsSuccess:
+    def test_force_with_quiet_still_exits_non_zero(self, moved_server):
+        """`--quiet` suppresses progress, not failures — see its own help.
+
+        An automation that asked for a forced upgrade was told it worked.
+        """
+        result = runner.invoke(app, ["self-upgrade", "--force", "--quiet"])
+        assert result.exit_code != 0, "a forced upgrade that never happened returned 0"
+
+
 class TestWorkspaceConvergenceSurvivesTheError:
     """Hook refresh is orthogonal to where `/cli/latest` points.
 
