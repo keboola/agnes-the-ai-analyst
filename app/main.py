@@ -2392,12 +2392,14 @@ def create_app() -> FastAPI:
     from app.auth.providers.google import router as google_auth_router
     from app.auth.providers.password import router as password_auth_router
     from app.auth.providers.email import router as email_auth_router
+    from app.auth.providers.keboola import router as keboola_auth_router
 
     # API routers
     app.include_router(auth_router)
     app.include_router(google_auth_router)
     app.include_router(password_auth_router)
     app.include_router(email_auth_router)  # Always register, check availability per-request
+    app.include_router(keboola_auth_router)  # Always register, availability + allowlist per-request
     app.include_router(health_router)
 
     from app.api import health_probes

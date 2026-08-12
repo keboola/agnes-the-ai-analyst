@@ -163,6 +163,10 @@
                     'no_email': "Google didn't return an email for this account.",
                     'domain_not_allowed': "This email's domain is not permitted to sign in to this " ~ (instance_brand or "Agnes") ~ " instance.",
                     'google_not_configured': "Google sign-in is not configured on this server.",
+                    'keboola_oauth_failed': "Keboola sign-in failed. Please try again.",
+                    'keboola_not_configured': "Keboola sign-in is not configured on this server.",
+                    'keboola_not_permitted': "Your Keboola token or project role is not permitted to sign in here. Contact your " ~ (instance_brand or "Agnes") ~ " administrator.",
+                    'keboola_project_mismatch': "Your Keboola session belongs to a different project than this instance. Retry and pick project " ~ (keboola_expected_project or "configured for this instance") ~ " on the Keboola sign-in screen.",
                 } %}
                 {% if _err and _err_messages.get(_err) %}
                 {# Inline error banner — canonical `.flash flash-error`

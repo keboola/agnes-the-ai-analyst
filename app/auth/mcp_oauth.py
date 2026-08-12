@@ -663,6 +663,13 @@ def _login_url(request: Request, pending: str) -> str:
         from urllib.parse import quote
 
         return f"{base}/auth/google/login?next={quote(consent_path)}"
+
+    from app.auth.providers.keboola import is_available as keboola_available
+
+    if keboola_available() and provider_allowed("keboola"):
+        from urllib.parse import quote
+
+        return f"{base}/auth/keboola/login?next={quote(consent_path)}"
     from urllib.parse import quote
 
     return f"{base}/login?next={quote(consent_path)}"

@@ -975,6 +975,13 @@ async def login_page(request: Request):
             providers.append({"name": "email", "display_name": "Email Link", "icon": "mail"})
     except Exception:
         pass
+    try:
+        from app.auth.providers.keboola import is_available as keboola_available
+
+        if keboola_available() and provider_allowed("keboola"):
+            providers.append({"name": "keboola", "display_name": "Keboola", "icon": "keboola"})
+    except Exception:
+        pass
 
     # Convert to login_buttons format expected by template
     login_buttons = []
@@ -1000,8 +1007,30 @@ async def login_page(request: Request):
             login_buttons.append(
                 {"url": _url, "text": "Sign in with Email Link", "css_class": "btn-secondary", "icon_html": ""}
             )
+        elif p["name"] == "keboola":
+            _url = "/auth/keboola/login"
+            if next_path:
+                _url += f"?next={quote(next_path, safe='')}"
+            login_buttons.append(
+                {"url": _url, "text": "Sign in with Keboola", "css_class": "btn-primary", "icon_html": ""}
+            )
 
-    ctx = _build_context(request, providers=providers, login_buttons=login_buttons, next_path=next_path)
+    keboola_expected_project = ""
+    if request.query_params.get("error") == "keboola_project_mismatch":
+        try:
+            from app.auth.providers import keboola_verify as _kv
+
+            keboola_expected_project = _kv.configured_project_id() or ""
+        except Exception:
+            pass
+
+    ctx = _build_context(
+        request,
+        providers=providers,
+        login_buttons=login_buttons,
+        next_path=next_path,
+        keboola_expected_project=keboola_expected_project,
+    )
     return templates.TemplateResponse(request, "login.html", ctx)
 
 
@@ -6453,8 +6482,7 @@ async def admin_semantic_layer_page(
     # here. So the page says a subset is shown, without a number it cannot
     # compute honestly. (Devin Review on this PR.)
     ctx["unresolved_tables_truncated"] = any(
-        int(e.get("unresolved_tables_total") or 0) > len(e.get("unresolved_tables") or [])
-        for e in last_by_ref.values()
+        int(e.get("unresolved_tables_total") or 0) > len(e.get("unresolved_tables") or []) for e in last_by_ref.values()
     )
     ctx["skipped_unresolved_total"] = sum(int(e.get("skipped_unresolved_table") or 0) for e in last_by_ref.values())
     ctx["default_connection_id"] = default_id
