@@ -84,6 +84,30 @@ class TestCallback:
         assert "error=keboola_project_mismatch" in resp.headers["location"]
         assert "access_token" not in resp.cookies
 
+    def test_unexpected_verify_exception_redirects_not_500(self, client, monkeypatch):
+        """Non-KeboolaVerifyError from verify must hit the backstop, not a 500."""
+        self._patch_flow(monkeypatch, verify_error=AttributeError("boom"))
+        resp = client.get("/auth/keboola/callback?code=x&state=y", follow_redirects=False)
+        assert resp.status_code == 302
+        assert "error=keboola_oauth_failed" in resp.headers["location"]
+        assert "access_token" not in resp.cookies
+
+    def test_unexpected_provisioning_exception_redirects_not_500(self, client, monkeypatch):
+        """Non-UserDeactivatedError from ensure_user must hit the backstop, not a 500."""
+        from app.auth.providers import keboola as kb
+
+        self._patch_flow(monkeypatch)
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("db exploded")
+
+        # The provider imports ensure_user by name; patch it on the provider module.
+        monkeypatch.setattr(kb, "ensure_user", boom)
+        resp = client.get("/auth/keboola/callback?code=x&state=y", follow_redirects=False)
+        assert resp.status_code == 302
+        assert "error=keboola_oauth_failed" in resp.headers["location"]
+        assert "access_token" not in resp.cookies
+
     def test_deactivated_user_rejected(self, client, monkeypatch):
         from src.repositories import users_repo
         import uuid

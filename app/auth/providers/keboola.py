@@ -92,32 +92,43 @@ async def keboola_callback(request: Request):
         logger.exception("Keboola OAuth token exchange failed")
         return RedirectResponse(url="/login?error=keboola_oauth_failed", status_code=302)
     access_token = str(token.get("access_token") or "")
+    # Backstop: any unexpected failure in the post-exchange flow (verify →
+    # provisioning → JWT → cookie) must land on the friendly login banner,
+    # never a raw 500. The specific except branches below return their own
+    # redirects from inside the try, so the backstop never shadows them.
     try:
-        # Sync HTTP verify off the event loop (same Tier-1 posture as auth).
-        identity = await run_in_threadpool(kv.verify_oauth_access_token, access_token)
-    except kv.KeboolaVerifyError as exc:
-        logger.info("Keboola login rejected: %s", exc.reason)
-        code = _ERROR_CODE_BY_REASON.get(exc.reason, "keboola_oauth_failed")
-        return RedirectResponse(url=f"/login?error={code}", status_code=302)
-    try:
-        user = await run_in_threadpool(ensure_user, identity.email, identity.name, source="auth.keboola:first-signin")
-    except UserDeactivatedError:
-        return RedirectResponse(url="/login?error=deactivated", status_code=302)
+        try:
+            # Sync HTTP verify off the event loop (same Tier-1 posture as auth).
+            identity = await run_in_threadpool(kv.verify_oauth_access_token, access_token)
+        except kv.KeboolaVerifyError as exc:
+            logger.info("Keboola login rejected: %s", exc.reason)
+            code = _ERROR_CODE_BY_REASON.get(exc.reason, "keboola_oauth_failed")
+            return RedirectResponse(url=f"/login?error={code}", status_code=302)
+        try:
+            user = await run_in_threadpool(
+                ensure_user, identity.email, identity.name, source="auth.keboola:first-signin"
+            )
+        except UserDeactivatedError:
+            return RedirectResponse(url="/login?error=deactivated", status_code=302)
 
-    jwt_token = create_access_token(user["id"], user["email"])
-    target = safe_next_path(request.session.pop("login_next", None))
+        jwt_token = create_access_token(user["id"], user["email"])
+        target = safe_next_path(request.session.pop("login_next", None))
 
-    from app.auth.public_url import cookie_secure
-    from app.instance_config import session_cookie_domain
+        from app.auth.public_url import cookie_secure
+        from app.instance_config import session_cookie_domain
 
-    response = RedirectResponse(url=target, status_code=302)
-    response.set_cookie(
-        key="access_token",
-        value=jwt_token,
-        httponly=True,
-        max_age=SESSION_COOKIE_MAX_AGE_SECONDS,
-        samesite="lax",
-        secure=cookie_secure(request),
-        domain=session_cookie_domain(),
-    )
-    return response
+        response = RedirectResponse(url=target, status_code=302)
+        response.set_cookie(
+            key="access_token",
+            value=jwt_token,
+            httponly=True,
+            max_age=SESSION_COOKIE_MAX_AGE_SECONDS,
+            samesite="lax",
+            secure=cookie_secure(request),
+            domain=session_cookie_domain(),
+        )
+        return response
+    except Exception:
+        # Deliberately no token/identity details in the log record.
+        logger.exception("Keboola OAuth callback failed after token exchange")
+        return RedirectResponse(url="/login?error=keboola_oauth_failed", status_code=302)
