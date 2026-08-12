@@ -847,12 +847,14 @@ function _chatToolsRowHtml(row) {
   const badgeClass = on ? "badge-vault" : "badge-unset";
   const badgeLabel = on ? "on" : "off";
   const hint = on
-    // Enabling registers the SOURCE, not its tools: the tool_registry rows the
-    // Access screen grants from are created by Introspect on the source detail
-    // page. The old wording ("Tools are registered. Grant them…") sent the
-    // admin straight to a grant screen with nothing on it. (Devin Review.)
-    ? "Connected. Open it under Admin -> MCP sources and run Introspect to list its tools, then grant them to a group under Access."
-    : "Give the chat agent this project's own Keboola tools.";
+    // Enabling registers the source AND its tools, so there is something to
+    // grant — but registered is not reachable, and the grant lives on each
+    // tool's own page (/admin/mcp-tools/{id}/grants), not on Access. Saying
+    // "done" here, or naming the wrong screen, both leave the admin one step
+    // short of the agent seeing anything. The manual Introspect detour this
+    // text used to describe is gone; the endpoint does it.
+    ? "Tools are registered but not yet reachable — grant them under Admin -> MCP sources, on each tool's Grants page."
+    : "Give the chat agent this project's own Keboola tools. The first run downloads the server, so it can take a minute.";
   return `
   <div class="ds-master-row">
     <span class="ds-master-label" title="${_esc(hint)}">Chat tools (Keboola MCP)</span>
@@ -874,8 +876,21 @@ async function toggleChatTools(id, isOn, resync) {
       credentials: "include",
     });
     if (r.ok || r.status === 204) {
+      const ok = await r.json().catch(() => ({}));
+      const n = ok.tools_registered;
+      // Mutating tools are refused for non-admins by the policy gate even
+      // when granted, and an upstream with no read-only annotations makes
+      // that ALL of them — the "grant them" advice must say so or it is a
+      // false promise. (Devin Review on this PR, fifth round.)
+      const adminOnly = ok.tools_admin_only;
+      const allAdminOnly = n > 0 && adminOnly === n;
       showToast(
-        turningOff ? "Chat tools turned off." : (resync ? "Token re-synced." : "Chat tools on — now grant them to a group under Access."),
+        turningOff
+          ? "Chat tools turned off."
+          : (resync
+              ? "Token re-synced."
+              : `Chat tools on — ${n === undefined ? "tools" : n + " tools"} registered. Grant them under Admin -> MCP sources to make them reachable.`
+                + (allAdminOnly ? " All are recorded as mutating (no read-only annotations upstream), and mutating tools stay admin-only even when granted." : "")),
         true,
       );
       await loadConnections();

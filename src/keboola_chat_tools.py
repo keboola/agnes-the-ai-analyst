@@ -29,6 +29,10 @@ by running the thing (2026-08-10):
 
 from __future__ import annotations
 
+import hashlib
+import os
+import re
+from pathlib import Path
 from typing import Any, Dict, List
 
 # Upstream package. Bump deliberately — the tool surface the agent sees is a
@@ -49,6 +53,22 @@ STACK_URL_ENV = "KBC_STORAGE_API_URL"
 RUNNER_COMMAND = "uv"
 
 
+def uv_cache_dir() -> str:
+    """Where ``uv`` caches the downloaded package, pinned onto the data disk.
+
+    Two reasons not to leave this to uv's default (``$HOME/.cache/uv``):
+
+    * The runtime image never sets ``HOME`` (``python:3.13-slim`` doesn't, and
+      a ``USER`` directive alone doesn't either), and the MCP SDK forwards only
+      env vars that actually exist in the parent — so the subprocess can end up
+      with no ``HOME`` to derive a cache path from.
+    * The container's filesystem is thrown away on every upgrade. A cache
+      inside it means the first tool call after each auto-upgrade re-downloads
+      the package; on the data volume it survives.
+    """
+    return str(Path(os.environ.get("DATA_DIR", "./data")) / "cache" / "uv")
+
+
 def derived_source_id(connection_id: str) -> str:
     """Stable ``mcp_sources.id`` for a connection's derived source.
 
@@ -57,6 +77,56 @@ def derived_source_id(connection_id: str) -> str:
     the connection id alone.
     """
     return f"kbc-chat-{connection_id}"
+
+
+def tool_name_prefix(connection_id: str, connection_name: str) -> str:
+    """Prefix that keeps two connected projects' identically-named tools apart.
+
+    Every Keboola project exposes ``query_data``, ``get_buckets`` and so on, so
+    the exposed names must carry which project they reach — the agent picks a
+    tool by name and has nothing else to go on. The readable half comes from
+    the connection name; the four hex characters come from the connection id,
+    because two distinct names can sanitize to the same slug and a collision
+    would silently point one project's tool at another's data.
+    """
+    slug = re.sub(r"[^a-z0-9]+", "_", (connection_name or "").lower()).strip("_")[:24]
+    digest = hashlib.sha256(connection_id.encode("utf-8")).hexdigest()[:4]
+    return f"kbc_{slug}_{digest}" if slug else f"kbc_{digest}"
+
+
+def derived_tool_id(connection_id: str, tool_name: str) -> str:
+    """Stable ``tool_registry.tool_id``, so re-enabling updates rows in place."""
+    return f"{derived_source_id(connection_id)}__{tool_name}"
+
+
+# Model APIs cap tool names (^[a-zA-Z0-9_-]{1,64}$); an over-long name fails at
+# the model call and can poison the whole tool list, not just the one tool.
+TOOL_NAME_MAX = 64
+
+
+def exposed_tool_name(connection_id: str, connection_name: str, tool_name: str) -> str:
+    """``{prefix}_{tool_name}``, capped at ``TOOL_NAME_MAX``.
+
+    Under the cap this is exactly the prefixed name (so existing registrations
+    are unaffected). Over it, the connection-name slug — the readable, least
+    load-bearing part — shrinks first; the 4-hex connection digest never does,
+    because it is what keeps two projects' identically-named tools apart. If
+    even a slug-less name is too long, the upstream name keeps its head and
+    gains a 4-hex digest of its full self, so two long names cannot collide.
+    """
+    full = f"{tool_name_prefix(connection_id, connection_name)}_{tool_name}"
+    if len(full) <= TOOL_NAME_MAX:
+        return full
+    digest = hashlib.sha256(connection_id.encode("utf-8")).hexdigest()[:4]
+    slug = re.sub(r"[^a-z0-9]+", "_", (connection_name or "").lower()).strip("_")[:24]
+    keep = len(slug) - (len(full) - TOOL_NAME_MAX)
+    slug = slug[:keep].rstrip("_") if keep > 0 else ""
+    candidate = f"kbc_{slug}_{digest}_{tool_name}" if slug else f"kbc_{digest}_{tool_name}"
+    if len(candidate) <= TOOL_NAME_MAX:
+        return candidate
+    name_digest = hashlib.sha256(tool_name.encode("utf-8")).hexdigest()[:4]
+    head = TOOL_NAME_MAX - len(f"kbc_{digest}__{name_digest}")
+    return f"kbc_{digest}_{tool_name[:head]}_{name_digest}"
 
 
 def derived_source_name(connection_name: str) -> str:
@@ -100,7 +170,7 @@ def build_stdio_spec(
         "transport": "stdio",
         "command": RUNNER_COMMAND,
         "args": runner_args(version=version),
-        "env": {STACK_URL_ENV: stack_url.rstrip("/")},
+        "env": {STACK_URL_ENV: stack_url.rstrip("/"), "UV_CACHE_DIR": uv_cache_dir()},
         "auth_secret_env": TOKEN_ENV,
         "auth_method": None,
         "scope": "shared",
