@@ -1049,6 +1049,16 @@ sys.exit(compute_exit_code(result, len(configs)))
             flush=True,
         )
 
+        # Analyst desktop notification (#412: `agnes watch`). Best-effort:
+        # notify_sync_completed never raises on its own, but wrap anyway —
+        # same "second line of defence" pattern as notify_sync_failure below.
+        try:
+            from app.services.sync_notifier import notify_sync_completed
+
+            notify_sync_completed(views)
+        except Exception:
+            logger.exception("sync-completed notifier raised")
+
         # Auto-profile synced tables (best-effort, don't fail sync on profile error).
         #
         # Each profile runs in a fresh Python subprocess (``src._profiler_worker``)

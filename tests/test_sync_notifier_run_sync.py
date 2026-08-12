@@ -9,7 +9,6 @@ completes (best-effort).
 """
 
 import duckdb
-import pytest
 
 from src.db import _ensure_schema
 from src.repositories.table_registry import TableRegistryRepository
@@ -34,14 +33,10 @@ def _seed_bq_only_registry(tmp_path):
 
 
 def _patch_bq_only(monkeypatch):
-    monkeypatch.setattr(
-        "app.instance_config.get_data_source_type", lambda: "bigquery"
-    )
+    monkeypatch.setattr("app.instance_config.get_data_source_type", lambda: "bigquery")
     monkeypatch.setattr(
         "app.instance_config.get_value",
-        lambda *args, **kw: (
-            "my-bq-proj" if (args and args[-1] == "project") else kw.get("default", "")
-        ),
+        lambda *args, **kw: "my-bq-proj" if (args and args[-1] == "project") else kw.get("default", ""),
     )
 
 
@@ -68,9 +63,7 @@ def test_run_sync_fatal_notifies(tmp_path, monkeypatch):
         def rebuild(self):
             raise RuntimeError("orchestrator exploded")
 
-    monkeypatch.setattr(
-        "src.orchestrator.SyncOrchestrator", lambda *a, **kw: _OrchBoom()
-    )
+    monkeypatch.setattr("src.orchestrator.SyncOrchestrator", lambda *a, **kw: _OrchBoom())
 
     captured = {}
 
@@ -109,9 +102,7 @@ def test_run_sync_per_table_errors_notifies(tmp_path, monkeypatch):
         def rebuild(self):
             return {}
 
-    monkeypatch.setattr(
-        "src.orchestrator.SyncOrchestrator", lambda *a, **kw: _OrchStub()
-    )
+    monkeypatch.setattr("src.orchestrator.SyncOrchestrator", lambda *a, **kw: _OrchStub())
 
     captured = {}
 
@@ -124,9 +115,7 @@ def test_run_sync_per_table_errors_notifies(tmp_path, monkeypatch):
     sync_mod._run_sync()
 
     assert captured.get("fatal") is None
-    assert captured.get("failed_tables") == [
-        {"table": "m1", "error": "budget exceeded"}
-    ]
+    assert captured.get("failed_tables") == [{"table": "m1", "error": "budget exceeded"}]
 
 
 def test_run_sync_clean_does_not_notify(tmp_path, monkeypatch):
@@ -150,9 +139,7 @@ def test_run_sync_clean_does_not_notify(tmp_path, monkeypatch):
         def rebuild(self):
             return {}
 
-    monkeypatch.setattr(
-        "src.orchestrator.SyncOrchestrator", lambda *a, **kw: _OrchStub()
-    )
+    monkeypatch.setattr("src.orchestrator.SyncOrchestrator", lambda *a, **kw: _OrchStub())
 
     called = {"n": 0}
 
@@ -190,9 +177,7 @@ def test_run_sync_notifier_raising_does_not_break_sync(tmp_path, monkeypatch):
             rebuilt["n"] += 1
             return {}
 
-    monkeypatch.setattr(
-        "src.orchestrator.SyncOrchestrator", lambda *a, **kw: _OrchStub()
-    )
+    monkeypatch.setattr("src.orchestrator.SyncOrchestrator", lambda *a, **kw: _OrchStub())
 
     def _boom(**kw):
         raise RuntimeError("notifier blew up")
@@ -230,9 +215,7 @@ def test_run_sync_timeout_notifies(tmp_path, monkeypatch):
         def rebuild(self):
             raise subprocess.TimeoutExpired(cmd="extractor", timeout=600)
 
-    monkeypatch.setattr(
-        "src.orchestrator.SyncOrchestrator", lambda *a, **kw: _OrchTimeout()
-    )
+    monkeypatch.setattr("src.orchestrator.SyncOrchestrator", lambda *a, **kw: _OrchTimeout())
 
     captured = {}
 
@@ -274,8 +257,10 @@ def test_run_sync_extractor_timeout_notifies(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(sync_mod.os, "killpg", lambda *a, **k: None)
 
     from src import orchestrator as orch_mod
+
     monkeypatch.setattr(
-        orch_mod, "SyncOrchestrator",
+        orch_mod,
+        "SyncOrchestrator",
         lambda *a, **kw: MagicMock(rebuild=MagicMock(return_value={})),
         raising=False,
     )
@@ -284,17 +269,26 @@ def test_run_sync_extractor_timeout_notifies(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("KEBOOLA_STACK_URL", "https://test.example")
 
     from src.repositories.table_registry import TableRegistryRepository
+
     monkeypatch.setattr(
-        TableRegistryRepository, "list_local",
+        TableRegistryRepository,
+        "list_local",
         lambda self, *a, **kw: [
-            {"id": "x", "name": "x", "source_type": "keboola",
-             "bucket": "in.c-x", "source_table": "y", "query_mode": "local"}
+            {
+                "id": "x",
+                "name": "x",
+                "source_type": "keboola",
+                "bucket": "in.c-x",
+                "source_table": "y",
+                "query_mode": "local",
+            }
         ],
     )
 
     fake_conn = MagicMock()
     from src import db as db_mod
     from app import instance_config as ic_mod
+
     monkeypatch.setattr(db_mod, "get_system_db", lambda: fake_conn)
     monkeypatch.setattr(ic_mod, "get_data_source_type", lambda: "keboola")
     monkeypatch.setattr(ic_mod, "get_value", lambda *a, **kw: "")
@@ -338,9 +332,7 @@ def test_run_sync_per_table_then_fatal_notifies_once(tmp_path, monkeypatch):
         def rebuild(self):
             raise RuntimeError("rebuild exploded")
 
-    monkeypatch.setattr(
-        "src.orchestrator.SyncOrchestrator", lambda *a, **kw: _OrchBoom()
-    )
+    monkeypatch.setattr("src.orchestrator.SyncOrchestrator", lambda *a, **kw: _OrchBoom())
 
     calls = []
 
@@ -355,3 +347,71 @@ def test_run_sync_per_table_then_fatal_notifies_once(tmp_path, monkeypatch):
     assert isinstance(calls[0]["fatal"], RuntimeError)
     # The combined alert still carries the per-table errors collected earlier.
     assert calls[0]["failed_tables"] == [{"table": "m1", "error": "budget exceeded"}]
+
+
+def test_run_sync_success_notifies_completed(tmp_path, monkeypatch):
+    """A successful orchestrator rebuild fires notify_sync_completed with the
+    rebuild's {source: [tables]} result (#412: agnes watch)."""
+    _seed_bq_only_registry(tmp_path)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    _patch_bq_only(monkeypatch)
+
+    from app.api import sync as sync_mod
+
+    monkeypatch.setattr(
+        "app.api.sync._run_materialized_pass",
+        lambda _c, _b, *, tables=None, source_type=None: {
+            "materialized": ["m1"],
+            "skipped": [],
+            "errors": [],
+        },
+    )
+
+    class _OrchStub:
+        def rebuild(self):
+            return {"bigquery": ["m1"]}
+
+    monkeypatch.setattr("src.orchestrator.SyncOrchestrator", lambda *a, **kw: _OrchStub())
+
+    captured = {}
+
+    def _spy_notify(views):
+        captured["views"] = views
+
+    monkeypatch.setattr("app.services.sync_notifier.notify_sync_completed", _spy_notify)
+
+    sync_mod._run_sync()
+
+    assert captured.get("views") == {"bigquery": ["m1"]}
+
+
+def test_run_sync_notify_completed_raising_does_not_break_sync(tmp_path, monkeypatch):
+    """notify_sync_completed is best-effort — a raise must not fail the sync."""
+    _seed_bq_only_registry(tmp_path)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    _patch_bq_only(monkeypatch)
+
+    from app.api import sync as sync_mod
+
+    monkeypatch.setattr(
+        "app.api.sync._run_materialized_pass",
+        lambda _c, _b, *, tables=None, source_type=None: {
+            "materialized": ["m1"],
+            "skipped": [],
+            "errors": [],
+        },
+    )
+
+    class _OrchStub:
+        def rebuild(self):
+            return {"bigquery": ["m1"]}
+
+    monkeypatch.setattr("src.orchestrator.SyncOrchestrator", lambda *a, **kw: _OrchStub())
+
+    def _boom(views):
+        raise RuntimeError("notifier blew up")
+
+    monkeypatch.setattr("app.services.sync_notifier.notify_sync_completed", _boom)
+
+    # Must not raise, and the run must still report success.
+    assert sync_mod._run_sync() is True
