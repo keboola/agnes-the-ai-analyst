@@ -106,6 +106,9 @@ tables = {
     'jira_changelog': 'server/parquet/jira/changelog/*.parquet',
     'jira_issuelinks': 'server/parquet/jira/issuelinks/*.parquet',
     'jira_remote_links': 'server/parquet/jira/remote_links/*.parquet',
+    # Unpartitioned dimension — a single data.parquet, so the same top-level glob
+    # matches it. The rsync above already brings it down with the other six.
+    'jira_organizations': 'server/parquet/jira/organizations/*.parquet',
 }
 created = 0
 for view, pattern in tables.items():

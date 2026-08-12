@@ -126,7 +126,18 @@ def _load_jira_tables() -> tuple:
             "subdir": "issues",
             "description": "Jira issues. Key fields: issue_key, summary, description, status, priority, assignee, created_at, resolved_at.",
             "primary_key": "issue_key",
-            "foreign_keys": [],
+            "foreign_keys": [
+                {
+                    "column": "organization_ids",
+                    "references": "jira_organizations.org_id",
+                    "description": (
+                        "Organizations on the ticket, as a JSON array of ids because the "
+                        "field is multi-valued — UNNEST before joining. Join on these rather "
+                        "than on the names in `organizations`, which are captured at ingest "
+                        "and drift whenever an organization is renamed."
+                    ),
+                }
+            ],
         },
         {
             "name": "jira_comments",
@@ -177,6 +188,21 @@ def _load_jira_tables() -> tuple:
             "foreign_keys": [
                 {"column": "issue_key", "references": "jira_issues.issue_key", "description": "Parent issue"}
             ],
+        },
+        {
+            "name": "jira_organizations",
+            "subdir": "organizations",
+            # Current state, not an event stream: one row per organization, unpartitioned,
+            # refreshed from the organization API rather than derived from issue JSON.
+            "description": (
+                "JSM organizations, current state — one row each, refreshed daily from the "
+                "organization API. Key fields: org_id, name, plus one column per organization "
+                "detail field the operator configured (JIRA_ORG_DETAIL_FIELDS), e.g. an account "
+                "id in a CRM or billing system. This is the join target for "
+                "jira_issues.organization_ids."
+            ),
+            "primary_key": "org_id",
+            "foreign_keys": [],
         },
     ]
 
