@@ -1121,9 +1121,197 @@ class EffectiveAccessItem(BaseModel):
     via_groups: List[dict]  # [{group_id, group_name}]
 
 
+class TablePolicyDiagnosis(BaseModel):
+    """Per-table access-policy self-audit (table access policies design
+    doc §10.2, §16). Always present on every table entry, never omitted —
+    a non-policied table reports ``applies=False`` rather than dropping the
+    key, so a caller can rely on one shape instead of branching on key
+    presence (documented choice; the design doc leaves this pick open).
+
+    ``applies`` is a STRUCTURAL fact about the table — it carries an
+    ``access_policy_sql`` — independent of whether THIS persona is actually
+    filtered by it: an admin-bypass target (§12) still reports
+    ``applies=True`` for a policied table, with ``rows_visible`` showing
+    the unfiltered count instead (exactly what a live read with that
+    identity would return).
+
+    ``note`` is additional human-readable context beyond the fixed
+    ``reason`` enum — e.g. why ``rows_visible`` is ``null`` despite
+    ``reason='ok'`` (a remote/BigQuery table, counted-skipped to avoid a
+    live scan), or which mapping table + ``last_sync`` produced
+    ``reason='mapping_empty'``. ``None`` when the reason is self-explanatory.
+    """
+
+    applies: bool
+    rows_visible: Optional[int] = None
+    reason: str  # 'ok' | 'empty_slice' | 'mapping_empty' | 'policy_error' | 'identity_unresolvable'
+    note: Optional[str] = None
+
+
+class TableAccessDiagnosis(BaseModel):
+    table_id: str
+    policy: TablePolicyDiagnosis
+
+
 class EffectiveAccessResponse(BaseModel):
     is_admin: bool
     items: List[EffectiveAccessItem]
+    # §10.2 — one entry per table this principal can actually read, in the
+    # STACK-GATED sense `src.rbac.get_accessible_tables` already uses for
+    # authorization — NOT the legacy per-table `resource_grants` rows
+    # `items` above carries (those are a no-op for analyst visibility, see
+    # `can_access_table`'s own docstring, and for a typical analyst whose
+    # access flows entirely through a data-package stack `items` would
+    # carry zero `resource_type='table'` rows at all). Additive: `items`
+    # keeps its existing shape and meaning untouched.
+    tables: List[TableAccessDiagnosis] = []
+
+
+def _table_access_diagnoses(principal: dict, conn: duckdb.DuckDBPyConnection) -> List[TableAccessDiagnosis]:
+    """§10.2 — one :class:`TableAccessDiagnosis` per table ``principal`` can
+    actually read. Internal tables (``agnes_sessions`` / ``_telemetry`` /
+    ``_audit``) have their own row-level RBAC and no ``table_registry`` row
+    at all — they never carry an access policy, so they are skipped rather
+    than reported with a trivially-false ``applies``.
+    """
+    from src.rbac import get_accessible_tables
+    from src.repositories import table_registry_repo
+
+    accessible = get_accessible_tables(principal, conn)
+    repo = table_registry_repo()
+    if accessible is None:
+        rows = repo.list_all()
+    else:
+        rows = []
+        for table_id in accessible:
+            row = repo.get(table_id)
+            if row:
+                rows.append(row)
+
+    return [
+        TableAccessDiagnosis(table_id=row["id"], policy=TablePolicyDiagnosis(**_table_policy_diagnosis(row, principal)))
+        for row in sorted(rows, key=lambda r: r["id"])
+    ]
+
+
+def _table_policy_diagnosis(row: dict, principal: dict) -> dict:
+    """The ``policy`` block for one ``table_registry`` row (§10.2)."""
+    policy_sql = row.get("access_policy_sql")
+    if not policy_sql:
+        return {"applies": False, "rows_visible": None, "reason": "ok", "note": None}
+
+    from src.access_policy import PolicyError, PolicyIdentityUnresolvable, PolicyMappingEmpty, policied_relation
+
+    table_id = row["id"]
+    try:
+        relation = policied_relation(table_id, principal)
+    except PolicyIdentityUnresolvable as exc:
+        return {"applies": True, "rows_visible": None, "reason": "identity_unresolvable", "note": str(exc)}
+    except PolicyError:
+        return _policy_error_diagnosis(table_id, stage="resolve")
+
+    # §15.1 — an empty (or never-synced) policy_mapping dependency only
+    # matters for a persona actually reading THROUGH the policy; the admin
+    # bypass (§12) reads unfiltered, so it is irrelevant to what they see.
+    if relation.policied:
+        try:
+            _raise_if_policy_mapping_empty(policy_sql)
+        except PolicyMappingEmpty as exc:
+            return {"applies": True, "rows_visible": None, "reason": "mapping_empty", "note": str(exc)}
+
+    if (row.get("query_mode") or "local") == "remote":
+        # A live COUNT(*) through the policy would run a real BigQuery
+        # scan on every effective-access page load — the same cost
+        # `agnes-conventions/command-ux.md` already guards against
+        # elsewhere. Local/materialized/server_only tables get a real
+        # count below; a remote one gets an explicit skip note instead of
+        # a silent (and possibly misleading) `rows_visible: 0`.
+        return {
+            "applies": True,
+            "rows_visible": None,
+            "reason": "ok",
+            "note": "row count skipped for a remote (BigQuery) table to avoid a live scan",
+        }
+
+    try:
+        rows_visible = _count_through_relation(relation)
+    except PolicyError:
+        return _policy_error_diagnosis(table_id, stage="execute")
+
+    reason = "empty_slice" if (relation.policied and rows_visible == 0) else "ok"
+    return {"applies": True, "rows_visible": rows_visible, "reason": reason, "note": None}
+
+
+def _policy_error_diagnosis(table_id: str, *, stage: str) -> dict:
+    return {
+        "applies": True,
+        "rows_visible": None,
+        "reason": "policy_error",
+        "note": f"access policy for table {table_id!r} failed to {stage}",
+    }
+
+
+def _raise_if_policy_mapping_empty(policy_sql: str) -> None:
+    """§15.1 — fail closed with a NAMED reason when a ``policy_mapping``
+    table this policy body references currently has zero (or never-synced)
+    rows, rather than let a broken upstream sync read as "you legitimately
+    have no data" via a bare zero count.
+
+    Cheap by design: reads ``sync_state`` — the row count already recorded
+    by the last successful sync — rather than a live ``COUNT(*)`` against
+    every mapping dependency. This runs for every policied+accessible table
+    on every effective-access call, and "the last sync landed empty (or
+    never ran)" is exactly what ``sync_state`` already tracks (and gives
+    ``last_sync`` for free, per §16's "must say" column).
+    """
+    import sqlglot
+    from sqlglot import exp
+
+    from src.access_policy import PolicyMappingEmpty
+    from src.repositories import sync_state_repo, table_registry_repo
+
+    try:
+        statement = sqlglot.parse_one(policy_sql, read="duckdb")
+    except Exception:
+        # policied_relation() already parsed this SQL successfully to reach
+        # this point (or raised PolicyError, handled by the caller before
+        # this runs) — defensive no-op only, never a NEW failure mode.
+        return
+    referenced_names = {t.name for t in statement.find_all(exp.Table) if t.name}
+    if not referenced_names:
+        return
+
+    mapping_rows = [
+        r for r in table_registry_repo().list_all() if r.get("policy_mapping") and r.get("name") in referenced_names
+    ]
+    for mapping_row in mapping_rows:
+        state = sync_state_repo().get_table_state(mapping_row["id"])
+        rows = state.get("rows") if state else None
+        if not rows:
+            raise PolicyMappingEmpty(mapping_row["name"], state.get("last_sync") if state else None)
+
+
+def _count_through_relation(relation) -> int:
+    """Live ``COUNT(*)`` through a resolved ``PoliciedRelation`` (§10.2) —
+    the same pattern ``app/api/admin.py``'s policy-preview endpoint and
+    ``src.access_policy.effective_schema`` already use: wrap the relation's
+    own SELECT in an outer COUNT, bound with its own params, against the
+    analytics connection every registered table's master view lives on.
+    """
+    from src.access_policy import PolicyError
+    from src.db import get_analytics_db_readonly
+
+    conn = get_analytics_db_readonly()
+    try:
+        try:
+            return conn.execute(
+                f"SELECT COUNT(*) FROM ({relation.relation_sql}) AS __agnes_effective_access_count__",
+                relation.params,
+            ).fetchone()[0]
+        except Exception as exc:
+            raise PolicyError(relation.table_id) from exc
+    finally:
+        conn.close()
 
 
 @router.get(
@@ -1145,17 +1333,24 @@ async def user_effective_access(
     Note: actual authorization at runtime still gives Admin-group members
     god-mode (see ``app.auth.access.is_user_admin``); this endpoint is a
     debugging/audit view of the explicit grant graph, not the enforcement
-    surface.
+    surface. ``tables`` (§10.2) is the exception — it reports what the
+    TARGET user ``user_id`` (not the calling admin) actually sees through
+    any access policy, since that is precisely the "X says Agnes shows her
+    nothing" question this field exists to answer in one page load.
     """
-    if not users_repo().get_by_id(user_id):
+    target = users_repo().get_by_id(user_id)
+    if not target:
         raise HTTPException(status_code=404, detail="User not found")
+
+    target_principal = {"id": target["id"], "email": target.get("email")}
+    tables = _table_access_diagnoses(target_principal, conn)
 
     # Compose the effective-access view from the factory-backed repos so the
     # endpoint stays backend-agnostic. Per-row JOIN isn't necessary — we have
     # all the data via list_groups_with_meta_for_user + list_for_groups.
     membership_rows = user_group_members_repo().list_groups_with_meta_for_user(user_id)
     if not membership_rows:
-        return EffectiveAccessResponse(is_admin=is_user_admin(user_id), items=[])
+        return EffectiveAccessResponse(is_admin=is_user_admin(user_id), items=[], tables=tables)
 
     by_gid = {m["group_id"]: m["name"] for m in membership_rows}
     grants_rows = resource_grants_repo().list_for_groups(list(by_gid.keys()))
@@ -1176,6 +1371,7 @@ async def user_effective_access(
     return EffectiveAccessResponse(
         is_admin=is_user_admin(user_id),
         items=list(grouped.values()),
+        tables=tables,
     )
 
 
@@ -1200,11 +1396,21 @@ async def my_effective_access(
     so non-admin callers can self-audit without elevation. Admins get the
     same explicit grant breakdown as everyone else (no short-circuit) so
     the profile page audits the actual grant graph; runtime authorization
-    still gives Admin god-mode regardless of this list."""
+    still gives Admin god-mode regardless of this list.
+
+    ``tables`` (§10.2) resolves the policy diagnosis against the FULL
+    ``user`` principal from ``get_current_user`` — including
+    ``credential_surface`` when the caller authenticated with a PAT — so a
+    ``surface='stack'`` admin token (the ``agnes init`` default) audits
+    itself as filtered, exactly like a live ``agnes query`` call with that
+    same token would be (§12: "policies follow the credential surface").
+    """
     user_id = user["id"]
+    tables = _table_access_diagnoses(user, conn)
+
     membership_rows = user_group_members_repo().list_groups_with_meta_for_user(user_id)
     if not membership_rows:
-        return EffectiveAccessResponse(is_admin=is_user_admin(user_id), items=[])
+        return EffectiveAccessResponse(is_admin=is_user_admin(user_id), items=[], tables=tables)
 
     by_gid = {m["group_id"]: m["name"] for m in membership_rows}
     grants_rows = resource_grants_repo().list_for_groups(list(by_gid.keys()))
@@ -1224,5 +1430,6 @@ async def my_effective_access(
 
     return EffectiveAccessResponse(
         is_admin=is_user_admin(user_id),
+        tables=tables,
         items=list(grouped.values()),
     )

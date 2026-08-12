@@ -3670,6 +3670,14 @@
             },
             "title": "Items",
             "type": "array"
+          },
+          "tables": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/TableAccessDiagnosis"
+            },
+            "title": "Tables",
+            "type": "array"
           }
         },
         "required": [
@@ -8276,6 +8284,23 @@
         "title": "SystemFlagResponse",
         "type": "object"
       },
+      "TableAccessDiagnosis": {
+        "properties": {
+          "policy": {
+            "$ref": "#/components/schemas/TablePolicyDiagnosis"
+          },
+          "table_id": {
+            "title": "Table Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "table_id",
+          "policy"
+        ],
+        "title": "TableAccessDiagnosis",
+        "type": "object"
+      },
       "TableDocsRequest": {
         "description": "Per-table docs surface \u2014 v52 (sample_questions / things_to_know /\npairs_well_with) extended in v56 with structured fields (grain /\nplatforms / partition_col / history / gotchas) for the\n/catalog/p/<slug> package detail page rewrite.\n\nAll fields optional. Sending `[]` for a list clears it; sending\n`\"\"` for a scalar clears it; omitting leaves it untouched\n(Optional-is-no-op contract).",
         "properties": {
@@ -8381,6 +8406,47 @@
           }
         },
         "title": "TableDocsRequest",
+        "type": "object"
+      },
+      "TablePolicyDiagnosis": {
+        "description": "Per-table access-policy self-audit (table access policies design\ndoc \u00a710.2, \u00a716). Always present on every table entry, never omitted \u2014\na non-policied table reports ``applies=False`` rather than dropping the\nkey, so a caller can rely on one shape instead of branching on key\npresence (documented choice; the design doc leaves this pick open).\n\n``applies`` is a STRUCTURAL fact about the table \u2014 it carries an\n``access_policy_sql`` \u2014 independent of whether THIS persona is actually\nfiltered by it: an admin-bypass target (\u00a712) still reports\n``applies=True`` for a policied table, with ``rows_visible`` showing\nthe unfiltered count instead (exactly what a live read with that\nidentity would return).\n\n``note`` is additional human-readable context beyond the fixed\n``reason`` enum \u2014 e.g. why ``rows_visible`` is ``null`` despite\n``reason='ok'`` (a remote/BigQuery table, counted-skipped to avoid a\nlive scan), or which mapping table + ``last_sync`` produced\n``reason='mapping_empty'``. ``None`` when the reason is self-explanatory.",
+        "properties": {
+          "applies": {
+            "title": "Applies",
+            "type": "boolean"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "rows_visible": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rows Visible"
+          }
+        },
+        "required": [
+          "applies",
+          "reason"
+        ],
+        "title": "TablePolicyDiagnosis",
         "type": "object"
       },
       "TableQueryRequest": {
@@ -27182,7 +27248,7 @@
     },
     "/api/admin/users/{user_id}/effective-access": {
       "get": {
-        "description": "List resources the user effectively has access to, with which group\ngrants each one. ``is_admin`` reflects the real Admin-group check but\nno longer short-circuits the response \u2014 admins get the same explicit\ngrant breakdown as everyone else, so the admin viewing a target user\ncan see precisely what's been granted via which group rather than a\nflat \"Full access\" pill that hides the wiring.\n\nNote: actual authorization at runtime still gives Admin-group members\ngod-mode (see ``app.auth.access.is_user_admin``); this endpoint is a\ndebugging/audit view of the explicit grant graph, not the enforcement\nsurface.",
+        "description": "List resources the user effectively has access to, with which group\ngrants each one. ``is_admin`` reflects the real Admin-group check but\nno longer short-circuits the response \u2014 admins get the same explicit\ngrant breakdown as everyone else, so the admin viewing a target user\ncan see precisely what's been granted via which group rather than a\nflat \"Full access\" pill that hides the wiring.\n\nNote: actual authorization at runtime still gives Admin-group members\ngod-mode (see ``app.auth.access.is_user_admin``); this endpoint is a\ndebugging/audit view of the explicit grant graph, not the enforcement\nsurface. ``tables`` (\u00a710.2) is the exception \u2014 it reports what the\nTARGET user ``user_id`` (not the calling admin) actually sees through\nany access policy, since that is precisely the \"X says Agnes shows her\nnothing\" question this field exists to answer in one page load.",
         "operationId": "user_effective_access_api_admin_users__user_id__effective_access_get",
         "parameters": [
           {
@@ -35990,7 +36056,7 @@
     },
     "/api/me/effective-access": {
       "get": {
-        "description": "Same payload as /api/admin/users/{id}/effective-access but scoped to\nthe calling user. Drives the /me/profile page's read-only access summary \u2014\nso non-admin callers can self-audit without elevation. Admins get the\nsame explicit grant breakdown as everyone else (no short-circuit) so\nthe profile page audits the actual grant graph; runtime authorization\nstill gives Admin god-mode regardless of this list.",
+        "description": "Same payload as /api/admin/users/{id}/effective-access but scoped to\nthe calling user. Drives the /me/profile page's read-only access summary \u2014\nso non-admin callers can self-audit without elevation. Admins get the\nsame explicit grant breakdown as everyone else (no short-circuit) so\nthe profile page audits the actual grant graph; runtime authorization\nstill gives Admin god-mode regardless of this list.\n\n``tables`` (\u00a710.2) resolves the policy diagnosis against the FULL\n``user`` principal from ``get_current_user`` \u2014 including\n``credential_surface`` when the caller authenticated with a PAT \u2014 so a\n``surface='stack'`` admin token (the ``agnes init`` default) audits\nitself as filtered, exactly like a live ``agnes query`` call with that\nsame token would be (\u00a712: \"policies follow the credential surface\").",
         "operationId": "my_effective_access_api_me_effective_access_get",
         "parameters": [
           {

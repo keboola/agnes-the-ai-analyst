@@ -223,6 +223,20 @@ COVERED: frozenset[str] = frozenset(
         # the (see EXEMPT note) profile-stat suppression this route itself
         # never rendered in the first place.
         "app/web/router.py::catalog_table_detail",
+        # Task 17 -- the effective-access self-audit (§10.2): GET
+        # /api/me/effective-access and GET /api/admin/users/{id}/effective-
+        # access report a per-table `policy` diagnosis (applies/rows_visible/
+        # reason). `_table_access_diagnoses` calls `get_accessible_tables` to
+        # get the STACK-GATED table set, then for each row calls the
+        # same-file `_table_policy_diagnosis`, which calls `policied_relation`
+        # directly. `_count_through_relation` doesn't call the resolver
+        # itself -- it takes an ALREADY-RESOLVED `PoliciedRelation` from its
+        # one caller (`_table_policy_diagnosis`) and executes ONLY that
+        # relation's own SQL (never a raw, unfiltered read of the table) --
+        # the same "operates on a pre-resolved relation, not a fresh read"
+        # shape as `src/access_policy.py::policied_from_sql` itself.
+        "app/api/access.py::_table_access_diagnoses",
+        "app/api/access.py::_count_through_relation",
     }
 )
 
