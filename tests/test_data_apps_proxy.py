@@ -868,3 +868,19 @@ def test_the_grace_window_reads_the_deploy_timestamp():
     # No clock at all → not provably still starting.
     assert _within_start_grace({}) is False
     assert _within_start_grace({"last_deploy_at": "not-a-timestamp"}) is False
+
+
+def test_the_grace_window_follows_a_wake_not_only_a_deploy():
+    """`last_deploy_at` is written only by `POST /{slug}/deploy`; the auto-wake
+    path never refreshes it. Measuring from it alone would give a woken app a
+    grace computed from a deploy days old, so the first refused connection
+    after a wake would latch instead of holding (Devin Review on this PR)."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.api.data_apps_proxy import _within_start_grace
+
+    old_deploy = datetime.now(timezone.utc) - timedelta(days=3)
+    just_woken = datetime.now(timezone.utc) - timedelta(seconds=10)
+    assert _within_start_grace({"last_deploy_at": old_deploy, "updated_at": just_woken}) is True
+    # ...and a stale row on both clocks is still out of grace.
+    assert _within_start_grace({"last_deploy_at": old_deploy, "updated_at": old_deploy}) is False

@@ -3711,16 +3711,15 @@ async def library_page(
     #: appear; it is not worth a paragraph above the inventory the reader came
     #: for. Rendered by `group_toggle`, so the table and the grid pick it up
     #: from one place.
-    _SECTION_SOON = {
-        "files": "Data apps coming soon",
-    }
-    _SECTION_SOON_TIP = {
-        "files": (
-            "Hosted apps that run next to your data will appear here. You'll be "
-            "able to build them with Agnes or link an existing one. Nothing to "
-            "do yet."
-        ),
-    }
+    #: "<kind> coming soon" badges, keyed by the section the kind will ship
+    #: INTO. Empty because the one entry it carried — "Data apps coming soon",
+    #: on the Files band — has shipped: apps now have their own section above,
+    #: and leaving the badge would have the same page list your apps and tell
+    #: you they do not exist yet (Devin Review on this PR). The mechanism stays
+    #: for the next kind; the badge is meant to delete itself when the kind
+    #: lands, which is what this is.
+    _SECTION_SOON: dict[str, str] = {}
+    _SECTION_SOON_TIP: dict[str, str] = {}
     #: Each section wears the SAME accent its members' detail pages wear, so a
     #: type is recognizable by colour before the label is read. Values are the
     #: `--ds-kind-*` vocabulary the detail hero resolves through

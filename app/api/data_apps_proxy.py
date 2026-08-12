@@ -336,43 +336,54 @@ def _waking_response(request: Request, slug: str, accepts_json: bool) -> Respons
 _START_GRACE_SECONDS = 420
 
 
+def _as_utc(value) -> Optional[datetime]:
+    """Coerce a DB timestamp to an aware UTC datetime, or None.
+
+    Naive values are read as UTC. Those columns are zoneless `TIMESTAMP`
+    written with SQL `now()`, so the value carries the DB session's zone —
+    this reading is the codebase's standing convention (`data_apps.py`,
+    `collections.py`, ~15 other places) and containers run UTC.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+
 def _within_start_grace(row: dict) -> bool:
     """True while a running container may still legitimately be booting.
 
-    Measured from the last deploy (when the boot actually began), falling
-    back to the row's last write. An unparseable or missing timestamp returns
-    False: without a clock the honest answer is "this is not provably still
-    starting", and the caller then records a real error instead of serving a
-    holding page forever.
-    """
-    stamp = row.get("last_deploy_at") or row.get("updated_at")
-    if stamp is None:
-        return False
-    if isinstance(stamp, str):
-        try:
-            stamp = datetime.fromisoformat(stamp)
-        except ValueError:
-            return False
-    if not isinstance(stamp, datetime):
-        return False
-    if stamp.tzinfo is None:
-        # These columns are zoneless `TIMESTAMP` written with SQL `now()`, so
-        # the value carries the DB session's zone and this reading is the
-        # codebase's standing convention (`data_apps.py`, `collections.py`,
-        # ~15 other places) — containers run UTC. Here it is load-bearing in a
-        # way it usually is not: a host behind UTC makes the stamp read older
-        # than it is, and the grace could be gone before it starts (Devin
-        # Review on this PR).
-        #
-        # `abs()` is the cheap half of the fix: it makes the window symmetric,
-        # so a clock offset in EITHER direction still reads as "recent" for
-        # the same span, rather than only the ahead-of-UTC direction being
-        # survivable. An offset larger than the grace itself is a genuinely
-        # misconfigured host, and the failure there is the diagnosable one —
-        # a recorded error, not a silent spinner.
-        stamp = stamp.replace(tzinfo=timezone.utc)
-    return abs((datetime.now(timezone.utc) - stamp).total_seconds()) < _START_GRACE_SECONDS
+    Measured from the LATER of the last deploy and the row's last write, so a
+    missing or unparseable clock returns False: without one the honest answer
+    is "this is not provably still starting", and the caller records a real
+    error rather than serving a holding page forever.
 
+    Why the later of the two rather than the deploy alone: `record_deploy`
+    writes `last_deploy_at` only from `POST /{slug}/deploy`, so the auto-wake
+    path (`_trigger_wake` → `redeploy_current`) never refreshes it. A woken
+    app's grace would be measured from a deploy that could be days old — and
+    the boot a wake performs is exactly the slow clone/install/build this
+    window exists for (Devin Review on this PR). `updated_at` moves on the
+    wake's own `set_state`, so the maximum covers both without inventing a
+    deploy that never happened.
+
+    The comparison is symmetric (`abs`). A naive stamp from a session ahead of
+    UTC lands in the future, and a one-sided window would treat that as
+    already expired; an offset larger than the grace itself is a misconfigured
+    host, where the outcome is the diagnosable one — a recorded error, not a
+    silent spinner.
+    """
+    stamps = [s for s in (_as_utc(row.get("last_deploy_at")), _as_utc(row.get("updated_at"))) if s is not None]
+    if not stamps:
+        return False
+    now = datetime.now(timezone.utc)
+    return abs((now - max(stamps)).total_seconds()) < _START_GRACE_SECONDS
 
 def _error_response(row: dict) -> Response:
     return JSONResponse(
