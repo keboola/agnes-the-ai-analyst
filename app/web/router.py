@@ -3304,10 +3304,22 @@ async def library_page(
     # `rail` instance had no way to reach one at all, since the "Apps" nav
     # entry shipped in the topnav only.
     #
-    # Visibility and shape come from `app.api.data_apps`'s own helpers rather
-    # than a second RBAC path here — the same reuse `data_apps_list_page`
-    # documents. Drafts are excluded (they are iteration branches of an app,
-    # not apps) and so is `linked_hidden`, matching that page exactly.
+    # Visibility is OWNERSHIP ∪ GRANT, deliberately NOT `data_apps._can_view`.
+    # That helper short-circuits True for any admin, and this page's contract
+    # is the opposite — see this function's docstring: "Deliberately NOT admin
+    # god-mode — an admin still sees their own Library, not every item in the
+    # instance". Reusing it listed every hosted app in the instance in an
+    # admin's Library, other people's private ones included, labelled "Shared
+    # with you" with owner "Your workspace" — a claim that is simply false for
+    # an app they hold no grant on (Devin Review on this PR). Reuse was the
+    # right instinct for the *shape* and the draft rule; it was the wrong one
+    # for the scope, because the two surfaces answer different questions.
+    #
+    # The grant set is fetched ONCE rather than per row: `_can_view` costs two
+    # DB lookups per app, on every Library render.
+    #
+    # Drafts are excluded (they are iteration branches of an app, not apps)
+    # and so is `linked_hidden`, matching `/apps` exactly.
     # Aliased imports: both names are bound locally further down this
     # function, so referencing the module-level ones here is a use-before-
     # assignment in the same scope.
@@ -3316,10 +3328,13 @@ async def library_page(
 
     if _feat_enabled("data_apps", "enabled", env_var="AGNES_DATA_APPS_ENABLED", default=False):
         try:
-            from app.api.data_apps import _can_view
+            # Grants on this type are keyed by SLUG (see `_can_view`), not id.
+            _app_grants = _granted_ids(ResourceType.DATA_APP.value)
 
             for a in _apps_repo().list(include_drafts=False):
-                if a.get("state") == "linked_hidden" or not _can_view(user, a):
+                if a.get("state") == "linked_hidden":
+                    continue
+                if a.get("owner_user_id") != uid and a.get("slug") not in _app_grants:
                     continue
                 _mine = a.get("owner_user_id") == user["id"]
                 _created = a.get("created_at")
@@ -3639,6 +3654,7 @@ async def library_page(
     # Unlisted types fall to the end, alphabetically.
     _SECTION_ORDER = [
         "data_package",
+        "data_app",
         "plugin",
         "skill",
         "agent",
@@ -3669,6 +3685,7 @@ async def library_page(
         "agent": "Agents",
         "recipe": "Recipes",
         "data_package": "Data packages",
+        "data_app": "Apps",
         "memory_domain": "Memory",
     }
     #: One line per group, in the header beside the label — the same slot My
@@ -3684,6 +3701,7 @@ async def library_page(
         "agent": "Assistants you installed.",
         "recipe": "Prepared analyses you can run.",
         "data_package": "Governed data you can query.",
+        "data_app": "Hosted apps running next to your data.",
         "memory_domain": "Curated organizational knowledge.",
     }
     #: Marker for a kind that will land INSIDE an existing section rather than
@@ -3715,6 +3733,7 @@ async def library_page(
         "agent": ("agent", "agent"),
         "recipe": ("recipe", "recipes"),
         "data_package": ("data", "data"),
+        "data_app": ("app", "app"),
         "memory_domain": ("memory", "memory"),
     }
 

@@ -800,3 +800,66 @@ def test_stranger_with_no_token_at_all_gets_401(proxy_client, running_app):
     r = proxy_client.get("/apps/s/", follow_redirects=False)
     assert r.status_code == 302
     assert r.headers["location"].startswith("/login")
+
+
+def test_a_live_but_silent_container_latches_once_the_grace_window_passes(
+    client_granted, fake_runner, monkeypatch, running_app
+):
+    """"Starting" has to be time-bounded.
+
+    The runner reports `running | paused | stopped | absent`, so a container
+    whose app process died or wedged WITHOUT the container exiting still
+    reads `running`. Treating that as "starting" forever would trade a
+    permanent latch for a permanent spinner — no better, and harder to
+    diagnose (Devin Review on this PR).
+    """
+    from datetime import datetime, timedelta, timezone
+
+    import app.api.data_apps_proxy as proxy_api
+    from src.repositories import data_apps_repo
+
+    fake_runner._status = {"container": "running", "ready": False}
+    _refuse_connections(monkeypatch)
+    monkeypatch.setattr(
+        proxy_api,
+        "_within_start_grace",
+        lambda row: False,
+        raising=True,
+    )
+
+    r = client_granted.get("/apps/s/hello")
+    assert r.status_code == 502
+    row = data_apps_repo().get_by_slug("s")
+    assert row["state"] == "error"
+    assert "not listening" in (row["state_detail"] or ""), "the detail must not blame the container's state"
+    _ = (datetime, timedelta, timezone)
+
+
+def test_a_paused_container_wakes_instead_of_latching(client_granted, fake_runner, monkeypatch, running_app):
+    """`paused` is the pause-mode sleep state, not a fault — recording an
+    error there would make the caller redeploy to clear something that only
+    needed a resume."""
+    from src.repositories import data_apps_repo
+
+    fake_runner._status = {"container": "paused", "ready": False}
+    _refuse_connections(monkeypatch)
+
+    r = client_granted.get("/apps/s/hello")
+    assert r.status_code == 503, "a paused app gets the waking page"
+    assert data_apps_repo().get_by_slug("s")["state"] != "error"
+
+
+def test_the_grace_window_reads_the_deploy_timestamp():
+    """Measured from when the boot began, not from now-ish defaults."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.api.data_apps_proxy import _within_start_grace
+
+    fresh = datetime.now(timezone.utc) - timedelta(seconds=5)
+    stale = datetime.now(timezone.utc) - timedelta(hours=3)
+    assert _within_start_grace({"last_deploy_at": fresh}) is True
+    assert _within_start_grace({"last_deploy_at": stale}) is False
+    assert _within_start_grace({"last_deploy_at": None, "updated_at": fresh}) is True
+    # No clock at all → not provably still starting.
+    assert _within_start_grace({}) is False
+    assert _within_start_grace({"last_deploy_at": "not-a-timestamp"}) is False

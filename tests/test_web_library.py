@@ -756,3 +756,24 @@ def test_library_excludes_drafts(seeded_app, monkeypatch):
     r = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"]))
     assert "Parent App" in r.text
     assert "parentapp--wip" not in r.text
+
+
+def test_library_does_not_give_an_admin_every_app_in_the_instance(seeded_app, monkeypatch):
+    """The Library is "what you have", NOT an audit view.
+
+    `library_page`'s own docstring says so: "Deliberately NOT admin god-mode
+    — an admin still sees their own Library, not every item in the instance
+    (the audit view is /admin/access)". Reusing `data_apps._can_view` here
+    broke that, because it short-circuits True for any admin — so an admin's
+    Library listed every hosted app including other people's private ones,
+    labelled "Shared with you" (Devin Review on this PR).
+    """
+    monkeypatch.setenv("AGNES_DATA_APPS_ENABLED", "true")
+    from src.repositories import data_apps_repo, users_repo
+
+    users_repo().create(id="someone_else", email="someone.else@test.com", name="Someone Else")
+    data_apps_repo().create(slug="notyours", name="Not Your App", owner_user_id="someone_else")
+
+    r = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"]))
+    assert r.status_code == 200
+    assert "Not Your App" not in r.text, "an admin must not see another user's app in their own Library"

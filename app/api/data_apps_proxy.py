@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
@@ -326,6 +327,39 @@ def _waking_response(request: Request, slug: str, accepts_json: bool) -> Respons
     return templates.TemplateResponse(request, "data_app_waking.html", {"slug": slug}, status_code=503)
 
 
+#: How long after a deploy a live-but-silent container is still read as
+#: "starting" rather than broken. A first deploy clones the repo, runs
+#: `npm install` and builds before anything listens — ~90s measured on a real
+#: dashboard — so the window has to clear that with room, while staying short
+#: enough that a wedged app becomes a diagnosable error rather than a spinner
+#: nobody can explain.
+_START_GRACE_SECONDS = 420
+
+
+def _within_start_grace(row: dict) -> bool:
+    """True while a running container may still legitimately be booting.
+
+    Measured from the last deploy (when the boot actually began), falling
+    back to the row's last write. An unparseable or missing timestamp returns
+    False: without a clock the honest answer is "this is not provably still
+    starting", and the caller then records a real error instead of serving a
+    holding page forever.
+    """
+    stamp = row.get("last_deploy_at") or row.get("updated_at")
+    if stamp is None:
+        return False
+    if isinstance(stamp, str):
+        try:
+            stamp = datetime.fromisoformat(stamp)
+        except ValueError:
+            return False
+    if not isinstance(stamp, datetime):
+        return False
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - stamp).total_seconds() < _START_GRACE_SECONDS
+
+
 def _error_response(row: dict) -> Response:
     return JSONResponse(
         {"detail": "app_error", "state_detail": row.get("state_detail") or ""},
@@ -463,14 +497,30 @@ async def proxy_app(slug: str, path: str, request: Request, conn=Depends(_get_db
             # the honest answer is the same "waking" page a sleeping app
             # gets. Only a container that is genuinely gone or stopped is an
             # error worth remembering.
+            #
+            # The "starting" verdict is TIME-BOUNDED. The runner's status
+            # contract is `running | paused | stopped | absent`, so a live
+            # container whose app process died or wedged without exiting
+            # still reads `running` — and without a bound this would trade a
+            # permanent latch for a permanent spinner, which is not obviously
+            # better and is harder to diagnose (Devin Review on this PR).
+            # Past the grace window a container that still is not listening
+            # has stopped being "slow to boot" and become broken.
             try:
                 container = (await run_in_threadpool(_runner().status, slug)).get("container")
             except (RunnerUnavailable, RunnerError):
                 container = None  # runner itself is down — say nothing about the app
-            if container == "running":
+            if container == "paused":
+                # Paused is the pause-mode sleep state, not a fault: fall
+                # through to the sleeping branch's wake rather than recording
+                # an error the caller would have to redeploy away.
+                await _trigger_wake(row)
+                return _waking_response(request, slug, accepts_json)
+            if container == "running" and _within_start_grace(row):
                 return _waking_response(request, slug, accepts_json)
             if container is not None:
-                data_apps_repo().set_state(row["id"], "error", f"container {container}")
+                detail = "container not listening" if container == "running" else f"container {container}"
+                data_apps_repo().set_state(row["id"], "error", detail)
             raise HTTPException(status_code=502, detail="container_unreachable")
 
     if state == "sleeping":
