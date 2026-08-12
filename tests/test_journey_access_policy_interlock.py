@@ -147,6 +147,16 @@ class TestInterlockCaseC:
     resolving to the same physical source as a policied table."""
 
     def test_a_distributable_twin_of_a_policied_source_is_rejected(self, seeded_app, monkeypatch):
+        """PUT-path defense-in-depth: ``TestRegisterTimeInterlock`` covers
+        the twin being caught the moment IT is registered. This test
+        instead registers the twin BEFORE its sibling has a policy
+        attached — so register-time sees no conflict yet and the twin
+        lands (as it must: two unpolicied rows sharing a source is not yet
+        a leak) — and shows the very next write to that twin still gets
+        caught. The interlock re-validates the merged shape on every write
+        to a distributable row, independent of which fields that write
+        touches, so a twin that predates its sibling's policy is not a
+        permanent blind spot."""
         monkeypatch.setenv("AGNES_ACCESS_POLICIES_ENABLED", "1")
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
@@ -159,6 +169,15 @@ class TestInterlockCaseC:
             bucket="in.c-main",
             source_table="invoices",
         )
+        # Registered while orig_src carries no policy yet.
+        twin_id = _register(
+            c,
+            token,
+            name="twin_src",
+            bucket="in.c-main",
+            source_table="invoices",
+        )
+
         attach = c.put(
             f"/api/admin/registry/{policied_id}",
             json={
@@ -168,18 +187,6 @@ class TestInterlockCaseC:
             headers=_auth(token),
         )
         assert attach.status_code == 200, attach.text
-
-        # A second row registered against the SAME physical source.
-        # Registration itself (POST) carries no policy of its own yet, so
-        # it is not gated — the very next PUT re-validates the merged shape
-        # against every policied table's physical source.
-        twin_id = _register(
-            c,
-            token,
-            name="twin_src",
-            bucket="in.c-main",
-            source_table="invoices",
-        )
 
         resp = c.put(
             f"/api/admin/registry/{twin_id}",
@@ -230,6 +237,149 @@ class TestInterlockCaseC:
             headers=_auth(token),
         )
         assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.journey
+class TestRegisterTimeInterlock:
+    """§3.2 at register time — ``POST /api/admin/register-table`` must
+    reject a brand-new distributable twin of an already-policied table's
+    physical source by itself; it cannot rely on a follow-up PUT to catch
+    it. Before this fix, ``register_table`` ran no physical-source check
+    at all: a fresh registry row sharing a policied table's physical
+    source landed unrejected whenever it was distributable (query_mode
+    'local' or 'materialized', server_only left False) — and for a
+    materialized row the next sync tick writes the raw, unfiltered rows to
+    parquet with no follow-up PUT ever required.
+    """
+
+    def test_a_distributable_twin_is_rejected_at_register(self, seeded_app, monkeypatch):
+        monkeypatch.setenv("AGNES_ACCESS_POLICIES_ENABLED", "1")
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+
+        policied_id = _register(
+            c,
+            token,
+            name="reg_orig_src",
+            server_only=True,
+            bucket="in.c-main",
+            source_table="invoices",
+        )
+        attach = c.put(
+            f"/api/admin/registry/{policied_id}",
+            json={
+                "access_policy_sql": _policy_sql("reg_orig_src"),
+                "access_policy_note": "pii masking",
+            },
+            headers=_auth(token),
+        )
+        assert attach.status_code == 200, attach.text
+
+        # The twin: SAME physical source, distributable (query_mode='local',
+        # server_only omitted -> False). Must be rejected at the POST itself.
+        resp = c.post(
+            "/api/admin/register-table",
+            json={
+                "name": "reg_twin_src",
+                "source_type": "keboola",
+                "query_mode": "local",
+                "bucket": "in.c-main",
+                "source_table": "invoices",
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 422, resp.text
+        assert "access_policy_physical_source_conflict" in resp.text
+        assert policied_id in resp.text
+
+        # And the row never landed in the registry.
+        from src.repositories import table_registry_repo
+
+        assert table_registry_repo().get("reg_twin_src") is None
+
+    def test_a_materialized_twin_is_rejected_at_register(self, seeded_app, monkeypatch):
+        """Same interlock via query_mode='materialized' — the mode the
+        finding singled out, since a materialized row's next sync tick
+        writes the raw rows to parquet with no further admin action."""
+        monkeypatch.setenv("AGNES_ACCESS_POLICIES_ENABLED", "1")
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+
+        policied_id = _register(
+            c,
+            token,
+            name="mat_orig_src",
+            server_only=True,
+            bucket="in.c-main",
+            source_table="shipments",
+        )
+        attach = c.put(
+            f"/api/admin/registry/{policied_id}",
+            json={
+                "access_policy_sql": _policy_sql("mat_orig_src"),
+                "access_policy_note": "pii masking",
+            },
+            headers=_auth(token),
+        )
+        assert attach.status_code == 200, attach.text
+
+        resp = c.post(
+            "/api/admin/register-table",
+            json={
+                "name": "mat_twin_src",
+                "source_type": "keboola",
+                "query_mode": "materialized",
+                "bucket": "in.c-main",
+                "source_table": "shipments",
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 422, resp.text
+        assert "access_policy_physical_source_conflict" in resp.text
+        assert policied_id in resp.text
+
+        from src.repositories import table_registry_repo
+
+        assert table_registry_repo().get("mat_twin_src") is None
+
+    def test_a_server_only_twin_is_allowed_at_register(self, seeded_app, monkeypatch):
+        """The register-time check only blocks the DISTRIBUTABLE case —
+        two undistributed rows sharing a physical source is not a leak."""
+        monkeypatch.setenv("AGNES_ACCESS_POLICIES_ENABLED", "1")
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+
+        policied_id = _register(
+            c,
+            token,
+            name="so_orig_src",
+            server_only=True,
+            bucket="in.c-main",
+            source_table="payments",
+        )
+        attach = c.put(
+            f"/api/admin/registry/{policied_id}",
+            json={
+                "access_policy_sql": _policy_sql("so_orig_src"),
+                "access_policy_note": "pii masking",
+            },
+            headers=_auth(token),
+        )
+        assert attach.status_code == 200, attach.text
+
+        resp = c.post(
+            "/api/admin/register-table",
+            json={
+                "name": "so_twin_src",
+                "source_type": "keboola",
+                "query_mode": "local",
+                "server_only": True,
+                "bucket": "in.c-main",
+                "source_table": "payments",
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 201, resp.text
 
 
 @pytest.mark.journey

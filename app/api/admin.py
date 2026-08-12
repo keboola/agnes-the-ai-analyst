@@ -3273,6 +3273,25 @@ def register_table(
                 detail=f"connection_id '{request.connection_id}' not found in source_connections",
             )
 
+    # §3.2 (table access policies design doc) — the physical-source twin.
+    # Must run against the fully-normalized request (after the BQ coercion
+    # above forced query_mode='remote' for a non-materialized BQ row, or
+    # left 'materialized' alone) and BEFORE repo.register() persists
+    # anything — a row this check rejects must never reach the registry,
+    # let alone the BQ branch below that can materialize it. Shared with
+    # update_table via _check_access_policy_physical_source_conflict.
+    _check_access_policy_physical_source_conflict(
+        source_type=request.source_type,
+        connection_id=request.connection_id,
+        bucket=request.bucket,
+        source_table=request.source_table,
+        bq_fqn=request.bq_fqn,
+        source_query=request.source_query,
+        query_mode=request.query_mode,
+        server_only=bool(request.server_only),
+        exclude_id=None,
+    )
+
     repo.register(
         id=table_id,
         name=request.name,
@@ -3652,6 +3671,80 @@ def _policy_physical_source_signals(row: Dict[str, Any]) -> set:
     return signals
 
 
+def _check_access_policy_physical_source_conflict(
+    *,
+    source_type: Optional[str],
+    connection_id: Optional[str],
+    bucket: Optional[str],
+    source_table: Optional[str],
+    bq_fqn: Optional[str],
+    source_query: Optional[str],
+    query_mode: Optional[str],
+    server_only: bool,
+    exclude_id: Optional[str] = None,
+) -> None:
+    """§3.2 (table access policies design doc) — the physical-source twin.
+
+    Rejects a table-registry row-in-progress (about to be inserted by
+    ``register_table``, or the merged shape ``update_table`` is about to
+    persist) when BOTH:
+
+    - it would itself be distributable (``query_mode in ('local',
+      'materialized')`` and not ``server_only`` — the shape ``agnes pull``
+      downloads), AND
+    - its physical source (``bq_fqn`` / ``(source_type, connection_id,
+      bucket, source_table)`` / non-Keboola ``source_query`` — see
+      ``_policy_physical_source_signals``) matches that of ANY existing
+      registry row carrying ``access_policy_sql``.
+
+    A row that stays undistributed never hands the raw rows to an analyst
+    via ``agnes pull``, so it is never blocked here regardless of
+    physical-source overlap — mirrors the update-time interlock this was
+    extracted from.
+
+    Shared between ``register_table`` (a brand-new row, not yet persisted —
+    call with ``exclude_id=None``) and ``update_table`` (an existing row
+    being edited — call with ``exclude_id=table_id`` so the row doesn't
+    collide with its own already-persisted signals). Mirrors how
+    ``_validate_bigquery_register_payload`` is already shared between the
+    two handlers. The caller MUST run this before persisting the row and
+    (for ``register_table``) before any materialization can run — a row
+    rejected here must never reach disk.
+
+    Raises ``HTTPException(422, "access_policy_physical_source_conflict")``.
+    """
+    effective_query_mode = (query_mode or "local").strip().lower()
+    if effective_query_mode not in ("local", "materialized") or server_only:
+        return
+    my_signals = _policy_physical_source_signals(
+        {
+            "source_type": source_type,
+            "connection_id": connection_id,
+            "bucket": bucket,
+            "source_table": source_table,
+            "bq_fqn": bq_fqn,
+            "source_query": source_query,
+        }
+    )
+    if not my_signals:
+        return
+    for other in table_registry_repo().list_all():
+        if other.get("id") == exclude_id or not other.get("access_policy_sql"):
+            continue
+        if my_signals & _policy_physical_source_signals(other):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "access_policy_physical_source_conflict: this table's "
+                    f"physical source matches table {other.get('id')!r} "
+                    f"({other.get('name')!r}), which has an access policy "
+                    "attached -- keep this row server_only=true (or "
+                    "query_mode='remote') so the policy can't be routed "
+                    "around, or point it at a different physical source"
+                ),
+            )
+
+
 @router.put("/registry/{table_id}")
 async def update_table(
     table_id: str,
@@ -3961,26 +4054,20 @@ async def update_table(
         # rows the policy exists to withhold. Runs on every write to a
         # distributable row, independent of which fields this particular
         # PUT changed — the danger is the merged row's current shape, not
-        # the delta.
-        _effective_query_mode = (merged.get("query_mode") or "local").strip().lower()
-        if _effective_query_mode in ("local", "materialized") and not merged.get("server_only"):
-            _my_signals = _policy_physical_source_signals(merged)
-            if _my_signals:
-                for _other in table_registry_repo().list_all():
-                    if _other.get("id") == table_id or not _other.get("access_policy_sql"):
-                        continue
-                    if _my_signals & _policy_physical_source_signals(_other):
-                        raise HTTPException(
-                            status_code=422,
-                            detail=(
-                                "access_policy_physical_source_conflict: this table's "
-                                f"physical source matches table {_other.get('id')!r} "
-                                f"({_other.get('name')!r}), which has an access policy "
-                                "attached -- keep this row server_only=true (or "
-                                "query_mode='remote') so the policy can't be routed "
-                                "around, or point it at a different physical source"
-                            ),
-                        )
+        # the delta. Shared with register_table's own call to the same
+        # helper via _check_access_policy_physical_source_conflict, so a
+        # brand-new twin is caught at registration too, not only here.
+        _check_access_policy_physical_source_conflict(
+            source_type=merged.get("source_type"),
+            connection_id=merged.get("connection_id"),
+            bucket=merged.get("bucket"),
+            source_table=merged.get("source_table"),
+            bq_fqn=merged.get("bq_fqn"),
+            source_query=merged.get("source_query"),
+            query_mode=merged.get("query_mode"),
+            server_only=bool(merged.get("server_only")),
+            exclude_id=table_id,
+        )
 
         # §14.6 — the live LIMIT 0 execution probe. Runs LAST among the
         # policy-write checks: after static validation (rule 1-5, above)
