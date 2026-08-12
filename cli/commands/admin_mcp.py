@@ -396,6 +396,13 @@ def source_grant(
         f"Granted {body.get('granted', 0)} of {body.get('total', 0)} tools to {group}"
         + (f" ({body['already_granted']} already granted)" if body.get("already_granted") else "")
     )
+    # A grant does not reach a mutating tool: the passthrough gate refuses
+    # those for every non-admin anyway. Saying so beats the group finding out.
+    if body.get("admin_only"):
+        typer.echo(
+            f"{body['admin_only']} of them are mutating and stay admin-only — a grant "
+            "does not make those reachable for analysts."
+        )
 
 
 @source_app.command("set-secret")
