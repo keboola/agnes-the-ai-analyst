@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.7] - 2026-08-12
+
 ### Fixed
 
 - **Turning chat tools on for a connected project now leaves the agent with tools to call.** As shipped in 0.83.5 the switch created the MCP source and stopped: the agent's passthrough surface is built from `tool_registry`, and those rows are otherwise written only by an admin curating each tool by hand under `/admin/mcp` — `introspect` and `classify` are read-only probes that persist nothing. So a switch that reported success produced a project the agent could not reach, and the surrounding copy sent the admin off to run Introspect themselves, on roughly forty tools, one at a time. Enabling now introspects the upstream and registers its tools as passthrough rows itself. `mutating` is taken from each tool's `readOnlyHint`, and a tool the upstream does **not** annotate is recorded as mutating rather than assumed safe — the absence of a claim is not a claim of safety. Exposed names carry a per-connection prefix, because every Keboola project exposes `query_data` and the agent picks a tool by name alone; without it two connected projects' tools would be indistinguishable at the point of choice. Grants are still not created: registering makes a tool curatable, granting makes it reachable, and only the second is an access-control decision — the UI and CLI now say so, and name the grants page that actually carries it rather than the Access screen, which does not. The two failure domains stay apart: an upstream that will not answer returns 502 with a retry hint, while a failed local config write propagates, because telling an admin to retry an upstream when their database write failed is a worse answer than none.
