@@ -769,49 +769,22 @@ def test_more_coming_note_is_a_sibling_of_the_count_not_a_child(seeded_app):
     assert head_at < count_at
 
 
-def test_data_apps_schedule_is_a_badge_on_the_files_band(seeded_app):
-    """Data apps ship INTO Files first, so the schedule rides the Files band's own
-    label — not a panel in the page head.
-
-    It has been three things now, and each move was for the same reason: a
-    roadmap note must not be mistaken for inventory, and must not cost the
-    inventory its space. It was a band inside the list (read as a sixth openable
-    section), then an info banner in the head-notes stack (which, stacked under
-    the prep caveat, put ~200px of un-actionable reading above the first row).
-    A badge on the section the kind will actually appear in says the same thing
-    for one line of chrome, and deletes itself when the kind ships.
-
-    `group_toggle()` renders it, so the table band and the grid band both carry
-    it from one place — that shared macro is the point, and is why there is no
-    per-layout assertion here."""
+def test_data_apps_schedule_badge_retired_when_the_kind_shipped(seeded_app):
+    """The "Data apps coming soon" badge promised the kind would land in the
+    Library — its own docstring said it "deletes itself when the kind ships."
+    The kind shipped (the Data apps band, tests/test_web_library_data_apps.py),
+    so a lingering badge would announce a roadmap the reader is looking at.
+    The `fbar-group__soon` seam itself stays (`_SECTION_SOON` in the router)
+    for the next kind on the roadmap; only the fulfilled entry is gone."""
     _create_collection(seeded_app, "Soon Badge Anchor", seeded_app["admin_token"])
     text = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"])).text
 
-    # The badge, on a band label, with the full sentence reachable — `data-tip`
-    # for pointer + keyboard, `aria-label` for a screen reader. Never `title`.
-    assert 'class="fbar-group__soon"' in text
-    assert ">Data apps coming soon<" in text
-    assert "Hosted apps that run next to your data will appear here." in text
-    assert "link an existing one" in text
-    assert "Nothing to do yet." in text
-
-    badge_at = text.index('class="fbar-group__soon"')
-    badge = text[badge_at : text.index("</span>", badge_at)]
-    assert "data-tip=" in badge
-    assert "aria-label=" in badge
-
-    # It is INSIDE the list now, on the Files band — after the list opens, and
-    # inside a group toggle rather than floating in the page head.
-    assert text.index('class="lib-list"') < badge_at
-    toggle_at = text.rindex('class="fbar-grouptoggle"', 0, badge_at)
-    toggle = text[toggle_at:badge_at]
-    assert 'data-sec-toggle="files"' in toggle, "the badge belongs to the Files band"
-
-    # The panels it replaced are gone — markup and CSS both.
+    assert "Soon Badge Anchor" in text  # the Files band really rendered
+    assert "Data apps coming soon" not in text
+    assert "Nothing to do yet." not in text
+    # The old pre-badge panels stay gone too — markup and CSS both.
     assert "lib-soon" not in text
     assert "lib-apps" not in text
-    # One badge, not one per page state.
-    assert text.count('class="fbar-group__soon"') == 1
 
 
 # ---------------------------------------------------------------------------

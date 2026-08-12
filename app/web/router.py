@@ -3463,6 +3463,58 @@ async def library_page(
     except Exception as e:
         logger.warning("/library: could not resolve installed agents: %s", e)
 
+    # ── Hosted data apps ───────────────────────────────────────────────
+    # Same visibility set as the /apps page (data_apps_list_page): the
+    # caller's own apps plus apps granted to their groups, minus drafts and
+    # `linked_hidden` rows. No stack membership — data-app access is
+    # grant-driven, not stack-driven — and no lifecycle actions here; the
+    # detail page owns start/stop/logs. Under the rail chrome this band is
+    # the ONLY way to the apps inventory (/apps 302s here — see
+    # data_apps_list_page), so removing it strands the surface.
+    if _data_apps_nav_enabled():
+        from app.api.data_apps import _can_view as _da_can_view
+        from app.api.data_apps import _serialize as _da_serialize
+        from src.repositories import data_apps_repo
+
+        try:
+            _da_cfg = get_data_apps_config()
+            _da_users = users_repo()
+            for da in data_apps_repo().list(include_drafts=False):
+                if da.get("state") == "linked_hidden" or not _da_can_view(user, da):
+                    continue
+                _da = _da_serialize(da, _da_cfg)
+                _da_mine = da["owner_user_id"] == uid
+                _da_owner = _da_users.get_by_id(da["owner_user_id"]) or {}
+                _da_meta = " · ".join(
+                    b for b in (_da.get("state") or "", "linked" if _da.get("kind") == "linked" else "") if b
+                )
+                items.append(
+                    _library_row_base(
+                        item_id=da["slug"],
+                        kind="library",
+                        title=da.get("name") or da["slug"],
+                        description=_da.get("effective_description") or "",
+                        href=f"/apps/detail/{da['slug']}",
+                        glyph="app",
+                        type_key="data_app",
+                        type_label="Data app",
+                        origin="built" if _da_mine else "granted",
+                        origin_label="Built here" if _da_mine else "Shared with you",
+                        added_iso=None,
+                        owner_label="You" if _da_mine else (_da_owner.get("email") or da["owner_user_id"]),
+                        ownership="mine" if _da_mine else "shared_with_me",
+                        visibility="private" if _da_mine else "shared",
+                        visibility_label="Yours" if _da_mine else "Shared with you",
+                        meta_text=_da_meta,
+                        share_type=None,
+                        requirement="optional",
+                        tags=[],
+                        owner_key="me" if _da_mine else (da["owner_user_id"] or "workspace"),
+                    )
+                )
+        except Exception as e:
+            logger.warning("/library: could not list data apps: %s", e)
+
     # ── Definitions — the semantic layer, as a page FOOTER ────────────────
     # Deliberately NOT rows in the list above. Metrics and glossary terms are
     # the one thing here nobody owns, shares, installs, drops or edits: they
@@ -3597,6 +3649,7 @@ async def library_page(
         # Loose files + collections-as-folders.
         "files",
         "memory_domain",
+        "data_app",
     ]
     grouped: dict = {}
     for c in items:
@@ -3621,6 +3674,7 @@ async def library_page(
         "recipe": "Recipes",
         "data_package": "Data packages",
         "memory_domain": "Memory",
+        "data_app": "Data apps",
     }
     #: One line per group, in the header beside the label — the same slot My
     #: Stack uses to say why a group exists ("Optional resources you added.").
@@ -3636,24 +3690,16 @@ async def library_page(
         "recipe": "Prepared analyses you can run.",
         "data_package": "Governed data you can query.",
         "memory_domain": "Curated organizational knowledge.",
+        "data_app": "Hosted apps running next to your data.",
     }
     #: Marker for a kind that will land INSIDE an existing section rather than
-    #: getting its own. Data apps ship into Files first, so the schedule rides
-    #: the Files band's own label — a badge next to the heading, not a panel in
-    #: the page head. A roadmap note is worth a word where the thing will
-    #: appear; it is not worth a paragraph above the inventory the reader came
-    #: for. Rendered by `group_toggle`, so the table and the grid pick it up
-    #: from one place.
-    _SECTION_SOON = {
-        "files": "Data apps coming soon",
-    }
-    _SECTION_SOON_TIP = {
-        "files": (
-            "Hosted apps that run next to your data will appear here. You'll be "
-            "able to build them with Agnes or link an existing one. Nothing to "
-            "do yet."
-        ),
-    }
+    #: getting its own — a badge next to that section's heading, not a panel
+    #: in the page head. Rendered by `group_toggle`, so the table and the grid
+    #: pick it up from one place. Currently empty: the one promise it carried
+    #: ("Data apps coming soon", on Files) was kept when data apps got their
+    #: own band above. The seam stays for the next kind on the roadmap.
+    _SECTION_SOON: dict[str, str] = {}
+    _SECTION_SOON_TIP: dict[str, str] = {}
     #: Each section wears the SAME accent its members' detail pages wear, so a
     #: type is recognizable by colour before the label is read. Values are the
     #: `--ds-kind-*` vocabulary the detail hero resolves through
@@ -3667,6 +3713,9 @@ async def library_page(
         "recipe": ("recipe", "recipes"),
         "data_package": ("data", "data"),
         "memory_domain": ("memory", "memory"),
+        # Neutral library accent — the data-app detail page carries no kind
+        # colour of its own to match — with a dedicated glyph.
+        "data_app": ("library", "app"),
     }
 
     def _section_rows(key: str, rows: list) -> list:
