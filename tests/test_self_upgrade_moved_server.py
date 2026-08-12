@@ -246,6 +246,33 @@ class TestTheCommandTheHookActuallyRuns:
         self._cli_step()
         assert consecutive_failures() == 1
 
+    def test_a_fixed_server_stops_the_stale_warning(self, moved_server, monkeypatch):
+        """A redirect counted while the CLI happened to be current must not
+        keep warning after the server is fixed: "already current" is a probe
+        that completed, so it resets the counter exactly as the interactive
+        command does. (Devin Review on #1275, second round.)"""
+        self._cli_step()
+        assert consecutive_failures() == 1
+
+        import cli.commands.self_upgrade as su
+
+        monkeypatch.setattr(su, "_resolve_info", lambda force: None)
+        step = self._cli_step()
+        assert step["detail"] == "already current"
+        assert consecutive_failures() == 0, "the stale 'server moved' warning survived the fix"
+
+    def test_offline_neither_counts_nor_clears(self, moved_server, monkeypatch):
+        """A transient blip is not evidence in either direction."""
+        self._cli_step()
+        assert consecutive_failures() == 1
+
+        import cli.commands.self_upgrade as su
+
+        monkeypatch.setattr(su, "_resolve_info", lambda force: su._OFFLINE)
+        step = self._cli_step()
+        assert step["detail"] == "offline"
+        assert consecutive_failures() == 1
+
 
 class TestForcedUpgradeNeverReportsSuccess:
     def test_force_with_quiet_still_exits_non_zero(self, moved_server):
