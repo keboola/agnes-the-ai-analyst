@@ -952,7 +952,12 @@ class TestDevinReviewRoundTwo:
         """The two surfaces read the same set, so they cannot drift again."""
         from connectors.jira.organizations import FAILURE_REASONS
 
-        assert FAILURE_REASONS == {"all_fetches_failed", "mass_removal_guard", "existing_unreadable"}
+        assert FAILURE_REASONS == {
+            "all_fetches_failed",
+            "mass_removal_guard",
+            "existing_unreadable",
+            "enumeration_empty",
+        }
         # An unconfigured instance skips this job; it does not fail it every night.
         assert "jira_not_configured" not in FAILURE_REASONS
 
@@ -1052,3 +1057,72 @@ class TestUnreadableBaselineRefuses:
         with patch("connectors.jira.organizations.refresh_organizations", return_value=stats):
             with pytest.raises(RuntimeError, match="existing_unreadable"):
                 kinds._run_jira_org_refresh({})
+
+
+class TestEmptyEnumerationSignals:
+    """An empty enumeration against an existing table is not a healthy run.
+
+    Leaving the rows alone is the right action, but reporting success meant a site
+    that had organizations a moment ago and now enumerates none looked identical to a
+    quiet nightly pass, on the only total-failure shape outside FAILURE_REASONS.
+    """
+
+    def test_empty_enumeration_with_existing_rows_is_a_failure(self, tmp_path: Path, org_env: None) -> None:
+        from connectors.jira import organizations as orgs
+
+        two = [_org("1", "Org 1", "ACC-1"), _org("2", "Org 2", "ACC-2")]
+        svc = _fake_service(["1", "2"], two)
+        with (
+            patch.object(orgs, "get_jira_service", return_value=svc),
+            patch.object(orgs, "update_meta"),
+            patch.object(orgs.time, "sleep"),
+        ):
+            orgs.refresh_organizations(extract_dir=tmp_path)
+
+        svc2 = _fake_service([], [])
+        with (
+            patch.object(orgs, "get_jira_service", return_value=svc2),
+            patch.object(orgs, "update_meta") as meta,
+            patch.object(orgs.time, "sleep"),
+        ):
+            stats = orgs.refresh_organizations(extract_dir=tmp_path)
+
+        assert stats["skipped_reason"] == "enumeration_empty"
+        assert stats["skipped_reason"] in orgs.FAILURE_REASONS
+        meta.assert_not_called()
+        # The right action is still to leave the rows standing.
+        assert len(_read_table(tmp_path)) == 2
+
+    def test_empty_enumeration_without_an_existing_table_is_not_a_failure(self, tmp_path: Path, org_env: None) -> None:
+        """A genuinely organization-free instance must not fail its nightly job."""
+        from connectors.jira import organizations as orgs
+
+        svc = _fake_service([], [])
+        with (
+            patch.object(orgs, "get_jira_service", return_value=svc),
+            patch.object(orgs, "update_meta"),
+            patch.object(orgs.time, "sleep"),
+        ):
+            stats = orgs.refresh_organizations(extract_dir=tmp_path)
+
+        assert "skipped_reason" not in stats
+
+    def test_unreadable_baseline_refuses_before_enumerating(self, tmp_path: Path, org_env: None) -> None:
+        """The baseline read moved ahead of enumeration, so a refusal costs no API calls."""
+        from connectors.jira import organizations as orgs
+
+        table_dir = tmp_path / "data" / "organizations"
+        table_dir.mkdir(parents=True)
+        (table_dir / "data.parquet").write_bytes(b"corrupt")
+
+        svc = _fake_service(["1"], [_org("1", "Org 1", "ACC-1")])
+        with (
+            patch.object(orgs, "get_jira_service", return_value=svc),
+            patch.object(orgs, "update_meta"),
+            patch.object(orgs.time, "sleep"),
+        ):
+            stats = orgs.refresh_organizations(extract_dir=tmp_path)
+
+        assert stats["skipped_reason"] == "existing_unreadable"
+        svc.fetch_organization_ids.assert_not_called()
+        svc.fetch_organization.assert_not_called()

@@ -79,7 +79,7 @@ MAX_REMOVED_FRACTION = 0.5
 #
 # `jira_not_configured` is deliberately NOT here: an instance without Jira ingest is
 # expected to skip this job, not to fail it every night.
-FAILURE_REASONS = frozenset({"all_fetches_failed", "mass_removal_guard", "existing_unreadable"})
+FAILURE_REASONS = frozenset({"all_fetches_failed", "mass_removal_guard", "existing_unreadable", "enumeration_empty"})
 
 
 def _read_existing(table_dir: Path) -> dict[str, dict] | None:
@@ -126,8 +126,13 @@ def refresh_organizations(
     forward, so a transient 429 or 5xx costs freshness, never data. Only a 404
     (organization genuinely gone) drops a row.
 
-    A sweep that would drop more than ``MAX_REMOVED_FRACTION`` of the existing rows is
-    refused rather than published; ``force=True`` overrides that.
+    Four outcomes refuse to publish rather than reporting a healthy run, all named in
+    ``FAILURE_REASONS`` so the CLI and the worker handler agree: the existing table
+    cannot be read (``existing_unreadable``), enumeration comes back empty while the
+    table holds rows (``enumeration_empty``), nothing fresh resolved at all
+    (``all_fetches_failed``), or the sweep would drop more than
+    ``MAX_REMOVED_FRACTION`` of the existing rows (``mass_removal_guard``, which
+    ``force=True`` overrides). In every case the rows already on disk are left standing.
 
     Returns a stats dict: ``organizations``, ``written``, ``preserved``, ``removed``,
     ``failed``, ``elapsed_sec``, ``dry_run``, and ``skipped_reason`` when it did not run.
@@ -150,26 +155,9 @@ def refresh_organizations(
 
     start = time.time()
 
-    # Abort on enumeration failure: writing a partial list would delete rows for every
-    # organization the failed page would have contained.
-    org_ids = service.fetch_organization_ids()
-    stats["organizations"] = len(org_ids)
-
-    if not org_ids:
-        logger.info("Jira returned no organizations — nothing to refresh")
-        stats["elapsed_sec"] = round(time.time() - start, 1)
-        return stats
-
-    if dry_run:
-        configured = [column for _, column in organization_detail_fields()]
-        logger.info(
-            "Dry run: would refresh %d organizations into columns %s",
-            len(org_ids),
-            ["org_id", "name", *configured],
-        )
-        stats["elapsed_sec"] = round(time.time() - start, 1)
-        return stats
-
+    # Establish the baseline BEFORE spending any API budget. If the current contents
+    # cannot be read there is no safe way to publish whatever this run resolves, so
+    # there is no point enumerating either.
     extract_path = extract_dir or get_default_output_dir()
     table_dir = extract_path / "data" / TABLE_NAME
     existing = _read_existing(table_dir)
@@ -183,6 +171,42 @@ def refresh_organizations(
             TABLE_NAME,
         )
         stats["skipped_reason"] = "existing_unreadable"
+        stats["elapsed_sec"] = round(time.time() - start, 1)
+        return stats
+
+    # Abort on enumeration failure: writing a partial list would delete rows for every
+    # organization the failed page would have contained.
+    org_ids = service.fetch_organization_ids()
+    stats["organizations"] = len(org_ids)
+
+    if not org_ids:
+        # An empty list against an existing table is the one "nothing resolved" shape
+        # that used to pass as a healthy run: it published nothing, reported no failure,
+        # and left whatever was on disk standing indefinitely. Leaving the rows alone is
+        # the right *action*, but a site that had organizations a moment ago and now
+        # enumerates none is at least as suspicious as the mass-removal guard's trigger,
+        # so it gets the same signal (Devin Review on #1274). With no existing table it
+        # is simply an instance with no organizations, which is not a failure.
+        if existing:
+            logger.error(
+                "Jira enumerated no organizations while %s holds %d rows — refusing to treat "
+                "that as a healthy run. The existing rows are left untouched.",
+                TABLE_NAME,
+                len(existing),
+            )
+            stats["skipped_reason"] = "enumeration_empty"
+        else:
+            logger.info("Jira returned no organizations — nothing to refresh")
+        stats["elapsed_sec"] = round(time.time() - start, 1)
+        return stats
+
+    if dry_run:
+        configured = [column for _, column in organization_detail_fields()]
+        logger.info(
+            "Dry run: would refresh %d organizations into columns %s",
+            len(org_ids),
+            ["org_id", "name", *configured],
+        )
         stats["elapsed_sec"] = round(time.time() - start, 1)
         return stats
 
