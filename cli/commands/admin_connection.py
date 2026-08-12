@@ -153,8 +153,10 @@ def chat_tools(
     — storing a new secret on the connection updates both — so this does not
     have to be re-run for a rotation.
 
-    The derived source lands with no tool grants: run
-    ``agnes admin grant`` before analysts see anything.
+    The derived source lands with no tool grants — grant its tools under
+    ``/admin/mcp-sources`` (each tool's Grants page) before analysts see
+    anything; ``agnes admin grant`` works on resource grants and cannot
+    touch MCP tool grants.
     """
     if disable:
         resp = api_delete(f"/api/admin/source-connections/{connection_id}/chat-tools")
@@ -166,16 +168,31 @@ def chat_tools(
     if resp.status_code not in (200, 201):
         _fail(resp)
     body = resp.json() if resp.content else {}
-    typer.echo(f"Chat tools enabled for {connection_id} (MCP source {body.get('source_id', '?')})")
-    # Enabling registers the SOURCE, not its tools: the tool_registry rows a
-    # grant needs are created by Introspect on the source detail page. The old
-    # line sent the admin to grant tools that do not exist yet, and named a
-    # command that cannot grant them either — `agnes admin grant` works on
-    # resource grants, not on MCP tool grants. (Devin Review on this PR.)
+    count = body.get("tools_registered", 0)
     typer.echo(
-        "Next: open /admin/mcp-sources and run Introspect on this source to list its tools, "
-        "then grant them to a group under Access."
+        f"Chat tools enabled for {connection_id}: {count} tools registered (MCP source {body.get('source_id', '?')})"
     )
+    # Registering is not granting, and MCP tool grants are their own surface —
+    # `agnes admin grant` works on resource grants and cannot touch these.
+    # (Devin Review on the original PR; the Introspect step it used to name is
+    # gone now that enabling registers the tools itself.)
+    typer.echo(
+        "Registered is not reachable — grant them under /admin/mcp-sources, "
+        "on each tool's Grants page, before analysts see anything."
+    )
+    # A `mutating` tool is refused for every non-admin by the passthrough
+    # policy gate, grant or no grant — and a tool the upstream does not
+    # annotate as read-only is recorded as mutating. Without this line, an
+    # upstream that annotates nothing makes the grant advice above a false
+    # promise. (Devin Review on this PR, fifth round.)
+    admin_only = body.get("tools_admin_only") or 0
+    if admin_only:
+        scope = "All" if admin_only == count else f"{admin_only} of {count}"
+        typer.echo(
+            f"{scope} registered tools are recorded as mutating and stay admin-only even when "
+            "granted (no read-only annotation upstream is not a claim of safety). Review any "
+            "that are actually read-only under /admin/mcp-sources."
+        )
 
 
 @admin_connection_app.command("test")
