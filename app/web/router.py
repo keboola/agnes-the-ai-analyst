@@ -3298,6 +3298,59 @@ async def library_page(
         except Exception as e:
             logger.warning("/library: could not resolve %s: %s", rt.value, e)
 
+    # Data apps — hosted apps the caller owns or has been granted. The
+    # Library is "everything you have", and an app you built from chat is as
+    # much yours as a collection you uploaded; until this row existed a
+    # `rail` instance had no way to reach one at all, since the "Apps" nav
+    # entry shipped in the topnav only.
+    #
+    # Visibility and shape come from `app.api.data_apps`'s own helpers rather
+    # than a second RBAC path here — the same reuse `data_apps_list_page`
+    # documents. Drafts are excluded (they are iteration branches of an app,
+    # not apps) and so is `linked_hidden`, matching that page exactly.
+    # Aliased imports: both names are bound locally further down this
+    # function, so referencing the module-level ones here is a use-before-
+    # assignment in the same scope.
+    from app.instance_config import feature_enabled as _feat_enabled
+    from src.repositories import data_apps_repo as _apps_repo
+
+    if _feat_enabled("data_apps", "enabled", env_var="AGNES_DATA_APPS_ENABLED", default=False):
+        try:
+            from app.api.data_apps import _can_view
+
+            for a in _apps_repo().list(include_drafts=False):
+                if a.get("state") == "linked_hidden" or not _can_view(user, a):
+                    continue
+                _mine = a.get("owner_user_id") == user["id"]
+                _created = a.get("created_at")
+                items.append(
+                    _library_row_base(
+                        item_id=a["id"],
+                        kind="data_app",
+                        title=a.get("name") or a.get("slug") or "",
+                        description=a.get("description") or "",
+                        href=f"/apps/detail/{a['slug']}",
+                        glyph="app",
+                        type_key="data_app",
+                        type_label="App",
+                        origin="mine" if _mine else "granted",
+                        origin_label="Yours" if _mine else "Shared with you",
+                        added_iso=_created.isoformat() if hasattr(_created, "isoformat") else None,
+                        owner_label="You" if _mine else "Your workspace",
+                        ownership="mine" if _mine else "shared_with_me",
+                        visibility="private" if _mine else "shared",
+                        visibility_label="Private" if _mine else "Shared with you",
+                        # The state is the one thing worth knowing at a glance:
+                        # an app can be running, sleeping, or in error, and the
+                        # row is a link you are deciding whether to click.
+                        meta_text=(a.get("state") or "").replace("_", " "),
+                        share_type=None,
+                        owner_key="me" if _mine else "workspace",
+                    )
+                )
+        except Exception as e:
+            logger.warning("/library: could not resolve data apps: %s", e)
+
     # Recipes — granted, resolved straight off the repo (no _fetch_entries
     # support for this type in StackResolver).
     try:
@@ -6442,8 +6495,7 @@ async def admin_semantic_layer_page(
     # here. So the page says a subset is shown, without a number it cannot
     # compute honestly. (Devin Review on this PR.)
     ctx["unresolved_tables_truncated"] = any(
-        int(e.get("unresolved_tables_total") or 0) > len(e.get("unresolved_tables") or [])
-        for e in last_by_ref.values()
+        int(e.get("unresolved_tables_total") or 0) > len(e.get("unresolved_tables") or []) for e in last_by_ref.values()
     )
     ctx["skipped_unresolved_total"] = sum(int(e.get("skipped_unresolved_table") or 0) for e in last_by_ref.values())
     ctx["default_connection_id"] = default_id
