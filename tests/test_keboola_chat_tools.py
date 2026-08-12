@@ -558,11 +558,52 @@ class TestAFailedReRunPutsEverythingBack(TestChatToolsEndpoint):
             resp = c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token))
 
         assert resp.status_code == 502
-        assert "restored" in resp.text
+        assert "state was restored" in resp.text
         restored = mcp_sources_repo().get(source_id)
         assert restored["enabled"] is False, (
             "a failed re-run left a deliberately disabled source enabled while claiming nothing changed"
         )
+
+    def test_a_failed_undo_is_not_reported_as_restored(self, seeded_app):
+        """Devin Review on this PR (seventh round): `_undo()` swallows its own
+        errors, yet the 502 asserted "restored" unconditionally — the same
+        class of unverified claim the restore itself was built to retire."""
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-chat-undofail")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        import app.api.admin_source_connections as mod
+
+        class _SecondUpsertDies:
+            """Handler's own upsert (call #1) succeeds; _undo's restore
+            (call #2) dies — the undo-failed path, end to end."""
+
+            def __init__(self, real):
+                self._real = real
+                self.upserts = 0
+
+            def __getattr__(self, name):
+                attr = getattr(self._real, name)
+                if name != "upsert":
+                    return attr
+
+                def _counted(*a, **kw):
+                    self.upserts += 1
+                    if self.upserts >= 2:
+                        raise RuntimeError("restore write died")
+                    return attr(*a, **kw)
+
+                return _counted
+
+        with pytest.MonkeyPatch.context() as mp:
+            self._upstream_dies(mp)
+            shared = _SecondUpsertDies(mod.mcp_sources_repo())
+            mp.setattr(mod, "mcp_sources_repo", lambda: shared)
+            resp = c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token))
+
+        assert resp.status_code == 502
+        assert "could not be fully restored" in resp.text, "a failed undo was reported as a successful restore"
+        assert "state was restored" not in resp.text
 
     def test_a_failed_rerun_restores_the_tool_set_and_grants(self, seeded_app):
         c, token = seeded_app["client"], seeded_app["admin_token"]

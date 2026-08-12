@@ -1187,16 +1187,20 @@ async def enable_chat_tools(
     previous_tools = registry.list_for_source(spec["id"]) if was_enabled else []
     previous_grants = {t["tool_id"]: registry.grants_for_tool(t["tool_id"]) for t in previous_tools}
 
-    def _undo() -> None:
+    def _undo() -> bool:
         """Put back what was here. Never raises — it runs inside an exception
         handler, and masking the original failure with a cleanup error would
-        cost the admin the only useful diagnostic."""
+        cost the admin the only useful diagnostic. Returns whether the restore
+        actually succeeded, so the 502 can say "restored" only when it is true
+        — asserting it unconditionally was the same class of unverified claim
+        the restore itself was built to retire.
+        (Devin Review on this PR, seventh round.)"""
         try:
             if not was_enabled:
                 # First enable: never leave a source, its tools or the token
                 # behind under an id the admin does not know exists.
                 _remove_chat_tools(connection_id)
-                return
+                return True
             # Re-run: by the time registration fails the source row has been
             # rewritten and forced on, the vault slot rewritten, and the
             # registration loop may have written rows before dying. The 502's
@@ -1221,8 +1225,10 @@ async def enable_chat_tools(
                 undo_registry.upsert(**{k: t[k] for k in _TOOL_UPSERT_FIELDS if k in t})
                 for group_id in previous_grants.get(t["tool_id"], []):
                     undo_registry.add_grant(t["tool_id"], group_id)
+            return True
         except Exception:
             logger.warning("could not roll back a failed enable for %s", connection_id, exc_info=True)
+            return False
 
     try:
         mcp_sources_repo().upsert(**spec)
@@ -1245,14 +1251,19 @@ async def enable_chat_tools(
             spec, connection_id, row.get("name") or connection_id
         )
     except Exception as exc:
-        _undo()
+        restored = _undo()
         logger.warning("chat-tools tool registration failed for connection %s", connection_id, exc_info=True)
         raise HTTPException(
             status_code=502,
             detail=(
                 f"could not reach the Keboola MCP server: {exc_summary(exc)}. "
                 "The first run downloads it, so a retry is usually quick; "
-                "the previous chat-tools state was restored."
+                + (
+                    "the previous chat-tools state was restored."
+                    if restored
+                    else "the previous chat-tools state could not be fully restored — review "
+                    "the derived source under /admin/mcp before retrying."
+                )
             ),
         ) from exc
 
