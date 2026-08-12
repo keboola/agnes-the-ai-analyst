@@ -497,3 +497,107 @@ def policied_from_sql(relation: PoliciedRelation, *, table_name: str, source_sql
     if not relation.policied:
         raise ValueError("policied_from_sql() called on a non-policied relation -- use source_sql directly instead")
     return f"(WITH {quote_ident(table_name)} AS (SELECT * FROM {source_sql}) {relation.relation_sql})"
+
+
+# ---------------------------------------------------------------------------
+# Task 9 -- effective schema (§11). `/api/v2/schema` (and, eventually, the
+# where-validator) reads the RAW, unfiltered column list today, so a
+# policy's `EXCLUDE (col)` is invisible to it -- an analyst sees a column
+# that no longer exists on any read surface. `effective_schema` closes that
+# gap the same way Task 8's surfaces read rows: resolve, then DESCRIBE the
+# wrapped relation via `policied_from_sql`, against the analytics
+# connection (none of these callers has a raw parquet path handy the way
+# `/api/v2/sample`'s local branch does).
+# ---------------------------------------------------------------------------
+
+
+def effective_schema(table_id: str, principal) -> list[dict] | None:
+    """Per-column ``hidden`` markers for a policied table (§11), derived
+    from a live ``DESCRIBE`` of the resolved relation rather than the raw,
+    unfiltered schema every read surface used before this feature existed.
+
+    Returns ``None`` when the table carries no policy, or when
+    ``policied_relation`` resolves ``principal`` to the admin bypass (§12)
+    -- either way there is nothing to correct, and the caller
+    (``/api/v2/schema``) keeps whatever raw schema it already built. §11
+    exists ONLY to stop a policied table's schema surface from advertising
+    a column the caller can never actually read; the inert/admin case is
+    not this function's concern.
+
+    Runs TWO ``DESCRIBE``s against the analytics connection, both scoped to
+    the registry row's own ``.name`` -- what ``policied_relation``'s own
+    passthrough calls "the base view" (§5.3), and what a policy body's own
+    ``FROM <name>`` resolves against once wrapped by ``policied_from_sql``:
+    one over the raw, unfiltered view (the reference column set) and one
+    over the policy-wrapped relation (what a caller actually receives). A
+    base column absent from the wrapped ``DESCRIBE``'s name set is
+    ``hidden`` -- the security-critical marker (§11), and the only one this
+    function computes.
+
+    ``masked`` is deliberately NOT attempted. The obvious heuristic --
+    comparing type per matching name -- misses the design doc's own
+    canonical example (``md5(email) AS email``: VARCHAR in, VARCHAR out,
+    same name, no type signal at all), and can't even be applied cleanly
+    when a policy body's ``SELECT *`` isn't ALSO excluding the column it
+    re-derives: DuckDB accepts that (two columns literally named the same),
+    and this function dedupes by keeping the first occurrence rather than
+    guessing which one is "the masked one" from a post-hoc DESCRIBE diff.
+    Reliable masked-detection needs a static read of the policy body's own
+    SELECT-list expressions, not a DESCRIBE diff -- left for a follow-up
+    rather than shipping a marker that can be wrong on the exact example
+    the design doc leads with.
+    """
+    from src.db import get_analytics_db_readonly
+
+    relation = policied_relation(table_id, principal)
+    if not relation.policied:
+        return None
+
+    row = _resolve_table_row(relation.table_id)
+    base_ref = quote_ident(row["name"])
+
+    conn = get_analytics_db_readonly()
+    try:
+        try:
+            base_rows = conn.execute(f"DESCRIBE {base_ref}").fetchall()
+        except Exception as exc:
+            raise PolicyError(relation.table_id) from exc
+
+        wrapped = policied_from_sql(relation, table_name=row["name"], source_sql=base_ref)
+        try:
+            effective_rows = conn.execute(f"DESCRIBE {wrapped}", relation.params).fetchall()
+        except Exception as exc:
+            raise PolicyError(relation.table_id) from exc
+    finally:
+        conn.close()
+
+    # Duplicate output names ARE possible (see the docstring above) --
+    # first occurrence wins, deterministically, rather than crashing or
+    # silently preferring whichever a dict comprehension iterated last.
+    effective_by_name: dict[str, tuple] = {}
+    for r in effective_rows:
+        effective_by_name.setdefault(r[0], r)
+
+    columns: list[dict] = []
+    seen_names: set[str] = set()
+    for r in base_rows:
+        name = r[0]
+        seen_names.add(name)
+        hit = effective_by_name.get(name)
+        if hit is None:
+            columns.append({"name": name, "type": r[1], "nullable": r[2] == "YES", "description": "", "hidden": True})
+        else:
+            columns.append(
+                {"name": hit[0], "type": hit[1], "nullable": hit[2] == "YES", "description": "", "hidden": False}
+            )
+
+    # A policy can also ADD a column no base column carries (e.g. pulled in
+    # from a `policy_mapping` join, §15) -- keep it, appended after the
+    # base-derived list, rather than silently dropping something the
+    # policy body deliberately returns.
+    for r in effective_rows:
+        if r[0] not in seen_names:
+            columns.append({"name": r[0], "type": r[1], "nullable": r[2] == "YES", "description": "", "hidden": False})
+            seen_names.add(r[0])
+
+    return columns

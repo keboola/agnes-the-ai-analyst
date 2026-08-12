@@ -10,6 +10,7 @@ from app.auth.dependencies import get_current_user, _get_db
 from src.db import _open_duckdb
 from src.audit_helpers import identity_for_audit, client_kind_from_user
 from src.rbac import can_access_table
+from src.access_policy import PolicyError, PolicyIdentityUnresolvable, effective_schema
 from app.api.v2_cache import TTLCache
 from connectors.bigquery.access import BqAccess, BqAccessError, get_bq_access
 
@@ -113,11 +114,62 @@ def build_schema(
     if not can_access_table(user, table_id, conn):
         raise PermissionError(table_id)
 
-    cached = _schema_cache.get(table_id)
-    if cached is not None:
-        return cached
+    # Table access policies (§11): a policied table's schema is caller-scoped
+    # the same way its rows are (§9) -- a non-admin must never see a column
+    # an EXCLUDE'd policy has already removed from every read surface, and
+    # `_schema_cache` is keyed on `table_id` alone, so serving it here would
+    # hand one caller's (or the admin's raw) schema to the next caller
+    # regardless of identity. Skip the cache read entirely for a policied
+    # table (mirrors Task 8's `_sample_cache` bypass); `build_schema_uncached`
+    # mirrors the same bypass on the write side below.
+    has_access_policy = bool(row.get("access_policy_sql"))
 
-    return build_schema_uncached(conn, table_id, bq=bq, row=row)
+    if not has_access_policy:
+        cached = _schema_cache.get(table_id)
+        if cached is not None:
+            return cached
+
+    payload = build_schema_uncached(conn, table_id, bq=bq, row=row)
+
+    if has_access_policy:
+        payload = _apply_effective_schema(payload, table_id, user)
+
+    return payload
+
+
+def _apply_effective_schema(payload: dict, table_id: str, user: dict) -> dict:
+    """Override ``payload["columns"]`` with ``effective_schema``'s
+    hidden-aware list for a non-admin caller on a policied table.
+
+    ``effective_schema`` itself returns ``None`` for the admin bypass (§12)
+    -- same signal ``policied_relation`` gives every other surface -- so an
+    admin's raw, unfiltered ``payload`` (the one ``build_schema_uncached``
+    just built and, per the caller above, never cached) passes through
+    completely untouched. A new dict is returned rather than mutating
+    ``payload`` in place, purely to keep this function's contract obvious
+    at the call site — nothing else holds a reference to it yet.
+
+    Hidden columns are DROPPED here, not merely marked, even though
+    ``effective_schema`` itself keeps them (hidden=True) in its own return
+    value. This is the one place that distinction matters: ``build_schema``
+    is also `/api/v2/scan`'s own schema source (`_resolve_schema` in
+    ``app/api/v2_scan.py``, "used by validator + projection check" — the
+    where-validator §11 promises protection to), and that consumer collapses
+    the column list to a bare ``{name: type}`` dict with no idea a `hidden`
+    key exists. A hidden entry that stayed in ``payload["columns"]`` would
+    still read as "a real, referenceable column" there — `select`/`where`/
+    `order_by` would keep validating a reference to an EXCLUDE'd column as
+    clean, deferring the rejection to a raw engine error deep inside the
+    policy-wrapped relation instead of the clean 400 the where-validator
+    exists to give. Dropping it here is what actually delivers "the
+    where-validator validates against it" for every current and future
+    consumer of this shape, without either of them needing to learn about
+    `hidden`.
+    """
+    columns = effective_schema(table_id, user)
+    if columns is None:
+        return payload
+    return {**payload, "columns": [c for c in columns if not c.get("hidden")]}
 
 
 def build_schema_uncached(
@@ -220,7 +272,14 @@ def build_schema_uncached(
             "where_dialect_hints": {},
         }
 
-    _schema_cache.set(table_id, payload)
+    # Mirrors the read-side bypass in `build_schema`: a policied table's
+    # schema is caller-scoped (§11), so it must never land in a cache keyed
+    # on `table_id` alone — `row` (not `user`; this function never takes
+    # one, see the class-level note in `tests/test_v2_schema.py`) already
+    # carries `access_policy_sql`, which is all the information needed to
+    # withhold the write.
+    if not row.get("access_policy_sql"):
+        _schema_cache.set(table_id, payload)
     return payload
 
 
@@ -249,7 +308,7 @@ def schema(
         except Exception:
             logger.exception("audit_log write failed for catalog.schema; continuing")
         return result
-    except (NotFound, PermissionError, ValueError, BqAccessError) as exc:
+    except (NotFound, PermissionError, ValueError, BqAccessError, PolicyIdentityUnresolvable, PolicyError) as exc:
         try:
             if isinstance(exc, NotFound):
                 status_code = 404
@@ -257,6 +316,10 @@ def schema(
                 status_code = 403
             elif isinstance(exc, ValueError):
                 status_code = 400
+            elif isinstance(exc, PolicyIdentityUnresolvable):
+                status_code = 403
+            elif isinstance(exc, PolicyError):
+                status_code = 500
             else:
                 status_code = BqAccessError.HTTP_STATUS.get(exc.kind, 500)  # type: ignore[union-attr]
             audit_repo().log(
@@ -283,6 +346,10 @@ def schema(
                 status_code=400,
                 detail={"error": "unsafe_identifier", "message": str(exc), "details": {}},
             )
+        if isinstance(exc, PolicyIdentityUnresolvable):
+            raise HTTPException(status_code=403, detail={"reason": "policy_identity_unresolvable"})
+        if isinstance(exc, PolicyError):
+            raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": exc.table_id})
         raise HTTPException(
             status_code=BqAccessError.HTTP_STATUS.get(exc.kind, 500),  # type: ignore[union-attr]
             detail={"error": exc.kind, "message": exc.message, "details": exc.details},  # type: ignore[union-attr]

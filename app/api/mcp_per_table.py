@@ -88,11 +88,21 @@ def _describe_columns(analytics_conn: duckdb.DuckDBPyConnection, from_sql: str, 
     A masked (``EXCLUDE``d) column must never be revealed (§8) — not in a
     result row, and not in the "unknown filter column" 400's ``allowed``
     list either. Deriving the column list from a ``DESCRIBE`` of the
-    policy-wrapped relation itself is the cheap way to get that right now
-    without waiting on Task 9's ``effective_schema`` (which will become the
-    canonical source for this once it lands — a ``LIMIT 0`` probe reused
-    across every surface instead of each computing its own). Same
+    policy-wrapped relation itself is the cheap way to get that right. Same
     best-effort/empty-list-on-error contract as ``_column_names``.
+
+    Task 9 added ``src.access_policy.effective_schema`` as the canonical,
+    reusable version of this same ``DESCRIBE``-diff idea — but it is a
+    poor fit for THIS call site and was deliberately left unswapped:
+    ``effective_schema`` opens its own ``get_analytics_db_readonly()``
+    connection and re-resolves ``policied_relation`` internally, whereas
+    ``query_table`` below already holds an open ``analytics_conn`` and an
+    already-resolved ``relation`` — swapping would pay for a second
+    connection open (re-ATTACHing every extract.duckdb file, the exact
+    cost this module's own ``query_table`` docstring cites as the reason
+    it stays a plain ``def``) and a second live-groups read on every call,
+    for a column list this endpoint already knows how to derive from what
+    it has in hand.
     """
     try:
         rows = analytics_conn.execute(f"DESCRIBE {from_sql}", params).fetchall()
