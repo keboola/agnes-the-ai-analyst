@@ -220,6 +220,8 @@ def _normalize_primary_key(v):
 _URL_BEARING_FIELDS: tuple[tuple[str, ...], ...] = (
     ("data_source", "keboola", "stack_url"),
     ("marketplace", "curators_url"),
+    ("auth", "keboola", "stack_url"),
+    ("auth", "keboola", "oauth_host"),
 )
 
 

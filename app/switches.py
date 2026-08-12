@@ -260,6 +260,24 @@ SWITCHES: tuple[Switch, ...] = (
         ),
     ),
     Switch(
+        name="keboola_token_header",
+        config_keys=("auth", "keboola", "allow_token_header"),
+        env_var="AGNES_KEBOOLA_ALLOW_TOKEN_HEADER",
+        kind="bool",
+        default=False,
+        effect="live",
+        category="operations",
+        editable=True,
+        description=(
+            "Accept a Keboola Storage API token in the X-StorageApi-Token header as API "
+            "authentication. The token is verified against the configured stack per request "
+            "(60s cache), must be a master token for the bound project, and maps only to an "
+            "EXISTING user — it never provisions accounts. Off by default: a plain Storage "
+            "token carries no interactive factor, so enabling this bypasses any MFA/SSO the "
+            "organization enforces on web logins."
+        ),
+    ),
+    Switch(
         name="agent_profiles",
         config_keys=("agent_profiles", "enabled"),
         env_var="AGNES_AGENT_PROFILES_ENABLED",

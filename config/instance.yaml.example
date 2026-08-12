@@ -233,6 +233,23 @@ auth:
   #                                 # providers' endpoints return 404. Env
   #                                 # override: AGNES_AUTH_PROVIDERS (comma-sep).
 
+  # --- Keboola login (optional) ---
+  # Lets users sign in with their Keboola platform identity. The OAuth
+  # client (client_id/client_secret) is issued by Keboola for your stack —
+  # ask your Keboola contact; it is not self-service. The token-header API
+  # auth (auth.keboola.allow_token_header switch) works without any OAuth
+  # client. Membership in project_id is the trust boundary: ANYONE that
+  # project admits (including guest/readOnly collaborators) can sign in and
+  # self-provision unless allowed_roles narrows it.
+  # keboola:
+  #   client_id: "${KEBOOLA_OAUTH_CLIENT_ID}"
+  #   client_secret: "${KEBOOLA_OAUTH_CLIENT_SECRET}"
+  #   stack_url: ""                 # default: data_source.keboola.stack_url
+  #   oauth_host: ""                # default: stack_url (OAuth lives on the connection host)
+  #   project_id: ""                # REQUIRED — tokens from other projects are rejected
+  #   allowed_roles: []             # e.g. [admin, share]; empty/unset = any project role
+  #   allow_token_header: false     # X-StorageApi-Token API auth; see docs/feature-flags.md
+
 # --- Security (optional) ---
 # security:
 #   # Hostnames exempt from the private/reserved-network SSRF guard on admin-
