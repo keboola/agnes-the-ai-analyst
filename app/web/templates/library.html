@@ -2793,11 +2793,16 @@
           ? 'In your stack — only an admin can remove it'
           : 'In your stack'));
         status.innerHTML = (locked ? LOCK_SVG : CARD_CHECK_SVG) + '<span>In stack</span>';
-      } else {
+        foot.appendChild(status);
+      } else if (row.dataset.type !== 'data_app') {
+        // Data apps have no stack membership AT ALL — "Not addable" would
+        // explain an absence nobody expected (the table slot is simply
+        // empty, and the card mirrors it). Every other slotless kind keeps
+        // the explicit status.
         tip('Not addable', 'This item cannot be added to your stack');
         status.innerHTML = '<span>Not addable</span>';
+        foot.appendChild(status);
       }
-      foot.appendChild(status);
     }
     card.appendChild(foot);
 

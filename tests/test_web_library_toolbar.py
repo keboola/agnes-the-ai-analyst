@@ -148,7 +148,7 @@ def test_files_of_every_format_share_one_files_section(seeded_app):
     text = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"])).text
     # One merged section, not per-format ones.
     assert 'data-lib-sec="files"' in text
-    assert ">Files<" in text
+    assert ">Artefacts<" in text
     for retired in ("image", "document", "collection", "spreadsheet"):
         assert f'data-lib-sec="{retired}"' not in text
     # The row still says what the file actually is — its format, on the second

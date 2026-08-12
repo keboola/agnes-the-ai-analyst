@@ -35,9 +35,15 @@ def test_band_lists_visible_app_under_rail(seeded_app, monkeypatch):
     resp = c.get("/library", headers=_auth(seeded_app["admin_token"]))
     assert resp.status_code == 200
     body = resp.text
-    assert "Data apps" in body
+    # Inside the Artefacts band (the caller's files + agent outputs + apps),
+    # not a band of its own — the Type facet still says "Data app" (rows
+    # keep type_key=data_app).
+    assert 'data-lib-sec="files"' in body
+    assert ">Artefacts<" in body
+    assert 'data-lib-sec="data_app"' not in body
     assert 'href="/apps/detail/revenue-dash"' in body
     assert "Revenue dashboard" in body
+    assert 'data-type="data_app"' in body
 
 
 def test_band_absent_when_feature_disabled(seeded_app, monkeypatch):
@@ -74,3 +80,19 @@ def test_soon_badge_gone_from_files_band(seeded_app, monkeypatch):
     body = resp.text
     assert "Badge probe" in body  # the Files band really rendered
     assert "Data apps coming soon" not in body
+
+
+def test_app_rows_trail_the_files_inside_artefacts(seeded_app, monkeypatch):
+    """Sub-kinds stay grouped inside the Artefacts band: folders, then loose
+    files, then data apps — not interleaved by recency."""
+    monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+    monkeypatch.setenv("AGNES_DATA_APPS_ENABLED", "1")
+    _seed_app(slug="order-app", name="Ordering app")
+    c = seeded_app["client"]
+    r = c.post(
+        "/api/collections", json={"name": "Order probe"}, headers=_auth(seeded_app["admin_token"])
+    )
+    assert r.status_code == 201, r.text
+    body = c.get("/library", headers=_auth(seeded_app["admin_token"])).text
+    sec_at = body.index('data-lib-sec="files"')
+    assert body.index("Order probe", sec_at) < body.index('href="/apps/detail/order-app"', sec_at)

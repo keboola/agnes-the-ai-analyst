@@ -33,7 +33,7 @@ def test_apps_redirects_to_library_under_rail_when_enabled(seeded_app, monkeypat
     c = seeded_app["client"]
     resp = c.get("/apps", headers=_auth(seeded_app["analyst_token"]), follow_redirects=False)
     assert resp.status_code == 302
-    assert resp.headers["location"] == "/library?section=data_app"
+    assert resp.headers["location"] == "/library?section=files"
 
 
 def test_apps_keeps_empty_state_under_rail_when_disabled(seeded_app, monkeypatch):

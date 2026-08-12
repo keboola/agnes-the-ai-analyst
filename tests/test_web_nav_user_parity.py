@@ -53,7 +53,7 @@ KNOWN_TOPNAV_ONLY = {
 # this set can never rot into a silent allowlist.
 REDIRECTED_UNDER_RAIL = {
     "/corporate-memory": "/library?section=memory_domain",
-    "/apps": "/library?section=data_app",
+    "/apps": "/library?section=files",
 }
 
 

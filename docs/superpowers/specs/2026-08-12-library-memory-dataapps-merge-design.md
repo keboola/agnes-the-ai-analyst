@@ -47,10 +47,20 @@ the pre-redesign pages byte-for-byte.
 
 ## Design
 
-### 1. Data apps band
+### 1. Data apps in the Library
 
-A new Library section "Data apps" (`type_key="data_app"`), sibling of
-Plugins/Memory, built from exactly the `/apps` page's logic — reuse
+> **Revision (post-review):** data apps do NOT get their own band after
+> all — they group into the Files band, renamed **Artefacts**, among the
+> caller's other artifacts, which is what that band's "Data apps coming
+> soon" badge promised in the first place. The band orders its sub-kinds
+> as stable blocks (folders, loose files, data apps); rows keep
+> `type_key="data_app"` so the Type facet and the row's own label stay
+> honest; the redirect and detail back link target `?section=files`. The
+> rest of this section describes the row model, which is unchanged.
+
+Data-app rows in the Library (`type_key="data_app"`, grouped into the
+Files section via the router's `_SECTION_OF` map), built from exactly the
+`/apps` page's logic — reuse
 `app.api.data_apps._can_view` / `_serialize` via the same imports the
 `data_apps_list_page` handler uses (`data_apps_repo().list(
 include_drafts=False)`, exclude `state == "linked_hidden"`):
