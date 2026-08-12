@@ -443,7 +443,34 @@ async def proxy_app(slug: str, path: str, request: Request, conn=Depends(_get_db
         try:
             return await _proxy(request, slug, path)
         except (httpx.ConnectError, httpx.ConnectTimeout):
-            data_apps_repo().set_state(row["id"], "error", "container unreachable")
+            # A refused connection is not proof the app is broken, and this
+            # is a latch: nothing clears `error` except a redeploy, because
+            # the `state == "error"` branch below only reports the stored
+            # detail and never re-checks. So one badly-timed request used to
+            # brick a healthy app permanently.
+            #
+            # That window is not narrow. A first deploy clones, runs
+            # `npm install` and builds before anything listens on 8888 —
+            # ~90s on a real app — and the deploy marks the row `running` as
+            # soon as the runner accepts the container, not when it serves.
+            # Watched live: the app finished building and served 200 inside
+            # the container while Agnes answered `app_error / container
+            # unreachable` to every caller, until an unrelated redeploy
+            # happened to reset it.
+            #
+            # So ask the runner what is actually true before latching. A
+            # container that is up but not yet listening is *starting*, and
+            # the honest answer is the same "waking" page a sleeping app
+            # gets. Only a container that is genuinely gone or stopped is an
+            # error worth remembering.
+            try:
+                container = (await run_in_threadpool(_runner().status, slug)).get("container")
+            except (RunnerUnavailable, RunnerError):
+                container = None  # runner itself is down — say nothing about the app
+            if container == "running":
+                return _waking_response(request, slug, accepts_json)
+            if container is not None:
+                data_apps_repo().set_state(row["id"], "error", f"container {container}")
             raise HTTPException(status_code=502, detail="container_unreachable")
 
     if state == "sleeping":
