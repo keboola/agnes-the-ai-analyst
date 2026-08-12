@@ -33,6 +33,8 @@ identity) has nothing to bind and is refused outright rather than guessed.
 
 from __future__ import annotations
 
+import re
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -251,3 +253,200 @@ def _referenced_variables(policy_sql: str, *, table_id: str) -> set[str]:
     except Exception as exc:
         raise PolicyError(table_id) from exc
     return {p.name for p in statement.find_all(exp.Placeholder) if p.name in _KNOWN_VARIABLES}
+
+
+# ---------------------------------------------------------------------------
+# Task 6 -- AST substitution for SQL read surfaces (§5.2). The other
+# consumer of `policied_relation` (Task 8's `table_id`-shaped FROM builder)
+# needs none of this: it never has a caller SQL tree to rewrite.
+# ---------------------------------------------------------------------------
+
+# A bare "word" -- the widest a SQL identifier or keyword can be. Used only
+# by the last-resort scan over SQL sqlglot could not parse at all (rule 3
+# below): every Agnes table name is representable by this pattern, so
+# probing each unique token through `resolve` finds a policied reference
+# without needing a full registry listing.
+_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+class PolicyNameCollision(Exception):
+    """A caller-introduced name -- a CTE alias or a subquery/derived-table
+    alias (§5.2 rule 4) -- is spelled identically to a policied table's name.
+
+    ``WITH invoices AS (SELECT ... FROM invoices ...) SELECT * FROM invoices``
+    is the single most common analyst idiom and the default shape an LLM
+    writes, so this is never resolved by guessing which occurrence the
+    caller meant -- it is refused outright, with a structured reason (§16)
+    so the caller (an LLM in practice) renames the CTE and retries instead
+    of looping on the same ambiguity.
+    """
+
+    def __init__(self, table_id: str) -> None:
+        self.table_id = table_id
+        super().__init__(
+            f"a CTE or subquery alias in this query is spelled identically to "
+            f"the policied table {table_id!r}; rename it and retry"
+        )
+
+
+def _scan_unparseable_for_policied_table(sql: str, principal, resolve) -> str | None:
+    """Best-effort answer to "does this SQL -- which failed to parse --
+    reference a policied table" (§5.2 rule 3; §19's tripwire example is
+    ``SELECT * FROM t SAMPLE 50%``, which DuckDB accepts and sqlglot does
+    not parse).
+
+    No AST is available, so there is no candidate-table list other than the
+    raw text itself. Every word-shaped token is a candidate; ``PolicyError``
+    -- ``_resolve_table_row``'s exact signal for "no such registered table"
+    -- is swallowed as "not a match" so a query that merely mentions
+    unregistered names keeps failing exactly as it did before this feature
+    existed. Any OTHER exception (an identity/mapping problem on a genuine
+    match) is a real, table-scoped failure and is not swallowed.
+    """
+    seen: set[str] = set()
+    for match in _IDENTIFIER_RE.finditer(sql):
+        word = match.group(0)
+        key = word.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            relation = resolve(word, principal)
+        except PolicyError:
+            continue
+        if relation.policied:
+            return relation.table_id
+    return None
+
+
+def rewrite_sql(
+    sql: str,
+    principal,
+    *,
+    resolve=policied_relation,
+) -> tuple[str, dict, list[str]]:
+    """Substitute every policied table reference in ``sql`` with its resolved
+    relation (§5.2) -- the AST-rewrite half of the resolver's two consumers
+    (§5; the other is Task 8's ``table_id``-shaped ``FROM`` builder).
+
+    Returns ``(rewritten_sql, merged_params, policied_table_ids)``:
+
+    - ``rewritten_sql`` is executable DuckDB SQL with every policied
+      ``exp.Table`` node replaced by ``(<relation_sql>) AS <alias>`` --
+      the alias preserved verbatim if the caller wrote one, else the
+      table's own name (rule 2). A query that touches no policied table is
+      returned byte-for-byte unchanged, not merely semantically unchanged
+      -- enforcement is inert until a policy is attached (plan
+      Architecture), and this is the only place that promise is upheld for
+      every read that reaches this function, not only the ones a caller
+      already suspects are policied.
+    - ``merged_params`` unions each substituted relation's bind params --
+      safe, because identity values are identical for every table in one
+      request.
+    - ``policied_table_ids`` lists the registry ids substituted, in the
+      order first encountered, for the disclosure envelope (Task 11).
+
+    Applied exactly once, non-recursively (rule 1): only ``exp.Table`` nodes
+    already present in the ORIGINAL parse of the caller's SQL are ever
+    considered -- a policy body's own ``FROM <table>`` never enters this
+    scan, because ``relation.relation_sql`` is spliced into the output as
+    literal text (a sentinel placed by the AST, swapped for the real text by
+    a plain string replace AFTER generation) rather than being re-parsed and
+    walked. Re-parsing it would also risk sqlglot normalizing the text it
+    round-trips (e.g. ``list_contains`` -> ``ARRAY_CONTAINS``), silently
+    drifting from what the admin wrote and what Task 3 validated -- the
+    verbatim property Task 5 documents at length.
+
+    Raises ``PolicyNameCollision`` if a caller CTE or subquery/derived-table
+    alias shadows a policied table's name (rule 4), and ``PolicyError`` if
+    the SQL references a policied table but does not parse (rule 3) -- the
+    same reason code ``policied_relation`` itself uses for "failed to
+    resolve", per §16's four-reason table (there is no fifth "unparseable"
+    reason). Callers map both to an HTTP 400 naming the table (Task 7).
+    """
+    try:
+        statement = sqlglot.parse_one(sql, read="duckdb")
+    except Exception:
+        # Rule 3: unparseable SQL is rejected outright when it touches a
+        # policied table (the fail-closed property a TEMP VIEW would have
+        # given for free, §5.1) and left alone otherwise, so a query
+        # sqlglot merely lags DuckDB on does not regress for everyone else.
+        table_id = _scan_unparseable_for_policied_table(sql, principal, resolve)
+        if table_id is not None:
+            raise PolicyError(table_id)
+        return sql, {}, []
+
+    table_nodes = list(statement.find_all(exp.Table))
+
+    # Rule 4: a caller-chosen CTE or subquery/derived-table alias spelled
+    # identically to a policied table's name -- checked on BOTH node shapes
+    # because sqlglot places a derived-table alias on ``exp.Subquery``, not
+    # ``exp.CTE`` (``SELECT * FROM t, (SELECT 1) invoices`` never produces
+    # an ``exp.Table`` named "invoices" at all, so this cannot be folded
+    # into the table-node loop below).
+    shadow_names = {cte.alias for cte in statement.find_all(exp.CTE) if cte.alias}
+    shadow_names |= {sub.alias for sub in statement.find_all(exp.Subquery) if sub.alias}
+    shadow_names_lower = {name.lower() for name in shadow_names}
+
+    # Rule 5 / §5.3: match by name, case-insensitively (DuckDB folds
+    # unquoted identifiers) -- resolve every DISTINCT name once, whether it
+    # appears as a real table reference, a shadowing alias, or both (the
+    # ``WITH invoices AS (SELECT ... FROM invoices ...)`` idiom is both at
+    # once, and must still raise the collision).
+    candidate_names: dict[str, str] = {}
+    for table in table_nodes:
+        if table.name:
+            candidate_names.setdefault(table.name.lower(), table.name)
+    for name in shadow_names:
+        candidate_names.setdefault(name.lower(), name)
+
+    relations: dict[str, PoliciedRelation] = {}
+    for lower_name, original_name in candidate_names.items():
+        try:
+            relation = resolve(original_name, principal)
+        except PolicyError:
+            # A name that resolves to no registered table is not this
+            # function's concern -- a CTE name, an information_schema
+            # view, anything sqlglot modeled as `exp.Table` that the
+            # registry has never heard of. Swallowing keeps every OTHER
+            # query working; rule 5's allowlist is enforced upstream
+            # (#1264, the registry gate), not here.
+            continue
+        if not relation.policied:
+            continue
+        if lower_name in shadow_names_lower:
+            raise PolicyNameCollision(relation.table_id)
+        relations[lower_name] = relation
+
+    if not relations:
+        return sql, {}, []
+
+    merged_params: dict[str, Any] = {}
+    policied_table_ids: list[str] = []
+    seen_ids: set[str] = set()
+    sentinel_relation_sql: dict[str, str] = {}
+
+    for table in table_nodes:
+        relation = relations.get(table.name.lower()) if table.name else None
+        if relation is None:
+            continue  # rule 1/2: non-policied tables are left untouched
+
+        # Reuse the original alias node (or, unaliased, the table's own
+        # name identifier) so quoting/casing survive -- rule 2.
+        alias_node = table.args.get("alias")
+        alias_node = alias_node.copy() if alias_node is not None else exp.TableAlias(this=table.this.copy())
+
+        sentinel = f"__agnes_policy_{uuid.uuid4().hex}__"
+        sentinel_relation_sql[sentinel] = relation.relation_sql
+        table.replace(exp.Subquery(this=exp.Var(this=sentinel), alias=alias_node))
+
+        merged_params.update(relation.params)
+        if relation.table_id not in seen_ids:
+            seen_ids.add(relation.table_id)
+            policied_table_ids.append(relation.table_id)
+
+    rewritten_sql = statement.sql(dialect="duckdb")
+    for sentinel, relation_sql in sentinel_relation_sql.items():
+        rewritten_sql = rewritten_sql.replace(sentinel, relation_sql)
+
+    return rewritten_sql, merged_params, policied_table_ids
