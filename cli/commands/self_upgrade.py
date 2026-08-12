@@ -980,7 +980,14 @@ def self_upgrade(
                 # server does not also freeze the workspace's hooks until
                 # someone re-points the CLI.
                 _try_refresh_hooks(quiet=quiet)
-            if quiet:
+            # `--force` asked for an upgrade that did not happen, so it is a
+            # failure whatever `--quiet` says — `--quiet` suppresses PROGRESS,
+            # not failures (its own help says so, and `_Unreachable` writes to
+            # stderr and exits 1 under it). Returning 0 here told an
+            # automation that its forced upgrade worked. Without `--force`
+            # this is the passive check, where silence and exit 0 match
+            # `_Offline`. (Devin Review on #1275.)
+            if quiet and not force:
                 raise typer.Exit(0)
             sys.stderr.write(f"agnes self-upgrade: {info.message}\n")
             raise typer.Exit(1)
