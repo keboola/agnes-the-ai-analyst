@@ -38,7 +38,13 @@ from app.auth.access import require_admin
 from app.secrets_vault import VaultKeyNotConfiguredError, can_store_secrets
 from connectors.keboola.semantic_layer import MasterTokenRequiredError, require_master_token
 from connectors.keboola.storage_api import KeboolaStorageClient, StorageApiError, is_upstream_client_error
-from src.keboola_chat_tools import build_stdio_spec, derived_source_id
+from connectors.mcp.client import exc_summary
+from src.keboola_chat_tools import (
+    build_stdio_spec,
+    derived_source_id,
+    derived_tool_id,
+    tool_name_prefix,
+)
 from src.repositories import (
     connection_secrets_repo,
     mcp_sources_repo,
@@ -48,6 +54,7 @@ from src.repositories import (
     table_registry_repo,
     tool_registry_repo,
 )
+from src.repositories.tool_registry import PASSTHROUGH
 
 logger = logging.getLogger(__name__)
 
@@ -811,11 +818,7 @@ async def delete_connection_secret(
             source = mcp_sources_repo().get(derived)
             if source is not None and source.get("enabled") is not False:
                 mcp_sources_repo().upsert(
-                    **{
-                        k: v
-                        for k, v in {**source, "enabled": False}.items()
-                        if k not in ("created_at", "updated_at")
-                    }
+                    **{k: v for k, v in {**source, "enabled": False}.items() if k not in ("created_at", "updated_at")}
                 )
         except Exception:  # noqa: BLE001 — best-effort; the primary delete already succeeded
             logger.warning(
@@ -919,6 +922,41 @@ def _remove_chat_tools(connection_id: str) -> None:
             ", ".join(failed),
             source_id,
         )
+
+
+async def _register_derived_tools(source: Dict[str, Any], connection_id: str, connection_name: str) -> int:
+    """Introspect the derived source and register its tools as passthrough.
+
+    Without this the switch would create a source and nothing else: the
+    passthrough surface the agent sees is built from ``tool_registry``, and
+    those rows are otherwise only written by an admin curating each tool by
+    hand under ``/admin/mcp``. Thirty-odd hand-registrations is not the "one
+    switch" this endpoint promises.
+
+    Grants are deliberately NOT created here — registering a tool makes it
+    curatable, granting it makes it reachable, and only the second is an
+    access-control decision.
+    """
+    from connectors.mcp.client import list_tools_async
+
+    tools = await list_tools_async(source)
+    prefix = tool_name_prefix(connection_id, connection_name)
+    registry = tool_registry_repo()
+    for tool in tools:
+        registry.upsert(
+            tool_id=derived_tool_id(connection_id, tool.name),
+            source_id=source["id"],
+            original_name=tool.name,
+            exposed_name=f"{prefix}_{tool.name}",
+            mode=PASSTHROUGH,
+            input_schema=tool.input_schema,
+            description=tool.description,
+            # `read_only is True` — not `not read_only`. An upstream that
+            # annotates nothing yields None, and treating that as read-only
+            # would mark every tool of such a server safe to call unattended.
+            mutating=tool.read_only is not True,
+        )
+    return len(tools)
 
 
 @router.post("/{connection_id}/chat-tools", status_code=201)
@@ -1050,23 +1088,64 @@ async def enable_chat_tools(
         merged_env = dict(existing_row.get("env") or {})
         merged_env.update(spec.get("env") or {})
         spec["env"] = merged_env
+    was_enabled = existing_row is not None
+
+    def _undo() -> None:
+        """Put back what was here. Never raises — it runs inside an exception
+        handler, and masking the original failure with a cleanup error would
+        cost the admin the only useful diagnostic."""
+        try:
+            if not was_enabled:
+                # First enable: never leave a source, its tools or the token
+                # behind under an id the admin does not know exists.
+                _remove_chat_tools(connection_id)
+            elif previous_secret is not None:
+                shared_secrets_repo().upsert(spec["id"], previous_secret)
+        except Exception:
+            logger.warning("could not roll back a failed enable for %s", connection_id, exc_info=True)
+
     try:
         mcp_sources_repo().upsert(**spec)
     except Exception:
         # First enable: never leave the token behind under a source id that
-        # does not exist. Re-sync: put back what was working.
+        # does not exist. Re-sync: put back what was working. The error itself
+        # propagates — a failed local config write is not something the admin
+        # can fix by retrying an upstream, so it must not be dressed up as one.
         if previous_secret is None:
             shared_secrets_repo().delete(spec["id"])
         else:
             shared_secrets_repo().upsert(spec["id"], previous_secret)
         raise
 
+    # Registering is a separate failure domain: this one really is "the
+    # upstream did not answer", and it is the step most likely to fail on a
+    # cold cache, so it gets the 502 and the retry hint.
+    try:
+        tool_count = await _register_derived_tools(spec, connection_id, row.get("name") or connection_id)
+    except Exception as exc:
+        _undo()
+        logger.warning("chat-tools tool registration failed for connection %s", connection_id, exc_info=True)
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"could not reach the Keboola MCP server: {exc_summary(exc)}. "
+                "The first run downloads it, so a retry is usually quick; "
+                "nothing was changed."
+            ),
+        ) from exc
+
     logger.info(
-        "chat tools enabled for connection %s (source %s)",
+        "chat tools enabled for connection %s (source %s, %d tools)",
         connection_id,
         spec["id"],
+        tool_count,
     )
-    return {"source_id": spec["id"], "name": spec["name"], "granted_to_groups": 0}
+    return {
+        "source_id": spec["id"],
+        "name": spec["name"],
+        "tools_registered": tool_count,
+        "granted_to_groups": 0,
+    }
 
 
 @router.delete("/{connection_id}/chat-tools", status_code=204)

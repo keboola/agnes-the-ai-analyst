@@ -910,8 +910,15 @@ discovery helper for the /admin/data-sources add-project wizard, #755).
 
 `POST …/{connection_id}/chat-tools` lends the chat agent the connected project's
 own upstream MCP tools (SQL, buckets/tables, search, semantic context): it derives
-an `mcp_sources` stdio row from the connection and copies the connection's storage
-token into the MCP vault, so the project is registered once rather than twice.
+an `mcp_sources` stdio row from the connection, copies the connection's storage
+token into the MCP vault, then **introspects the upstream and registers its tools**
+as `tool_registry` passthrough rows — the agent's passthrough surface is built from
+that table, so a source alone would give it nothing to call. `mutating` comes from
+each tool's `readOnlyHint`; a tool the upstream does not annotate is recorded as
+mutating rather than assumed safe. Exposed names are prefixed per connection, so
+two projects' identically-named tools stay apart. Returns `tools_registered`.
+A registration failure returns 502 and rolls back; a failed local config write
+propagates instead of being dressed up as an upstream problem.
 `DELETE` removes both (idempotent), and deleting the connection itself does the
 same. Keboola-only; 400 without a resolvable token — a source that connected
 anonymously would fail every call at the far end instead. Enabling is idempotent
