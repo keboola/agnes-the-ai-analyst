@@ -31759,7 +31759,7 @@
     },
     "/api/data-apps/{slug}/readiness": {
       "get": {
-        "description": "Runner-backed readiness probe. Doubles as the wake-completion flip:\nwhen a `deploying` app's runner reports `ready`, this call itself\ntransitions the row to `running` \u2014 the ingress proxy's holding page\n(`app/api/data_apps_proxy.py``, ``data_app_waking.html``'s poll loop)\nis the only caller that hits this endpoint on a cadence, so the flip\nhappening here (rather than a dedicated poller) is what actually\nsurfaces \"the app is up\" back to the browser tab that triggered the\nwake. See that module's docstring for the other half of this contract.",
+        "description": "Runner-backed readiness probe. Doubles as the wake-completion flip:\nwhen a `deploying` app's runner reports `ready`, this call itself\ntransitions the row to `running` \u2014 the ingress proxy's holding page\n(`app/api/data_apps_proxy.py``, ``data_app_waking.html``'s poll loop)\nis the only caller that hits this endpoint on a cadence, so the flip\nhappening here (rather than a dedicated poller) is what actually\nsurfaces \"the app is up\" back to the browser tab that triggered the\nwake. See that module's docstring for the other half of this contract.\n\nThe caller is resolved through the PROXY's chain, not a plain\n``Depends(get_current_user)``. The holding page this serves is rendered\nby the proxy, which accepts a ``data-app-preview:<slug>`` scoped token \u2014\nthe credential the in-chat preview iframe carries \u2014 while\n``get_current_user`` rejects it outright. So a preview iframe used to get\na holding page whose poll 401'd forever and never noticed the app come\nup (Devin Review on this PR; pre-existing for the `sleeping`/`deploying`\nbranches, but the starting-app branch added here reaches it far more\noften). Serving the page and refusing its only poll is half a fix.\n\nImported inside the function: `data_apps_proxy` imports this module, so a\nmodule-level import would be circular.",
         "operationId": "get_data_app_readiness_api_data_apps__slug__readiness_get",
         "parameters": [
           {
@@ -31769,22 +31769,6 @@
             "schema": {
               "title": "Slug",
               "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           }
         ],

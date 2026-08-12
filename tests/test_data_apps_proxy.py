@@ -884,3 +884,29 @@ def test_the_grace_window_follows_a_wake_not_only_a_deploy():
     assert _within_start_grace({"last_deploy_at": old_deploy, "updated_at": just_woken}) is True
     # ...and a stale row on both clocks is still out of grace.
     assert _within_start_grace({"last_deploy_at": old_deploy, "updated_at": old_deploy}) is False
+
+
+def test_a_preview_token_can_poll_readiness(proxy_client, fake_runner, running_app, mint_preview):
+    """The holding page's poll must work for the credential the holding page
+    is served to.
+
+    `_waking_response` is rendered by the proxy, which accepts a
+    `data-app-preview:<slug>` token — but `/readiness`, the endpoint its poll
+    loop hits, resolved through `get_current_user`, which rejects that scope
+    outright. So an in-chat preview iframe got a holding page whose poll 401'd
+    forever and never noticed the app come up (Devin Review on this PR).
+    """
+    tok = mint_preview("s", ttl_s=1800)
+    r = proxy_client.get("/api/data-apps/s/readiness", headers={"cookie": tok.cookie})
+    assert r.status_code == 200, r.text
+    assert "ready" in r.json()
+
+
+def test_a_preview_token_for_another_app_cannot_poll_readiness(proxy_client, fake_runner, running_app, mint_preview):
+    """The scope pin is what makes skipping the grant check safe."""
+    _create_app_row(slug="other2", state="running")
+    tok = mint_preview("other2", ttl_s=1800)
+    r = proxy_client.get(
+        "/api/data-apps/s/readiness", headers={"cookie": tok.cookie}, follow_redirects=False
+    )
+    assert r.status_code in (401, 403), r.text

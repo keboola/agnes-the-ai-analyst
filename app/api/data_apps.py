@@ -58,7 +58,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import duckdb
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from starlette.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import exc as sa_exc
@@ -1608,7 +1609,7 @@ async def get_data_app_logs(slug: str, tail: int = 200, user: dict = Depends(get
 
 
 @router.get("/{slug}/readiness")
-async def get_data_app_readiness(slug: str, user: dict = Depends(get_current_user)):
+async def get_data_app_readiness(slug: str, request: Request):
     """Runner-backed readiness probe. Doubles as the wake-completion flip:
     when a `deploying` app's runner reports `ready`, this call itself
     transitions the row to `running` — the ingress proxy's holding page
@@ -1617,10 +1618,30 @@ async def get_data_app_readiness(slug: str, user: dict = Depends(get_current_use
     happening here (rather than a dedicated poller) is what actually
     surfaces "the app is up" back to the browser tab that triggered the
     wake. See that module's docstring for the other half of this contract.
+
+    The caller is resolved through the PROXY's chain, not a plain
+    ``Depends(get_current_user)``. The holding page this serves is rendered
+    by the proxy, which accepts a ``data-app-preview:<slug>`` scoped token —
+    the credential the in-chat preview iframe carries — while
+    ``get_current_user`` rejects it outright. So a preview iframe used to get
+    a holding page whose poll 401'd forever and never noticed the app come
+    up (Devin Review on this PR; pre-existing for the `sleeping`/`deploying`
+    branches, but the starting-app branch added here reaches it far more
+    often). Serving the page and refusing its only poll is half a fix.
+
+    Imported inside the function: `data_apps_proxy` imports this module, so a
+    module-level import would be circular.
     """
+    from app.api.data_apps_proxy import _resolve_proxy_caller
+
     _feature_gate()
     row = _get_row_or_404(slug)
-    if not _can_view(user, row):
+    user, via_preview = await run_in_threadpool(_resolve_proxy_caller, request, slug, None)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+    # `via_preview` is already pinned to THIS slug by the resolver's scope
+    # check, which is what makes skipping the grant check safe here.
+    if not via_preview and not _can_view(user, row):
         raise HTTPException(status_code=403, detail="forbidden")
     _reject_linked(row)
 
