@@ -79,7 +79,15 @@ MAX_REMOVED_FRACTION = 0.5
 #
 # `jira_not_configured` is deliberately NOT here: an instance without Jira ingest is
 # expected to skip this job, not to fail it every night.
-FAILURE_REASONS = frozenset({"all_fetches_failed", "mass_removal_guard", "existing_unreadable", "enumeration_empty"})
+FAILURE_REASONS = frozenset(
+    {
+        "all_fetches_failed",
+        "mass_removal_guard",
+        "existing_unreadable",
+        "enumeration_empty",
+        "cloud_id_unresolved",
+    }
+)
 
 
 def _read_existing(table_dir: Path) -> dict[str, dict] | None:
@@ -207,6 +215,30 @@ def refresh_organizations(
             len(org_ids),
             ["org_id", "name", *configured],
         )
+        stats["elapsed_sec"] = round(time.time() - start, 1)
+        return stats
+
+    # Resolve the site's cloud id once, before the loop. `fetch_organization` needs it
+    # per request but only memoizes a *successful* lookup, and the loop below catches
+    # JiraFetchError per organization and carries on — so an unresolvable id became one
+    # redundant tenant_info request per organization, reported N times as a
+    # per-organization warning with no single clear cause (Devin Review on #1274).
+    #
+    # Usually those N failures are fast: a non-200, a refused connection or a DNS failure
+    # all return immediately. The case that hurts is a tenant_info that *hangs* rather
+    # than errors, where each attempt runs to the client's 30s timeout — then N is
+    # multiplied by 30s and a large site can outlive
+    # `_DEFAULT_JIRA_ORG_REFRESH_LEASE_S`, get reclaimed mid-sweep and retry forever.
+    # Resolving once removes the whole class regardless of which failure mode it is, and
+    # the success memo makes every later call in the sweep free.
+    #
+    # Deliberately after the dry-run return: `--dry-run` only enumerates, so it has no
+    # business requiring CSM reachability.
+    try:
+        service.resolve_cloud_id()
+    except JiraFetchError as e:
+        logger.error("Cannot resolve the site's cloud id, so no organization can be read: %s", e)
+        stats["skipped_reason"] = "cloud_id_unresolved"
         stats["elapsed_sec"] = round(time.time() - start, 1)
         return stats
 

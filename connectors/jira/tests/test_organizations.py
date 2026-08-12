@@ -958,6 +958,7 @@ class TestDevinReviewRoundTwo:
             "mass_removal_guard",
             "existing_unreadable",
             "enumeration_empty",
+            "cloud_id_unresolved",
         }
         # An unconfigured instance skips this job; it does not fail it every night.
         assert "jira_not_configured" not in FAILURE_REASONS
@@ -1188,3 +1189,59 @@ class TestConcurrentPublishSafety:
 
         _, files = _table_parquets("organizations", table_dir)
         assert [f.name for f in files] == ["data.parquet"]
+
+
+class TestCloudIdResolvedOnce:
+    """An unresolvable cloud id must fail once, not once per organization.
+
+    `fetch_organization` needs the cloud id per request but memoizes only successful
+    lookups, and the sweep catches JiraFetchError per organization — so an unreachable
+    tenant_info cost one 30s-timeout request per organization. At ~60 lookups per
+    1800s lease, a few-hundred-organization site would be reclaimed mid-sweep and retried
+    indefinitely.
+    """
+
+    def test_unresolvable_cloud_id_aborts_before_the_loop(self, tmp_path: Path, org_env: None) -> None:
+        from connectors.jira import organizations as orgs
+
+        svc = MagicMock()
+        svc.is_configured.return_value = True
+        svc.fetch_organization_ids.return_value = [str(i) for i in range(1, 51)]
+        svc.resolve_cloud_id.side_effect = JiraFetchError("tenant_info lookup failed: connection")
+
+        with (
+            patch.object(orgs, "get_jira_service", return_value=svc),
+            patch.object(orgs, "update_meta") as meta,
+            patch.object(orgs.time, "sleep"),
+        ):
+            stats = orgs.refresh_organizations(extract_dir=tmp_path)
+
+        assert stats["skipped_reason"] == "cloud_id_unresolved"
+        assert stats["skipped_reason"] in orgs.FAILURE_REASONS
+        # One resolution attempt for 50 organizations, and no per-org requests at all.
+        assert svc.resolve_cloud_id.call_count == 1
+        svc.fetch_organization.assert_not_called()
+        meta.assert_not_called()
+
+    def test_dry_run_does_not_require_cloud_id_resolution(self, tmp_path: Path, org_env: None) -> None:
+        """--dry-run only enumerates, so it has no business needing CSM reachability."""
+        from connectors.jira import organizations as orgs
+
+        svc = MagicMock()
+        svc.is_configured.return_value = True
+        svc.fetch_organization_ids.return_value = ["1", "2"]
+        svc.resolve_cloud_id.side_effect = JiraFetchError("should not be called")
+
+        with patch.object(orgs, "get_jira_service", return_value=svc):
+            stats = orgs.refresh_organizations(extract_dir=tmp_path, dry_run=True)
+
+        assert "skipped_reason" not in stats
+        svc.resolve_cloud_id.assert_not_called()
+
+    def test_worker_raises_on_unresolvable_cloud_id(self) -> None:
+        from app.worker import kinds
+
+        stats = {"skipped_reason": "cloud_id_unresolved"}
+        with patch("connectors.jira.organizations.refresh_organizations", return_value=stats):
+            with pytest.raises(RuntimeError, match="cloud_id_unresolved"):
+                kinds._run_jira_org_refresh({})
