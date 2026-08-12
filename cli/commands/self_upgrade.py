@@ -952,20 +952,35 @@ def self_upgrade(
         # --quiet stays silent: that is the SessionStart hook, and its
         # non-noisy contract (#601) outranks this diagnosis.
         if isinstance(info, _Redirected):
-            # Count it, unlike `_Offline`. That branch skips the counter
-            # because a network blip is transient and would raise a false
-            # alarm; a redirect is deterministic — it repeats on every
-            # invocation until someone re-points the CLI. On the quiet
-            # SessionStart path nothing is printed, so the #478 counter is
-            # the ONLY channel that will ever mention this: without it the
-            # analyst sits on a stale CLI indefinitely seeing nothing, which
-            # is the exact failure this branch exists to end. At the
-            # threshold the next non-quiet command says self-upgrade keeps
-            # failing and names the reason, and running it prints the
-            # remedy below. (Devin Review on #1275.)
-            record_outcome(success=False, reason=info.reason)
-            if quiet:
+            # `--check-only` REPORTS the redirect but changes nothing: it is
+            # read-only intent, and no upgrade was attempted, so counting one
+            # as failed would warn about something nobody tried. Both halves
+            # of that contract already have tests
+            # (`test_check_only_does_not_touch_failure_counter`,
+            # `test_hook_refresh_skipped_when_check_only`) — but they only
+            # exercise the outdated path, so this branch sailed past them
+            # green until Devin Review on #1275 read the ordering.
+            if not check_only:
+                # Count it, unlike `_Offline`. That branch skips the counter
+                # because a network blip is transient and would raise a false
+                # alarm; a redirect is deterministic — it repeats on every
+                # invocation until someone re-points the CLI. On the quiet
+                # SessionStart path nothing is printed, so the #478 counter is
+                # the ONLY channel that will ever mention this: without it the
+                # analyst sits on a stale CLI indefinitely seeing nothing,
+                # which is the exact failure this branch exists to end. At the
+                # threshold the next non-quiet command says self-upgrade keeps
+                # failing and names the reason, and running it prints the
+                # remedy below.
+                record_outcome(success=False, reason=info.reason)
+                # Hook convergence is orthogonal to where /cli/latest points:
+                # the workspace layout may have shifted whatever the server
+                # answered, and the `_Offline` verdict this case used to reach
+                # refreshed on exactly this path. Keeping it means a relocated
+                # server does not also freeze the workspace's hooks until
+                # someone re-points the CLI.
                 _try_refresh_hooks(quiet=quiet)
+            if quiet:
                 raise typer.Exit(0)
             sys.stderr.write(f"agnes self-upgrade: {info.message}\n")
             raise typer.Exit(1)
