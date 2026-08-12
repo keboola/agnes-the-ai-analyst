@@ -212,8 +212,10 @@ def test_detail_page_renders_for_owner_with_deploy_button(web_env):
     assert "Stop" in resp.text
     assert "/api/data-apps/" in resp.text
     assert "logs?tail=200" in resp.text
-    # /admin/access was retired (308 -> /admin/groups); the detail page's
-    # grant hint now points at the group's Access tab.
+    # The grant hint points at a group's own Access tab (where grants for
+    # ONE group are edited beside its Members). The cross-group workspace at
+    # /admin/access is a different surface; either destination is a real page,
+    # so what matters here is that the hint leads somewhere grants are edited.
     assert "/admin/groups" in resp.text
 
 

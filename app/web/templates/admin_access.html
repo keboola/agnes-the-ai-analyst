@@ -1,0 +1,648 @@
+{% extends "base_admin_page.html" %}
+{# The Access surface — the third leg of People → Data → Access.
+
+   `/admin/access` used to be a standalone grant matrix, was retired into the
+   group detail page's Access tab (grants key on `group_id`, so the group's
+   own page is where the editor belongs), and comes back here as something
+   the tab is not: a WORKSPACE over the whole graph. Two jobs the per-group
+   tab cannot do, and which no surface did:
+
+     1. Compare and move between groups without a page load each time — the
+        left column is the group list, the right pane is the editor.
+     2. Answer "why can/can't this person see X?" — the Simulate tab walks
+        membership → grant → tier and names what is NOT shared, which was
+        previously four pages of manual joining.
+
+   It is the SAME editor and the SAME rows as the group tab (one storage,
+   `/api/admin/grants`; the overview comes from `/api/admin/access-overview`
+   in one round trip), so the two can never disagree — this adds a second
+   entry point, it does not fork the model. The group detail tab stays: it is
+   where you land from a group, and it carries Members beside Access.
+
+   Data packages lead the right pane because they are the redesign's spine;
+   every other ResourceType is present but collapsed — progressive disclosure
+   of breadth, never removal. #}
+{% block title %}Access — {{ config.INSTANCE_NAME }}{% endblock %}
+{% block container_modifier %}container--wide{% endblock %}
+
+{% set page_hero_eyebrow = "Administration" %}
+{% set page_hero_title = "Access" %}
+{% set page_hero_subtitle = "Who can use what. Pick a group to edit its access, or simulate a person to see exactly what they get and why." %}
+
+{% block head_extra %}
+<style>
+  .ax-tabs { display: flex; gap: 2px; margin-bottom: 18px; }
+  .ax-tab {
+    border: none; background: transparent; cursor: pointer;
+    padding: 7px 14px 9px; margin-bottom: -1px;
+    font-size: 13px; font-weight: 600; color: var(--ds-text-secondary);
+    border-bottom: 2px solid transparent;
+  }
+  .ax-tab.is-on { color: var(--ds-primary-dark, var(--ds-primary)); border-bottom-color: var(--ds-primary); }
+  .ax-pane { display: none; }
+  .ax-pane.is-on { display: block; }
+
+  /* ── Two-pane workspace ── */
+  .ax-cols { display: grid; grid-template-columns: 260px 1fr; gap: 16px; align-items: start; }
+  @media (max-width: 900px) { .ax-cols { grid-template-columns: 1fr; } }
+
+  .ax-panel {
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: 12px;
+    box-shadow: var(--ds-shadow-sm);
+  }
+  .ax-panel__hd {
+    display: flex; align-items: baseline; gap: 10px;
+    padding: 14px 18px 0;
+  }
+  .ax-panel__hd h2 { margin: 0; font-size: 15px; font-weight: 700; color: var(--ds-text-primary); }
+  .ax-panel__hd .sub { font-size: 12.5px; color: var(--ds-text-muted); }
+  .ax-panel__hd .end { margin-left: auto; }
+  .ax-panel__bd { padding: 12px 18px 16px; }
+
+  .ax-grouplist { padding: 8px; }
+  .ax-group {
+    display: flex; align-items: center; gap: 10px; width: 100%;
+    padding: 9px 12px; border: none; background: transparent; text-align: left;
+    border-radius: var(--ds-radius-btn); cursor: pointer;
+    font-size: 13.5px; font-weight: 600; color: var(--ds-text-secondary);
+  }
+  .ax-group:hover { background: var(--ds-surface-sunken); }
+  .ax-group.is-on { background: var(--ds-primary-light); color: var(--ds-primary-dark, var(--ds-primary)); }
+  .ax-group__ava {
+    width: 24px; height: 24px; border-radius: 7px; flex: 0 0 auto;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 10px; font-weight: 800;
+    background: var(--ds-surface-sunken); color: var(--ds-text-secondary);
+  }
+  .ax-group.is-everyone .ax-group__ava { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
+  .ax-group__cnt { margin-left: auto; font-size: 11.5px; font-weight: 600; color: var(--ds-text-muted); }
+
+  /* ── Resource sections ── */
+  .ax-sec { border-bottom: 1px solid var(--ds-border-light); }
+  .ax-sec:last-child { border-bottom: none; }
+  .ax-sec > summary {
+    cursor: pointer; list-style: none;
+    display: flex; align-items: center; gap: 9px;
+    padding: 10px 2px; font-size: 13px; font-weight: 700; color: var(--ds-text-secondary);
+  }
+  .ax-sec > summary::-webkit-details-marker { display: none; }
+  .ax-sec > summary .car { font-size: 10px; color: var(--ds-text-muted); transition: transform var(--ds-motion-fast) var(--ds-ease-standard); }
+  .ax-sec[open] > summary .car { transform: rotate(90deg); }
+  .ax-sec > summary .cnt { margin-left: auto; font-size: 11.5px; font-weight: 600; color: var(--ds-text-muted); }
+  .ax-tag {
+    font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: var(--ds-radius-pill);
+    background: var(--ds-surface-sunken); color: var(--ds-text-secondary);
+  }
+  .ax-tag--data { background: var(--ds-kind-data-soft); color: var(--ds-kind-data); }
+
+  .ax-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 4px 8px 22px;
+    border-top: 1px solid var(--ds-border-light);
+    font-size: 13px; color: var(--ds-text-primary);
+  }
+  .ax-item input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--ds-primary); flex: 0 0 auto; }
+  .ax-item__name { font-weight: 600; }
+  .ax-item__sub { font-size: 11.5px; color: var(--ds-text-muted); }
+  .ax-item__blk { font-size: 11.5px; color: var(--ds-text-muted); }
+
+  .ax-tier {
+    margin-left: auto; display: inline-flex; padding: 2px; flex: 0 0 auto;
+    background: var(--ds-surface-sunken); border-radius: var(--ds-radius-btn);
+  }
+  .ax-tier button {
+    border: none; background: transparent; cursor: pointer;
+    padding: 3px 10px; font-size: 12px; font-weight: 600;
+    border-radius: 7px; color: var(--ds-text-muted);
+  }
+  .ax-tier button.on { background: var(--ds-surface); color: var(--ds-text-primary); box-shadow: var(--ds-shadow-sm); }
+  .ax-tier button.on.auto { color: var(--ds-primary-dark, var(--ds-primary)); }
+  .ax-tier[aria-disabled="true"] { opacity: .45; pointer-events: none; }
+
+  .ax-note {
+    font-size: 12.5px; color: var(--ds-text-secondary);
+    background: var(--ds-surface-dim);
+    border: 1px solid var(--ds-border-light);
+    border-radius: 10px; padding: 10px 12px; margin-bottom: 12px;
+  }
+  .ax-empty { padding: 18px 4px; font-size: 13px; color: var(--ds-text-muted); }
+
+  /* ── Simulate ── */
+  .ax-simrow { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+  .ax-simrow label { display: block; font-size: 12.5px; font-weight: 700; margin-bottom: 4px; color: var(--ds-text-primary); }
+  .ax-simrow select {
+    font: inherit; font-size: 13.5px; padding: 7px 10px; min-width: 320px;
+    border: 1px solid var(--ds-border); border-radius: var(--ds-radius-btn);
+    background: var(--ds-surface); color: var(--ds-text-primary);
+  }
+  .ax-chips { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .ax-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; font-weight: 700; padding: 3px 10px;
+    border-radius: var(--ds-radius-pill); border: 1px solid transparent;
+  }
+  .ax-chip::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .ax-chip.ok { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); border-color: var(--ds-accent-success-line); }
+  .ax-chip.no { background: var(--ds-accent-danger-bg); color: var(--ds-accent-danger-ink); border-color: var(--ds-accent-danger-line); }
+  .ax-chip.info { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
+
+  .ax-chain { margin: 6px 0 0; padding: 0; list-style: none; }
+  .ax-chain li {
+    position: relative; margin-left: 8px; padding: 9px 0 9px 18px;
+    border-left: 2px solid var(--ds-border);
+    font-size: 13px; color: var(--ds-text-primary);
+  }
+  .ax-chain li::before {
+    content: ''; position: absolute; left: -5px; top: 15px;
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--ds-primary); border: 2px solid var(--ds-surface);
+  }
+  .ax-chain li.stop::before { background: var(--ds-accent-danger-line); }
+  .ax-chain li .muted { color: var(--ds-text-muted); }
+  .ax-chain li b { font-weight: 700; }
+
+  .ax-toast {
+    position: fixed; bottom: 24px; right: 24px; z-index: 1100;
+    display: none; max-width: 380px;
+    padding: 10px 16px; border-radius: 8px;
+    font-size: 13px; font-weight: 500; box-shadow: var(--ds-shadow-md);
+  }
+  .ax-toast.show { display: block; }
+  .ax-toast.ok { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); border: 1px solid var(--ds-accent-success-line); }
+  .ax-toast.fail { background: var(--ds-accent-danger-bg); color: var(--ds-accent-danger-ink); border: 1px solid var(--ds-accent-danger-line); }
+</style>
+{% endblock %}
+
+{% block toolbar %}
+<a class="btn btn-secondary" href="/admin/groups">Manage groups</a>
+<a class="btn btn-primary" href="/admin/data-packages">Data packages</a>
+{% endblock %}
+
+{% block page %}
+<div class="ax-tabs" role="tablist" aria-label="Access sections">
+  <button type="button" class="ax-tab is-on" role="tab" data-axtab="edit">Who can use what</button>
+  <button type="button" class="ax-tab" role="tab" data-axtab="sim">Simulate a person</button>
+</div>
+
+{# ── Editor: groups on the left, what they can use on the right ── #}
+<div class="ax-pane is-on" data-axpane="edit">
+  <div class="ax-cols">
+    <div class="ax-panel ax-grouplist" id="ax-groups">
+      <div class="ax-empty">Loading groups…</div>
+    </div>
+    <div class="ax-panel">
+      <div class="ax-panel__hd">
+        <h2 id="ax-what-title">Pick a group</h2>
+        <span class="sub" id="ax-what-sub"></span>
+        <span class="end"><a href="#" id="ax-members-link" style="font-size:12.5px; font-weight:600; display:none;">Members →</a></span>
+      </div>
+      <div class="ax-panel__bd">
+        <div class="ax-note">
+          <strong>Optional</strong> shows the item in members' Library — they add it themselves.
+          <strong>Automatic</strong> puts it in their workspace on the next sync.
+          Admins can always reach everything regardless of grants.
+        </div>
+        <div id="ax-resources"><div class="ax-empty">Select a group on the left.</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{# ── Simulate: the reason chain for one person ── #}
+<div class="ax-pane" data-axpane="sim">
+  <div class="ax-panel">
+    <div class="ax-panel__bd">
+      <div class="ax-simrow">
+        <div>
+          <label for="ax-sim-user">Person</label>
+          <select id="ax-sim-user"><option value="">Loading people…</option></select>
+        </div>
+        <a class="btn btn-secondary" id="ax-sim-detail" href="/admin/users" style="display:none;">Open their profile →</a>
+      </div>
+      <div id="ax-sim-out"><div class="ax-empty">Pick a person to see what they can use, and why.</div></div>
+    </div>
+  </div>
+</div>
+
+<div class="ax-toast" id="ax-toast" role="status" aria-live="polite"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  const GRANTS_API = "/api/admin/grants";
+  const OVERVIEW_API = "/api/admin/access-overview";
+  const USERS_LIST_API = "/api/users";        // list + single user
+  const ADMIN_USERS_API = "/api/admin/users"; // memberships + effective-access
+
+  // Data packages first — the redesign's spine. Everything else keeps a
+  // section but stays collapsed: breadth disclosed, never removed.
+  const LEAD_TYPE = "data_package";
+
+  let overview = null;   // {groups, grants, resources}
+  let selectedGroup = null;
+  let users = [];
+
+  const el = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+  function toast(msg, ok) {
+    const t = el("ax-toast");
+    t.textContent = msg;
+    t.className = "ax-toast show " + (ok ? "ok" : "fail");
+    clearTimeout(t._t);
+    t._t = setTimeout(() => { t.className = "ax-toast"; }, 3500);
+  }
+
+  /* ── Tabs ── */
+  document.querySelectorAll("[data-axtab]").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      const name = tab.dataset.axtab;
+      document.querySelectorAll("[data-axtab]").forEach((t) => t.classList.toggle("is-on", t === tab));
+      document.querySelectorAll("[data-axpane]").forEach((p) => p.classList.toggle("is-on", p.dataset.axpane === name));
+      history.replaceState(null, "", window.location.pathname + (name === "sim" ? "#simulate" : ""));
+      if (name === "sim") loadUsers();
+    });
+  });
+
+  /* ── Editor ── */
+
+  function grantsFor(groupId) {
+    return (overview.grants || []).filter((g) => g.group_id === groupId);
+  }
+  function grantOf(groupId, type, resourceId) {
+    return grantsFor(groupId).find((g) => g.resource_type === type && g.resource_id === resourceId);
+  }
+
+  // Everyone first — a grant to it is company-wide, so it belongs where the
+  // eye lands rather than alphabetically buried. One function, because the
+  // default selection must be the row that renders first: reading the
+  // unsorted list landed the page on Admin, whose grants are the one set that
+  // changes nothing (admins reach everything anyway).
+  function sortedGroups() {
+    return (overview.groups || []).slice().sort((a, b) => {
+      const ae = a.is_system && a.name === "Everyone" ? 0 : 1;
+      const be = b.is_system && b.name === "Everyone" ? 0 : 1;
+      return ae - be || String(a.name).localeCompare(String(b.name));
+    });
+  }
+
+  function renderGroups() {
+    const host = el("ax-groups");
+    const groups = sortedGroups();
+    if (!groups.length) {
+      host.innerHTML = `<div class="ax-empty">No groups yet. <a href="/admin/groups">Create one →</a></div>`;
+      return;
+    }
+    host.innerHTML = groups.map((g) => {
+      const everyone = g.is_system && g.name === "Everyone";
+      return `
+      <button type="button" class="ax-group ${everyone ? "is-everyone" : ""} ${selectedGroup === g.id ? "is-on" : ""}" data-group="${esc(g.id)}">
+        <span class="ax-group__ava">${esc(String(g.name || "?").charAt(0).toUpperCase())}</span>
+        <span>${esc(g.name)}</span>
+        <span class="ax-group__cnt">${g.member_count ?? 0}</span>
+      </button>`;
+    }).join("");
+  }
+
+  function renderResources() {
+    const host = el("ax-resources");
+    if (!selectedGroup) {
+      host.innerHTML = `<div class="ax-empty">Select a group on the left.</div>`;
+      return;
+    }
+    const group = (overview.groups || []).find((g) => g.id === selectedGroup);
+    const everyone = group && group.is_system && group.name === "Everyone";
+    el("ax-what-title").textContent = group ? `${group.name} can use…` : "Access";
+    el("ax-what-sub").textContent = group
+      ? `${group.member_count ?? 0} member${(group.member_count ?? 0) === 1 ? "" : "s"}`
+        + (everyone ? " · every account on this instance" : "")
+        + (group.is_google_managed ? " · Google-synced" : "")
+      : "";
+    const link = el("ax-members-link");
+    link.style.display = group ? "" : "none";
+    if (group) link.href = `/admin/groups/${encodeURIComponent(group.id)}`;
+
+    const types = (overview.resources || []).slice().sort((a, b) => {
+      const al = a.type_key === LEAD_TYPE ? 0 : 1;
+      const bl = b.type_key === LEAD_TYPE ? 0 : 1;
+      return al - bl || String(a.type_display).localeCompare(String(b.type_display));
+    });
+
+    host.innerHTML = types.map((t) => {
+      const items = (t.blocks || []).flatMap((b) => (b.items || []).map((i) => ({ ...i, _block: b.name })));
+      const granted = items.filter((i) => grantOf(selectedGroup, t.type_key, i.resource_id)).length;
+      const lead = t.type_key === LEAD_TYPE;
+      if (!items.length) {
+        return `
+        <details class="ax-sec">
+          <summary><span class="car">▶</span> <span class="ax-tag ${lead ? "ax-tag--data" : ""}">${esc(t.type_display)}</span>
+            <span class="cnt">none registered</span></summary>
+          <div class="ax-empty" style="padding-left:22px;">Nothing of this kind exists on the instance yet.</div>
+        </details>`;
+      }
+      const rows = items.map((i) => {
+        const grant = grantOf(selectedGroup, t.type_key, i.resource_id);
+        const tier = grant ? (grant.requirement === "required" ? "required" : "available") : null;
+        return `
+        <div class="ax-item" data-type="${esc(t.type_key)}" data-rid="${esc(i.resource_id)}">
+          <input type="checkbox" ${grant ? "checked" : ""} aria-label="Grant ${esc(i.name || i.resource_id)}">
+          <span>
+            <span class="ax-item__name">${esc(i.name || i.resource_id)}</span>
+            ${i._block && i._block !== t.type_display ? `<span class="ax-item__blk"> · ${esc(i._block)}</span>` : ""}
+            ${i.description ? `<span class="ax-item__sub"><br>${esc(String(i.description).slice(0, 90))}</span>` : ""}
+          </span>
+          <span class="ax-tier" ${grant ? "" : 'aria-disabled="true"'} role="group" aria-label="Access tier">
+            <button type="button" data-tier="available" class="${tier === "available" ? "on" : ""}" title="available">Optional</button>
+            <button type="button" data-tier="required" class="${tier === "required" ? "on auto" : ""}" title="required">Automatic</button>
+          </span>
+        </div>`;
+      }).join("");
+      return `
+      <details class="ax-sec" ${lead ? "open" : ""}>
+        <summary><span class="car">▶</span> <span class="ax-tag ${lead ? "ax-tag--data" : ""}">${esc(t.type_display)}</span>
+          <span class="cnt">${granted} of ${items.length} granted</span></summary>
+        ${rows}
+      </details>`;
+    }).join("");
+  }
+
+  async function writeGrant(type, resourceId, requirement) {
+    const r = await fetch(GRANTS_API, {
+      method: "POST", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ group_id: selectedGroup, resource_type: type, resource_id: resourceId, requirement }),
+    });
+    if (!r.ok) {
+      const b = await r.json().catch(() => ({}));
+      throw new Error(typeof b.detail === "string" ? b.detail : `HTTP ${r.status}`);
+    }
+    const created = await r.json();
+    overview.grants.push({
+      id: created.id, group_id: selectedGroup,
+      resource_type: type, resource_id: resourceId, requirement,
+    });
+  }
+
+  async function updateGrant(grant, requirement) {
+    const r = await fetch(`${GRANTS_API}/${encodeURIComponent(grant.id)}`, {
+      method: "PUT", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ requirement }),
+    });
+    if (!r.ok) {
+      const b = await r.json().catch(() => ({}));
+      throw new Error(typeof b.detail === "string" ? b.detail : `HTTP ${r.status}`);
+    }
+    grant.requirement = requirement;
+  }
+
+  async function deleteGrant(grant) {
+    const r = await fetch(`${GRANTS_API}/${encodeURIComponent(grant.id)}`, {
+      method: "DELETE", credentials: "include",
+    });
+    if (!r.ok && r.status !== 404) throw new Error(`HTTP ${r.status}`);
+    overview.grants = overview.grants.filter((g) => g.id !== grant.id);
+  }
+
+  document.addEventListener("click", async (e) => {
+    const groupBtn = e.target.closest("[data-group]");
+    if (groupBtn) {
+      selectedGroup = groupBtn.dataset.group;
+      renderGroups();
+      renderResources();
+      return;
+    }
+
+    const item = e.target.closest(".ax-item");
+    if (!item || !selectedGroup) return;
+    const type = item.dataset.type;
+    const rid = item.dataset.rid;
+
+    if (e.target.matches('input[type="checkbox"]')) {
+      const box = e.target;
+      box.disabled = true;
+      try {
+        const grant = grantOf(selectedGroup, type, rid);
+        if (box.checked && !grant) {
+          await writeGrant(type, rid, "available");
+          toast("Granted (optional)", true);
+        } else if (!box.checked && grant) {
+          await deleteGrant(grant);
+          toast("Grant removed", true);
+        }
+      } catch (err) {
+        box.checked = !box.checked;
+        toast("Could not save: " + err.message, false);
+      } finally {
+        box.disabled = false;
+        renderResources();
+        renderGroups();
+      }
+      return;
+    }
+
+    const tierBtn = e.target.closest("[data-tier]");
+    if (tierBtn) {
+      const grant = grantOf(selectedGroup, type, rid);
+      if (!grant || grant.requirement === tierBtn.dataset.tier) return;
+      try {
+        await updateGrant(grant, tierBtn.dataset.tier);
+        toast(tierBtn.dataset.tier === "required"
+          ? "Automatic — lands in members' workspaces on the next sync"
+          : "Optional — members add it themselves", true);
+      } catch (err) {
+        toast("Could not save: " + err.message, false);
+      }
+      renderResources();
+    }
+  });
+
+  /* ── Simulate ── */
+
+  async function loadUsers() {
+    if (users.length) return;
+    try {
+      const r = await fetch(`${USERS_LIST_API}?limit=500`, { credentials: "include" });
+      users = r.ok ? await r.json() : [];
+      if (!Array.isArray(users)) users = users.users || [];
+    } catch (e) { users = []; }
+    const sel = el("ax-sim-user");
+    sel.innerHTML = `<option value="">Pick a person…</option>` + users
+      .filter((u) => u.active !== false)
+      .map((u) => `<option value="${esc(u.id)}">${esc(u.name || u.email)} — ${esc(u.email)}</option>`)
+      .join("");
+  }
+
+  el("ax-sim-user").addEventListener("change", async (e) => {
+    const uid = e.target.value;
+    const out = el("ax-sim-out");
+    const detailBtn = el("ax-sim-detail");
+    if (!uid) {
+      out.innerHTML = `<div class="ax-empty">Pick a person to see what they can use, and why.</div>`;
+      detailBtn.style.display = "none";
+      return;
+    }
+    detailBtn.style.display = "";
+    detailBtn.href = `/admin/users/${encodeURIComponent(uid)}`;
+    out.innerHTML = `<div class="ax-empty">Resolving…</div>`;
+    try {
+      const [effResp, memResp] = await Promise.all([
+        fetch(`${ADMIN_USERS_API}/${encodeURIComponent(uid)}/effective-access`, { credentials: "include" }),
+        fetch(`${ADMIN_USERS_API}/${encodeURIComponent(uid)}/memberships`, { credentials: "include" }),
+      ]);
+      const eff = effResp.ok ? await effResp.json() : { items: [], is_admin: false };
+      const mem = memResp.ok ? await memResp.json() : [];
+      renderSimulation(uid, eff, Array.isArray(mem) ? mem : (mem.groups || []));
+    } catch (err) {
+      out.innerHTML = `<div class="ax-empty">Could not resolve this person's access (${esc(err.message)}).</div>`;
+    }
+  });
+
+  // Every grantable item on the instance, indexed `type:id → {name, type}`.
+  // Without this the chain printed raw ids (`col_1e7d714a1a3ed6d7`), which is
+  // the one thing a "why can they see this?" answer must not do.
+  function resourceIndex() {
+    const idx = new Map();
+    for (const t of (overview && overview.resources) || []) {
+      for (const b of t.blocks || []) {
+        for (const i of b.items || []) {
+          idx.set(`${t.type_key}:${i.resource_id}`, {
+            name: i.name || i.resource_id,
+            type: t.type_display,
+          });
+        }
+      }
+    }
+    return idx;
+  }
+
+  function renderSimulation(uid, eff, memberships) {
+    const person = users.find((u) => u.id === uid) || {};
+    const items = eff.items || [];
+    const idx = resourceIndex();
+    const nameOf = (it) => {
+      const hit = idx.get(`${it.resource_type}:${it.resource_id}`);
+      return hit ? hit.name : it.resource_id;
+    };
+
+    const packages = items.filter((i) => i.resource_type === "data_package");
+    const others = items.filter((i) => i.resource_type !== "data_package");
+
+    // What is NOT shared with them — the half a grant list cannot show, and
+    // the reason someone opens this page at all.
+    const allPackages = ((overview && overview.resources) || [])
+      .filter((t) => t.type_key === "data_package")
+      .flatMap((t) => (t.blocks || []).flatMap((b) => b.items || []));
+    const has = new Set(packages.map((p) => p.resource_id));
+    const missing = allPackages.filter((p) => !has.has(p.resource_id));
+
+    const groupNames = memberships.map((g) => g.name || g.group_name || g.id).filter(Boolean);
+    const chips = [
+      ...packages.slice(0, 6).map((p) => `<span class="ax-chip ok">Can use: ${esc(nameOf(p))}</span>`),
+      ...missing.slice(0, 4).map((p) => `<span class="ax-chip no">Cannot use: ${esc(p.name)}</span>`),
+    ];
+    if (eff.is_admin) {
+      chips.unshift(`<span class="ax-chip info">Admin — reaches everything regardless of grants</span>`);
+    }
+
+    const chain = [];
+    chain.push(`<li><b>${esc(person.name || person.email || "This person")}</b> is in ${
+      groupNames.length ? groupNames.map((n) => `<b>${esc(n)}</b>`).join(", ") : "<span class=\"muted\">no groups</span>"
+    }</li>`);
+
+    if (!items.length) {
+      chain.push(`<li class="stop">Nothing is granted to those groups, so they see no shared data.
+        <a href="#" data-axgoto="edit">Grant something →</a></li>`);
+    }
+
+    // Data packages, one row each and named — the spine of the question.
+    for (const p of packages) {
+      const via = (p.via_groups || []).map((g) => esc(g.group_name || g.group_id)).join(", ");
+      chain.push(`<li><b>${esc(nameOf(p))}</b> <span class="muted">(data package)</span>
+        — via ${via ? `<b>${via}</b>` : "<span class=\"muted\">a group</span>"}</li>`);
+    }
+
+    // Everything else FOLDED PER TYPE. Listing eight collection rows
+    // individually buried the packages under them and answered a question
+    // nobody asked; the count plus the groups is what a reader needs, and
+    // the per-item detail lives on the user's own profile page.
+    //
+    // Bucketed on `resource_type`, NOT on each item's looked-up display name:
+    // a grant whose target is not in the projection (deleted, or private to
+    // its owner and so absent from the admin grant list) has no name to look
+    // up, and keying on the fallback split one kind across two buckets —
+    // "Collections — 7 items" beside a lowercase "collection — 2 items",
+    // which reads as two different things. Those are counted inside their own
+    // kind and named as unlisted, because a grant pointing at something this
+    // page cannot show is worth saying out loud rather than hiding.
+    const typeDisplay = new Map(
+      ((overview && overview.resources) || []).map((t) => [t.type_key, t.type_display]),
+    );
+    const byType = new Map();
+    for (const it of others) {
+      const key = it.resource_type;
+      if (!byType.has(key)) byType.set(key, { n: 0, unlisted: 0, via: new Set() });
+      const bucket = byType.get(key);
+      bucket.n += 1;
+      if (!idx.has(`${key}:${it.resource_id}`)) bucket.unlisted += 1;
+      for (const g of it.via_groups || []) bucket.via.add(g.group_name || g.group_id);
+    }
+    for (const [key, b] of byType) {
+      const label = typeDisplay.get(key) || key.replace(/_/g, " ");
+      const unlisted = b.unlisted
+        ? ` <span class="muted">(${b.unlisted} not listed here — deleted, or private to its owner)</span>`
+        : "";
+      chain.push(`<li><b>${esc(label)}</b> <span class="muted">— ${b.n} item${b.n === 1 ? "" : "s"}</span>
+        via ${b.via.size ? [...b.via].map((v) => `<b>${esc(v)}</b>`).join(", ") : "<span class=\"muted\">a group</span>"}${unlisted}</li>`);
+    }
+
+    for (const p of missing.slice(0, 3)) {
+      chain.push(`<li class="stop"><b>${esc(p.name)}</b> is not shared with any group they are in.
+        <a href="/admin/data-packages">Share it →</a></li>`);
+    }
+
+    chain.push(`<li><b>Delivery:</b> a granted package reaches their machine on the next
+      <code>agnes pull</code> — sharing it is not the same as it having arrived.</li>`);
+
+    el("ax-sim-out").innerHTML =
+      `<div class="ax-chips">${chips.join("") || '<span class="ax-chip no">Nothing shared with them yet</span>'}</div>
+       <ul class="ax-chain">${chain.join("")}</ul>`;
+  }
+
+  // "Grant something →" inside the chain jumps to the editor tab.
+  document.addEventListener("click", (e) => {
+    const jump = e.target.closest("[data-axgoto]");
+    if (!jump) return;
+    e.preventDefault();
+    document.querySelector('[data-axtab="edit"]').click();
+  });
+
+  /* ── Boot ── */
+  (async function boot() {
+    try {
+      const r = await fetch(OVERVIEW_API, { credentials: "include" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      overview = await r.json();
+    } catch (e) {
+      el("ax-groups").innerHTML = `<div class="ax-empty">Could not load access data (${esc(e.message)}).</div>`;
+      return;
+    }
+    // Deep link: ?group=<id> selects it (the retired /admin/access?group= URL
+    // used to land on a group's Access tab, so that shape keeps working).
+    const params = new URLSearchParams(window.location.search);
+    const wanted = params.get("group");
+    const groups = sortedGroups();
+    selectedGroup = (wanted && groups.some((g) => g.id === wanted))
+      ? wanted
+      : (groups.length ? groups[0].id : null);
+    renderGroups();
+    renderResources();
+    if (window.location.hash === "#simulate") document.querySelector('[data-axtab="sim"]').click();
+  })();
+})();
+</script>
+{% endblock %}

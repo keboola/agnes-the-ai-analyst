@@ -7,21 +7,19 @@ redesign (docs/superpowers/specs/2026-08-12-admin-redesign-exploration.md):
     Overview                     where am I, what needs me, what's next
     People                       accounts · groups · tokens
     Data                         sources · tables · packages · sync · semantics
+    Access                       who can use what · simulate a person
     ── maintain ──
     Library                      what analysts can find: curation + moderation
     Instance                     the machine: config, secrets, connections
     Activity                     what's happening: audit, telemetry, adoption
 
-Two intent sections up front (getting people in, getting data to them — with
-access edited from both of those: a group's Access tab and a package's Share
-editor), three maintenance sections behind a divider. This replaced a
+Three intent sections up front (get people in, get data in, get the data to
+the people), three maintenance sections behind a divider. This replaced a
 seven-section shape (People & access / Data / Connections / Moderation /
 Content / Instance / Insights) that grouped routes closer to "what the table
 underneath is" than to what an admin is trying to do — Moderation and Content
 were both really "the Library, from two directions", and Connections was
-plumbing that belongs to the Instance. A dedicated Access surface (the
-group-x-package matrix with simulate) is designed but not built; when it
-ships it becomes the third intent section. Kept as a plain Python module
+plumbing that belongs to the Instance. Kept as a plain Python module
 (not inline in the Jinja partial) so `tests/test_web_admin_nav.py` can import
 it directly and assert every `require_admin`-gated, template-rendering GET
 route in `app/web/router.py` is reachable from some entry here — the guard
@@ -66,9 +64,10 @@ exist for that reason and carry constraints worth knowing before editing:
     module would fail its reverse guard until that module is added there too.
 
 Deliberately out of scope:
-  - Pure redirects (`/admin/usage`, `/admin/access`, `/admin/grants`,
+  - Pure redirects (`/admin/usage`, `/admin/grants`,
     `/admin/scheduler-runs`, `/admin/agent-prompt`, `/admin/workspace-prompt`)
-    — they 308 onto a page that already carries a nav entry.
+    — they 308 onto a page that already carries a nav entry. (`/admin/access`
+    was one of these and is a real page again — the Access section's row.)
   - The API-documentation links, which are not `/admin/*` routes at all — see
     `ADMIN_NAV_DOCS` at the bottom of this module.
 """
@@ -108,9 +107,9 @@ ADMIN_NAV_SECTIONS: list[dict] = [
         "icon": "users",
         "items": [
             {"label": "Users", "href": "/admin/users", "match": ["/admin/users"]},
-            # A group's page carries its Access tab — the grant editor — which
-            # is why /admin/access and /admin/grants fold in here.
-            {"label": "Groups", "href": "/admin/groups", "match": ["/admin/groups", "/admin/access", "/admin/grants"]},
+            # A group's own page carries Members + its Access tab; the
+            # cross-group workspace is the Access section below.
+            {"label": "Groups", "href": "/admin/groups", "match": ["/admin/groups"]},
             {"label": "Tokens", "href": "/admin/tokens", "match": ["/admin/tokens"]},
         ],
     },
@@ -127,6 +126,22 @@ ADMIN_NAV_SECTIONS: list[dict] = [
             {"label": "Data packages", "href": "/admin/data-packages", "match": ["/admin/data-packages"]},
             {"label": "Sync", "href": "/admin/sync", "match": ["/admin/sync"]},
             {"label": "Semantic layer", "href": "/admin/semantic-layer", "match": ["/admin/semantic-layer"]},
+        ],
+    },
+    {
+        # The third intent section, and the one the whole redesign is named
+        # after: People → Data → Access. One row, because the surface is one
+        # page with two tabs (the cross-group editor and Simulate) — a
+        # section with a single item would add a disclosure nobody needs.
+        "key": "access",
+        "label": "Access",
+        "icon": "shield-check",
+        "items": [
+            {
+                "label": "Who can use what",
+                "href": "/admin/access",
+                "match": ["/admin/access", "/admin/grants"],
+            },
         ],
     },
     {

@@ -62,8 +62,7 @@ _OUT_OF_SCOPE_PATHS = {
     "/admin/studio",  # get_current_user, not require_admin — a different surface
     "/admin/studio/{domain}",  # ditto
     "/admin/usage",  # redirect -> /admin/telemetry
-    "/admin/access",  # redirect -> /admin/groups
-    "/admin/grants",  # redirect -> /admin/groups
+    "/admin/grants",  # redirect -> /admin/access
     "/admin/scheduler-runs",  # redirect -> /admin/activity
     "/admin/agent-prompt",  # redirect -> /admin/prompts
     "/admin/workspace-prompt",  # redirect -> /admin/prompts
@@ -202,14 +201,14 @@ class TestAdminNavInventoryCoverage:
         keys/labels and their order so a future edit that reshuffles them
         (or quietly drops one) fails loudly.
 
-        The shape is the admin redesign's: two INTENT sections first (People,
-        Data — the daily jobs), then the maintenance half behind the divider
-        (Library, Instance, Activity). A dedicated Access section joins the
-        intent half when its surface ships; until then access is edited from
-        a group's Access tab and a package's Share editor."""
+        The shape is the admin redesign's: three INTENT sections first
+        (People, Data, Access — get people in, get data in, get the data to
+        the people), then the maintenance half behind the divider (Library,
+        Instance, Activity)."""
         assert [(s["key"], s["label"]) for s in ADMIN_NAV_SECTIONS] == [
             ("people", "People"),
             ("data", "Data"),
+            ("access", "Access"),
             ("library", "Library"),
             ("instance", "Instance"),
             ("activity", "Activity"),
@@ -252,9 +251,13 @@ class TestAdminNavActiveState:
     def test_hub_page_has_no_active_section(self) -> None:
         assert resolve_active_href("/admin") is None
 
-    def test_redirect_targets_land_on_the_groups_row(self) -> None:
-        assert resolve_active_href("/admin/access") == "/admin/groups"
-        assert resolve_active_href("/admin/grants") == "/admin/groups"
+    def test_access_and_its_legacy_url_light_the_access_row(self) -> None:
+        """`/admin/access` is a real page again (the Access section's row) and
+        `/admin/grants` 308s onto it, so both resolve to that row rather than
+        to Groups, where they pointed while the matrix lived on the group's
+        own detail tab."""
+        assert resolve_active_href("/admin/access") == "/admin/access"
+        assert resolve_active_href("/admin/grants") == "/admin/access"
 
     def test_only_one_item_renders_is_active_for_each_page(self, seeded_app) -> None:
         c = seeded_app["client"]
@@ -276,6 +279,7 @@ class TestAdminNavActiveSection:
 
     def test_active_section_matches_the_active_item_s_section(self) -> None:
         assert resolve_active_section_key("/admin/users") == "people"
+        assert resolve_active_section_key("/admin/access") == "access"
         assert resolve_active_section_key("/admin/tables") == "data"
         assert resolve_active_section_key("/admin/mcp-sources") == "instance"
         assert resolve_active_section_key("/admin/store/lint") == "library"
