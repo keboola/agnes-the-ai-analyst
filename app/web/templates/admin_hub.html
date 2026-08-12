@@ -113,10 +113,170 @@
     color: var(--ds-text-muted);
     font-size: var(--text-13);
   }
+
+  /* ── Setup path — the four stages between an empty instance and data in
+        someone's hands. Renders only until all four are done (the panel
+        self-retires, same pattern as the rail's onboarding card). ── */
+  .adash-setup {
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-primary);
+    border-radius: 12px;
+    margin-bottom: var(--space-6);
+    overflow: hidden;
+  }
+  .adash-setup__hd {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-3);
+    padding: var(--space-4) var(--space-5) 0;
+  }
+  .adash-setup__title { font-size: var(--text-15); font-weight: 700; color: var(--ds-text-primary); }
+  .adash-setup__note { font-size: var(--text-13); color: var(--ds-text-muted); }
+  .adash-setup__steps {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    margin-top: var(--space-4);
+  }
+  @media (max-width: 900px) { .adash-setup__steps { grid-template-columns: 1fr 1fr; } }
+  .adash-step {
+    padding: var(--space-4) var(--space-5);
+    border-right: 1px solid var(--ds-border-light);
+    border-top: 1px solid var(--ds-border-light);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+  .adash-step:last-child { border-right: none; }
+  .adash-step__state {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--ds-text-muted);
+  }
+  .adash-step.is-done .adash-step__state { color: var(--ds-accent-success-ink); }
+  .adash-step.is-current .adash-step__state { color: var(--ds-primary); }
+  .adash-step__title { font-size: var(--text-14, 14px); font-weight: 700; color: var(--ds-text-primary); }
+  .adash-step__detail { font-size: var(--text-13); color: var(--ds-text-secondary); }
+  .adash-step__cta {
+    margin-top: var(--space-2);
+    align-self: flex-start;
+    font-size: var(--text-13);
+    font-weight: 700;
+    color: var(--ds-text-link);
+    text-decoration: none;
+  }
+  .adash-step__cta:hover { text-decoration: underline; }
+
+  /* ── Gap cards — the People → Data → Access chain, each card counting what
+        exists then leading with the broken link in the chain. Always
+        rendered: the healthy state is information here, not noise. ── */
+  .adash-gaps {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--space-4);
+    margin-bottom: var(--space-7, 40px);
+  }
+  @media (max-width: 900px) { .adash-gaps { grid-template-columns: 1fr; } }
+  .adash-gap {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding: var(--space-4) var(--space-5);
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: 12px;
+    text-decoration: none;
+    color: inherit;
+    transition: border-color var(--ds-motion-fast) var(--ds-ease-standard),
+                box-shadow var(--ds-motion-fast) var(--ds-ease-standard);
+  }
+  .adash-gap:hover { border-color: var(--ds-text-muted); box-shadow: var(--ds-shadow-sm); }
+  .adash-gap__title {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ds-text-muted);
+  }
+  .adash-gap__facts { display: flex; gap: var(--space-4); flex-wrap: wrap; }
+  .adash-gap__facts b {
+    font-size: var(--text-20, 20px);
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    color: var(--ds-text-primary);
+  }
+  .adash-gap__facts span { font-size: var(--text-13); color: var(--ds-text-secondary); }
+  .adash-gap__line {
+    margin-top: var(--space-2);
+    padding-top: var(--space-3);
+    border-top: 1px dashed var(--ds-border);
+    font-size: var(--text-13);
+    font-weight: 600;
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+  }
+  .adash-gap__line.is-warn { color: var(--ds-accent-warn-ink); }
+  .adash-gap__line.is-ok { color: var(--ds-accent-success-ink); }
+  .adash-gap__line.is-failed { color: var(--ds-text-muted); }
+  .adash-gap__line .arrow { margin-left: auto; color: var(--ds-text-muted); }
 </style>
 {% endblock %}
 
 {% block page %}
+
+{# ── Setup path: the four stages between an empty instance and data in
+      someone's hands. Self-retiring — renders only until all four are done —
+      because a fresh instance showing "nothing needs your attention" is the
+      worst possible first-run signal. Data: resolve_journey() in
+      app/services/admin_dashboard.py. #}
+{% if journey.setup and not journey.setup.complete %}
+<section class="adash-setup" aria-labelledby="adash-setup-title">
+  <div class="adash-setup__hd">
+    <h2 class="adash-setup__title" id="adash-setup-title">Set up this instance</h2>
+    <span class="adash-setup__note">Four steps from empty to data in someone's hands. This panel retires itself when they're done.</span>
+  </div>
+  <div class="adash-setup__steps">
+    {% for s in journey.setup.steps %}
+    <div class="adash-step {{ 'is-done' if s.done else ('is-current' if s.current else '') }}">
+      <span class="adash-step__state">{{ '✓ Done' if s.done else ('Next' if s.current else 'Then') }}</span>
+      <span class="adash-step__title">{{ s.title }}</span>
+      <span class="adash-step__detail">{{ s.detail }}</span>
+      {% if s.current %}<a class="adash-step__cta" href="{{ s.href }}">{{ s.cta }}</a>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{# ── Gap cards: the People → Data → Access chain. Each card counts what
+      exists, then leads with the broken link in the chain and links to the
+      page that fixes it. Always rendered — the healthy state ("every table
+      is in a package") is information, not noise. A failed resolver shows as
+      "could not be checked", never as a healthy chain. #}
+{% if journey.gaps %}
+<div class="adash-gaps">
+  {% for g in journey.gaps %}
+  <a class="adash-gap" href="{{ g.href }}" data-gap="{{ g.key }}">
+    <span class="adash-gap__title">{{ g.title }}</span>
+    <span class="adash-gap__facts">
+      {% for f in g.facts %}<span><b>{{ f.n }}</b> {{ f.label }}</span>{% endfor %}
+    </span>
+    {% if g.failed %}
+    <span class="adash-gap__line is-failed">Could not be checked — see the server log.</span>
+    {% elif g.gap_count > 0 %}
+    <span class="adash-gap__line is-warn">{{ g.gap_text }} <span class="arrow">→</span></span>
+    {% else %}
+    <span class="adash-gap__line is-ok">{{ g.ok_text }}</span>
+    {% endif %}
+  </a>
+  {% endfor %}
+</div>
+{% endif %}
 
 {# ── Zone 1: decisions. Resolved server-side — these are COUNT-shaped and
       belong in first paint, because they are why an admin opened this page. #}

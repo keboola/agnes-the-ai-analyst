@@ -6070,9 +6070,17 @@ async def admin_hub(
     instance with a large audit log doesn't pay for it on every render. Row
     inventory: `app/web/admin_signals.py`.
     """
-    from app.services.admin_dashboard import resolve_needs_you
+    from app.services.admin_dashboard import resolve_journey, resolve_needs_you
 
-    ctx = _build_context(request, user=user, needs_you=resolve_needs_you())
+    ctx = _build_context(
+        request,
+        user=user,
+        needs_you=resolve_needs_you(),
+        # Setup path + People/Data/Access gap cards — the "where am I, what's
+        # next" layer in front of the two signal zones. Resolved inline: every
+        # count is a cheap repo read (see resolve_journey's docstring).
+        journey=resolve_journey(),
+    )
     return templates.TemplateResponse(request, "admin_hub.html", ctx)
 
 
@@ -6481,8 +6489,7 @@ async def admin_semantic_layer_page(
     # here. So the page says a subset is shown, without a number it cannot
     # compute honestly. (Devin Review on this PR.)
     ctx["unresolved_tables_truncated"] = any(
-        int(e.get("unresolved_tables_total") or 0) > len(e.get("unresolved_tables") or [])
-        for e in last_by_ref.values()
+        int(e.get("unresolved_tables_total") or 0) > len(e.get("unresolved_tables") or []) for e in last_by_ref.values()
     )
     ctx["skipped_unresolved_total"] = sum(int(e.get("skipped_unresolved_table") or 0) for e in last_by_ref.values())
     ctx["default_connection_id"] = default_id
