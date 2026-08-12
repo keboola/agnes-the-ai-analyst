@@ -115,3 +115,69 @@ def test_empty_required_domain_stays_visible(seeded_app, monkeypatch):
     resp = c.get("/library", headers=_auth(seeded_app["analyst_token"]))
     assert resp.status_code == 200
     assert "Lib Empty Required" in resp.text
+
+
+def _subscribe(user_id: str, domain_id: str):
+    from src.db import get_system_db
+    from src.repositories.user_stack_subscriptions import UserStackSubscriptionsRepository
+
+    conn = get_system_db()
+    try:
+        UserStackSubscriptionsRepository(conn).subscribe(user_id, "memory_domain", domain_id)
+    finally:
+        conn.close()
+
+
+def test_classic_self_subscription_is_removable_not_locked(seeded_app, monkeypatch):
+    """A classic-mode subscription the caller created themselves must render
+    the REMOVE control, exactly as /catalog offers for the same membership.
+    The locked pill's claim ("only an admin can remove it") is false for a
+    self-subscription — the lock is driven by droppability, and this row IS
+    droppable. Real confusion: a user added a domain, read the lock as
+    'required by admin', and found the removable truth only on /catalog."""
+    monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+    dom = _make_domain("lib-selfsub", "Lib SelfSub")
+    _make_item("lib_selfsub_1", "Note", dom)
+    _grant_domain("Everyone", dom, users=["analyst1"])
+    _subscribe("analyst1", dom)
+    c = seeded_app["client"]
+    resp = c.get("/library", headers=_auth(seeded_app["analyst_token"]))
+    assert resp.status_code == 200
+    body = resp.text
+    row_at = body.index("Lib SelfSub")
+    row = body[row_at : row_at + 4000]
+    assert f'data-remove-from-stack="{dom}"' in row
+    assert f'data-stack-remove-endpoint="/api/stack/subscription/memory_domain/{dom}"' in row
+    assert "only an admin can remove it" not in row
+
+
+def test_required_membership_stays_locked(seeded_app, monkeypatch):
+    monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+    dom = _make_domain("lib-req-lock", "Lib ReqLock")
+    _make_item("lib_reqlock_1", "Note", dom)
+    _grant_domain("Everyone", dom, requirement="required", users=["analyst1"])
+    c = seeded_app["client"]
+    resp = c.get("/library", headers=_auth(seeded_app["analyst_token"]))
+    body = resp.text
+    row_at = body.index("Lib ReqLock")
+    row = body[row_at : row_at + 4000]
+    assert "lib-instack--locked" in row
+    assert f'data-remove-from-stack="{dom}"' not in row
+
+
+def test_auto_membership_grant_stays_locked(seeded_app, monkeypatch):
+    """Under auto-membership the grant IS the membership — there is no
+    subscription to drop, so the locked pill (and its admin wording) is the
+    truth there."""
+    monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+    monkeypatch.setenv("AGNES_STACK_AUTO_MEMBERSHIP", "1")
+    dom = _make_domain("lib-auto-lock", "Lib AutoLock")
+    _make_item("lib_autolock_1", "Note", dom)
+    _grant_domain("Everyone", dom, users=["analyst1"])
+    c = seeded_app["client"]
+    resp = c.get("/library", headers=_auth(seeded_app["analyst_token"]))
+    body = resp.text
+    row_at = body.index("Lib AutoLock")
+    row = body[row_at : row_at + 4000]
+    assert "lib-instack--locked" in row
+    assert f'data-remove-from-stack="{dom}"' not in row

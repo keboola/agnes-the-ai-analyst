@@ -3181,8 +3181,15 @@ async def library_page(
         tags=None,
         owner_key=None,
         in_stack=True,
+        droppable=False,
     ) -> None:
-        """Append one access-granted row (never owner-shareable)."""
+        """Append one access-granted row (never owner-shareable).
+
+        ``droppable``: the membership is the caller's own subscription
+        (classic mode, optional tier) — render the REMOVE control, exactly
+        as /catalog offers for the same membership. Callers whose
+        membership is the grant itself (auto-membership, recipes, plugins)
+        leave it False and get the locked pill."""
         items.append(
             _library_row_base(
                 item_id=item_id,
@@ -3215,17 +3222,35 @@ async def library_page(
         # would label rows the agent cannot actually query (membership also
         # drives ``get_accessible_tables``). Callers whose membership
         # genuinely is the grant (recipes, plugins) omit the argument.
-        if in_stack:
+        if in_stack and droppable:
+            # Classic self-subscription: the caller added it, the caller can
+            # remove it — HERE, not just on /catalog. This row used to render
+            # the locked pill ("only an admin can remove it"), which was
+            # false for a self-subscription and read as a required mandate;
+            # /catalog offered Remove for the very same membership. The lock
+            # is driven by droppability, and this membership IS droppable.
+            import json as _json
+
             items[-1]["stack_state"] = "in_stack"
-            # Every member row says the same thing about membership — "In
-            # Stack" — and is LOCKED, because for a granted member there is
-            # no per-user membership to drop here, only a grant an admin can
-            # revoke (classic members ARE per-user, but their drop surface
-            # is the Catalog/Stack pages, not this listing). The lock is
-            # driven by *droppability*, not by the grant tier: keying it on
-            # ``requirement == 'required'`` (as this once did) left an
-            # optional grant rendering the success-tinted check that a
-            # REMOVABLE row wears at rest. The tier stays legible in the
+            items[-1]["stack_pill"] = "In Stack"
+            items[-1]["stack_removable"] = True
+            # Remove is a path-param DELETE; re-add (after a remove, without
+            # a reload) POSTs the generic subscribe endpoint with a body —
+            # the row carries both so the click handler can cycle.
+            items[-1]["stack_endpoint"] = "/api/stack/subscribe"
+            items[-1]["stack_body"] = _json.dumps({"resource_type": type_key, "resource_id": item_id})
+            items[-1]["stack_remove_endpoint"] = f"/api/stack/subscription/{type_key}/{item_id}"
+            items[-1]["stack_title"] = "Added by you — click to remove it from your Stack"
+        elif in_stack:
+            items[-1]["stack_state"] = "in_stack"
+            # Every non-droppable member row says the same thing about
+            # membership — "In Stack" — and is LOCKED: there is no per-user
+            # membership to drop, only a grant an admin can revoke (required
+            # tier, or auto-membership where the grant IS the membership).
+            # The lock is driven by *droppability*, not by the grant tier:
+            # keying it on ``requirement == 'required'`` (as this once did)
+            # left an optional grant rendering the success-tinted check that
+            # a REMOVABLE row wears at rest. The tier stays legible in the
             # tooltip and the Optional/Required facet.
             items[-1]["stack_pill"] = "In Stack"
             items[-1]["stack_locked"] = True
@@ -3237,17 +3262,18 @@ async def library_page(
             # Classic non-member: a real Add control, not a dead pill (Devin
             # Review on #1199, round 4). The generic subscribe endpoint takes
             # a JSON body, so the row carries it (`data-stack-body`) for the
-            # shared click handler; after a successful add the row is a
-            # MEMBER — locked like every other granted member (the drop
-            # surface is the Catalog/Stack pages), which
-            # `data-stack-locked-after` tells the handler to render.
+            # shared click handler. The post-add state is the REMOVABLE
+            # member above (the handler switches on data-stack-remove-endpoint),
+            # matching what a reload would render — the old locked-after
+            # contract claimed an admin mandate the caller had just created
+            # themselves.
             import json as _json
 
             items[-1]["stack_state"] = "available"
             items[-1]["stack_addable"] = True
             items[-1]["stack_endpoint"] = "/api/stack/subscribe"
             items[-1]["stack_body"] = _json.dumps({"resource_type": type_key, "resource_id": item_id})
-            items[-1]["stack_locked_after_add"] = True
+            items[-1]["stack_remove_endpoint"] = f"/api/stack/subscription/{type_key}/{item_id}"
             items[-1]["stack_title"] = "Granted to you, but not in your Stack — add it to make it queryable"
 
     # Governed data packages + memory domains — StackResolver.browse() is
@@ -3275,6 +3301,12 @@ async def library_page(
             dom_counts[_did] = (len(_sums), sum(1 for s in _sums if s.get("is_required")))
     except Exception as e:
         logger.warning("/library: could not count memory-domain items: %s", e)
+    # Membership mode decides droppability below: classic optional members
+    # are the caller's own subscriptions (removable here, as on /catalog);
+    # under auto-membership the grant IS the membership, nothing to drop.
+    from app.instance_config import get_stack_auto_membership
+
+    _auto_membership = get_stack_auto_membership()
     for rt, type_key, type_label, glyph in (
         (ResourceType.DATA_PACKAGE, "data_package", "Data package", "data"),
         (ResourceType.MEMORY_DOMAIN, "memory_domain", "Memory", "memory"),
@@ -3322,6 +3354,7 @@ async def library_page(
                     # Mode-resolved membership: auto → always True (rendering
                     # unchanged); classic → required ∪ subscribed only.
                     in_stack=e.in_stack,
+                    droppable=(not _auto_membership and e.in_stack and e.requirement != "required"),
                 )
         except Exception as e:
             logger.warning("/library: could not resolve %s: %s", rt.value, e)

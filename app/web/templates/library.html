@@ -391,9 +391,17 @@
                        box so the row never shifts. A membership the caller did
                        not create (an admin grant) stays a plain status. #}
                     {% if c.stack_removable %}
+                    {# `data-stack-remove-endpoint` (when present) is where the
+                       DELETE goes — the generic subscribe flow removes via a
+                       path-param route while adding POSTs /api/stack/subscribe
+                       with a body, so a row in that flow carries both and the
+                       handler cycles between them. Rows whose one endpoint
+                       serves both directions (artefacts, installs) omit it. #}
                     <button type="button" class="lib-stackpill lib-instack" data-stack-badge="{{ c.id }}"
                             data-remove-from-stack="{{ c.id }}"
                             data-stack-endpoint="{{ c.stack_endpoint }}"
+                            {% if c.stack_remove_endpoint %}data-stack-remove-endpoint="{{ c.stack_remove_endpoint }}"{% endif %}
+                            {% if c.stack_body %}data-stack-body="{{ c.stack_body }}"{% endif %}
                             title="{{ c.stack_title }}"
                             aria-label="{{ c.title }} is in your Stack. Remove it from your Stack">
                       <span class="lib-stackpill__rest">
@@ -466,15 +474,16 @@
                     {# Available but not added — the default action, for anything
                        whose membership is the caller's to create: an artefact, a
                        skill, a plugin — and, under classic membership, a granted
-                       data package / memory domain (its endpoint takes a JSON
-                       body, carried in data-stack-body; data-stack-locked-after
-                       tells the handler the post-add state is the LOCKED member
-                       pill, since a granted member's drop surface is the
-                       Catalog/Stack pages, not this row). #}
+                       data package / memory domain (its add endpoint takes a
+                       JSON body, carried in data-stack-body; the remove
+                       direction is the path-param DELETE in
+                       data-stack-remove-endpoint, so the post-add state is the
+                       REMOVABLE member — what a reload renders — not a locked
+                       pill claiming an admin mandate the caller just created). #}
                     <button type="button" class="lib-stackpill lib-addstack" data-add-to-stack="{{ c.id }}"
                             data-stack-endpoint="{{ c.stack_endpoint }}"
                             {% if c.stack_body %}data-stack-body="{{ c.stack_body }}"{% endif %}
-                            {% if c.stack_locked_after_add %}data-stack-locked-after="1"{% endif %}
+                            {% if c.stack_remove_endpoint %}data-stack-remove-endpoint="{{ c.stack_remove_endpoint }}"{% endif %}
                             title="{{ c.stack_title }}"
                             aria-label="Add {{ c.title }} to your Stack">
                       <span class="lib-stackpill__rest">
@@ -3107,15 +3116,19 @@
     '<path d="M5 12h14" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>';
   const STACK_PLUS_SVG = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
     '<path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>';
-  const STACK_LOCK_SVG = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
-    '<path d="M6 11V8a6 6 0 1 1 12 0v3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>' +
-    '<rect x="4" y="11" width="16" height="10" rx="2" stroke="currentColor" stroke-width="2"/></svg>';
-
-  function inStackHtml(id, title, endpoint) {
+  // `body` + `removeEndpoint` ride along for the generic subscribe flow
+  // (granted data/memory under classic membership): add POSTs `endpoint`
+  // with `body`, remove DELETEs `removeEndpoint` — both must survive any
+  // number of add/remove cycles without a reload, so each rendered state
+  // re-emits all three. Artefact/install rows pass neither and behave as
+  // before (one endpoint, both methods).
+  function inStackHtml(id, title, endpoint, body, removeEndpoint) {
     return '<button type="button" class="lib-stackpill lib-instack" data-stack-badge="' + id + '" ' +
       'data-remove-from-stack="' + id + '" ' +
       (endpoint ? 'data-stack-endpoint="' + esc(endpoint) + '" ' : '') +
-      'title="The default agent can use this artefact — click to remove it" ' +
+      (body ? 'data-stack-body="' + esc(body) + '" ' : '') +
+      (removeEndpoint ? 'data-stack-remove-endpoint="' + esc(removeEndpoint) + '" ' : '') +
+      'title="In your Stack — click to remove it" ' +
       'aria-label="' + esc(title) + ' is in your Stack. Remove it from your Stack">' +
       '<span class="lib-stackpill__rest">' + STACK_CHECK_SVG + 'In Stack</span>' +
       '<span class="lib-stackpill__alt">' + STACK_MINUS_SVG + 'Remove from Stack</span>' +
@@ -3132,23 +3145,15 @@
       'aria-label="In Stack. Its collection is in your Stack">' +
       '<span class="lib-stackpill__rest">' + STACK_CHECK_SVG + 'In Stack</span></span>';
   }
-  function addToStackHtml(id, title, endpoint) {
+  function addToStackHtml(id, title, endpoint, body, removeEndpoint) {
     return '<button type="button" class="lib-stackpill lib-addstack" data-add-to-stack="' + id + '" ' +
       (endpoint ? 'data-stack-endpoint="' + esc(endpoint) + '" ' : '') +
+      (body ? 'data-stack-body="' + esc(body) + '" ' : '') +
+      (removeEndpoint ? 'data-stack-remove-endpoint="' + esc(removeEndpoint) + '" ' : '') +
       'title="Let the default agent use ' + esc(title) + '" ' +
       'aria-label="Add ' + esc(title) + ' to your Stack">' +
       '<span class="lib-stackpill__rest">' + STACK_PLUS_SVG + 'Add to Stack</span>' +
       '</button>';
-  }
-  // Post-add state for a granted row under classic membership: a LOCKED
-  // member pill (its drop surface is the Catalog/Stack pages, not this row)
-  // — mirrors the server-rendered locked branch of library_row().
-  function lockedInStackHtml(id) {
-    return '<span class="lib-stackpill lib-instack lib-instack--fixed lib-instack--locked" ' +
-      'data-stack-badge="' + id + '" role="img" ' +
-      'data-tip="Granted to your group — only an admin can remove it from your Stack." ' +
-      'aria-label="In Stack. Granted to your group — only an admin can remove it from your Stack.">' +
-      '<span class="lib-stackpill__rest">' + STACK_LOCK_SVG + 'In Stack</span></span>';
   }
   function esc(s) {
     return String(s == null ? '' : s)
@@ -3196,28 +3201,36 @@
       || ('/api/stack/artefacts/' + encodeURIComponent(id));
     btn.disabled = true;
     try {
-      // A row whose endpoint takes a JSON body (the generic
+      // A row whose ADD endpoint takes a JSON body (the generic
       // /api/stack/subscribe for granted data/memory under classic
-      // membership) carries it in data-stack-body; the path-param
-      // endpoints (artefacts, store installs) send none, as before.
-      const body = add ? btn.dataset.stackBody : null;
-      const resp = await fetch(endpoint, {
+      // membership) carries it in data-stack-body, and its REMOVE goes to
+      // the path-param DELETE in data-stack-remove-endpoint. Rows with one
+      // endpoint for both directions (artefacts, store installs) carry
+      // neither and behave as before.
+      const stackBody = btn.dataset.stackBody || null;
+      const removeEndpoint = btn.dataset.stackRemoveEndpoint || endpoint;
+      const body = add ? stackBody : null;
+      const resp = await fetch(add ? endpoint : removeEndpoint, {
         method: add ? 'POST' : 'DELETE',
         credentials: 'same-origin',
         ...(body ? { headers: { 'Content-Type': 'application/json' }, body } : {}),
       });
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
       if (add) {
-        // data-stack-locked-after: the post-add state is the LOCKED member
-        // pill (granted membership drops via the Catalog/Stack pages), not
-        // the removable one.
-        const nextHtml = btn.dataset.stackLockedAfter
-          ? lockedInStackHtml(id)
-          : inStackHtml(id, title, endpoint);
-        setRowStackState(row, nextHtml, 'in_stack');
+        // The post-add state is the REMOVABLE member — the same thing a
+        // reload renders. (This used to switch to a LOCKED pill claiming
+        // "only an admin can remove it" for the subscribe flow, which was
+        // false for a membership the caller had just created themselves.)
+        setRowStackState(
+          row,
+          inStackHtml(id, title, endpoint, stackBody, btn.dataset.stackRemoveEndpoint),
+          'in_stack');
         if (window.appToast) window.appToast({ kind: 'success', msg: 'Added to Stack' });
       } else {
-        setRowStackState(row, addToStackHtml(id, title, endpoint), 'available');
+        setRowStackState(
+          row,
+          addToStackHtml(id, title, endpoint, stackBody, btn.dataset.stackRemoveEndpoint),
+          'available');
         if (window.appToast) window.appToast({ kind: 'success', msg: 'Removed from Stack' });
       }
     } catch (e) {

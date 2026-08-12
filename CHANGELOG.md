@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **A Library row for a stack membership you created yourself now offers Remove, matching /catalog.** Adding a granted data package or memory domain from the Library (classic membership mode) used to flip the row to a locked pill claiming "only an admin can remove it" — false for a self-subscription, and read in testing as an admin mandate — while /catalog offered a working Remove for the very same membership. The lock now follows droppability: required-tier and auto-membership rows keep it (there really is nothing the caller can drop), classic self-subscriptions render the same Remove control both views agree on, live through any number of add/remove cycles without a reload.
+
 ### Changed
 
 - **Under the rail chrome, the Library is now the one browse surface for memory domains and hosted data apps.** The Memory band carries the item/required counts the standalone cards had and hides empty optional domains; a new Data apps band lists the caller's visible apps (gated on `data_apps.enabled`), fulfilling the Files band's "Data apps coming soon" promise. `/corporate-memory` and `/apps` now 302 to their Library sections under rail — the interim rail nav rows for both are gone again, and a memory-domain detail's back link points straight at the band. Default (topnav) instances render exactly what they rendered before; detail pages (`/memory/d/…`, `/apps/detail/…`) stay live in both chromes.
