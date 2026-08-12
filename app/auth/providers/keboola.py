@@ -87,6 +87,14 @@ async def keboola_callback(request: Request):
     if not is_available():
         return RedirectResponse(url="/login?error=keboola_not_configured", status_code=302)
     try:
+        # SSRF: oauth_host is re-validated at use time (not just when
+        # stored), same posture as stack_url in
+        # keboola_verify._fetch_verify — a DNS-rebind or config edit
+        # between store and use must not point the token exchange at a
+        # private/internal address.
+        from app.api.admin import _validate_url_not_private
+
+        _validate_url_not_private(kv.oauth_host(), "auth.keboola.oauth_host")
         token = await _oauth_client().authorize_access_token(request)
     except Exception:
         logger.exception("Keboola OAuth token exchange failed")

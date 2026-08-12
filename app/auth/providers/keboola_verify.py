@@ -14,6 +14,14 @@ Facts this encodes (verified against the platform, 2026-08-12):
   service token authenticate as the human who created it.
 - ``adminOwner`` on the verify response is real but publicly undocumented —
   handle absence defensively, never crash.
+- The ``isMasterToken`` gate in ``_identity_from_payload`` is shared by both
+  ``verify_storage_token`` (header path) and ``verify_oauth_access_token``
+  (login path) on purpose, and it does not contradict the "guest/readOnly
+  can sign in" design: a human's interactive Keboola login/OAuth token IS a
+  master token (the OAuth flow cannot issue a restricted API token), so this
+  gate only ever rejects restricted tokens presented to the header path.
+  Project-role filtering for humans (guest, readOnly, etc.) is a separate
+  concern, handled below by ``admin.role`` + ``allowed_roles()``.
 """
 
 import logging

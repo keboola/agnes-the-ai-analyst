@@ -70,6 +70,29 @@ class TestGates:
             kv.verify_storage_token("tok")
         assert exc.value.reason == "role_forbidden"
 
+    def test_oauth_path_non_master_token_rejected(self, configured, monkeypatch):
+        # The login path (verify_oauth_access_token) shares
+        # _identity_from_payload with the header path — the master-token
+        # gate must apply there too, not just to verify_storage_token.
+        monkeypatch.setattr(kv, "_fetch_verify", lambda url, headers: _payload(isMasterToken=False))
+        with pytest.raises(kv.KeboolaVerifyError) as exc:
+            kv.verify_oauth_access_token("oauth-tok")
+        assert exc.value.reason == "not_master_token"
+
+    def test_oauth_path_readonly_master_token_allowed(self, configured, monkeypatch):
+        # Role != master-ness: a readOnly *master* token logs in fine when
+        # allowed_roles() is unset (None) — the master-token gate rejects
+        # restricted API tokens, not restricted project roles.
+        monkeypatch.setattr(
+            kv,
+            "_fetch_verify",
+            lambda url, headers: _payload(admin={"id": 42, "name": "Jane", "role": "readOnly"}),
+        )
+        identity = kv.verify_oauth_access_token("oauth-tok")
+        assert isinstance(identity, kv.VerifiedKeboolaIdentity)
+        assert identity.role == "readOnly"
+        assert identity.email == "jane@example.com"
+
     def test_unconfigured_stack_fails_closed(self, monkeypatch):
         monkeypatch.setattr(kv, "stack_url", lambda: None)
         with pytest.raises(kv.KeboolaVerifyError) as exc:

@@ -76,7 +76,10 @@ New `app/auth/providers/keboola.py`, modeled on `google.py`:
   project admits — including `guest`, `readOnly`, and external
   collaborator accounts — can create an Agnes account** and receives
   Everyone-group access. This is stated in the config docs, not only
-  here.
+  here. (This is not in tension with the master-token gate described
+  below: a human's own Keboola login/OAuth token is always a master
+  token, so that gate never blocks a guest/readOnly human — role
+  filtering is this bullet's job, not the master-token gate's.)
 - **Auto-provisioning:** first successful login creates the user through
   a **shared provisioning helper extracted from the Google callback** —
   user row + `ensure_everyone_membership` + the v39 system-plugin

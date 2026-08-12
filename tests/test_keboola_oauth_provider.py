@@ -59,6 +59,12 @@ class TestCallback:
             authorize_access_token = staticmethod(fake_authorize_access_token)
 
         monkeypatch.setattr(kb, "_oauth_client", lambda: FakeApp())
+        # oauth_host() here is the fixture's fake "connection.example.com",
+        # which doesn't resolve via real DNS. These tests exercise the
+        # post-exchange flow, not the SSRF gate itself (that has its own
+        # dedicated test below) — stub the shared validator permissive,
+        # same pattern as tests/test_keboola_verify.py.
+        monkeypatch.setattr("app.api.admin._validate_url_not_private", lambda url, field_name="url": None)
         if verify_error is not None:
 
             def boom(tok):
@@ -107,6 +113,30 @@ class TestCallback:
         assert resp.status_code == 302
         assert "error=keboola_oauth_failed" in resp.headers["location"]
         assert "access_token" not in resp.cookies
+
+    def test_oauth_host_ssrf_rejected_before_token_exchange(self, client, monkeypatch):
+        """oauth_host is re-validated at use time (not just store time): a
+        private/loopback host must fail closed before the token exchange
+        ever runs, exactly like stack_url in keboola_verify._fetch_verify."""
+        from app.auth.providers import keboola as kb
+
+        monkeypatch.setattr(kv, "oauth_host", lambda: "http://169.254.169.254")
+
+        called = {"exchange": False}
+
+        async def fake_authorize_access_token(request):
+            called["exchange"] = True
+            return {"access_token": "at-123"}
+
+        class FakeApp:
+            authorize_access_token = staticmethod(fake_authorize_access_token)
+
+        monkeypatch.setattr(kb, "_oauth_client", lambda: FakeApp())
+        resp = client.get("/auth/keboola/callback?code=x&state=y", follow_redirects=False)
+        assert resp.status_code == 302
+        assert "error=keboola_oauth_failed" in resp.headers["location"]
+        assert "access_token" not in resp.cookies
+        assert called["exchange"] is False
 
     def test_deactivated_user_rejected(self, client, monkeypatch):
         from src.repositories import users_repo
