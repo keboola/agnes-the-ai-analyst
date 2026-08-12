@@ -273,6 +273,72 @@
 
   .ds-wizard-lede { margin: 0 0 12px; font-size: 13px; color: var(--ds-text-secondary); }
 
+  /* ── Step 1: connector picker ── */
+  .ds-srcpick {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+    margin-bottom: 16px;
+  }
+  @media (max-width: 640px) { .ds-srcpick { grid-template-columns: 1fr 1fr; } }
+  .ds-srcopt {
+    display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+    padding: 10px 12px; text-align: left; cursor: pointer;
+    border: 1px solid var(--border, var(--ds-border)); border-radius: 10px;
+    background: var(--surface, var(--ds-surface)); color: var(--ds-text-primary);
+  }
+  .ds-srcopt:hover { border-color: var(--ds-text-muted); }
+  .ds-srcopt.on {
+    border-color: var(--ds-primary);
+    background: var(--ds-primary-light, rgba(2, 132, 199, 0.08));
+    box-shadow: 0 0 0 1px var(--ds-primary);
+  }
+  .ds-srcopt .so-logo {
+    width: 26px; height: 26px; border-radius: 7px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-weight: 800; font-size: 12px;
+  }
+  .ds-srcopt .so-logo--kbc  { background: var(--ds-kind-data-soft, #e1f3f1); color: var(--ds-kind-data, #185a57); }
+  .ds-srcopt .so-logo--bq   { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
+  .ds-srcopt .so-logo--csv  { background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink); }
+  .ds-srcopt .so-logo--jira { background: var(--ds-kind-plugin-soft, #f2e9fb); color: var(--ds-kind-plugin, #391c57); }
+  .ds-srcopt .so-name { font-weight: 700; font-size: 13px; }
+  .ds-srcopt .so-sub { font-size: 11.5px; color: var(--ds-text-muted); line-height: 1.3; }
+
+  .ds-wexisting {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 9px 12px; margin-bottom: 14px;
+    border: 1px solid var(--border, var(--ds-border)); border-radius: 10px;
+    background: var(--ds-surface-dim);
+    font-size: 12.5px; color: var(--ds-text-secondary);
+  }
+  .ds-wexisting[hidden] { display: none; }
+  .ds-wexisting select {
+    font: inherit; font-size: 12.5px; padding: 4px 8px;
+    border: 1px solid var(--border, var(--ds-border)); border-radius: 7px;
+    background: var(--surface, var(--ds-surface)); color: var(--ds-text-primary);
+  }
+  .ds-wexisting__or { color: var(--ds-text-muted); }
+
+  .ds-wguide {
+    border: 1px solid var(--border, var(--ds-border)); border-radius: 10px;
+    padding: 14px 16px; background: var(--ds-surface-dim);
+  }
+  .ds-wguide h4 { margin: 0 0 8px; font-size: 13.5px; color: var(--ds-text-primary); }
+  .ds-wguide p { margin: 0 0 10px; font-size: 13px; color: var(--ds-text-secondary); }
+  .ds-wguide p:last-child { margin-bottom: 0; }
+  .ds-wguide a { color: var(--ds-primary); }
+
+  .ds-bqcred { display: flex; align-items: center; gap: 8px; min-height: 26px; }
+
+  /* ── Step 2 (BigQuery): manual rows editor ── */
+  .ds-bqrow { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .ds-bqrow input {
+    flex: 1; font: inherit; font-size: 13px; padding: 7px 10px;
+    border: 1px solid var(--border, var(--ds-border)); border-radius: 8px;
+    background: var(--surface, var(--ds-surface)); color: var(--ds-text-primary);
+  }
+  .ds-bqrow .ds-table-status { flex: 0 0 auto; }
+  .ds-bqrow button { flex: 0 0 auto; }
+
   /* ── Step 1: semantic-layer opt-in ── */
   .ds-wsl-opt {
     border: 1px solid var(--border, var(--ds-border));
@@ -552,8 +618,46 @@
     </div>
     <div class="ds-modal-body">
 
-      {# Step 1: connect #}
+      {# Step 1: connect — opens on a connector picker (spec §3.7). Each
+         connector brings its own connect form; steps 3–4 are identical for
+         all of them, because once tables exist, bundling and sharing don't
+         care where the data came from. CSV and Jira are honest guidance,
+         not forms: there is no CSV connector (files enter through Library
+         Collections) and Jira is configured instance-side + webhook. #}
       <div class="ds-wizard-step active" id="ds-wizard-step-connect">
+        <div class="ds-srcpick" role="radiogroup" aria-label="Source type">
+          <button type="button" class="ds-srcopt on" data-wsrc="keboola">
+            <span class="so-logo so-logo--kbc">K</span>
+            <span class="so-name">Keboola project</span>
+            <span class="so-sub">Buckets &amp; tables, synced copies</span>
+          </button>
+          <button type="button" class="ds-srcopt" data-wsrc="bigquery">
+            <span class="so-logo so-logo--bq">BQ</span>
+            <span class="so-name">BigQuery</span>
+            <span class="so-sub">Live queries, no copy</span>
+          </button>
+          <button type="button" class="ds-srcopt" data-wsrc="csv">
+            <span class="so-logo so-logo--csv">⇪</span>
+            <span class="so-name">CSV / files</span>
+            <span class="so-sub">Uploads via the Library</span>
+          </button>
+          <button type="button" class="ds-srcopt" data-wsrc="jira">
+            <span class="so-logo so-logo--jira">J</span>
+            <span class="so-name">Jira</span>
+            <span class="so-sub">Real-time via webhooks</span>
+          </button>
+        </div>
+
+        <div data-wsrcform="keboola">
+        {# Existing-source shortcut: the wizard is also the way to ADD MORE
+           tables from a project that is already connected — without it,
+           "add data" reads as "new connection only". #}
+        <div class="ds-wexisting" id="ds-wexisting" hidden>
+          <span>Already connected:</span>
+          <select id="ds-wexisting-select" aria-label="Existing connection"></select>
+          <button type="button" class="btn btn-secondary" id="ds-wexisting-btn">Choose tables →</button>
+          <span class="ds-wexisting__or">or connect a new project below</span>
+        </div>
         <div class="ds-field">
           <label for="ds-new-name">Connection name</label>
           <input type="text" id="ds-new-name" placeholder="e.g. Production (auto-detected if left blank)" autocomplete="off">
@@ -585,6 +689,54 @@
             <input type="password" id="ds-new-master" placeholder="paste owner token" autocomplete="off">
           </div>
         </div>
+        </div>
+
+        {# BigQuery — real: credentials are the instance service account
+           (managed on Instance secrets; status fetched live), tables are
+           registered as live queries in step 2. Saved queries / partitioning
+           keep their full editor on /admin/tables. #}
+        <div data-wsrcform="bigquery" hidden>
+          <div class="ds-field">
+            <label>Credentials</label>
+            <div class="ds-bqcred" id="ds-bqcred"><span class="ds-loading" style="padding:4px 0;">Checking service account…</span></div>
+            <div class="field-hint">BigQuery uses the instance-level service account — one credential for every dataset,
+              managed in <a href="/admin/datasource-credentials">Instance secrets</a>.</div>
+          </div>
+          <div class="ds-wsl-opt">
+            <div class="ds-wsl-opt__head" style="cursor:default;">Live queries, cost-guarded</div>
+            <p style="margin-left:0;">Tables you add here are registered as <strong>live queries</strong> — no copy, every query
+               runs in BigQuery behind the scan cap. For a <strong>saved query</strong> (materialized SQL on a schedule),
+               partitioning or custom SQL, use <a href="/admin/tables">Tables → Register new table</a> — the full editor stays there.</p>
+          </div>
+        </div>
+
+        {# CSV / files — honest guidance: there is no CSV connector. Files
+           enter through Library Collections (per-file ingestion); a live
+           system's export belongs in a data package instead. #}
+        <div data-wsrcform="csv" hidden>
+          <div class="ds-wguide">
+            <h4>Files become searchable through the Library, not a connector.</h4>
+            <p>Upload documents (PDF, Markdown, CSV, …) into a <strong>Collection</strong> in the
+               <a href="/library">Library</a> — Agnes ingests them per file and analysts search them with citations.
+               A Collection is honest about being a snapshot: when the content changes, a person re-uploads.</p>
+            <p>If the file is an <em>export of a live system</em>, that system is the source — connect it
+               (Keboola or BigQuery) and let a data package carry the tables, or the copy starts drifting
+               the moment it lands. The trade-offs: <a href="https://github.com/keboola/agnes-the-ai-analyst/blob/main/docs/admin/collections-vs-data-packages.md" rel="noopener">Collections vs. data packages</a>.</p>
+          </div>
+        </div>
+
+        {# Jira — honest guidance: webhook-driven connector configured
+           instance-side, not through a browser form. #}
+        <div data-wsrcform="jira" hidden>
+          <div class="ds-wguide">
+            <h4>Jira streams in over webhooks — set up once, fresh within seconds.</h4>
+            <p>The Jira connector is configured on the instance (site, credentials and a webhook registered in
+               Jira's admin), not through this form. Once wired, issues, sprints and worklogs update as they
+               change and surface as ordinary tables you can bundle and share like any other.</p>
+            <p>Setup recipe: <a href="https://github.com/keboola/agnes-the-ai-analyst/blob/main/docs/connectors/jira.md" rel="noopener">docs/connectors/jira.md</a>.</p>
+          </div>
+        </div>
+
         <div id="ds-wizard-error" class="ds-wizard-error"></div>
       </div>
 
@@ -1276,6 +1428,8 @@ async function registerSelected(connId) {
 
 let _wizardConnId = null;
 let _wizardStep = 1;
+let _wizardSource = "keboola"; // 'keboola' | 'bigquery' | 'csv' | 'jira'
+let _bqCredStatus = null;      // cached /api/admin/datasource-secrets read
 let _wizardTables = [];       // [{id, name, bucket}] registered in step 2
 let _wizardBoard = null;      // {trays: [{id, name, tables: [table]}], out: [table]}
 let _wizardTrayIdSeq = 0;
@@ -1320,6 +1474,47 @@ function _setWizStep(step) {
   // and the CTA count only recomputes on a live step-3 render — so entering
   // the step is the moment the label must catch up.
   if (step === 3) _updateBundleCta();
+  // Each step starts at its own top — the modal is a scroll container, and
+  // arriving mid-scroll hides the steps strip.
+  const modal = document.querySelector(".ds-modal--wizard");
+  if (modal) modal.scrollTop = 0;
+}
+
+function _setWizSource(src) {
+  _wizardSource = src;
+  document.querySelectorAll("[data-wsrc]").forEach((o) => o.classList.toggle("on", o.dataset.wsrc === src));
+  document.querySelectorAll("[data-wsrcform]").forEach((f) => { f.hidden = f.dataset.wsrcform !== src; });
+  const connectBtn = document.getElementById("ds-wizard-connect-btn");
+  if (src === "keboola") {
+    connectBtn.style.display = _wizardStep === 1 ? "" : "none";
+    connectBtn.textContent = "Connect & validate";
+  } else if (src === "bigquery") {
+    connectBtn.style.display = _wizardStep === 1 ? "" : "none";
+    connectBtn.textContent = "Continue";
+    _loadBqCredStatus();
+  } else {
+    // csv / jira are guidance, not forms — nothing to submit.
+    connectBtn.style.display = "none";
+  }
+  document.getElementById("ds-wizard-error").style.display = "none";
+}
+
+async function _loadBqCredStatus() {
+  const host = document.getElementById("ds-bqcred");
+  if (_bqCredStatus) return; // already rendered this open
+  try {
+    const r = await fetch("/api/admin/datasource-secrets", { credentials: "include" });
+    const data = r.ok ? await r.json() : { secrets: [] };
+    const row = (data.secrets || []).find((s) => s.name === "BIGQUERY_SERVICE_ACCOUNT_JSON");
+    _bqCredStatus = row || { source: "unset", has_value: false };
+  } catch (e) {
+    _bqCredStatus = { source: "unset", has_value: false };
+  }
+  host.innerHTML = _bqCredStatus.has_value
+    ? `<span class="ds-badge ${_bqCredStatus.source === "env" ? "badge-env" : "badge-vault"}">service account · ${_esc(_bqCredStatus.source)}</span>`
+    : `<span class="ds-badge badge-unset">not set</span>
+       <span style="font-size:12px; color:var(--ds-accent-warn-ink);">Set <code>BIGQUERY_SERVICE_ACCOUNT_JSON</code> in
+       <a href="/admin/datasource-credentials">Instance secrets</a> first — registering works, but nothing can query until it's there.</span>`;
 }
 
 function openWizard() {
@@ -1328,6 +1523,7 @@ function openWizard() {
   _wizardBoard = null;
   _wizardPackages = [];
   _wizardShares = null;
+  _bqCredStatus = null;
   document.getElementById("ds-new-name").value = "";
   document.getElementById("ds-new-stack").value = "";
   document.getElementById("ds-new-token").value = "";
@@ -1338,9 +1534,25 @@ function openWizard() {
   const share = document.getElementById("ds-wizard-step-share");
   share.querySelector(".ds-wshare").style.display = "";
   share.querySelector(".ds-wdone").style.display = "none";
+  // Existing-source shortcut: offer already-connected projects for "add
+  // more tables from ..." — the wizard is not only for new connections.
+  const existing = document.getElementById("ds-wexisting");
+  if (_connections.length) {
+    document.getElementById("ds-wexisting-select").innerHTML = _connections
+      .map((c) => `<option value="${_esc(c.id)}">${_esc(c.name || c.id)}</option>`)
+      .join("");
+    existing.hidden = false;
+  } else {
+    existing.hidden = true;
+  }
   _setWizStep(1);
+  _setWizSource("keboola");
   document.getElementById("ds-wizard-overlay").classList.add("show");
-  document.getElementById("ds-new-name").focus();
+  // preventScroll: the modal is its own scroll container, and a plain
+  // focus() scrolls the name field into view — pushing the steps strip and
+  // the connector picker out of the top of the modal before anyone sees them.
+  document.getElementById("ds-new-name").focus({ preventScroll: true });
+  document.querySelector(".ds-modal--wizard").scrollTop = 0;
 }
 
 function closeWizard() {
@@ -1539,6 +1751,105 @@ async function _loadWizardTables(connId) {
 function finishWizard() {
   closeWizard();
   loadConnections();
+}
+
+/* ── Step 2 (BigQuery): manual rows editor ────────────────────────────────
+   BigQuery has no bucket browser — datasets are named, not listed (the
+   service account may see thousands). Each filled row registers as a LIVE
+   query (query_mode='remote', cost-guarded); saved queries and partitioning
+   keep their full editor on /admin/tables. */
+
+function _renderBqRowsEditor() {
+  const body = document.getElementById("ds-wizard-tables-body");
+  document.getElementById("ds-wizard-connected-banner").innerHTML =
+    "Name the BigQuery tables to register — dataset and table, one per row.";
+  body.innerHTML = `
+    <div id="ds-bqrows">
+      ${_bqRowHtml()}${_bqRowHtml()}${_bqRowHtml()}
+    </div>
+    <button type="button" class="btn btn-secondary" id="ds-bqrow-add">＋ Add another table</button>
+    <div class="ds-browse-error" id="ds-bq-rows-error" style="display:block; margin-top:8px;"></div>`;
+  body.querySelector("#ds-bqrow-add").addEventListener("click", () => {
+    body.querySelector("#ds-bqrows").insertAdjacentHTML("beforeend", _bqRowHtml());
+  });
+}
+
+function _bqRowHtml() {
+  return `
+  <div class="ds-bqrow">
+    <input type="text" data-bq-dataset placeholder="dataset (e.g. analytics)" autocomplete="off" spellcheck="false">
+    <input type="text" data-bq-table placeholder="table (e.g. events_raw)" autocomplete="off" spellcheck="false">
+    <span class="ds-table-status"></span>
+  </div>`;
+}
+
+async function _registerBqRows() {
+  const rows = [...document.querySelectorAll("#ds-bqrows .ds-bqrow")]
+    .map((row) => ({
+      row,
+      dataset: row.querySelector("[data-bq-dataset]").value.trim(),
+      table: row.querySelector("[data-bq-table]").value.trim(),
+      statusEl: row.querySelector(".ds-table-status"),
+    }))
+    .filter((r) => r.dataset || r.table);
+  const errEl = document.getElementById("ds-bq-rows-error");
+  errEl.textContent = "";
+  if (!rows.length) {
+    errEl.textContent = "Fill in at least one dataset + table row.";
+    return { ok: [], failed: 0 };
+  }
+  const registered = [];
+  let failed = 0;
+  for (const r of rows) {
+    if (!r.dataset || !r.table) {
+      r.statusEl.textContent = "✗ needs both dataset and table";
+      r.statusEl.className = "ds-table-status fail";
+      failed++;
+      continue;
+    }
+    r.statusEl.textContent = "registering…";
+    r.statusEl.className = "ds-table-status";
+    try {
+      const resp = await fetch(API_REGISTER_TABLE, {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: r.table,
+          source_type: "bigquery",
+          bucket: r.dataset,
+          source_table: r.table,
+          query_mode: "remote",
+          description: "Added via the Add-data wizard",
+        }),
+      });
+      if (resp.ok || resp.status === 201 || resp.status === 409) {
+        r.statusEl.textContent = resp.status === 409 ? "already registered" : "✓ registered";
+        r.statusEl.className = "ds-table-status ok";
+        registered.push({
+          id: r.table.trim().toLowerCase().replace(/ /g, "_"),
+          name: r.table,
+          bucket: r.dataset,
+        });
+      } else {
+        const b = await resp.json().catch(() => ({}));
+        r.statusEl.textContent = "✗ " + _esc(typeof b.detail === "string" ? b.detail : "failed");
+        r.statusEl.className = "ds-table-status fail";
+        failed++;
+      }
+    } catch (e) {
+      r.statusEl.textContent = "✗ request failed";
+      r.statusEl.className = "ds-table-status fail";
+      failed++;
+    }
+  }
+  return { ok: registered, failed };
+}
+
+// One entry point for step 2's "register whatever this source selected".
+async function _registerStepTwo() {
+  if (_wizardSource === "bigquery") return _registerBqRows();
+  if (!_wizardConnId) return { ok: [], failed: 0 };
+  return registerSelected(_wizardConnId);
 }
 
 /* ── Step 3: the bundle board ─────────────────────────────────────────────
@@ -1806,7 +2117,33 @@ function _showDoneSlab() {
 document.getElementById("ds-add-btn").addEventListener("click", openWizard);
 document.getElementById("ds-wizard-close").addEventListener("click", closeWizard);
 document.getElementById("ds-wizard-cancel").addEventListener("click", closeWizard);
-document.getElementById("ds-wizard-connect-btn").addEventListener("click", connectAndValidate);
+
+// Step 1: the connector picker swaps the connect form.
+document.querySelectorAll("[data-wsrc]").forEach((opt) => {
+  opt.addEventListener("click", () => _setWizSource(opt.dataset.wsrc));
+});
+
+// Step 1 primary: what "continue" means depends on the connector.
+document.getElementById("ds-wizard-connect-btn").addEventListener("click", () => {
+  if (_wizardSource === "bigquery") {
+    _setWizStep(2);
+    _renderBqRowsEditor();
+    return;
+  }
+  connectAndValidate();
+});
+
+// Step 1 shortcut: add more tables from an already-connected project.
+document.getElementById("ds-wexisting-btn").addEventListener("click", async () => {
+  const id = document.getElementById("ds-wexisting-select").value;
+  if (!id) return;
+  _wizardConnId = id;
+  const conn = _connections.find((c) => c.id === id);
+  document.getElementById("ds-wizard-connected-banner").innerHTML =
+    `Adding tables from "${_esc((conn && conn.name) || id)}".`;
+  _setWizStep(2);
+  await _loadWizardTables(id);
+});
 
 // Step 1: the semantic-layer opt-in reveals its token field.
 document.getElementById("ds-new-semantic").addEventListener("change", (e) => {
@@ -1814,13 +2151,12 @@ document.getElementById("ds-new-semantic").addEventListener("change", (e) => {
   if (e.target.checked) document.getElementById("ds-new-master").focus();
 });
 
-// Step 2 → 3: register the selection, then bundle it.
+// Step 2 → 3: register what this source selected, then bundle it.
 document.getElementById("ds-wizard-register-btn").addEventListener("click", async () => {
-  if (!_wizardConnId) return;
   const btn = document.getElementById("ds-wizard-register-btn");
   btn.disabled = true;
   try {
-    const result = await registerSelected(_wizardConnId);
+    const result = await _registerStepTwo();
     if (!result || !result.ok.length) return; // per-row statuses say why
     _wizardTables = result.ok;
     _seedBoard("one");
@@ -1832,8 +2168,7 @@ document.getElementById("ds-wizard-register-btn").addEventListener("click", asyn
 
 // Step 2 escape hatch: the pre-redesign behavior — register and stop.
 document.getElementById("ds-wizard-finish-early-btn").addEventListener("click", async () => {
-  if (!_wizardConnId) return;
-  const result = await registerSelected(_wizardConnId);
+  const result = await _registerStepTwo();
   if (result && result.ok.length) finishWizard();
 });
 
@@ -1895,8 +2230,12 @@ document.getElementById("ds-wizard-overlay").addEventListener("keydown", functio
   if (e.key === "Escape") closeWizard();
 });
 
-loadConnections();
-// Deep-link: the Overview's "+ Add data" lands here with ?add=1.
-if (new URLSearchParams(window.location.search).has("add")) openWizard();
+// Deep-link: the Overview's "+ Add data" lands here with ?add=1. The open
+// waits for the connections list — openWizard reads it to offer the
+// "already connected" shortcut, and racing it hid the strip on exactly the
+// entry path that needs it most.
+loadConnections().then(() => {
+  if (new URLSearchParams(window.location.search).has("add")) openWizard();
+});
 </script>
 {% endblock %}

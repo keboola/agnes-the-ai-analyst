@@ -295,3 +295,54 @@ class TestAddDataWizard:
             headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
         ).text
         assert "/admin/data-sources?add=1" in hub
+
+
+class TestAddDataConnectorPicker:
+    """Step 1 opens on a connector picker (spec §3.7): Keboola and BigQuery
+    are real flows; CSV and Jira are HONEST guidance — no CSV connector
+    exists (files enter through Library Collections) and Jira is configured
+    instance-side + webhook. Only step 1 varies by source; Bundle and Share
+    are shared."""
+
+    def _page(self, seeded_app) -> str:
+        c = seeded_app["client"]
+        return c.get(
+            "/admin/data-sources",
+            headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
+        ).text
+
+    def test_all_four_connectors_are_offered(self, seeded_app):
+        body = self._page(seeded_app)
+        for src in ("keboola", "bigquery", "csv", "jira"):
+            assert f'data-wsrc="{src}"' in body
+            assert f'data-wsrcform="{src}"' in body
+
+    def test_bigquery_reads_the_real_credential_status(self, seeded_app):
+        """BQ credentials are the instance service account — the wizard must
+        consult /api/admin/datasource-secrets and route to Instance secrets,
+        never grow its own credential field."""
+        body = self._page(seeded_app)
+        assert "/api/admin/datasource-secrets" in body
+        assert "BIGQUERY_SERVICE_ACCOUNT_JSON" in body
+        assert "/admin/datasource-credentials" in body
+
+    def test_bigquery_registers_live_queries_and_defers_depth(self, seeded_app):
+        """The wizard registers `remote` rows; saved queries / partitioning
+        keep their full editor on /admin/tables — stated, not dropped."""
+        body = self._page(seeded_app)
+        assert '"remote"' in body.split("_registerBqRows", 1)[1].split("async function", 1)[0]
+        assert "/admin/tables" in body
+
+    def test_csv_guidance_is_honest_about_the_missing_connector(self, seeded_app):
+        """`csv` is an alias with no connector (docs/DATA_SOURCES.md); the
+        card must send people to Library Collections, not fake a form."""
+        body = self._page(seeded_app)
+        assert "collections-vs-data-packages" in body
+
+    def test_existing_connection_shortcut_is_offered(self, seeded_app):
+        """The wizard is also how MORE tables are added from a project that
+        is already connected — without this, 'Add data' reads as 'new
+        connection only'."""
+        body = self._page(seeded_app)
+        assert 'id="ds-wexisting-select"' in body
+        assert 'id="ds-wexisting-btn"' in body
