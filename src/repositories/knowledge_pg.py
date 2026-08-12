@@ -550,8 +550,25 @@ class KnowledgePgRepository:
         statuses: Optional[List[str]] = None,
         limit: int = 100,
     ) -> List[Dict[str, Any]]:
-        sql_parts = ["SELECT * FROM knowledge_items WHERE domain = :domain"]
-        params: Dict[str, Any] = {"domain": domain, "limit": limit}
+        """Mirrors the DuckDB repo (#1017): resolves the slug through
+        ``memory_domains`` and EXISTS-joins ``knowledge_item_domains`` instead
+        of reading the ``knowledge_items.domain`` scalar column. The scalar
+        only ever reflects the domain passed to ``create``/``update`` — a
+        multi-domain write via ``MemoryDomainsRepositoryPg.replace_domains_for_item``
+        (the admin edit-item ``domain_ids`` field) touches only the junction,
+        so the scalar-based read silently missed those items (and kept
+        showing them under a domain they had moved off of). Unknown slug →
+        empty (matches the old ``WHERE domain = ?`` semantic).
+        """
+        domain_id = self._resolve_domain_slug(domain)
+        if domain_id is None:
+            return []
+        sql_parts = [
+            "SELECT * FROM knowledge_items "
+            "WHERE EXISTS (SELECT 1 FROM knowledge_item_domains kid "
+            "WHERE kid.item_id = knowledge_items.id AND kid.domain_id = :domain_id)"
+        ]
+        params: Dict[str, Any] = {"domain_id": domain_id, "limit": limit}
         if statuses:
             keys = []
             for i, s in enumerate(statuses):

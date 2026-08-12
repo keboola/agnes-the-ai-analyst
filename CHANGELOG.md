@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **Postgres's corporate-memory duplicate/lexical scan now finds items moved between domains by the admin multi-domain editor.** `list_by_domain` (used by the verification detector's lexical-similarity fallback) read a `knowledge_items.domain` scalar column that only ever reflected the domain passed to `create`/`update` — a multi-domain re-assignment through `/api/admin/...` (`domain_ids`, `MemoryDomainsRepositoryPg.replace_domains_for_item`) touches only the `knowledge_item_domains` junction, so a moved item stayed invisible under its new domain and kept surfacing under the one it left. It now resolves the slug through `memory_domains` and joins the junction, matching the DuckDB repo (#1017).
+
 ## [0.83.7] - 2026-08-12
 
 ### Fixed
