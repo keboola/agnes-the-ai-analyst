@@ -14,6 +14,7 @@ Three guarantees:
 """
 
 import re
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -2127,7 +2128,6 @@ class TestDefaultContentParity:
         input (caught by the screenshot audit). The BASE rule is the topnav
         contract: two columns, exactly as before the redesign; rail lays its
         composer out with its own flex rules and never reads this grid."""
-        from pathlib import Path
 
         css = Path("app/web/static/css/chat.css").read_text()
         import re
@@ -2145,7 +2145,6 @@ class TestDefaultContentParity:
         the module reads ``data-ui-layout`` off the root element and its boot
         path early-returns off the rail, so topnav gets no journey fetch, no
         greeting bubbles, and no auto-launched coach-mark tour."""
-        from pathlib import Path
 
         src = Path("app/web/static/js/chat_onboarding.js").read_text()
         assert 'dataset.uiLayout === "rail"' in src, (
@@ -2346,7 +2345,6 @@ class TestDetailPageParity:
 
     @pytest.mark.parametrize("base,token,why", FORKED_PAIR_INVARIANTS)
     def test_frozen_copy_carries_the_same_invariant(self, base, token, why):
-        from pathlib import Path
 
         live = Path(f"app/web/templates/{base}.html").read_text()
         legacy = Path(f"app/web/templates/{base}_legacy.html").read_text()
@@ -2361,7 +2359,6 @@ class TestDetailPageParity:
         """No render site may keep the bare redesigned template literal — a
         new call site that bypasses the switch reintroduces the redesign on
         topnav silently."""
-        from pathlib import Path
 
         src = Path("app/web/router.py").read_text()
         for name in self.DETAIL_TEMPLATES:
@@ -2419,3 +2416,45 @@ class TestDetailPageParity:
         assert resp.status_code == 200
         assert 'class="detail-page"' in resp.text
         assert "td-back" not in resp.text
+
+
+class TestChromeNavParity:
+    """Feature-gated destinations must exist in BOTH chromes.
+
+    `data-ui-layout` picks one of two hand-written navs (`_app_header.html`
+    for `topnav`, `_app_rail.html` for `rail`). A link added to one is
+    invisible on instances running the other, and the failure is silent: the
+    feature is enabled, deployed and serving, with nothing to click. That is
+    exactly what happened to hosted data apps — the "Apps" entry shipped in
+    the topnav only, so a `rail` instance could not reach the app list at
+    all, while the rail's own comment described the destination as coming
+    "soon".
+    """
+
+    HEADER = "app/web/templates/_app_header.html"
+    RAIL = "app/web/templates/_app_rail.html"
+
+    def _read(self, p):
+        from pathlib import Path
+
+        return Path(p).read_text(encoding="utf-8")
+
+    def test_apps_destination_is_in_both_chromes(self):
+        for tpl in (self.HEADER, self.RAIL):
+            body = self._read(tpl)
+            assert 'href="/apps"' in body, f"{tpl} has no link to the data-apps list"
+
+    def test_apps_is_gated_the_same_way_in_both_chromes(self):
+        """Same gate, or one chrome shows a link the other hides — and the
+        routes 404 when the feature is off."""
+        for tpl in (self.HEADER, self.RAIL):
+            body = self._read(tpl)
+            at = body.index('href="/apps"')
+            window = body[max(0, at - 700) : at]
+            assert "data_apps_enabled()" in window, f"{tpl}: /apps link is not gated on data_apps_enabled()"
+
+    def test_agents_destination_is_in_both_chromes(self):
+        """The sibling gated destination, pinned for the same reason."""
+        for tpl in (self.HEADER, self.RAIL):
+            body = self._read(tpl)
+            assert 'href="/agents"' in body, f"{tpl} has no link to the agent builder"
