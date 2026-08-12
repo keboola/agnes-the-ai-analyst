@@ -21,7 +21,13 @@ async function api(path, init = {}) {
       const body = await r.json();
       if (body && body.detail) detail = JSON.stringify(body.detail);
     } catch (_) { /* non-JSON */ }
-    throw new Error(detail);
+    // Carry the status on the error: callers have to tell "you lack a grant"
+    // (401/403) from "the server is down" (5xx) or unreachable (no status at
+    // all), and a message that guesses wrong sends people to an admin who
+    // finds nothing to fix. (Devin Review on #1263.)
+    const err = new Error(detail);
+    err.status = r.status;
+    throw err;
   }
   if (r.status === 204 || r.headers.get("content-length") === "0") return null;
   return r.json();
@@ -140,8 +146,13 @@ async function createEntity() {
       created && (created.id || created.slug)
         ? created.id || created.slug
         : payload.slug || payload.name;
-    result.textContent = `Created: ${id}`;
-    if (window.appToast) window.appToast(`Created: ${id}`);
+    // A seeded knowledge item is created `pending` — approval is what
+    // publishes it to every analyst — so say so rather than let the author
+    // assume the knowledge is live. (Devin Review on #1263.)
+    const pendingItem = created && created.item_id && created.item_status === "pending";
+    const suffix = pendingItem ? " — the knowledge item awaits approval before it is published" : "";
+    result.textContent = `Created: ${id}${suffix}`;
+    if (window.appToast) window.appToast(`Created: ${id}${suffix}`);
   } catch (e) {
     result.textContent = `Failed: ${e.message}`;
   } finally {
@@ -195,7 +206,28 @@ async function openAssistant() {
     const sendBtn = $("studio-send");
     if (sendBtn) sendBtn.addEventListener("click", send);
   } catch (e) {
-    appendStream(`Assistant unavailable: ${e.message}\n`);
+    // Don't paste the raw exception into the panel. The common cause is a
+    // missing cloud-chat grant, which used to surface here verbatim as
+    // `Assistant unavailable: "Access denied to chat 'chat'"` — an internal
+    // string, on a page whose banner reads "AI-ASSISTED". The reader cannot
+    // act on it and cannot tell whether it is their permissions or a broken
+    // instance. Say what it means for them; keep the detail for the console.
+    console.warn("studio assistant unavailable:", e);
+    // Branch on WHAT failed. A blanket "ask an admin for a grant" sent people
+    // chasing permissions they already had whenever the server was simply
+    // down or unreachable — and an admin who checks finds nothing to fix.
+    // Only 401/403 is a permission answer. (Devin Review on #1263.)
+    const status = (e && (e.status || e.statusCode)) || 0;
+    const denied = status === 401 || status === 403;
+    appendStream(
+      (denied
+        ? "The assistant isn't available on your account — an admin enables it " +
+          "by granting your group the cloud-chat feature."
+        : "The assistant could not be reached" +
+          (status ? ` (the server answered ${status})` : "") +
+          " — this is not about your permissions. Try again in a moment.") +
+        " You can still fill in the form below and create this yourself.\n",
+    );
   }
 }
 

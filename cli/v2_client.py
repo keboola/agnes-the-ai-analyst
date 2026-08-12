@@ -10,6 +10,7 @@ import pyarrow as pa
 
 from cli.config import get_server_url, get_token
 from cli.error_render import render_error
+from cli.server_moved import is_redirect, redirect_body
 
 
 @dataclass
@@ -43,27 +44,39 @@ def _parse_error_body(r: httpx.Response) -> Any:
     return r.text
 
 
+def _raise_for_status(r: httpx.Response) -> None:
+    """Turn a non-success response into a V2ClientError.
+
+    A 3xx is checked FIRST and separately: these helpers only ever guarded
+    `>= 400`, so a redirect fell through to `r.json()` on an empty body and
+    surfaced as `internal CLI error (JSONDecodeError)` — no status, no
+    destination, no remedy. See `cli/server_moved.py` for why the redirect
+    is explained rather than followed.
+    """
+    if is_redirect(r.status_code):
+        raise V2ClientError(status_code=r.status_code, body=redirect_body(r, get_server_url()))
+    if r.status_code >= 400:
+        raise V2ClientError(status_code=r.status_code, body=_parse_error_body(r))
+
+
 def api_get_json(path: str, **params) -> dict:
     url = f"{get_server_url().rstrip('/')}{path}"
     r = httpx.get(url, headers=_headers(), params=params or None, timeout=30)
-    if r.status_code >= 400:
-        raise V2ClientError(status_code=r.status_code, body=_parse_error_body(r))
+    _raise_for_status(r)
     return r.json()
 
 
 def api_post_json(path: str, payload: dict) -> dict:
     url = f"{get_server_url().rstrip('/')}{path}"
     r = httpx.post(url, json=payload, headers=_headers(), timeout=120)
-    if r.status_code >= 400:
-        raise V2ClientError(status_code=r.status_code, body=_parse_error_body(r))
+    _raise_for_status(r)
     return r.json()
 
 
 def api_delete(path: str) -> dict:
     url = f"{get_server_url().rstrip('/')}{path}"
     r = httpx.delete(url, headers=_headers(), timeout=30)
-    if r.status_code >= 400:
-        raise V2ClientError(status_code=r.status_code, body=_parse_error_body(r))
+    _raise_for_status(r)
     if not r.content:
         return {}
     if "json" in r.headers.get("content-type", ""):
@@ -74,8 +87,7 @@ def api_delete(path: str) -> dict:
 def api_put_json(path: str, payload: dict) -> dict:
     url = f"{get_server_url().rstrip('/')}{path}"
     r = httpx.put(url, json=payload, headers=_headers(), timeout=30)
-    if r.status_code >= 400:
-        raise V2ClientError(status_code=r.status_code, body=_parse_error_body(r))
+    _raise_for_status(r)
     if not r.content:
         return {}
     return r.json()
@@ -84,8 +96,7 @@ def api_put_json(path: str, payload: dict) -> dict:
 def api_patch_json(path: str, payload: dict) -> dict:
     url = f"{get_server_url().rstrip('/')}{path}"
     r = httpx.patch(url, json=payload, headers=_headers(), timeout=30)
-    if r.status_code >= 400:
-        raise V2ClientError(status_code=r.status_code, body=_parse_error_body(r))
+    _raise_for_status(r)
     if not r.content:
         return {}
     return r.json()
@@ -111,8 +122,7 @@ def api_post_multipart(
         headers=_headers(),
         timeout=600,
     )
-    if r.status_code >= 400:
-        raise V2ClientError(status_code=r.status_code, body=_parse_error_body(r))
+    _raise_for_status(r)
     return r.json()
 
 
@@ -130,8 +140,7 @@ def api_put_multipart(
         headers=_headers(),
         timeout=600,
     )
-    if r.status_code >= 400:
-        raise V2ClientError(status_code=r.status_code, body=_parse_error_body(r))
+    _raise_for_status(r)
     return r.json()
 
 
@@ -150,6 +159,12 @@ def api_get_stream(path: str, dest: "io.IOBase | str", **params) -> int:
         params=params or None,
         timeout=600,
     ) as r:
+        # A redirect here is worse than elsewhere: without this the 3xx is
+        # not an error, so the loop below writes the redirect's (empty) body
+        # to `dest` and reports success — a downloaded file that is not the
+        # file. Checked before the `>= 400` branch, which never saw it.
+        if is_redirect(r.status_code):
+            raise V2ClientError(status_code=r.status_code, body=redirect_body(r, get_server_url()))
         if r.status_code >= 400:
             # Read the (likely small) error body before raising.
             body = b"".join(r.iter_bytes())
@@ -175,7 +190,6 @@ def api_post_arrow(path: str, payload: dict) -> pa.Table:
     """Post JSON, expect Arrow IPC stream response."""
     url = f"{get_server_url().rstrip('/')}{path}"
     r = httpx.post(url, json=payload, headers=_headers(), timeout=600)
-    if r.status_code >= 400:
-        raise V2ClientError(status_code=r.status_code, body=_parse_error_body(r))
+    _raise_for_status(r)
     reader = pa.ipc.open_stream(io.BytesIO(r.content))
     return reader.read_all()

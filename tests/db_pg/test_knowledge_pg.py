@@ -27,7 +27,20 @@ def k_engine(pg_engine, monkeypatch):
     import src.db_pg as db_pg
 
     db_pg.dispose()
-    return db_pg.get_engine()
+    engine = db_pg.get_engine()
+
+    # The domains these tests file items under have to exist: since #1263 a
+    # `domain` is written to `knowledge_item_domains` as well as to the inline
+    # column (matching the DuckDB repo, which has always resolved the slug),
+    # and an unresolvable slug is rejected on both engines rather than
+    # half-written on one.
+    from src.repositories.memory_domains_pg import MemoryDomainsPgRepository
+
+    domains = MemoryDomainsPgRepository(engine)
+    for slug in ("finance", "ops"):
+        if domains.get_by_slug(slug) is None:
+            domains.create(name=slug.title(), slug=slug, description=None, icon=None, color=None, created_by="test")
+    return engine
 
 
 # ---------------------------------------------------------------------------

@@ -96,7 +96,25 @@ STUDIO_DOMAINS: dict[str, StudioDomain] = {
         title="Corporate Memory Builder",
         subtitle="Distill reusable knowledge into a memory domain granted to a group.",
         endpoint="/api/admin/memory-domains",
-        fields=(_NAME, _SLUG, _DESC),
+        # `content` seeds the domain's first knowledge item in the same POST.
+        # Without it this builder created an empty container: the three
+        # generic fields are name/slug/description, and the endpoint accepted
+        # nothing else — so the page's own subtitle promised distilled
+        # knowledge that the form had no way to carry.
+        fields=(
+            _NAME,
+            _SLUG,
+            _DESC,
+            StudioField(
+                "content",
+                "Knowledge",
+                type="textarea",
+                placeholder=(
+                    "The knowledge itself — what a colleague needs to know, "
+                    "in your own words. Becomes this domain's first item."
+                ),
+            ),
+        ),
     ),
     "skill": StudioDomain(
         slug="skill",

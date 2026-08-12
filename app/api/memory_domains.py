@@ -47,6 +47,15 @@ class CreateMemoryDomainRequest(BaseModel):
     color: Optional[str] = None
     cover_image_url: Optional[str] = None
     status: Optional[str] = None  # v51
+    # Optional first knowledge item, seeded into the new domain in the same
+    # call. Without it this endpoint only ever produced an empty container —
+    # which is what the Studio "Corporate Memory Builder" posts to, so a page
+    # whose subtitle promises "Distill reusable knowledge into a memory
+    # domain" had nowhere to put the knowledge. The item is created through
+    # the same repository the regular knowledge endpoint uses, carrying this
+    # domain's slug, so it is indistinguishable from one added later.
+    content: Optional[str] = None
+    content_title: Optional[str] = None
 
     @field_validator("color")
     @classmethod
@@ -147,6 +156,69 @@ async def list_memory_domains_admin(
     return [_serialize(r) for r in rows]
 
 
+#: Category for items the domain builder seeds. One value, not one per
+#: domain — see the note at the `category=` argument below.
+SEEDED_ITEM_CATEGORY = "corporate-memory"
+
+
+def seed_domain_item(
+    *,
+    slug: str,
+    name: str,
+    content: Optional[str],
+    content_title: Optional[str],
+    source_user: Optional[str],
+) -> Optional[str]:
+    """Create the domain's first knowledge item, or ``None`` when there is none.
+
+    Shared with the suggestion-queue replay in
+    ``app/api/authoring_suggestions.py``: a non-admin's submission is created
+    later, by a different code path, and that path copied only name/slug/
+    description — so the knowledge the author actually wrote was dropped on
+    approval and an empty domain appeared instead. One function, so the two
+    ways a domain gets created cannot drift again. (Devin Review on #1263.)
+
+    The item lands ``pending`` like every other route into corporate memory
+    (`POST /api/memory`): approval is what publishes an item into every
+    analyst's `.claude/rules/`, and authoring it is not approving it.
+    """
+    if not content or not content.strip():
+        return None
+
+    import uuid as _uuid
+
+    from src.repositories import knowledge_repo
+
+    # Resolve the domain BEFORE writing anything. `create` inserts the item
+    # row and only then links it to the domain, so an unresolvable slug — the
+    # one failure this call can actually hit — used to leave a note nobody
+    # asked for and nothing points at. There is no delete on the knowledge
+    # repo (items are retired by status, never removed), so the fix is to not
+    # create the half. (Devin Review on #1263.)
+    if memory_domains_repo().get_by_slug(slug.strip()) is None:
+        raise ValueError(f"Unknown memory domain slug: {slug.strip()}")
+
+    item_id = str(_uuid.uuid4())
+    knowledge_repo().create(
+        id=item_id,
+        title=(content_title or name).strip(),
+        content=content.strip(),
+        # `category` is required on the knowledge repo and the builder form
+        # does not ask for one. NOT the domain slug: categories are
+        # enumerated with `SELECT DISTINCT category` to fill the admin page's
+        # dropdowns (`app/web/router.py`), so a slug per domain would grow a
+        # long tail of one-item categories there. The domain is already
+        # recorded in `domain`; one stable label says where the item came
+        # from without inventing a taxonomy. (Devin Review on #1263.)
+        category=SEEDED_ITEM_CATEGORY,
+        source_user=source_user,
+        tags=None,
+        domain=slug.strip(),
+        confidence=0.50,
+    )
+    return item_id
+
+
 @router.post("", status_code=201)
 async def create_memory_domain(
     payload: CreateMemoryDomainRequest,
@@ -176,7 +248,53 @@ async def create_memory_domain(
         f"memory_domain:{domain_id}",
         {"slug": payload.slug, "name": payload.name},
     )
-    return {"id": domain_id}
+
+    # Seed the first knowledge item when the caller supplied one. Deliberately
+    # after the audit row and best-effort in nothing: a failure here must be
+    # visible, because the caller asked for content and a silently empty
+    # domain is the exact failure this field exists to remove. The domain
+    # itself is already created and audited, so the 500 is honest — retrying
+    # the item is possible, and re-POSTing the domain 409s on the slug.
+    try:
+        item_id: Optional[str] = seed_domain_item(
+            slug=payload.slug,
+            name=payload.name,
+            content=payload.content,
+            content_title=payload.content_title,
+            source_user=user.get("email"),
+        )
+    except Exception:
+        # Undo the domain this request just created. Leaving it behind turns a
+        # transient failure into a permanent one: the caller sees a 500, the
+        # empty domain stays, and every retry is refused for the duplicate
+        # slug. Hard, because a soft delete keeps the slug taking its unique
+        # constraint. The suggestion-queue path does the same thing.
+        # (Devin Review on #1263, once per creation path.)
+        try:
+            repo.hard_delete(domain_id)
+        except Exception:
+            logger.exception(
+                "memory_domains: seeding failed for %s and the rollback failed too — "
+                "delete that domain by hand before retrying",
+                domain_id,
+            )
+        raise
+    if item_id:
+        _audit(
+            conn,
+            user["id"],
+            "memory_domain.seed_item",
+            f"memory_domain:{domain_id}",
+            {"item_id": item_id, "slug": payload.slug},
+        )
+
+    # `item_status` is stated rather than implied: the seeded item lands
+    # `pending` like every other route into corporate memory, because approval
+    # is what publishes an item into every analyst's `.claude/rules/` and
+    # authoring is not approving. An admin who wrote it still has to approve
+    # it, and the builder now says so instead of leaving them to notice.
+    # (Devin Review on #1263 asked whether pending was intended — it is.)
+    return {"id": domain_id, "item_id": item_id, "item_status": "pending" if item_id else None}
 
 
 @router.get("/{domain_id}")

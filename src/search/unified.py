@@ -161,7 +161,21 @@ def unified_search(
 
     buckets: List[List[Dict[str, Any]]] = []
 
+    # Cap for buckets whose top hit is strong only relative to itself. Defined
+    # here because the chunk bucket needs it too: `_minmax` maps any bucket's
+    # best hit to 1.0, so a fallback that matched only FILE NAMES would arrive
+    # indistinguishable from a document that actually contains the words and
+    # could take every slot from knowledge, glossary and tables that genuinely
+    # matched. (Devin Review on #1267.)
+    _sem_cap = max(2, k // 5)
+
     chunk_hits = [dict(h, type="chunk") for h in _chunk_search(corpus_ids, query, k=k)] if corpus_ids else []
+    # Cap the NAME-matched hits inside the bucket, rather than only capping a
+    # bucket that is entirely name hits: since the fallback keeps body hits
+    # and merely rescales them, an all-filename bucket is now rare and an
+    # all-or-nothing test would almost never fire. Body hits are untouched.
+    # (Devin Review on #1267.)
+    named = [h for h in chunk_hits if h.get("matched_on") == "filename"]
     buckets.append(chunk_hits)
 
     knowledge_hits: List[Dict[str, Any]] = []
@@ -193,11 +207,10 @@ def unified_search(
     buckets.append(knowledge_hits)
     buckets.append(_table_scores(query, tables)[:k] if tables else [])
 
-    # Cap the new semantic buckets so their _minmax-normalized top-1 hit
-    # (score=1.0) cannot crowd out more than a proportional share of the
-    # final k slots.  max(2, k//5) gives 2 slots at k=10 and scales up
-    # with larger k values.  The three legacy buckets keep their [:k] cap.
-    _sem_cap = max(2, k // 5)
+    # Same cap, same reason, for the semantic buckets: a _minmax-normalized
+    # top-1 hit (score=1.0) must not crowd out more than a proportional share
+    # of the final k slots. 2 slots at k=10, scaling with k. The legacy buckets
+    # keep their [:k] cap.
     buckets.append(_metric_scores(query, metrics or [])[:_sem_cap] if metrics else [])
 
     # Glossary is public — fetched inside, not caller-prefiltered. BM25 score is
@@ -221,6 +234,16 @@ def unified_search(
             }
         )
     buckets.append(glossary_hits)
+
+    # Cap a name-only chunk bucket ONLY when something else actually matched.
+    # The cap exists to stop weak name hits crowding out real matches from the
+    # other sources; when there are no other matches it would just throw away
+    # the answer to the query that motivated the fallback — "what is in
+    # quarterly-report.md?" deserves more than two chunks of that file when
+    # nothing else in the instance matched. (Devin Review on #1267.)
+    if named and any(bucket for bucket in buckets[1:]):
+        keep = {id(h) for h in named[:_sem_cap]}
+        buckets[0] = [h for h in buckets[0] if h.get("matched_on") != "filename" or id(h) in keep]
 
     merged: List[Dict[str, Any]] = []
     for bucket in buckets:

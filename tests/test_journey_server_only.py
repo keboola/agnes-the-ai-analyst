@@ -117,3 +117,184 @@ def test_put_bq_coercion_cannot_bypass_server_only(seeded_app, bq_instance):
     )
     assert resp.status_code == 422, resp.text
     assert "server_only" in resp.text
+
+
+@pytest.mark.journey
+def test_server_only_table_is_not_downloadable(seeded_app, mock_extract_factory):
+    """`server_only` must be a SERVER-side gate, not advice `agnes pull` is
+    trusted to follow.
+
+    The flag's whole purpose is "this parquet is not distributed". `agnes pull`
+    honours it client-side (`cli/lib/pull.py`), but the bytes were still one
+    authenticated GET away: `/api/data/{id}/download` gated on
+    `can_access_table` and nothing else, and on Caddy deployments
+    `forward_auth` → `check-access` → `file_server` serves the file without
+    the app ever seeing the request — so `check-access` is the only place that
+    can close that path too.
+
+    Deliberately asserted with the ADMIN token: this is not an authorization
+    question. The table is undistributed for everyone, exactly as the manifest
+    reports it to everyone.
+    """
+    c = seeded_app["client"]
+    env = seeded_app["env"]
+    hdrs = _auth(seeded_app["admin_token"])
+
+    for name, server_only in (("dist_tbl", False), ("nodist_tbl", True)):
+        resp = c.post(
+            "/api/admin/register-table",
+            json={
+                "name": name,
+                "source_type": "keboola",
+                "query_mode": "local",
+                "server_only": server_only,
+            },
+            headers=hdrs,
+        )
+        assert resp.status_code == 201, resp.text
+
+    mock_extract_factory(
+        "keboola",
+        [
+            {"name": "dist_tbl", "data": [{"id": "1"}]},
+            {"name": "nodist_tbl", "data": [{"id": "1"}]},
+        ],
+    )
+    from src.orchestrator import SyncOrchestrator
+    SyncOrchestrator(analytics_db_path=env["analytics_db"]).rebuild()
+
+    # The distributed table is unaffected — both surfaces still serve it.
+    assert c.get("/api/data/dist_tbl/check-access", headers=hdrs).status_code == 204
+    assert c.get("/api/data/dist_tbl/download", headers=hdrs).status_code == 200
+
+    # The server_only one is refused on BOTH, and the refusal names the flag
+    # so an operator staring at a failed download knows why.
+    resp = c.get("/api/data/nodist_tbl/download", headers=hdrs)
+    assert resp.status_code == 403, resp.text
+    assert "server_only" in resp.text
+
+    resp = c.get("/api/data/nodist_tbl/check-access", headers=hdrs)
+    assert resp.status_code == 403, resp.text
+    assert "server_only" in resp.text
+
+
+@pytest.mark.journey
+def test_a_blank_query_mode_is_local_here_too(seeded_app, mock_extract_factory):
+    """Devin Review on #1265: the gate must read a blank mode the way the
+    manifest does.
+
+    `app/api/sync.py` and the distribution mirror both resolve a NULL/empty
+    `query_mode` to `local`, so such a table IS advertised as downloadable.
+    An allowlist that refuses the blank value leaves it listed forever and
+    fetchable never — a permanent "not distributed" error on a table the
+    server keeps offering.
+    """
+    c = seeded_app["client"]
+    env = seeded_app["env"]
+    hdrs = _auth(seeded_app["admin_token"])
+
+    resp = c.post(
+        "/api/admin/register-table",
+        json={"name": "blank_mode_tbl", "source_type": "keboola", "query_mode": "local"},
+        headers=hdrs,
+    )
+    assert resp.status_code == 201, resp.text
+    table_id = resp.json()["id"]
+
+    # Straight to the registry: the API coerces a missing mode on the way in,
+    # and the row this guards against is the historical one already stored
+    # blank.
+    from src.repositories import table_registry_repo
+
+    repo = table_registry_repo()
+    repo.conn.execute("UPDATE table_registry SET query_mode = '' WHERE id = ?", [table_id])
+    assert (repo.get(table_id)["query_mode"] or "") == ""
+
+    mock_extract_factory("keboola", [{"name": "blank_mode_tbl", "data": [{"id": "1"}]}])
+    from src.orchestrator import SyncOrchestrator
+
+    SyncOrchestrator(analytics_db_path=env["analytics_db"]).rebuild()
+
+    assert c.get("/api/data/blank_mode_tbl/check-access", headers=hdrs).status_code == 204
+    assert c.get("/api/data/blank_mode_tbl/download", headers=hdrs).status_code == 200
+
+
+@pytest.mark.journey
+def test_a_refused_probe_is_not_audited_as_a_success(seeded_app, mock_extract_factory):
+    """Devin Review on #1265: the audit line must match the answer given.
+
+    `check-access` wrote `granted=True, result="success"` before the
+    distribution gate ran, so a probe that answered 403 left a record saying
+    access was granted — and the denial itself was never recorded. On a Caddy
+    deployment this endpoint is the only trace of the request that exists.
+    """
+    c = seeded_app["client"]
+    hdrs = _auth(seeded_app["admin_token"])
+
+    resp = c.post(
+        "/api/admin/register-table",
+        json={
+            "name": "audited_nodist",
+            "source_type": "keboola",
+            "query_mode": "local",
+            "server_only": True,
+        },
+        headers=hdrs,
+    )
+    assert resp.status_code == 201, resp.text
+
+    assert c.get("/api/data/audited_nodist/check-access", headers=hdrs).status_code == 403
+
+    from src.repositories import audit_repo
+
+    rows = audit_repo().query(action="data.access_check", resource_prefix="table:audited_nodist")
+    rows = rows[0] if isinstance(rows, tuple) else rows
+    rows = list(rows)
+    assert rows, "the refused probe left no audit trail at all"
+    latest = rows[0]
+    assert str(latest.get("result", "")).startswith("error."), latest
+
+
+@pytest.mark.journey
+def test_a_registry_outage_does_not_release_the_bytes(seeded_app, mock_extract_factory):
+    """Devin Review on #1265: the new read can fail, and the answer matters.
+
+    A 500 tells the caller nothing and a 204 would release a parquet this gate
+    has not cleared, so both surfaces answer 503 with a code that says what to
+    do. Fail-closed: the check is between the caller and raw bytes.
+    """
+    from unittest.mock import patch
+
+    c = seeded_app["client"]
+    hdrs = _auth(seeded_app["admin_token"])
+
+    resp = c.post(
+        "/api/admin/register-table",
+        json={"name": "outage_tbl", "source_type": "keboola", "query_mode": "local"},
+        headers=hdrs,
+    )
+    assert resp.status_code == 201, resp.text
+
+    with patch("app.api.data._distribution_refusal", side_effect=RuntimeError("registry gone")):
+        probe = c.get("/api/data/outage_tbl/check-access", headers=hdrs)
+    assert probe.status_code == 503, probe.text
+    assert probe.json()["detail"]["code"] == "distribution_check_unavailable"
+
+    # …and the audit trail says outage, not denial: an operator reading it has
+    # to be able to tell a temporary failure from a refused table.
+    from src.repositories import audit_repo
+
+    result = audit_repo().query(action="data.access_check", resource_prefix="table:outage_tbl")
+    rows = list(result[0] if isinstance(result, tuple) else result)
+    assert rows, "the failed probe left no audit trail"
+    assert str(rows[0].get("result", "")) == "error.503", rows[0]
+    params = rows[0].get("params")
+    if isinstance(params, str):
+        import json as _json
+
+        params = _json.loads(params)
+    assert (params or {}).get("refused") == "check_unavailable", rows[0]
+
+    with patch("app.api.data._distribution_refusal", side_effect=RuntimeError("registry gone")):
+        download = c.get("/api/data/outage_tbl/download", headers=hdrs)
+    assert download.status_code == 503, download.text

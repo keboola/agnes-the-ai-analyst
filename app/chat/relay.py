@@ -39,6 +39,13 @@ _SCOPE_FOR_PREFIX = {
     "/agnes-api": "main",
     "/agnes-mcp": "mcp",
     "/data-apps": "data_apps",
+    # Git smart-HTTP for a hosted app's repo. Shares the `data_apps` ticket
+    # but is deliberately NOT an envelope route: git speaks raw HTTP with
+    # binary bodies and its own content types, which the {method, path, body}
+    # JSON envelope cannot carry. It rides the transparent leg instead, like
+    # `/anthropic` — the broker attaches the real git credential on the
+    # outbound side, so the sandbox never holds one.
+    "/data-apps.git": "data_apps",
 }
 
 # Prefixes whose broker route replays a ``{method, path, body}`` envelope
@@ -59,6 +66,49 @@ _ENVELOPE_PREFIXES = frozenset({"/agnes-api", "/agnes-mcp", "/data-apps"})
 # while keeping connect/write/pool bounded. Fast `/agnes-api` and `/agnes-mcp`
 # calls still return promptly; the long read timeout only permits slow ones.
 _OUTBOUND_TIMEOUT = httpx.Timeout(connect=15.0, read=600.0, write=60.0, pool=15.0)
+
+
+
+async def _read_request_body(reader: "asyncio.StreamReader", headers: dict[str, str]) -> bytes:
+    """The request body, whether it was sent sized or chunked.
+
+    `Content-Length` alone is not enough now that git rides this relay: git
+    sends a pack over `Transfer-Encoding: chunked` once it grows past a small
+    threshold, and a chunked request carries no length — so the old
+    `readexactly(length) if length else b""` forwarded an EMPTY body and a
+    bigger push silently arrived with nothing in it. Small pushes, being
+    sized, worked, which is what made it look like a size limit rather than a
+    missing code path. (Devin Review on #1252.)
+
+    Trailers after the terminating zero-length chunk are consumed and dropped:
+    nothing downstream reads them, and leaving them in the stream would
+    desynchronise the next request on a kept-alive connection.
+    """
+    if "chunked" in headers.get("transfer-encoding", "").lower():
+        chunks: list[bytes] = []
+        while True:
+            size_line = await reader.readline()
+            if not size_line:
+                break
+            size_field = size_line.split(b";", 1)[0].strip()
+            if not size_field:
+                continue
+            try:
+                size = int(size_field, 16)
+            except ValueError:
+                break
+            if size == 0:
+                while True:  # trailers, terminated by a blank line
+                    trailer = await reader.readline()
+                    if trailer in (b"\r\n", b"\n", b""):
+                        break
+                break
+            chunks.append(await reader.readexactly(size))
+            await reader.readexactly(2)  # the CRLF that closes each chunk
+        return b"".join(chunks)
+
+    length = int(headers.get("content-length", "0") or "0")
+    return await reader.readexactly(length) if length else b""
 
 
 class Relay:
@@ -189,9 +239,13 @@ class Relay:
                 headers = {"Authorization": f"Bearer {ticket}"}
                 return await client.post(url, json=envelope, headers=headers)
 
-            # Transparent proxy (``/anthropic``): raw body + SDK headers.
+            # Transparent proxy (``/anthropic``, ``/data-apps.git``): raw body
+            # + caller headers. The METHOD has to pass through: git's very
+            # first call is `GET /info/refs?service=git-upload-pack`, and a
+            # hardcoded POST turned it into a 405 before the repo was ever
+            # reached. `/anthropic` is unaffected — it only ever POSTs.
             url, headers = self._transparent_request(path, inbound_headers)
-            return await client.post(url, content=body, headers=headers)
+            return await client.request(method.upper(), url, content=body, headers=headers)
         finally:
             if owns_client:
                 await client.aclose()
@@ -239,8 +293,7 @@ class Relay:
             name, _, value = line.decode("latin-1").partition(":")
             headers[name.strip().lower()] = value.strip()
 
-        length = int(headers.get("content-length", "0") or "0")
-        body = await reader.readexactly(length) if length else b""
+        body = await _read_request_body(reader, headers)
 
         prefix = "/" + path.lstrip("/").split("/", 1)[0]
         try:
