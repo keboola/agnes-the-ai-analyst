@@ -916,8 +916,13 @@ as `tool_registry` passthrough rows — the agent's passthrough surface is built
 that table, so a source alone would give it nothing to call. `mutating` comes from
 each tool's `readOnlyHint`; a tool the upstream does not annotate is recorded as
 mutating rather than assumed safe. Exposed names are prefixed per connection, so
-two projects' identically-named tools stay apart. Returns `tools_registered`.
-A registration failure returns 502 and rolls back; a failed local config write
+two projects' identically-named tools stay apart, and capped at 64 characters —
+the tool-name limit model APIs enforce. Returns `tools_registered` plus
+`tools_admin_only`, the number of registered tools recorded as mutating: the
+passthrough policy gate refuses those for every non-admin even when granted, and
+on an upstream that annotates nothing that is all of them — the caller needs to
+see that before promising analysts anything. A registration failure returns 502
+and rolls back the previous chat-tools state; a failed local config write
 propagates instead of being dressed up as an upstream problem.
 `DELETE` removes both (idempotent), and deleting the connection itself does the
 same. Keboola-only; 400 without a resolvable token — a source that connected

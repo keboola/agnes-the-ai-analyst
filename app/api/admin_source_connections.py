@@ -44,7 +44,7 @@ from src.keboola_chat_tools import (
     build_stdio_spec,
     derived_source_id,
     derived_tool_id,
-    tool_name_prefix,
+    exposed_tool_name,
 )
 from src.repositories import (
     connection_secrets_repo,
@@ -985,21 +985,23 @@ async def _register_derived_tools(source: Dict[str, Any], connection_id: str, co
     # admin request open forever instead of failing into the 502 path this
     # handler was written for. (Devin Review on this PR.)
     tools = await asyncio.wait_for(list_tools_async(source), timeout=CHAT_TOOLS_INTROSPECT_TIMEOUT_S)
-    prefix = tool_name_prefix(connection_id, connection_name)
     registry = tool_registry_repo()
+    mutating_count = 0
     for tool in tools:
+        # `read_only is True` — not `not read_only`. An upstream that
+        # annotates nothing yields None, and treating that as read-only
+        # would mark every tool of such a server safe to call unattended.
+        mutating = tool.read_only is not True
+        mutating_count += int(mutating)
         registry.upsert(
             tool_id=derived_tool_id(connection_id, tool.name),
             source_id=source["id"],
             original_name=tool.name,
-            exposed_name=f"{prefix}_{tool.name}",
+            exposed_name=exposed_tool_name(connection_id, connection_name, tool.name),
             mode=PASSTHROUGH,
             input_schema=tool.input_schema,
             description=tool.description,
-            # `read_only is True` — not `not read_only`. An upstream that
-            # annotates nothing yields None, and treating that as read-only
-            # would mark every tool of such a server safe to call unattended.
-            mutating=tool.read_only is not True,
+            mutating=mutating,
         )
     # Reconcile: a tool the upstream no longer offers must not stay callable.
     # `derived_tool_id` is deterministic per name, so the loop above updates
@@ -1014,7 +1016,7 @@ async def _register_derived_tools(source: Dict[str, Any], connection_id: str, co
     for row in registry.list_for_source(source["id"]):
         if row["original_name"] not in fresh_names:
             registry.delete(row["tool_id"])  # cascades the tool's grants
-    return len(tools)
+    return len(tools), mutating_count
 
 
 @router.post("/{connection_id}/chat-tools", status_code=201)
@@ -1210,7 +1212,9 @@ async def enable_chat_tools(
     # upstream did not answer", and it is the step most likely to fail on a
     # cold cache, so it gets the 502 and the retry hint.
     try:
-        tool_count = await _register_derived_tools(spec, connection_id, row.get("name") or connection_id)
+        tool_count, mutating_count = await _register_derived_tools(
+            spec, connection_id, row.get("name") or connection_id
+        )
     except Exception as exc:
         _undo()
         logger.warning("chat-tools tool registration failed for connection %s", connection_id, exc_info=True)
@@ -1224,15 +1228,22 @@ async def enable_chat_tools(
         ) from exc
 
     logger.info(
-        "chat tools enabled for connection %s (source %s, %d tools)",
+        "chat tools enabled for connection %s (source %s, %d tools, %d admin-only)",
         connection_id,
         spec["id"],
         tool_count,
+        mutating_count,
     )
     return {
         "source_id": spec["id"],
         "name": spec["name"],
         "tools_registered": tool_count,
+        # `mutating=True` rows are refused for every non-admin by the
+        # passthrough policy gate, so a grant alone does not make them
+        # reachable. On an upstream that annotates nothing this is ALL of
+        # them — the caller must be able to see that, or "grant and go"
+        # is a false promise. (Devin Review on this PR, fifth round.)
+        "tools_admin_only": mutating_count,
         "granted_to_groups": 0,
     }
 

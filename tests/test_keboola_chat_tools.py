@@ -9,6 +9,8 @@ truncated toolset — 33 tools instead of 37, no semantic-layer tools.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from cryptography.fernet import Fernet
 
@@ -16,9 +18,12 @@ from app.secrets_vault import _reset_ephemeral_key_for_tests
 from connectors.mcp.client import ToolInfo
 from src.keboola_chat_tools import (
     KEBOOLA_MCP_VERSION,
+    TOOL_NAME_MAX,
     build_stdio_spec,
     derived_source_id,
+    exposed_tool_name,
     runner_args,
+    tool_name_prefix,
 )
 
 BASE = "/api/admin/source-connections"
@@ -55,6 +60,53 @@ class TestSpecBuilder:
     def test_derived_id_is_stable_for_a_connection(self):
         assert derived_source_id("abc") == derived_source_id("abc")
         assert derived_source_id("abc") != derived_source_id("abd")
+
+
+class TestExposedNamesFitTheModelApiLimit:
+    """Model APIs cap tool names at 64 chars (^[a-zA-Z0-9_-]{1,64}$); an
+    over-long name fails at the model call and can poison the whole tool
+    list. (Devin Review on this PR, fifth round.)"""
+
+    def test_short_names_are_the_plain_prefixed_form(self):
+        # Existing registrations must not churn: under the cap the name is
+        # exactly what the pre-cap code produced.
+        assert exposed_tool_name("c1", "Demo", "query_data") == f"{tool_name_prefix('c1', 'Demo')}_query_data"
+
+    def test_every_name_fits_no_matter_the_inputs(self):
+        long_conn_name = "An Extremely Long Connection Name That Slugs To The Cap"
+        long_tool = "get_component_configuration_examples_with_extremely_long_suffix"
+        for conn_name in ("Demo", long_conn_name, ""):
+            for tool in ("q", "query_data", long_tool, "x" * 80):
+                name = exposed_tool_name("c1", conn_name, tool)
+                assert len(name) <= TOOL_NAME_MAX, (conn_name, tool, name)
+                assert re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", name), name
+
+    def test_the_connection_digest_survives_shrinking(self):
+        # The 4-hex digest is what keeps two projects' identically-named tools
+        # apart — the readable slug is what shrinks.
+        import hashlib
+
+        digest = hashlib.sha256(b"c1").hexdigest()[:4]
+        squeezed = exposed_tool_name("c1", "A" * 60, "some_quite_long_tool_name_indeed_yes")
+        assert digest in squeezed
+        assert len(squeezed) <= TOOL_NAME_MAX
+
+    def test_two_connections_never_collide_even_when_squeezed(self):
+        tool = "get_component_configuration_examples_with_extremely_long_suffix"
+        a = exposed_tool_name("conn-a", "Same Name", tool)
+        b = exposed_tool_name("conn-b", "Same Name", tool)
+        assert a != b
+
+    def test_two_long_tool_names_never_collide(self):
+        base = "x" * 70
+        a = exposed_tool_name("c1", "Demo", base + "a")
+        b = exposed_tool_name("c1", "Demo", base + "b")
+        assert a != b
+        assert len(a) <= TOOL_NAME_MAX and len(b) <= TOOL_NAME_MAX
+
+    def test_stability(self):
+        args = ("c1", "Some Connection", "y" * 70)
+        assert exposed_tool_name(*args) == exposed_tool_name(*args)
 
 
 FAKE_TOOLS = [
@@ -152,6 +204,23 @@ class TestChatToolsEndpoint:
         from src.repositories import shared_secrets_repo
 
         assert shared_secrets_repo().get(derived_source_id(conn_id)) == "kbc-token-value"
+
+    def test_enable_reports_how_many_tools_stay_admin_only(self, seeded_app):
+        """A `mutating` tool is refused for non-admins by the policy gate even
+        when granted, and an unannotated tool is recorded as mutating — so the
+        caller must be able to see the count, or the "grant them" guidance is
+        a false promise on an upstream that annotates nothing. (Devin Review
+        on this PR, fifth round.)"""
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-chat-adminonly")
+
+        resp = c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token))
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        # FAKE_TOOLS: one annotated read-only, one annotated mutating, one
+        # unannotated (recorded as mutating) → 2 of 3 stay admin-only.
+        assert body["tools_registered"] == 3
+        assert body["tools_admin_only"] == 2
 
     def test_enable_without_a_token_fails_closed(self, seeded_app):
         """A source that would connect anonymously is worse than no source:
@@ -956,13 +1025,18 @@ class TestADerivedNameClashIsExplained(TestChatToolsEndpoint):
 
 def test_the_cli_points_at_the_step_that_actually_creates_tools():
     """Dual-surface: the web hint was fixed; the CLI printed the same wrong
-    next step, naming a command that cannot grant MCP tools either."""
+    next step, naming a command that cannot grant MCP tools either.
+
+    Asserts on the text the CLI actually prints — an earlier revision asserted
+    `"Introspect" in src`, which the removal of the manual Introspect step left
+    passing only because the word survived in a comment. (Devin Review on this
+    PR, fifth round.)"""
     import pathlib
 
     src = (pathlib.Path(__file__).resolve().parents[1] / "cli" / "commands" / "admin_connection.py").read_text(
         encoding="utf-8"
     )
-    assert "Introspect" in src
+    assert "grant them under /admin/mcp-sources" in src, "the printed next step no longer names the grants page"
     assert "agnes admin grant --help" not in src, "still points at a command that cannot grant tool access"
 
 

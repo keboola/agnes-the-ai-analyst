@@ -99,6 +99,36 @@ def derived_tool_id(connection_id: str, tool_name: str) -> str:
     return f"{derived_source_id(connection_id)}__{tool_name}"
 
 
+# Model APIs cap tool names (^[a-zA-Z0-9_-]{1,64}$); an over-long name fails at
+# the model call and can poison the whole tool list, not just the one tool.
+TOOL_NAME_MAX = 64
+
+
+def exposed_tool_name(connection_id: str, connection_name: str, tool_name: str) -> str:
+    """``{prefix}_{tool_name}``, capped at ``TOOL_NAME_MAX``.
+
+    Under the cap this is exactly the prefixed name (so existing registrations
+    are unaffected). Over it, the connection-name slug — the readable, least
+    load-bearing part — shrinks first; the 4-hex connection digest never does,
+    because it is what keeps two projects' identically-named tools apart. If
+    even a slug-less name is too long, the upstream name keeps its head and
+    gains a 4-hex digest of its full self, so two long names cannot collide.
+    """
+    full = f"{tool_name_prefix(connection_id, connection_name)}_{tool_name}"
+    if len(full) <= TOOL_NAME_MAX:
+        return full
+    digest = hashlib.sha256(connection_id.encode("utf-8")).hexdigest()[:4]
+    slug = re.sub(r"[^a-z0-9]+", "_", (connection_name or "").lower()).strip("_")[:24]
+    keep = len(slug) - (len(full) - TOOL_NAME_MAX)
+    slug = slug[:keep].rstrip("_") if keep > 0 else ""
+    candidate = f"kbc_{slug}_{digest}_{tool_name}" if slug else f"kbc_{digest}_{tool_name}"
+    if len(candidate) <= TOOL_NAME_MAX:
+        return candidate
+    name_digest = hashlib.sha256(tool_name.encode("utf-8")).hexdigest()[:4]
+    head = TOOL_NAME_MAX - len(f"kbc_{digest}__{name_digest}")
+    return f"kbc_{digest}_{tool_name[:head]}_{name_digest}"
+
+
 def derived_source_name(connection_name: str) -> str:
     """Human-facing ``mcp_sources.name``. Unique-constrained upstream, so it
     carries the connection name — which is itself unique among connections."""

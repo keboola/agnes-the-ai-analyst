@@ -180,6 +180,19 @@ def chat_tools(
         "Registered is not reachable — grant them under /admin/mcp-sources, "
         "on each tool's Grants page, before analysts see anything."
     )
+    # A `mutating` tool is refused for every non-admin by the passthrough
+    # policy gate, grant or no grant — and a tool the upstream does not
+    # annotate as read-only is recorded as mutating. Without this line, an
+    # upstream that annotates nothing makes the grant advice above a false
+    # promise. (Devin Review on this PR, fifth round.)
+    admin_only = body.get("tools_admin_only") or 0
+    if admin_only:
+        scope = "All" if admin_only == count else f"{admin_only} of {count}"
+        typer.echo(
+            f"{scope} registered tools are recorded as mutating and stay admin-only even when "
+            "granted (no read-only annotation upstream is not a claim of safety). Review any "
+            "that are actually read-only under /admin/mcp-sources."
+        )
 
 
 @admin_connection_app.command("test")

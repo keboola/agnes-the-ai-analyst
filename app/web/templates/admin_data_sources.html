@@ -878,12 +878,19 @@ async function toggleChatTools(id, isOn, resync) {
     if (r.ok || r.status === 204) {
       const ok = await r.json().catch(() => ({}));
       const n = ok.tools_registered;
+      // Mutating tools are refused for non-admins by the policy gate even
+      // when granted, and an upstream with no read-only annotations makes
+      // that ALL of them — the "grant them" advice must say so or it is a
+      // false promise. (Devin Review on this PR, fifth round.)
+      const adminOnly = ok.tools_admin_only;
+      const allAdminOnly = n > 0 && adminOnly === n;
       showToast(
         turningOff
           ? "Chat tools turned off."
           : (resync
               ? "Token re-synced."
-              : `Chat tools on — ${n === undefined ? "tools" : n + " tools"} registered. Grant them under Admin -> MCP sources to make them reachable.`),
+              : `Chat tools on — ${n === undefined ? "tools" : n + " tools"} registered. Grant them under Admin -> MCP sources to make them reachable.`
+                + (allAdminOnly ? " All are recorded as mutating (no read-only annotations upstream), and mutating tools stay admin-only even when granted." : "")),
         true,
       );
       await loadConnections();
