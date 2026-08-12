@@ -4630,6 +4630,13 @@ async def corporate_memory(
     from app.services.stack_resolver import StackResolver
     from app.resource_types import ResourceType
 
+    # Rail: the Library's Memory band IS this page now (counts, add-to-stack,
+    # the empty-domain rule all moved there — spec 2026-08-12). 302, not 308,
+    # so a later layout flip is not cached permanently. Topnav serves the
+    # frozen pre-redesign page below, untouched.
+    if get_ui_layout() == "rail":
+        return RedirectResponse(url="/library?section=memory_domain", status_code=302)
+
     resolver = StackResolver(conn)
     domains_repo = memory_domains_repo()
     repo = knowledge_repo()
@@ -4932,8 +4939,16 @@ async def data_apps_list_page(
     from app.api.data_apps import _can_view, _serialize
     from src.repositories import data_apps_repo, users_repo
 
-    cfg = get_data_apps_config()
     enabled = feature_enabled("data_apps", "enabled", env_var="AGNES_DATA_APPS_ENABLED", default=False)
+    # Rail: the Library's Data apps band is the inventory now (spec
+    # 2026-08-12). Only when the feature is on — with it off, this page's
+    # explanatory empty state below is the better answer for a bookmark than
+    # a Library with no Data apps section. 302, not 308 (layout flips must
+    # not be cached).
+    if enabled and get_ui_layout() == "rail":
+        return RedirectResponse(url="/library?section=data_app", status_code=302)
+
+    cfg = get_data_apps_config()
     apps: list[dict] = []
     if enabled:
         u_repo = users_repo()
