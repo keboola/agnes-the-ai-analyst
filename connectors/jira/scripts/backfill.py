@@ -41,7 +41,7 @@ import httpx
 from dotenv import load_dotenv
 
 from app.logging_config import setup_logging
-from connectors.jira.service import JiraFetchError
+from connectors.jira.service import JiraFetchError, complete_issue_comments
 
 setup_logging(__name__)
 logger = logging.getLogger(__name__)
@@ -222,20 +222,22 @@ class JiraBackfill:
                     headers={"Accept": "application/json"},
                 )
 
-            if response.status_code == 200:
-                return response.json()
-            elif response.status_code == 404:
-                logger.warning(f"Issue {issue_key} not found")
-                return None
-            elif response.status_code == 429:
-                # Rate limited - wait and retry
-                retry_after = int(response.headers.get("Retry-After", 60))
-                logger.warning(f"Rate limited, waiting {retry_after}s...")
-                time.sleep(retry_after)
-                return self.fetch_issue(issue_key)  # Retry
-            else:
-                logger.error(f"Failed to fetch {issue_key}: {response.status_code}")
-                return None
+                if response.status_code == 200:
+                    issue_data = response.json()
+                    complete_issue_comments(issue_data, self.base_url, self.auth, client)
+                    return issue_data
+                elif response.status_code == 404:
+                    logger.warning(f"Issue {issue_key} not found")
+                    return None
+                elif response.status_code == 429:
+                    # Rate limited - wait and retry
+                    retry_after = int(response.headers.get("Retry-After", 60))
+                    logger.warning(f"Rate limited, waiting {retry_after}s...")
+                    time.sleep(retry_after)
+                    return self.fetch_issue(issue_key)  # Retry
+                else:
+                    logger.error(f"Failed to fetch {issue_key}: {response.status_code}")
+                    return None
 
         except httpx.RequestError as e:
             logger.error(f"Request error fetching {issue_key}: {e}")
@@ -260,9 +262,7 @@ class JiraBackfill:
                     headers={"Accept": "application/json"},
                 )
         except httpx.RequestError as e:
-            raise JiraFetchError(
-                f"Backfill remote-links fetch for {issue_key} failed: connection — {e}"
-            ) from e
+            raise JiraFetchError(f"Backfill remote-links fetch for {issue_key} failed: connection — {e}") from e
 
         if response.status_code == 200:
             return response.json()
@@ -280,12 +280,10 @@ class JiraBackfill:
             )
         if response.status_code >= 500:
             raise JiraFetchError(
-                f"Backfill remote-links fetch for {issue_key} failed: server error "
-                f"({response.status_code})"
+                f"Backfill remote-links fetch for {issue_key} failed: server error ({response.status_code})"
             )
         raise JiraFetchError(
-            f"Backfill remote-links fetch for {issue_key} failed: unexpected status "
-            f"{response.status_code}"
+            f"Backfill remote-links fetch for {issue_key} failed: unexpected status {response.status_code}"
         )
 
     def save_issue(self, issue_data: dict) -> Path | None:
@@ -415,8 +413,7 @@ class JiraBackfill:
             issue_data["_remote_links"] = self.fetch_remote_links(issue_key)
         except JiraFetchError as e:
             logger.warning(
-                f"Skipping _remote_links overlay for {issue_key}: {e}. "
-                f"Existing parquet rows will be preserved."
+                f"Skipping _remote_links overlay for {issue_key}: {e}. Existing parquet rows will be preserved."
             )
 
         # Save JSON
@@ -484,7 +481,7 @@ class JiraBackfill:
                 processed += 1
 
                 try:
-                    success = future.result()
+                    future.result()
                 except Exception as e:
                     logger.error(f"Error processing {issue_key}: {e}")
                     self.stats["failed"] += 1
@@ -598,7 +595,7 @@ def main():
                     processed += 1
 
                     try:
-                        success = future.result()
+                        future.result()
                     except Exception as e:
                         logger.error(f"Error processing {issue_key}: {e}")
                         backfill.stats["failed"] += 1

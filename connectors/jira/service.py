@@ -34,6 +34,10 @@ class JiraFetchError(Exception):
     """
 
 
+# Jira's issue-embed API caps `fields.comment.comments` at this many rows.
+JIRA_COMMENT_PAGE_SIZE = 100
+
+
 class _JiraConfig:
     """Jira configuration from environment variables."""
 
@@ -163,6 +167,92 @@ def trigger_incremental_transform(issue_key: str, deleted: bool = False) -> bool
         return False
 
 
+def complete_issue_comments(
+    issue_data: dict[str, Any],
+    base_url: str,
+    auth: tuple[str, str],
+    client: httpx.Client,
+) -> None:
+    """Fill in comments Jira's issue payload truncated at its embed page size.
+
+    ``GET /issue/{key}`` embeds ``fields.comment.comments`` capped at 100,
+    oldest-first — an issue with more than 100 comments arrives missing its
+    NEWEST comments. Because every later full-refetch (``fields=*all``)
+    re-hits the same cap, the gap never heals on its own; it only widens as
+    more comments are added.
+
+    ``fields.comment.total`` carries the true count. When it exceeds what's
+    embedded, page through ``GET /issue/{key}/comment`` (``startAt``,
+    ``maxResults=100``) for the remainder and replace the embedded list with
+    the complete one — mutated in place on ``issue_data``, using the same
+    ``client``/``auth`` as the issue fetch that produced it.
+
+    This is the single fetch-layer seam shared by both ingestion paths that
+    call it right after their issue GET: ``JiraService.fetch_issue`` (webhook
+    full-refetch) and ``JiraBackfill.fetch_issue`` (batch/full extract).
+    ``transform_issue``/``transform_comments`` stay pure — they just read
+    whatever ``fields.comment.comments`` this function already completed.
+
+    Comments can legitimately be added between the two requests, so a
+    residual shortfall after completion is only logged (WARNING), never
+    raised — this is a best-effort enrichment step, not a hard requirement.
+    """
+    issue_key = issue_data.get("key")
+    fields = issue_data.get("fields") or {}
+    comment_field = fields.get("comment") or {}
+    embedded = comment_field.get("comments") or []
+    total = comment_field.get("total", len(embedded))
+
+    if issue_key and total > len(embedded):
+        extra: list[dict[str, Any]] = []
+        start_at = len(embedded)
+        while len(embedded) + len(extra) < total:
+            try:
+                response = client.get(
+                    f"{base_url}/issue/{issue_key}/comment",
+                    auth=auth,
+                    params={"startAt": start_at, "maxResults": JIRA_COMMENT_PAGE_SIZE},
+                    headers={"Accept": "application/json"},
+                )
+            except httpx.RequestError as e:
+                logger.warning(
+                    "Jira issue %s: comment pagination request failed at startAt=%d: %s",
+                    issue_key,
+                    start_at,
+                    e,
+                )
+                break
+            if response.status_code != 200:
+                logger.warning(
+                    "Jira issue %s: comment pagination page failed at startAt=%d (status %s)",
+                    issue_key,
+                    start_at,
+                    response.status_code,
+                )
+                break
+            page = response.json().get("comments") or []
+            if not page:
+                break
+            extra.extend(page)
+            start_at += len(page)
+
+        if extra:
+            comment_field["comments"] = embedded + extra
+            fields["comment"] = comment_field
+            issue_data["fields"] = fields
+
+    stored = len(comment_field.get("comments", embedded))
+    if stored < total:
+        logger.warning(
+            "Jira issue %s: stored %d comments but Jira reports comment.total=%d after "
+            "pagination completion (comments may have been added mid-fetch, or a page "
+            "request failed)",
+            issue_key,
+            stored,
+            total,
+        )
+
+
 class JiraService:
     """Service for interacting with Jira Cloud REST API."""
 
@@ -254,14 +344,16 @@ class JiraService:
                     headers={"Accept": "application/json"},
                 )
 
-            if response.status_code == 200:
-                return response.json()
-            elif response.status_code == 404:
-                logger.warning(f"Issue {issue_key} not found")
-                return None
-            else:
-                logger.error(f"Failed to fetch issue {issue_key}: {response.status_code} - {response.text[:200]}")
-                return None
+                if response.status_code == 200:
+                    issue_data = response.json()
+                    complete_issue_comments(issue_data, self.base_url, self.auth, client)
+                    return issue_data
+                elif response.status_code == 404:
+                    logger.warning(f"Issue {issue_key} not found")
+                    return None
+                else:
+                    logger.error(f"Failed to fetch issue {issue_key}: {response.status_code} - {response.text[:200]}")
+                    return None
 
         except httpx.RequestError as e:
             logger.error(f"Request error fetching issue {issue_key}: {e}")

@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- Jira issues with more than 100 comments no longer lose their newest ones. Jira's issue endpoint embeds `fields.comment.comments` capped at 100, oldest-first, so any issue over that count arrived missing its newest comments — and because every later full-refetch re-hits the same cap, the gap never healed, it only widened. The fetch layer now compares the embedded count against `fields.comment.total` and, when short, pages through `GET /issue/{key}/comment` for the remainder before the issue reaches transform. Fixed for both ingestion paths — the batch/full extract and the webhook full-refetch — via one shared completion step. A residual shortfall after completion (comments legitimately added mid-fetch, or a page request failing) is logged as a warning rather than silently swallowed.
+
 ## [0.83.7] - 2026-08-12
 
 ### Fixed
