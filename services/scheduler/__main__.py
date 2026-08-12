@@ -537,14 +537,19 @@ def build_jobs() -> list[JobRow | EnqueueJobRow]:
             _ENQUEUE_TIMEOUT_SEC,
             _ENQUEUE_BODIES["marketplaces"],
         ),
-        # Offset from the other daily rows so none of them fire on the same tick:
-        # `marketplaces` at 03:00 and `store-blocked-purge` at 04:00. A fixed daily
+        # Offset from every other daily row so none of them fire on the same tick:
+        # `marketplaces` 03:00, `initial-workspace` 03:30, `store-blocked-purge` 04:00,
+        # `ducklake-maintenance` 04:30. Sharing 04:30 with ducklake-maintenance was the
+        # actual hazard, not a cosmetic one: both are LIGHT-lane and the worker runs
+        # exactly `_LIGHT_CONCURRENCY = 2` light slots, so a minutes-long sweep next to
+        # the maintenance pass occupies both and stalls `webhook-deliver` /
+        # `agent_response` for the window (Devin Review on #1274). A fixed daily
         # schedule rather than an interval env var on purpose — an interval would have
         # to join the `smallest` min() above and constrain SCHEDULER_TICK_SECONDS for a
         # job that needs no precision at all.
         (
             "jira-org-refresh",
-            "daily 04:30",
+            "daily 05:00",
             "/api/jobs",
             "POST",
             _ENQUEUE_TIMEOUT_SEC,

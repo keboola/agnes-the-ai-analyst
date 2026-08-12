@@ -707,3 +707,171 @@ class TestFlatTableSurvivesHiveMigration:
             assert conn.execute("SELECT count(*) FROM organizations").fetchone()[0] == 1
         finally:
             conn.close()
+
+
+class TestDevinReviewFindings:
+    """Regressions for the four findings on PR #1274."""
+
+    def test_reload_config_from_env_rehydrates_frozen_credentials(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """`_JiraConfig` snapshots os.environ in its class body, so a CLI that loads a
+        .env in main() leaves the service holding empty credentials. The documented
+        manual run then exits 0 reporting "Jira is not configured"."""
+        from connectors.jira.service import reload_config_from_env
+
+        monkeypatch.setattr(jira_service.Config, "JIRA_DOMAIN", "", raising=False)
+        monkeypatch.setattr(jira_service.Config, "JIRA_EMAIL", "", raising=False)
+        monkeypatch.setattr(jira_service.Config, "JIRA_API_TOKEN", "", raising=False)
+        monkeypatch.setattr(jira_service, "_jira_service", jira_service.JiraService(), raising=False)
+        assert jira_service.get_jira_service().is_configured() is False
+
+        # What load_dotenv() does: populate os.environ, nothing else.
+        monkeypatch.setenv("JIRA_DOMAIN", "mycompany.atlassian.net")
+        monkeypatch.setenv("JIRA_EMAIL", "bot@mycompany.com")
+        monkeypatch.setenv("JIRA_API_TOKEN", "tok-123")
+        assert jira_service.get_jira_service().is_configured() is False, "env alone must not be enough"
+
+        reload_config_from_env()
+
+        assert jira_service.Config.JIRA_DOMAIN == "mycompany.atlassian.net"
+        svc = jira_service.get_jira_service()
+        assert svc.is_configured() is True
+        assert svc.domain == "mycompany.atlassian.net"
+
+    def test_enumeration_uses_the_gateway_for_a_scoped_token(
+        self, svc: JiraService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A scoped token cannot authenticate against the site domain, so enumeration
+        must follow fetch_refresh_fields onto the api.atlassian.com gateway."""
+        monkeypatch.setattr(jira_service.Config, "JIRA_CLOUD_ID", "cloud-xyz", raising=False)
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"values": [{"id": "1"}], "isLastPage": True}
+        client = MagicMock()
+        client.get.return_value = response
+        client.__enter__ = MagicMock(return_value=client)
+        client.__exit__ = MagicMock(return_value=False)
+
+        with patch.object(jira_service.httpx, "Client", return_value=client):
+            assert svc.fetch_organization_ids() == ["1"]
+
+        assert _called_url(client) == ("https://api.atlassian.com/ex/jira/cloud-xyz/rest/servicedeskapi/organization")
+
+    def test_enumeration_uses_the_site_domain_without_a_cloud_id(self, svc: JiraService) -> None:
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"values": [{"id": "1"}], "isLastPage": True}
+        client = MagicMock()
+        client.get.return_value = response
+        client.__enter__ = MagicMock(return_value=client)
+        client.__exit__ = MagicMock(return_value=False)
+
+        with patch.object(jira_service.httpx, "Client", return_value=client):
+            svc.fetch_organization_ids()
+
+        assert _called_url(client) == "https://mycompany.atlassian.net/rest/servicedeskapi/organization"
+
+    def test_scheduler_row_does_not_share_a_slot_with_another_daily_job(self) -> None:
+        """Both LIGHT-lane, and the worker runs only _LIGHT_CONCURRENCY slots, so two
+        long daily jobs on the same tick starve the rest of the lane."""
+        from services.scheduler.__main__ import build_jobs
+
+        daily: dict[str, list[str]] = {}
+        for row in build_jobs():
+            schedule = row[1]
+            if isinstance(schedule, str) and schedule.startswith("daily "):
+                daily.setdefault(schedule, []).append(row[0])
+
+        ours = next(s for s, names in daily.items() if "jira-org-refresh" in names)
+        assert daily[ours] == ["jira-org-refresh"], f"{ours} is shared with {daily[ours]}"
+
+    def test_mass_removal_guard_refuses_to_publish(self, tmp_path: Path, org_env: None) -> None:
+        """A partial-visibility failure 404s some organizations without touching
+        `failed`, which would silently delete the invisible half."""
+        from connectors.jira import organizations as orgs
+
+        four = [_org(str(i), f"Org {i}", f"ACC-{i}") for i in range(1, 5)]
+        svc = _fake_service(["1", "2", "3", "4"], four)
+        with (
+            patch.object(orgs, "get_jira_service", return_value=svc),
+            patch.object(orgs, "update_meta"),
+            patch.object(orgs.time, "sleep"),
+        ):
+            orgs.refresh_organizations(extract_dir=tmp_path)
+        assert len(_read_table(tmp_path)) == 4
+
+        # Three of the four now 404 (readable via servicedeskapi, invisible via CSM).
+        svc2 = _fake_service(["1", "2", "3", "4"], [_org("1", "Org 1", "ACC-1"), None, None, None])
+        with (
+            patch.object(orgs, "get_jira_service", return_value=svc2),
+            patch.object(orgs, "update_meta"),
+            patch.object(orgs.time, "sleep"),
+        ):
+            stats = orgs.refresh_organizations(extract_dir=tmp_path)
+
+        assert stats["skipped_reason"] == "mass_removal_guard"
+        assert len(_read_table(tmp_path)) == 4, "the existing table must survive untouched"
+
+    def test_force_overrides_the_mass_removal_guard(self, tmp_path: Path, org_env: None) -> None:
+        from connectors.jira import organizations as orgs
+
+        four = [_org(str(i), f"Org {i}", f"ACC-{i}") for i in range(1, 5)]
+        svc = _fake_service(["1", "2", "3", "4"], four)
+        with (
+            patch.object(orgs, "get_jira_service", return_value=svc),
+            patch.object(orgs, "update_meta"),
+            patch.object(orgs.time, "sleep"),
+        ):
+            orgs.refresh_organizations(extract_dir=tmp_path)
+
+        svc2 = _fake_service(["1", "2", "3", "4"], [_org("1", "Org 1", "ACC-1"), None, None, None])
+        with (
+            patch.object(orgs, "get_jira_service", return_value=svc2),
+            patch.object(orgs, "update_meta"),
+            patch.object(orgs.time, "sleep"),
+        ):
+            stats = orgs.refresh_organizations(extract_dir=tmp_path, force=True)
+
+        assert "skipped_reason" not in stats
+        assert _read_table(tmp_path)["org_id"].tolist() == ["1"]
+
+    def test_guard_allows_a_small_removal(self, tmp_path: Path, org_env: None) -> None:
+        from connectors.jira import organizations as orgs
+
+        four = [_org(str(i), f"Org {i}", f"ACC-{i}") for i in range(1, 5)]
+        svc = _fake_service(["1", "2", "3", "4"], four)
+        with (
+            patch.object(orgs, "get_jira_service", return_value=svc),
+            patch.object(orgs, "update_meta"),
+            patch.object(orgs.time, "sleep"),
+        ):
+            orgs.refresh_organizations(extract_dir=tmp_path)
+
+        # One of four gone: under the threshold, so it publishes.
+        svc2 = _fake_service(
+            ["1", "2", "3", "4"],
+            [_org("1", "Org 1", "ACC-1"), _org("2", "Org 2", "ACC-2"), _org("3", "Org 3", "ACC-3"), None],
+        )
+        with (
+            patch.object(orgs, "get_jira_service", return_value=svc2),
+            patch.object(orgs, "update_meta"),
+            patch.object(orgs.time, "sleep"),
+        ):
+            stats = orgs.refresh_organizations(extract_dir=tmp_path)
+
+        assert "skipped_reason" not in stats
+        assert sorted(_read_table(tmp_path)["org_id"].tolist()) == ["1", "2", "3"]
+
+    def test_guard_does_not_fire_on_a_first_run(self, tmp_path: Path, org_env: None) -> None:
+        """No existing table means there is nothing to protect."""
+        from connectors.jira import organizations as orgs
+
+        svc = _fake_service(["1", "2"], [_org("1", "Org 1", "ACC-1"), None])
+        with (
+            patch.object(orgs, "get_jira_service", return_value=svc),
+            patch.object(orgs, "update_meta"),
+            patch.object(orgs.time, "sleep"),
+        ):
+            stats = orgs.refresh_organizations(extract_dir=tmp_path)
+
+        assert "skipped_reason" not in stats
+        assert _read_table(tmp_path)["org_id"].tolist() == ["1"]

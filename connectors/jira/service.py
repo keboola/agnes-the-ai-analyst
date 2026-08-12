@@ -49,6 +49,35 @@ class _JiraConfig:
 Config = _JiraConfig
 
 
+def reload_config_from_env() -> None:
+    """Re-read ``Config`` from ``os.environ`` and drop the service singleton.
+
+    ``_JiraConfig`` evaluates every value in its **class body**, so the credentials
+    freeze when this module is imported. A CLI that calls ``load_dotenv()`` in
+    ``main()`` therefore populates ``os.environ`` far too late: the module was
+    already imported at the top of the file, ``Config.JIRA_DOMAIN`` is still empty,
+    and ``JiraService`` copies those empty values — so the command reports "Jira is
+    not configured" and exits 0 having done nothing (Devin Review on #1274).
+
+    Scripts that load a ``.env`` at runtime must call this immediately afterwards.
+    Deliberately not solved by making ``_JiraConfig`` lazy: its attributes are
+    monkeypatched directly across the test suite, and properties would break every
+    one of those call sites for no gain on the deployed paths, where the values are
+    exported into the environment before the process starts.
+    """
+    global _jira_service
+
+    Config.JIRA_DOMAIN = os.environ.get("JIRA_DOMAIN", "")
+    Config.JIRA_EMAIL = os.environ.get("JIRA_EMAIL", "")
+    Config.JIRA_API_TOKEN = os.environ.get("JIRA_API_TOKEN", "")
+    Config.JIRA_CLOUD_ID = os.environ.get("JIRA_CLOUD_ID", "")
+    Config.JIRA_WEBHOOK_SECRET = os.environ.get("JIRA_WEBHOOK_SECRET", "")
+    Config.JIRA_DATA_DIR = Path(os.environ.get("JIRA_DATA_DIR", "/data/src_data/raw/jira"))
+
+    # The singleton captured the stale values in __init__; rebuild it on next use.
+    _jira_service = None
+
+
 _VALID_COLUMN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -523,7 +552,18 @@ class JiraService:
 
     @property
     def _servicedesk_url(self) -> str:
-        """Base URL for the Service Desk API (a sibling of ``/rest/api/3``)."""
+        """Base URL for the Service Desk API (a sibling of ``/rest/api/3``).
+
+        Switches to the ``api.atlassian.com`` gateway when ``JIRA_CLOUD_ID`` is set,
+        mirroring ``fetch_refresh_fields``: a *scoped* API token cannot authenticate
+        against the site domain at all. Without this, an instance on a scoped token
+        could read an organization through the CSM API (which is gateway-only) but
+        not enumerate them here, so the whole refresh aborted on the first call
+        (Devin Review on #1274).
+        """
+        cloud_id = Config.JIRA_CLOUD_ID
+        if cloud_id:
+            return f"https://api.atlassian.com/ex/jira/{cloud_id}/rest/servicedeskapi"
         return f"https://{self.domain}/rest/servicedeskapi"
 
     def fetch_organization_ids(self) -> list[str]:

@@ -32,7 +32,7 @@ cadence, so it doesn't appear in `build_jobs()`.
 | `session-processor:verification` | `POST /api/admin/run-session-processor?processor=verification` | stays-HTTP | LLM-heavy, but deferred to a later workstream — the session-processor family isn't part of this wave's migrated set. |
 | `session-processor:usage` | `POST /api/admin/run-session-processor?processor=usage` | stays-HTTP | Same session-processor family as verification; deferred to a later workstream. |
 | `corporate-memory` | `POST /api/jobs` (`kind=corporate-memory`) | queued | LLM-driven corporate-memory collection pass — LIGHT lane, cadence-sensitive. |
-| `jira-org-refresh` | `POST /api/jobs` (`kind=jira-org-refresh`) | queued | One organization-API request per organization (minutes on a large site) — LIGHT lane, `daily 04:30`. No caller needs the result synchronously, so it never warranted a REST endpoint of its own. |
+| `jira-org-refresh` | `POST /api/jobs` (`kind=jira-org-refresh`) | queued | One organization-API request per organization (minutes on a large site) — LIGHT lane, `daily 05:00`. No caller needs the result synchronously, so it never warranted a REST endpoint of its own. |
 | `store-blocked-purge` | `POST /api/admin/run-blocked-purge` | stays-HTTP | Cheap `rmtree` + one UPDATE; sub-second, not worth queueing overhead. |
 | `store-reap-stuck-reviews` | `POST /api/admin/run-reap-stuck-reviews` | stays-HTTP | One indexed SELECT + a handful of small UPDATEs; sub-second reaper. |
 | `store-lint-audit` | `POST /api/admin/store/lint-audit` | stays-HTTP | Fingerprint-gated (zero-cost when nothing changed) weekly audit; not yet migrated. |

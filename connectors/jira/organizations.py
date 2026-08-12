@@ -31,6 +31,7 @@ from connectors.jira.service import (
     JiraFetchError,
     get_jira_service,
     organization_detail_fields,
+    reload_config_from_env,
 )
 from connectors.jira.transform import (
     PARQUET_WRITE_OPTIONS,
@@ -48,6 +49,25 @@ TABLE_NAME = "organizations"
 # a few-hundred-organization site well clear of Jira's rate limiter on a job that
 # only runs daily.
 REQUEST_DELAY_SEC = 0.2
+
+# Refuse to publish a sweep that would drop more than this fraction of the rows the
+# table already had, unless the caller explicitly forces it.
+#
+# Two ways rows disappear, and neither is reported in `failed`:
+#   * an enumerated id 404s on the CSM read. A genuinely deleted organization is
+#     simply absent from enumeration, so it never reaches that path — a 404 here means
+#     enumerated-but-unreadable, i.e. a race, a wrong cloud id, or a token that can
+#     list through the Service Desk API but not read through CSM (Devin Review #1274);
+#   * enumeration returns a short list without raising, so organizations vanish by
+#     omission.
+# An all-or-nothing failure is already safe (no rows resolve, the write is skipped),
+# but a partial one silently deletes the invisible half. This gives deletion the same
+# "abort rather than publish something suspicious" treatment enumeration failure gets.
+#
+# It does NOT clear itself: skipping the write leaves the table its old size, so a
+# real bulk cleanup trips the guard on every subsequent run too. That is deliberate —
+# a human should look — and `--force` is the escape hatch.
+MAX_REMOVED_FRACTION = 0.5
 
 
 def _read_existing(table_dir: Path) -> dict[str, dict]:
@@ -72,6 +92,7 @@ def _read_existing(table_dir: Path) -> dict[str, dict]:
 def refresh_organizations(
     extract_dir: Path | None = None,
     dry_run: bool = False,
+    force: bool = False,
 ) -> dict:
     """Rebuild the organizations table from the Jira API.
 
@@ -81,6 +102,9 @@ def refresh_organizations(
     failures are non-fatal but *do not* blank the row: the previous values are carried
     forward, so a transient 429 or 5xx costs freshness, never data. Only a 404
     (organization genuinely gone) drops a row.
+
+    A sweep that would drop more than ``MAX_REMOVED_FRACTION`` of the existing rows is
+    refused rather than published; ``force=True`` overrides that.
 
     Returns a stats dict: ``organizations``, ``written``, ``preserved``, ``removed``,
     ``failed``, ``elapsed_sec``, ``dry_run``, and ``skipped_reason`` when it did not run.
@@ -171,6 +195,30 @@ def refresh_organizations(
         stats["elapsed_sec"] = round(time.time() - start, 1)
         return stats
 
+    # Mass-deletion guard. See MAX_REMOVED_FRACTION: rows vanish both by 404 and by
+    # simple omission from a short enumeration, and neither shows up in `failed`.
+    if existing and not force:
+        dropped = len(existing) - len(records)
+        if dropped > 0 and dropped / len(existing) > MAX_REMOVED_FRACTION:
+            logger.error(
+                "Refusing to publish %s: the sweep resolved %d rows against %d existing, "
+                "dropping %d (%.0f%%, over the %.0f%% limit). Enumeration returned %d ids "
+                "and %d of them 404'd — check JIRA_CLOUD_ID and that the account has "
+                "Customer Service Management access. Re-run with --force if the removals "
+                "are real.",
+                TABLE_NAME,
+                len(records),
+                len(existing),
+                dropped,
+                100 * dropped / len(existing),
+                100 * MAX_REMOVED_FRACTION,
+                len(org_ids),
+                stats["removed"],
+            )
+            stats["skipped_reason"] = "mass_removal_guard"
+            stats["elapsed_sec"] = round(time.time() - start, 1)
+            return stats
+
     table_dir.mkdir(parents=True, exist_ok=True)
     table = apply_schema(pd.DataFrame(records), organizations_schema())
     dest = table_dir / "data.parquet"
@@ -238,6 +286,11 @@ def refresh_organizations(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Refresh the Jira organizations table")
     parser.add_argument("--dry-run", action="store_true", help="Enumerate only; do not fetch or write")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Publish even if the sweep would drop most of the existing rows (see MAX_REMOVED_FRACTION)",
+    )
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
     args = parser.parse_args()
 
@@ -247,16 +300,20 @@ def main() -> None:
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    # Load the .env the way every other Jira CLI in this connector does, and BEFORE
-    # touching the service: `_JiraConfig` snapshots os.environ at import, and nothing
-    # else in the process calls load_dotenv(). Without this the documented manual run
-    # exits 0 with "Jira is not configured" on any host that has not exported JIRA_*,
-    # and JIRA_ORG_DETAIL_FIELDS from the .env would be invisible.
+    # Load the .env the way every other Jira CLI in this connector does. Loading it is
+    # not enough on its own: `_JiraConfig` snapshots os.environ in its class body, which
+    # ran when this module imported `connectors.jira.service` at the top of the file —
+    # long before main(). `load_dotenv()` only writes into os.environ, so without the
+    # reload below the service still holds empty credentials and the documented manual
+    # run exits 0 reporting "Jira is not configured" (Devin Review on #1274).
     from connectors.jira.scripts.backfill_sla import load_config
 
     load_config()
+    reload_config_from_env()
 
-    stats = refresh_organizations(dry_run=args.dry_run)
+    stats = refresh_organizations(dry_run=args.dry_run, force=args.force)
+    if stats.get("skipped_reason") == "mass_removal_guard":
+        sys.exit(1)
     # Non-zero when the run resolved nothing fresh, so a cron/CI caller notices.
     # Deliberately keyed on `written`, not on whether a parquet was produced: a sweep
     # where every fetch failed still rewrites the table from preserved rows, and

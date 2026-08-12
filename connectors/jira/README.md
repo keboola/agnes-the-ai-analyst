@@ -499,7 +499,7 @@ cp -r /data/src_data/parquet/jira/* ~/server/parquet/jira/
 
 Tickets carry organization **ids** in `issues.organization_ids` (a JSON array — the Jira field is multi-valued). The `organizations` table resolves those ids to the organization's current name plus one column per organization detail field named in `JIRA_ORG_DETAIL_FIELDS`.
 
-**File:** `connectors/jira/organizations.py` · **Job kind:** `jira-org-refresh` · **Cadence:** `daily 04:30`
+**File:** `connectors/jira/organizations.py` · **Job kind:** `jira-org-refresh` · **Cadence:** `daily 05:00`
 
 **Why ids and not names.** `issues.organizations` holds names captured at ingest. Rename an organization and its existing tickets keep the old name, so a name join silently splits one customer into several. Ids do not change on rename.
 
@@ -524,6 +524,8 @@ GET https://api.atlassian.com/jsm/csm/cloudid/{cloudId}/api/v1/organization/{org
 
 **Failure semantics.** Enumeration failure aborts before any write — a partial list is indistinguishable from organizations having been deleted. A per-organization fetch failure carries the previous row forward, so a transient 429 or 5xx costs freshness but never data. Only a 404 (organization gone) drops a row.
 
+A sweep that would drop more than half the existing rows is refused rather than published, and logs what to check. Rows disappear in two ways that never show up in the failure count: an enumerated organization 404ing on the CSM read — which means enumerated-but-unreadable (a wrong `JIRA_CLOUD_ID`, or an account without Customer Service Management access), since a genuinely deleted organization is simply absent from enumeration — and a short enumeration losing organizations by omission. The guard does not clear itself: if the removals are real, re-run with `--force`.
+
 **Layout.** Unpartitioned: a single `data/organizations/data.parquet`, written temp-then-`os.replace()` so a reader never sees a truncated file. The extract view uses `union_by_name=true` but no `hive_partitioning` — there is no partition key, because an organization has one current state rather than a history.
 
 ```bash
@@ -532,6 +534,9 @@ python -m connectors.jira.organizations
 
 # Enumerate only, no fetch or write
 python -m connectors.jira.organizations --dry-run
+
+# Publish anyway when the mass-removal guard fires and the removals are real
+python -m connectors.jira.organizations --force
 ```
 
 ### Backfilling `issues.organization_ids` on an existing install
