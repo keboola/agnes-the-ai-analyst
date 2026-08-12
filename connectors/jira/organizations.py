@@ -79,14 +79,23 @@ MAX_REMOVED_FRACTION = 0.5
 #
 # `jira_not_configured` is deliberately NOT here: an instance without Jira ingest is
 # expected to skip this job, not to fail it every night.
-FAILURE_REASONS = frozenset({"all_fetches_failed", "mass_removal_guard"})
+FAILURE_REASONS = frozenset({"all_fetches_failed", "mass_removal_guard", "existing_unreadable"})
 
 
-def _read_existing(table_dir: Path) -> dict[str, dict]:
-    """Existing rows keyed by ``org_id``, or ``{}`` when there is no parquet yet.
+def _read_existing(table_dir: Path) -> dict[str, dict] | None:
+    """Existing rows keyed by ``org_id``.
 
-    Used to preserve rows for organizations whose fetch failed this run — see
-    ``refresh_organizations``.
+    Returns ``{}`` only when there genuinely is no table yet, and ``None`` when one
+    exists but its previous state could not be established.
+
+    The distinction is load-bearing, because this one value feeds both safety nets in
+    ``refresh_organizations``: rows are carried forward for organizations whose fetch
+    failed (``if org_id in existing``), and the mass-removal guard is skipped entirely
+    when ``existing`` is falsy. Collapsing an unreadable table into ``{}`` therefore
+    disabled both at once — a transient IO or pyarrow error alongside any per-organization
+    API failure would republish only whatever resolved this run and silently delete the
+    rest, which is precisely the failure the guard exists to prevent (Devin Review on
+    #1274). The caller refuses to publish on ``None`` instead.
     """
     parquet_path = table_dir / "data.parquet"
     if not parquet_path.exists():
@@ -94,10 +103,12 @@ def _read_existing(table_dir: Path) -> dict[str, dict]:
     try:
         df = pd.read_parquet(parquet_path)
     except Exception as e:
-        logger.warning("Could not read existing %s: %s", parquet_path, e)
-        return {}
+        logger.error("Could not read existing %s: %s", parquet_path, e)
+        return None
     if "org_id" not in df.columns:
-        return {}
+        # A table without the key column is not a baseline we can reason about either.
+        logger.error("Existing %s has no org_id column — refusing to treat it as empty", parquet_path)
+        return None
     return {str(row["org_id"]): row for row in df.to_dict("records") if row.get("org_id") is not None}
 
 
@@ -162,6 +173,18 @@ def refresh_organizations(
     extract_path = extract_dir or get_default_output_dir()
     table_dir = extract_path / "data" / TABLE_NAME
     existing = _read_existing(table_dir)
+    if existing is None:
+        # A table exists but its contents could not be established. Publishing now would
+        # run with both safety nets down — no rows to carry forward, and the removal
+        # guard skipped for want of a baseline — so the next API hiccup would delete
+        # whatever it could not fetch. Refuse instead; the read is retried next run.
+        logger.error(
+            "Cannot establish the current %s contents — refusing to publish. Re-run once the parquet is readable.",
+            TABLE_NAME,
+        )
+        stats["skipped_reason"] = "existing_unreadable"
+        stats["elapsed_sec"] = round(time.time() - start, 1)
+        return stats
 
     records: list[dict] = []
     # One client for the whole sweep. Per-request clients cost a fresh TLS handshake

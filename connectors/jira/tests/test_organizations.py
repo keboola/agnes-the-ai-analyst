@@ -952,7 +952,7 @@ class TestDevinReviewRoundTwo:
         """The two surfaces read the same set, so they cannot drift again."""
         from connectors.jira.organizations import FAILURE_REASONS
 
-        assert FAILURE_REASONS == {"all_fetches_failed", "mass_removal_guard"}
+        assert FAILURE_REASONS == {"all_fetches_failed", "mass_removal_guard", "existing_unreadable"}
         # An unconfigured instance skips this job; it does not fail it every night.
         assert "jira_not_configured" not in FAILURE_REASONS
 
@@ -989,3 +989,66 @@ class TestDevinReviewRoundTwo:
         monkeypatch.setattr(orgs, "refresh_organizations", _fake_refresh)
         orgs.main()  # must not raise SystemExit or ValueError
         assert called == {"dry_run": True, "force": False}
+
+
+class TestUnreadableBaselineRefuses:
+    """An unreadable existing table must not be treated as an empty one.
+
+    `_read_existing` returning {} fed both safety nets: rows carried forward on a
+    failed fetch, and the mass-removal guard (skipped when `existing` is falsy). A
+    transient read error therefore disabled both at once, so any per-organization API
+    failure in the same run silently deleted what it could not fetch.
+    """
+
+    def test_absent_table_reads_as_empty_not_unreadable(self, tmp_path: Path) -> None:
+        from connectors.jira.organizations import _read_existing
+
+        assert _read_existing(tmp_path / "organizations") == {}
+
+    def test_corrupt_parquet_reads_as_unreadable(self, tmp_path: Path) -> None:
+        from connectors.jira.organizations import _read_existing
+
+        table_dir = tmp_path / "organizations"
+        table_dir.mkdir()
+        (table_dir / "data.parquet").write_bytes(b"not a parquet file at all")
+        assert _read_existing(table_dir) is None
+
+    def test_parquet_without_org_id_reads_as_unreadable(self, tmp_path: Path) -> None:
+        import pandas as pd
+
+        from connectors.jira.organizations import _read_existing
+
+        table_dir = tmp_path / "organizations"
+        table_dir.mkdir()
+        pd.DataFrame([{"something_else": "x"}]).to_parquet(table_dir / "data.parquet")
+        assert _read_existing(table_dir) is None
+
+    def test_refresh_refuses_when_the_baseline_is_unreadable(self, tmp_path: Path, org_env: None) -> None:
+        from connectors.jira import organizations as orgs
+
+        table_dir = tmp_path / "data" / "organizations"
+        table_dir.mkdir(parents=True)
+        (table_dir / "data.parquet").write_bytes(b"corrupt")
+        before = (table_dir / "data.parquet").read_bytes()
+
+        svc = _fake_service(["1", "2"], [_org("1", "Org 1", "ACC-1"), JiraFetchError("429")])
+        with (
+            patch.object(orgs, "get_jira_service", return_value=svc),
+            patch.object(orgs, "update_meta") as meta,
+            patch.object(orgs.time, "sleep"),
+        ):
+            stats = orgs.refresh_organizations(extract_dir=tmp_path)
+
+        assert stats["skipped_reason"] == "existing_unreadable"
+        assert stats["skipped_reason"] in orgs.FAILURE_REASONS, "must be a failure on both surfaces"
+        meta.assert_not_called()
+        svc.fetch_organization.assert_not_called()
+        assert (table_dir / "data.parquet").read_bytes() == before
+
+    def test_worker_raises_on_an_unreadable_baseline(self) -> None:
+        from app.worker import kinds
+
+        stats = {"skipped_reason": "existing_unreadable"}
+        with patch("connectors.jira.organizations.refresh_organizations", return_value=stats):
+            with pytest.raises(RuntimeError, match="existing_unreadable"):
+                kinds._run_jira_org_refresh({})
