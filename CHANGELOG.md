@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **`agnes diagnose` now checks whether the analyst can actually reach their data.** Every check it ran asked the server about itself, so it reported `Overall: healthy` — including `[ok] data` — while a fresh analyst's tables were unreachable: the manifest listed a table, `agnes pull` had 403'd on the download, and nothing on the laptop said so. The analyst who hit this stopped trusting the command and went to raw `curl`. A new `local-data` check compares what the manifest offers against the parquets on disk and names the next step ("run `agnes pull` and read its output; a download that 403s means the table is not in your stack yet"). `query_mode='remote'` rows are excluded — they answer server-side and are never expected locally, so counting them would report a permanent, unfixable shortfall. The check is analyst-audience and never promotes the headline past `warn`: a workspace with nothing pulled yet is a normal first run, not a broken instance.
+
 ## [0.83.5] - 2026-08-12
 
 ### Changed
