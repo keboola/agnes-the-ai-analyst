@@ -9421,6 +9421,28 @@
       },
       "UpdateTableRequest": {
         "properties": {
+          "access_policy_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Access Policy Note"
+          },
+          "access_policy_sql": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Access Policy Sql"
+          },
           "bq_fqn": {
             "anyOf": [
               {
@@ -9530,6 +9552,17 @@
               }
             ],
             "title": "Partition Granularity"
+          },
+          "policy_mapping": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Mapping"
           },
           "primary_key": {
             "anyOf": [
@@ -10499,7 +10532,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.83.4"
+    "version": "0.83.7"
   },
   "openapi": "3.1.0",
   "paths": {

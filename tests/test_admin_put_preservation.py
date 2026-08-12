@@ -97,7 +97,14 @@ def test_put_does_not_typeerror_once_a_policy_is_set(seeded_app):
     ``access_policy_*`` / ``policy_mapping`` keys ``register()`` does not
     accept as kwargs — regression guard for the ``register(**merged)`` trap
     (design doc §18): every PUT on a policied table would otherwise 500 with
-    a ``TypeError``, not just ones that touch the policy fields."""
+    a ``TypeError``, not just ones that touch the policy fields.
+
+    Registered ``server_only=true`` (not the plain ``local`` Task 2 used):
+    Task 4's distribution interlock (design doc §3.1) now rejects ANY PUT
+    that would leave a policy on a distributable row, so a policied-but-
+    distributable fixture would 422 on the very ``description``-only PUT
+    below for a real, unrelated reason — this test wants to isolate the
+    ``register(**merged)`` TypeError regression alone."""
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
     auth = _auth(token)
@@ -109,6 +116,7 @@ def test_put_does_not_typeerror_once_a_policy_is_set(seeded_app):
             "name": "policied_tbl",
             "source_type": "keboola",
             "query_mode": "local",
+            "server_only": True,
         },
     )
     assert r.status_code == 201, r.text

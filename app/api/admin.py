@@ -403,6 +403,22 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
             ),
         },
     },
+    "access_policies": {
+        "enabled": {
+            "kind": "bool",
+            "default": _flag_default("access_policies", "enabled", False),
+            "hint": (
+                "Table access policies — lets an admin attach one row-filtering "
+                "and column-masking SQL policy per non-distributed table "
+                "(query_mode='remote' or server_only=true), substituted for it "
+                "on every server-side read with the caller's identity bound in. "
+                "Gates ATTACHING a policy only (PUT /api/admin/registry/{id}); "
+                "a table that already carries one stays protected — and the "
+                "distribution interlock stays enforced — regardless of this "
+                "flag's later state. New feature — off by default."
+            ),
+        },
+    },
     "features": {
         "stack_auto_membership": {
             "kind": "bool",
@@ -2588,6 +2604,29 @@ class UpdateTableRequest(BaseModel):
     # record in the update_table handler (the PUT body alone may omit
     # query_mode, so it can't be validated here in isolation).
     server_only: Optional[bool] = None
+    # v116 (table access policies design doc) — PUT lets an admin attach,
+    # replace, or clear (explicit null) the SQL access policy on this row.
+    # The feature flag gate, the SQL validator, and the distribution
+    # interlock (§3.1/§3.2) all run in update_table against the *merged*
+    # record — a PUT body alone can't judge coherence with the row's other
+    # fields (query_mode, server_only, physical source). Persisted through
+    # table_registry_repo().set_access_policy()/.set_policy_mapping(), not
+    # register() — see the strip-tuple comment in update_table below.
+    access_policy_sql: Optional[str] = None
+    access_policy_note: Optional[str] = None
+    policy_mapping: Optional[bool] = None
+
+    @field_validator("access_policy_sql", mode="before")
+    @classmethod
+    def _normalize_access_policy_sql(cls, v):
+        """Mirror source_query's whitespace-only -> None normalization
+        below: a blank string is neither a valid policy body nor an
+        explicit clear-via-null, so treat it as the latter rather than
+        persist an incoherent empty VARCHAR."""
+        if v is None:
+            return None
+        v = str(v).strip()
+        return v or None
 
     @field_validator("sync_strategy", mode="before")
     @classmethod
@@ -3571,6 +3610,47 @@ def register_table_precheck(
     }
 
 
+def _policy_physical_source_signals(row: Dict[str, Any]) -> set:
+    """Every physical-source signal ``row`` (a ``table_registry`` record)
+    carries — the ways a DIFFERENT registry row could resolve to the exact
+    same underlying data (table access policies design doc §3.2, "the
+    physical-source twin"). A row may carry more than one signal at once
+    (e.g. a BigQuery row with both ``bq_fqn`` and ``bucket``/``source_table``
+    set); two rows collide when their signal sets intersect at all.
+    """
+    signals: set = set()
+    bq_fqn = (row.get("bq_fqn") or "").strip().lower()
+    if bq_fqn:
+        signals.add(("bq_fqn", bq_fqn))
+    bucket = (row.get("bucket") or "").strip()
+    source_table = (row.get("source_table") or "").strip()
+    if bucket and source_table:
+        # Namespaced by source_type + connection_id too: two DIFFERENT
+        # source systems (or two Keboola projects behind different
+        # connections) can coincidentally reuse the same bucket/table label
+        # without pointing at the same physical data.
+        signals.add(
+            (
+                "bucket_table",
+                (row.get("source_type") or "").strip().lower(),
+                row.get("connection_id") or "",
+                bucket.lower(),
+                source_table.lower(),
+            )
+        )
+    # Keboola's source_query is a JSON *filter* spec layered atop
+    # bucket/source_table (see the materialized-mode coherence check in
+    # update_table below), not an independent physical pointer — two
+    # unrelated Keboola rows can carry byte-identical filter JSON (starting
+    # with both blank/null). Every other source type's source_query IS the
+    # physical pointer — the design doc's own §3.2 example is a materialized
+    # SELECT against a fully-qualified remote table.
+    source_query = (row.get("source_query") or "").strip()
+    if source_query and (row.get("source_type") or "") != "keboola":
+        signals.add(("source_query", " ".join(source_query.split()).lower()))
+    return signals
+
+
 @router.put("/registry/{table_id}")
 async def update_table(
     table_id: str,
@@ -3647,19 +3727,13 @@ async def update_table(
         # v116 — table access policies (access_policy_sql/_note/_updated_at/
         # _updated_by + policy_mapping) live on table_registry but, like the
         # docs fields above, are written through their own dedicated setters
-        # (``table_registry_repo().set_access_policy`` /
-        # ``.set_policy_mapping``), not ``register()``. Strip them from the
-        # read-modify-write loop for the same reason: ``existing`` came back
-        # from a `SELECT *`, so every PUT would otherwise TypeError once a
-        # policy is attached.
-        for _policy_key in (
-            "access_policy_sql",
-            "access_policy_note",
-            "access_policy_updated_at",
-            "access_policy_updated_by",
-            "policy_mapping",
-        ):
-            merged.pop(_policy_key, None)
+        # (``table_registry_repo().set_access_policy`` / ``.set_policy_mapping``),
+        # not ``register()``. Unlike the docs fields, the interlock below needs
+        # to read these values off ``merged`` first (a PUT that only touches
+        # server_only/query_mode must still be judged against a policy that's
+        # already persisted and simply carried over from ``existing`` here) —
+        # so the strip that keeps ``register()`` from TypeErroring on them runs
+        # much later, immediately before the ``register()`` call itself.
 
         # v74 (#607) — validate the server_only ↔ query_mode invariant
         # against the *merged* record (the PUT body may toggle either field
@@ -3787,7 +3861,126 @@ async def update_table(
                     detail="bq_fqn only applies to source_type='bigquery'",
                 )
 
+        # v116 (table access policies design doc §3.1/§3.2) — evaluated
+        # against the FINAL, fully-normalized ``merged`` record, i.e. AFTER
+        # the BQ coercion above: a PUT that flips query_mode via BQ
+        # coercion must be judged on the post-coercion value, the same
+        # reason the server_only re-check on the BQ synthetic exists
+        # (Devin Review, #630).
+        if "access_policy_sql" in updates and updates["access_policy_sql"] is not None:
+            # Attaching or replacing a policy in THIS request. Clearing
+            # (explicit null, handled by the interlock below via
+            # ``merged``) always stays possible regardless of the flag —
+            # it is a safety valve, not a new grant — so only an actual
+            # non-null SQL body is flag-gated and SQL-validated here.
+            from app.instance_config import feature_enabled
+
+            if not feature_enabled(
+                "access_policies", "enabled", env_var="AGNES_ACCESS_POLICIES_ENABLED", default=False
+            ):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "access_policies_disabled: table access policies are not "
+                        "enabled on this instance -- set access_policies.enabled=true "
+                        "(or AGNES_ACCESS_POLICIES_ENABLED=1) before attaching one"
+                    ),
+                )
+
+            from src.access_policy_validate import PolicyValidationError, validate_policy_sql
+
+            _mapping_table_names = {
+                r["name"] for r in table_registry_repo().list_all() if r.get("policy_mapping") and r.get("name")
+            }
+            try:
+                validate_policy_sql(
+                    updates["access_policy_sql"],
+                    table_id=table_id,
+                    table_name=merged.get("name") or table_id,
+                    mapping_table_names=_mapping_table_names,
+                    for_remote=(merged.get("query_mode") == "remote"),
+                )
+            except PolicyValidationError as e:
+                raise HTTPException(status_code=422, detail=f"{e.reason}: {e.detail}") from e
+
+        # §3.1 — the interlock itself: a policy (attached by this PUT, or
+        # already persisted and simply left untouched by it) may only
+        # survive on a merged record that is 'remote' or server_only=true.
+        # One check catches both directions the design doc names —
+        # attaching a policy to a distributed table, AND clearing
+        # server_only / moving query_mode to 'local' on an already-policied
+        # one — because both leave the SAME incoherent shape: a policy on a
+        # row `agnes pull` would otherwise download unfiltered.
+        if merged.get("access_policy_sql") and merged.get("query_mode") != "remote" and not merged.get("server_only"):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "access_policy_requires_undistributed: a table carrying an access "
+                    "policy must stay undistributed (query_mode='remote' or "
+                    "server_only=true), so the policy can't be routed around via agnes "
+                    "pull -- set server_only=true first, attach the policy to a "
+                    "query_mode='remote' table instead, or clear access_policy_sql "
+                    "before making this table distributable"
+                ),
+            )
+
+        # §3.2 — the physical-source twin: a DIFFERENT, distributable row
+        # pointing at the exact same physical source as an existing policied
+        # table would hand every granted analyst (via agnes pull) the raw
+        # rows the policy exists to withhold. Runs on every write to a
+        # distributable row, independent of which fields this particular
+        # PUT changed — the danger is the merged row's current shape, not
+        # the delta.
+        _effective_query_mode = (merged.get("query_mode") or "local").strip().lower()
+        if _effective_query_mode in ("local", "materialized") and not merged.get("server_only"):
+            _my_signals = _policy_physical_source_signals(merged)
+            if _my_signals:
+                for _other in table_registry_repo().list_all():
+                    if _other.get("id") == table_id or not _other.get("access_policy_sql"):
+                        continue
+                    if _my_signals & _policy_physical_source_signals(_other):
+                        raise HTTPException(
+                            status_code=422,
+                            detail=(
+                                "access_policy_physical_source_conflict: this table's "
+                                f"physical source matches table {_other.get('id')!r} "
+                                f"({_other.get('name')!r}), which has an access policy "
+                                "attached -- keep this row server_only=true (or "
+                                "query_mode='remote') so the policy can't be routed "
+                                "around, or point it at a different physical source"
+                            ),
+                        )
+
+        # Capture the fully-validated policy fields before stripping them
+        # out of ``merged`` (register() doesn't accept them — see the v116
+        # comment above) so the setter calls after register() below persist
+        # exactly what was just validated.
+        _final_access_policy_sql = merged.get("access_policy_sql")
+        _final_access_policy_note = merged.get("access_policy_note")
+        for _policy_key in (
+            "access_policy_sql",
+            "access_policy_note",
+            "access_policy_updated_at",
+            "access_policy_updated_by",
+            "policy_mapping",
+        ):
+            merged.pop(_policy_key, None)
+
         repo.register(id=table_id, **merged)
+
+        # Persist the access-policy fields through their dedicated setters
+        # (Task 2's set_access_policy/set_policy_mapping) — only called when
+        # this PUT actually touched one of them, so an unrelated edit never
+        # re-stamps access_policy_updated_at.
+        if "access_policy_sql" in updates or "access_policy_note" in updates:
+            repo.set_access_policy(
+                table_id,
+                sql=_final_access_policy_sql,
+                note=_final_access_policy_note,
+                updated_by=user.get("email"),
+            )
+        if "policy_mapping" in updates:
+            repo.set_policy_mapping(table_id, bool(updates["policy_mapping"]))
 
     audit_repo().log(
         user_id=user.get("id"),
