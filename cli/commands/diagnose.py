@@ -14,6 +14,75 @@ from cli.lib.session_health import session_upload_health
 diagnose_app = typer.Typer(help="System diagnostics")
 
 
+def _local_delivery_check() -> dict:
+    """Can the analyst actually READ the data the server says they may?
+
+    Every other check here asks the server about itself. This one compares
+    what the manifest offers against what is on the laptop, because that gap
+    is invisible from the server side: a fresh analyst whose `agnes pull`
+    had 403'd on the download still saw "Overall: healthy" and "[ok] data".
+
+    Never worse than `warn`. An empty workspace is a normal first-run state,
+    not a broken instance — the point is to name the next step, not to fail.
+    """
+    check: dict = {"name": "local-data", "audience": "analyst"}
+    try:
+        root = get_workspace_root()
+        if not root or not Path(root).exists():
+            check.update(
+                status="warn",
+                detail="No workspace on this machine — run `agnes init` first.",
+            )
+            return check
+
+        parquet_dir = Path(root) / "server" / "parquet"
+        on_disk = len(list(parquet_dir.glob("*.parquet"))) if parquet_dir.exists() else 0
+
+        # What the server says this caller may pull. `query_mode='remote'`
+        # rows are answered server-side and are never expected on disk, so
+        # counting them would report a permanent shortfall.
+        offered = 0
+        try:
+            entries = (api_get("/api/sync/manifest").json() or {}).get("tables") or []
+            offered = sum(
+                1
+                for t in entries
+                if (t.get("query_mode") or "local") != "remote" and not t.get("server_only")
+            )
+        except Exception as e:
+            check.update(
+                status="warn",
+                detail=f"{on_disk} table(s) local; could not read the manifest to compare ({e}).",
+                tables_local=on_disk,
+            )
+            return check
+
+        check.update(tables_local=on_disk, tables_offered=offered)
+        if offered and on_disk == 0:
+            check.update(
+                status="warn",
+                detail=(
+                    f"The server offers {offered} table(s) but none are on this "
+                    "machine — run `agnes pull` and read its output; a download "
+                    "that 403s means the table is not in your stack yet."
+                ),
+            )
+        elif on_disk < offered:
+            check.update(
+                status="warn",
+                detail=(
+                    f"{on_disk} of {offered} offered table(s) are local — "
+                    "`agnes pull` to fetch the rest."
+                ),
+            )
+        else:
+            check.update(status="ok", detail=f"{on_disk} table(s) available locally.")
+        return check
+    except Exception as e:
+        check.update(status="info", detail=f"local delivery check failed: {e}")
+        return check
+
+
 @diagnose_app.callback(invoke_without_command=True)
 def diagnose(
     ctx: typer.Context,
@@ -63,7 +132,9 @@ def diagnose(
     try:
         resp = api_get("/api/health")
         health = resp.json()
-        checks.append({"name": "api", "status": "ok", "audience": "analyst", "latency_ms": resp.elapsed.total_seconds() * 1000})
+        checks.append(
+            {"name": "api", "status": "ok", "audience": "analyst", "latency_ms": resp.elapsed.total_seconds() * 1000}
+        )
 
         # Detailed health (auth required) for service-level checks
         try:
@@ -99,7 +170,9 @@ def diagnose(
         cap.setdefault("audience", "analyst")
         checks.append(cap)
     except Exception as e:
-        checks.append({"name": "session-upload", "status": "info", "audience": "analyst", "detail": f"health check failed: {e}"})
+        checks.append(
+            {"name": "session-upload", "status": "info", "audience": "analyst", "detail": f"health check failed: {e}"}
+        )
 
     # Issue #394: detect Jira partition layout (flat YYYY-MM vs hive month=*/).
     # Resolves the Jira data directory from the DATA_DIR env var (mirrors how
@@ -107,13 +180,36 @@ def diagnose(
     # Operator-only audience — analysts can't act on a partition migration.
     try:
         import os
+
         _data_root = Path(os.environ.get("DATA_DIR", "/data"))
         _jira_dir = _data_root / "extracts" / "jira"
         jira_check = detect_jira_partition_layout(_jira_dir)
         jira_check.setdefault("audience", "operator")
         checks.append(jira_check)
     except Exception as e:
-        checks.append({"name": "jira-partition-format", "status": "info", "audience": "operator", "detail": f"partition check failed: {e}"})
+        checks.append(
+            {
+                "name": "jira-partition-format",
+                "status": "info",
+                "audience": "operator",
+                "detail": f"partition check failed: {e}",
+            }
+        )
+
+    # Local delivery: does the analyst actually HAVE the data the server says
+    # they may read? Every check above this point asks the server about
+    # itself, so `agnes diagnose` reported "Overall: healthy" including
+    # "[ok] data" while a fresh analyst's tables were unreachable — the
+    # manifest listed one table, `agnes pull` had 403'd on the download, and
+    # nothing on the laptop said so. A diagnostic that stays green through a
+    # total data outage is worse than none: the analyst who hit this stopped
+    # trusting it and went to raw curl.
+    #
+    # Analyst-audience on purpose — this is the analyst's own workspace, and
+    # it is the one thing they can act on ("run agnes pull", "ask for the
+    # grant"). Never promotes above `warn`: a workspace with nothing pulled
+    # yet is a normal first-run state, not a broken instance.
+    checks.append(_local_delivery_check())
 
     # Determine overall — `info` and `unknown` surface in the per-check
     # output but never promote the headline (issue #178).
@@ -164,8 +260,7 @@ def diagnose(
         # any operator-side warnings as a secondary line so they're not
         # invisible — they just don't get to drive the headline.
         operator_warns = [
-            c for c in checks
-            if c.get("audience") == "operator" and c.get("status") in ("warning", "error")
+            c for c in checks if c.get("audience") == "operator" and c.get("status") in ("warning", "error")
         ]
         if not operator_mode and operator_warns:
             typer.echo(

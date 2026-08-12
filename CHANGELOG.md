@@ -10,6 +10,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **`agnes diagnose` now checks whether the analyst can actually reach their data.** Every check it ran asked the server about itself, so it reported `Overall: healthy` — including `[ok] data` — while a fresh analyst's tables were unreachable: the manifest listed a table, `agnes pull` had 403'd on the download, and nothing on the laptop said so. The analyst who hit this stopped trusting the command and went to raw `curl`. A new `local-data` check compares what the manifest offers against the parquets on disk and names the next step ("run `agnes pull` and read its output; a download that 403s means the table is not in your stack yet"). `query_mode='remote'` rows are excluded — they answer server-side and are never expected locally, so counting them would report a permanent, unfixable shortfall. The check is analyst-audience and never promotes the headline past `warn`: a workspace with nothing pulled yet is a normal first run, not a broken instance.
+
+
 ## [0.83.7] - 2026-08-12
 
 ### Fixed
@@ -41,7 +46,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - A whitespace-only `created_at` no longer renders `_—    _` — a credit line with nothing in it, which also made the header promise credits it could not show.
 - The moderation warning strips control characters from a note's excerpt before echoing it: `click.echo` does not, so a crafted note could repaint or erase the very line printed about it.
 - **`agnes admin memory approve` printed the same flagged sentence once per pattern it tripped.** The scanner reports a finding per kind, and the sentence this feature exists for trips three at once, so one flagged note filled three consecutive lines with identical text and read as three separate problems. Findings are now grouped by excerpt with their kinds listed together. Found on a live approval against a throwaway instance, not by the unit tests — which asserted the payload's structure and never looked at the shape of the output.
-
 ## [0.83.5] - 2026-08-12
 
 ### Changed

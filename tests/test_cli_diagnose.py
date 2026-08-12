@@ -230,3 +230,83 @@ class TestAnalystAudienceFilter:
             result = runner.invoke(app, ["diagnose"])
         assert result.exit_code == 0
         assert "degraded" in result.output.lower()
+
+
+class TestLocalDeliveryCheck:
+    """`agnes diagnose` used to report only what the SERVER thinks.
+
+    A fresh analyst whose `agnes pull` had 403'd on the download saw
+    "Overall: healthy" including "[ok] data" while no table was reachable.
+    They stopped trusting the command and went to raw curl. This check
+    compares what the manifest offers against what is on the laptop.
+    """
+
+    def _check(self, monkeypatch, tmp_path, *, offered, on_disk):
+        from unittest.mock import MagicMock
+
+        import cli.commands.diagnose as mod
+
+        parquet_dir = tmp_path / "server" / "parquet"
+        parquet_dir.mkdir(parents=True)
+        for i in range(on_disk):
+            (parquet_dir / f"t{i}.parquet").write_bytes(b"")
+
+        monkeypatch.setattr(mod, "get_workspace_root", lambda: str(tmp_path))
+        resp = MagicMock()
+        resp.json.return_value = {
+            "tables": [{"id": f"t{i}", "query_mode": "local"} for i in range(offered)]
+        }
+        monkeypatch.setattr(mod, "api_get", lambda *a, **k: resp)
+        return mod._local_delivery_check()
+
+    def test_nothing_local_while_the_server_offers_tables_warns(self, monkeypatch, tmp_path):
+        c = self._check(monkeypatch, tmp_path, offered=1, on_disk=0)
+        assert c["status"] == "warn", c
+        assert "agnes pull" in c["detail"]
+        assert c["tables_offered"] == 1 and c["tables_local"] == 0
+
+    def test_everything_local_is_ok(self, monkeypatch, tmp_path):
+        c = self._check(monkeypatch, tmp_path, offered=2, on_disk=2)
+        assert c["status"] == "ok", c
+
+    def test_partial_pull_warns(self, monkeypatch, tmp_path):
+        c = self._check(monkeypatch, tmp_path, offered=3, on_disk=1)
+        assert c["status"] == "warn", c
+
+    def test_remote_tables_are_not_expected_on_disk(self, monkeypatch, tmp_path):
+        """`query_mode='remote'` rows answer server-side and never land as
+        parquet — counting them would report a permanent, unfixable shortfall."""
+        from unittest.mock import MagicMock
+
+        import cli.commands.diagnose as mod
+
+        (tmp_path / "server" / "parquet").mkdir(parents=True)
+        monkeypatch.setattr(mod, "get_workspace_root", lambda: str(tmp_path))
+        resp = MagicMock()
+        resp.json.return_value = {"tables": [{"id": "big", "query_mode": "remote"}]}
+        monkeypatch.setattr(mod, "api_get", lambda *a, **k: resp)
+
+        c = mod._local_delivery_check()
+        assert c["status"] == "ok", c
+        assert c["tables_offered"] == 0
+
+    def test_no_workspace_says_run_init(self, monkeypatch):
+        import cli.commands.diagnose as mod
+
+        monkeypatch.setattr(mod, "get_workspace_root", lambda: None)
+        c = mod._local_delivery_check()
+        assert c["status"] == "warn"
+        assert "agnes init" in c["detail"]
+
+    def test_never_reports_error(self, monkeypatch, tmp_path):
+        """An empty workspace is a normal first run, not a broken instance —
+        this check must never promote the headline past `warn`."""
+        import cli.commands.diagnose as mod
+
+        def _boom(*a, **k):
+            raise RuntimeError("manifest unreachable")
+
+        monkeypatch.setattr(mod, "get_workspace_root", lambda: str(tmp_path))
+        monkeypatch.setattr(mod, "api_get", _boom)
+        c = mod._local_delivery_check()
+        assert c["status"] in ("warn", "info"), c
