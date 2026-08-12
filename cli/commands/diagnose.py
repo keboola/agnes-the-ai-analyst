@@ -78,11 +78,24 @@ def diagnose(
                 check = {"name": svc_name, "status": svc_data.get("status", "unknown")}
                 check.update({k: v for k, v in svc_data.items() if k != "status"})
                 checks.append(check)
+        except RedirectHardStop:
+            # Scoped opt-in: the OUTER handler answers "can we reach the
+            # server at all", and that question is already answered — the
+            # reachability probe above succeeded and filed its `ok` row. A
+            # redirect on this best-effort extra (a proxy that rewrites only
+            # some paths) must not unwind into it and append a second,
+            # contradicting `api` row saying `error` beside the `ok` one:
+            # the reader is then told both, and anything selecting the first
+            # match by name gets whichever landed first.
+            #
+            # `RedirectHardStop` derives from `BaseException`, so the clause
+            # below cannot do this for us — being named here is the point.
+            # Treated exactly like every other failure of this probe, whose
+            # contract is that a missing detail is not worth a row.
+            # (Devin Review on #1277.)
+            pass
         except Exception:
-            # Auth may not be configured — minimal reachability is sufficient.
-            # A redirect does NOT land here: `RedirectHardStop` derives from
-            # `BaseException` precisely so a swallow-everything clause cannot
-            # take it. The outer handler files it as the one row that matters.
+            # Auth may not be configured — minimal reachability is sufficient
             pass
     except RedirectHardStop as e:
         # The opt-in. Everything else in the CLI keeps the old behaviour —

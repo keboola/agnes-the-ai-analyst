@@ -35,6 +35,7 @@ report while the remaining steps keep talking to it.
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 
 import httpx
 import pytest
@@ -131,6 +132,39 @@ class TestDiagnoseStillDiagnoses:
         """One dead check must not take the local-side checks with it."""
         payload = json.loads(self._run(["--json"]).stdout)
         assert {c["name"] for c in payload["checks"]} - {"api"}, "only the failing check survived"
+
+    def test_a_redirect_on_only_the_detailed_probe_does_not_duplicate_the_row(self, monkeypatch):
+        """`/api/health` fine, `/api/health/detailed` redirected — one row, not two.
+
+        The outer `try` spans both requests. Because `RedirectHardStop` skips
+        `except Exception`, a redirect on the *second* one unwinds past the
+        nested best-effort handler into the outer opt-in, which appends a
+        second `api` row saying `error` next to the `ok` one already there.
+        A reader is told the server is both fine and broken, and anything
+        doing `next(c for c in checks if c["name"] == "api")` gets whichever
+        landed first. (Devin Review on #1277.)
+        """
+        import cli.commands.diagnose  # noqa: F401
+
+        def _selective(path, *_a, **_kw):
+            if path == "/api/health":
+                ok = httpx.Response(
+                    200, json={"status": "ok"}, request=httpx.Request("GET", "https://old.example/api/health")
+                )
+                # `.elapsed` raises on a hand-built response, and diagnose
+                # reads it for latency_ms — without this the healthy row is
+                # never appended and the test measures the wrong thing.
+                ok.elapsed = timedelta(milliseconds=5)
+                return ok
+            _check_moved_server(_redirect(location="https://new.example/api/health/detailed"))
+
+        monkeypatch.setattr("cli.client.get_server_url", lambda: "https://old.example")
+        monkeypatch.setattr("cli.commands.diagnose.api_get", _selective)
+
+        payload = json.loads(self._run(["--json"]).stdout)
+        api_rows = [c for c in payload["checks"] if c["name"] == "api"]
+        assert len(api_rows) == 1, f"contradictory rows for one check: {api_rows}"
+        assert api_rows[0]["status"] == "ok", "the reachability probe succeeded"
 
 
 class TestUpdateStepIsolationHolds:
