@@ -42,6 +42,7 @@ import httpx
 
 from cli.client import api_get, api_post, stream_download
 from cli.config import get_sync_state, save_sync_state
+from cli.snapshot_meta import list_snapshots
 from src.sql_ident import quote_ident
 
 
@@ -1276,8 +1277,24 @@ def run_pull(
 
         # 6. Rebuild DuckDB views — unconditional. The DB file is the
         # load-bearing artifact for downstream readers.
+        #
+        # Table access policies (§3.4, §10.3): a local snapshot whose
+        # stored `policy_fingerprint` no longer matches the fingerprint the
+        # manifest (fetched fresh in step 1) reports for its source table
+        # RIGHT NOW must not keep serving pre-change rows — reuses this
+        # SAME `blocked_names` mechanism #1129 built for a de-authorized or
+        # newly-`server_only` table, so `snapshot_views_blocked` stays the
+        # one audit trail for "why did this name stop resolving" regardless
+        # of cause. Computed fresh every run (never merged into
+        # `local_state["snapshot_blocked"]` above): unlike the de-auth
+        # case, both comparison inputs (the snapshot's own meta.json, the
+        # manifest) are already durable, so there is nothing to "remember"
+        # across pulls — and a reverted policy's fingerprint matching again
+        # correctly un-blocks the view on the very next pull.
         result.snapshot_views_blocked = _rebuild_duckdb_views(
-            workspace, parquet_dir, blocked_names=blocked_snapshot_names
+            workspace,
+            parquet_dir,
+            blocked_names=blocked_snapshot_names | _stale_policy_snapshot_names(workspace, manifest),
         )
 
         # 7. Fetch corporate-memory bundle and lazily write
@@ -1625,6 +1642,70 @@ def _blocked_snapshot_names(
         or (authorized_names is not None and tid not in authorized_names)
     }
     return (remembered | newly_revoked) - still_local
+
+
+def _manifest_policy_fingerprints(manifest: dict) -> dict:
+    """``table_id -> access_policy_fingerprint`` read from
+    ``data_packages[].tables[]`` (``app/api/sync.py::_table_manifest_entry``,
+    table access policies §3.4/§10.3, plan Task 18) — the only manifest
+    section carrying it, since a policied table is only ever reachable
+    through a data package under the unified-stack model (attaching a
+    policy requires ``server_only=True``, and ``server_only`` tables
+    surface exclusively via packages).
+
+    Keyed by BOTH the registry ``id`` and ``name`` pointing at the same
+    fingerprint: ``SnapshotMeta.table_id`` is whatever the analyst typed as
+    the ``agnes snapshot create <table_id>`` argument, which — mirroring
+    the server-side resolver's own id-or-name fallback
+    (``src/access_policy.py::_resolve_table_row``) — may be either form.
+    Keying on only one would false-positive-block a snapshot of a table
+    whose id and name differ.
+
+    A table id/name absent from the map — outside the puller's current
+    stack, or a pre-this-feature server that never emits the key at all —
+    reads back ``None`` via ``dict.get`` on the caller side: the fail-safe
+    direction, since losing sight of a table's current policy state blocks
+    a stale snapshot rather than trusting it.
+    """
+    out: dict = {}
+    for pkg in manifest.get("data_packages", []) or []:
+        for t in pkg.get("tables", []) or []:
+            fingerprint = t.get("access_policy_fingerprint")
+            for key in (t.get("id"), t.get("name")):
+                if key:
+                    out[key] = fingerprint
+    return out
+
+
+def _stale_policy_snapshot_names(workspace: Path, manifest: dict) -> set[str]:
+    """Local snapshot VIEW names (table access policies §3.4, §10.3; plan
+    Task 18) whose stored ``SnapshotMeta.policy_fingerprint`` no longer
+    matches the CURRENT fingerprint the manifest reports for that
+    snapshot's source table — the policy SQL changed, or the puller's own
+    group membership changed, since ``agnes snapshot create``/``refresh``
+    last ran.
+
+    Keyed off ``SnapshotMeta.name`` (the actual registered view name — may
+    differ from ``table_id`` under ``--as``), unlike ``_blocked_snapshot_
+    names`` above, which only ever withholds the bare ``table_id`` (the
+    one collision a nameless ``agnes snapshot create`` produces): a policy
+    can go stale under ANY snapshot name.
+
+    A snapshot with no recorded fingerprint (created before this feature
+    existed, or of a table that carried no policy at fetch time) compares
+    against ``None`` — so a policy newly ATTACHED to that table after the
+    fact also goes stale, not only an edited one. Both sides ``None`` (no
+    policy then, none now) compares equal and stays resolvable — the "no
+    policy = no behaviour change" invariant holds for snapshots too.
+    """
+    snapshots_dir = workspace / "user" / "snapshots"
+    if not snapshots_dir.exists():
+        return set()
+
+    current = _manifest_policy_fingerprints(manifest)
+    return {
+        meta.name for meta in list_snapshots(snapshots_dir) if meta.policy_fingerprint != current.get(meta.table_id)
+    }
 
 
 def _rebuild_duckdb_views(workspace: Path, parquet_dir: Path, blocked_names: set[str] | None = None) -> list[str]:

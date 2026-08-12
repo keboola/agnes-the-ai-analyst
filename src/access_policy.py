@@ -39,6 +39,7 @@ identity) has nothing to bind and is refused outright rather than guessed.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import uuid
 from dataclasses import dataclass
@@ -736,3 +737,50 @@ def policy_cache_identity(principal, *, table_id: str) -> tuple[str | None, tupl
     """
     user_id, _user_email, live_groups = _resolve_identity(principal, table_id=table_id)
     return (user_id, tuple(sorted(live_groups())))
+
+
+# ---------------------------------------------------------------------------
+# Task 18 -- snapshot policy fingerprint (§3.4, §10.3). `agnes snapshot
+# create` deliberately puts a policied table's rows on the laptop, bypassing
+# every live-read enforcement point above -- the parquet keeps answering
+# from whatever slice was current at fetch time even after the policy
+# tightens. `policy_fingerprint` is the value `/api/v2/scan` stamps onto the
+# `X-Agnes-Policy-Fingerprint` response header and `app/api/sync.py`'s
+# manifest recomputes per caller (`_table_manifest_entry`); `agnes pull`
+# (`cli/lib/pull.py`) compares the two and withholds a mismatched snapshot's
+# view through the SAME `snapshot_views_blocked` mechanism #1129 already
+# built for a de-authorized or newly-`server_only` table.
+# ---------------------------------------------------------------------------
+
+
+def policy_fingerprint(table_id: str, principal) -> str | None:
+    """``sha256(access_policy_sql + '|' + repr(sorted(caller_group_names)))``
+    -- a fingerprint of the policy text a table currently carries plus the
+    caller's live group membership (§10.3: "hash of the policy SQL + the
+    caller's bound group set").
+
+    ``None`` -- the same "nothing to protect" passthrough
+    :func:`policied_relation` itself uses -- when the table carries no
+    policy, or ``principal`` is the admin bypass (§12): an admin's read is
+    never filtered, so a snapshot taken as admin was never filtered either,
+    and there is no slice whose staleness needs tracking.
+
+    Reuses :func:`policy_cache_identity` for the identity half rather than
+    inlining a fresh ``_resolve_identity`` + live-groups read: a fingerprint
+    must invalidate on ANY group-membership change, not only when the
+    CURRENT policy text happens to reference ``$user_groups`` -- the exact
+    reasoning ``policy_cache_identity`` already documents for its own
+    caller (response-cache keys, §9) applies here unchanged, since an admin
+    could edit the policy tomorrow to start referencing groups it does not
+    reference today.
+    """
+    row = _resolve_table_row(table_id)
+    policy_sql = row.get("access_policy_sql")
+    if not policy_sql:
+        return None
+    if _is_admin_bypass(principal):
+        return None
+
+    _, groups = policy_cache_identity(principal, table_id=row["id"])
+    digest_input = f"{policy_sql}|{sorted(groups)!r}"
+    return hashlib.sha256(digest_input.encode()).hexdigest()

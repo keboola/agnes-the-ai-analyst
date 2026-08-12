@@ -186,10 +186,27 @@ def api_get_stream(path: str, dest: "io.IOBase | str", **params) -> int:
         return total
 
 
-def api_post_arrow(path: str, payload: dict) -> pa.Table:
-    """Post JSON, expect Arrow IPC stream response."""
+def _post_arrow(path: str, payload: dict) -> "tuple[pa.Table, httpx.Headers]":
     url = f"{get_server_url().rstrip('/')}{path}"
     r = httpx.post(url, json=payload, headers=_headers(), timeout=600)
     _raise_for_status(r)
     reader = pa.ipc.open_stream(io.BytesIO(r.content))
-    return reader.read_all()
+    return reader.read_all(), r.headers
+
+
+def api_post_arrow(path: str, payload: dict) -> pa.Table:
+    """Post JSON, expect Arrow IPC stream response."""
+    table, _headers = _post_arrow(path, payload)
+    return table
+
+
+def api_post_arrow_with_headers(path: str, payload: dict) -> "tuple[pa.Table, httpx.Headers]":
+    """Like :func:`api_post_arrow`, but also returns the response headers.
+
+    ``/api/v2/scan`` has no JSON body to carry values like
+    ``X-Agnes-Row-Scope`` or ``X-Agnes-Policy-Fingerprint`` (table access
+    policies §10.3, §3.4) -- a caller that needs them (``agnes snapshot
+    create``/``refresh``, ``cli/commands/snapshot.py``) reads this instead
+    of the header-blind :func:`api_post_arrow`.
+    """
+    return _post_arrow(path, payload)

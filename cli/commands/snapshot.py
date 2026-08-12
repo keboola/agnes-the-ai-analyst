@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json as json_lib
-import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -22,7 +21,7 @@ from cli.snapshot_meta import (
     sweep_expired_snapshots,
     write_meta,
 )
-from cli.v2_client import V2ClientError, api_post_arrow, api_post_json
+from cli.v2_client import V2ClientError, api_post_arrow_with_headers, api_post_json
 from src.duckdb_conn import _open_duckdb
 from src.sql_ident import quote_ident
 
@@ -157,10 +156,17 @@ def refresh_cmd(
         "order_by": meta.order_by,
     }
     try:
-        table = api_post_arrow("/api/v2/scan", req)
+        table, resp_headers = api_post_arrow_with_headers("/api/v2/scan", req)
     except V2ClientError as e:
         typer.echo(f"Error: refresh failed: {e}", err=True)
         raise typer.Exit(5 if e.status_code >= 500 else 8 if e.status_code == 403 else 2)
+    # Table access policies §3.4/§10.3 (plan Task 18): re-fetching MUST
+    # re-stamp the fingerprint too, not just the rows -- otherwise a
+    # refresh of a snapshot whose policy changed would fetch CURRENT
+    # (correctly filtered) rows but keep the STALE fingerprint from the
+    # original `create`, and `agnes pull` would go on blocking a view that
+    # is actually fresh.
+    policy_fingerprint_header = resp_headers.get("X-Agnes-Policy-Fingerprint") or None
 
     parquet_path = snap_dir / f"{name}.parquet"
     with snapshot_lock(snap_dir):
@@ -189,6 +195,7 @@ def refresh_cmd(
             estimated_scan_bytes_at_fetch=meta.estimated_scan_bytes_at_fetch,
             result_hash_md5=new_hash,
             expires_at=expires_at,
+            policy_fingerprint=policy_fingerprint_header,
         )
         write_meta(snap_dir, new_meta)
 
@@ -542,10 +549,15 @@ def _create_snapshot(
 
     # Fetch
     try:
-        table = api_post_arrow("/api/v2/scan", req)
+        table, resp_headers = api_post_arrow_with_headers("/api/v2/scan", req)
     except V2ClientError as e:
         typer.echo(f"Error: fetch failed: {e}", err=True)
         raise typer.Exit(_exit_code_for(e))
+    # Table access policies §3.4/§10.3 (plan Task 18): persisted below on
+    # `SnapshotMeta.policy_fingerprint` -- None when the source table
+    # carries no policy, or the fetch ran as the admin bypass (`/api/v2/
+    # scan` omits the header in both cases).
+    policy_fingerprint_header = resp_headers.get("X-Agnes-Policy-Fingerprint") or None
 
     # Install under flock — re-check existence here to close the TOCTOU
     # window between the early check above and this write.
@@ -591,6 +603,7 @@ def _create_snapshot(
             estimated_scan_bytes_at_fetch=int(est.get("estimated_scan_bytes", 0)) if est is not None else 0,
             result_hash_md5=result_hash,
             expires_at=expires_at,
+            policy_fingerprint=policy_fingerprint_header,
         )
         write_meta(snap_dir, meta)
 

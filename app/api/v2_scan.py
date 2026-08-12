@@ -23,6 +23,7 @@ from src.access_policy import (
     PolicyIdentityUnresolvable,
     policied_from_sql,
     policied_relation,
+    policy_fingerprint,
     row_scope_payload,
 )
 from app.api.where_validator import (
@@ -696,9 +697,22 @@ def scan_endpoint(
         # safe, which raw HTTP header encoding requires (Starlette encodes
         # header values as latin-1).
         response_headers: dict[str, str] = {}
-        row_scope = row_scope_payload(job_info.get("policied_table_ids"))
+        policied_ids = job_info.get("policied_table_ids")
+        row_scope = row_scope_payload(policied_ids)
         if row_scope is not None:
             response_headers["X-Agnes-Row-Scope"] = json.dumps(row_scope)
+        # Table access policies §3.4/§10.3 (plan Task 18): the snapshot
+        # policy fingerprint -- present only when the read touched EXACTLY
+        # one policied table, mirroring `SnapshotMeta.table_id`'s own
+        # single-table shape. A `from_query` scan that joined two-or-more
+        # policied tables has no single well-defined fingerprint to stamp
+        # -- a documented gap, not a silent one: `agnes pull` simply has
+        # nothing to compare for that snapshot and never blocks it on
+        # policy drift.
+        if policied_ids and len(policied_ids) == 1:
+            fingerprint = policy_fingerprint(policied_ids[0], user)
+            if fingerprint:
+                response_headers["X-Agnes-Policy-Fingerprint"] = fingerprint
         return Response(content=ipc, media_type=CONTENT_TYPE, headers=response_headers or None)
     except HTTPException as exc:
         # `run_remote_select_to_arrow` (from_query mode, #616) raises
