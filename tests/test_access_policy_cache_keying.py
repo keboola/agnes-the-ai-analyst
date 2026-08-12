@@ -246,7 +246,10 @@ class TestSaveTimeProbeRejectsAMissingColumn:
         token = seeded_app["admin_token"]
         resp = c.put(
             "/api/admin/registry/widgets",
-            json={"access_policy_sql": "SELECT nonexistent_col FROM widgets"},
+            json={
+                "access_policy_sql": "SELECT nonexistent_col FROM widgets",
+                "access_policy_note": "restrict rows",
+            },
             headers=_auth(token),
         )
         assert resp.status_code == 422, resp.text
@@ -278,7 +281,10 @@ class TestSaveTimeProbeRejectsAMissingColumn:
 
         resp = c.put(
             f"/api/admin/registry/{table_id}",
-            json={"access_policy_sql": "SELECT * FROM never_synced"},
+            json={
+                "access_policy_sql": "SELECT * FROM never_synced",
+                "access_policy_note": "restrict rows",
+            },
             headers=_auth(token),
         )
         assert resp.status_code == 200, resp.text
@@ -324,7 +330,8 @@ class TestSaveTimeProbeRejectsAMissingColumn:
                 "access_policy_sql": (
                     "SELECT * EXCLUDE (national_id), md5(email) AS email FROM invoices2 "
                     "WHERE list_contains($user_groups, cost_center)"
-                )
+                ),
+                "access_policy_note": "cost-centre filter",
             },
             headers=_auth(token),
         )

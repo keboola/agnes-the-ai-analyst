@@ -241,6 +241,20 @@ EXEMPT: frozenset[str] = frozenset(
         # AUTHORING the policy against the table they are about to gate,
         # not a caller reading its content.
         "app/api/admin.py::update_table",
+        # Task 14 -- POST /registry/{id}/policy/preview (design doc §13.1).
+        # UNLIKE update_table's probe above, this endpoint DOES intentionally
+        # hand back real row content -- that is the feature, not an
+        # accidental leak: an admin choosing a persona (as_user/as_groups)
+        # to check a stored or candidate policy before trusting it, audited
+        # (`access_policy.preview`) per §13.1's "who looked at whose data".
+        # It never calls the resolver's four functions BY DESIGN, not by
+        # omission: `policied_relation`'s admin bypass (§12) follows the
+        # CALLING admin's own credential surface, which is exactly wrong
+        # here -- the whole point is to run the policy as the CHOSEN
+        # persona regardless of who is asking, so it binds that persona's
+        # identity/groups directly and reads through `probe_policy` +
+        # `get_analytics_db_readonly()` instead.
+        "app/api/admin.py::preview_table_policy",
         # POST /api/query/hybrid -- spec §8 names this one explicitly: "out
         # of scope by §12's admin bypass, not by omission".
         "app/api/query_hybrid.py::hybrid_query",

@@ -7,6 +7,7 @@ callers via the same ``_user_group_ids`` lookup.
 
 import json
 import logging
+import math
 import os
 import threading
 from pathlib import Path
@@ -3903,6 +3904,36 @@ async def update_table(
             except PolicyValidationError as e:
                 raise HTTPException(status_code=422, detail=f"{e.reason}: {e.detail}") from e
 
+        # §4 (Task 14) — access_policy_note is MANDATORY whenever a non-null
+        # access_policy_sql is attached or replaced. Tasks 2/4 deliberately
+        # left this to the API layer: the repository setter accepts sql and
+        # note independently (a future non-HTTP caller may have its own
+        # reason to write without one), but every write through THIS
+        # endpoint must explain why the policy exists — the inheriting
+        # admin who finds forty lines of SQL joining `user_access` otherwise
+        # has no way to tell "legal requirement" from "hunch", and the safe
+        # move is always "leave it alone", so an unexplained policy
+        # calcifies (§4's own reasoning).
+        #
+        # Evaluated against the MERGED/final record, like the §3.1/§3.2
+        # interlocks below — not merely "did THIS PUT's body include a
+        # note" — so a SEPARATE PUT that blanks only access_policy_note
+        # while access_policy_sql stays attached is caught too (a naive
+        # "only check when this PUT touches sql" rule would miss exactly
+        # that "one toggle away" shape). Clearing the policy itself
+        # (access_policy_sql explicit null) short-circuits this — merged
+        # carries no sql, so nothing to explain — the same safety-valve
+        # carve-out the flag gate above already gives clearing.
+        if merged.get("access_policy_sql") and not (merged.get("access_policy_note") or "").strip():
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "policy_note_required: access_policy_note is required whenever "
+                    "access_policy_sql is set -- explain why this policy exists so the "
+                    "next admin to find it knows whether it's safe to change"
+                ),
+            )
+
         # §3.1 — the interlock itself: a policy (attached by this PUT, or
         # already persisted and simply left untouched by it) may only
         # survive on a merged record that is 'remote' or server_only=true.
@@ -4025,6 +4056,259 @@ async def update_table(
     invalidate_for_table(table_id)
 
     return {"id": table_id, "updated": list(updates.keys())}
+
+
+class PolicyPreviewRequest(BaseModel):
+    """Body for ``POST /registry/{table_id}/policy/preview`` (design doc
+    §13.1). ``sql`` is optional — omitted previews the table's currently
+    stored ``access_policy_sql``; given, it previews a CANDIDATE body
+    before it is ever saved. Exactly one of ``as_user`` / ``as_groups``
+    selects the persona to run the policy as: ``as_user`` binds a real,
+    existing user's identity (id/email) AND their LIVE group membership;
+    ``as_groups`` is an ad-hoc group set with no real user behind it — the
+    shape Task 15's persona matrix repeatedly calls this endpoint with, one
+    distinct group-set at a time, per §13.1's "enumerates the distinct
+    group-sets" (an ad-hoc set never needs a real account to exist).
+    """
+
+    sql: Optional[str] = None
+    as_user: Optional[str] = None
+    as_groups: Optional[List[str]] = None
+
+
+# Mirrors ``src.access_policy._PATTERN_METACHARACTERS`` (§6.3) — group names
+# are not validated against any character class elsewhere in the system, so
+# a wildcard-named ad-hoc group here would silently widen a LIKE-adjacent
+# policy the same way a Workspace-synced one would at live-enforcement time.
+# Duplicated rather than imported: that constant is private to the resolver
+# module, and this is the one OTHER place a caller-supplied string is bound
+# as a ``$user_groups`` value instead of being read live from the DB.
+_POLICY_PREVIEW_PATTERN_METACHARACTERS = ("%", "_")
+
+# The only three identity values a policy may reference (§6.2) — mirrors the
+# same closed set ``src/access_policy.py`` and
+# ``src/access_policy_validate.py`` each already check against.
+_POLICY_PREVIEW_KNOWN_VARIABLES = frozenset({"user_email", "user_id", "user_groups"})
+
+_POLICY_PREVIEW_SAMPLE_LIMIT = 20
+
+
+def _sanitize_for_json(obj):
+    """Recursively replace NaN / ±inf floats with None so a preview's sample
+    rows survive JSON serialization -- FastAPI's default encoder rejects
+    these even though Python's stdlib ``json`` accepts them by default, and
+    NaNs show up routinely in DuckDB scans (NULL through certain casts).
+    Same fix as ``app/api/v2_sample.py::_sanitize_for_json`` (duplicated
+    rather than imported -- that one is private to its own module and this
+    is the only other endpoint that hands back raw policy-query row values)."""
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, list):
+        return [_sanitize_for_json(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    return obj
+
+
+def _policy_preview_referenced_variables(sql: str) -> set:
+    """Which of the three known ``$name`` variables ``sql`` actually
+    references, so the bind dict only ever carries the keys the policy text
+    uses — DuckDB rejects a named parameter bound but never referenced
+    (§7.1 documents this exact failure mode for the BigQuery push-down; the
+    same strictness applies to a plain parameterized DuckDB query). Mirrors
+    the identical walk already duplicated in ``probe_policy``
+    (``src/access_policy_validate.py``) and ``_referenced_variables``
+    (``src/access_policy.py``) — each module computes its own because the
+    VALUES bound differ per caller (probe: throwaway sentinels; the live
+    resolver: the real caller's identity; here: the admin-chosen preview
+    persona).
+    """
+    import sqlglot
+    from sqlglot import exp
+
+    statement = sqlglot.parse_one(sql, read="duckdb")
+    return {p.name for p in statement.find_all(exp.Placeholder) if p.name in _POLICY_PREVIEW_KNOWN_VARIABLES}
+
+
+@router.post("/registry/{table_id}/policy/preview")
+async def preview_table_policy(
+    table_id: str,
+    request: PolicyPreviewRequest,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Run a stored or candidate access policy as a chosen persona and
+    report what it does (design doc §13.1) — the single-persona primitive
+    admins use to check a policy before trusting it, and that Task 15's
+    admin-UI matrix (multiple personas, union/overlap) is built from
+    repeated calls to.
+
+    Deliberately does NOT route through ``policied_relation``'s admin-bypass
+    path (§12): that bypass exists for LIVE reads, where "is this caller
+    exempt from filtering" is a real authorization decision keyed off the
+    CALLING admin's own credential surface. A preview's entire point is
+    "what would THIS CHOSEN persona see", independent of who is asking for
+    it — so identity/groups are resolved directly from the request (or, for
+    ``as_user``, from that user's own live membership), never from the
+    calling admin's principal.
+
+    Every preview is audited (§13.1: "it shows one person another person's
+    slice, and 'who looked at whose data, when' is the first question asked
+    after an incident").
+    """
+    from src.sql_ident import quote_ident
+
+    row = table_registry_repo().get(table_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Table not found")
+
+    if request.as_user and request.as_groups is not None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "policy_preview_persona_conflict: choose one persona selector -- "
+                "as_user (an existing user) OR as_groups (an ad-hoc group set), not both"
+            ),
+        )
+    if not request.as_user and request.as_groups is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "policy_preview_persona_required: identify a persona to preview as -- "
+                "as_user (an existing user) or as_groups (an ad-hoc group set)"
+            ),
+        )
+
+    is_candidate = request.sql is not None
+    policy_sql = request.sql if is_candidate else row.get("access_policy_sql")
+    if not policy_sql:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "policy_preview_no_policy: this table has no stored access policy, and "
+                "no candidate `sql` was given to preview"
+            ),
+        )
+
+    if is_candidate:
+        from src.access_policy_validate import PolicyValidationError, validate_policy_sql
+
+        mapping_table_names = {
+            r["name"] for r in table_registry_repo().list_all() if r.get("policy_mapping") and r.get("name")
+        }
+        try:
+            validate_policy_sql(
+                policy_sql,
+                table_id=table_id,
+                table_name=row.get("name") or table_id,
+                mapping_table_names=mapping_table_names,
+                for_remote=(row.get("query_mode") == "remote"),
+            )
+        except PolicyValidationError as e:
+            raise HTTPException(status_code=422, detail=f"{e.reason}: {e.detail}") from e
+
+    # Persona resolution -- exactly one of as_user / as_groups was required
+    # above, so exactly one branch below runs.
+    if request.as_user:
+        from src.repositories import user_group_members_repo, users_repo
+
+        target = users_repo().get_by_id(request.as_user) or users_repo().get_by_email(request.as_user)
+        if not target:
+            raise HTTPException(status_code=404, detail=f"user_not_found: no such user {request.as_user!r}")
+        persona_user_id, persona_user_email = target["id"], target["email"]
+        persona_groups = user_group_members_repo().list_group_names_for_user(persona_user_id)
+    else:
+        for group_name in request.as_groups:
+            if any(ch in group_name for ch in _POLICY_PREVIEW_PATTERN_METACHARACTERS):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"policy_preview_unsafe_group_name: {group_name!r} contains a "
+                        "pattern metacharacter (%, _) and cannot be bound as a group name"
+                    ),
+                )
+        persona_user_id, persona_user_email = None, None
+        persona_groups = list(request.as_groups)
+
+    from src.access_policy_validate import PolicyValidationError, probe_policy
+    from src.db import get_analytics_db_readonly
+
+    analytics_conn = get_analytics_db_readonly()
+    try:
+        try:
+            probed_columns = probe_policy(policy_sql, table_id, analytics_conn)
+        except PolicyValidationError as e:
+            raise HTTPException(status_code=422, detail=f"{e.reason}: {e.detail}") from e
+
+        try:
+            base_rows = analytics_conn.execute(f"DESCRIBE {quote_ident(row['name'])}").fetchall()
+        except Exception:
+            base_rows = []
+        base_names = [r[0] for r in base_rows]
+        probed_names = {c["name"] for c in probed_columns}
+        columns = [{"name": name, "hidden": name not in probed_names} for name in base_names]
+        for probed_col in probed_columns:
+            if probed_col["name"] not in base_names:
+                columns.append({"name": probed_col["name"], "hidden": False})
+
+        try:
+            referenced = _policy_preview_referenced_variables(policy_sql)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"policy_preview_failed: could not parse policy SQL: {exc}",
+            ) from exc
+
+        params: Dict[str, Any] = {}
+        if "user_email" in referenced:
+            params["user_email"] = persona_user_email
+        if "user_id" in referenced:
+            params["user_id"] = persona_user_id
+        if "user_groups" in referenced:
+            params["user_groups"] = persona_groups
+
+        try:
+            rows_total = analytics_conn.execute(f"SELECT COUNT(*) FROM {quote_ident(row['name'])}").fetchone()[0]
+            rows_visible = analytics_conn.execute(
+                f"SELECT COUNT(*) FROM ({policy_sql}) AS __agnes_policy_preview__",
+                params,
+            ).fetchone()[0]
+            sample_cursor = analytics_conn.execute(
+                f"SELECT * FROM ({policy_sql}) AS __agnes_policy_preview__ LIMIT {_POLICY_PREVIEW_SAMPLE_LIMIT}",
+                params,
+            )
+            sample_col_names = [d[0] for d in sample_cursor.description]
+            sample_rows = [dict(zip(sample_col_names, r)) for r in sample_cursor.fetchall()]
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=f"policy_preview_failed: {exc}") from exc
+    finally:
+        analytics_conn.close()
+
+    sample_rows = _sanitize_for_json(sample_rows)
+
+    audit_repo().log(
+        user_id=user.get("id"),
+        action="access_policy.preview",
+        resource=table_id,
+        params=_sanitize_for_audit(
+            {
+                "as_user": request.as_user,
+                "as_groups": request.as_groups,
+                "candidate_sql": request.sql,
+                "rows_visible": int(rows_visible),
+                "rows_total": int(rows_total),
+            }
+        ),
+    )
+
+    return {
+        "columns": columns,
+        "sample_rows": sample_rows,
+        "rows_visible": int(rows_visible),
+        "rows_total": int(rows_total),
+    }
 
 
 class _GotchaItem(BaseModel):

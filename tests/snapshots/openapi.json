@@ -6455,6 +6455,49 @@
         "title": "PluginResponse",
         "type": "object"
       },
+      "PolicyPreviewRequest": {
+        "description": "Body for ``POST /registry/{table_id}/policy/preview`` (design doc\n\u00a713.1). ``sql`` is optional \u2014 omitted previews the table's currently\nstored ``access_policy_sql``; given, it previews a CANDIDATE body\nbefore it is ever saved. Exactly one of ``as_user`` / ``as_groups``\nselects the persona to run the policy as: ``as_user`` binds a real,\nexisting user's identity (id/email) AND their LIVE group membership;\n``as_groups`` is an ad-hoc group set with no real user behind it \u2014 the\nshape Task 15's persona matrix repeatedly calls this endpoint with, one\ndistinct group-set at a time, per \u00a713.1's \"enumerates the distinct\ngroup-sets\" (an ad-hoc set never needs a real account to exist).",
+        "properties": {
+          "as_groups": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Groups"
+          },
+          "as_user": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As User"
+          },
+          "sql": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sql"
+          }
+        },
+        "title": "PolicyPreviewRequest",
+        "type": "object"
+      },
       "PreviewComponent": {
         "properties": {
           "description": {
@@ -22936,6 +22979,79 @@
           }
         },
         "summary": "Update Table Docs",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/registry/{table_id}/policy/preview": {
+      "post": {
+        "description": "Run a stored or candidate access policy as a chosen persona and\nreport what it does (design doc \u00a713.1) \u2014 the single-persona primitive\nadmins use to check a policy before trusting it, and that Task 15's\nadmin-UI matrix (multiple personas, union/overlap) is built from\nrepeated calls to.\n\nDeliberately does NOT route through ``policied_relation``'s admin-bypass\npath (\u00a712): that bypass exists for LIVE reads, where \"is this caller\nexempt from filtering\" is a real authorization decision keyed off the\nCALLING admin's own credential surface. A preview's entire point is\n\"what would THIS CHOSEN persona see\", independent of who is asking for\nit \u2014 so identity/groups are resolved directly from the request (or, for\n``as_user``, from that user's own live membership), never from the\ncalling admin's principal.\n\nEvery preview is audited (\u00a713.1: \"it shows one person another person's\nslice, and 'who looked at whose data, when' is the first question asked\nafter an incident\").",
+        "operationId": "preview_table_policy_api_admin_registry__table_id__policy_preview_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "table_id",
+            "required": true,
+            "schema": {
+              "title": "Table Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PolicyPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Table Policy",
         "tags": [
           "admin"
         ]
