@@ -25,6 +25,19 @@ duplicates_app = typer.Typer(
 memory_admin_app.add_typer(duplicates_app, name="duplicates")
 
 
+def _plain_excerpt(value: object) -> str:
+    """A note's own words, with nothing that can rewrite the admin's terminal.
+
+    The excerpt is analyst-authored text echoed to a TTY. `click.echo` does not
+    strip ANSI escapes when stdout is a terminal, so a crafted note could
+    repaint or erase the warning line printed about it — the one line whose
+    job is to be read. Control characters are dropped; the words are not
+    touched. (Adversarial review of #1268.)
+    """
+    text = str(value or "")
+    return "".join(ch for ch in text if ch == "\t" or (ch.isprintable() and ch not in "\r\n"))
+
+
 def _fail(resp, what: str) -> None:
     """Print a CLI-friendly error and exit non-zero."""
     try:
@@ -229,9 +242,20 @@ def _echo_delivery_warnings(data: dict) -> None:
         f"warning: {len(by_item)} item(s) carry text an agent will read as an instruction:",
         err=True,
     )
+    # Group by excerpt, not by finding: one sentence commonly trips several
+    # patterns at once ("type /exit and rerun claude … recaps disabled in
+    # /config" matches all three), and printing it once per kind made a single
+    # flagged sentence look like three separate problems. Seen on a live run.
     for item_id, findings in by_item.items():
+        kinds_by_excerpt: dict[str, list[str]] = {}
         for f in findings:
-            typer.echo(f"  {item_id} [{f.get('kind')}] {f.get('excerpt')}", err=True)
+            excerpt = _plain_excerpt(f.get("excerpt"))
+            kind = str(f.get("kind") or "")
+            kinds = kinds_by_excerpt.setdefault(excerpt, [])
+            if kind not in kinds:
+                kinds.append(kind)
+        for excerpt, kinds in kinds_by_excerpt.items():
+            typer.echo(f"  {item_id} [{', '.join(kinds)}] {excerpt}", err=True)
     notice = data.get("delivery_notice")
     if notice:
         typer.echo(f"{notice}", err=True)
