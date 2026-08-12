@@ -619,13 +619,28 @@ must register the Jira tables and grant the analyst's group access via
 advertises the tables and `agnes pull` downloads the parquets to the
 analyst's workspace on the next session.
 
-DuckDB views for Jira tables are created automatically if data exists:
-- `jira_issues` — main issues table
-- `jira_comments` — issue comments
-- `jira_attachments` — attachment metadata (filenames, sizes, URLs)
-- `jira_changelog` — field change history
-- `jira_issuelinks` — links between issues (blocks, duplicates, relates to)
-- `jira_remote_links` — external links (Confluence, Slack, etc.)
+Views are created automatically for whichever tables have data. **They are named
+after the table, with no `jira_` prefix** — the master view is claimed on the bare
+`_meta` table name (`src/orchestrator.py`, `CREATE OR REPLACE VIEW <table_name>`),
+so this is what to query:
+
+- `issues` — main issues table
+- `comments` — issue comments
+- `attachments` — attachment metadata (filenames, sizes, URLs)
+- `changelog` — field change history
+- `issuelinks` — links between issues (blocks, duplicates, relates to)
+- `remote_links` — external links (Confluence, Slack, etc.)
+- `organizations` — one row per JSM organization: id, current name, and any
+  configured detail fields (see "Organizations Table" above)
+
+```bash
+agnes query "SELECT count(*) FROM issues"
+```
+
+The `jira_`-prefixed names (`jira_issues`, `jira_comments`, …) belong to the legacy
+Data Broker path only: `connectors/jira/scripts/sync_jira.sh` creates them in an
+analyst's local `user/duckdb/analytics.duckdb` after an rsync. They are not what a
+server-side `agnes query` resolves.
 
 ## Attachment Access
 
