@@ -860,6 +860,11 @@ def test_the_grace_window_reads_the_deploy_timestamp():
     assert _within_start_grace({"last_deploy_at": fresh}) is True
     assert _within_start_grace({"last_deploy_at": stale}) is False
     assert _within_start_grace({"last_deploy_at": None, "updated_at": fresh}) is True
+    # A naive stamp from a DB session ahead of UTC lands in the "future";
+    # the window is symmetric so a clock offset either way still reads as
+    # recent rather than instantly expired (Devin Review on this PR).
+    future = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=2)
+    assert _within_start_grace({"last_deploy_at": future}) is True
     # No clock at all → not provably still starting.
     assert _within_start_grace({}) is False
     assert _within_start_grace({"last_deploy_at": "not-a-timestamp"}) is False

@@ -356,8 +356,22 @@ def _within_start_grace(row: dict) -> bool:
     if not isinstance(stamp, datetime):
         return False
     if stamp.tzinfo is None:
+        # These columns are zoneless `TIMESTAMP` written with SQL `now()`, so
+        # the value carries the DB session's zone and this reading is the
+        # codebase's standing convention (`data_apps.py`, `collections.py`,
+        # ~15 other places) — containers run UTC. Here it is load-bearing in a
+        # way it usually is not: a host behind UTC makes the stamp read older
+        # than it is, and the grace could be gone before it starts (Devin
+        # Review on this PR).
+        #
+        # `abs()` is the cheap half of the fix: it makes the window symmetric,
+        # so a clock offset in EITHER direction still reads as "recent" for
+        # the same span, rather than only the ahead-of-UTC direction being
+        # survivable. An offset larger than the grace itself is a genuinely
+        # misconfigured host, and the failure there is the diagnosable one —
+        # a recorded error, not a silent spinner.
         stamp = stamp.replace(tzinfo=timezone.utc)
-    return (datetime.now(timezone.utc) - stamp).total_seconds() < _START_GRACE_SECONDS
+    return abs((datetime.now(timezone.utc) - stamp).total_seconds()) < _START_GRACE_SECONDS
 
 
 def _error_response(row: dict) -> Response:

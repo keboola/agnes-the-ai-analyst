@@ -2461,3 +2461,58 @@ class TestChromeNavParity:
         for tpl in (self.HEADER, self.RAIL):
             body = self._read(tpl)
             assert 'href="/agents"' in body, f"{tpl} has no link to the agent builder"
+
+
+class TestSectionKindColours:
+    """Every Library section kind must resolve to a real colour token.
+
+    `library.html` sets each band's accent inline as
+    `--lib-kind: var(--ds-kind-{{ sec.kind }})`. A kind with no matching
+    token does NOT fall back to a default — the custom property is invalid
+    at computed-value time, so the heading, count, edge stripe and icon tiles
+    render colourless. Adding a section without its token is therefore a
+    silent visual break, which is exactly what happened to Apps (Devin
+    Review on this PR).
+    """
+
+    def _css(self):
+        from pathlib import Path
+
+        return Path("app/web/static/css/design-tokens.css").read_text(encoding="utf-8")
+
+    def _router(self):
+        from pathlib import Path
+
+        return Path("app/web/router.py").read_text(encoding="utf-8")
+
+    def test_every_section_kind_has_a_colour_token(self):
+        import re
+
+        src = self._router()
+        block = src[src.index("_SECTION_KINDS = {") : src.index("}", src.index("_SECTION_KINDS = {"))]
+        kinds = {m for _, m in re.findall(r'"([a-z_]+)":\s*\("([a-z_]+)",', block)}
+        css = self._css()
+        for kind in sorted(kinds):
+            # The BASE (default-theme) definition specifically — a literal
+            # colour. Matching "any --ds-kind-<k>: ..." would be satisfied by
+            # the paper theme's `var(--ds-resource-*)` alias alone, leaving
+            # the default theme colourless while the guard stayed green. That
+            # is not hypothetical: the first version of this test did exactly
+            # that and passed with the token deleted.
+            assert re.search(rf"--ds-kind-{kind}:\s*#[0-9a-fA-F]{{3,8}}\s*;", css), (
+                f"section kind '{kind}' has no base --ds-kind-{kind} colour: "
+                "its band renders colourless in the default theme"
+            )
+            assert re.search(rf"--ds-kind-{kind}-soft:\s*#[0-9a-fA-F]{{3,8}}\s*;", css), (
+                f"--ds-kind-{kind}-soft has no base colour"
+            )
+
+    def test_the_paper_theme_repoints_every_kind(self):
+        """Paper aliases --ds-kind-* onto --ds-resource-*; a kind left out
+        keeps the blue theme's hex on a paper surface."""
+        import re
+
+        css = self._css()
+        base = set(re.findall(r"--ds-kind-([a-z_]+):\s*#", css))
+        aliased = set(re.findall(r"--ds-kind-([a-z_]+):\s*var\(--ds-resource", css))
+        assert base - aliased == set(), f"kinds with no paper mapping: {sorted(base - aliased)}"
