@@ -322,3 +322,6 @@ Per `.claude/skills/agnes-conventions/references/security.md`:
 - Storing `adminOwner.id` / a provider-identity table (revisit if email
   churn becomes real).
 - Per-user Keboola API calls with stored OAuth tokens.
+- Self-service project onboarding from the login (register the
+  authenticated project as a source, pick tables, import the semantic
+  layer, data apps) — tracked in #1286.
