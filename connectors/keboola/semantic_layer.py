@@ -705,27 +705,43 @@ def _sync_one_source(
     empty_result = {"status": "ok", **_empty_counters(), "source_ref": source_ref, "project_key": project_key}
     if not models:
         return empty_result
-    if len(models) > 1:
-        logger.warning(
-            "Keboola project has %d semantic models; using the first (%s)",
-            len(models),
-            (models[0].get("attributes") or {}).get("name"),
-        )
-    model_uuid = models[0]["id"]
 
-    try:
-        datasets = metastore.list_items("semantic-dataset", model_uuid)
-        metrics = metastore.list_items("semantic-metric", model_uuid)
-        constraints = metastore.list_items("semantic-constraint", model_uuid)
-        relationships = metastore.list_items("semantic-relationship", model_uuid)
-        glossary_items = metastore.list_items("semantic-glossary", model_uuid)
-    except (MetastoreApiError, requests.RequestException) as e:
-        logger.error("Keboola Metastore fetch failed (model %s): %s", model_uuid, e)
-        return {"status": "error", "error": f"Metastore fetch failed: {e}", "source_ref": source_ref}
+    # Sorted, not API order: when two models publish the same metric name the
+    # first one processed keeps it (below), so the iteration order decides a
+    # user-visible outcome. Metastore list order is not a documented guarantee,
+    # and a flapping order would silently swap what `revenue` means between
+    # syncs. Model uuids are immutable, so sorting on them is stable — and a
+    # no-op for the single-model case.
+    model_uuids = sorted(m["id"] for m in models if m.get("id"))
+    if not model_uuids:
+        return empty_result
+
+    # EVERY model, not just the first. A project exposes more than one the
+    # moment a model shared from another project is linked into it — the
+    # direction Keboola's catalog is heading (keboola/ui#7739 makes the model
+    # the unit of sharing; keboola/go-monorepo#571 adds the `targeted` scope
+    # that lets a sibling project see it). Importing only `models[0]` would
+    # drop every shared metric behind a log line nobody reads.
+    #
+    # All models are fetched BEFORE anything is written: a failure partway
+    # through must abort while the tables are still untouched, or the models
+    # that did load would prune the rows of the model that did not.
+    per_model: list[tuple[str, dict[str, list[dict]]]] = []
+    item_types = (
+        "semantic-dataset",
+        "semantic-metric",
+        "semantic-constraint",
+        "semantic-relationship",
+        "semantic-glossary",
+    )
+    for model_uuid in model_uuids:
+        try:
+            per_model.append((model_uuid, {t: metastore.list_items(t, model_uuid) for t in item_types}))
+        except (MetastoreApiError, requests.RequestException) as e:
+            logger.error("Keboola Metastore fetch failed (model %s): %s", model_uuid, e)
+            return {"status": "error", "error": f"Metastore fetch failed: {e}", "source_ref": source_ref}
 
     table_lookup = table_lookup_from_registry(table_registry_repo().list_by_source("keboola"))
-    dataset_lookup = dataset_lookup_by_table_id(datasets)
-    relationship_lookup = relationship_lookup_by_dataset(relationships)
     column_metadata = column_metadata_repo()
     column_lookup = {
         name: {c["column_name"] for c in column_metadata.list_for_table(name)} for name in set(table_lookup.values())
@@ -738,6 +754,13 @@ def _sync_one_source(
     # held back from the prune loop, which would otherwise delete this source's
     # own previously-written row the first time a conflict appears.
     retained_ids: set[str] = set()
+    # Names claimed earlier in THIS run. `_is_owned_by_source` cannot cover
+    # this: it permits a write when the incumbent row belongs to this source
+    # under a different id, which is correct across runs (the project's model
+    # was recreated under a new uuid — the stale row prunes at the end) but
+    # wrong within one, where both rows are in `seen_ids` and both survive.
+    # Two linked models publishing a `revenue` is exactly that case.
+    claimed_names: set[str] = set()
     skipped_unresolved_table = 0
     skipped_foreign_alias = 0
     skipped_embedded_comment = 0
@@ -746,50 +769,66 @@ def _sync_one_source(
     skipped_unverified_relationship_direction = 0
     skipped_conflict = 0
 
-    for item in metrics:
-        row, skip_reason = build_metric_row(
-            item,
-            table_lookup,
-            dataset_lookup,
-            constraints,
-            model_uuid,
-            relationship_lookup=relationship_lookup,
-            column_lookup=column_lookup,
-        )
-        if row is None:
-            if skip_reason == "unresolved_table":
-                skipped_unresolved_table += 1
-            elif skip_reason == "foreign_alias_reference":
-                skipped_foreign_alias += 1
-            elif skip_reason == "embedded_sql_comment":
-                skipped_embedded_comment += 1
-            elif skip_reason == "ambiguous_relationship":
-                skipped_ambiguous_relationship += 1
-            elif skip_reason == "unsupported_relationship_type":
-                skipped_unsupported_relationship_type += 1
-            elif skip_reason == "unverified_relationship_direction":
-                skipped_unverified_relationship_direction += 1
-            else:
-                logger.warning(
-                    "Keboola semantic metric skipped (%s): %r",
-                    skip_reason,
-                    (item.get("attributes") or {}).get("name"),
-                )
-            continue
-        # Name-uniqueness gate: another source (or a hand-authored row) may
-        # already hold this metric name. Ownership is sticky — skip and count
-        # rather than shadowing the incumbent with a second same-named row.
-        if not _is_owned_by_source(repo.find_by_name(row["name"]), row["id"], scope_refs, adopt_null):
-            logger.warning(
-                "Keboola semantic metric %r already exists under a different owner; skipping",
-                row["name"],
-            )
-            skipped_conflict += 1
-            retained_ids.add(row["id"])
-            continue
-        repo.create(**row, source_ref=source_ref)
-        seen_ids.add(row["id"])
+    # Datasets, constraints and relationships are model-scoped: each model's
+    # metrics resolve against its OWN objects, never a merged pool, or a
+    # dataset in one model could silently satisfy a metric in another.
+    for model_uuid, model_items in per_model:
+        dataset_lookup = dataset_lookup_by_table_id(model_items["semantic-dataset"])
+        relationship_lookup = relationship_lookup_by_dataset(model_items["semantic-relationship"])
+        constraints = model_items["semantic-constraint"]
 
+        for item in model_items["semantic-metric"]:
+            row, skip_reason = build_metric_row(
+                item,
+                table_lookup,
+                dataset_lookup,
+                constraints,
+                model_uuid,
+                relationship_lookup=relationship_lookup,
+                column_lookup=column_lookup,
+            )
+            if row is None:
+                if skip_reason == "unresolved_table":
+                    skipped_unresolved_table += 1
+                elif skip_reason == "foreign_alias_reference":
+                    skipped_foreign_alias += 1
+                elif skip_reason == "embedded_sql_comment":
+                    skipped_embedded_comment += 1
+                elif skip_reason == "ambiguous_relationship":
+                    skipped_ambiguous_relationship += 1
+                elif skip_reason == "unsupported_relationship_type":
+                    skipped_unsupported_relationship_type += 1
+                elif skip_reason == "unverified_relationship_direction":
+                    skipped_unverified_relationship_direction += 1
+                else:
+                    logger.warning(
+                        "Keboola semantic metric skipped (%s): %r",
+                        skip_reason,
+                        (item.get("attributes") or {}).get("name"),
+                    )
+                continue
+            # Name-uniqueness gate: another source (or a hand-authored row) may
+            # already hold this metric name. Ownership is sticky — skip and count
+            # rather than shadowing the incumbent with a second same-named row.
+            # Across models this is also the tie-break for the unresolved
+            # cross-project identity problem (two linked models can each publish
+            # a `revenue`): first model wins, the rest are counted, none shadowed.
+            if row["name"] in claimed_names or not _is_owned_by_source(
+                repo.find_by_name(row["name"]), row["id"], scope_refs, adopt_null
+            ):
+                logger.warning(
+                    "Keboola semantic metric %r already exists under a different owner; skipping",
+                    row["name"],
+                )
+                skipped_conflict += 1
+                retained_ids.add(row["id"])
+                continue
+            repo.create(**row, source_ref=source_ref)
+            seen_ids.add(row["id"])
+            claimed_names.add(row["name"])
+
+    # Prune once, against the union of every model's ids — a per-model prune
+    # would delete the other models' rows on each pass.
     existing = [m for m in repo.list() if _in_scope(m, scope_refs, adopt_null)]
     pruned = 0
     if not seen_ids and existing:
@@ -818,34 +857,44 @@ def _sync_one_source(
     used_glossary_ids: set[str] = set()
     seen_glossary_ids: set[str] = set()
     retained_glossary_ids: set[str] = set()
+    claimed_terms: set[str] = set()
     skipped_missing_term = 0
 
-    for item in glossary_items:
-        row, skip_reason = build_glossary_row(item, model_uuid, used_glossary_ids)
-        if row is None:
-            if skip_reason == "missing_term":
-                skipped_missing_term += 1
-            else:
+    # ``used_glossary_ids`` is deliberately shared across models: ids already
+    # carry the model uuid, so cross-model collision is impossible, but the
+    # set is what makes within-model slug suffixing deterministic and it costs
+    # nothing to keep one.
+    for model_uuid, model_items in per_model:
+        for item in model_items["semantic-glossary"]:
+            row, skip_reason = build_glossary_row(item, model_uuid, used_glossary_ids)
+            if row is None:
+                if skip_reason == "missing_term":
+                    skipped_missing_term += 1
+                else:
+                    logger.warning(
+                        "Keboola glossary item skipped (%s): %r",
+                        skip_reason,
+                        (item.get("attributes") or {}).get("term"),
+                    )
+                continue
+            # Same sticky-ownership gate as the metric loop, keyed on the term,
+            # with the same within-run first-claim rule (see `claimed_names`).
+            if row["term"] in claimed_terms or not _is_owned_by_source(
+                glossary_repository.find_by_term(row["term"]), row["id"], scope_refs, adopt_null
+            ):
                 logger.warning(
-                    "Keboola glossary item skipped (%s): %r",
-                    skip_reason,
-                    (item.get("attributes") or {}).get("term"),
+                    "Keboola glossary term %r already exists under a different owner; skipping",
+                    row["term"],
                 )
-            continue
-        # Same sticky-ownership gate as the metric loop, keyed on the term.
-        if not _is_owned_by_source(glossary_repository.find_by_term(row["term"]), row["id"], scope_refs, adopt_null):
-            logger.warning(
-                "Keboola glossary term %r already exists under a different owner; skipping",
-                row["term"],
-            )
-            skipped_conflict += 1
-            retained_glossary_ids.add(row["id"])
-            continue
-        # refresh_fts=False: rebuilding the BM25 index is O(N) per call, so
-        # doing it once per imported term is O(N^2) over a sync. Refresh once
-        # after the full create+prune loop below instead.
-        glossary_repository.create(**row, source_ref=source_ref, refresh_fts=False)
-        seen_glossary_ids.add(row["id"])
+                skipped_conflict += 1
+                retained_glossary_ids.add(row["id"])
+                continue
+            # refresh_fts=False: rebuilding the BM25 index is O(N) per call, so
+            # doing it once per imported term is O(N^2) over a sync. Refresh once
+            # after the full create+prune loop below instead.
+            glossary_repository.create(**row, source_ref=source_ref, refresh_fts=False)
+            seen_glossary_ids.add(row["id"])
+            claimed_terms.add(row["term"])
 
     existing_glossary = [g for g in glossary_repository.list(limit=100000) if _in_scope(g, scope_refs, adopt_null)]
     glossary_pruned = 0

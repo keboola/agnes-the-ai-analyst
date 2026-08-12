@@ -32,20 +32,57 @@ Each item:
             active; a route "hits" an item when the current request path
             equals one of these or starts with one of them + "/".
 
-Deliberately out of scope (not required-admin gated, or not registered in
-``app/web/router.py``):
-  - `/admin/studio` and `/admin/studio/{domain}` — the Studio authoring
-    surface is available to every signed-in user (`get_current_user`, not
-    `require_admin`); it happens to share the `/admin` URL prefix but is a
-    different product surface, not an admin-only page.
-  - `/admin/chat` — content-negotiated JSON/HTML route registered from
-    `app/api/admin_chat.py`, not `app/web/router.py`.
+This column is now the ONLY navigation for the admin area. `/admin` used to
+render a second copy of this inventory as a card grid; that grid is gone (the
+hub is a real dashboard — see `admin_signals.py`), so anything reachable only
+from the old grid had to move here or become unreachable. Two entries below
+exist for that reason and carry constraints worth knowing before editing:
+
+  - `/admin/studio` — the Studio authoring surface is available to every
+    signed-in user (`get_current_user`, not `require_admin`); it shares the
+    `/admin` URL prefix without being an admin-only page. It carries
+    ``"when": "can_studio"``, the ONLY conditional item mechanism here: the
+    partial drops the row when that context flag is falsey, matching the gate
+    the old hub grid applied. `can_studio` is `get_studio_enabled()`, set on
+    every context by `_build_context`.
+  - `/admin/chat` — genuinely `require_admin`, but registered from
+    `app/api/admin_chat.py` (a router with `prefix="/admin/chat"`), not
+    `app/web/router.py`. `tests/test_web_admin_nav.py` reads BOTH modules for
+    exactly this row; a nav entry pointing at a route defined in a third
+    module would fail its reverse guard until that module is added there too.
+
+Deliberately out of scope:
   - Pure redirects (`/admin/usage`, `/admin/access`, `/admin/grants`,
     `/admin/scheduler-runs`, `/admin/agent-prompt`, `/admin/workspace-prompt`)
     — they 308 onto a page that already carries a nav entry.
+  - The API-documentation links, which are not `/admin/*` routes at all — see
+    `ADMIN_NAV_DOCS` at the bottom of this module.
 """
 
 from __future__ import annotations
+
+# The hub, as the sidebar's FIRST ROW — above the seven sections, in none of
+# them. `/admin` is the landing surface every admin area is reachable from
+# (its card grid is the long form of this whole sidebar), so it is a
+# destination in its own right, not a heading.
+#
+# It used to be reachable only by clicking the column's "Admin" TITLE, which
+# is not a control anyone reads as a link, and the rail compensated by hanging
+# a hover flyout of admin areas off its own Admin row — a second, hand-written
+# copy of this inventory that had already drifted (different labels, different
+# grouping, and three `/documentation` links that are not admin pages at all:
+# that route is gated by `get_current_user`, not `require_admin`). Both are
+# retired: the rail's Admin is a plain link here, and here is where the areas
+# are listed. See `_app_rail.html`.
+#
+# NOT a member of ADMIN_NAV_SECTIONS on purpose — a section's `key` drives the
+# stored open/closed preference, and this row has no children to disclose. It
+# also keeps `resolve_active_href` returning None for the hub, so landing on
+# `/admin` still expands no section.
+#
+# No `icon`: rows in this column are label-only (the icons belong to the
+# primary rail, one tier up — see admin-nav.css's header).
+ADMIN_NAV_HOME: dict = {"label": "Dashboard", "href": "/admin"}
 
 ADMIN_NAV_SECTIONS: list[dict] = [
     {
@@ -54,11 +91,7 @@ ADMIN_NAV_SECTIONS: list[dict] = [
         "icon": "users",
         "items": [
             {"label": "Users", "href": "/admin/users", "match": ["/admin/users"]},
-            {
-                "label": "Groups",
-                "href": "/admin/groups",
-                "match": ["/admin/groups", "/admin/access", "/admin/grants"],
-            },
+            {"label": "Groups", "href": "/admin/groups", "match": ["/admin/groups", "/admin/access", "/admin/grants"]},
             {"label": "Tokens", "href": "/admin/tokens", "match": ["/admin/tokens"]},
         ],
     },
@@ -79,11 +112,7 @@ ADMIN_NAV_SECTIONS: list[dict] = [
         "label": "Connections",
         "icon": "link",
         "items": [
-            {
-                "label": "MCP sources",
-                "href": "/admin/mcp-sources",
-                "match": ["/admin/mcp-sources", "/admin/mcp-tools"],
-            },
+            {"label": "MCP sources", "href": "/admin/mcp-sources", "match": ["/admin/mcp-sources", "/admin/mcp-tools"]},
             {"label": "Linked apps", "href": "/admin/linked-apps", "match": ["/admin/linked-apps"]},
             {
                 "label": "Instance secrets",
@@ -98,11 +127,7 @@ ADMIN_NAV_SECTIONS: list[dict] = [
         "icon": "shield-check",
         "items": [
             {"label": "Store moderation", "href": "/admin/store", "match": ["/admin/store"]},
-            {
-                "label": "Flea submissions",
-                "href": "/admin/store/submissions",
-                "match": ["/admin/store/submissions"],
-            },
+            {"label": "Flea submissions", "href": "/admin/store/submissions", "match": ["/admin/store/submissions"]},
             {"label": "Store lint", "href": "/admin/store/lint", "match": ["/admin/store/lint"]},
             {
                 "label": "Studio suggestions",
@@ -121,6 +146,16 @@ ADMIN_NAV_SECTIONS: list[dict] = [
             {"label": "Corporate memory", "href": "/admin/corporate-memory", "match": ["/admin/corporate-memory"]},
             {"label": "News", "href": "/admin/news", "match": ["/admin/news"]},
             {"label": "Contribute a skill", "href": "/admin/contribute-skill", "match": ["/admin/contribute-skill"]},
+            # Conditional — see the module docstring. `match` stays the bare
+            # prefix: `/admin/studio/suggestions` is its own row under
+            # Moderation and wins on longest-prefix, so the two never light
+            # together.
+            {
+                "label": "Studio",
+                "href": "/admin/studio",
+                "match": ["/admin/studio"],
+                "when": "can_studio",
+            },
         ],
     },
     {
@@ -130,11 +165,7 @@ ADMIN_NAV_SECTIONS: list[dict] = [
         "items": [
             {"label": "Server config", "href": "/admin/server-config", "match": ["/admin/server-config"]},
             {"label": "Database backend", "href": "/admin/database", "match": ["/admin/database"]},
-            {
-                "label": "Initial workspace",
-                "href": "/admin/initial-workspace",
-                "match": ["/admin/initial-workspace"],
-            },
+            {"label": "Initial workspace", "href": "/admin/initial-workspace", "match": ["/admin/initial-workspace"]},
             {
                 "label": "Prompts",
                 "href": "/admin/prompts",
@@ -150,9 +181,28 @@ ADMIN_NAV_SECTIONS: list[dict] = [
             {"label": "Audit log", "href": "/admin/activity", "match": ["/admin/activity"]},
             {"label": "Telemetry", "href": "/admin/telemetry", "match": ["/admin/telemetry", "/admin/usage"]},
             {"label": "Analyst sessions", "href": "/admin/sessions", "match": ["/admin/sessions"]},
+            {"label": "Chat sessions", "href": "/admin/chat", "match": ["/admin/chat"]},
             {"label": "Adoption", "href": "/admin/adoption", "match": ["/admin/adoption"]},
         ],
     },
+]
+
+# API documentation — a footer strip in `_admin_nav.html`, NOT an eighth
+# section. These are not `/admin/*` routes (`/documentation/api` is
+# `get_current_user`-gated; `/docs` and `/redoc` are FastAPI's own), so they
+# cannot be section items without widening
+# `tests/test_web_admin_nav.py::test_every_nav_href_is_a_real_admin_route`
+# past the job it exists to do — and an eighth section would break the
+# deliberate seven-section IA that `test_exactly_the_seven_decided_sections_in_order`
+# pins. They landed here when `/admin`'s card grid was replaced by the
+# dashboard; the grid was the only place they were linked from.
+#
+# No `match` key: these never render active. The admin column is not visible
+# on any of the three destinations.
+ADMIN_NAV_DOCS: list[dict] = [
+    {"label": "API guide", "href": "/documentation/api"},
+    {"label": "Interactive API", "href": "/docs"},
+    {"label": "API reference", "href": "/redoc"},
 ]
 
 
@@ -201,3 +251,13 @@ def resolve_active_section_key(path: str) -> str | None:
             if item["href"] == href:
                 return section["key"]
     return None
+
+
+def resolve_home_active(path: str) -> bool:
+    """Whether the sidebar's first row (``ADMIN_NAV_HOME``) is the active one.
+
+    EXACT match on ``/admin`` — not a prefix. Every ``/admin/*`` path belongs
+    to one of the seven sections, and a prefix rule here would light the hub
+    row on all of them, giving the column two active rows at once.
+    """
+    return path.rstrip("/") == "/admin"

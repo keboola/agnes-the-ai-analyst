@@ -1527,6 +1527,42 @@ class TestMarketplacesSmoke:
 
 
 # ---------------------------------------------------------------------------
+# Admin dashboard signals (the /admin "Needs fixing" zone)
+# ---------------------------------------------------------------------------
+
+
+class TestAdminDashboardSmoke:
+    COVERED_ROUTES = {
+        "GET /api/admin/dashboard/signals",
+    }
+
+    def test_signals_shape(self, seeded_app_both):
+        from app.services.admin_dashboard import invalidate_cache
+
+        # The zone-2 TTL cache is process-global, so the duckdb leg of this
+        # parametrised fixture would otherwise serve its rollup to the pg leg.
+        invalidate_cache()
+        r = seeded_app_both["client"].get(
+            "/api/admin/dashboard/signals",
+            headers=_admin_headers(seeded_app_both),
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["zone"] == "needs_fixing"
+        assert isinstance(body["signals"], list)
+        # Clear signals are omitted, never returned at zero — an empty list is
+        # the healthy state and the page renders it as such.
+        for sig in body["signals"]:
+            assert sig["count"] > 0 or sig["failed"] is True
+            assert set(sig) >= {"key", "title", "zone", "severity", "failed", "count", "href", "blurb"}
+        invalidate_cache()
+
+    def test_signals_requires_admin(self, seeded_app_both):
+        r = seeded_app_both["client"].get("/api/admin/dashboard/signals")
+        assert r.status_code in (401, 403)
+
+
+# ---------------------------------------------------------------------------
 # Reports (marketplace usage digest)
 # ---------------------------------------------------------------------------
 

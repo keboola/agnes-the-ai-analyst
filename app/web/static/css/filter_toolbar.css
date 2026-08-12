@@ -190,13 +190,25 @@
    popovers inside it, and filter_toolbar.js places those with plain viewport
    arithmetic (see `placeSubmenu`). Under the rail layout the frame starts at
    the rail's edge so the card centres on the CONTENT, not the window; at the
-   rail's own breakpoint the rail unpins and the offset goes with it. */
+   rail's own breakpoint the rail unpins and the offset goes with it.
+
+   That edge is `--rail-clearance` (published by rail.css beside the `body`
+   padding that encodes the same number), never a literal. It used to be
+   `left: 240px` under a `html[data-ui-layout="rail"]` selector, which was the
+   EXPANDED rail's width and nothing else: once the rail could be collapsed to
+   56px the frame still started at 240, so the card centred 184px right of the
+   content it belongs to and the veil's blur began 184px in — visibly sliced off
+   its left end, over a strip of page it should have been frosting. Zero for
+   topnav layouts, which is why no layout-conditional rule is needed here now.
+   `transition` so the toolbar travels with the rail on a collapse instead of
+   teleporting mid-animation; rail.css owns the duration token. */
 .fbar-dock {
   --fbar-dock-inset: 26px;   /* gap between the card and the viewport floor */
   --fbar-dock-reach: 48px;   /* how far the veil's fade extends above the card */
   --fbar-dock-card: 62px;    /* the card's resting height, one control row tall */
   position: fixed;
-  left: 0; right: 0; bottom: var(--fbar-dock-inset);
+  left: var(--rail-clearance, 0px); right: 0; bottom: var(--fbar-dock-inset);
+  transition: left var(--ds-motion-fast, .16s) var(--ds-ease-standard, ease);
   /* Above the rail (40) and the sticky group bands (3–4), below row-level
      popovers (60) and modals (100) — a control that is always on screen must
      never be the thing covering a dialog. */
@@ -205,8 +217,14 @@
   padding: 0 16px;
   pointer-events: none;
 }
-html[data-ui-layout="rail"] .fbar-dock { left: 240px; }
-@media (max-width: 760px) { html[data-ui-layout="rail"] .fbar-dock { left: 0; } }
+
+/* The rail's width jumps rather than animates with motion reduced (rail.css),
+   so a toolbar that still slid would arrive after the column it belongs to.
+   Declared once for the frame and the veil together. */
+@media (prefers-reduced-motion: reduce) {
+  .fbar-dock,
+  .fbar-dock__veil { transition: none; }
+}
 
 /* ── The frosted veil ──
    A band of progressive blur across the foot of the viewport, strongest at the
@@ -248,10 +266,14 @@ html[data-ui-layout="rail"] .fbar-dock { left: 240px; }
    `position: fixed` descendants, and the Filter menu's category popovers are
    fixed. A self-positioned sibling of the card carries it without them noticing.
    Under the rail layout the band starts at the rail's edge — the dock's stacking
-   context sits above the rail, so a band at `left: 0` would blur the sidebar. */
+   context sits above the rail, so a band at `left: 0` would blur the sidebar.
+   Same `--rail-clearance` the frame uses, for the same reason (see there): the
+   band and the card it sits behind have to agree on where the content starts, so
+   they must read that edge from one place. */
 .fbar-dock__veil {
   position: fixed;
-  left: 0; right: 0; bottom: 0;
+  left: var(--rail-clearance, 0px); right: 0; bottom: 0;
+  transition: left var(--ds-motion-fast, .16s) var(--ds-ease-standard, ease);
   /* Tall enough for the dissolve to have room, and it needs it: the fade is what
      keeps a band this size imperceptible. Most of the height is behind the card
      and the gap below it; `--fbar-dock-reach` is the part that shows above. */
@@ -294,8 +316,6 @@ html[data-ui-layout="rail"] .fbar-dock { left: 240px; }
             color-mix(in srgb, black 88%, transparent) 85%,
             black 100%);
 }
-html[data-ui-layout="rail"] .fbar-dock__veil { left: 240px; }
-@media (max-width: 760px) { html[data-ui-layout="rail"] .fbar-dock__veil { left: 0; } }
 
 .fbar-dock__veil::before,
 .fbar-dock__veil::after {

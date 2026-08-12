@@ -10477,7 +10477,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.83.2"
+    "version": "0.83.4"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -10552,7 +10552,7 @@
     },
     "/admin": {
       "get": {
-        "description": "Admin hub \u2014 the canonical landing page for instance administration.\n\nA settings-style index that groups every /admin/* surface by domain\n(Activity Center, Users & Access, Data Packages, Sources, Agent\nExperience, Documentation, Server). The header's Admin mega-menu links\nhere; this page is the scalable home as the admin surface grows past what\na dropdown holds. Shell-only \u2014 every card links to an existing gated\nroute (each still enforces require_admin independently).",
+        "description": "Admin dashboard \u2014 what needs the admin's attention, on landing.\n\nThis page used to be a card grid of every /admin/* surface. Once the\ngrouped sidebar shipped (`admin_nav.py`) the grid became a second copy of\nthe navigation rendered beside the first, answering \"where do I go\" for a\nquestion the column already answered better. The sidebar is now the only\nadmin navigation (the three API-doc links the grid carried moved into it\nas `ADMIN_NAV_DOCS`), and this page answers \"what needs me?\" instead.\n\nOnly the \"Needs you\" zone \u2014 approval queues, all COUNT-shaped \u2014 resolves\nhere. \"Needs fixing\" reads the unbounded audit/history tables and is\nfetched after first paint from /api/admin/dashboard/signals, so an\ninstance with a large audit log doesn't pay for it on every render. Row\ninventory: `app/web/admin_signals.py`.",
         "operationId": "admin_hub_admin_get",
         "parameters": [
           {
@@ -15276,6 +15276,64 @@
         "summary": "Delete Contributed Skill",
         "tags": [
           "admin"
+        ]
+      }
+    },
+    "/api/admin/dashboard/signals": {
+      "get": {
+        "description": "Signals in the \"Needs fixing\" zone that currently have something to say.\n\nClear signals are omitted entirely rather than returned with ``count: 0``\n\u2014 an empty ``signals`` list IS the healthy state, and the page renders it\nas such. A signal whose resolver raised is returned with ``failed: true``\nso the page can say \"couldn't check\" instead of implying all-clear.",
+        "operationId": "dashboard_signals_api_admin_dashboard_signals_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Dashboard Signals Api Admin Dashboard Signals Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Dashboard Signals",
+        "tags": [
+          "admin-dashboard"
         ]
       }
     },

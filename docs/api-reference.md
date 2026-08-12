@@ -800,6 +800,19 @@ authoring-suggestions queue (never an admin-direct write).
 - /api/admin/adoption/users/{user_id}/top-skills
 - /api/admin/adoption/users/{user_id}/top-tools
 
+### `/api/admin/dashboard` — Admin dashboard signals (admin)
+
+- /api/admin/dashboard/signals
+
+  The "Needs fixing" zone of the `/admin` dashboard — failed syncs, broken
+  marketplace syncs, and tools erroring above threshold. Fetched by the page
+  after first paint rather than rendered inline, because these read the
+  unbounded `sync_history` / `usage_events` tables;
+  memoised behind a short process-local TTL. Clear signals are OMITTED rather
+  than returned at `count: 0`, so an empty `signals` array is the healthy
+  state. A signal whose resolver raised comes back with `failed: true` so a
+  broken check never reads as all-clear. Admin-only.
+
 ### `/api/admin/reports` — Marketplace usage digest (admin)
 
 - /api/admin/reports/marketplace-digest

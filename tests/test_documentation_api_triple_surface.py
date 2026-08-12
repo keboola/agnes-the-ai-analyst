@@ -608,6 +608,14 @@ _EXEMPT: dict[str, str] = {
         "persistence, no analyst CLI/MCP analogue."
     ),
     "/api/admin/reports/marketplace-digest": _REPORTS_REASON,
+    "/api/admin/dashboard/signals": (
+        "Render-path split for the /admin dashboard's 'Needs fixing' zone, not a "
+        "capability: every signal it returns is a count over a page an admin can "
+        "already open, and each row exists to link there. It is fetched after "
+        "first paint purely so the unbounded audit/history reads stay off the "
+        "page render. A CLI/MCP surface would expose nothing `agnes admin` "
+        "cannot already reach per-queue."
+    ),
     "/api/mcp-connect/token": _MCP_CONNECT_REASON,
     "/api/admin/source-connections/{connection_id}": _SOURCE_CONNECTIONS_CRUD_REASON,
     "/api/admin/source-connections/{connection_id}/secret": _SOURCE_CONNECTIONS_CRUD_REASON,

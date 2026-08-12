@@ -352,14 +352,20 @@ templates.env.globals["is_paper"] = _is_paper_theme
 # `_admin_nav.html` (included from base_admin.html / base_admin_page.html)
 # resolves them regardless of which context builder the enclosing page uses.
 from app.web.admin_nav import (  # noqa: E402
+    ADMIN_NAV_DOCS,
+    ADMIN_NAV_HOME,
     ADMIN_NAV_SECTIONS,
     resolve_active_href,
     resolve_active_section_key,
+    resolve_home_active,
 )
 
 templates.env.globals["admin_nav_sections"] = ADMIN_NAV_SECTIONS
+templates.env.globals["admin_nav_docs"] = ADMIN_NAV_DOCS
+templates.env.globals["admin_nav_home"] = ADMIN_NAV_HOME
 templates.env.globals["admin_nav_active_href"] = resolve_active_href
 templates.env.globals["admin_nav_active_section_key"] = resolve_active_section_key
+templates.env.globals["admin_nav_home_active"] = resolve_home_active
 
 
 # The ONE default behind `library.show_unverified_trust`, read off the registry
@@ -6035,15 +6041,24 @@ async def admin_hub(
     request: Request,
     user: dict = Depends(require_admin),
 ):
-    """Admin hub — the canonical landing page for instance administration.
+    """Admin dashboard — what needs the admin's attention, on landing.
 
-    A settings-style index that groups every /admin/* surface by domain
-    (Activity Center, Users & Access, Data Packages, Sources, Agent
-    Experience, Documentation, Server). The header's Admin mega-menu links
-    here; this page is the scalable home as the admin surface grows past what
-    a dropdown holds. Shell-only — every card links to an existing gated
-    route (each still enforces require_admin independently)."""
-    ctx = _build_context(request, user=user)
+    This page used to be a card grid of every /admin/* surface. Once the
+    grouped sidebar shipped (`admin_nav.py`) the grid became a second copy of
+    the navigation rendered beside the first, answering "where do I go" for a
+    question the column already answered better. The sidebar is now the only
+    admin navigation (the three API-doc links the grid carried moved into it
+    as `ADMIN_NAV_DOCS`), and this page answers "what needs me?" instead.
+
+    Only the "Needs you" zone — approval queues, all COUNT-shaped — resolves
+    here. "Needs fixing" reads the unbounded audit/history tables and is
+    fetched after first paint from /api/admin/dashboard/signals, so an
+    instance with a large audit log doesn't pay for it on every render. Row
+    inventory: `app/web/admin_signals.py`.
+    """
+    from app.services.admin_dashboard import resolve_needs_you
+
+    ctx = _build_context(request, user=user, needs_you=resolve_needs_you())
     return templates.TemplateResponse(request, "admin_hub.html", ctx)
 
 

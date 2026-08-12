@@ -1,160 +1,174 @@
-{% extends "base_admin.html" %}
+{% extends "base_admin_page.html" %}
 {% block title %}Admin — {{ config.INSTANCE_NAME }}{% endblock %}
 {% block container_modifier %}container--full{% endblock %}
 
+{% set page_hero_eyebrow = "Administration" %}
+{% set page_hero_title = "Dashboard" %}
+{% set page_hero_subtitle = "What needs your attention on this instance. Every admin area lives in the column on the left." %}
+
 {% block head_extra %}
 <style>
-  /* Admin hub — a settings-style index of every /admin surface, grouped by
-     domain. Tokens only so it themes in light/dark for free. */
-  .admin-hub-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    gap: var(--space-5);
-    margin-top: var(--space-6);
-  }
-  .admin-hub-card {
-    background: var(--surface, #fff);
-    border: 1px solid var(--border, #e5e7eb);
-    border-radius: 12px;
-    padding: var(--space-5);
-  }
-  .admin-hub-card__title {
-    font-size: 11px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    color: var(--text-secondary, #6b7280);
-    margin: 0 0 var(--space-3);
-  }
-  .admin-hub-links { display: flex; flex-direction: column; gap: 2px; }
-  .admin-hub-link {
+  /* Admin dashboard. Rows are the unit: count, what it is, and one link to
+     the page where the work actually happens. Tokens only, so light/dark and
+     the paper theme come for free. */
+  .adash-zone { margin-bottom: var(--space-7, 40px); }
+  .adash-zone__hd {
     display: flex;
-    flex-direction: column;
-    gap: 1px;
-    padding: 8px 10px;
-    border-radius: 8px;
+    align-items: baseline;
+    gap: var(--space-3);
+    margin: 0 0 var(--space-4);
+  }
+  .adash-zone__title {
+    font-size: var(--text-15);
+    font-weight: 700;
+    color: var(--ds-text-primary);
+    margin: 0;
+  }
+  .adash-zone__note {
+    font-size: var(--text-13);
+    color: var(--ds-text-muted);
+  }
+
+  .adash-rows { display: flex; flex-direction: column; gap: var(--space-3); }
+
+  .adash-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    padding: var(--space-4) var(--space-5);
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    /* The severity accent is a left stripe rather than a filled card: nine
+       tinted blocks would read as nine alarms. The stripe ranks them without
+       shouting. */
+    border-left: 3px solid var(--ds-border);
+    border-radius: var(--ds-radius-btn);
     text-decoration: none;
-    color: var(--text-primary, #111827);
-    font-size: 14px;
+    color: inherit;
+    transition: border-color var(--ds-motion-fast) var(--ds-ease-standard),
+                box-shadow var(--ds-motion-fast) var(--ds-ease-standard);
+  }
+  .adash-row:hover {
+    border-color: var(--ds-text-muted);
+    box-shadow: var(--ds-shadow-sm);
+  }
+  .adash-row.is-action { border-left-color: var(--ds-accent-info-line); }
+  .adash-row.is-warn   { border-left-color: var(--ds-accent-warn-line); }
+  .adash-row.is-error  { border-left-color: var(--ds-accent-danger-line); }
+
+  .adash-row__count {
+    flex: 0 0 auto;
+    min-width: 2.5ch;
+    font-size: var(--text-24, 24px);
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+    color: var(--ds-text-primary);
+  }
+  .adash-row.is-error .adash-row__count { color: var(--ds-accent-danger-ink); }
+  .adash-row.is-warn .adash-row__count  { color: var(--ds-accent-warn-ink); }
+
+  .adash-row__body { flex: 1 1 auto; min-width: 0; }
+  .adash-row__title {
+    display: block;
+    font-size: var(--text-15);
+    font-weight: 600;
+    color: var(--ds-text-primary);
+  }
+  .adash-row__blurb {
+    display: block;
+    font-size: var(--text-13);
+    color: var(--ds-text-secondary);
+  }
+  .adash-row__go {
+    flex: 0 0 auto;
+    font-size: var(--text-13);
+    font-weight: 600;
+    color: var(--ds-text-link);
+  }
+
+  /* A resolver that raised. Shown rather than hidden — "we couldn't check"
+     must never look like "all clear". */
+  .adash-row--failed { border-left-color: var(--ds-accent-warn-line); }
+  .adash-row--failed .adash-row__count { color: var(--ds-text-muted); }
+
+  .adash-clear {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-5);
+    background: var(--ds-accent-success-bg);
+    border: 1px solid var(--ds-accent-success-line);
+    border-radius: var(--ds-radius-btn);
+    color: var(--ds-accent-success-ink);
+    font-size: var(--text-14, 14px);
     font-weight: 500;
   }
-  .admin-hub-link:hover { background: var(--border-light, #f3f4f6); }
-  .admin-hub-link__desc {
-    font-size: 12px;
-    font-weight: 400;
-    color: var(--text-secondary, #6b7280);
+
+  .adash-skeleton {
+    padding: var(--space-5);
+    background: var(--ds-surface-sunken);
+    border: 1px solid var(--ds-border-light);
+    border-radius: var(--ds-radius-btn);
+    color: var(--ds-text-muted);
+    font-size: var(--text-13);
   }
 </style>
 {% endblock %}
 
-{% block admin_content %}
-<section class="page-header page-header--hero" aria-labelledby="admin-hub-title">
-  <div class="page-header__main">
-    <div class="page-header__eyebrow">Administration</div>
-    <h1 class="page-header__title" id="admin-hub-title">Admin</h1>
-    <p class="page-header__subtitle">
-      Everything that governs this instance — data, access, agent experience,
-      and server configuration. Jump to any area below, or reach the same
-      surfaces from the Admin menu in the header.
-    </p>
+{% block page %}
+
+{# ── Zone 1: decisions. Resolved server-side — these are COUNT-shaped and
+      belong in first paint, because they are why an admin opened this page. #}
+<section class="adash-zone" aria-labelledby="adash-needs-you">
+  <div class="adash-zone__hd">
+    <h2 class="adash-zone__title" id="adash-needs-you">Needs you</h2>
+    <span class="adash-zone__note">Decisions waiting on an admin</span>
+  </div>
+  {% if needs_you %}
+  <div class="adash-rows">
+    {% for s in needs_you %}
+    {% if s.failed %}
+    <div class="adash-row adash-row--failed">
+      <span class="adash-row__count" aria-hidden="true">—</span>
+      <span class="adash-row__body">
+        <span class="adash-row__title">{{ s.title }}</span>
+        <span class="adash-row__blurb">Could not be checked — see the server log.</span>
+      </span>
+    </div>
+    {% else %}
+    <a class="adash-row is-{{ s.severity }}" href="{{ s.signal.href }}">
+      <span class="adash-row__count">{{ s.count }}</span>
+      <span class="adash-row__body">
+        <span class="adash-row__title">{{ s.title }}</span>
+        <span class="adash-row__blurb">{{ s.signal.blurb }}</span>
+      </span>
+      <span class="adash-row__go" aria-hidden="true">Review →</span>
+    </a>
+    {% endif %}
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="adash-clear">Nothing needs your attention.</div>
+  {% endif %}
+</section>
+
+{# ── Zone 2: breakage. Filled by admin_dashboard.js from
+      /api/admin/dashboard/signals — these read the unbounded audit/history
+      tables, so they must not sit in the render path of the page an admin
+      opens when something is already wrong. #}
+<section class="adash-zone" aria-labelledby="adash-needs-fixing">
+  <div class="adash-zone__hd">
+    <h2 class="adash-zone__title" id="adash-needs-fixing">Needs fixing</h2>
+    {# No window stated here on purpose — each row's blurb carries its own
+       ("…in the last 24h"), and the windows differ per signal. One number
+       here would be wrong for most of them. #}
+    <span class="adash-zone__note">Sync, marketplaces, and tool errors</span>
+  </div>
+  <div id="adash-fixing" data-adash-fixing aria-live="polite" aria-busy="true">
+    <div class="adash-skeleton">Checking instance health…</div>
   </div>
 </section>
 
-<div class="admin-hub-grid">
-  <div class="admin-hub-card">
-    <h2 class="admin-hub-card__title">Activity Center</h2>
-    <div class="admin-hub-links">
-      <a class="admin-hub-link" href="/admin/adoption">Adoption</a>
-      <a class="admin-hub-link" href="/admin/activity">Audit log</a>
-      <a class="admin-hub-link" href="/admin/telemetry">Telemetry</a>
-      <a class="admin-hub-link" href="/admin/sessions">Analyst sessions</a>
-      <a class="admin-hub-link" href="/admin/chat">Chat sessions</a>
-    </div>
-  </div>
-
-  <div class="admin-hub-card">
-    <h2 class="admin-hub-card__title">Users &amp; Access</h2>
-    <div class="admin-hub-links">
-      <a class="admin-hub-link" href="/admin/users">People
-        <span class="admin-hub-link__desc">Accounts, invitations, passwords, activation</span>
-      </a>
-      <a class="admin-hub-link" href="/admin/groups">Groups
-        <span class="admin-hub-link__desc">Membership + the resource grants each group carries</span>
-      </a>
-      <a class="admin-hub-link" href="/admin/tokens">Tokens
-        <span class="admin-hub-link__desc">Every personal access token — incident response, offboarding</span>
-      </a>
-    </div>
-  </div>
-
-  <div class="admin-hub-card">
-    <h2 class="admin-hub-card__title">Data Packages</h2>
-    <div class="admin-hub-links">
-      <a class="admin-hub-link" href="/admin/tables">Tables</a>
-      <a class="admin-hub-link" href="/admin/sync">Sync</a>
-      <a class="admin-hub-link" href="/admin/data-packages">All packages
-        <span class="admin-hub-link__desc">Every Data Package + Memory Domain, regardless of grant</span>
-      </a>
-    </div>
-  </div>
-
-  <div class="admin-hub-card">
-    <h2 class="admin-hub-card__title">Sources</h2>
-    <div class="admin-hub-links">
-      <a class="admin-hub-link" href="/admin/data-sources">Data sources
-        <span class="admin-hub-link__desc">Keboola/BigQuery projects Agnes pulls tables from</span>
-      </a>
-      <a class="admin-hub-link" href="/admin/semantic-layer">Semantic layer
-        <span class="admin-hub-link__desc">Business metric + entity definitions layered over sources</span>
-      </a>
-      <a class="admin-hub-link" href="/admin/mcp-sources">MCP sources
-        <span class="admin-hub-link__desc">MCP servers whose tools Agnes calls at runtime</span>
-      </a>
-      <a class="admin-hub-link" href="/admin/linked-apps">Link Keboola apps
-        <span class="admin-hub-link__desc">Ingest externally-hosted (Keboola) data apps and grant them to a group</span>
-      </a>
-      <a class="admin-hub-link" href="/admin/datasource-credentials">Instance secrets
-        <span class="admin-hub-link__desc">Vault-backed BigQuery / Google Workspace credentials</span>
-      </a>
-    </div>
-  </div>
-
-  <div class="admin-hub-card">
-    <h2 class="admin-hub-card__title">Agent Experience</h2>
-    <div class="admin-hub-links">
-      <a class="admin-hub-link" href="/admin/store">Moderation &amp; Trust
-        <span class="admin-hub-link__desc">Verification requests, submission review, marketplace curation</span>
-      </a>
-      <a class="admin-hub-link" href="/admin/marketplaces">Curated Marketplaces</a>
-      <a class="admin-hub-link" href="/admin/initial-workspace">Initial Workspace</a>
-      <a class="admin-hub-link" href="/admin/news">News</a>
-      <a class="admin-hub-link" href="/admin/corporate-memory">Curated memory reviews</a>
-      <a class="admin-hub-link" href="/admin/knowledge-digests">Maintained digests</a>
-      <a class="admin-hub-link" href="/admin/store/submissions">Flea Submissions</a>
-      <a class="admin-hub-link" href="/admin/prompts">Prompts</a>
-      {% if can_studio %}
-      <a class="admin-hub-link" href="/admin/studio">Studio
-        <span class="admin-hub-link__desc">Authoring workspace for data packages, skills, and agents</span>
-      </a>
-      {% endif %}
-    </div>
-  </div>
-
-  <div class="admin-hub-card">
-    <h2 class="admin-hub-card__title">Server</h2>
-    <div class="admin-hub-links">
-      <a class="admin-hub-link" href="/admin/server-config">Instance settings</a>
-      <a class="admin-hub-link" href="/admin/database">Database backend</a>
-    </div>
-  </div>
-
-  <div class="admin-hub-card">
-    <h2 class="admin-hub-card__title">Documentation</h2>
-    <div class="admin-hub-links">
-      <a class="admin-hub-link" href="/documentation/api">API Guide</a>
-      <a class="admin-hub-link" href="/docs">Interactive API (Swagger)</a>
-      <a class="admin-hub-link" href="/redoc">API Reference (ReDoc)</a>
-    </div>
-  </div>
-</div>
+<script src="{{ static_url('js/admin/admin_dashboard.js') }}" defer></script>
 {% endblock %}

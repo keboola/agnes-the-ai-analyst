@@ -1,68 +1,63 @@
-{# Grouped, collapsible left sidebar for the /admin section (issue #896
-   follow-up, then a height/grab-bag follow-up — see admin_nav.py's module
-   docstring for the seven-section rationale).
+{# Grouped left sidebar for the /admin section (issue #896 follow-up, then a
+   height/grab-bag follow-up, then a layout/hierarchy pass).
 
    Included by base_admin.html / base_admin_page.html only — every /admin/*
    HTML page is already gated server-side by `Depends(require_admin)`, so a
    non-admin never reaches a route that renders this partial. The
    `session.user.is_admin` check below is defence in depth (mirrors the same
-   guard on the rail's Admin flyout in _app_rail.html), not the primary gate.
+   guard on the rail's Admin row in _app_rail.html), not the primary gate.
 
-   Data comes from `app/web/admin_nav.py` (`ADMIN_NAV_SECTIONS`,
-   `resolve_active_href`, `resolve_active_section_key`), registered as the
-   Jinja globals `admin_nav_sections` / `admin_nav_active_href` /
-   `admin_nav_active_section_key` — the single source of truth
-   `tests/test_web_admin_nav.py` also imports directly, so a page added to
-   the router without a nav entry fails that guard.
+   Data comes from `app/web/admin_nav.py` (`ADMIN_NAV_HOME`,
+   `ADMIN_NAV_SECTIONS`, `resolve_active_href`, `resolve_active_section_key`,
+   `resolve_home_active`), registered as the Jinja globals `admin_nav_home` /
+   `admin_nav_sections` / `admin_nav_active_href` /
+   `admin_nav_active_section_key` / `admin_nav_home_active` — the single
+   source of truth `tests/test_web_admin_nav.py` also imports directly, so a
+   page added to the router without a nav entry fails that guard.
 
-   Two independent collapse mechanisms, both persisted per browser in
-   localStorage (owned by js/admin/admin_nav.js), both resolved server-side
-   for FIRST PAINT so nothing flashes fully expanded before JS runs:
+   THIS COLUMN DOES NOT COLLAPSE. It is the primary navigation of every page
+   that renders it, and the primary rail beside it already owns the
+   collapse/expand behaviour for the window — two collapsible columns side by
+   side made "how do I get back?" a two-step puzzle. What was here before: a
+   toggle that shrank the column to a 56px icon strip whose seven glyphs
+   opened hover flyouts. All of it is gone, along with the localStorage key
+   that remembered it (`agnes.adminNav.collapsed`) and the inline
+   first-paint script that applied it.
 
-     1. Per-SECTION disclosure. `_active_section_key` (computed from the
-        request path, not from any stored state) is the one section that
-        renders expanded by default; every other section renders with its
-        body `hidden` and its header's `aria-expanded="false"`. A caller's
-        own manually-opened/closed sections persist across page loads, but
-        the ACTIVE section is always forced open by the JS on load too — it
-        must never end up hidden just because a stale stored value says so.
-
-     2. Whole-SIDEBAR collapse, to a ~56px icon strip (one icon per
-        section — `.admin-nav__rail`) — collapsed state itself has no
-        server-side signal (it's pure per-device chrome, like the rail's own
-        nav collapse), so it starts expanded on a cold load and the tiny
-        inline script below applies a stored "collapsed" preference before
-        the rest of the aside paints. Clicking a rail icon opens a flyout
-        listing that section's items (positioned beside the rail, not
-        inline, so collapsing never grows the column's height). #}
+   What remains is per-SECTION disclosure, persisted per browser in
+   localStorage (owned by js/admin/admin_nav.js) and resolved server-side for
+   FIRST PAINT so nothing flashes fully expanded before JS runs:
+   `_active_section_key` (computed from the request path, not from any stored
+   state) is the one section that renders expanded by default; every other
+   section renders with its body `hidden` and its header's
+   `aria-expanded="false"`. A caller's own manually-opened/closed sections
+   persist across page loads, but the ACTIVE section is always forced open by
+   the JS on load too — it must never end up hidden just because a stale
+   stored value says so. #}
 {% if session.user.is_admin %}
 {% set _admin_path = request.url.path %}
 {% set _active_href = admin_nav_active_href(_admin_path) %}
 {% set _active_section_key = admin_nav_active_section_key(_admin_path) %}
 {% import "macros/_icon.html" as ico %}
+{# Flags addressable by an item's `when` key. `can_studio` is
+   `get_studio_enabled()`, put on every context by `_build_context`;
+   `default(false)` so a context that somehow lacks it hides the row rather
+   than raising. #}
+{% set _nav_flags = {'can_studio': can_studio | default(false)} %}
 <aside class="admin-nav" aria-label="Admin sections" data-admin-nav data-active-section="{{ _active_section_key or '' }}">
-    <script>
-    (function () {
-        // Applied synchronously, before the rest of this aside paints, so a
-        // caller who collapsed the sidebar on a previous visit never sees it
-        // flash open first. Inert (no class added) with JS disabled or in a
-        // storage-denying context — the sidebar simply starts expanded.
-        try {
-            if (localStorage.getItem("agnes.adminNav.collapsed") === "1") {
-                document.currentScript.closest(".admin-nav").classList.add("is-collapsed");
-            }
-        } catch (e) { /* private mode / storage disabled */ }
-    })();
-    </script>
     <div class="admin-nav__head">
-        <a class="admin-nav__title" href="/admin">Admin</a>
-        <button type="button" class="admin-nav__collapse-toggle" data-admin-nav-collapse-toggle
-                aria-expanded="true" aria-label="Collapse sidebar">
-            <span class="admin-nav__collapse-glyph admin-nav__collapse-glyph--open" aria-hidden="true">&laquo;</span>
-            <span class="admin-nav__collapse-glyph admin-nav__collapse-glyph--closed" aria-hidden="true">&raquo;</span>
-        </button>
+        {# A LABEL, not a link. It used to be the only way back to the hub,
+           which asked a small uppercase column heading to do a navigation job
+           nobody reads it as offering — the hub is the `admin_nav_home` row
+           directly below instead. #}
+        <span class="admin-nav__title">Admin</span>
     </div>
     <div class="admin-nav__sections">
+        {# The hub, first and outside every section — see admin_nav.py's
+           ADMIN_NAV_HOME. Active on `/admin` EXACTLY, so it never competes
+           with the section row that owns an `/admin/*` page. #}
+        <a class="admin-nav__link admin-nav__link--home{% if admin_nav_home_active(_admin_path) %} is-active{% endif %}"
+           href="{{ admin_nav_home['href'] }}">{{ admin_nav_home['label'] }}</a>
         {% for section in admin_nav_sections %}
         {% set _sec_open = section['key'] == _active_section_key %}
         <div class="admin-nav__group{% if _sec_open %} is-open{% endif %}" data-admin-nav-group="{{ section['key'] }}">
@@ -73,7 +68,15 @@
                 {{ ico.icon('chevron', 13, 'admin-nav__group-chev') }}
             </button>
             <div class="admin-nav__group-body" id="admin-nav-body-{{ section['key'] }}"{% if not _sec_open %} hidden{% endif %}>
-                {% for item in section['items'] %}
+                {# `when` (optional) names a flag in `_nav_flags` that must be
+                   truthy for the row to render — see admin_nav.py. Only Studio
+                   uses it. A row naming a flag that isn't in the map is
+                   DROPPED, not shown: `when` gates surfaces that can be
+                   disabled instance-wide, so failing closed is the safe
+                   direction. Add a supported flag by extending `_nav_flags`
+                   above — Jinja has no ambient `context` lookup, and an
+                   explicit map is what makes the supported set readable. #}
+                {% for item in section['items'] if not item.get('when') or _nav_flags.get(item['when']) %}
                 <a class="admin-nav__link{% if item['href'] == _active_href %} is-active{% endif %}"
                    href="{{ item['href'] }}">{{ item['label'] }}</a>
                 {% endfor %}
@@ -81,24 +84,12 @@
         </div>
         {% endfor %}
     </div>
-    <div class="admin-nav__rail">
-        {% for section in admin_nav_sections %}
-        <div class="admin-nav__rail-item">
-            <button type="button" class="admin-nav__rail-btn{% if section['key'] == _active_section_key %} is-active{% endif %}"
-                    data-admin-nav-rail-btn="{{ section['key'] }}"
-                    aria-haspopup="true" aria-expanded="false" aria-controls="admin-nav-flyout-{{ section['key'] }}"
-                    aria-label="{{ section['label'] }}">
-                {{ ico.icon(section['icon'], 18) }}
-            </button>
-            <div class="admin-nav__flyout" id="admin-nav-flyout-{{ section['key'] }}"
-                 data-admin-nav-flyout="{{ section['key'] }}" role="group" aria-label="{{ section['label'] }}" hidden>
-                <div class="admin-nav__flyout-label">{{ section['label'] }}</div>
-                {% for item in section['items'] %}
-                <a class="admin-nav__flyout-item{% if item['href'] == _active_href %} is-active{% endif %}"
-                   href="{{ item['href'] }}">{{ item['label'] }}</a>
-                {% endfor %}
-            </div>
-        </div>
+    {# API docs — pinned below the sections, outside the seven-section IA.
+       See ADMIN_NAV_DOCS in admin_nav.py for why these can't be a section. #}
+    <div class="admin-nav__docs">
+        <span class="admin-nav__docs-hd">API docs</span>
+        {% for item in admin_nav_docs %}
+        <a class="admin-nav__link admin-nav__link--doc" href="{{ item['href'] }}">{{ item['label'] }}</a>
         {% endfor %}
     </div>
 </aside>

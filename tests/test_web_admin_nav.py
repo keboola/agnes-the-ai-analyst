@@ -1,13 +1,13 @@
-"""Guard tests for the grouped, collapsible `/admin` sidebar (`_admin_nav.html`).
+"""Guard tests for the grouped `/admin` sidebar (`_admin_nav.html`).
 
 (a) Inventory-driven coverage: every ``require_admin``-gated, template-
     rendering GET route registered in ``app/web/router.py`` must be
-    reachable from an entry in ``app/web/admin_nav.py::ADMIN_NAV_SECTIONS``
-    (or be the ``/admin`` hub itself, which the sidebar's "Admin" title
-    links to instead of a section row). A future admin page shipped without
-    a nav entry fails this test — that is the point.
+    reachable from an entry in ``app/web/admin_nav.py`` — the seven
+    ``ADMIN_NAV_SECTIONS`` or the ``ADMIN_NAV_HOME`` row. A future admin
+    page shipped without a nav entry fails this test — that is the point.
 (b) Active-state: visiting a page marks its own nav row active, and only
-    that one.
+    that one. The hub row is active on ``/admin`` EXACTLY, never as a
+    prefix, or the column would show two active rows on every admin page.
 (c) The sidebar renders for admins on admin pages only — never for a
     non-admin (403 before the template body even runs), and never on a
     non-admin page.
@@ -16,10 +16,15 @@
     on its header); every other section renders collapsed. This is what
     keeps first paint honest — a client-side-only default would flash the
     full ~31-row list before JS could collapse it.
-(e) Collapsed-sidebar markup: the whole-sidebar collapse toggle and one
-    rail icon button per section are always present in the rendered HTML
-    (CSS/JS decide which of the two representations is visible; the guard
-    only needs to know both exist to be toggled between).
+(e) The column does NOT collapse. The whole-sidebar toggle, its 56px icon
+    strip, the per-section hover flyouts and the stored preference behind
+    them are retired — the rail beside it owns collapse/expand for the
+    window, and two collapsible columns made "how do I get back?" a
+    two-step puzzle. ``TestAdminNavDoesNotCollapse`` pins that, since the
+    pieces reappear one accessor at a time if nothing watches.
+(f) The rail's Admin row is one plain link to ``/admin`` on every page —
+    the data-driven area flyout it used to open is gone, along with the
+    second, drifted copy of the admin inventory that fed it.
 """
 
 from __future__ import annotations
@@ -27,16 +32,33 @@ from __future__ import annotations
 from pathlib import Path
 import re
 
-from app.web.admin_nav import ADMIN_NAV_SECTIONS, resolve_active_href, resolve_active_section_key
+from app.web.admin_nav import (
+    ADMIN_NAV_HOME,
+    ADMIN_NAV_SECTIONS,
+    resolve_active_href,
+    resolve_active_section_key,
+    resolve_home_active,
+)
 
 ROUTER_SRC = Path("app/web/router.py").read_text(encoding="utf-8")
+# Admin pages whose routes are NOT declared in the web router. `/admin/chat` is
+# a content-negotiated JSON/HTML route on a router with its own
+# `prefix="/admin/chat"`, so neither `_ROUTE_RE` nor the path literal appears
+# in ROUTER_SRC. It became a nav entry when /admin's card grid was replaced by
+# the dashboard (the grid was the only place it was linked from), so the
+# reverse guard below has to know it exists or it reads as a dead link.
+# Add a module here only when it genuinely serves an admin PAGE.
+_EXTERNAL_ADMIN_ROUTE_MODULES = ("app/api/admin_chat.py",)
 RAIL_CSS = Path("app/web/static/css/rail.css").read_text(encoding="utf-8")
 RAIL_HTML = Path("app/web/templates/_app_rail.html").read_text(encoding="utf-8")
+ADMIN_NAV_JS = Path("app/web/static/js/admin/admin_nav.js").read_text(encoding="utf-8")
+RAIL_TOGGLE_JS = Path("app/web/static/js/rail_toggle.js").read_text(encoding="utf-8")
 
 # Routes deliberately outside the sidebar's scope — see admin_nav.py's module
 # docstring for why each is excluded.
 _OUT_OF_SCOPE_PATHS = {
-    "/admin",  # the hub itself — reached via the sidebar's "Admin" title link
+    # NOTE: "/admin" is deliberately NOT here — the hub is the sidebar's first
+    # row (ADMIN_NAV_HOME), so it is covered like every other page.
     "/admin/studio",  # get_current_user, not require_admin — a different surface
     "/admin/studio/{domain}",  # ditto
     "/admin/usage",  # redirect -> /admin/telemetry
@@ -79,6 +101,32 @@ def _admin_get_routes() -> list[tuple[str, str]]:
     return routes
 
 
+_PREFIX_RE = re.compile(r'APIRouter\(\s*prefix="(/admin[^"]*)"')
+_SUBPATH_RE = re.compile(r'@(?:\w+)\.get\("([^"]*)"')
+
+
+def _external_admin_route_literals() -> set[str]:
+    """Admin route paths declared outside `app/web/router.py`.
+
+    Reads each module in `_EXTERNAL_ADMIN_ROUTE_MODULES`, joins its router
+    prefix onto each GET sub-path, and returns the resulting literals. Only
+    feeds the REVERSE guard (is this nav href real?) — the forward guard
+    stays scoped to the web router, whose job is catching a new PAGE shipped
+    without a nav entry.
+    """
+    out: set[str] = set()
+    for mod in _EXTERNAL_ADMIN_ROUTE_MODULES:
+        src = Path(mod).read_text(encoding="utf-8")
+        prefix_m = _PREFIX_RE.search(src)
+        if not prefix_m:
+            continue
+        prefix = prefix_m.group(1)
+        out.add(prefix)
+        for sub in _SUBPATH_RE.findall(src):
+            out.add((prefix + sub).rstrip("/") or prefix)
+    return out
+
+
 def _is_admin_gated(body: str) -> bool:
     return "require_admin" in body
 
@@ -106,7 +154,9 @@ def _route_literal_prefix(path: str) -> str:
 
 
 def _all_nav_prefixes() -> list[str]:
-    prefixes = []
+    # The hub row first — it is a nav entry like any other now, just one that
+    # lives above the sections rather than inside one.
+    prefixes = [ADMIN_NAV_HOME["href"]]
     for section in ADMIN_NAV_SECTIONS:
         for item in section["items"]:
             prefixes.extend(item["match"])
@@ -138,6 +188,7 @@ class TestAdminNavInventoryCoverage:
         doesn't serve would be a dead link in the sidebar."""
         routes = {p for p, _ in _admin_get_routes()}
         route_literals = {_route_literal_prefix(p) for p in routes}
+        route_literals |= _external_admin_route_literals()
         dead = []
         for section in ADMIN_NAV_SECTIONS:
             for item in section["items"]:
@@ -261,18 +312,96 @@ class TestAdminNavActiveSection:
             assert by_body_key[section["key"]] == " hidden", section["key"]
 
 
-class TestAdminNavCollapsedMarkup:
-    def test_collapse_toggle_and_seven_rail_icons_present(self, seeded_app) -> None:
+class TestAdminNavDoesNotCollapse:
+    """The column is the primary navigation of every page that renders it, and
+    the rail beside it already owns collapse/expand for the window — two
+    collapsible columns made "how do I get back?" a two-step puzzle. What was
+    here (a toggle, a 56px icon strip, seven hover flyouts, a stored
+    preference) is retired; these pin that it stays retired, since the pieces
+    reappear one accessor at a time if nothing watches."""
+
+    def test_no_collapse_toggle_icon_strip_or_flyouts(self, seeded_app) -> None:
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
         resp = c.get("/admin/users", headers={"Authorization": f"Bearer {token}"})
         assert resp.status_code == 200, resp.text
         text = resp.text
-        assert "data-admin-nav-collapse-toggle" in text
-        rail_keys = re.findall(r'data-admin-nav-rail-btn="([\w-]+)"', text)
-        assert rail_keys == [s["key"] for s in ADMIN_NAV_SECTIONS]
-        flyout_keys = re.findall(r'data-admin-nav-flyout="([\w-]+)"', text)
-        assert flyout_keys == [s["key"] for s in ADMIN_NAV_SECTIONS]
+        for gone in (
+            "data-admin-nav-collapse-toggle",
+            "data-admin-nav-rail-btn",
+            "data-admin-nav-flyout",
+            "admin-nav__rail",
+            "admin-nav__flyout",
+            "admin-nav__collapse",
+        ):
+            assert gone not in text, gone
+        # ...nor the stored preference, nor the inline first-paint script that
+        # applied it before the aside painted.
+        assert "agnes.adminNav.collapsed" not in text
+        # The JS may still NAME the retired key in its header comment (that is
+        # the record of what went and why); what it must not do is read or
+        # write it, or toggle the class it drove.
+        assert 'getItem("agnes.adminNav.collapsed")' not in ADMIN_NAV_JS
+        assert 'setItem("agnes.adminNav.collapsed"' not in ADMIN_NAV_JS
+        assert "is-collapsed" not in ADMIN_NAV_JS
+
+    def test_css_carries_no_collapsed_state(self) -> None:
+        css = Path("app/web/static/css/admin-nav.css").read_text(encoding="utf-8")
+        assert ".admin-nav.is-collapsed" not in css
+        assert ".admin-nav__rail" not in css
+        assert ".admin-nav__flyout" not in css
+
+    def test_per_section_disclosure_survives(self, seeded_app) -> None:
+        """Only the WHOLE-COLUMN collapse went. A section still opens and
+        closes — that is what makes the nesting legible."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/admin/users", headers={"Authorization": f"Bearer {token}"})
+        assert "data-admin-nav-toggle" in resp.text
+        assert "agnes.adminNav.sections" in ADMIN_NAV_JS
+
+
+class TestAdminNavHomeRow:
+    """The hub is the sidebar's first row. It used to be reachable only by
+    clicking the column's uppercase "Admin" TITLE, which nobody reads as a
+    link."""
+
+    def test_home_row_renders_first_and_is_not_inside_a_section(self, seeded_app) -> None:
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/admin/users", headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 200, resp.text
+        nav = resp.text.split('<aside class="admin-nav"', 1)[1].split("</aside>", 1)[0]
+        assert "admin-nav__link--home" in nav
+        # First link in the column, ahead of every section body.
+        assert nav.index("admin-nav__link--home") < nav.index("admin-nav__group-body")
+        # And it is not a member of the seven sections.
+        assert all(
+            ADMIN_NAV_HOME["href"] != item["href"] for section in ADMIN_NAV_SECTIONS for item in section["items"]
+        )
+
+    def test_title_is_a_label_not_a_link(self, seeded_app) -> None:
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/admin/users", headers={"Authorization": f"Bearer {token}"})
+        assert '<span class="admin-nav__title">' in resp.text
+        assert '<a class="admin-nav__title"' not in resp.text
+
+    def test_home_is_active_on_the_hub_only(self) -> None:
+        assert resolve_home_active("/admin") is True
+        assert resolve_home_active("/admin/") is True
+        # A prefix rule here would light the hub row on every admin page and
+        # give the column two active rows at once.
+        assert resolve_home_active("/admin/users") is False
+        assert resolve_home_active("/admin/store/lint") is False
+
+    def test_hub_page_lights_the_home_row_and_no_section_row(self, seeded_app) -> None:
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/admin", headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 200, resp.text
+        actives = re.findall(r'class="admin-nav__link[^"]*is-active"[^>]*>([^<]+)<', resp.text)
+        assert actives == [ADMIN_NAV_HOME["label"]], actives
 
 
 class TestAdminNavGating:
@@ -300,15 +429,14 @@ class TestAdminNavGating:
         assert 'class="admin-nav__title"' in resp.text
 
 
-class TestRailIconModeOnAdminPages:
-    """On rail-layout instances, /admin/* pages now carry TWO nav columns —
-    the admin sidebar above plus the global rail (`_app_rail.html`). The
-    rail collapses to a ~56px icon strip there (`_admin_page` in
-    _app_rail.html) so the admin sidebar can be the primary nav instead of
-    two permanent full-width columns; see the CHANGELOG's admin-sidebar
-    bullet. Markup-level assertions live here; the CSS contract that makes
-    the collapse/expand/overlay behaviour actually work lives in
-    TestRailIconModeCss below."""
+class TestRailCollapsePreference:
+    """The rail's collapsed/expanded width is a PERSISTED USER PREFERENCE
+    (localStorage `agnes.rail.collapsed`), honored on EVERY rail page —
+    admin included — not derived from the request path the way it used to
+    be (`_admin_page` in _app_rail.html now only supplies the default a
+    caller who has never toggled starts from). Markup-level assertions live
+    here; the CSS contract that makes the collapse/peek/overlay behaviour
+    actually work lives in TestRailCollapseCss below."""
 
     def _auth(self, token: str) -> dict:
         return {"Authorization": f"Bearer {token}"}
@@ -322,11 +450,11 @@ class TestRailIconModeOnAdminPages:
         short-circuit for Admin), and with chat disabled (the default with
         no instance.yaml) every test below asserting on those blocks,
         present or absent, would pass vacuously regardless of the
-        `_admin_page` branch it means to exercise. Granted to the Admin
-        group rather than Everyone: new users are no longer auto-added to
-        Everyone (src/repositories/users.py), so the seeded admin (a member
-        of Admin only) would not pick up a grant made there. Sets
-        `chat_config` directly on the already-built app (same pattern as
+        branch it means to exercise. Granted to the Admin group rather than
+        Everyone: new users are no longer auto-added to Everyone
+        (src/repositories/users.py), so the seeded admin (a member of Admin
+        only) would not pick up a grant made there. Sets `chat_config`
+        directly on the already-built app (same pattern as
         test_admin_chat.py) rather than `AGNES_CHAT_ENABLED`, which would
         re-run the full startup provider/key validation cascade in
         app/main.py for a check that only reads `.enabled`."""
@@ -340,14 +468,63 @@ class TestRailIconModeOnAdminPages:
         conn.close()
         seeded_app["client"].app.state.chat_config = ChatConfig(enabled=True)
 
-    def test_rail_renders_icon_mode_alongside_the_admin_sidebar(self, seeded_app, monkeypatch) -> None:
+    def test_default_is_collapsed_on_admin_expanded_elsewhere(self, seeded_app, monkeypatch) -> None:
+        """With no stored preference, the server-rendered class is only a
+        STARTING value — collapsed on /admin, expanded everywhere else."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         c = seeded_app["client"]
-        resp = c.get("/admin/users", headers=self._auth(seeded_app["admin_token"]))
-        assert resp.status_code == 200, resp.text
-        text = resp.text
-        assert 'class="rail rail-icon-mode"' in text
-        assert 'class="admin-nav"' in text
+        admin_text = c.get("/admin/users", headers=self._auth(seeded_app["admin_token"])).text
+        assert 'class="rail rail-icon-mode"' in admin_text
+        assert 'class="admin-nav"' in admin_text
+
+        stack_text = c.get("/stack", headers=self._auth(seeded_app["admin_token"])).text
+        assert 'class="rail-icon-mode"' not in stack_text
+        assert 'class="rail"' in stack_text
+
+    def test_preference_bootstrap_script_renders_on_every_rail_page(self, seeded_app, monkeypatch) -> None:
+        """The before-first-paint bootstrap (reads localStorage, applies a
+        stored preference to the `<nav>` class before the browser paints —
+        same no-flash technique as _theme_resolve.html) must render on EVERY
+        rail page, not just /admin — the preference applies everywhere."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        c = seeded_app["client"]
+        for path in ("/admin/users", "/stack"):
+            text = c.get(path, headers=self._auth(seeded_app["admin_token"])).text
+            assert "agnes.rail.collapsed" in text
+            assert "document.currentScript.parentNode" in text
+            # The bootstrap script is the FIRST thing inside <nav> — before
+            # any visible chrome — so it runs before that subtree paints.
+            nav_open = text.index("<nav class=")
+            script_pos = text.index("<script>", nav_open)
+            logo_pos = text.index('class="rail-logo-row"', nav_open)
+            assert nav_open < script_pos < logo_pos
+
+    def test_one_consolidated_toggle_with_correct_aria(self, seeded_app, monkeypatch) -> None:
+        """ONE `#rail-toggle` in the logo row, not two separate controls —
+        the old admin-only `#rail-icon-toggle` tap affordance is gone
+        entirely, replaced by this single control everywhere."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        c = seeded_app["client"]
+        admin_text = c.get("/admin/users", headers=self._auth(seeded_app["admin_token"])).text
+        assert 'id="rail-icon-toggle"' not in admin_text
+        assert "js/rail_icon_mode.js" not in admin_text
+        assert admin_text.count('id="rail-toggle"') == 1
+        assert 'aria-expanded="false"' in admin_text.split('id="rail-toggle"', 1)[1][:200]
+        assert "Expand navigation" in admin_text.split('id="rail-toggle"', 1)[1][:200]
+
+        stack_text = c.get("/stack", headers=self._auth(seeded_app["admin_token"])).text
+        assert 'id="rail-icon-toggle"' not in stack_text
+        assert "js/rail_icon_mode.js" not in stack_text
+        assert stack_text.count('id="rail-toggle"') == 1
+        assert 'aria-expanded="true"' in stack_text.split('id="rail-toggle"', 1)[1][:200]
+        assert "Collapse navigation" in stack_text.split('id="rail-toggle"', 1)[1][:200]
+
+    def test_toggle_js_loaded_on_every_rail_page(self, seeded_app, monkeypatch) -> None:
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        c = seeded_app["client"]
+        for path in ("/admin/users", "/stack"):
+            text = c.get(path, headers=self._auth(seeded_app["admin_token"])).text
+            assert "js/rail_toggle.js" in text
 
     def test_rail_admin_entry_is_a_plain_active_link_not_a_flyout(self, seeded_app, monkeypatch) -> None:
         """The admin sidebar already carries the seven-area IA — the rail's
@@ -362,8 +539,8 @@ class TestRailIconModeOnAdminPages:
         assert "rail-admin-flyout" not in nav
         assert 'rail-i on" href="/admin"' in nav
 
-    def test_rail_keeps_destinations_and_profile_in_icon_mode(self, seeded_app, monkeypatch) -> None:
-        """Icon mode still SHOWS the brand mark, the destination rows
+    def test_rail_keeps_destinations_and_profile_when_collapsed(self, seeded_app, monkeypatch) -> None:
+        """The collapsed rail still SHOWS the brand mark, the destination rows
         (including New chat, once chat is granted) and the profile avatar."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         self._enable_chat(seeded_app)
@@ -371,49 +548,37 @@ class TestRailIconModeOnAdminPages:
         resp = c.get("/admin/users", headers=self._auth(seeded_app["admin_token"]))
         text = resp.text
         for anchor in ('class="rail-orb"', 'id="new-chat"', 'href="/library"', 'id="userMenuTrigger"'):
-            assert anchor in text, f"icon-mode rail is missing {anchor}"
+            assert anchor in text, f"collapsed rail is missing {anchor}"
 
-    def test_conversation_region_is_never_rendered_in_icon_mode(self, seeded_app, monkeypatch) -> None:
-        """Regression guard for the reflow bug: a block that materializes
-        only on hover shifts every row below it (`.rail-nav-bottom`'s
-        `margin-top: auto` re-anchors the bottom zone to whatever height the
-        column above it has), so the rail's row set must be identical
-        collapsed and hover-expanded. The conversation region's rows are
-        text and cannot shrink to 56px, so — unlike the onboarding card,
-        which gets a fixed-height ring instead (see the next test) — it is
-        absent from the response ENTIRELY on an admin page: there's no hover
-        state for a static HTML fetch to toggle, so total absence is what a
-        `:hover` CSS rule can never accidentally undo. Chat is explicitly
-        enabled+granted (`_enable_chat`) so this is a real assertion about
-        the `_admin_page` branch and not a vacuous pass from `can_chat`
-        being False anyway — the non-admin comparison page below proves the
-        same grant DOES render it when `_admin_page` isn't in play."""
+    def test_conversation_region_renders_on_admin_pages_and_is_css_gated(self, seeded_app, monkeypatch) -> None:
+        """The region is RENDERED on an admin page and hidden by CSS while the
+        rail is collapsed, so hover-peeking it (or persisting expanded) gives
+        you the standard rail — conversations included, identical to any
+        other rail page.
+
+        Chat is explicitly enabled+granted (`_enable_chat`) so this is a real
+        assertion and not a vacuous pass from `can_chat` being False anyway."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         self._enable_chat(seeded_app)
         c = seeded_app["client"]
         admin_text = c.get("/admin/users", headers=self._auth(seeded_app["admin_token"])).text
-        assert 'id="rail-history"' not in admin_text
-        # The JS that fills the conversation list has nothing to bind to on
-        # an admin page's chat rows, but it also wires the onboarding card's
-        # popover (which DOES render there — see the next test), so it stays
-        # loaded; only the row-menu script (Pin/Rename/Delete, conversation
-        # rows only) is skipped.
-        assert "js/components/chat_row_menu.js" not in admin_text
+        assert 'id="rail-history"' in admin_text
+        # The rows are the standard rail's rows, so they get the standard
+        # rail's per-row menu (Pin/Rename/Delete) rather than a degraded copy.
+        assert "js/components/chat_row_menu.js" in admin_text
 
-        # Same caller, same grant, a non-admin rail page: the region DOES
-        # render — proving the assertion above tests `_admin_page`, not an
-        # unrelated `can_chat` gate.
+        # Same caller, same grant, a non-admin rail page: identical.
         stack_text = c.get("/stack", headers=self._auth(seeded_app["admin_token"])).text
         assert 'id="rail-history"' in stack_text
 
-    def test_onboarding_row_stays_in_icon_mode_same_anatomy_as_other_rows(self, seeded_app, monkeypatch) -> None:
+    def test_onboarding_row_stays_when_collapsed_same_anatomy_as_other_rows(self, seeded_app, monkeypatch) -> None:
         """Unlike the conversation region, the onboarding row is NOT removed
-        in icon mode — hiding then materializing it on hover would shift the
+        when collapsed — hiding then materializing it on peek would shift the
         profile row exactly as the conversation region would. It doesn't
         need special-casing to avoid that any more, though: its icon IS the
-        progress ring (a fixed size in both icon-mode states, same as any
-        other row's icon), so only its label — same mechanism as every other
-        row's — appears/disappears, never the row itself."""
+        progress ring (a fixed size in both states, same as any other row's
+        icon), so only its label — same mechanism as every other row's —
+        appears/disappears, never the row itself."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         self._enable_chat(seeded_app)
         c = seeded_app["client"]
@@ -431,30 +596,11 @@ class TestRailIconModeOnAdminPages:
         assert "js/rail_history.js" in text
         assert "js/chat_onboarding.js" in text
 
-    def test_tap_expand_affordance_exists_in_icon_mode(self, seeded_app, monkeypatch) -> None:
-        """The click/tap pin toggle must exist in the markup for a touch
-        caller to reach — CSS (not this test) decides that a hover-capable
-        mouse never sees it. See TestRailIconModeCss for that half."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
-        c = seeded_app["client"]
-        resp = c.get("/admin/users", headers=self._auth(seeded_app["admin_token"]))
-        text = resp.text
-        assert 'id="rail-icon-toggle"' in text
-        assert "js/rail_icon_mode.js" in text
-
-    def test_tap_expand_affordance_absent_outside_icon_mode(self, seeded_app, monkeypatch) -> None:
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
-        c = seeded_app["client"]
-        resp = c.get("/stack", headers=self._auth(seeded_app["admin_token"]))
-        assert resp.status_code == 200, resp.text
-        text = resp.text
-        assert 'id="rail-icon-toggle"' not in text
-        assert "js/rail_icon_mode.js" not in text
-
-    def test_non_admin_rail_page_keeps_the_full_rail_and_its_admin_flyout(self, seeded_app, monkeypatch) -> None:
-        """A rail page outside /admin/* must render byte-for-byte as before
-        this follow-up: full-width rail, conversation region, and the
-        data-driven Admin flyout (not the plain link)."""
+    def test_non_admin_rail_page_keeps_the_full_rail_and_a_plain_admin_link(self, seeded_app, monkeypatch) -> None:
+        """A rail page outside /admin/* keeps the full-width rail and the
+        conversation region — and, since the flyout was retired, the SAME
+        plain Admin link the admin pages get. The two branches converged: one
+        Admin row, one destination, on every page."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         self._enable_chat(seeded_app)
         c = seeded_app["client"]
@@ -464,9 +610,18 @@ class TestRailIconModeOnAdminPages:
         assert 'class="rail-icon-mode"' not in text
         assert 'class="rail"' in text
         nav = text.split('<nav class="rail"', 1)[1].split("</nav>", 1)[0]
-        assert "rail-admin-summary" in nav
-        assert "rail-admin-flyout" in nav
         assert 'id="rail-history"' in nav
+        # No flyout machinery anywhere, on any page.
+        for gone in (
+            "rail-admin-summary",
+            "rail-admin-flyout",
+            "rail-admin-sub",
+            "rail-admin-groups",
+            "rail-admin-caret",
+        ):
+            assert gone not in nav, gone
+        # ...and Admin is a plain link to the hub.
+        assert '<a class="rail-i " href="/admin">' in nav or '<a class="rail-i" href="/admin">' in nav
 
     def test_topnav_default_is_unaffected_on_admin_and_non_admin_pages(self, seeded_app, monkeypatch) -> None:
         monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
@@ -476,17 +631,19 @@ class TestRailIconModeOnAdminPages:
             assert resp.status_code == 200, (path, resp.text)
             assert "rail-icon-mode" not in resp.text
             assert 'class="rail"' not in resp.text
-            assert "js/rail_icon_mode.js" not in resp.text
+            assert "js/rail_toggle.js" not in resp.text
+            assert 'id="rail-toggle"' not in resp.text
 
 
-class TestRailIconModeCss:
-    """CSS contract for the icon-mode rail — everything the markup-level
-    tests above can't see (hover/focus/pin expansion, the overlay-not-reflow
+class TestRailCollapseCss:
+    """CSS contract for the collapsed rail — everything the markup-level
+    tests above can't see (hover/focus peek expansion, the overlay-not-reflow
     body clearance, the ≤1024px reflow staying untouched, reduced motion,
-    and the hover-capable/touch split on the tap toggle)."""
+    the hover-delay on open, and the hover-capable/touch split on the
+    logo-row toggle)."""
 
     def _desktop_block(self) -> str:
-        """The `@media (min-width: 1025px)` block's body — every icon-mode
+        """The `@media (min-width: 1025px)` block's body — every collapse
         rule must live inside this (or a sibling desktop-only query), never
         inside the `@media (max-width: 1024px)` block below it."""
         start = RAIL_CSS.index("@media (min-width: 1025px) {")
@@ -494,50 +651,138 @@ class TestRailIconModeCss:
         return RAIL_CSS[start:end]
 
     def test_icon_mode_rules_are_gated_to_desktop_only(self) -> None:
-        """Guards against icon mode fighting the narrow-screen rail reflow
-        (CLAUDE.md's design-system contract): every occurrence of
+        """Guards against the collapse mechanism fighting the narrow-screen
+        rail reflow (CLAUDE.md's design-system contract): every occurrence of
         `.rail-icon-mode` in a sizing/behavioural rule sits above the
         `max-width: 1024px` query, never inside it."""
         narrow = RAIL_CSS[RAIL_CSS.index("@media (max-width: 1024px)") :]
         assert "rail-icon-mode" not in narrow, (
-            "icon-mode rules leaked into the ≤1024px reflow — that query must win outright at narrow widths"
+            "the collapse mechanism leaked into the ≤1024px reflow — that query must win outright at narrow widths"
         )
+        # The width-preference toggle itself has no job below 1025px either
+        # — it is switched off there rather than left to render inertly.
+        assert 'html[data-ui-layout="rail"] .rail-toggle {\n        display: none;' in narrow
 
-    def test_collapsed_width_and_expand_triggers(self) -> None:
+    def test_collapsed_width_and_peek_triggers(self) -> None:
         block = self._desktop_block()
         assert 'html[data-ui-layout="rail"] .rail.rail-icon-mode {' in block
         assert "width: 56px;" in block
-        # Hover, keyboard :focus-within, and the click/tap pin all expand it.
-        assert ":is(:hover, :focus-within, .rail-pinned-open) {" in block
+        # Hover and keyboard :focus-within both peek it open — no separate
+        # "pinned open" class any more (clicking the toggle persists the
+        # preference instead, which removes .rail-icon-mode outright).
+        assert ":is(:hover, :focus-within) {" in block
+        assert "rail-pinned-open" not in RAIL_CSS
         assert "width: 240px;" in block
 
+    def test_hover_open_delay_close_is_instant(self) -> None:
+        """~120ms delay on the way OPEN (an accidental pointer pass-through
+        shouldn't peek it); the collapsed rule carries no delay, so closing
+        on mouse-leave is instant."""
+        block = self._desktop_block()
+        collapsed = block.split('html[data-ui-layout="rail"] .rail.rail-icon-mode {', 1)[1].split("}", 1)[0]
+        assert "ease) 0s" in collapsed
+        # Matched by shape rather than by the literal selector: the peek rules
+        # also carry a `:not(.rail-no-peek)` gate (see the peek-suppression test
+        # below), and pinning the exact string made this fail for a change that
+        # left its actual invariant — delayed open, instant close — intact.
+        peek = re.search(
+            r'html\[data-ui-layout="rail"\] \.rail\.rail-icon-mode[^ ]*:is\(:hover, :focus-within\) \{([^}]*)\}',
+            block,
+        )
+        assert peek, "no rule peeks the collapsed rail open"
+        assert "width: 240px" in peek.group(1)
+        assert "ease) .12s" in peek.group(1)
+
+    def test_both_widths_animate_and_the_page_moves_with_them(self) -> None:
+        """The toggle animates in BOTH directions, and the page's clearance
+        travels with the rail rather than snapping ahead of it.
+
+        Two bugs in one guard, because they share a cause — a transition that
+        only existed on ONE of the two states. The width transition used to be
+        declared solely on `.rail.rail-icon-mode`, so clicking to EXPAND (which
+        removes that class) dropped the rule in the same frame the width
+        changed and the rail jumped 56 -> 240px with no animation at all; and
+        `body`'s padding-left carried no transition either, so content landed
+        184px away a full 160ms before the rail caught up."""
+        block = self._desktop_block()
+        base = block.split('html[data-ui-layout="rail"] .rail {', 1)[1].split("}", 1)[0]
+        assert "transition: width" in base, "the expanded state needs its own width transition or it cannot animate"
+        clearance = block.split('html[data-ui-layout="rail"] body:has(.rail) {', 1)[1].split("}", 1)[0]
+        assert "transition: padding-left" in clearance
+        # Same duration token on both, so the two edges can't drift apart.
+        assert "--ds-motion-fast" in base and "--ds-motion-fast" in clearance
+
+    def test_peek_is_suppressed_for_the_collapse_that_just_happened(self) -> None:
+        """`#rail-toggle` lives inside the rail and Cmd+\\ can fire while the
+        pointer rests on it, so `:hover` / `:focus-within` kept the peek open
+        through a collapse: `body` reflowed to the 56px clearance while the rail
+        stayed 240px wide on top of it, and nothing looked collapsed until the
+        caller wandered off. Every peek rule is gated on `:not(.rail-no-peek)`,
+        which rail_toggle.js parks on the rail for exactly that window."""
+        peeks = re.findall(r"\.rail\.rail-icon-mode(:not\(\.rail-no-peek\))?:is\(:hover, :focus-within\)", RAIL_CSS)
+        assert peeks, "no peek rules found"
+        assert all(peeks), "a peek rule is missing its :not(.rail-no-peek) gate — a collapse can stall open on it"
+        # The class is inert on its own: it must never carry declarations of
+        # its own, or it becomes a third rail state instead of a suppression.
+        assert not re.search(r"\.rail-no-peek\s*\{", RAIL_CSS)
+        # …and it has to be released, or the rail is left permanently un-peekable.
+        assert "rail-no-peek" in RAIL_TOGGLE_JS
+        assert "function releasePeek" in RAIL_TOGGLE_JS
+        assert "pointermove" in RAIL_TOGGLE_JS, "release must not rely on mouseleave alone (the rail shrinks away)"
+
+    def test_peeked_labels_wait_for_the_width_to_hold_them(self) -> None:
+        """`display` can't be transitioned, so every label is laid out at t=0
+        while the column is still 56px, and `.rail` is `overflow: visible` for
+        its popovers — so a label that becomes legible before the width catches
+        up paints OUTSIDE the rail, over the page. One shared delay token,
+        longer than the width's own 120ms, keeps that from happening and keeps
+        the three label rules from drifting apart."""
+        assert "--rail-peek-text-delay:" in RAIL_CSS
+        delay = RAIL_CSS.split("--rail-peek-text-delay:", 1)[1].split(";", 1)[0].strip()
+        assert float(delay.rstrip("s")) > 0.12, "the label fade must trail the width's 120ms opening delay"
+        # Every rule that brings TEXT back uses the token, none a hardcoded
+        # delay. Keyed on restoring `display` as well as `opacity`, which is
+        # what separates them from the peek's other opacity flips (the orb/
+        # toggle swap in the logo row, which has no text to out-run).
+        block = self._desktop_block()
+        restores = [
+            rule
+            for rule in re.findall(r":is\(:hover, :focus-within\)[^{]*\{[^}]*\}", block)
+            if "opacity: 1;" in rule and "display:" in rule
+        ]
+        assert len(restores) >= 3, restores
+        for rule in restores:
+            assert "var(--rail-peek-text-delay)" in rule, rule
+
     def test_body_clearance_is_the_icon_width_and_constant(self) -> None:
-        """The 56px reservation must NOT change on hover/focus/pin — the
-        expanded rail is an overlay, so the page's own layout never moves."""
+        """The 56px reservation must NOT change on hover/focus — the peeked
+        rail is an overlay, so the page's own layout never moves."""
         block = self._desktop_block()
         assert "body:has(.rail.rail-icon-mode) {" in block
         assert "padding-left: 56px;" in block
-        # No hover/focus/pin-conditioned body rule anywhere in the file.
+        # No hover/focus-conditioned body rule anywhere in the file.
         assert re.search(r"body:has\(\.rail\.rail-icon-mode[^)]*\)\s*:is\(", RAIL_CSS) is None
         assert "hover, .rail-icon-mode" not in RAIL_CSS  # no accidental body-level hover selector
 
-    def test_css_never_toggles_the_conversation_region(self) -> None:
-        """Regression guard for the reflow bug: the conversation region must
-        not be addressed by ANY icon-mode CSS rule (hide-on-collapse,
-        restore-on-expand, or otherwise) — `_app_rail.html` simply never
-        renders it on an admin page, in either state, which is the only way
-        to guarantee the row set can't differ between hover and rest. A CSS
-        rule that hides it on `.rail-icon-mode` and shows it again on
-        `:hover`/`:focus-within`/`.rail-pinned-open` is exactly the pattern
-        that shifted every row below it and must never come back."""
-        icon_mode_section = RAIL_CSS.split("── Icon-only rail")[1].split("Small + tablet screens")[0]
-        assert "rail-history" not in icon_mode_section
+    def test_css_gates_the_conversation_region_on_both_states(self) -> None:
+        """The conversation region is the one entry in the collapse hide-list
+        that is not merely a label: its rows are text end to end and have no
+        icon form. So it is hidden while COLLAPSED and restored when
+        PEEKED/EXPANDED, and both halves must exist — a hide with no matching
+        restore would leave the peeked rail without the conversations that
+        are the whole reason to peek it."""
+        icon_mode_section = RAIL_CSS.split("── Collapsed rail")[1].split("Small + tablet screens")[0]
+        assert ".rail-icon-mode .rail-history" in icon_mode_section
+        expanded = ":is(:hover, :focus-within) .rail-history"
+        assert expanded in icon_mode_section
+        # The restore must come AFTER the hide, or the cascade drops it.
+        assert icon_mode_section.index(".rail-icon-mode .rail-history") < icon_mode_section.index(expanded)
 
     def test_onboarding_row_never_needs_a_height_override_in_icon_mode(self) -> None:
         """The onboarding row's icon IS the progress ring, a fixed size in
-        both icon-mode states — unlike the conversation region it needed no
-        bespoke height/reservation rule to keep it from shifting other rows,
-        and none should reappear. Its label instead rides the SAME shared
+        both states — unlike the conversation region it needed no bespoke
+        height/reservation rule to keep it from shifting other rows, and
+        none should reappear. Its label instead rides the SAME shared
         show/hide list every other row's label does (see the next test)."""
         assert not re.search(r"\.rail-icon-mode \.rail-getstarted\s*\{[^}]*height:", RAIL_CSS)
         assert not re.search(r":is\([^)]*\)\s*\.rail-getstarted\s*\{[^}]*height:", RAIL_CSS)
@@ -547,10 +792,15 @@ class TestRailIconModeCss:
         SAME collapse/expand selector lists as `.rail-i-label` — same
         mechanism as every other row, not a bespoke rule of its own."""
         block = self._desktop_block()
-        collapsed = re.search(r"\.rail-icon-mode \.rail-logo-txt,.*?\{\s*display: none;\s*\}", block, re.S)
-        assert collapsed and "rail-getstarted-body" in collapsed.group(0)
+        # Matched on the SELECTOR LIST, not on an exact declaration block: the
+        # rules carry an opacity pair alongside `display` (the peek's label
+        # fade waits out the width's 120ms opening delay), and pinning the
+        # literal `{ display: none; }` made this test fail for a change that
+        # kept its actual invariant — one shared mechanism — intact.
+        collapsed = re.search(r"\.rail-icon-mode \.rail-logo-txt,(.*?)\{[^}]*display: none;[^}]*\}", block, re.S)
+        assert collapsed and "rail-getstarted-body" in collapsed.group(1)
         expanded = re.search(
-            r":is\(:hover, :focus-within, \.rail-pinned-open\) \.rail-getstarted-body,.*?\{\s*display: flex;\s*\}",
+            r":is\(:hover, :focus-within\) \.rail-getstarted-body,(.*?)\{[^}]*display: flex;[^}]*\}",
             block,
             re.S,
         )
@@ -559,8 +809,8 @@ class TestRailIconModeCss:
     def test_onboarding_row_icon_is_a_constant_size_ring_in_both_states(self) -> None:
         """The ring's own box (`.rail-getstarted-ring`) must be an unconditional
         rule, not one that changes width/height between collapsed and
-        hover-expanded — that constancy is what keeps the row's own height
-        from ever differing between the two."""
+        peeked-open — that constancy is what keeps the row's own height from
+        ever differing between the two."""
         assert not re.search(r":is\([^)]*\)\s*\.rail-getstarted-ring\s*\{[^}]*(width|height):", RAIL_CSS)
         ring = RAIL_CSS.split('html[data-ui-layout="rail"] .rail-getstarted-ring {', 1)[1].split("}", 1)[0]
         assert "width: 28px" in ring
@@ -597,37 +847,57 @@ class TestRailIconModeCss:
     def test_onboarding_row_height_is_pinned_in_icon_mode(self) -> None:
         """The row's label is two lines and therefore taller than its 28px
         ring, so letting the row size to its content made it 40px collapsed
-        and 46px hover-expanded — and because the bottom zone is pinned to
-        the foot, those 6px slid Library/Agents/Admin upward on every hover.
-        One pinned height in both states is what stops that.
+        and 46px peeked-open — and because the bottom zone is pinned to the
+        foot, those 6px slid Library/Agents/Admin upward on every hover. One
+        pinned height in both states is what stops that.
         """
         btn = RAIL_CSS.split('html[data-ui-layout="rail"] .rail.rail-icon-mode .rail-getstarted-btn {', 1)[1].split(
             "}", 1
         )[0]
         assert "min-height" in btn
 
-    def test_reduced_motion_disables_the_width_transition(self) -> None:
+    def test_reduced_motion_disables_the_width_and_toggle_transitions(self) -> None:
         assert "@media (min-width: 1025px) and (prefers-reduced-motion: reduce)" in RAIL_CSS
         reduced = RAIL_CSS[RAIL_CSS.index("@media (min-width: 1025px) and (prefers-reduced-motion: reduce)") :]
         reduced = reduced[: reduced.index("\n}") + 2]
         assert "rail-icon-mode" in reduced
+        assert "rail-toggle" in reduced
         assert "transition: none;" in reduced
 
-    def test_tap_toggle_hidden_for_hover_capable_fine_pointer_devices(self) -> None:
-        """A mouse already expands the rail on hover, and a keyboard caller
-        already gets `:focus-within` — the visible tap button is withdrawn
-        there (not simply left unrendered), and touch (no hover, no fine
-        pointer) never matches this query, so it keeps seeing the base
-        `display: flex` rule instead."""
-        assert "@media (min-width: 1025px) and (hover: hover) and (pointer: fine)" in RAIL_CSS
-        hover_capable = RAIL_CSS[RAIL_CSS.index("@media (min-width: 1025px) and (hover: hover) and (pointer: fine)") :]
-        hover_capable = hover_capable[: hover_capable.index("\n}") + 2]
-        assert ".rail-icon-toggle" in hover_capable
-        assert "display: none;" in hover_capable
-
-    def test_tap_toggle_base_rule_shows_it_by_default_in_icon_mode(self) -> None:
-        """The un-narrowed rule (no hover/pointer condition) is what a touch
-        caller actually sees — it must default to visible so withdrawing it
-        for mouse/keyboard is an override, not the only rule."""
+    def test_toggle_hidden_on_hover_reveals_on_touch(self) -> None:
+        """A mouse already peeks the rail open on hover, and a keyboard
+        caller already gets `:focus-within` — the toggle stays invisible at
+        rest there, appearing only on hover/focus of the logo row. Touch has
+        neither, so the `(hover: none)` override shows it unconditionally
+        instead — this is the ONE control, not a second bolted-on one."""
         block = self._desktop_block()
-        assert re.search(r"\.rail-icon-mode \.rail-icon-toggle\s*\{\s*display: flex;", block)
+        # At rest, collapsed: invisible. Two rules share the
+        # `.rail.rail-icon-mode .rail-toggle` selector (one just declares the
+        # opacity transition, alongside `.rail-logo`) — match the specific
+        # rule that sets `opacity: 0`, not the first one textually.
+        rest = re.search(
+            r'html\[data-ui-layout="rail"\] \.rail\.rail-icon-mode \.rail-toggle \{([^}]*opacity: 0[^}]*)\}',
+            block,
+        )
+        assert rest, "no rule sets the collapsed toggle to invisible at rest"
+        # Hover/focus on the logo row reveals it.
+        reveal = re.search(
+            r"\.rail-logo-row:hover \.rail-toggle,\s*"
+            r'html\[data-ui-layout="rail"\] \.rail\.rail-icon-mode \.rail-logo-row:focus-within \.rail-toggle\s*'
+            r"\{([^}]*)\}",
+            block,
+        )
+        assert reveal and "opacity: 1" in reveal.group(1)
+        # Touch: no hover event at all, so it defaults to visible instead.
+        assert "@media (min-width: 1025px) and (hover: none)" in RAIL_CSS
+        touch = RAIL_CSS[RAIL_CSS.index("@media (min-width: 1025px) and (hover: none)") :]
+        touch = touch[: touch.index("\n}\n") + 2]
+        assert ".rail-toggle" in touch
+        assert "opacity: 1" in touch
+
+    def test_no_second_toggle_control_left_behind(self) -> None:
+        """The old admin-only `#rail-icon-toggle` tap affordance is gone in
+        CSS too, as a selector — the name may still appear in a comment
+        recording why it was retired (history, not a live rule)."""
+        for selector in (".rail-icon-toggle {", ".rail-icon-toggle:", ".rail-icon-toggle "):
+            assert selector not in RAIL_CSS, selector

@@ -30,50 +30,87 @@
    Styles live in app/web/static/css/rail.css (.rail-* prefix),
    activated by html[data-ui-layout="rail"]. #}
 {% import "macros/_agnes_orb.html" as agnes_orb %}
-{# Emits "1" when `path` is under any of `prefixes` — the rail's one
-   active-path test, used for the Admin flyout links and (over the union of an
-   area's prefixes) for the area row that contains them. A macro rather than a
-   `startswith` chain per link: the Admin areas are data below, so the test has
-   to work over a list. `| trim` at the call site turns it into a boolean. #}
-{% macro _admin_hit(path, prefixes) %}{% for p in prefixes %}{% if path.startswith(p) %}1{% endif %}{% endfor %}{% endmacro %}
 {% if session.user %}
 {% set _path = request.url.path %}
-{# Icon-only rail signal — /admin/* pages under the rail layout. The admin
-   sidebar (_admin_nav.html) is the primary IA there, so the global rail
-   collapses to a ~56px icon strip rather than keeping BOTH its own 240px
-   and the admin sidebar's 190px permanently on screen. Server-rendered off
-   the request path — the same mechanism _admin_nav.html already uses for its
-   own active-state — so there is no first-paint flash waiting on client JS,
-   and it needs no extra context wired in from the routers. #}
+{# Collapsed vs. expanded rail width is a PERSISTED USER PREFERENCE
+   (localStorage `agnes.rail.collapsed`), honored on EVERY rail page —
+   admin included — not derived from the request path. `_admin_page` here
+   only supplies the STARTING class for a caller who has never toggled:
+   collapsed on /admin (430px of chrome measurably squeezes the content on
+   an 1100px viewport there), expanded everywhere else. The inline script
+   immediately inside <nav> below applies a stored preference, if one
+   exists, before the browser paints — same no-flash technique
+   _theme_resolve.html uses for the colour scheme, just scoped to this
+   element instead of <html>. Once a caller toggles anywhere (click or
+   Cmd/Ctrl+\, js/rail_toggle.js), the stored value wins on every page
+   after that, this default included. #}
 {% set _admin_page = _path == '/admin' or _path.startswith('/admin/') %}
-<nav class="rail{% if _admin_page %} rail-icon-mode{% endif %}" aria-label="Primary">
-    {# Brand row — the wordmark alone. "How {brand} works" was briefly an icon
+<nav class="rail{% if _admin_page %} rail-icon-mode{% endif %}" aria-label="Primary"
+     data-rail-context="{{ 'admin' if _admin_page else 'app' }}">
+    <script>
+      (function () {
+        // Two remembered widths, not one: `admin` and `app`. A single global
+        // preference meant expanding the rail once on /chat also switched
+        // /admin to two permanent full-width nav columns — the exact density
+        // problem the admin default exists to avoid — and forced a re-collapse
+        // on every visit. Scoping the memory means "until the user changes it
+        // manually" is per context: collapsing or expanding on /chat says
+        // nothing about /admin, and vice versa.
+        var nav = document.currentScript.parentNode;
+        var KEY = 'agnes.rail.collapsed.' + (nav.getAttribute('data-rail-context') || 'app');
+        var stored = null;
+        try { stored = localStorage.getItem(KEY); } catch (e) { /* storage disabled */ }
+        if (stored === '1') { nav.classList.add('rail-icon-mode'); }
+        else if (stored === '0') { nav.classList.remove('rail-icon-mode'); }
+      })();
+    </script>
+    {# Brand row — the wordmark plus the ONE control that collapses/expands
+       the rail (ChatGPT's pattern). "How {brand} works" was briefly an icon
        here and it was wrong: the lockup is an identity element, not a control
        surface, and a help glyph welded to the wordmark reads as an annotation on
        the product name. It lives in the account menu now, grouped with "Start
-       over onboarding" — see the note there. #}
-    <a class="rail-logo" href="{{ home_route or '/dashboard' }}" aria-label="Home">
-        {% if config.LOGO_SVG %}{{ config.LOGO_SVG | safe }}{% else %}
-        {{ agnes_orb.orb(css_class='rail-orb', size=30) }}
-        <span class="rail-logo-txt">{{ instance_brand or config.INSTANCE_NAME or 'Agnes' }}</span>
-        {% endif %}
-    </a>
+       over onboarding" — see the note there.
 
-    {% if _admin_page %}
-    {# Touch has no hover event, so icon mode needs a real tap affordance —
-       but a mouse already expands the rail on hover and a keyboard caller
-       already gets `:focus-within` (rail.css), so this button is CSS-hidden
-       again on `(hover: hover) and (pointer: fine)` devices — visible
-       only where hover genuinely can't fire. Always rendered here
-       regardless (no JS/UA sniffing, nothing to flash on first paint);
-       rail.css decides who actually sees it. Click/tap pins it open
-       (`.rail-pinned-open`, wired in rail_icon_mode.js); tapping outside or
-       Escape un-pins it. #}
-    <button type="button" class="rail-icon-toggle" id="rail-icon-toggle"
-            aria-expanded="false" aria-label="Expand navigation">
-        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
-    </button>
-    {% endif %}
+       Expanded, both sit in the row — logo left, toggle at the right end,
+       both persistently visible. Collapsed, the row is a single ~40px slot:
+       only the orb shows at rest, and hovering (or focusing into) the row
+       swaps it for the toggle in the SAME spot (rail.css) — no permanently
+       visible chrome in the 56px strip for a caller who already has hover or
+       Tab. Touch has neither, so it sees the toggle there always (the
+       `(hover: none)` override in rail.css) — this is the ONE control for
+       that job now, replacing the old admin-only `#rail-icon-toggle`
+       tap affordance the same way it replaces the old always-icon-mode
+       derivation. #}
+    <div class="rail-logo-row">
+        <a class="rail-logo" href="{{ home_route or '/dashboard' }}" aria-label="Home">
+            {% if config.LOGO_SVG %}{{ config.LOGO_SVG | safe }}{% else %}
+            {{ agnes_orb.orb(css_class='rail-orb', size=30) }}
+            <span class="rail-logo-txt">{{ instance_brand or config.INSTANCE_NAME or 'Agnes' }}</span>
+            {% endif %}
+        </a>
+        {# aria-expanded/aria-label start in sync with the server-rendered
+           default above; js/rail_toggle.js re-syncs both to the ACTUAL class
+           on load (a stored preference may have overridden the default
+           before this ever paints) and again on every click, and swaps the
+           label to "Pin navigation open" while the collapsed rail is merely
+           PEEKING open on hover/focus rather than persisted that way. #}
+        <button type="button" class="rail-toggle" id="rail-toggle"
+                aria-expanded="{{ 'false' if _admin_page else 'true' }}"
+                aria-label="{{ 'Expand navigation' if _admin_page else 'Collapse navigation' }}">
+            {# The panel glyph — a rounded frame plus the divider that marks off
+               the sidebar's own column — not a chevron. This control toggles a
+               PANEL, and that is the conventional icon for it (VS Code,
+               ChatGPT, Linear). A chevron means "advance in this direction",
+               which is why it needed a 180° flip per state to avoid lying
+               about what a click does; the panel glyph is state-neutral and
+               needs no flip. Direction lives in the accessible name
+               ("Collapse"/"Expand navigation"), where it can be read. #}
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <rect x="3" y="4.5" width="18" height="15" rx="2.5" stroke="currentColor" stroke-width="1.7"/>
+                <path d="M9.5 4.5v15" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+            </svg>
+        </button>
+    </div>
 
     {# Below 1024px the rail becomes a wrapping top bar (rail.css) with nowhere
        to collapse to — every nav item, the recent-chats list, and Admin stayed
@@ -151,20 +188,20 @@
         </a>
     </div>
 
-    {% if not _admin_page %}
-    {# Absent entirely on an admin page — not merely CSS-hidden and restored
-       on hover. Icon mode's governing rule is that the rail's ITEM SET is
-       IDENTICAL collapsed and hover-expanded; hover/focus only widen the
-       column and reveal label text already sitting beside each icon. A
-       block that materializes on hover shifts every row below it (Library,
-       Agents, Admin, the profile) each time the pointer arrives or leaves —
-       exactly the kind of layout shift `.rail-nav-bottom`'s
-       `margin-top: auto` (which anchors the bottom zone to whichever
-       height the column above it turns out to have) would otherwise
-       reintroduce. Leaving this out of the render altogether removes the
-       block from that computation for the page's entire lifetime, so it
-       cannot vary between the two states. It returns unconditionally the
-       moment the caller leaves /admin. #}
+    {# Rendered on EVERY rail page, /admin included. It spent one pass omitted
+       from admin pages entirely, on the rule that icon mode's item set must be
+       identical collapsed and hover-expanded — a block that materializes on
+       hover shifts every row below it (Library, Agents, Admin, the profile),
+       which `.rail-nav-bottom`'s `margin-top: auto` would otherwise absorb by
+       moving the bottom zone. The cost of honouring that rule was worse than
+       the shift it avoided: hover-expanding the rail on an admin page gave you
+       a 240px column with no conversations in it, so the one thing the gesture
+       is for — reaching back into your work while administering the instance —
+       was the one thing it could not do. Expanded, the rail is now the standard
+       rail; collapsed, the region is hidden by CSS (it has no icon form, being
+       text rows), and the bottom zone rides up. The shift is confined to the
+       expanded overlay, which is `position: fixed` and reflows neither the
+       admin sidebar nor the page. See the `.rail-icon-mode` block in rail.css. #}
     {# Conversations — the caller's chats in TWO collapsible sections, Pinned
        above Recent, with "View all chats" under them. The rail is a WORKING SET
        now, not the whole history: what you have pinned, the handful you touched
@@ -301,7 +338,6 @@
             </a>
         </div>
     </section>
-    {% endif %}{# /not _admin_page — the conversation region #}
     {% endif %}{# /can_chat — end of zone 1 #}
 
     {# ── Zone 2 (bottom): browse destinations, then Admin behind a divider ──
@@ -340,130 +376,37 @@
     </div>
 
     {% if session.user.is_admin %}
-    {% set _admin_active = _path.startswith('/admin/') or _path.startswith('/documentation') %}
-    {% if _admin_page %}
-    {# On an admin page the sidebar (_admin_nav.html) already carries the
-       seven-section IA — re-offering the same tree in a hover flyout here
-       would just be the duplication this icon-mode follow-up removes. Admin
-       collapses to a plain, always-active link back to the hub instead; the
-       data-driven flyout below (the non-admin-page branch) never renders on
-       these pages. Same wrapper class as that branch so the divider/spacing
-       rules in rail.css (`.rail-admin`) apply unchanged. #}
-    <div class="rail-admin">
-        <a class="rail-i on" href="/admin">
-            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M10.3 2.4a2 2 0 0 1 3.4 0l.6 1a2 2 0 0 0 2.2.9l1.1-.3a2 2 0 0 1 2.4 2.4l-.3 1.1a2 2 0 0 0 .9 2.2l1 .6a2 2 0 0 1 0 3.4l-1 .6a2 2 0 0 0-.9 2.2l.3 1.1a2 2 0 0 1-2.4 2.4l-1.1-.3a2 2 0 0 0-2.2.9l-.6 1a2 2 0 0 1-3.4 0l-.6-1a2 2 0 0 0-2.2-.9l-1.1.3a2 2 0 0 1-2.4-2.4l.3-1.1a2 2 0 0 0-.9-2.2l-1-.6a2 2 0 0 1 0-3.4l1-.6a2 2 0 0 0 .9-2.2l-.3-1.1a2 2 0 0 1 2.4-2.4l1.1.3a2 2 0 0 0 2.2-.9l.6-1Z" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.5"/></svg>
-            <span class="rail-i-label">Admin</span>
-        </a>
-    </div>
-    {% else %}
     {# Admin — the last thing in the bottom zone, behind the nav's only divider
        (rail.css): a different KIND of destination from Library/Agents
        (operating the instance vs. using it).
 
-       Open, it lists its seven areas as SUBITEMS — one row each, and that is
-       all. The links inside an area appear in a flyout beside the rail on
-       hover / focus / click, never inline. That is what keeps the two zones
-       fixed: the old version nested a <details> per area that expanded IN the
-       column, so opening "Agent Experience" alone added seven rows and pushed
-       the profile down — and because the areas restored their own open state,
-       the rail's height (and therefore where every row below sat) differed
-       from page to page. An absolutely-positioned flyout contributes no
-       height, so `Admin` open is now always exactly seven rows tall.
+       ONE PLAIN LINK, on every page. No flyout, no <details>, no sub-rows.
+       What was here: a hover/focus flyout listing seven "areas", each opening
+       a panel of links beside the rail — a second, hand-written copy of the
+       admin inventory that had already drifted from the real one in
+       `app/web/admin_nav.py` (different labels, different grouping, and three
+       `/documentation` links that are not admin pages at all — that route is
+       gated by `get_current_user`, not `require_admin`). Two IAs for one
+       section is a maintenance trap, and the flyout was the wrong half to
+       keep: it could only ever be a menu, where `/admin` is a page that
+       explains itself (a card grid of every area, `admin_hub.html`, which is
+       also where the Documentation links live on).
 
-       Data-driven so the row + flyout markup is written once; the area rows
-       and their links are the same set the header dropdown carries
-       (_app_header.html), which is the parity contract to keep in step.
-       `match` is the list of path prefixes that mean "this link is the page
-       you're on" — the area row picks up a quiet marker when any of its own
-       links match (it is the ROUTE to the active page, not the active page
-       itself, so it deliberately does not take the `.on` tint).
-
-       Native <details> throughout: click toggles, Escape/blur closes, and the
-       whole thing works with zero JS — which it has to, since the rail's only
-       script (rail_history.js) is chat-gated and an admin without a chat grant
-       would otherwise get a dead Admin section.
-
-       Users & Access carries three items matching the tab strip that section
-       renders (_people_tabs.html). "Resource access" is gone as a
-       destination: grants are group-scoped, so they live on the group's own
-       detail page (Access tab) under Groups. #}
-    {% set admin_sections = [
-        {'label': 'Activity Center', 'items': [
-            {'label': 'Adoption', 'href': '/admin/adoption', 'match': ['/admin/adoption']},
-            {'label': 'Audit log', 'href': '/admin/activity', 'match': ['/admin/activity']},
-            {'label': 'Telemetry', 'href': '/admin/telemetry', 'match': ['/admin/telemetry', '/admin/usage']},
-            {'label': 'Analyst sessions', 'href': '/admin/sessions', 'match': ['/admin/sessions']},
-            {'label': 'Chat sessions', 'href': '/admin/chat', 'match': ['/admin/chat']}]},
-        {'label': 'Users & Access', 'items': [
-            {'label': 'People', 'href': '/admin/users', 'match': ['/admin/users']},
-            {'label': 'Groups', 'href': '/admin/groups', 'match': ['/admin/groups', '/admin/access']},
-            {'label': 'Tokens', 'href': '/admin/tokens', 'match': ['/admin/tokens']}]},
-        {'label': 'Data Packages', 'items': [
-            {'label': 'Tables', 'href': '/admin/tables', 'match': ['/admin/tables']},
-            {'label': 'Sync', 'href': '/admin/sync', 'match': ['/admin/sync']}]},
-        {'label': 'Sources', 'items': [
-            {'label': 'Data sources', 'href': '/admin/data-sources', 'match': ['/admin/data-sources']},
-            {'label': 'MCP sources', 'href': '/admin/mcp-sources', 'match': ['/admin/mcp-sources', '/admin/mcp-tools']},
-            {'label': 'Instance secrets', 'href': '/admin/datasource-credentials', 'match': ['/admin/datasource-credentials']}]},
-        {'label': 'Agent Experience', 'items': [
-            {'label': 'Curated Marketplaces', 'href': '/admin/marketplaces', 'match': ['/admin/marketplaces']},
-            {'label': 'Initial Workspace', 'href': '/admin/initial-workspace', 'match': ['/admin/initial-workspace']},
-            {'label': 'News', 'href': '/admin/news', 'match': ['/admin/news']},
-            {'label': 'Curated memory reviews', 'href': '/admin/corporate-memory', 'match': ['/admin/corporate-memory']},
-            {'label': 'Maintained digests', 'href': '/admin/knowledge-digests', 'match': ['/admin/knowledge-digests']},
-            {'label': 'Flea Submissions', 'href': '/admin/store/submissions', 'match': ['/admin/store/submissions']},
-            {'label': 'Prompts', 'href': '/admin/prompts', 'match': ['/admin/prompts', '/admin/agent-prompt', '/admin/workspace-prompt']}]},
-        {'label': 'Documentation', 'items': [
-            {'label': 'API Guide', 'href': '/documentation/api', 'match': ['/documentation']},
-            {'label': 'Interactive API (Swagger)', 'href': '/docs', 'match': []},
-            {'label': 'API Reference (ReDoc)', 'href': '/redoc', 'match': []}]},
-        {'label': 'Server', 'items': [
-            {'label': 'Instance settings', 'href': '/admin/server-config', 'match': ['/admin/server-config']},
-            {'label': 'Database backend', 'href': '/admin/database', 'match': ['/admin/database']}]},
-    ] %}
-    <details class="rail-admin" {% if _admin_active %}open{% endif %}>
-        <summary class="rail-i rail-admin-summary {% if _admin_active %}on{% endif %}">
+       So Admin goes where Admin goes: to `/admin`. From there the admin
+       sidebar (`_admin_nav.html`) carries the sections, and it is the single
+       inventory both surfaces read. Active on the whole `/admin` subtree,
+       since every one of those pages IS this destination. #}
+    <div class="rail-admin">
+        <a class="rail-i {% if _admin_page %}on{% endif %}" href="/admin">
             {# The cog's every command after the moveto is RELATIVE, so the
                start y is what centres the whole outline: at the original 4.3 it
-               ran 3.35 → 24.45 (centre 13.9), i.e. 1.9 low — clipped at the
+               ran 3.35 -> 24.45 (centre 13.9), i.e. 1.9 low — clipped at the
                foot of the viewBox and not concentric with its own inner circle.
-               2.4 puts it at 1.45 → 22.55, matching the x extent exactly. #}
+               2.4 puts it at 1.45 -> 22.55, matching the x extent exactly. #}
             <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M10.3 2.4a2 2 0 0 1 3.4 0l.6 1a2 2 0 0 0 2.2.9l1.1-.3a2 2 0 0 1 2.4 2.4l-.3 1.1a2 2 0 0 0 .9 2.2l1 .6a2 2 0 0 1 0 3.4l-1 .6a2 2 0 0 0-.9 2.2l.3 1.1a2 2 0 0 1-2.4 2.4l-1.1-.3a2 2 0 0 0-2.2.9l-.6 1a2 2 0 0 1-3.4 0l-.6-1a2 2 0 0 0-2.2-.9l-1.1.3a2 2 0 0 1-2.4-2.4l.3-1.1a2 2 0 0 0-.9-2.2l-1-.6a2 2 0 0 1 0-3.4l1-.6a2 2 0 0 0 .9-2.2l-.3-1.1a2 2 0 0 1 2.4-2.4l1.1.3a2 2 0 0 0 2.2-.9l.6-1Z" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.5"/></svg>
             <span class="rail-i-label">Admin</span>
-            <svg class="rail-admin-caret" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        </summary>
-        <div class="rail-admin-groups">
-            {% for sec in admin_sections %}
-            {% set _sec_hit = _admin_hit(_path, sec['items'] | map(attribute='match') | sum(start=[])) | trim %}
-            <div class="rail-admin-sub">
-                {# A plain <button>, NOT a nested <details>: Chrome now hides a
-                   closed <details>'s content via `::details-content
-                   { content-visibility: hidden }`, which an author `display`
-                   rule on the child cannot override — so a hover-revealed
-                   panel inside a closed <details> never appears. The button
-                   opens the panel on hover and, because clicking it leaves it
-                   focused, on click too (`:focus-within`, which also covers
-                   tabbing in from the keyboard). Blur / moving away closes it.
-                   No JS, deliberately — see the section note above. #}
-                <button type="button" class="rail-admin-sub-row {% if _sec_hit %}has-active{% endif %}"
-                        aria-haspopup="true">
-                    <span class="rail-admin-sub-txt">{{ sec['label'] }}</span>
-                    <svg class="rail-admin-sub-caret" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                </button>
-                {# Opens beside the rail (never inline — see the note above), so
-                   it costs the column no height and can be as long as the area
-                   needs. #}
-                <div class="rail-admin-flyout" role="group" aria-label="{{ sec['label'] }}">
-                    {% for it in sec['items'] %}
-                    <a class="rail-admin-flyout-item {% if _admin_hit(_path, it['match']) | trim %}is-active{% endif %}"
-                       href="{{ it['href'] }}">{{ it['label'] }}</a>
-                    {% endfor %}
-                </div>
-            </div>
-            {% endfor %}
-        </div>
-    </details>
-    {% endif %}{# /_admin_page #}
+        </a>
+    </div>
     {% endif %}{# /session.user.is_admin #}
 
     {# "How {brand} works" is no longer a row here — it is a `.rail-meta` row in
@@ -643,14 +586,7 @@
                 <div class="app-user-menu-sep" role="separator"></div>
                 <a class="app-user-menu-item" role="menuitem" href="{{ url_for('auth.logout') }}">Logout</a>
                 <div class="app-user-menu-sep" role="separator"></div>
-                <div class="app-theme-toggle" id="themeToggle" role="radiogroup" aria-label="Theme">
-                    <span class="app-theme-toggle-label">Theme</span>
-                    <div class="app-theme-toggle-options">
-                        <button type="button" role="radio" aria-checked="false" tabindex="-1" data-theme-choice="light" class="app-theme-toggle-btn">Light</button>
-                        <button type="button" role="radio" aria-checked="false" tabindex="-1" data-theme-choice="dark" class="app-theme-toggle-btn">Dark</button>
-                        <button type="button" role="radio" aria-checked="false" tabindex="-1" data-theme-choice="system" class="app-theme-toggle-btn">System</button>
-                    </div>
-                </div>
+                {% include "_theme_toggle.html" %}
             </div>
         </div>
     </div>
@@ -659,11 +595,14 @@
    chromes. Defer keeps it non-blocking. #}
 <script src="{{ static_url('app.js') }}" defer></script>
 <script src="{{ static_url('js/global_search.js') }}" defer></script>
-{# Icon-mode rail (/admin/* pages): hover and `:focus-within` expand it via
-   CSS alone (rail.css) — this only wires what CSS can't do on its own, the
-   tap/click pin for touch and an Escape that releases `:focus-within`
-   before collapsing. See js/rail_icon_mode.js. #}
-{% if _admin_page %}<script src="{{ static_url('js/rail_icon_mode.js') }}" defer></script>{% endif %}
+{# The collapsed/expanded preference: hover and `:focus-within` already peek
+   the collapsed rail open via CSS alone (rail.css) — this wires what CSS
+   can't do on its own: the `#rail-toggle` click (persists the preference to
+   localStorage and flips the class immediately), the Cmd/Ctrl+\ shortcut,
+   and the "Pin navigation open" label swap while merely peeking. Loaded on
+   EVERY rail page, not just /admin — the preference is honored everywhere.
+   See js/rail_toggle.js. #}
+<script src="{{ static_url('js/rail_toggle.js') }}" defer></script>
 {# Fills the Pinned + Chats lists on every page EXCEPT /chat (where chat.js owns
    the rows), and owns the two sections' collapse state + counts on ALL rail
    pages, /chat included — AND the onboarding card's popover open/click/Escape
@@ -678,7 +617,10 @@
    load on a rail /chat page (chat.html loads it too). Skipped on an admin
    page — there are no conversation rows there for it to menu. #}
 {% if can_chat %}
-{% if not _admin_page %}<script src="{{ static_url('js/components/chat_row_menu.js') }}" defer></script>{% endif %}
+{# Loaded on admin pages too, now that the conversation region renders there:
+   the rows are the standard rail's rows, so they get the standard rail's
+   per-row "⋮" menu rather than a degraded copy. #}
+<script src="{{ static_url('js/components/chat_row_menu.js') }}" defer></script>
 <script src="{{ static_url('js/rail_history.js') }}" defer></script>
 {% endif %}
 {# Mounts the onboarding checklist into the card's popover on rail pages

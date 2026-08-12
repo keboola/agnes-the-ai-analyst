@@ -14,6 +14,7 @@ Three guarantees:
 """
 
 import re
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -154,6 +155,52 @@ class TestRailBodyClearance:
         assert 'html[data-ui-layout="rail"] body:has(.rail) {\n        padding-left: 0;' in narrow, (
             "the narrow-screen override no longer matches the desktop rule's specificity"
         )
+
+    def test_clearance_is_published_beside_every_padding_that_encodes_it(self, web_client):
+        """`position: fixed` chrome cannot inherit the body padding — it is laid
+        out against the viewport — so it reads the same edge from
+        `--rail-clearance`. Every rule that sets the padding must set the
+        variable to the SAME value in the same block, or the two drift and the
+        fixed chrome ends up somewhere the content is not."""
+        css = web_client.get("/static/css/rail.css").text
+        # Only the blocks that actually declare the padding — a `body:has(.rail)`
+        # rule carrying just the transition has no edge of its own to publish.
+        blocks = [body for body in re.findall(r"body:has\(\.rail[^)]*\)\s*\{([^}]*)\}", css) if "padding-left:" in body]
+        assert len(blocks) >= 3, blocks
+        for body in blocks:
+            pad = re.search(r"padding-left:\s*([^;]+);", body)
+            var = re.search(r"--rail-clearance:\s*([^;]+);", body)
+            assert pad and var, f"a rail clearance rule is missing one of the pair: {body!r}"
+            # 0 and 0px are the same edge; compare numerically.
+            assert float(pad.group(1).rstrip("px")) == float(var.group(1).rstrip("px")), body
+
+    def test_no_fixed_chrome_hardcodes_the_expanded_rail_width(self):
+        """The bug this guards: `.fbar-dock`, `.fbar-dock__veil` and `.ch-bulk`
+        each pinned `left: 240px` under `html[data-ui-layout="rail"]`. 240px is
+        the EXPANDED rail's width and nothing more, so once the rail could be
+        collapsed to 56px the docked toolbar centred 184px right of its content
+        and the veil's blur started 184px in — sliced off down its left edge.
+        They read `--rail-clearance` now; a new literal is the same bug.
+
+        rail.css is exempt because it OWNS the number — it is the one file that
+        may say 240px, and the test above is what keeps the variable it
+        publishes in step with the padding it declares."""
+        offenders = []
+        for path in sorted(Path("app/web/static/css").glob("*.css")):
+            if path.name == "rail.css":
+                continue
+            # Declarations only — a comment recounting the old bug is not one.
+            # Blanked in place (newlines kept) so line numbers stay reportable.
+            code = re.sub(
+                r"/\*.*?\*/",
+                lambda m: "\n" * m.group(0).count("\n"),
+                path.read_text(encoding="utf-8"),
+                flags=re.S,
+            )
+            for lineno, line in enumerate(code.splitlines(), 1):
+                if re.search(r"(?<![-\w])(left|right)\s*:\s*240px", line):
+                    offenders.append(f"{path}:{lineno}: {line.strip()}")
+        assert not offenders, "hardcoded rail offset — use var(--rail-clearance, 0px):\n" + "\n".join(offenders)
 
 
 class TestRailOptIn:
@@ -313,13 +360,16 @@ class TestRailOptIn:
         assert "rail-studio" not in css
         assert "rail-badge--maybe" not in css
         assert "rail-nav-sep" not in css
-        # The admin <details> section is NOT retired chrome — it is live, so
-        # its rules must be present rather than absent. Admin expands in the
-        # rail into one row per area, with each area's links in a flyout beside
-        # the column (see test_rail_admin_expands_into_area_rows_with_flyouts).
-        assert "rail-admin-summary" in css
-        assert "rail-admin-groups" in css
-        assert "rail-admin-flyout" in css
+        # Admin is live chrome, so its rule must be present rather than
+        # absent — but it is now ONE plain link to /admin, so what survives is
+        # the `.rail-admin` wrapper that carries the divider above it. The
+        # flyout machinery it used to open is retired chrome like the rest,
+        # and its rules must be gone (see TestRailAdminIsOnePlainLink).
+        assert "rail-admin {" in css
+        assert "rail-admin-summary" not in css
+        assert "rail-admin-groups" not in css
+        assert "rail-admin-flyout" not in css
+        assert "rail-admin-sub" not in css
         # The retired /ask hero (#896) is gone: no rail nav item points at it,
         # and the Chat slot renders only when cloud-chat is actually reachable.
         assert 'href="/ask"' not in text
@@ -996,13 +1046,11 @@ class TestRailTwoZones:
         for selector in (
             'html[data-ui-layout="rail"] .rail-i.on {',
             'html[data-ui-layout="rail"] .rail-history .cloud-chat-list li.active,',
-            'html[data-ui-layout="rail"] .rail-admin-flyout-item.is-active {',
         ):
             assert "background: var(--rail-active-bg)" in block_for(selector), selector
         for selector in (
             'html[data-ui-layout="rail"] .rail-i:hover {',
             'html[data-ui-layout="rail"] .rail-history .cloud-chat-list li[data-id]:hover {',
-            'html[data-ui-layout="rail"] .rail-admin-flyout-item:hover {',
         ):
             assert "background: var(--rail-hover-bg)" in block_for(selector), selector
 
@@ -1132,117 +1180,64 @@ class TestRailTwoZones:
         assert 'html[data-ui-layout="rail"] .rail-history-all {' in css
 
 
-class TestRailAdminSubitems:
-    """Admin's areas are SUBITEMS with side flyouts, never an inline tree.
+class TestRailAdminIsOnePlainLink:
+    """Admin in the rail is ONE plain link to /admin, on every page.
 
-    The old version nested a `<details>` per area that expanded in the column,
-    so opening one added its links to the rail's height — and since the areas
-    restored their own open state, the height (and therefore where every row
-    below sat) differed from page to page. The flyout is absolutely positioned,
-    so `Admin` open now costs a fixed seven rows and the two zones never drift.
-    """
+    It used to open a hover/focus flyout listing seven "areas", each with its
+    own panel of links beside the column. That was a second, hand-written copy
+    of the admin inventory in `app/web/admin_nav.py`, and it had already
+    drifted from it: different labels, different grouping, and three
+    `/documentation` links that are not admin pages at all (that route is
+    gated by `get_current_user`, not `require_admin`). Two IAs for one section
+    is a maintenance trap, and the flyout was the wrong half to keep — it could
+    only ever be a menu, where `/admin` is a page that explains itself and
+    carries those Documentation links on its own card grid.
 
-    def _rail(self, web_client, admin_cookie, path="/stack"):
-        text = web_client.get(path, cookies=admin_cookie).text
-        return text.split('<nav class="rail"', 1)[1].split("</nav>", 1)[0]
+    These tests are the replacement for four that pinned the flyout's
+    anatomy (subitem rows, button-not-nested-details, positioned-not-inline,
+    and the active/traced-area marking)."""
 
-    def test_areas_are_subitem_rows_with_flyouts(self, web_client, admin_cookie, monkeypatch):
+    def test_no_flyout_markup_on_a_non_admin_rail_page(self, web_client, admin_cookie, monkeypatch):
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
-        rail = self._rail(web_client, admin_cookie)
-        # Seven areas, each a subitem row + its own flyout.
-        assert rail.count('class="rail-admin-sub"') == 7
-        assert rail.count("rail-admin-sub-row") == 7
-        assert rail.count('class="rail-admin-flyout"') == 7
-        # Every link the header dropdown carries is still reachable, now inside
-        # a flyout rather than inline in the column.
-        for href in (
-            "/admin/adoption",
-            "/admin/activity",
-            "/admin/telemetry",
-            "/admin/sessions",
-            "/admin/chat",
-            "/admin/users",
-            # /admin/access is deliberately absent: resource grants are
-            # group-scoped, so they live on the group detail page's Access
-            # tab rather than as their own nav destination.
-            "/admin/groups",
-            "/admin/tokens",
-            "/admin/tables",
-            "/admin/sync",
-            "/admin/data-sources",
-            "/admin/mcp-sources",
-            "/admin/datasource-credentials",
-            "/admin/marketplaces",
-            "/admin/initial-workspace",
-            "/admin/news",
-            "/admin/corporate-memory",
-            "/admin/knowledge-digests",
-            "/admin/store/submissions",
-            "/admin/prompts",
-            "/documentation/api",
-            "/docs",
-            "/redoc",
-            "/admin/server-config",
-            "/admin/database",
-        ):
-            assert f'href="{href}"' in rail, f"admin flyouts dropped {href}"
-
-    def test_area_row_is_a_button_not_a_nested_details(self, web_client, admin_cookie, monkeypatch):
-        """A closed `<details>` hides its content via `::details-content
-        { content-visibility: hidden }` in Chrome, which an author `display`
-        rule cannot override — a hover-revealed panel inside one never appears.
-        The area row must stay a plain <button>."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
-        rail = self._rail(web_client, admin_cookie)
-        assert '<button type="button" class="rail-admin-sub-row' in rail
-        assert '<details class="rail-admin-sub"' not in rail
-        assert '<summary class="rail-admin-sub-row' not in rail
-        # The topnav dropdown-panel classes are gone from the rail — the rail
-        # styles its own rows now instead of resetting a leaked skin.
-        assert "app-nav-menu-group" not in rail
-        assert "app-nav-menu-section" not in rail
-        assert "app-nav-menu-item" not in rail
-
-    def test_flyout_is_positioned_not_inline(self, web_client, admin_cookie, monkeypatch):
-        """The whole point: an area's links cost the column no height, and are
-        revealed by hover AND focus (the latter covers click + keyboard)."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
-        css = web_client.get("/static/css/rail.css").text
-        block = css.split('html[data-ui-layout="rail"] .rail-admin-flyout {', 1)[1].split("}", 1)[0]
-        assert "position: absolute" in block
-        assert "display: none" in block
-        assert "left: 100%" in block  # beside the rail, in the page's left band
-        assert "bottom: -6px" in block  # grows upward — Admin sits at the foot
-        reveal = 'html[data-ui-layout="rail"] .rail-admin-sub:hover > .rail-admin-flyout'
-        assert reveal in css
-        assert 'html[data-ui-layout="rail"] .rail-admin-sub:focus-within > .rail-admin-flyout' in css
-
-    def test_active_admin_page_marks_the_link_and_traces_its_area(self, web_client, admin_cookie, monkeypatch):
-        """On a page the flyout covers that is NOT itself under `/admin/*`
-        (`/documentation/api` — the Documentation area's links are
-        `/documentation`, `/docs`, `/redoc`, none `/admin`-prefixed): the
-        LINK takes the primary tint (`is-active`), and its area row only
-        gets the quiet `has-active` trace — the active destination stays the
-        one tinted row. A real `/admin/*` page no longer renders this flyout
-        at all — see `_app_rail.html`'s `_admin_page` branch and
-        tests/test_web_admin_nav.py::TestRailIconModeOnAdminPages for that
-        replacement (a plain, always-active link to `/admin`)."""
-        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
-        resp = web_client.get("/documentation/api", cookies=admin_cookie)
+        resp = web_client.get("/stack", cookies=admin_cookie)
         assert resp.status_code == 200
-        rail = resp.text.split('<nav class="rail"', 1)[1].split("</nav>", 1)[0]
-        # Admin auto-opens when the current page is one of its own areas.
-        assert '<details class="rail-admin" open>' in rail
-        # The API Guide link is the active destination (class attr precedes href).
-        api_link = rail.split('href="/documentation/api"', 1)[0].rsplit("<a ", 1)[1]
-        assert "rail-admin-flyout-item is-active" in api_link
-        # Exactly one area row carries the trace (Documentation).
-        assert rail.count("has-active") == 1
-        doc = rail.split("Documentation", 1)[0].rsplit('class="rail-admin-sub-row', 1)[1]
-        assert "has-active" in doc
-        # ...and area rows never take the `.on` destination tint.
-        for row in rail.split('class="rail-admin-sub-row')[1:]:
-            assert ' on"' not in row.split(">", 1)[0]
+        rail = resp.text.split('<nav class="rail', 1)[1].split("</nav>", 1)[0]
+        for gone in (
+            "rail-admin-summary",
+            "rail-admin-groups",
+            "rail-admin-sub",
+            "rail-admin-flyout",
+            "rail-admin-caret",
+            "<details",
+        ):
+            assert gone not in rail, gone
+
+    def test_admin_row_links_to_the_hub_and_is_active_across_the_subtree(self, web_client, admin_cookie, monkeypatch):
+        """Every /admin/* page IS this destination, so the row reads active
+        across the whole subtree — not only on the hub itself."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        for path in ("/admin", "/admin/users"):
+            resp = web_client.get(path, cookies=admin_cookie)
+            assert resp.status_code == 200, path
+            rail = resp.text.split('<nav class="rail', 1)[1].split("</nav>", 1)[0]
+            admin_row = rail.split('href="/admin"', 1)[0].rsplit("<a ", 1)[1]
+            assert "rail-i" in admin_row, path
+            assert "on" in admin_row, path
+
+        # ...and NOT active on a page outside it.
+        resp = web_client.get("/stack", cookies=admin_cookie)
+        rail = resp.text.split('<nav class="rail', 1)[1].split("</nav>", 1)[0]
+        admin_row = rail.split('href="/admin"', 1)[0].rsplit("<a ", 1)[1]
+        assert " on" not in admin_row
+
+    def test_documentation_is_still_reachable_from_the_hub(self, web_client, admin_cookie, monkeypatch):
+        """The flyout was the only rail path to the API Guide. Retiring it is
+        only safe because /admin carries those links — assert that, rather
+        than trusting it."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/admin", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert 'href="/documentation/api"' in resp.text
 
 
 class TestDashboardLandingRedirect:
