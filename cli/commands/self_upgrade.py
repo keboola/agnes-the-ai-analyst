@@ -67,8 +67,8 @@ class _Offline:
 _OFFLINE = _Offline()
 
 
-class _Moved:
-    """Sentinel for "the server answered, with a redirect somewhere else".
+class _Redirected:
+    """Sentinel for "the server answered, with a redirect the CLI won't follow".
 
     Distinct from ``_Unreachable``/``_Offline`` because the probe did NOT
     fail: a relocated deployment leaves the old hostname answering `308`,
@@ -77,10 +77,22 @@ class _Moved:
     to "probe failed", that produced a silent no-op without `--force` and
     the untrue `cannot reach <old>/cli/latest` with it — on the very
     command someone runs to repair a stale install.
+
+    Covers EVERY redirect, not only a cross-host move: a same-origin bounce
+    (an SSO proxy answering `302 /login`) or a downgrade to plaintext is
+    equally a probe the CLI cannot complete, and "cannot reach" is equally
+    untrue of it — the server answered. What differs is the remedy, and
+    ``cli.server_moved`` already classifies that, handing back the new
+    address for a real move and a proxy hint otherwise. Named for the
+    evidence (a redirect), not the diagnosis (Devin Review on #1275).
     """
 
-    def __init__(self, message: str) -> None:
+    def __init__(self, message: str, reason: str) -> None:
         self.message = message
+        #: One short line for ``upgrade_status.json`` — the multi-line
+        #: ``message`` is for a terminal, this rides inside a warning
+        #: sentence on some later command.
+        self.reason = reason
 
 
 def _invalidate_update_cache() -> None:
@@ -671,8 +683,16 @@ def _try_refresh_hooks(*, quiet: bool) -> None:
 _PROBE_TIMEOUT_SECONDS = 3.0
 
 
-def _probe_moved(server_url: str) -> Optional[str]:
-    """A moved-server explanation when ``/cli/latest`` redirects, else ``None``.
+#: Short ``upgrade_status.json`` reasons per ``classify_redirect`` code. The
+#: fallback covers ``unexpected_redirect`` — same address, nothing to name.
+_REDIRECT_REASONS = {
+    "server_moved": "server moved to {target}",
+    "insecure_redirect": "server redirected to plaintext {target}",
+}
+
+
+def _probe_redirect(server_url: str) -> Optional[_Redirected]:
+    """A redirect verdict when ``/cli/latest`` redirects, else ``None``.
 
     Runs only after the normal probe already came back empty, so the happy
     path pays nothing. Deliberately does not follow the redirect: httpx
@@ -682,7 +702,7 @@ def _probe_moved(server_url: str) -> Optional[str]:
     """
     import httpx
 
-    from cli.server_moved import is_redirect, moved_server_message
+    from cli.server_moved import classify_redirect, is_redirect, moved_server_message
 
     try:
         with httpx.Client(base_url=server_url, timeout=_PROBE_TIMEOUT_SECONDS) as c:
@@ -691,10 +711,13 @@ def _probe_moved(server_url: str) -> Optional[str]:
         return None  # genuinely unreachable — the caller's existing verdict stands
     if not is_redirect(resp.status_code):
         return None
-    return moved_server_message(resp.status_code, resp.headers.get("Location", ""), server_url)
+    location = resp.headers.get("Location", "")
+    code, target = classify_redirect(location, server_url)
+    reason = _REDIRECT_REASONS.get(code, "server redirected the update check").format(target=target)
+    return _Redirected(moved_server_message(resp.status_code, location, server_url), reason)
 
 
-def _resolve_info(force: bool) -> Union[UpdateInfo, _Unreachable, _Offline, _Moved, None]:
+def _resolve_info(force: bool) -> Union[UpdateInfo, _Unreachable, _Offline, _Redirected, None]:
     """Returns:
     UpdateInfo  — install this wheel
     _UNREACHABLE — --force specified, server probe failed
@@ -714,9 +737,9 @@ def _resolve_info(force: bool) -> Union[UpdateInfo, _Unreachable, _Offline, _Mov
         # `check` is silent on every failure path, so a probe that came back
         # as a REDIRECT is indistinguishable here from a dead server. Ask
         # once, on the failure path only, before calling it unreachable.
-        moved = _probe_moved(server_url)
-        if moved:
-            return _Moved(moved)
+        redirected = _probe_redirect(server_url)
+        if redirected:
+            return redirected
         return _UNREACHABLE if force else _OFFLINE
     if not info.download_url:
         return None
@@ -894,7 +917,10 @@ def self_upgrade(
     check_only: bool = typer.Option(
         False,
         "--check-only",
-        help="Print status, don't install. Exit 1 if outdated.",
+        help=(
+            "Print status, don't install. Exit 1 if outdated, or if the server "
+            "answered the check with a redirect the CLI won't follow."
+        ),
     ),
     force: bool = typer.Option(
         False,
@@ -918,12 +944,26 @@ def self_upgrade(
         # --check-only is read-only intent — never exit non-zero on
         # transport errors. If unreachable or offline, treat as "can't
         # tell, current" and exit 0 silently.
-        # A moved server is the one probe failure with an actionable answer,
-        # so it is reported before the generic ones — including under
-        # --check-only, which otherwise swallows every transport verdict.
+        # A redirect is the one probe failure where the server ANSWERED, so
+        # it is reported before the generic ones — including under
+        # --check-only, which otherwise swallows every transport verdict:
+        # exiting 0 there would report "up to date" about a check that never
+        # ran (--check-only's help names this second exit-1 case).
         # --quiet stays silent: that is the SessionStart hook, and its
         # non-noisy contract (#601) outranks this diagnosis.
-        if isinstance(info, _Moved):
+        if isinstance(info, _Redirected):
+            # Count it, unlike `_Offline`. That branch skips the counter
+            # because a network blip is transient and would raise a false
+            # alarm; a redirect is deterministic — it repeats on every
+            # invocation until someone re-points the CLI. On the quiet
+            # SessionStart path nothing is printed, so the #478 counter is
+            # the ONLY channel that will ever mention this: without it the
+            # analyst sits on a stale CLI indefinitely seeing nothing, which
+            # is the exact failure this branch exists to end. At the
+            # threshold the next non-quiet command says self-upgrade keeps
+            # failing and names the reason, and running it prints the
+            # remedy below. (Devin Review on #1275.)
+            record_outcome(success=False, reason=info.reason)
             if quiet:
                 _try_refresh_hooks(quiet=quiet)
                 raise typer.Exit(0)
