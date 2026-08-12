@@ -229,9 +229,20 @@ def _echo_delivery_warnings(data: dict) -> None:
         f"warning: {len(by_item)} item(s) carry text an agent will read as an instruction:",
         err=True,
     )
+    # Group by excerpt, not by finding: one sentence commonly trips several
+    # patterns at once ("type /exit and rerun claude … recaps disabled in
+    # /config" matches all three), and printing it once per kind made a single
+    # flagged sentence look like three separate problems. Seen on a live run.
     for item_id, findings in by_item.items():
+        kinds_by_excerpt: dict[str, list[str]] = {}
         for f in findings:
-            typer.echo(f"  {item_id} [{f.get('kind')}] {f.get('excerpt')}", err=True)
+            excerpt = str(f.get("excerpt") or "")
+            kind = str(f.get("kind") or "")
+            kinds = kinds_by_excerpt.setdefault(excerpt, [])
+            if kind not in kinds:
+                kinds.append(kind)
+        for excerpt, kinds in kinds_by_excerpt.items():
+            typer.echo(f"  {item_id} [{', '.join(kinds)}] {excerpt}", err=True)
     notice = data.get("delivery_notice")
     if notice:
         typer.echo(f"{notice}", err=True)
