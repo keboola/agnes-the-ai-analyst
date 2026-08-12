@@ -9932,6 +9932,11 @@
             ],
             "title": "Created At"
           },
+          "data_package_count": {
+            "default": 0,
+            "title": "Data Package Count",
+            "type": "integer"
+          },
           "deactivated_at": {
             "anyOf": [
               {
@@ -9990,6 +9995,17 @@
             "default": false,
             "title": "Is Sso User",
             "type": "boolean"
+          },
+          "last_pull_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Pull At"
           },
           "name": {
             "anyOf": [
@@ -10624,8 +10640,8 @@
     },
     "/admin/access": {
       "get": {
-        "description": "Retired \u2014 the grant matrix is now the group detail page's Access tab.\n\nKeeps the admin gate the page itself carried: the destination is gated\ntoo, but a bare redirect would answer a non-admin with a 308 naming an\ninternal URL where the page answered 403.",
-        "operationId": "admin_access_redirect_admin_access_get",
+        "description": "The Access surface \u2014 the third leg of People \u2192 Data \u2192 Access.\n\nThis URL has had three lives, and the middle one is why the current\nshape is what it is. It was a standalone grant matrix; it was retired\ninto the group detail page's **Access tab**, correctly, because\n``resource_grants`` keys on ``group_id`` and the old page was the same\neditor behind a second group picker; and it returns here as the thing\nthat tab cannot be \u2014 a workspace over the whole graph, with two jobs no\nsurface in the product had:\n\n  * move between groups without a page load each time (left column is\n    the group list, right pane is the editor), and\n  * answer \"why can/can't this person see X?\" \u2014 the **Simulate** tab\n    walks membership \u2192 grant \u2192 tier and names what is NOT shared, which\n    previously meant joining four pages by hand.\n\nIt is deliberately NOT a fork: the page renders the same\n``resource_grants`` rows through the same ``/api/admin/grants``\nendpoints as the group tab and the package-side Share editor, reading\nits snapshot from ``/api/admin/access-overview`` in one round trip. The\ngroup detail tab stays \u2014 it is where you land from a group, and it\ncarries Members beside Access.\n\n``?group=<id>`` selects that group (the shape the retired redirect\naccepted, so old links keep working).",
+        "operationId": "admin_access_page_admin_access_get",
         "parameters": [
           {
             "in": "header",
@@ -10666,7 +10682,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Admin Access Redirect",
+        "summary": "Admin Access Page",
         "tags": [
           "web"
         ]
@@ -11656,7 +11672,7 @@
     },
     "/admin/grants": {
       "get": {
-        "description": "Backward-compat redirect for the page's previous URL.",
+        "description": "Backward-compat redirect for the page's oldest URL.\n\nCarries ``?group=`` through, which the Access page reads to preselect a\ngroup. Keeps the admin gate the destination has, so a non-admin gets 403\nhere rather than a 308 naming an internal URL.",
         "operationId": "admin_grants_redirect_admin_grants_get",
         "parameters": [
           {

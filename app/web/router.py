@@ -6776,6 +6776,18 @@ async def admin_users_page(
     ctx["group_filter_options"] = [{"value": "", "label": "All groups"}] + [
         {"value": g["id"], "label": g["name"]} for g in groups
     ]
+    # Identity provider, for the strip above the table. Google Workspace
+    # produces PEOPLE (sign-in + nightly group sync), not tables — so its
+    # status belongs on the page showing the people it produces, not in Data.
+    # `google_group_count` is what makes the strip checkable rather than
+    # decorative: it is the number of groups Workspace actually owns here, so
+    # "why isn't Maria in Finance yet?" starts with a real number.
+    from app.instance_config import get_allowed_domains
+
+    ctx["idp_domains"] = get_allowed_domains()
+    ctx["google_group_count"] = sum(
+        1 for g in groups if str(g.get("created_by") or "").startswith("system:google-sync")
+    )
     return templates.TemplateResponse(request, "admin_users.html", ctx)
 
 

@@ -136,3 +136,60 @@ class TestAccessIsInTheNav:
         # The sidebar's active row is the Access one, and only it.
         assert body.count("admin-nav__link is-active") == 1
         assert 'href="/admin/access"' in body
+
+
+class TestMembersInContext:
+    """A group is two things — who is in it, and what it can use. Editing the
+    second while the first is a page away is where an admin loses the thread
+    ("Finance can use Revenue… is Maria even in Finance?"), so the membership
+    slice sits above the grants with the one write action that question leads
+    to.
+
+    It is a SLICE, not a second People section: the full roster,
+    deactivation and credentials stay on People, and this pane links there.
+    """
+
+    def _body(self, seeded_app) -> str:
+        c = seeded_app["client"]
+        return c.get("/admin/access", headers=_auth(seeded_app["admin_token"])).text
+
+    def test_the_members_pane_exists_above_the_grants(self, seeded_app):
+        body = self._body(seeded_app)
+        assert 'id="ax-members"' in body
+        # ...and before the resource sections in document order, because the
+        # question arrives in that order.
+        assert body.index('id="ax-members"') < body.index('id="ax-resources"')
+
+    def test_it_uses_the_canonical_membership_endpoints(self, seeded_app):
+        """Same rows the group detail page's Members tab writes — a second
+        membership store is how the two surfaces would start disagreeing about
+        who is in a group."""
+        body = self._body(seeded_app)
+        assert "/members" in body
+        assert '"POST"' in body and '"DELETE"' in body
+
+    def test_adding_a_stranger_routes_to_People_instead_of_failing_blankly(self, seeded_app):
+        """The common miss is a person with no account yet. That is a People
+        job, so the error names it rather than echoing a 404."""
+        body = self._body(seeded_app)
+        assert "invite them on People first" in body
+        assert "must already have an account" in body
+
+    def test_everyone_is_explained_not_enumerated(self, seeded_app):
+        """`Everyone` has automatic membership — listing its members would be
+        the user table with extra steps, and there is nothing to add."""
+        body = self._body(seeded_app)
+        assert "automatically" in body
+        assert "nothing to add or remove here" in body
+
+    def test_google_managed_membership_is_read_only(self, seeded_app):
+        """Workspace owns membership for synced groups and the API refuses
+        writes on them, so the pane must not offer an add field that cannot
+        work — it names where to do it instead."""
+        body = self._body(seeded_app)
+        assert "synced from Google Workspace" in body
+
+    def test_the_pane_routes_to_the_owning_surfaces(self, seeded_app):
+        body = self._body(seeded_app)
+        assert "Open group" in body
+        assert "All people" in body

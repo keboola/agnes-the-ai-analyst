@@ -27,7 +27,7 @@
 
 {% set page_hero_eyebrow = "Administration" %}
 {% set page_hero_title = "Access" %}
-{% set page_hero_subtitle = "Who can use what. Pick a group to edit its access, or simulate a person to see exactly what they get and why." %}
+{% set page_hero_subtitle = "Who can use what. Pick a group to see its members and edit what it can use, or simulate a person to check what they get and why. Accounts live in <a href=\"/admin/users\">People</a>; the packages themselves in <a href=\"/admin/data-packages\">Data</a>." %}
 
 {% block head_extra %}
 <style>
@@ -127,6 +127,48 @@
     border: 1px solid var(--ds-border-light);
     border-radius: 10px; padding: 10px 12px; margin-bottom: 12px;
   }
+
+  /* ── Members, in context ──────────────────────────────────────────────
+     A group is two things: who is in it, and what it can use. Editing the
+     second while the first is a page away is where an admin loses the
+     thread — "Finance can use Revenue… is Maria even in Finance?" — so the
+     membership slice sits above the grants, with the one write action that
+     question leads to. It is a SLICE, not a second People section: the full
+     roster, deactivation and credentials stay on People. */
+  .ax-members { margin-bottom: 14px; }
+  .ax-members__hd {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    font-size: 12.5px; font-weight: 700; color: var(--ds-text-secondary);
+    margin-bottom: 8px;
+  }
+  .ax-members__hd .end { margin-left: auto; display: flex; gap: 10px; align-items: center; }
+  .ax-members__hd .end a { font-size: 12.5px; font-weight: 600; }
+  .ax-people { display: flex; flex-wrap: wrap; gap: 6px; }
+  .ax-person {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 3px 10px 3px 4px; border-radius: var(--ds-radius-pill);
+    background: var(--ds-surface-dim); border: 1px solid var(--ds-border-light);
+    font-size: 12.5px; color: var(--ds-text-primary);
+  }
+  .ax-person__ava {
+    width: 20px; height: 20px; border-radius: 50%; flex: 0 0 auto;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 9.5px; font-weight: 800; color: #fff;
+  }
+  .ax-person__x {
+    border: none; background: none; cursor: pointer; padding: 0 0 0 2px;
+    color: var(--ds-text-muted); font-size: 13px; line-height: 1;
+  }
+  .ax-person__x:hover { color: var(--ds-accent-danger-ink); }
+  .ax-person.is-inactive { opacity: .55; }
+  .ax-members__empty { font-size: 12.5px; color: var(--ds-accent-warn-ink); font-weight: 600; }
+  .ax-addrow { display: flex; gap: 8px; align-items: center; margin-top: 9px; flex-wrap: wrap; }
+  .ax-addrow input {
+    font: inherit; font-size: 13px; padding: 6px 10px; min-width: 260px;
+    border: 1px solid var(--ds-border); border-radius: var(--ds-radius-btn);
+    background: var(--ds-surface); color: var(--ds-text-primary);
+  }
+  .ax-addrow .hint { font-size: 12px; color: var(--ds-text-muted); }
   .ax-empty { padding: 18px 4px; font-size: 13px; color: var(--ds-text-muted); }
 
   /* ── Simulate ── */
@@ -199,6 +241,9 @@
         <span class="end"><a href="#" id="ax-members-link" style="font-size:12.5px; font-weight:600; display:none;">Members →</a></span>
       </div>
       <div class="ax-panel__bd">
+        {# Who is in the group, before what it can use — the order the
+           question arrives in. #}
+        <div class="ax-members" id="ax-members"></div>
         <div class="ax-note">
           <strong>Optional</strong> shows the item in members' Library — they add it themselves.
           <strong>Automatic</strong> puts it in their workspace on the next sync.
@@ -408,14 +453,146 @@
     overview.grants = overview.grants.filter((g) => g.id !== grant.id);
   }
 
+  /* ── Members, in context ──────────────────────────────────────────────
+     Fetched per selected group (small, and always current — a cached roster
+     is the thing that would make "is Maria in Finance?" answerable and
+     wrong). Google-managed groups render read-only with the reason, since
+     Workspace owns their membership and the API refuses writes on them. */
+
+  const membersCache = new Map();
+
+  async function renderMembers() {
+    const host = el("ax-members");
+    if (!selectedGroup) { host.innerHTML = ""; return; }
+    const group = (overview.groups || []).find((g) => g.id === selectedGroup);
+    const everyone = group && group.is_system && group.name === "Everyone";
+
+    // `Everyone` has automatic membership — every account is in it by
+    // construction, so listing them would be the user table with extra
+    // steps, and there is nothing to add.
+    if (everyone) {
+      host.innerHTML = `
+        <div class="ax-members__hd">
+          <span>Members</span>
+          <span class="end"><a href="/admin/users">All people →</a></span>
+        </div>
+        <div class="ax-empty" style="padding:4px 0;">Every account is in <b>Everyone</b> automatically — there is nothing to add or remove here.</div>`;
+      return;
+    }
+
+    host.innerHTML = `<div class="ax-members__hd"><span>Members</span></div>
+      <div class="ax-empty" style="padding:4px 0;">Loading members…</div>`;
+    let members = membersCache.get(selectedGroup);
+    if (!members) {
+      try {
+        const r = await fetch(`/api/admin/groups/${encodeURIComponent(selectedGroup)}/members`, { credentials: "include" });
+        members = r.ok ? await r.json() : [];
+      } catch (e) { members = []; }
+      membersCache.set(selectedGroup, members);
+    }
+    if (selectedGroup !== (group && group.id)) return; // selection moved on
+
+    const managed = group && group.is_google_managed;
+    const chips = members.map((m) => `
+      <span class="ax-person ${m.active === false ? "is-inactive" : ""}" title="${esc(m.email)}${m.active === false ? " · deactivated" : ""}">
+        <span class="ax-person__ava" style="background:${esc(AgnesIdentity.avatarColor(m.email || m.user_id))}">${esc(AgnesIdentity.initials(m.name || m.email))}</span>
+        ${esc(m.name || m.email)}
+        ${managed ? "" : `<button type="button" class="ax-person__x" data-rmmember="${esc(m.user_id)}" title="Remove from ${esc(group.name)}" aria-label="Remove ${esc(m.name || m.email)}">✕</button>`}
+      </span>`).join("");
+
+    host.innerHTML = `
+      <div class="ax-members__hd">
+        <span>Members</span>
+        <span style="font-weight:500; color:var(--ds-text-muted);">${members.length} in ${esc(group ? group.name : "")}</span>
+        <span class="end">
+          <a href="/admin/groups/${encodeURIComponent(selectedGroup)}">Open group →</a>
+          <a href="/admin/users">All people →</a>
+        </span>
+      </div>
+      ${members.length
+        ? `<div class="ax-people">${chips}</div>`
+        : `<div class="ax-members__empty">Nobody is in this group yet — anything granted below reaches no one.</div>`}
+      ${managed
+        ? `<div class="ax-addrow"><span class="hint">Membership is synced from Google Workspace — add or remove people there, not here.</span></div>`
+        : `<div class="ax-addrow">
+             <input type="email" id="ax-add-email" placeholder="Add a person by email…" autocomplete="off">
+             <button type="button" class="btn btn-secondary" id="ax-add-btn">Add to group</button>
+             <span class="hint">They must already have an account — <a href="/admin/users">invite them first</a> if not.</span>
+           </div>`}`;
+  }
+
+  async function addMember() {
+    const input = el("ax-add-email");
+    const email = (input.value || "").trim();
+    if (!email) return;
+    const btn = el("ax-add-btn");
+    btn.disabled = true;
+    try {
+      const r = await fetch(`/api/admin/groups/${encodeURIComponent(selectedGroup)}/members`, {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      if (!r.ok) {
+        const b = await r.json().catch(() => ({}));
+        // 404 is the common one and deserves the real next step: the person
+        // has no account yet, which is a People job, not an Access one.
+        toast(r.status === 404
+          ? `No account for ${email} — invite them on People first.`
+          : `Could not add: ${typeof b.detail === "string" ? b.detail : r.status}`, false);
+        return;
+      }
+      membersCache.delete(selectedGroup);
+      input.value = "";
+      toast(`${email} added — they now get everything granted to this group.`, true);
+      await renderMembers();
+      await refreshGroupCounts();
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function removeMember(userId) {
+    const r = await fetch(
+      `/api/admin/groups/${encodeURIComponent(selectedGroup)}/members/${encodeURIComponent(userId)}`,
+      { method: "DELETE", credentials: "include" },
+    );
+    if (!r.ok && r.status !== 404) {
+      const b = await r.json().catch(() => ({}));
+      toast(`Could not remove: ${typeof b.detail === "string" ? b.detail : r.status}`, false);
+      return;
+    }
+    membersCache.delete(selectedGroup);
+    toast("Removed from the group — they lose everything granted through it.", true);
+    await renderMembers();
+    await refreshGroupCounts();
+  }
+
+  // The left column shows member counts, so a membership edit has to move
+  // them or the two halves of this page disagree.
+  async function refreshGroupCounts() {
+    try {
+      const r = await fetch(OVERVIEW_API, { credentials: "include" });
+      if (!r.ok) return;
+      const fresh = await r.json();
+      overview.groups = fresh.groups || overview.groups;
+      renderGroups();
+    } catch (e) { /* counts are cosmetic — never block the edit */ }
+  }
+
   document.addEventListener("click", async (e) => {
     const groupBtn = e.target.closest("[data-group]");
     if (groupBtn) {
       selectedGroup = groupBtn.dataset.group;
       renderGroups();
+      renderMembers();
       renderResources();
       return;
     }
+
+    if (e.target.closest("#ax-add-btn")) { await addMember(); return; }
+    const rm = e.target.closest("[data-rmmember]");
+    if (rm) { await removeMember(rm.dataset.rmmember); return; }
 
     const item = e.target.closest(".ax-item");
     if (!item || !selectedGroup) return;
@@ -613,6 +790,16 @@
        <ul class="ax-chain">${chain.join("")}</ul>`;
   }
 
+  // Enter in the add-member field submits, like every other add row in the
+  // admin area — an email field that needs a mouse to commit is a small
+  // papercut on the one action this pane exists for.
+  document.addEventListener("keydown", (e) => {
+    if (e.target && e.target.id === "ax-add-email" && e.key === "Enter") {
+      e.preventDefault();
+      addMember();
+    }
+  });
+
   // "Grant something →" inside the chain jumps to the editor tab.
   document.addEventListener("click", (e) => {
     const jump = e.target.closest("[data-axgoto]");
@@ -640,6 +827,7 @@
       ? wanted
       : (groups.length ? groups[0].id : null);
     renderGroups();
+    renderMembers();
     renderResources();
     if (window.location.hash === "#simulate") document.querySelector('[data-axtab="sim"]').click();
   })();

@@ -5,8 +5,8 @@
    sub-view, so People / Groups / Tokens read as one place rather than
    three sibling pages. #}
 {% set page_hero_eyebrow = "Administration" %}
-{% set page_hero_title = "Users & Access" %}
-{% set page_hero_subtitle = "Accounts, group membership, resource grants and credentials." %}
+{% set page_hero_title = "People" %}
+{% set page_hero_subtitle = "Accounts, the groups they belong to, and the credentials issued to them. Who can use what lives in <a href=\"/admin/access\">Access</a>." %}
 
 {% block head_extra %}
 <link rel="stylesheet" href="{{ static_url('css/ds_dropdown.css') }}">
@@ -93,6 +93,39 @@
     display: flex; flex-wrap: wrap; gap: 4px;
     max-width: 320px;
   }
+  /* Outcome cells — a state worth acting on is tinted; an accurate zero is
+     merely quiet. Never a red badge: none of these is an error, they are
+     gaps, and the /admin Overview already counts them. */
+  .outcome-warn {
+    color: var(--ds-accent-warn-ink);
+    font-weight: 600;
+    text-decoration: none;
+  }
+  a.outcome-warn:hover { text-decoration: underline; }
+  .outcome-muted { color: var(--ds-text-muted); }
+
+  /* Google Workspace identity strip — Workspace produces PEOPLE, not tables,
+     so its status belongs above the people it produces rather than in Data
+     (where an admin wondering "why isn't Maria in Finance yet?" would never
+     look). Renders only when Workspace sign-in is actually configured. */
+  .idp-strip {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 10px 14px; margin-bottom: 14px;
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--ds-radius-btn);
+    font-size: 13px; color: var(--ds-text-secondary);
+  }
+  .idp-strip__logo {
+    width: 24px; height: 24px; border-radius: 50%; flex: 0 0 auto;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 800;
+    background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink);
+  }
+  .idp-strip b { color: var(--ds-text-primary); }
+  .idp-strip__end { margin-left: auto; display: flex; gap: 12px; align-items: center; }
+  .idp-strip__end a { font-size: 12.5px; font-weight: 600; }
+
   .group-chip {
     display: inline-block;
     padding: 3px 8px; border-radius: 999px;
@@ -226,6 +259,31 @@
    JS-generated per-row table actions stay page-local. #}
 <div class="users-page">
 
+  {# Identity provider — where these accounts come from. Google Workspace is
+     not a data source (it produces people, not tables), so its status lives
+     here, above the people it produces: an admin asking "why isn't Maria in
+     Finance yet?" is already looking at this page. Renders only when
+     Workspace sign-in is configured; its credentials stay in Instance
+     secrets, which is where "Settings" points. #}
+  {% if idp_domains %}
+  <div class="idp-strip">
+    <span class="idp-strip__logo" aria-hidden="true">G</span>
+    <span>
+      <b>Google Workspace</b> is the identity provider — people sign in with
+      {% for d in idp_domains %}<b>@{{ d }}</b>{% if not loop.last %}, {% endif %}{% endfor %},
+      {% if google_group_count %}
+      and <b>{{ google_group_count }}</b> group{{ '' if google_group_count == 1 else 's' }} {{ 'is' if google_group_count == 1 else 'are' }} synced from it.
+      {% else %}
+      and no groups are synced from it yet.
+      {% endif %}
+    </span>
+    <span class="idp-strip__end">
+      <a href="/admin/datasource-credentials">Credentials →</a>
+      <a href="/admin/groups">Groups →</a>
+    </span>
+  </div>
+  {% endif %}
+
   <div class="users-metric">
     <span class="users-metric-label">Total users</span>
     <span class="users-metric-value">{{ total_users }}</span>
@@ -258,9 +316,16 @@
   <div class="data-table-wrap">
     <table class="data-table" id="users-table">
       <thead>
+        {# Outcome columns before plumbing: "does this person get data, and is
+           it reaching them?" is the question an admin has about a row, where
+           Created/Deactivated is account bookkeeping. Both new columns are
+           derived from existing storage — see UserResponse in
+           app/api/users.py. #}
         <tr>
           <th>User</th>
           <th>Groups</th>
+          <th title="Distinct data packages reachable through this person's groups">Data access</th>
+          <th title="Last time this person fetched the sync manifest — every `agnes pull` does">Last pull</th>
           <th>Active</th>
           <th>Created</th>
           <th>Deactivated</th>
@@ -403,6 +468,39 @@ function deriveDisplayName(fullEmail) {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 function fmtDate(s) { return s ? (window.AgnesTime.formatDateTime(s) || "—") : "—"; }
+
+// ── Outcome cells ─────────────────────────────────────────────────────────
+// "Data access" and "Last pull" answer the question an admin has about a row.
+// Both warn rather than print a bare number when the answer is a problem: a
+// person in no group with a package grant is the People gap the /admin
+// Overview counts, and a pull that has not happened means shared data has
+// not actually arrived. An ADMIN with zero explicit grants is not warned —
+// they reach everything by god-mode, so the zero is accurate and harmless
+// (see UserResponse.data_package_count for why it isn't inflated).
+function accessCell(u) {
+  const n = u.data_package_count ?? 0;
+  if (n > 0) return `${n} package${n === 1 ? "" : "s"}`;
+  if (u.is_admin) return `<span class="outcome-muted" title="Admins reach every resource regardless of grants">— (admin)</span>`;
+  if (!u.active) return "—";
+  return `<a class="outcome-warn" href="/admin/access" title="This person is in no group with a data-package grant, so no shared data reaches them">No data access</a>`;
+}
+
+function pullCell(u) {
+  if (!u.last_pull_at) {
+    // Never pulled is only worth flagging for someone who HAS data to pull.
+    const cls = (u.data_package_count ?? 0) > 0 ? "outcome-warn" : "outcome-muted";
+    return `<span class="${cls}" title="No sync manifest fetch recorded — the data has never reached this person's machine">Never</span>`;
+  }
+  const days = (Date.now() - new Date(u.last_pull_at).getTime()) / 86400000;
+  const rel = window.AgnesTime.formatRelative
+    ? window.AgnesTime.formatRelative(u.last_pull_at)
+    : fmtDate(u.last_pull_at);
+  // Seven days: a working analyst pulls at session start, so a week of
+  // silence means either they stopped working or their sync is broken.
+  return days > 7
+    ? `<span class="outcome-warn" title="Last manifest fetch ${fmtDate(u.last_pull_at)}">${rel}</span>`
+    : `<span title="Last manifest fetch ${fmtDate(u.last_pull_at)}">${rel}</span>`;
+}
 // Avatar initials + stable color come from the shared AgnesIdentity helper
 // (app/web/static/js/identity.js) so the circle matches /admin/adoption.
 function initials(u) { return AgnesIdentity.initials(u.name || u.email); }
@@ -539,6 +637,8 @@ function renderUsers(users) {
         </a>
       </td>
       <td>${chipsHtml}</td>
+      <td>${accessCell(u)}</td>
+      <td>${pullCell(u)}</td>
       <td>
         <label class="toggle">
           <input type="checkbox" ${u.active ? "checked" : ""} data-action="toggle-active" data-user-id="${esc(u.id)}">
