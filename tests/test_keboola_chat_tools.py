@@ -2045,3 +2045,34 @@ class TestWorkspaceSchemaReachesTheSource(TestChatToolsEndpoint):
 
         env = mcp_sources_repo().get(derived_source_id(conn_id))["env"]
         assert env["KBC_WORKSPACE_SCHEMA"] == "WS_9"
+
+
+class TestBulkGrantReportsWhatAGrantCannotReach(TestChatToolsEndpoint):
+    """A grant does not make a mutating tool reachable.
+
+    The passthrough policy gate refuses `mutating=True` for every non-admin
+    regardless of grants, and on an upstream that annotates nothing that is
+    every tool. Reporting only "granted N of N" would promise the group an
+    access it does not have — the same false promise `tools_admin_only`
+    exists to prevent on the enable side.
+    """
+
+    def test_grant_reports_the_admin_only_count(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-grant-gated")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.repositories import user_groups_repo
+
+        gid = user_groups_repo().get_by_name("Everyone")["id"]
+        body = c.post(
+            f"/api/admin/mcp-sources/{derived_source_id(conn_id)}/grants",
+            json={"group_id": gid},
+            headers=_auth(token),
+        ).json()
+
+        # FAKE_TOOLS: query_data is read-only; run_job and the unannotated
+        # "mystery" are both recorded as mutating.
+        expected = sum(1 for t in FAKE_TOOLS if t.read_only is not True)
+        assert body["admin_only"] == expected
+        assert body["granted"] == len(FAKE_TOOLS)

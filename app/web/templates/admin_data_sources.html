@@ -906,7 +906,11 @@ async function grantChatTools(id, sourceId) {
       // "granted 0 of 37" is not the same news as "granted 37 of 37", and
       // both look like success without the counts.
       const extra = body.already_granted ? ` (${body.already_granted} already granted)` : "";
-      showToast(`Granted ${body.granted} of ${body.total} tools${extra}.`, true);
+      // A grant does not reach a mutating tool — the passthrough gate refuses
+      // those for every non-admin regardless, so promising reach here would
+      // be false for exactly the tools an analyst would notice missing.
+      const gated = body.admin_only ? ` ${body.admin_only} are mutating and stay admin-only.` : "";
+      showToast(`Granted ${body.granted} of ${body.total} tools${extra}.${gated}`, true);
     } else {
       showToast("Failed: " + detailMessage(body, `HTTP ${r.status}`), false);
     }

@@ -1965,7 +1965,17 @@ async def add_mcp_source_grant(
         f"mcp_source:{source_id}",
         {"group_id": group_id, "granted": len(granted), "already_granted": len(already)},
     )
-    return {"granted": len(granted), "already_granted": len(already), "total": len(tools)}
+    return {
+        "granted": len(granted),
+        "already_granted": len(already),
+        "total": len(tools),
+        # A grant does not make a `mutating=True` tool reachable — the
+        # passthrough policy gate refuses those for every non-admin regardless.
+        # On an upstream that annotates nothing that is ALL of them, so
+        # reporting only "granted 37 of 37" would promise the group an access
+        # they do not have. Same reasoning as `tools_admin_only` on enable.
+        "admin_only": sum(1 for t in tools if t.get("mutating")),
+    }
 
 
 @router.delete("/mcp-sources/{source_id}/grants/{group_id}", status_code=204)
