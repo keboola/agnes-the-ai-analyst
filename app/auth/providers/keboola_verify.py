@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 import httpx
+from fastapi import HTTPException
 
 from app.instance_config import get_value
 from app.keboola_identity import project_identity, project_matches
@@ -94,7 +95,13 @@ def _fetch_verify(base_url: str, headers: Dict[str, str]) -> Dict[str, Any]:
     """
     from app.api.admin import _validate_url_not_private
 
-    _validate_url_not_private(base_url, "auth.keboola.stack_url")
+    try:
+        _validate_url_not_private(base_url, "auth.keboola.stack_url")
+    except HTTPException as exc:
+        # The shared SSRF validator speaks HTTP (HTTPException); this module's
+        # contract is KeboolaVerifyError-only. Translate the rejection without
+        # weakening the gate itself.
+        raise KeboolaVerifyError("verify_failed", str(exc.detail))
     try:
         resp = httpx.get(
             f"{base_url}/v2/storage/tokens/verify",
@@ -109,7 +116,10 @@ def _fetch_verify(base_url: str, headers: Dict[str, str]) -> Dict[str, Any]:
     if resp.status_code != 200:
         logger.warning("Keboola verify returned HTTP %s", resp.status_code)
         raise KeboolaVerifyError("verify_failed", f"Keboola verify returned HTTP {resp.status_code}")
-    return resp.json()
+    try:
+        return resp.json()
+    except ValueError:  # json.JSONDecodeError is a ValueError subclass
+        raise KeboolaVerifyError("verify_failed", "Keboola verify returned a non-JSON response")
 
 
 def _identity_from_payload(payload: Dict[str, Any]) -> VerifiedKeboolaIdentity:
@@ -151,11 +161,23 @@ def _identity_from_payload(payload: Dict[str, Any]) -> VerifiedKeboolaIdentity:
     )
 
 
-def verify_storage_token(token: str) -> VerifiedKeboolaIdentity:
-    """Verify a plain Storage API token (X-StorageApi-Token header path)."""
+def _configured_base_url() -> str:
+    """Config-only gates, checked BEFORE any network I/O.
+
+    An unconfigured instance (missing stack_url OR project_id) must fail
+    closed without ever reaching the network.
+    """
     base = stack_url()
     if not base:
         raise KeboolaVerifyError("not_configured", "No Keboola stack URL configured")
+    if configured_project_id() is None:
+        raise KeboolaVerifyError("not_configured", "auth.keboola.project_id is not configured")
+    return base
+
+
+def verify_storage_token(token: str) -> VerifiedKeboolaIdentity:
+    """Verify a plain Storage API token (X-StorageApi-Token header path)."""
+    base = _configured_base_url()
     payload = _fetch_verify(base, {"X-StorageApi-Token": token})
     return _identity_from_payload(payload)
 
@@ -166,8 +188,6 @@ def verify_oauth_access_token(access_token: str) -> VerifiedKeboolaIdentity:
     Named assumption (spec): Bearer acceptance on /tokens/verify is real but
     publicly undocumented platform behavior.
     """
-    base = stack_url()
-    if not base:
-        raise KeboolaVerifyError("not_configured", "No Keboola stack URL configured")
+    base = _configured_base_url()
     payload = _fetch_verify(base, {"Authorization": f"Bearer {access_token}"})
     return _identity_from_payload(payload)

@@ -89,3 +89,58 @@ class TestGates:
         seen.clear()
         kv.verify_oauth_access_token("oauth-tok")
         assert seen == {"Authorization": "Bearer oauth-tok"}
+
+
+class TestErrorContract:
+    """Every failure leaving this module is a KeboolaVerifyError — the SSRF
+    gate's HTTPException, non-JSON 200 bodies, and config gaps included."""
+
+    def test_ssrf_rejection_translates_to_verify_error(self, configured, monkeypatch):
+        import fastapi
+
+        def reject(url, field_name="url"):
+            raise fastapi.HTTPException(
+                status_code=400,
+                detail="Invalid auth.keboola.stack_url: resolves to a private network",
+            )
+
+        monkeypatch.setattr("app.api.admin._validate_url_not_private", reject)
+
+        def no_network(*args, **kwargs):
+            raise AssertionError("httpx.get must not be reached when the SSRF gate rejects")
+
+        monkeypatch.setattr(kv.httpx, "get", no_network)
+        with pytest.raises(kv.KeboolaVerifyError) as exc:
+            kv.verify_storage_token("tok")
+        assert exc.value.reason == "verify_failed"
+        assert "private network" in exc.value.detail
+
+    def test_non_json_200_body_is_verify_error(self, configured, monkeypatch):
+        import json
+
+        monkeypatch.setattr("app.api.admin._validate_url_not_private", lambda url, field_name="url": None)
+
+        class FakeResp:
+            status_code = 200
+
+            def json(self):
+                raise json.JSONDecodeError("Expecting value", "<html>", 0)
+
+        monkeypatch.setattr(kv.httpx, "get", lambda *args, **kwargs: FakeResp())
+        with pytest.raises(kv.KeboolaVerifyError) as exc:
+            kv.verify_storage_token("tok")
+        assert exc.value.reason == "verify_failed"
+        assert "non-JSON" in exc.value.detail
+
+    @pytest.mark.parametrize("verify", ["verify_storage_token", "verify_oauth_access_token"])
+    def test_missing_project_id_fails_closed_before_network(self, monkeypatch, verify):
+        monkeypatch.setattr(kv, "stack_url", lambda: "https://connection.example.com")
+        monkeypatch.setattr(kv, "configured_project_id", lambda: None)
+
+        def fail_if_called(*args, **kwargs):
+            raise AssertionError("_fetch_verify must not be called when project_id is unconfigured")
+
+        monkeypatch.setattr(kv, "_fetch_verify", fail_if_called)
+        with pytest.raises(kv.KeboolaVerifyError) as exc:
+            getattr(kv, verify)("tok")
+        assert exc.value.reason == "not_configured"
