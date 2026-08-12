@@ -298,19 +298,6 @@
             <span class="rail-i-label">Agents</span>
         </a>
         {% endif %}
-        {# Apps — hosted data apps. Gated on the same `data_apps_enabled()`
-           Jinja global as the topnav's entry in `_app_header.html`, because
-           the two chromes must gate identically: the link shipped in the
-           topnav only, so on a `rail` instance the feature was unreachable
-           from the UI entirely — enabled, deployed, serving, and with no way
-           to click to it. The comment above ("soon, their data apps") had
-           been describing the intent for long enough to look done. #}
-        {% if data_apps_enabled() %}
-        <a class="rail-i {% if _path == '/apps' or _path.startswith('/apps/detail') %}on{% endif %}" href="/apps">
-            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5" stroke="currentColor" stroke-width="1.7"/><path d="M3.5 9h17" stroke="currentColor" stroke-width="1.7"/><circle cx="6.6" cy="6.8" r="0.9" fill="currentColor"/></svg>
-            <span class="rail-i-label">Apps</span>
-        </a>
-        {% endif %}
     </div>
 
     {% if session.user.is_admin %}
