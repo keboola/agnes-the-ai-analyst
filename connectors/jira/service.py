@@ -52,6 +52,30 @@ Config = _JiraConfig
 _VALID_COLUMN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+def _parse_field_spec(raw: str) -> list[tuple[str, str]]:
+    """Parse a comma-separated ``id`` / ``id:column`` spec into ``[(id, alias), ...]``.
+
+    Shared by ``refresh_fields`` (issue custom fields) and
+    ``organization_detail_fields`` (JSM organization details) so the two specs can
+    never drift in how they tokenize. Returns the *raw* alias — an empty string when
+    the entry named no column — and leaves validation to the caller, because the two
+    consumers fall back differently (issue fields to the field id, organization
+    details to a prefixed name, since a detail id like ``38`` is not a legal column).
+    """
+    out: list[tuple[str, str]] = []
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        field_id, _, alias = entry.partition(":")
+        field_id = field_id.strip()
+        alias = alias.strip()
+        if not field_id:
+            continue
+        out.append((field_id, alias))
+    return out
+
+
 def refresh_fields() -> list[tuple[str, str]]:
     """``[(field_id, column_name), ...]`` parsed from ``JIRA_REFRESH_FIELDS``.
 
@@ -64,17 +88,69 @@ def refresh_fields() -> list[tuple[str, str]]:
     ``verify_sla_access --list-fields``.
     """
     out: list[tuple[str, str]] = []
-    for entry in os.environ.get("JIRA_REFRESH_FIELDS", "").split(","):
-        entry = entry.strip()
-        if not entry:
-            continue
-        field_id, _, alias = entry.partition(":")
-        field_id = field_id.strip()
-        alias = alias.strip()
-        if not field_id:
-            continue
+    for field_id, alias in _parse_field_spec(os.environ.get("JIRA_REFRESH_FIELDS", "")):
         column = alias if alias and _VALID_COLUMN.match(alias) else field_id
         out.append((field_id, column))
+    return out
+
+
+# Built-in `organizations` columns a configured detail must never overwrite. Kept
+# here rather than imported from transform.py to avoid a circular import; the
+# pairing is asserted by a test so the two cannot drift apart.
+ORGANIZATION_RESERVED_COLUMNS = ("org_id", "name")
+
+ORGANIZATION_DETAIL_PREFIX = "detail_"
+
+
+def organization_detail_fields() -> list[tuple[str, str]]:
+    """``[(detail_key, column_name), ...]`` parsed from ``JIRA_ORG_DETAIL_FIELDS``.
+
+    Format mirrors ``JIRA_REFRESH_FIELDS``: comma-separated ``detail_key`` or
+    ``detail_key:column_name``. ``detail_key`` is matched against a JSM organization
+    detail's ``id`` first and its ``name`` second (see
+    ``transform.extract_organization_details``), so an operator can configure either
+    the stable numeric id or the human label.
+
+    No defaults: detail ids are per-instance, so any hard-coded value would be wrong
+    on another deployment. Unlike issue fields, the key cannot double as the column —
+    a detail id such as ``38`` is not a legal SQL/parquet identifier — so an entry
+    with no usable alias becomes ``detail_<key>``. An alias colliding with a built-in
+    column is prefixed the same way rather than silently shadowing it, and a column
+    already claimed by an earlier entry is skipped. Read at call time so scripts that
+    ``load_dotenv()`` at runtime see the value.
+    """
+    seen: set[str] = set()
+    out: list[tuple[str, str]] = []
+    for detail_key, alias in _parse_field_spec(os.environ.get("JIRA_ORG_DETAIL_FIELDS", "")):
+        if alias and _VALID_COLUMN.match(alias):
+            column = alias
+            if column in ORGANIZATION_RESERVED_COLUMNS:
+                column = f"{ORGANIZATION_DETAIL_PREFIX}{column}"
+                logger.warning(
+                    "Jira org detail %s: column %r collides with a built-in organizations column; using %r instead",
+                    detail_key,
+                    alias,
+                    column,
+                )
+        else:
+            # Either no alias, or one that is not a legal identifier. The key itself
+            # is usually a bare number, so prefix it into something addressable.
+            column = f"{ORGANIZATION_DETAIL_PREFIX}{detail_key}"
+            if not _VALID_COLUMN.match(column):
+                logger.warning(
+                    "Jira org detail %s: cannot derive a valid column name; skipping",
+                    detail_key,
+                )
+                continue
+        if column in seen:
+            logger.warning(
+                "Jira org detail %s: column %r already used by another entry; skipping",
+                detail_key,
+                column,
+            )
+            continue
+        seen.add(column)
+        out.append((detail_key, column))
     return out
 
 
@@ -176,6 +252,9 @@ class JiraService:
         self.api_token = Config.JIRA_API_TOKEN
         self.data_dir = Config.JIRA_DATA_DIR
         self.attachments_dir = self.data_dir / "attachments"
+        # Memoized tenant_info lookup — see resolve_cloud_id(). Per-instance, so a
+        # long-lived service reuses it while tests get a fresh one each time.
+        self._cloud_id: str | None = None
 
         if not all([self.domain, self.email, self.api_token]):
             logger.warning("Jira credentials not fully configured")
@@ -374,6 +453,150 @@ class JiraService:
         if response.status_code >= 500:
             raise JiraFetchError(f"Remote-links fetch for {issue_key} failed: server error ({response.status_code})")
         raise JiraFetchError(f"Remote-links fetch for {issue_key} failed: unexpected status {response.status_code}")
+
+    def resolve_cloud_id(self) -> str:
+        """The site's cloud id, needed to address the Customer Service Management API.
+
+        ``JIRA_CLOUD_ID`` wins when set (it is already the documented switch for a
+        *scoped* API token). Otherwise it is read from the site's public
+        ``/_edge/tenant_info`` document, which needs no authentication. Unlike the
+        issue REST API, the CSM API is only reachable through the
+        ``api.atlassian.com`` gateway and therefore *always* needs a cloud id — so
+        this cannot simply fall back to the site domain the way
+        ``fetch_refresh_fields`` does.
+
+        Memoized per service instance: a site's cloud id is immutable, and the
+        organization refresh would otherwise re-request it for every organization.
+
+        Raises:
+            JiraFetchError: if the id is unset and tenant_info cannot be read.
+        """
+        configured = Config.JIRA_CLOUD_ID
+        if configured:
+            return configured
+        if self._cloud_id:
+            return self._cloud_id
+        if not self.domain:
+            raise JiraFetchError("Cannot resolve cloud id: JIRA_DOMAIN is not set and JIRA_CLOUD_ID is empty")
+
+        url = f"https://{self.domain}/_edge/tenant_info"
+        try:
+            with httpx.Client(timeout=30) as client:
+                response = client.get(url, headers={"Accept": "application/json"})
+        except httpx.RequestError as e:
+            raise JiraFetchError(f"tenant_info lookup for {self.domain} failed: connection — {e}") from e
+
+        if response.status_code != 200:
+            raise JiraFetchError(
+                f"tenant_info lookup for {self.domain} failed: status {response.status_code}. "
+                "Set JIRA_CLOUD_ID explicitly to skip this lookup."
+            )
+        cloud_id = (response.json() or {}).get("cloudId")
+        if not cloud_id:
+            raise JiraFetchError(f"tenant_info for {self.domain} returned no cloudId")
+        self._cloud_id = cloud_id
+        return cloud_id
+
+    @property
+    def _servicedesk_url(self) -> str:
+        """Base URL for the Service Desk API (a sibling of ``/rest/api/3``)."""
+        return f"https://{self.domain}/rest/servicedeskapi"
+
+    def fetch_organization_ids(self) -> list[str]:
+        """Every JSM organization id on the site, following pagination.
+
+        Uses the Service Desk API rather than the CSM API deliberately: CSM exposes
+        no list/search operation for organizations (``GET /organization`` answers 405
+        — ``POST`` there *creates* one), whereas this endpoint pages through them.
+        Only ids are needed; the details come from ``fetch_organization``.
+
+        Raises:
+            JiraFetchError: on any non-200, so a partial enumeration can never be
+                mistaken for "the site has fewer organizations now" and quietly
+                delete rows from the organizations table.
+        """
+        if not self.is_configured():
+            raise JiraFetchError("Organization enumeration failed: Jira service not configured")
+
+        ids: list[str] = []
+        start = 0
+        limit = 50
+        url = f"{self._servicedesk_url}/organization"
+
+        with httpx.Client(timeout=30) as client:
+            while True:
+                try:
+                    response = client.get(
+                        url,
+                        auth=self.auth,
+                        params={"start": start, "limit": limit},
+                        headers={"Accept": "application/json"},
+                    )
+                except httpx.RequestError as e:
+                    raise JiraFetchError(f"Organization enumeration failed: connection — {e}") from e
+
+                if response.status_code != 200:
+                    raise JiraFetchError(
+                        f"Organization enumeration failed at start={start}: status {response.status_code}"
+                    )
+
+                payload = response.json() or {}
+                values = payload.get("values") or []
+                for org in values:
+                    org_id = org.get("id")
+                    if org_id is not None:
+                        ids.append(str(org_id))
+
+                if payload.get("isLastPage") or not values:
+                    break
+                start += len(values)
+
+        logger.info("Enumerated %d Jira organizations", len(ids))
+        return ids
+
+    def fetch_organization(self, org_id: str) -> dict[str, Any] | None:
+        """One organization with its detail fields, from the CSM API.
+
+        ``GET /organization/{id}`` is the only CSM operation that returns each
+        detail's ``id`` alongside its ``name``; the batched
+        ``POST /organization/profile/fetch`` and ``GET /organization/details`` both
+        omit it. Matching on the id is what makes the mapping survive a detail-field
+        rename, so the per-organization call is worth the extra requests — the
+        refresh is a low-frequency job, not a per-ticket one.
+
+        Returns:
+            The organization dict, or ``None`` when it no longer exists (404).
+
+        Raises:
+            JiraFetchError: on auth, rate-limit, or server errors — the caller must
+                keep the previous row rather than blank a real value.
+        """
+        if not self.is_configured():
+            raise JiraFetchError(f"Organization fetch for {org_id} failed: Jira service not configured")
+
+        cloud_id = self.resolve_cloud_id()
+        url = f"https://api.atlassian.com/jsm/csm/cloudid/{cloud_id}/api/v1/organization/{org_id}"
+
+        try:
+            with httpx.Client(timeout=30) as client:
+                response = client.get(url, auth=self.auth, headers={"Accept": "application/json"})
+        except httpx.RequestError as e:
+            raise JiraFetchError(f"Organization fetch for {org_id} failed: connection — {e}") from e
+
+        if response.status_code == 200:
+            return response.json()
+        if response.status_code == 404:
+            return None
+        if response.status_code in (401, 403):
+            raise JiraFetchError(
+                f"Organization fetch for {org_id} failed: auth error ({response.status_code}) — "
+                "the account needs Jira Service Management access for the CSM API"
+            )
+        if response.status_code == 429:
+            raise JiraFetchError(f"Organization fetch for {org_id} failed: rate limited (429) — retry later")
+        if response.status_code >= 500:
+            raise JiraFetchError(f"Organization fetch for {org_id} failed: server error ({response.status_code})")
+        raise JiraFetchError(f"Organization fetch for {org_id} failed: unexpected status {response.status_code}")
 
     def save_issue(self, issue_data: dict[str, Any]) -> Path | None:
         """

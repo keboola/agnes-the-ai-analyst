@@ -495,6 +495,53 @@ python -m connectors.jira.transform \
 cp -r /data/src_data/parquet/jira/* ~/server/parquet/jira/
 ```
 
+## Organizations Table (Daily Refresh)
+
+Tickets carry organization **ids** in `issues.organization_ids` (a JSON array — the Jira field is multi-valued). The `organizations` table resolves those ids to the organization's current name plus one column per organization detail field named in `JIRA_ORG_DETAIL_FIELDS`.
+
+**File:** `connectors/jira/organizations.py` · **Job kind:** `jira-org-refresh` · **Cadence:** `daily 04:00`
+
+**Why ids and not names.** `issues.organizations` holds names captured at ingest. Rename an organization and its existing tickets keep the old name, so a name join silently splits one customer into several. Ids do not change on rename.
+
+**Why a table and not a column on `issues`.** A detail value belongs to the organization, not the ticket. Denormalizing it would freeze a copy per ticket, so correcting a detail later would leave all history wrong until a full re-transform. One row here fixes every ticket retroactively.
+
+**Configuration** (no defaults — detail ids are per-instance):
+
+```bash
+JIRA_ORG_DETAIL_FIELDS=38:crm_account_id,41:region
+```
+
+Each key is matched against a detail's `id` first, then its `name`. Prefer the id: it survives a rename of the detail field. An alias colliding with a built-in column (`org_id`, `name`) is prefixed `detail_`, as is an entry with no usable alias.
+
+**Discovering detail ids.** Only the per-organization endpoint returns them:
+
+```
+GET https://api.atlassian.com/jsm/csm/cloudid/{cloudId}/api/v1/organization/{orgId}
+  -> {"id": "...", "name": "...", "details": [{"id": "38", "name": "CRM ID", "values": ["..."]}]}
+```
+
+`GET /organization/details` and `POST /organization/profile/fetch` return detail **names only**, which is why the refresh makes one request per organization instead of batching 25 at a time — batching would force matching on the label. At a daily cadence the extra requests do not matter. Enumeration uses `GET /rest/servicedeskapi/organization` (paginated) because CSM exposes no list operation: `GET /organization` answers 405, and `POST` there *creates* an organization.
+
+**Failure semantics.** Enumeration failure aborts before any write — a partial list is indistinguishable from organizations having been deleted. A per-organization fetch failure carries the previous row forward, so a transient 429 or 5xx costs freshness but never data. Only a 404 (organization gone) drops a row.
+
+**Layout.** Unpartitioned: a single `data/organizations/data.parquet`, written temp-then-`os.replace()` so a reader never sees a truncated file. The extract view uses `union_by_name=true` but no `hive_partitioning` — there is no partition key, because an organization has one current state rather than a history.
+
+```bash
+# Manual run
+python -m connectors.jira.organizations
+
+# Enumerate only, no fetch or write
+python -m connectors.jira.organizations --dry-run
+```
+
+Joining a ticket to its organizations:
+
+```sql
+SELECT i.issue_key, o.name, o.crm_account_id
+FROM issues i, UNNEST(from_json(i.organization_ids, '["VARCHAR"]')) AS t(org_id)
+LEFT JOIN organizations o ON o.org_id = t.org_id;
+```
+
 ## Field Refresh Polling (Open Tickets)
 
 Configured field values (`JIRA_REFRESH_FIELDS`) only update on the ticket when a webhook fires. For idle open tickets these values go stale, so a poll re-fetches them periodically.

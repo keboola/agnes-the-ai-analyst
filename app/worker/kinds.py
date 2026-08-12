@@ -143,6 +143,10 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_DATA_REFRESH_LEASE_S = 900
 _DEFAULT_JIRA_REFRESH_LEASE_S = 300
+# One API request per organization, gently paced — a few-hundred-organization site
+# takes minutes, so the lease has to outlast the whole sweep or the job would be
+# reclaimed mid-run and start over.
+_DEFAULT_JIRA_ORG_REFRESH_LEASE_S = 1800
 _DEFAULT_LIGHT_LEASE_S = 300
 # merge_adjacent_files/expire_snapshots/cleanup_old_files/VACUUM can each
 # take a while over a large lake — same "generous ceiling, not a hard
@@ -377,6 +381,41 @@ def _run_jira_refresh(payload: dict) -> None:
         logger.warning(f"Could not update Jira extract.duckdb _meta: {meta_err}")
 
     SyncOrchestrator().rebuild_source("jira")
+
+
+def _run_jira_org_refresh(payload: dict) -> None:
+    """Rebuild the Jira ``organizations`` dimension from the organization API.
+
+    Resolves the organization ids that ``issues.organization_ids`` carries to a
+    current name plus whichever organization detail fields the operator configured
+    (``JIRA_ORG_DETAIL_FIELDS``) — the join path from a ticket to whatever those
+    details point at, without matching on organization names, which drift on rename.
+
+    Enqueued by the scheduler on a daily cadence, not per webhook: organization
+    membership and details change on a scale of weeks, and the refresh costs one API
+    request per organization because the CSM API exposes no bulk read that returns
+    detail *ids* (see ``JiraService.fetch_organization``). A day-stale name is
+    immaterial; a per-event refresh would spend hundreds of requests to learn nothing.
+
+    No source rebuild is triggered afterwards. The extract views glob the parquet per
+    query, so fresh rows are served immediately, and ``refresh_organizations`` already
+    refreshes this table's ``_meta`` row (under ``rebuild_mutex()``) for the catalog's
+    row/size numbers. Failures propagate so the job retries rather than silently
+    leaving the dimension stale.
+    """
+    from connectors.jira.organizations import refresh_organizations
+
+    stats = refresh_organizations()
+    if stats.get("skipped_reason"):
+        logger.info(f"Jira organization refresh skipped: {stats['skipped_reason']}")
+        return
+    logger.info(
+        "Jira organization refresh: %s written, %s preserved, %s removed, %s failed",
+        stats.get("written"),
+        stats.get("preserved"),
+        stats.get("removed"),
+        stats.get("failed"),
+    )
 
 
 def _ducklake_expire_older_than_sql(retention_days: int) -> str:
@@ -995,6 +1034,19 @@ def register_all_kinds() -> None:
             lane=HEAVY_LANE,
             lease_seconds=_DEFAULT_JIRA_REFRESH_LEASE_S,
             retry_in_seconds=300,
+        )
+    )
+    register_kind(
+        JobKind(
+            # LIGHT lane: this is network-bound (one request per organization), not a
+            # DuckDB rebuild. It touches extract.duckdb only for the brief `_meta`
+            # update, which takes `rebuild_mutex()` itself, so it does not need the
+            # HEAVY lane's concurrency-1 serialisation.
+            name="jira-org-refresh",
+            handler=_run_jira_org_refresh,
+            lane=LIGHT_LANE,
+            lease_seconds=_DEFAULT_JIRA_ORG_REFRESH_LEASE_S,
+            retry_in_seconds=3600,
         )
     )
     register_kind(

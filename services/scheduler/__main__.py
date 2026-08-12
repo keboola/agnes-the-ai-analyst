@@ -453,6 +453,11 @@ _ENQUEUE_BODIES: dict[str, dict[str, str]] = {
     # no-ops when analytics.backend != "ducklake", so this row is enqueued
     # unconditionally — harmless on a legacy-backend instance.
     "ducklake-maintenance": {"kind": "ducklake-maintenance", "idempotency_key": "ducklake-maintenance"},
+    # Jira organizations dimension. Daily rather than interval-driven: organization
+    # names and detail fields change on a scale of weeks, and the refresh costs one
+    # API request per organization. The handler no-ops when Jira is unconfigured, so
+    # this row is harmless on an instance without Jira ingest.
+    "jira-org-refresh": {"kind": "jira-org-refresh", "idempotency_key": "jira-org-refresh"},
 }
 
 # HTTP timeout for a ``/api/jobs`` enqueue call. Short on purpose: enqueueing
@@ -531,6 +536,18 @@ def build_jobs() -> list[JobRow | EnqueueJobRow]:
             "POST",
             _ENQUEUE_TIMEOUT_SEC,
             _ENQUEUE_BODIES["marketplaces"],
+        ),
+        # Offset an hour from marketplaces so the two daily jobs don't fire on the
+        # same tick. A fixed daily schedule rather than an interval env var on
+        # purpose: an interval would have to join the `smallest` min() above and
+        # constrain SCHEDULER_TICK_SECONDS for a job that needs no precision at all.
+        (
+            "jira-org-refresh",
+            "daily 04:00",
+            "/api/jobs",
+            "POST",
+            _ENQUEUE_TIMEOUT_SEC,
+            _ENQUEUE_BODIES["jira-org-refresh"],
         ),
         # LLM pipeline (#176, #179 review). Cadences are deliberately offset
         # (10m / 15m / 17m by default — all coprime modulo the 30s tick) so
