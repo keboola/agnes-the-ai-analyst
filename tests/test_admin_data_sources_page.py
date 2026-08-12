@@ -346,3 +346,110 @@ class TestAddDataConnectorPicker:
         body = self._page(seeded_app)
         assert 'id="ds-wexisting-select"' in body
         assert 'id="ds-wexisting-btn"' in body
+
+
+class TestSourcePipelineStrip:
+    """The per-source pipeline strip — connected → synced → semantic →
+    feeding whom, on one card (spec §3.7).
+
+    Its whole value is that each cell is TRUE and actionable, so that is
+    what these pin: the shape is per-connector (no semantic cell where there
+    is no Metastore), a cell degrades rather than lying, and unattributable
+    legacy rows are named as unlinked instead of reported as "no tables yet"
+    — the misreading that made an eleven-table instance look empty.
+    """
+
+    def test_strip_is_computed_per_connection(self, seeded_app):
+        import uuid
+
+        from src.repositories import source_connections_repo
+        from app.web.router import _source_pipelines
+
+        conn_id = f"probe-{uuid.uuid4().hex[:8]}"
+        source_connections_repo().create(
+            id=conn_id,
+            name=f"Pipeline Probe {conn_id[-4:]}",
+            source_type="keboola",
+            config={"stack_url": "https://connection.keboola.com"},
+        )
+        try:
+            strips = _source_pipelines()
+            assert conn_id in strips
+            cells = strips[conn_id]
+            assert set(cells) == {"tables", "sync", "semantic", "feeds"}
+            # Nothing registered or granted yet — every cell says so rather
+            # than guessing.
+            assert cells["tables"]["count"] == 0
+            assert cells["sync"]["last_sync"] is None
+            assert cells["semantic"]["token"] is False
+            assert cells["feeds"]["packages"] == 0
+        finally:
+            source_connections_repo().delete(conn_id)
+
+    def test_bigquery_source_has_no_semantic_cell(self, seeded_app):
+        """The strip is per-connector: the Metastore is a Keboola API, so a
+        BigQuery source must not render a semantic cell at all (rather than
+        an empty or misleading one)."""
+        from src.repositories import source_connections_repo
+        from app.web.router import _source_pipelines
+
+        import uuid
+
+        conn_id = f"bqprobe-{uuid.uuid4().hex[:8]}"
+        source_connections_repo().create(
+            id=conn_id,
+            name=f"BQ Probe {conn_id[-4:]}",
+            source_type="bigquery",
+            config={"project_id": "acme-warehouse"},
+        )
+        try:
+            cells = _source_pipelines()[conn_id]
+            assert "semantic" not in cells
+            assert {"tables", "sync", "feeds"}.issubset(cells)
+        finally:
+            source_connections_repo().delete(conn_id)
+
+    def test_a_registered_table_is_attributed_to_its_connection(self, seeded_app):
+        import uuid
+
+        from src.repositories import source_connections_repo, table_registry_repo
+        from app.web.router import _source_pipelines
+
+        conn_id = f"attrprobe-{uuid.uuid4().hex[:8]}"
+        source_connections_repo().create(
+            id=conn_id,
+            name=f"Attributed Probe {conn_id[-4:]}",
+            source_type="keboola",
+            config={"stack_url": "https://connection.keboola.com"},
+        )
+        tid = f"strip-{uuid.uuid4().hex[:6]}"
+        table_registry_repo().register(
+            id=tid,
+            name=f"strip_table_{tid[-6:]}",
+            source_type="keboola",
+            bucket="in.c-test",
+            source_table="strip",
+            query_mode="local",
+            connection_id=conn_id,
+        )
+        try:
+            cells = _source_pipelines()[conn_id]
+            assert cells["tables"]["count"] == 1
+            assert cells["tables"]["basis"] == "connection"
+            # Registered but in no package — the end of the chain says so.
+            assert cells["feeds"]["packages"] == 0
+        finally:
+            table_registry_repo().unregister(tid)
+            source_connections_repo().delete(conn_id)
+
+    def test_the_page_serves_the_strip_data(self, seeded_app):
+        c = seeded_app["client"]
+        body = c.get(
+            "/admin/data-sources",
+            headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
+        ).text
+        assert "SOURCE_PIPELINES" in body
+        assert "_pipelineStripHtml" in body
+        # Each cell routes to the page owning that stage.
+        for href in ("/admin/tables", "/admin/sync", "/admin/semantic-layer", "/admin/data-packages"):
+            assert href in body

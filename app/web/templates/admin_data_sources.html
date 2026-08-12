@@ -339,6 +339,39 @@
   .ds-bqrow .ds-table-status { flex: 0 0 auto; }
   .ds-bqrow button { flex: 0 0 auto; }
 
+  /* ── Pipeline strip — connected → synced → semantic → feeding whom, on
+        every source card. Four (or three) cells reading across the whole
+        vertical for ONE project; previously this took four pages to
+        assemble. Data: `_source_pipelines()` in app/web/router.py. ── */
+  .ds-pipe {
+    display: grid;
+    border-top: 1px solid var(--border-light, var(--ds-border-light));
+    background: var(--ds-surface-dim);
+  }
+  .ds-pipe--4 { grid-template-columns: repeat(4, 1fr); }
+  .ds-pipe--3 { grid-template-columns: repeat(3, 1fr); }
+  @media (max-width: 700px) { .ds-pipe--4, .ds-pipe--3 { grid-template-columns: 1fr 1fr; } }
+  .ds-pipe__cell {
+    padding: 9px 16px;
+    border-right: 1px solid var(--border-light, var(--ds-border-light));
+    display: flex; flex-direction: column; gap: 2px;
+    font-size: 12px; color: var(--ds-text-secondary);
+    text-decoration: none;
+  }
+  .ds-pipe__cell:last-child { border-right: none; }
+  a.ds-pipe__cell:hover { background: var(--surface, var(--ds-surface)); }
+  .ds-pipe__k {
+    font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--ds-text-muted);
+  }
+  .ds-pipe__v {
+    font-weight: 600; color: var(--ds-text-primary);
+    display: flex; align-items: center; gap: 5px;
+  }
+  .ds-pipe__v.is-ok   { color: var(--ds-accent-success-ink); }
+  .ds-pipe__v.is-warn { color: var(--ds-accent-warn-ink); }
+  .ds-pipe__v.is-err  { color: var(--ds-accent-danger-ink); }
+
   /* ── Step 1: semantic-layer opt-in ── */
   .ds-wsl-opt {
     border: 1px solid var(--border, var(--ds-border));
@@ -683,7 +716,10 @@
             <span>Also sync business metrics &amp; glossary (semantic layer)</span>
           </label>
           <p>Keeps this project's metric definitions in Agnes so analysts and agents compute
-             metrics one way. Needs a second token — a project <strong>owner</strong> token.</p>
+             metrics one way. Keboola's Metastore requires a second token for this — a project
+             <strong>owner</strong> token, separate from the storage token above.
+             <strong>Optional:</strong> skip it and tables still work; you can set it any time
+             later on this connection's card.</p>
           <div class="ds-field ds-wsl-opt__field" hidden>
             <label for="ds-new-master">Semantic-layer token <span class="optional">(project owner)</span></label>
             <input type="password" id="ds-new-master" placeholder="paste owner token" autocomplete="off">
@@ -870,6 +906,96 @@ function _masterTokenRowHtml(row) {
   <div class="ds-token-mismatch" id="ds-mismatch-${id}" hidden></div>`;
 }
 
+/* ── Pipeline strip ────────────────────────────────────────────────────────
+   Server-computed per connection (`_source_pipelines()` in
+   app/web/router.py) so a card needs no extra round-trips. Each cell links
+   to the page that owns that stage, and every value is worded as a state an
+   admin can act on: "no tables yet", "never synced", "token not set",
+   "0 packages — nobody can pull this". A missing cell (BigQuery has no
+   semantic layer) simply is not rendered — the strip is per-connector. */
+const SOURCE_PIPELINES = {{ source_pipelines | tojson }};
+
+function _relAge(minutes) {
+  if (minutes === null || minutes === undefined) return "";
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const h = Math.floor(minutes / 60);
+  if (h < 24) return `${h} h ago`;
+  const d = Math.floor(h / 24);
+  return `${d} day${d === 1 ? "" : "s"} ago`;
+}
+
+function _pipelineStripHtml(row) {
+  const p = SOURCE_PIPELINES[row.id];
+  if (!p) return "";
+  const cells = [];
+
+  // Tables. `unlinked` rows carry no connection_id and this source type has
+  // several connections, so they cannot be attributed — named rather than
+  // reported as "no tables yet", which read as an empty instance.
+  const t = p.tables || { count: 0, unlinked: 0 };
+  let tblText, tblTone = "", tblTitle = "Registered against this connection";
+  if (t.count) {
+    tblText = `${t.count} registered`;
+    if (t.basis === "source_type") tblTitle = "Counted by source type — these rows predate per-connection tracking, and this is the only connection of this type";
+  } else if (t.unlinked) {
+    tblText = `${t.unlinked} unlinked`;
+    tblTone = "is-warn";
+    tblTitle = `${t.unlinked} table(s) of this source type predate per-connection tracking, so they cannot be attributed to one connection. They still sync and are still bundleable.`;
+  } else {
+    tblText = "No tables yet";
+    tblTone = "is-warn";
+  }
+  cells.push(`
+    <a class="ds-pipe__cell" href="/admin/tables" title="${_esc(tblTitle)}">
+      <span class="ds-pipe__k">Tables</span>
+      <span class="ds-pipe__v ${tblTone}">${tblText}</span>
+    </a>`);
+
+  // Sync
+  const s = p.sync || {};
+  let syncTone = "", syncText;
+  if (s.errors) { syncTone = "is-err"; syncText = `${s.errors} failing`; }
+  else if (s.last_sync) { syncTone = "is-ok"; syncText = `✓ ${_relAge(s.age_minutes)}`; }
+  else { syncTone = "is-warn"; syncText = "Never synced"; }
+  cells.push(`
+    <a class="ds-pipe__cell" href="/admin/sync">
+      <span class="ds-pipe__k">Sync</span>
+      <span class="ds-pipe__v ${syncTone}">${syncText}</span>
+    </a>`);
+
+  // Semantic layer (Keboola only)
+  if (p.semantic) {
+    const sem = p.semantic;
+    const semText = !sem.token
+      ? "Token not set"
+      : (sem.metrics || sem.terms)
+        ? `✓ ${sem.metrics} metric${sem.metrics === 1 ? "" : "s"} · ${sem.terms} term${sem.terms === 1 ? "" : "s"}`
+        : "Nothing imported yet";
+    const semTone = !sem.token ? "is-warn" : (sem.metrics || sem.terms) ? "is-ok" : "is-warn";
+    cells.push(`
+      <a class="ds-pipe__cell" href="/admin/semantic-layer">
+        <span class="ds-pipe__k">Semantic layer</span>
+        <span class="ds-pipe__v ${semTone}">${semText}</span>
+      </a>`);
+  }
+
+  // Feeds — the end of the chain: who actually gets this source's data.
+  const f = p.feeds || { packages: 0, groups: 0, people: 0 };
+  let feedText;
+  if (!f.packages) feedText = "0 packages";
+  else if (f.people === -1) feedText = `${f.packages} package${f.packages === 1 ? "" : "s"} → everyone`;
+  else feedText = `${f.packages} package${f.packages === 1 ? "" : "s"} → ${f.people} ${f.people === 1 ? "person" : "people"}`;
+  cells.push(`
+    <a class="ds-pipe__cell" href="/admin/data-packages"
+       title="${f.packages ? "Packages holding this source's tables, and who they reach" : "Tables reach analysts only through a data package"}">
+      <span class="ds-pipe__k">Feeds</span>
+      <span class="ds-pipe__v ${f.packages ? "" : "is-warn"}">${feedText}</span>
+    </a>`);
+
+  return `<div class="ds-pipe ds-pipe--${cells.length}">${cells.join("")}</div>`;
+}
+
 function _connectionCardHtml(row) {
   const id = row.id;
   const name = _esc(row.name || "");
@@ -910,6 +1036,7 @@ function _connectionCardHtml(row) {
       ${_secretBadgeHtml(row)}
     </div>
   </div>
+  ${_pipelineStripHtml(row)}
   ${_chatToolsRowHtml(row)}
   <div class="ds-conn-actions">
     <button type="button" class="btn btn-secondary" data-role="test" onclick="testConn('${id}')">Test</button>

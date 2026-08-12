@@ -6333,7 +6333,199 @@ async def admin_data_sources_page(
     # never-synced-yet / last-sync-ok / last-attempt-failed are all visible
     # states, not just "something has successfully synced".
     ctx["semantic_refresh_summary"] = get_last_refresh_summary()
+    # Per-connection pipeline strip: connected → synced → semantic → feeding
+    # whom, in one glance on each source card. See `_source_pipelines`.
+    ctx["source_pipelines"] = _source_pipelines()
     return templates.TemplateResponse(request, "admin_data_sources.html", ctx)
+
+
+def _source_pipelines() -> dict:
+    """The pipeline strip for every source card, keyed by connection id.
+
+    Four cells per source — tables, sync, semantic layer, who it feeds —
+    computed server-side because each one is a fold over a different table
+    and the client would otherwise need four more round-trips per card. The
+    strip is what makes a source card answer "is this project healthy AND is
+    anyone getting its data", which previously took four pages (Data sources,
+    Tables, Sync, Semantic layer) to assemble by hand.
+
+    Per-connector by construction rather than a fixed four: the semantic cell
+    is Keboola-only (the Metastore is a Keboola API), so a BigQuery source
+    simply has no `semantic` key and the template renders the cells present.
+
+    Every cell degrades independently — a raising repo yields no key rather
+    than a 500 — for the same reason the /admin dashboard isolates its
+    resolvers: this page is where an admin lands when a source is already
+    broken.
+    """
+    from datetime import timezone
+
+    from src.repositories import (
+        data_packages_repo,
+        resource_grants_repo,
+        source_connections_repo,
+        sync_state_repo,
+        table_registry_repo,
+        user_group_members_repo,
+        user_groups_repo,
+    )
+
+    out: dict[str, dict] = {}
+    try:
+        connections = source_connections_repo().list()
+    except Exception as e:
+        logger.warning("data-sources pipelines: could not list connections: %s", e)
+        return out
+
+    try:
+        tables = table_registry_repo().list_all()
+    except Exception as e:
+        logger.warning("data-sources pipelines: could not list tables: %s", e)
+        tables = []
+
+    # ── tables per connection. `connection_id` is the precise link, but rows
+    # registered before it existed (or through the CLI) carry only
+    # `source_type`. Those are UNATTRIBUTABLE when a type has several
+    # connections, and reporting them as "no tables yet" was the misleading
+    # answer — an instance with eleven registered tables read as empty on
+    # every card. They are counted separately and named as unlinked instead;
+    # with exactly one connection of that type the attribution is safe, so
+    # they simply belong to it.
+    by_conn: dict[str, list] = {}
+    unlinked_by_type: dict[str, list] = {}
+    conns_per_type: dict[str, int] = {}
+    for c in connections:
+        st = c.get("source_type") or ""
+        conns_per_type[st] = conns_per_type.get(st, 0) + 1
+    for t in tables:
+        st = t.get("source_type") or ""
+        if st == "internal":
+            continue
+        if t.get("connection_id"):
+            by_conn.setdefault(t["connection_id"], []).append(t)
+        else:
+            unlinked_by_type.setdefault(st, []).append(t)
+
+    try:
+        states = {s["table_id"]: s for s in sync_state_repo().get_all_states()}
+    except Exception:
+        states = {}
+    try:
+        pkg_members = data_packages_repo().list_member_ids_bulk()
+        packages = {p["id"]: p for p in data_packages_repo().list()}
+    except Exception:
+        pkg_members, packages = {}, {}
+    try:
+        pkg_grants: dict[str, list] = {}
+        for g in resource_grants_repo().list_all(resource_type="data_package"):
+            pkg_grants.setdefault(g["resource_id"], []).append(g)
+    except Exception:
+        pkg_grants = {}
+    try:
+        groups = {g["id"]: g for g in user_groups_repo().list_all()}
+        members_repo = user_group_members_repo()
+    except Exception:
+        groups, members_repo = {}, None
+
+    # Semantic-layer counts, per `source_ref` (== connection id).
+    sem_metrics: dict[str, int] = {}
+    sem_terms: dict[str, int] = {}
+    try:
+        from src.repositories import glossary_repo, metric_repo
+
+        for m in metric_repo().list():
+            if m.get("source") == "keboola_semantic_layer" and m.get("source_ref"):
+                sem_metrics[m["source_ref"]] = sem_metrics.get(m["source_ref"], 0) + 1
+        for t in glossary_repo().list(limit=100000):
+            if t.get("source") == "keboola_semantic_layer" and t.get("source_ref"):
+                sem_terms[t["source_ref"]] = sem_terms.get(t["source_ref"], 0) + 1
+    except Exception as e:
+        logger.warning("data-sources pipelines: semantic counts unavailable: %s", e)
+
+    def _has_master(conn_id: str) -> bool:
+        try:
+            from app.api.admin_source_connections import master_secret_key
+            from src.repositories import connection_secrets_repo
+
+            return bool(connection_secrets_repo().has(master_secret_key(conn_id)))
+        except Exception:
+            return False
+
+    now = datetime.now(timezone.utc)
+    for conn in connections:
+        cid = conn["id"]
+        cells: dict[str, dict] = {}
+
+        # ── Tables
+        stype = conn.get("source_type") or ""
+        own = list(by_conn.get(cid, []))
+        unlinked = unlinked_by_type.get(stype, [])
+        basis = "connection"
+        if conns_per_type.get(stype, 0) == 1 and unlinked:
+            # Only one connection of this type — the pre-tracking rows can
+            # only be its own, so attribute rather than report them as
+            # orphans the admin cannot place.
+            own += unlinked
+            basis = "source_type"
+            unlinked = []
+        cells["tables"] = {"count": len(own), "basis": basis, "unlinked": len(unlinked)}
+
+        # ── Sync: the freshest run across this source's tables, and how many
+        # are currently in error. `internal`/remote rows have no sync state,
+        # so a source with none reads "not synced" rather than an error.
+        errors = 0
+        latest = None
+        for t in own:
+            st = states.get(t["id"]) or {}
+            if (st.get("status") or "") not in ("", "ok", "skipped"):
+                errors += 1
+            ts = st.get("last_sync")
+            if ts is not None:
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                if latest is None or ts > latest:
+                    latest = ts
+        cells["sync"] = {
+            "errors": errors,
+            "last_sync": latest.isoformat() if latest else None,
+            "age_minutes": int((now - latest).total_seconds() // 60) if latest else None,
+        }
+
+        # ── Semantic layer (Keboola only — the Metastore is a Keboola API).
+        if (conn.get("source_type") or "") == "keboola":
+            cells["semantic"] = {
+                "token": _has_master(cid),
+                "metrics": sem_metrics.get(cid, 0),
+                "terms": sem_terms.get(cid, 0),
+            }
+
+        # ── Feeds: packages holding this source's tables → groups granted →
+        # people reached. The end of the chain the redesign cares about; a
+        # source with tables in no package reads "0 packages", which is the
+        # honest answer to "who is getting this data".
+        own_ids = {t["id"] for t in own}
+        feeding = [pid for pid, tids in pkg_members.items() if own_ids.intersection(tids) and pid in packages]
+        granted_group_ids = {g["group_id"] for pid in feeding for g in pkg_grants.get(pid, [])}
+        everyone_ids = {g["id"] for g in groups.values() if g.get("is_system") and g.get("name") == "Everyone"}
+        people = 0
+        if granted_group_ids & everyone_ids:
+            people = -1  # sentinel: everyone (the template words it)
+        elif members_repo is not None:
+            reached: set[str] = set()
+            for gid in granted_group_ids:
+                try:
+                    reached.update(m["id"] for m in members_repo.list_members_for_group(gid))
+                except Exception:
+                    pass
+            people = len(reached)
+        cells["feeds"] = {
+            "packages": len(feeding),
+            "groups": len(granted_group_ids),
+            "people": people,
+        }
+
+        out[cid] = cells
+    return out
 
 
 def _orphan_reason(connection_id: str) -> str:
