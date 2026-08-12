@@ -116,6 +116,29 @@ def test_me_connections_page_renders_oauth_source(seeded_app):
     assert "/api/mcp/sources/src_oauth_ui/oauth/authorize" in r.text
 
 
+def test_me_connections_rail_redesign_keeps_the_card_contracts(seeded_app, monkeypatch):
+    """The rail chrome serves the REDESIGNED template
+    (me_connections.html; topnav keeps the frozen legacy copy), so the card
+    contracts every test above pins — auth-kind branches, OAuth authorize
+    href, the action buttons the page script drives — must hold in that
+    template too, or they are guarded on only half the pair."""
+    monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+    _seed_oauth_source(source_id="src_oauth_rail")
+    r = seeded_app["client"].get(
+        "/me/connections",
+        headers={"Authorization": f"Bearer {seeded_app['analyst_token']}"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.text
+    assert 'class="connx-head"' in body  # the redesigned page, not legacy
+    assert 'data-auth-kind="oauth"' in body
+    assert "/api/mcp/sources/src_oauth_rail/oauth/authorize" in body
+    assert 'data-action="oauth-connect"' in body
+    # The script's contracts survive the restyle.
+    assert "data-status" in body
+    assert "data-highlight=" in body
+
+
 def test_me_connections_page_shows_connected_banner(seeded_app):
     from src.repositories import mcp_user_oauth_tokens_repo
 
@@ -417,7 +440,7 @@ def test_me_connections_connected_banner_only_names_visible_sources(seeded_app):
 
 
 def test_revoked_analyst_is_told_they_lost_access_not_that_tools_are_missing(seeded_app):
-    """"This source has no tools yet" and "no tools are granted to me" are
+    """ "This source has no tools yet" and "no tools are granted to me" are
     different facts. They coincide for an admin, which hid the bug: a revoked
     analyst — whose card this page deliberately keeps visible — was told the
     source was unfinished and sent to chase an admin about tools that were

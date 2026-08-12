@@ -1557,7 +1557,11 @@ async def me_connections_page(
         connect_error=CONNECT_ERROR_MESSAGES.get(error_code, CONNECT_ERROR_FALLBACK) if error_code else "",
         retry_source=retry,
     )
-    return templates.TemplateResponse(request, "me_connections.html", ctx)
+    # Rail renders the redesigned page; topnav keeps the frozen pre-redesign
+    # copy byte-for-byte (the /me/activity pattern —
+    # TestDefaultContentParity).
+    tmpl = "me_connections.html" if get_ui_layout() == "rail" else "me_connections_legacy.html"
+    return templates.TemplateResponse(request, tmpl, ctx)
 
 
 @router.get("/me/activity", response_class=HTMLResponse)

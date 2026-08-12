@@ -2174,6 +2174,21 @@ class TestDefaultContentParity:
         assert resp.status_code == 200
         assert 'id="pf-name-edit"' in resp.text
 
+    def test_topnav_connections_is_the_legacy_page(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        resp = web_client.get("/me/connections", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert 'class="connx-head"' not in resp.text, "redesigned connections page leaked into topnav"
+
+    def test_rail_connections_is_the_redesigned_page(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = web_client.get("/me/connections", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert 'class="connx-head"' in resp.text
+        # The JS contracts the page's script drives are layout-independent.
+        assert "data-highlight=" in resp.text
+
     def test_topnav_activity_is_the_legacy_page(self, web_client, admin_cookie, monkeypatch):
         monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
         monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
