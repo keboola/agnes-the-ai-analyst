@@ -94,12 +94,20 @@ def refresh_fields() -> list[tuple[str, str]]:
     return out
 
 
-# Built-in `organizations` columns a configured detail must never overwrite. Kept
-# here rather than imported from transform.py to avoid a circular import; the
-# pairing is asserted by a test so the two cannot drift apart.
-ORGANIZATION_RESERVED_COLUMNS = ("org_id", "name")
-
 ORGANIZATION_DETAIL_PREFIX = "detail_"
+
+
+def _organization_reserved_columns() -> frozenset[str]:
+    """Built-in `organizations` columns a configured detail must never overwrite.
+
+    Derived from ``ORGANIZATIONS_SCHEMA`` rather than restated, so a column added
+    there is protected without a second edit here. The import is function-local
+    because ``transform`` imports this module at top level — the same reason
+    ``trigger_incremental_transform`` defers its ``incremental_transform`` import.
+    """
+    from connectors.jira.transform import ORGANIZATIONS_SCHEMA
+
+    return frozenset(ORGANIZATIONS_SCHEMA)
 
 
 def organization_detail_fields() -> list[tuple[str, str]]:
@@ -119,12 +127,13 @@ def organization_detail_fields() -> list[tuple[str, str]]:
     already claimed by an earlier entry is skipped. Read at call time so scripts that
     ``load_dotenv()`` at runtime see the value.
     """
+    reserved = _organization_reserved_columns()
     seen: set[str] = set()
     out: list[tuple[str, str]] = []
     for detail_key, alias in _parse_field_spec(os.environ.get("JIRA_ORG_DETAIL_FIELDS", "")):
         if alias and _VALID_COLUMN.match(alias):
             column = alias
-            if column in ORGANIZATION_RESERVED_COLUMNS:
+            if column in reserved:
                 column = f"{ORGANIZATION_DETAIL_PREFIX}{column}"
                 logger.warning(
                     "Jira org detail %s: column %r collides with a built-in organizations column; using %r instead",
@@ -554,7 +563,7 @@ class JiraService:
         logger.info("Enumerated %d Jira organizations", len(ids))
         return ids
 
-    def fetch_organization(self, org_id: str) -> dict[str, Any] | None:
+    def fetch_organization(self, org_id: str, client: httpx.Client | None = None) -> dict[str, Any] | None:
         """One organization with its detail fields, from the CSM API.
 
         ``GET /organization/{id}`` is the only CSM operation that returns each
@@ -563,6 +572,13 @@ class JiraService:
         omit it. Matching on the id is what makes the mapping survive a detail-field
         rename, so the per-organization call is worth the extra requests — the
         refresh is a low-frequency job, not a per-ticket one.
+
+        Args:
+            org_id: JSM organization id.
+            client: Optional client to reuse. A caller sweeping every organization
+                should pass one — a per-request client pays a fresh TLS handshake
+                each time, which dominates the sweep. Omitted, one is created and
+                closed around this single request.
 
         Returns:
             The organization dict, or ``None`` when it no longer exists (404).
@@ -578,8 +594,11 @@ class JiraService:
         url = f"https://api.atlassian.com/jsm/csm/cloudid/{cloud_id}/api/v1/organization/{org_id}"
 
         try:
-            with httpx.Client(timeout=30) as client:
+            if client is not None:
                 response = client.get(url, auth=self.auth, headers={"Accept": "application/json"})
+            else:
+                with httpx.Client(timeout=30) as own_client:
+                    response = own_client.get(url, auth=self.auth, headers={"Accept": "application/json"})
         except httpx.RequestError as e:
             raise JiraFetchError(f"Organization fetch for {org_id} failed: connection — {e}") from e
 

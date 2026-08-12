@@ -200,14 +200,10 @@ def _detail_value(detail: dict) -> str | None:
     values = detail.get("values")
     if values is None:
         value = detail.get("value")
-        if isinstance(value, dict):
-            values = value.get("text")
-        elif value is not None:
-            return str(value)
-    if not isinstance(values, list) or not values:
+        values = value.get("text") if isinstance(value, dict) else None
+    if not isinstance(values, list) or not values or values[0] is None:
         return None
-    first = values[0]
-    return None if first is None else str(first)
+    return str(values[0])
 
 
 def extract_organization_details(raw_org: dict) -> dict[str, str | None]:

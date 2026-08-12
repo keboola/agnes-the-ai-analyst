@@ -31,13 +31,62 @@ def _is_flat_table(table_name: str) -> bool:
     return table_name in JIRA_FLAT_TABLES
 
 
-def _flat_view_sql(table_name: str, table_dir: Path) -> str:
-    """``CREATE OR REPLACE VIEW`` over an unpartitioned table directory."""
-    glob_path = str(table_dir / "*.parquet")
+def _table_parquets(table_name: str, table_dir: Path) -> tuple[str, list[Path]]:
+    """``(glob_path, existing_files)`` for a table, whichever layout it uses."""
+    if _is_flat_table(table_name):
+        return str(table_dir / "*.parquet"), list(table_dir.glob("*.parquet"))
+    return str(table_dir / "month=*" / "*.parquet"), list(table_dir.glob("month=*/data.parquet"))
+
+
+def _view_sql(table_name: str, glob_path: str) -> str:
+    """``CREATE OR REPLACE VIEW`` over a table's parquet glob.
+
+    ``union_by_name`` on both layouts, so adding a column stays non-breaking;
+    ``hive_partitioning`` only where there is a partition key to project.
+    """
+    hive = "" if _is_flat_table(table_name) else ", hive_partitioning=true"
     return (
         f"CREATE OR REPLACE VIEW {quote_ident(table_name)} AS "
-        f"SELECT * FROM read_parquet('{glob_path}', union_by_name=true)"
+        f"SELECT * FROM read_parquet('{glob_path}', union_by_name=true{hive})"
     )
+
+
+def _rebuild_view_and_stats(conn, table_name: str, table_dir: Path) -> tuple[int, int]:
+    """Recreate a table's view and return its ``(rows, size_bytes)``.
+
+    ``(0, 0)`` when the table has no parquet yet — DuckDB's glob fails on an empty
+    directory, so the view is left uncreated rather than pointing at nothing.
+    """
+    glob_path, files = _table_parquets(table_name, table_dir)
+    if not files:
+        return 0, 0
+    try:
+        conn.execute(_view_sql(table_name, glob_path))
+        rows = conn.execute(f"SELECT count(*) FROM {quote_ident(table_name)}").fetchone()[0]
+        return rows, sum(f.stat().st_size for f in files)
+    except Exception as e:
+        logger.warning("Could not count rows for %s: %s", table_name, e)
+        return 0, 0
+
+
+def _upsert_meta(conn, table_name: str, rows: int, size_bytes: int, now: datetime) -> None:
+    """Write a table's catalog row, inserting it when it is not there yet.
+
+    An UPDATE alone is not enough: on an instance whose extract.duckdb predates a
+    table, `_meta` has no row for it and a bare UPDATE matches nothing, leaving the
+    table absent from the catalog (and so unlisted for users) until someone happens
+    to re-run ``init_extract``.
+    """
+    if conn.execute("SELECT count(*) FROM _meta WHERE table_name = ?", [table_name]).fetchone()[0]:
+        conn.execute(
+            "UPDATE _meta SET rows = ?, size_bytes = ?, extracted_at = ? WHERE table_name = ?",
+            [rows, size_bytes, now, table_name],
+        )
+    else:
+        conn.execute(
+            "INSERT INTO _meta VALUES (?, ?, ?, ?, ?, 'local')",
+            [table_name, f"Jira {table_name}", rows, size_bytes, now],
+        )
 
 
 def init_extract(output_dir: str | Path) -> None:
@@ -66,67 +115,31 @@ def init_extract(output_dir: str | Path) -> None:
         )""")
 
         now = datetime.now(timezone.utc)
-        for table_name in JIRA_TABLES:
+        for table_name in JIRA_TABLES + JIRA_FLAT_TABLES:
             table_dir = data_dir / table_name
             table_dir.mkdir(exist_ok=True)
 
-            # Migrate any remaining flat YYYY-MM.parquet files to hive layout
-            # before building the view so the glob always points at hive dirs.
-            try:
-                from .incremental_transform import migrate_flat_to_hive
-
-                migrated = migrate_flat_to_hive(table_dir)
-                if migrated:
-                    logger.info(
-                        "Migrated %d flat parquet(s) to hive layout for %s: %s",
-                        len(migrated),
-                        table_name,
-                        migrated,
-                    )
-            except Exception as mig_err:
-                logger.warning("Could not migrate flat parquets for %s: %s", table_name, mig_err)
-
-            # Create view only if hive partition dirs exist
-            # (DuckDB glob fails on empty dirs / non-existent paths).
-            rows = 0
-            size_bytes = 0
-            hive_parquets = list(table_dir.glob("month=*/data.parquet"))
-            if hive_parquets:
-                glob_path = str(table_dir / "month=*" / "*.parquet")
-                conn.execute(
-                    f"CREATE OR REPLACE VIEW {quote_ident(table_name)} AS "
-                    f"SELECT * FROM read_parquet('{glob_path}', union_by_name=true, hive_partitioning=true)"
-                )
+            if not _is_flat_table(table_name):
+                # Migrate any remaining flat YYYY-MM.parquet files to hive layout
+                # before building the view so the glob always points at hive dirs.
+                # Skipped for dimension tables, whose single data.parquet is the
+                # intended layout rather than an unmigrated legacy one.
                 try:
-                    rows = conn.execute(f"SELECT count(*) FROM {quote_ident(table_name)}").fetchone()[0]
-                    size_bytes = sum(f.stat().st_size for f in hive_parquets)
-                except Exception:
-                    pass
+                    from .incremental_transform import migrate_flat_to_hive
 
-            conn.execute(
-                "INSERT INTO _meta VALUES (?, ?, ?, ?, ?, 'local')",
-                [table_name, f"Jira {table_name}", rows, size_bytes, now],
-            )
+                    migrated = migrate_flat_to_hive(table_dir)
+                    if migrated:
+                        logger.info(
+                            "Migrated %d flat parquet(s) to hive layout for %s: %s",
+                            len(migrated),
+                            table_name,
+                            migrated,
+                        )
+                except Exception as mig_err:
+                    logger.warning("Could not migrate flat parquets for %s: %s", table_name, mig_err)
 
-        for table_name in JIRA_FLAT_TABLES:
-            table_dir = data_dir / table_name
-            table_dir.mkdir(exist_ok=True)
-
-            rows = 0
-            size_bytes = 0
-            flat_parquets = list(table_dir.glob("*.parquet"))
-            if flat_parquets:
-                conn.execute(_flat_view_sql(table_name, table_dir))
-                try:
-                    rows = conn.execute(f"SELECT count(*) FROM {quote_ident(table_name)}").fetchone()[0]
-                    size_bytes = sum(f.stat().st_size for f in flat_parquets)
-                except Exception:
-                    pass
-
-            conn.execute(
-                "INSERT INTO _meta VALUES (?, ?, ?, ?, ?, 'local')",
-                [table_name, f"Jira {table_name}", rows, size_bytes, now],
-            )
+            rows, size_bytes = _rebuild_view_and_stats(conn, table_name, table_dir)
+            _upsert_meta(conn, table_name, rows, size_bytes, now)
 
         logger.info(
             "Initialized Jira extract.duckdb at %s with %d tables",
@@ -152,69 +165,10 @@ def update_meta(output_dir: str | Path, table_name: str) -> None:
     conn = _open_duckdb(str(db_path))
     try:
         table_dir = output_path / "data" / table_name
-
-        if _is_flat_table(table_name):
-            # Unpartitioned dimension: same view-rebuild + row/size refresh as below,
-            # minus the hive glob. Without this branch a flat table's _meta row would
-            # keep whatever init_extract wrote (0 rows before the first refresh) and
-            # its view would never be recreated, so the table would read as empty.
-            rows = 0
-            size_bytes = 0
-            flat_parquets = list(table_dir.glob("*.parquet"))
-            if flat_parquets:
-                try:
-                    conn.execute(_flat_view_sql(table_name, table_dir))
-                    rows = conn.execute(f"SELECT count(*) FROM {quote_ident(table_name)}").fetchone()[0]
-                    size_bytes = sum(f.stat().st_size for f in flat_parquets)
-                except Exception as e:
-                    logger.warning("Could not count rows for %s: %s", table_name, e)
-
-            # Upsert rather than UPDATE. On an instance whose extract.duckdb predates
-            # this table, `_meta` has no row for it, and a bare UPDATE would match
-            # nothing — leaving the table absent from the catalog (and so unlisted for
-            # users) until someone happened to re-run init_extract.
-            now = datetime.now(timezone.utc)
-            existing = conn.execute(
-                "SELECT count(*) FROM _meta WHERE table_name = ?",
-                [table_name],
-            ).fetchone()[0]
-            if existing:
-                conn.execute(
-                    "UPDATE _meta SET rows = ?, size_bytes = ?, extracted_at = ? WHERE table_name = ?",
-                    [rows, size_bytes, now, table_name],
-                )
-            else:
-                conn.execute(
-                    "INSERT INTO _meta VALUES (?, ?, ?, ?, ?, 'local')",
-                    [table_name, f"Jira {table_name}", rows, size_bytes, now],
-                )
-            conn.execute("CHECKPOINT")
-            return
-
-        hive_parquets = list(table_dir.glob("month=*/data.parquet"))
-
-        rows = 0
-        size_bytes = 0
-        if hive_parquets:
-            try:
-                glob_path = str(table_dir / "month=*" / "*.parquet")
-                # Recreate view to pick up new/changed hive partition dirs
-                conn.execute(
-                    f"CREATE OR REPLACE VIEW {quote_ident(table_name)} AS "
-                    f"SELECT * FROM read_parquet('{glob_path}', union_by_name=true, hive_partitioning=true)"
-                )
-                rows = conn.execute(
-                    f"SELECT count(*) FROM read_parquet('{glob_path}', union_by_name=true, hive_partitioning=true)"
-                ).fetchone()[0]
-                size_bytes = sum(f.stat().st_size for f in hive_parquets)
-            except Exception as e:
-                logger.warning("Could not count rows for %s: %s", table_name, e)
-
-        now = datetime.now(timezone.utc)
-        conn.execute(
-            "UPDATE _meta SET rows = ?, size_bytes = ?, extracted_at = ? WHERE table_name = ?",
-            [rows, size_bytes, now, table_name],
-        )
+        # The view is recreated (not just counted) so it picks up new partition dirs,
+        # and on a dimension table so it picks up a newly added detail column.
+        rows, size_bytes = _rebuild_view_and_stats(conn, table_name, table_dir)
+        _upsert_meta(conn, table_name, rows, size_bytes, datetime.now(timezone.utc))
         conn.execute("CHECKPOINT")
     finally:
         conn.close()

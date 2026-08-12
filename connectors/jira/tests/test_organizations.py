@@ -558,3 +558,28 @@ class TestFlatTableRegistration:
             assert row is not None and row[0] == 1
         finally:
             conn.close()
+
+
+class TestReservedColumnsCoverEveryBuiltin:
+    def test_no_builtin_column_can_be_shadowed_by_a_detail(
+        self, clear_org_env: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every ORGANIZATIONS_SCHEMA column is protected, not just a hardcoded few.
+
+        Guards the drift that a restated list invites: `_synced_at` was originally
+        omitted, so `JIRA_ORG_DETAIL_FIELDS=38:_synced_at` passed validation and
+        `transform_organization` overwrote the sync timestamp with a detail value.
+        """
+        for builtin in ORGANIZATIONS_SCHEMA:
+            monkeypatch.setenv(ORG_DETAIL_ENV, f"38:{builtin}")
+            assert organization_detail_fields() == [("38", f"detail_{builtin}")], (
+                f"built-in column {builtin!r} is not reserved"
+            )
+
+    def test_detail_cannot_clobber_synced_at(self, clear_org_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(ORG_DETAIL_ENV, "38:_synced_at")
+        rec = transform_organization(
+            {"id": "325", "name": "Acme", "details": [{"id": "38", "name": "CRM ID", "values": ["CLOBBERED"]}]}
+        )
+        assert rec["_synced_at"] != "CLOBBERED"
+        assert rec["detail__synced_at"] == "CLOBBERED"
