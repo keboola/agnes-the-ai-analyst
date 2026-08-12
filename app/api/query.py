@@ -30,6 +30,12 @@ from connectors.internal.access import (
     find_internal_refs,
     is_internal_table,
 )
+from src.access_policy import (
+    PolicyError,
+    PolicyIdentityUnresolvable,
+    PolicyNameCollision,
+    rewrite_sql,
+)
 from src.audit_helpers import client_kind_from_user
 from src.db import get_analytics_db_readonly
 from src.rbac import get_accessible_tables
@@ -1113,6 +1119,33 @@ def execute_query(
         # via _enforce_non_admin_sql_rbac; no-op for admins (allowed is None).
         _enforce_non_admin_sql_rbac(analytics, sql_lower, allowed)
 
+        # Table access policies (§5/§6): substitute every policied table
+        # reference in the caller's SQL with its resolved, caller-scoped
+        # relation. No special-casing for admins here — policied_relation
+        # already returns the passthrough (unfiltered) relation for a
+        # full-surface admin, so this call is a no-op for them too. Inert
+        # (byte-identical SQL, empty params) unless a table this query
+        # touches actually carries a policy.
+        try:
+            policy_rewritten_sql, policy_params, policied_table_ids = rewrite_sql(request.sql, user)
+        except PolicyNameCollision as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "reason": "policy_name_collision",
+                    "table": exc.table_id,
+                    "fix": "rename your CTE",
+                },
+            )
+        except PolicyIdentityUnresolvable:
+            raise HTTPException(status_code=403, detail={"reason": "policy_identity_unresolvable"})
+        except PolicyError as exc:
+            # Never fall back to the unfiltered table (§17). The raw
+            # engine/parse detail is deliberately not surfaced (§16) — a
+            # failing policy's error can quote literal values from the
+            # policy body.
+            raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": exc.table_id})
+
         # ---- #160 BQ remote-row guardrail + RBAC patch -------------------
         dry_run_set, name_lookups, blocked_bq_path = _bq_guardrail_inputs(
             request.sql,
@@ -1164,6 +1197,21 @@ def execute_query(
             # large to return" on >100M-row sources). Helper returns the
             # original SQL unchanged when rewriting would be unsafe
             # (cross-source JOIN, no BQ tables referenced, double-wrap).
+            #
+            # Task 10: this plans the push-down against ``request.sql`` — the
+            # caller's ORIGINAL SQL, not ``policy_rewritten_sql`` above. A
+            # policy on a query_mode='remote' table is therefore not yet
+            # enforced when this rewrite fires (only on the ATTACH-catalog
+            # path below, when did_rewrite is False). Per spec §7.3, closing
+            # this requires policy substitution to run FIRST — resolved
+            # against the table's physical bq.<dataset>.<table> path
+            # (``policied_relation(..., dialect='bigquery')``, §7.2) — before
+            # this bare-name→backtick rewrite runs on the substituted
+            # subtree, with named params threaded through
+            # ``run_bq_query_to_arrow``'s ``query_parameters`` (§7.1) instead
+            # of a DuckDB bind, since this push-down payload is a
+            # dollar-quoted string literal that ``conn.execute()`` never
+            # scans for ``$name`` placeholders.
             execution_sql, did_rewrite = _rewrite_user_sql_for_bigquery_query(
                 request.sql,
                 conn,
@@ -1185,6 +1233,12 @@ def execute_query(
                     user_id,
                 )
             else:
+                # Non-push-down (plain ATTACH-catalog) path: run the
+                # access-policy-rewritten SQL instead of the raw analyst SQL.
+                # Byte-identical to request.sql — so this branch is a no-op
+                # change — unless a table this query touches is policied
+                # (rewrite_sql's inert-until-attached guarantee).
+                execution_sql = policy_rewritten_sql
                 logger.debug(
                     "query_rewrite_skipped: user_id=%s — running original SQL via ATTACH-catalog path",
                     user_id,
@@ -1197,9 +1251,14 @@ def execute_query(
             # to the original SQL via the legacy ATTACH-catalog path so
             # the request still succeeds (slower, but correct). Same
             # safety contract as the dry-run fallback in
-            # ``_bq_quota_and_cap_guard``.
+            # ``_bq_quota_and_cap_guard``. Bind ``policy_params`` (DuckDB
+            # named params) whenever the executed SQL carries a policy's
+            # ``$name`` markers — never string-interpolated (§6.2).
             try:
-                result = analytics.execute(execution_sql).fetchmany(request.limit + 1)
+                if policy_params:
+                    result = analytics.execute(execution_sql, policy_params).fetchmany(request.limit + 1)
+                else:
+                    result = analytics.execute(execution_sql).fetchmany(request.limit + 1)
             except Exception as exc:
                 if did_rewrite and _looks_like_bq_rewrite_parse_error(exc):
                     logger.warning(
@@ -1209,7 +1268,14 @@ def execute_query(
                         user_id,
                         type(exc).__name__,
                     )
-                    result = analytics.execute(request.sql).fetchmany(request.limit + 1)
+                    # Retry on the policy-rewritten SQL, not the raw
+                    # request.sql — this fallback re-enters the ATTACH-catalog
+                    # path (same as the did_rewrite=False branch above), so
+                    # it must stay policy-filtered too.
+                    if policy_params:
+                        result = analytics.execute(policy_rewritten_sql, policy_params).fetchmany(request.limit + 1)
+                    else:
+                        result = analytics.execute(policy_rewritten_sql).fetchmany(request.limit + 1)
                 else:
                     raise
             columns = [desc[0] for desc in analytics.description] if analytics.description else []
@@ -1248,6 +1314,10 @@ def execute_query(
         # Computed before building the response so it can be surfaced to
         # REST/CLI/MCP consumers; ``None`` for local queries (no BQ tables).
         _bytes_scanned = sum(b for _, _, b in _dry_run_set) if _dry_run_set else None
+        # Task 11: policied_table_ids (from the rewrite_sql call above)
+        # surfaces here as response.row_scope, disclosing to the caller that
+        # this result is a caller-scoped slice, not the raw table — not
+        # added to QueryResponse in this task.
         response = QueryResponse(
             columns=columns,
             rows=serializable_rows,
@@ -2387,6 +2457,27 @@ def run_remote_select_to_arrow(conn, user, sql, bq, quota):
         # denylist + internal-extract denylist M1), shared via the helper.
         _enforce_non_admin_sql_rbac(analytics, sql_lower, allowed)
 
+        # Table access policies (§5/§6) — same substitution as /api/query's
+        # execute_query, shared here so a snapshot materialize can't be used
+        # to bypass a policy /api/query would have enforced. See that
+        # handler's comment for the full rationale; error→HTTP mapping
+        # mirrors it exactly.
+        try:
+            policy_rewritten_sql, policy_params, policied_table_ids = rewrite_sql(sql, user)
+        except PolicyNameCollision as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "reason": "policy_name_collision",
+                    "table": exc.table_id,
+                    "fix": "rename your CTE",
+                },
+            )
+        except PolicyIdentityUnresolvable:
+            raise HTTPException(status_code=403, detail={"reason": "policy_identity_unresolvable"})
+        except PolicyError as exc:
+            raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": exc.table_id})
+
         dry_run_set, name_lookups, blocked_bq_path = _bq_guardrail_inputs(
             sql,
             sql_lower,
@@ -2433,7 +2524,18 @@ def run_remote_select_to_arrow(conn, user, sql, bq, quota):
                         },
                     ) from exc
 
+            # Task 10: plans the push-down against the ORIGINAL `sql`, not
+            # `policy_rewritten_sql` — same deferred ordering gap as
+            # execute_query's identically-commented call site above
+            # (§7.1-§7.3); `inner_sql`'s labeled client.query path doesn't
+            # enforce a policy on a query_mode='remote' table yet either.
             execution_sql, did_rewrite, billing_project, inner_sql = _bq_remote_execution_plan(sql, conn)
+            if not (did_rewrite and inner_sql is not None):
+                # Non-push-down (ATTACH-catalog) path: run the
+                # access-policy-rewritten SQL instead of the raw analyst
+                # SQL. Byte-identical to `execution_sql` here (a no-op)
+                # unless a table this query touches is policied.
+                execution_sql = policy_rewritten_sql
             try:
                 try:
                     if did_rewrite and inner_sql is not None:
@@ -2453,6 +2555,8 @@ def run_remote_select_to_arrow(conn, user, sql, bq, quota):
                             inner_sql,
                             labels=job_labels_for(user, "query"),
                         )
+                    elif policy_params:
+                        table = analytics.execute(execution_sql, policy_params).arrow()
                     else:
                         table = analytics.execute(execution_sql).arrow()
                 except HTTPException:
@@ -2462,9 +2566,15 @@ def run_remote_select_to_arrow(conn, user, sql, bq, quota):
                     # survived identifier rewrite) falls back to the original SQL
                     # via the ATTACH-catalog extension path — slower but correct.
                     # This fallback job is unlabeled (extension-owned), matching
-                    # the interactive /api/query fallback contract.
+                    # the interactive /api/query fallback contract. Retries on
+                    # the policy-rewritten SQL, not the raw `sql` — this
+                    # fallback re-enters the ATTACH-catalog path, so it must
+                    # stay policy-filtered too.
                     if did_rewrite and _looks_like_bq_rewrite_parse_error(exc):
-                        table = analytics.execute(sql).arrow()
+                        if policy_params:
+                            table = analytics.execute(policy_rewritten_sql, policy_params).arrow()
+                        else:
+                            table = analytics.execute(policy_rewritten_sql).arrow()
                     else:
                         raise
             except HTTPException:
@@ -2497,6 +2607,9 @@ def run_remote_select_to_arrow(conn, user, sql, bq, quota):
                     quota.record_bytes(user=user_id, n=total_bq_bytes)
                 except Exception:
                     logger.warning("quota record_bytes failed for user=%s", user_id)
+        # Task 11: policied_table_ids (from the rewrite_sql call above) has
+        # no carrier on this function's plain pyarrow.Table return — the
+        # v2_scan caller will need it for the X-Agnes-Row-Scope header.
         return table
     finally:
         analytics.close()
