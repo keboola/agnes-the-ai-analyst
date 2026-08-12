@@ -146,7 +146,32 @@ def test_http_transport_without_url_raises_value_error():
         asyncio.run(_drive())
 
 
-def test_stdio_env_is_base_secret_overlays(monkeypatch):
+async def _close_pool():
+    from connectors.mcp import session_pool
+
+    await session_pool.close_all()
+
+
+def _patch_stdio_everywhere(monkeypatch, params_factory, streams_cm, session_ctor):
+    """Patch the stdio transport on BOTH paths that can launch it.
+
+    Since the session pool landed, a stdio source is served from a warm
+    process by default and the direct spawn is the fallback. The params are
+    built before that fork, so these tests parametrize over both: what gets
+    launched must not depend on which path launched it.
+    """
+    from connectors.mcp import session_pool
+
+    monkeypatch.setattr(mcp_client, "StdioServerParameters", params_factory)
+    monkeypatch.setattr(mcp_client, "stdio_client", streams_cm)
+    monkeypatch.setattr(mcp_client, "ClientSession", session_ctor)
+    monkeypatch.setattr(session_pool, "stdio_client", streams_cm)
+    monkeypatch.setattr(session_pool, "ClientSession", session_ctor)
+    monkeypatch.setattr(session_pool, "spec_key", lambda params: "test-key")
+
+
+@pytest.mark.parametrize("pooled", (True, False))
+def test_stdio_env_is_base_secret_overlays(monkeypatch, pooled):
     """Per-source ``env`` is the base; the auth_secret_env secret overlays it."""
     captured = {}
 
@@ -159,9 +184,8 @@ def test_stdio_env_is_base_secret_overlays(monkeypatch):
     fake_stdio = _fake_streams_cm((MagicMock(name="read"), MagicMock(name="write")))
     ctor, _session = _fake_client_session()
 
-    monkeypatch.setattr(mcp_client, "StdioServerParameters", _fake_stdio_params)
-    monkeypatch.setattr(mcp_client, "stdio_client", fake_stdio)
-    monkeypatch.setattr(mcp_client, "ClientSession", ctor)
+    monkeypatch.setenv("AGNES_MCP_SESSION_POOL", "1" if pooled else "0")
+    _patch_stdio_everywhere(monkeypatch, _fake_stdio_params, fake_stdio, ctor)
     monkeypatch.setattr(
         mcp_client, "_lookup_secret_for_source", lambda src, **kw: "tok-123"
     )
@@ -179,6 +203,7 @@ def test_stdio_env_is_base_secret_overlays(monkeypatch):
             pass
 
     asyncio.run(_drive())
+    asyncio.run(_close_pool())
 
     assert captured["command"] == "crm-mcp"
     assert captured["args"] == ["--flag"]
@@ -186,7 +211,8 @@ def test_stdio_env_is_base_secret_overlays(monkeypatch):
     assert captured["env"] == {"CRM_API_URL": "u", "CRM_TOKEN": "tok-123"}
 
 
-def test_stdio_no_env_no_secret_passes_none(monkeypatch):
+@pytest.mark.parametrize("pooled", (True, False))
+def test_stdio_no_env_no_secret_passes_none(monkeypatch, pooled):
     """No env and no secret → env=None (prior behavior, unchanged)."""
     captured = {}
 
@@ -197,9 +223,8 @@ def test_stdio_no_env_no_secret_passes_none(monkeypatch):
     fake_stdio = _fake_streams_cm((MagicMock(name="read"), MagicMock(name="write")))
     ctor, _session = _fake_client_session()
 
-    monkeypatch.setattr(mcp_client, "StdioServerParameters", _fake_stdio_params)
-    monkeypatch.setattr(mcp_client, "stdio_client", fake_stdio)
-    monkeypatch.setattr(mcp_client, "ClientSession", ctor)
+    monkeypatch.setenv("AGNES_MCP_SESSION_POOL", "1" if pooled else "0")
+    _patch_stdio_everywhere(monkeypatch, _fake_stdio_params, fake_stdio, ctor)
 
     src = {"transport": "stdio", "command": "plain-mcp"}
 
@@ -208,6 +233,7 @@ def test_stdio_no_env_no_secret_passes_none(monkeypatch):
             pass
 
     asyncio.run(_drive())
+    asyncio.run(_close_pool())
 
     assert captured["env"] is None
 

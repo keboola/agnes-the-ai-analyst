@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+
+- **A stdio MCP server is kept warm between calls instead of started for each one.** Measured on a live instance against a connected Keboola project: **~6 s per tool call**, of which the `uv` launcher accounts for 0.13 s. The rest is the upstream's own import tree — `import fastmcp` alone is 2.4 s, its server module 5.6 s — so nothing about *how* we launch it can move that number, and an agent reaching for five tools in one answer was spending half a minute inside process startup. Sessions are now pooled per launch spec. Three properties make reuse safe, and each is pinned by a test. **The pool key is the whole launch spec, resolved secret included** (hashed, so the bookkeeping never holds a credential in the clear): a rotated token, an edited `env` or a bumped runner version each produce a different key, so the next call builds a fresh process and the stale one ages out — there is no invalidation hook to forget. The same property is what stops a `scope='per_user'` source from handing one analyst's warm process to another, since their resolved credentials differ. **Calls on one session are serialized**, because the streams underneath are not documented as safe for concurrent writers and nothing was concurrent before — every caller was paying a full spawn. **A failed call evicts the session and never retries**: retrying is the caller's decision, since a retry of a mutating tool can run it twice; the pool only guarantees the next caller does not inherit a broken process. Idle sessions close after `AGNES_MCP_SESSION_IDLE_S` (default 180 s) and at most `AGNES_MCP_SESSION_POOL_MAX` (default 8) are held, since each is a Python process with the upstream's imports resident. Set `AGNES_MCP_SESSION_POOL=0` for a process per call. HTTP and SSE sources are untouched — they have no spawn to amortize.
+
 ## [0.83.7] - 2026-08-12
 
 ### Fixed

@@ -664,6 +664,16 @@ async def _open_session(
                 env_extra[secret_env] = token
 
         params = StdioServerParameters(command=command, args=list(args), env=env_extra or None)
+        # Reuse a warm subprocess when one matches this exact launch spec.
+        # The upstream's own import tree, not our launcher, is what costs ~6s
+        # per call — see connectors/mcp/session_pool.py for the measurement and
+        # for why the pool key includes the resolved secret.
+        from connectors.mcp import session_pool
+
+        if session_pool.pool_enabled():
+            async with session_pool.get_pool().acquire(params) as session:
+                yield session
+            return
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
