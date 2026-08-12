@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+- **Setting `chat.docker_egress_allow_hosts` without `chat.docker_egress_mode: allowlist` now warns at startup.** The allow-hosts knob reads like it turns the allowlist on, but only the mode does — set alone (the mode defaults to `open`), the hosts were silently ignored and sandbox egress stayed unrestricted. The startup egress-config check now reports the ignored allowlist and the consequence for the configured mode.
+
 ## [0.83.7] - 2026-08-12
 
 ### Fixed
