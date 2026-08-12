@@ -303,6 +303,101 @@ class TestAdminConfigureSSRF:
             assert "private" not in resp.json()["detail"].lower()
 
 
+class TestServerConfigAuthProvidersValidation:
+    """`_validate_auth_providers_in_patch` gate on POST /api/admin/server-config.
+
+    Spec (2026-08-12 keboola auth provider): an explicitly empty
+    ``auth.providers`` list is a config error — one overlay write must never
+    be able to lock every user out — so the admin API rejects it with 422.
+    ``null`` is the documented "clear the override" value (validator
+    early-returns; reader treats it as unset = all providers), and a
+    non-empty list is accepted and persisted.
+
+    ``auth`` is a danger section, so every request here carries
+    ``confirm_danger=true`` — without it the danger gate 400s before the
+    providers validator runs (asserted explicitly below so nobody mistakes
+    that 400 for the 422 contract).
+    """
+
+    def test_empty_providers_list_rejected_with_422(self, seeded_app):
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"auth": {"providers": []}}, "confirm_danger": True},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 422, resp.text
+        assert "non-empty" in resp.json()["detail"]
+
+    def test_non_list_providers_rejected_with_422(self, seeded_app):
+        """The admin API accepts only a list — the comma-separated string
+        form is a YAML/env-var convenience, not a server-config one."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"auth": {"providers": "google"}}, "confirm_danger": True},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 422, resp.text
+        assert "non-empty" in resp.json()["detail"]
+
+    def test_empty_providers_without_confirm_danger_hits_danger_gate_first(self, seeded_app):
+        """auth is a danger section: without confirm_danger the request 400s
+        at the danger gate before the providers validator ever runs."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"auth": {"providers": []}}},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 400, resp.text
+        assert "confirm_danger" in resp.json()["detail"]
+
+    def test_nonempty_providers_accepted_and_persisted(self, seeded_app):
+        import yaml
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"auth": {"providers": ["google"]}}, "confirm_danger": True},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        overlay = yaml.safe_load((seeded_app["env"]["data_dir"] / "state" / "instance.yaml").read_text())
+        assert overlay["auth"]["providers"] == ["google"]
+
+    def test_null_providers_accepted_as_clear_override(self, seeded_app):
+        """``providers: null`` is NOT rejected — the validator early-returns
+        on None, the overlay persists the null, and the allowlist reader
+        (`configured_allowlist`) treats it as unset = every provider."""
+        import yaml
+
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"auth": {"providers": None}}, "confirm_danger": True},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+        overlay = yaml.safe_load((seeded_app["env"]["data_dir"] / "state" / "instance.yaml").read_text())
+        assert overlay["auth"]["providers"] is None
+        # And the reader side: null resolves to "no allowlist" (all providers).
+        import app.instance_config as ic
+
+        ic._instance_config = None
+        try:
+            from app.auth.provider_registry import configured_allowlist
+
+            assert configured_allowlist() is None
+        finally:
+            ic._instance_config = None
+
+
 class TestAdminRegistry:
     def test_list_registry_empty(self, seeded_app):
         c = seeded_app["client"]
