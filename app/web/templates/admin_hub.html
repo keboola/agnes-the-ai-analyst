@@ -227,6 +227,14 @@
 </style>
 {% endblock %}
 
+{% block toolbar %}
+{# The two verbs an admin needs on day one, on the landing page — not behind
+   the nav taxonomy. "+ Add data" deep-links into the 4-step wizard on
+   /admin/data-sources (?add=1 auto-opens it). #}
+<a class="btn btn-secondary" href="/admin/users">Invite people</a>
+<a class="btn btn-primary" href="/admin/data-sources?add=1">＋ Add data</a>
+{% endblock %}
+
 {% block page %}
 
 {# ── Setup path: the four stages between an empty instance and data in

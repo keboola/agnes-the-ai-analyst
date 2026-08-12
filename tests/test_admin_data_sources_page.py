@@ -217,3 +217,81 @@ class TestWizardRegisterPayloadContract:
         tpl = self._template_text()
         assert 'data.scope === "token_buckets"' in tpl
         assert "ds-scope-note" in tpl
+
+
+class TestAddDataWizard:
+    """The 4-step Add-data flow (connect → choose tables → bundle → share) —
+    the redesign's one path from "nothing connected" to "data in someone's
+    hands" (spec §3.6–3.8), grown out of the two-step Add-Keboola-project
+    modal without dropping any of its behavior.
+
+    The flow itself is client JS over endpoints that carry their own suites
+    (source-connections, register-table, data-packages, grants); what this
+    class pins is the SERVED SCAFFOLDING — the pieces whose silent absence
+    would degrade the wizard back to the old two steps without failing
+    anything else."""
+
+    def _page(self, seeded_app) -> str:
+        c = seeded_app["client"]
+        return c.get(
+            "/admin/data-sources",
+            headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
+        ).text
+
+    def test_the_four_steps_are_declared(self, seeded_app):
+        body = self._page(seeded_app)
+        for pane in (
+            "ds-wizard-step-connect",
+            "ds-wizard-step-tables",
+            "ds-wizard-step-bundle",
+            "ds-wizard-step-share",
+        ):
+            assert pane in body
+        # The steps strip names them in flow order.
+        strip = body.split('class="ds-wsteps"', 1)[1].split("</div>", 1)[0]
+        for label in ("Connect", "Choose tables", "Bundle", "Share"):
+            assert label in strip
+
+    def test_semantic_layer_opt_in_lives_on_connect(self, seeded_app):
+        """The master-token requirement used to be discoverable only on the
+        semantic-layer page's empty state; the wizard offers it at the moment
+        of connecting, skippably."""
+        body = self._page(seeded_app)
+        assert 'id="ds-new-semantic"' in body
+        assert 'id="ds-new-master"' in body
+        assert "owner" in body  # the copy says WHICH token this is
+
+    def test_bundle_and_share_write_through_the_canonical_apis(self, seeded_app):
+        """The wizard must create real packages and real grants — the same
+        rows /admin/data-packages and a group's Access tab edit — never a
+        parallel store."""
+        body = self._page(seeded_app)
+        assert "/api/admin/data-packages" in body
+        assert "/api/admin/grants" in body
+        assert "/api/admin/groups" in body
+
+    def test_old_register_only_exit_is_preserved(self, seeded_app):
+        """The pre-redesign behavior — register the selection and stop — is
+        an explicit escape hatch, not removed."""
+        body = self._page(seeded_app)
+        assert 'id="ds-wizard-finish-early-btn"' in body
+
+    def test_share_step_is_skippable(self, seeded_app):
+        body = self._page(seeded_app)
+        assert 'id="ds-wizard-skip-btn"' in body
+        # The lede says WHY skipping is safe (the Overview catches it).
+        assert "waits for you on the Overview" in body
+
+    def test_add_deep_link_auto_opens(self, seeded_app):
+        """The Overview's '+ Add data' lands on ?add=1 — the page script must
+        read it, or the button silently becomes a plain nav link."""
+        body = self._page(seeded_app)
+        assert 'has("add")' in body
+
+    def test_overview_carries_the_add_data_action(self, seeded_app):
+        c = seeded_app["client"]
+        hub = c.get(
+            "/admin",
+            headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
+        ).text
+        assert "/admin/data-sources?add=1" in hub

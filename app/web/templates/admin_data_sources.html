@@ -247,6 +247,152 @@
     max-height: 85vh;
     overflow-y: auto;
   }
+  /* The 4-step wizard needs room for the bundle board + share cards. */
+  .ds-modal--wizard { max-width: 640px; }
+
+  /* ── Steps strip ── */
+  .ds-wsteps {
+    display: flex; gap: 6px;
+    padding: 0 20px 12px;
+    border-bottom: 1px solid var(--border-light, var(--ds-border-light));
+  }
+  .ds-wstep {
+    flex: 1; display: flex; align-items: center; gap: 7px;
+    font-size: 12px; font-weight: 600; color: var(--ds-text-muted);
+  }
+  .ds-wstep .n {
+    width: 20px; height: 20px; border-radius: 50%; flex: 0 0 auto;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 800;
+    background: var(--ds-surface-sunken); color: var(--ds-text-muted);
+  }
+  .ds-wstep.is-now { color: var(--ds-primary-dark, var(--ds-primary)); }
+  .ds-wstep.is-now .n { background: var(--ds-primary); color: #fff; }
+  .ds-wstep.is-done { color: var(--ds-accent-success-ink); }
+  .ds-wstep.is-done .n { background: var(--ds-accent-success-ink); color: #fff; }
+
+  .ds-wizard-lede { margin: 0 0 12px; font-size: 13px; color: var(--ds-text-secondary); }
+
+  /* ── Step 1: semantic-layer opt-in ── */
+  .ds-wsl-opt {
+    border: 1px solid var(--border, var(--ds-border));
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-top: 14px;
+    background: var(--ds-surface-dim);
+  }
+  .ds-wsl-opt__head {
+    display: flex; align-items: center; gap: 9px;
+    font-weight: 600; font-size: 13px; color: var(--ds-text-primary);
+    cursor: pointer;
+  }
+  .ds-wsl-opt__head input { width: 15px; height: 15px; accent-color: var(--ds-primary); }
+  .ds-wsl-opt p { margin: 6px 0 0 24px; font-size: 12.5px; color: var(--ds-text-secondary); }
+  .ds-wsl-opt__field { margin: 10px 0 2px 24px; }
+
+  /* ── Step 3: bundle board ── */
+  .ds-seed-row {
+    display: flex; gap: 8px; align-items: center; margin: 0 0 12px;
+    font-size: 12.5px; color: var(--ds-text-muted); flex-wrap: wrap;
+  }
+  .ds-seed-chip {
+    padding: 4px 12px; border-radius: 999px;
+    border: 1px solid var(--border, var(--ds-border)); background: var(--surface, var(--ds-surface));
+    font-size: 12px; font-weight: 600; color: var(--ds-text-secondary); cursor: pointer;
+  }
+  .ds-seed-chip:hover { border-color: var(--ds-primary); color: var(--ds-primary-dark, var(--ds-primary)); }
+  .ds-btray {
+    border: 1px solid var(--border, var(--ds-border)); border-radius: 10px;
+    margin-bottom: 10px; overflow: hidden; background: var(--surface, var(--ds-surface));
+  }
+  .ds-btray-hd {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 12px; background: var(--ds-surface-dim);
+    border-bottom: 1px solid var(--border-light, var(--ds-border-light));
+  }
+  .ds-btray-hd .cnt { font-size: 11.5px; color: var(--ds-text-muted); font-weight: 600; }
+  .ds-tray-name {
+    font: inherit; font-weight: 700; font-size: 13px; width: 200px;
+    border: none; background: transparent; color: var(--ds-text-primary);
+    padding: 2px 6px; border-radius: 5px;
+  }
+  .ds-tray-name:hover { background: var(--surface, var(--ds-surface)); }
+  .ds-tray-name:focus { background: var(--surface, var(--ds-surface)); outline: 1.5px solid var(--ds-primary); }
+  .ds-btray-row {
+    display: flex; align-items: center; gap: 9px;
+    padding: 6px 12px; border-bottom: 1px solid var(--border-light, var(--ds-border-light));
+    font-size: 13px; color: var(--ds-text-primary);
+  }
+  .ds-btray-row:last-child { border-bottom: none; }
+  .ds-btray-row input { width: 15px; height: 15px; accent-color: var(--ds-primary); }
+  .ds-btray-row .bkt {
+    font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px;
+    background: var(--ds-surface-sunken); color: var(--ds-text-secondary);
+    padding: 1px 6px; border-radius: 5px;
+  }
+  .ds-btray-empty { padding: 9px 12px; font-size: 12.5px; color: var(--ds-text-muted); }
+  .ds-btray.out { border-style: dashed; border-color: var(--ds-accent-warn-line); }
+  .ds-btray.out .ds-btray-hd {
+    background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink);
+    border-bottom-color: var(--ds-accent-warn-line);
+  }
+  .ds-movebar {
+    position: sticky; bottom: 0; z-index: 5;
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    padding: 8px 12px; margin-top: 10px;
+    background: var(--surface, var(--ds-surface));
+    border: 1px solid var(--ds-primary);
+    border-radius: 10px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.10);
+    font-size: 12.5px; font-weight: 700; color: var(--ds-text-primary);
+  }
+  .ds-movebar[hidden] { display: none; }
+  .ds-movebar .mv-to { font-weight: 500; color: var(--ds-text-muted); }
+  #ds-movebar-targets { display: flex; gap: 6px; flex-wrap: wrap; }
+
+  /* ── Step 4: share cards ── */
+  .ds-wshare-card {
+    border: 1px solid var(--border, var(--ds-border)); border-radius: 10px;
+    padding: 2px 14px 8px; margin-bottom: 12px; background: var(--surface, var(--ds-surface));
+  }
+  .ds-wshare-card__hd { display: flex; align-items: center; gap: 8px; padding: 9px 0 4px; }
+  .ds-wshare-card__hd b { font-size: 13.5px; color: var(--ds-text-primary); }
+  .ds-wshare-card__hd .m { font-size: 12px; color: var(--ds-text-muted); }
+  .ds-wshare-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 0; border-bottom: 1px solid var(--border-light, var(--ds-border-light));
+    font-size: 13px;
+  }
+  .ds-wshare-row:last-child { border-bottom: none; }
+  .ds-wshare-row input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--ds-primary); }
+  .ds-wshare-row .g-name { font-weight: 600; color: var(--ds-text-primary); }
+  .ds-wshare-row .g-sub { font-size: 11.5px; color: var(--ds-text-muted); }
+  .ds-wshare-row .g-sub.everyone { color: var(--ds-accent-info-ink); }
+  .ds-wtier {
+    margin-left: auto; display: inline-flex; padding: 2px;
+    background: var(--ds-surface-sunken); border-radius: 9px;
+  }
+  .ds-wtier button {
+    border: none; background: transparent; padding: 3px 10px;
+    font-size: 12px; font-weight: 600; border-radius: 7px;
+    color: var(--ds-text-muted); cursor: pointer;
+  }
+  .ds-wtier button.on { background: var(--surface, var(--ds-surface)); color: var(--ds-text-primary); box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08); }
+  .ds-wtier button.on.auto { color: var(--ds-primary-dark, var(--ds-primary)); }
+  .ds-wtier[aria-disabled="true"] { opacity: .45; pointer-events: none; }
+
+  /* ── Done slab ── */
+  .ds-wdone-slab { text-align: center; padding: 26px 12px 8px; }
+  .ds-wdone-slab .big {
+    width: 48px; height: 48px; margin: 0 auto 12px; border-radius: 50%;
+    background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink);
+    display: flex; align-items: center; justify-content: center; font-size: 22px;
+  }
+  .ds-wdone-slab h3 { margin: 0 0 10px; font-size: 17px; color: var(--ds-text-primary); }
+  .ds-wdone-slab ul {
+    text-align: left; max-width: 460px; margin: 0 auto 16px; padding-left: 18px;
+    font-size: 13px; color: var(--ds-text-secondary);
+  }
+  .ds-wdone-slab li { margin: 3px 0; }
   .ds-modal-header {
     display: flex; align-items: center; justify-content: space-between;
     padding: 16px 20px 14px;
@@ -384,12 +530,25 @@
   </div>
 </div>
 
-{# ── Add Keboola project wizard ──────────────────────────────────────── #}
+{# ── Add data wizard — connect → choose tables → bundle → share ────────
+   The redesign's one flow from "nothing connected" to "data in someone's
+   hands" (spec §3.6–3.8). Steps 1–2 are the previous Add-Keboola-project
+   wizard unchanged (connection retry-reuse, name adoption, project binding
+   all preserved); 3 bundles the just-registered tables into packages (the
+   dependency the product never used to say out loud), 4 shares them —
+   skippable, because an unshared package now warns on Overview and on
+   /admin/data-packages rather than failing silently. #}
 <div id="ds-wizard-overlay" class="ds-modal-overlay" role="dialog" aria-modal="true" aria-labelledby="ds-wizard-title">
-  <div class="ds-modal">
+  <div class="ds-modal ds-modal--wizard">
     <div class="ds-modal-header">
-      <div class="ds-modal-title" id="ds-wizard-title">Add Keboola project</div>
+      <div class="ds-modal-title" id="ds-wizard-title">Add data</div>
       <button type="button" class="ds-modal-close" id="ds-wizard-close" aria-label="Close">&times;</button>
+    </div>
+    <div class="ds-wsteps" aria-hidden="true">
+      <span class="ds-wstep is-now" data-wstep="1"><span class="n">1</span> Connect</span>
+      <span class="ds-wstep" data-wstep="2"><span class="n">2</span> Choose tables</span>
+      <span class="ds-wstep" data-wstep="3"><span class="n">3</span> Bundle</span>
+      <span class="ds-wstep" data-wstep="4"><span class="n">4</span> Share</span>
     </div>
     <div class="ds-modal-body">
 
@@ -409,6 +568,23 @@
           <input type="password" id="ds-new-token" placeholder="paste token here" autocomplete="off">
           <div class="field-hint">Stored in the server vault, never echoed back.</div>
         </div>
+        {# The second token, offered where it belongs. The semantic layer's
+           master-token requirement was previously discoverable only on the
+           semantic-layer page's empty state; here it is an option inside
+           Connect — skippable, and if skipped the Data sources page's
+           token-mismatch/missing warnings still catch it later. #}
+        <div class="ds-wsl-opt">
+          <label class="ds-wsl-opt__head">
+            <input type="checkbox" id="ds-new-semantic">
+            <span>Also sync business metrics &amp; glossary (semantic layer)</span>
+          </label>
+          <p>Keeps this project's metric definitions in Agnes so analysts and agents compute
+             metrics one way. Needs a second token — a project <strong>owner</strong> token.</p>
+          <div class="ds-field ds-wsl-opt__field" hidden>
+            <label for="ds-new-master">Semantic-layer token <span class="optional">(project owner)</span></label>
+            <input type="password" id="ds-new-master" placeholder="paste owner token" autocomplete="off">
+          </div>
+        </div>
         <div id="ds-wizard-error" class="ds-wizard-error"></div>
       </div>
 
@@ -420,11 +596,54 @@
         </div>
       </div>
 
+      {# Step 3: bundle — arrange the registered tables into packages #}
+      <div class="ds-wizard-step" id="ds-wizard-step-bundle">
+        <p class="ds-wizard-lede">
+          Arrange the tables into <strong>data packages</strong> — the bundles analysts add to
+          their workspace. Tables reach analysts only through a package. Nothing is final:
+          merge, split or rename any time from Data packages.
+        </p>
+        <div class="ds-seed-row">
+          <span>Start from:</span>
+          <button type="button" class="ds-seed-chip" data-wseed="one">One package</button>
+          <button type="button" class="ds-seed-chip" data-wseed="bucket">Split by bucket</button>
+          <span style="flex:1"></span>
+          <button type="button" class="btn btn-secondary" id="ds-new-tray-btn">＋ New package</button>
+        </div>
+        <div id="ds-bundle-board"></div>
+        <div class="ds-movebar" id="ds-movebar" hidden>
+          <span id="ds-movebar-label">0 selected</span>
+          <span class="mv-to">Move to:</span>
+          <span id="ds-movebar-targets"></span>
+        </div>
+      </div>
+
+      {# Step 4: share — one card per created package; skippable #}
+      <div class="ds-wizard-step" id="ds-wizard-step-share">
+        <div class="ds-wshare">
+          <p class="ds-wizard-lede">
+            Who gets these packages? Share now or skip — an unshared package stays private and
+            waits for you on the Overview. <strong>Optional</strong> shows it in members' Library
+            to add themselves; <strong>Automatic</strong> puts it in their workspace on the next sync.
+          </p>
+          <div id="ds-share-cards"><div class="ds-loading">Loading groups…</div></div>
+          <div id="ds-share-error" class="ds-wizard-error"></div>
+        </div>
+        <div class="ds-wdone" style="display:none;">
+          <div class="ds-wdone-slab" id="ds-wdone-slab"></div>
+        </div>
+      </div>
+
     </div>
     <div class="ds-modal-actions">
       <button type="button" class="btn btn-secondary" id="ds-wizard-cancel">Cancel</button>
+      <span style="flex:1"></span>
+      <button type="button" class="btn btn-secondary" id="ds-wizard-skip-btn" style="display:none;">Skip sharing for now</button>
+      <button type="button" class="btn btn-secondary" id="ds-wizard-finish-early-btn" style="display:none;" title="Register the selected tables and stop — bundle them later from Data packages.">Register only &amp; finish</button>
       <button type="button" class="btn btn-primary" id="ds-wizard-connect-btn">Connect &amp; validate</button>
-      <button type="button" class="btn btn-primary" id="ds-wizard-register-btn" style="display:none;">Register selected</button>
+      <button type="button" class="btn btn-primary" id="ds-wizard-register-btn" style="display:none;">Continue with selected tables</button>
+      <button type="button" class="btn btn-primary" id="ds-wizard-bundle-btn" style="display:none;">Create packages &amp; continue</button>
+      <button type="button" class="btn btn-primary" id="ds-wizard-share-btn" style="display:none;">Share &amp; finish</button>
       <button type="button" class="btn btn-secondary" id="ds-wizard-done-btn" style="display:none;">Done</button>
     </div>
   </div>
@@ -977,6 +1196,11 @@ function _renderBucketPicker(connId, buckets) {
 }
 
 async function registerSelected(connId) {
+  // Returns {ok: [{id, name, bucket}], failed: n} — the wizard's Bundle step
+  // consumes the list; the standalone Browse&register path ignores it. The
+  // id is derived the way the server derives it (see register_table in
+  // app/api/admin.py: name → strip/lower/underscores), so the Bundle step can
+  // attach tables to packages without a second round-trip.
   const checked = document.querySelectorAll(
     `.ds-table-checkbox[data-conn="${connId}"]:checked`
   );
@@ -984,8 +1208,9 @@ async function registerSelected(connId) {
   if (errEl) errEl.textContent = "";
   if (!checked.length) {
     if (errEl) errEl.textContent = "Select at least one table.";
-    return;
+    return { ok: [], failed: 0 };
   }
+  const registered = [];
   let okCount = 0, failCount = 0;
   for (const cb of checked) {
     const statusId = cb.closest(".ds-table-row").querySelector(".ds-table-status").id;
@@ -1013,9 +1238,20 @@ async function registerSelected(connId) {
         statusEl.className = "ds-table-status ok";
         cb.disabled = true;
         okCount++;
+        registered.push({
+          id: (cb.dataset.tableName || "").trim().toLowerCase().replace(/ /g, "_"),
+          name: cb.dataset.tableName,
+          bucket: cb.dataset.bucket || "",
+        });
       } else if (r.status === 409) {
         statusEl.textContent = "already registered";
         statusEl.className = "ds-table-status ok";
+        // Already in the registry — still bundleable, so it rides along.
+        registered.push({
+          id: (cb.dataset.tableName || "").trim().toLowerCase().replace(/ /g, "_"),
+          name: cb.dataset.tableName,
+          bucket: cb.dataset.bucket || "",
+        });
       } else {
         const body = await r.json().catch(() => ({}));
         statusEl.textContent = "✗ " + (body.detail || "failed");
@@ -1033,23 +1269,76 @@ async function registerSelected(connId) {
   } else {
     showToast(`${okCount} registered, ${failCount} failed. See per-row status.`, false);
   }
+  return { ok: registered, failed: failCount };
 }
 
-/* ── Wizard: Add Keboola project ─────────────────────────────────────────── */
+/* ── Wizard: Add data (connect → choose → bundle → share) ────────────────── */
 
 let _wizardConnId = null;
+let _wizardStep = 1;
+let _wizardTables = [];       // [{id, name, bucket}] registered in step 2
+let _wizardBoard = null;      // {trays: [{id, name, tables: [table]}], out: [table]}
+let _wizardTrayIdSeq = 0;
+let _wizardPackages = [];     // [{id, name, count}] created entering step 4
+let _wizardShares = null;     // {trayLocalId: [{group_id, name, tier}]}
+let _wizardGroups = null;     // cached /api/admin/groups
+
+const _WIZ_STEP_PANES = {
+  1: "ds-wizard-step-connect",
+  2: "ds-wizard-step-tables",
+  3: "ds-wizard-step-bundle",
+  4: "ds-wizard-step-share",
+};
+// Footer buttons visible per step (Cancel is always there).
+const _WIZ_STEP_BUTTONS = {
+  1: ["ds-wizard-connect-btn"],
+  2: ["ds-wizard-finish-early-btn", "ds-wizard-register-btn"],
+  3: ["ds-wizard-bundle-btn"],
+  4: ["ds-wizard-skip-btn", "ds-wizard-share-btn"],
+};
+const _WIZ_ALL_BUTTONS = [
+  "ds-wizard-connect-btn", "ds-wizard-register-btn", "ds-wizard-bundle-btn",
+  "ds-wizard-share-btn", "ds-wizard-skip-btn", "ds-wizard-finish-early-btn",
+  "ds-wizard-done-btn",
+];
+
+function _setWizStep(step) {
+  _wizardStep = step;
+  for (const [n, paneId] of Object.entries(_WIZ_STEP_PANES)) {
+    document.getElementById(paneId).classList.toggle("active", Number(n) === step);
+  }
+  document.querySelectorAll(".ds-wstep").forEach((el) => {
+    const n = Number(el.dataset.wstep);
+    el.classList.toggle("is-now", n === step);
+    el.classList.toggle("is-done", n < step);
+  });
+  for (const id of _WIZ_ALL_BUTTONS) {
+    document.getElementById(id).style.display =
+      (_WIZ_STEP_BUTTONS[step] || []).includes(id) ? "" : "none";
+  }
+  // The board is seeded BEFORE the step switches (see the register handler),
+  // and the CTA count only recomputes on a live step-3 render — so entering
+  // the step is the moment the label must catch up.
+  if (step === 3) _updateBundleCta();
+}
 
 function openWizard() {
   _wizardConnId = null;
+  _wizardTables = [];
+  _wizardBoard = null;
+  _wizardPackages = [];
+  _wizardShares = null;
   document.getElementById("ds-new-name").value = "";
   document.getElementById("ds-new-stack").value = "";
   document.getElementById("ds-new-token").value = "";
+  document.getElementById("ds-new-semantic").checked = false;
+  document.getElementById("ds-new-master").value = "";
+  document.querySelector(".ds-wsl-opt__field").hidden = true;
   document.getElementById("ds-wizard-error").style.display = "none";
-  document.getElementById("ds-wizard-step-connect").classList.add("active");
-  document.getElementById("ds-wizard-step-tables").classList.remove("active");
-  document.getElementById("ds-wizard-connect-btn").style.display = "";
-  document.getElementById("ds-wizard-register-btn").style.display = "none";
-  document.getElementById("ds-wizard-done-btn").style.display = "none";
+  const share = document.getElementById("ds-wizard-step-share");
+  share.querySelector(".ds-wshare").style.display = "";
+  share.querySelector(".ds-wdone").style.display = "none";
+  _setWizStep(1);
   document.getElementById("ds-wizard-overlay").classList.add("show");
   document.getElementById("ds-new-name").focus();
 }
@@ -1184,12 +1473,34 @@ async function connectAndValidate() {
       banner.innerHTML = `✓ Connected — ${_esc(name || projectName)}.`;
     }
 
-    // 5. Move to step 2 and load buckets/tables.
-    document.getElementById("ds-wizard-step-connect").classList.remove("active");
-    document.getElementById("ds-wizard-step-tables").classList.add("active");
-    document.getElementById("ds-wizard-connect-btn").style.display = "none";
-    document.getElementById("ds-wizard-register-btn").style.display = "";
-    document.getElementById("ds-wizard-done-btn").style.display = "";
+    // 5. Semantic-layer opt-in: store the owner token in its own vault slot.
+    //    NON-FATAL — the connection and tables are already good, and the
+    //    Data sources page's missing/mismatched-token warnings catch a
+    //    failure here later; the banner says what happened either way.
+    if (document.getElementById("ds-new-semantic").checked) {
+      const masterToken = document.getElementById("ds-new-master").value.trim();
+      if (masterToken) {
+        const mResp = await fetch(`${API_CONNECTIONS}/${connId}/secret`, {
+          method: "PUT", credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ value: masterToken, kind: "master" }),
+        });
+        if (mResp.ok || mResp.status === 204) {
+          banner.innerHTML += ` Semantic layer enabled — metrics & glossary will sync.`;
+        } else {
+          const mb = await mResp.json().catch(() => ({}));
+          const md = mb.detail;
+          banner.innerHTML += ` <span style="color:var(--ds-accent-warn-ink)">Semantic-layer token was refused (` +
+            _esc((md && typeof md === "object" ? (md.message || md.error) : md) || `HTTP ${mResp.status}`) +
+            `) — tables still work; set it later on this connection's card.</span>`;
+        }
+      } else {
+        banner.innerHTML += ` <span style="color:var(--ds-accent-warn-ink)">No owner token pasted — semantic layer skipped; set it later on this connection's card.</span>`;
+      }
+    }
+
+    // 6. Move to step 2 and load buckets/tables.
+    _setWizStep(2);
     await _loadWizardTables(connId);
   } finally {
     btn.disabled = false;
@@ -1230,16 +1541,352 @@ function finishWizard() {
   loadConnections();
 }
 
+/* ── Step 3: the bundle board ─────────────────────────────────────────────
+   Arrange the just-registered tables into packages. Seeds (one package /
+   split by bucket) are one-click STARTING POINTS, not modes — everything is
+   editable after: tick tables → move bar, inline rename, ＋ New package, and
+   a warn-styled "Leave out" tray whose tables land in the standing
+   unpackaged tray on /admin/data-packages rather than vanishing. */
+
+function _seedBoard(kind) {
+  _wizardTrayIdSeq = 0;
+  if (kind === "bucket") {
+    const byBucket = new Map();
+    for (const t of _wizardTables) {
+      if (!byBucket.has(t.bucket)) byBucket.set(t.bucket, []);
+      byBucket.get(t.bucket).push(t);
+    }
+    _wizardBoard = {
+      trays: [...byBucket.entries()].map(([bucket, tables]) => ({
+        id: "t" + (++_wizardTrayIdSeq),
+        // `in.c-sales` → "Sales" — a starting name, editable inline.
+        name: (bucket.split(".").pop() || bucket || "Package")
+          .replace(/^c-/, "").replace(/[-_]+/g, " ")
+          .replace(/\b\w/g, (c) => c.toUpperCase()) || "Package",
+        tables: tables.slice(),
+      })),
+      out: [],
+    };
+  } else {
+    const conn = _connections.find((c) => c.id === _wizardConnId);
+    _wizardBoard = {
+      trays: [{
+        id: "t" + (++_wizardTrayIdSeq),
+        name: (conn && conn.name) ? conn.name : "New package",
+        tables: _wizardTables.slice(),
+      }],
+      out: [],
+    };
+  }
+  _renderBoard();
+}
+
+function _renderBoard() {
+  const trayHtml = (tray, out) => `
+    <div class="ds-btray ${out ? "out" : ""}" data-tray="${tray.id}">
+      <div class="ds-btray-hd">
+        ${out
+          ? '<b style="font-size:13px;">Leave out</b>'
+          : `<input class="ds-tray-name" value="${_esc(tray.name)}" aria-label="Package name">`}
+        <span class="cnt">${tray.tables.length} table${tray.tables.length === 1 ? "" : "s"}</span>
+        ${out ? '<span class="cnt" style="margin-left:auto; font-weight:500;">they wait in the unpackaged tray — nobody can pull them until packaged</span>' : ""}
+      </div>
+      ${tray.tables.map((t) => `
+        <div class="ds-btray-row">
+          <input type="checkbox" class="ds-bt-check" data-table="${_esc(t.id)}" aria-label="Select ${_esc(t.name)}">
+          <b>${_esc(t.name)}</b> <span class="bkt">${_esc(t.bucket)}</span>
+        </div>`).join("")}
+      ${tray.tables.length ? "" : '<div class="ds-btray-empty">Empty — tick tables anywhere and move them here.</div>'}
+    </div>`;
+  document.getElementById("ds-bundle-board").innerHTML =
+    _wizardBoard.trays.map((t) => trayHtml(t, false)).join("") +
+    (_wizardBoard.out.length ? trayHtml({ id: "out", tables: _wizardBoard.out }, true) : "");
+  _updateMovebar();
+  _updateBundleCta();
+}
+
+const _selectedBoardTables = () =>
+  [...document.querySelectorAll(".ds-bt-check:checked")].map((c) => c.dataset.table);
+
+function _updateMovebar() {
+  const sel = _selectedBoardTables();
+  const bar = document.getElementById("ds-movebar");
+  bar.hidden = sel.length === 0;
+  if (!sel.length) return;
+  document.getElementById("ds-movebar-label").textContent = sel.length + " selected";
+  document.getElementById("ds-movebar-targets").innerHTML =
+    _wizardBoard.trays.map((t) => `<button type="button" class="btn btn-secondary" data-wmove="${t.id}">${_esc(t.name)}</button>`).join("") +
+    '<button type="button" class="btn btn-secondary" data-wmove="out">Leave out</button>' +
+    '<button type="button" class="btn btn-secondary" data-wmove="__new">＋ New package</button>';
+}
+
+function _moveSelected(target) {
+  const sel = new Set(_selectedBoardTables());
+  if (!sel.size) return;
+  const moved = [];
+  for (const tray of _wizardBoard.trays) {
+    tray.tables = tray.tables.filter((t) => (sel.has(t.id) ? (moved.push(t), false) : true));
+  }
+  _wizardBoard.out = _wizardBoard.out.filter((t) => (sel.has(t.id) ? (moved.push(t), false) : true));
+  if (target === "__new") {
+    _wizardBoard.trays.push({ id: "t" + (++_wizardTrayIdSeq), name: "New package", tables: moved });
+  } else if (target === "out") {
+    _wizardBoard.out.push(...moved);
+  } else {
+    const tray = _wizardBoard.trays.find((t) => t.id === target);
+    if (tray) tray.tables.push(...moved);
+  }
+  _renderBoard();
+}
+
+function _updateBundleCta() {
+  if (_wizardStep !== 3 || !_wizardBoard) return;
+  const n = _wizardBoard.trays.filter((t) => t.tables.length).length;
+  document.getElementById("ds-wizard-bundle-btn").textContent =
+    n === 0 ? "Continue (no packages)" : `Create ${n} package${n === 1 ? "" : "s"} & continue`;
+}
+
+const _slugify = (name) =>
+  name.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "package";
+
+async function _createPackagesAndContinue() {
+  const btn = document.getElementById("ds-wizard-bundle-btn");
+  btn.disabled = true;
+  try {
+    _wizardPackages = [];
+    for (const tray of _wizardBoard.trays.filter((t) => t.tables.length)) {
+      let slug = _slugify(tray.name);
+      let resp = await fetch("/api/admin/data-packages", {
+        method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: tray.name.trim() || "Package", slug }),
+      });
+      if (resp.status === 409) {
+        // slug_exists — suffix and retry once rather than failing the flow.
+        slug = `${slug}-${Date.now() % 10000}`;
+        resp = await fetch("/api/admin/data-packages", {
+          method: "POST", credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: tray.name.trim() || "Package", slug }),
+        });
+      }
+      if (!resp.ok) {
+        const b = await resp.json().catch(() => ({}));
+        showToast(`Could not create "${tray.name}": ${b.detail || resp.status}`, false);
+        return; // stop on the failing tray; already-created packages stand
+      }
+      const pkgId = (await resp.json()).id;
+      let attached = 0;
+      for (const t of tray.tables) {
+        const ar = await fetch(`/api/admin/data-packages/${encodeURIComponent(pkgId)}/tables`, {
+          method: "POST", credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ table_id: t.id }),
+        });
+        if (ar.ok) attached++;
+        else showToast(`"${t.name}" could not be added to ${tray.name} — attach it later from the package.`, false);
+      }
+      _wizardPackages.push({ id: pkgId, localId: tray.id, name: tray.name, count: attached });
+    }
+    _setWizStep(4);
+    await _renderShareStep();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/* ── Step 4: share — one card per created package, same grant rows as the
+   group-side matrix; entirely skippable because unshared packages warn on
+   Overview and on /admin/data-packages. ── */
+
+async function _renderShareStep() {
+  const host = document.getElementById("ds-share-cards");
+  if (!_wizardGroups) {
+    try {
+      const r = await fetch("/api/admin/groups", { credentials: "include" });
+      _wizardGroups = r.ok ? await r.json() : [];
+    } catch (e) { _wizardGroups = []; }
+  }
+  if (!_wizardShares) {
+    _wizardShares = {};
+    for (const p of _wizardPackages) _wizardShares[p.localId] = [];
+  }
+  if (!_wizardPackages.length) {
+    host.innerHTML = '<div class="ds-empty">No packages were created — the tables wait in the unpackaged tray on Data packages.</div>';
+    return;
+  }
+  const card = (p) => {
+    const shares = _wizardShares[p.localId] || [];
+    const row = (g) => {
+      const share = shares.find((s) => s.group_id === g.id);
+      const everyone = g.is_system && g.name === "Everyone";
+      return `
+      <div class="ds-wshare-row" data-pkg="${_esc(p.localId)}" data-group="${_esc(g.id)}">
+        <input type="checkbox" ${share ? "checked" : ""} aria-label="Share ${_esc(p.name)} with ${_esc(g.name)}">
+        <div>
+          <div class="g-name">${_esc(g.name)}</div>
+          <div class="g-sub ${everyone ? "everyone" : ""}">${everyone
+            ? "the whole company — every account, automatically"
+            : `${g.member_count ?? 0} member${(g.member_count ?? 0) === 1 ? "" : "s"}`}</div>
+        </div>
+        <div class="ds-wtier" ${share ? "" : 'aria-disabled="true"'} role="group" aria-label="Access tier">
+          <button type="button" data-wtier="available" class="${share && share.tier === "available" ? "on" : ""}" title="available">Optional</button>
+          <button type="button" data-wtier="required" class="${share && share.tier === "required" ? "on auto" : ""}" title="required">Automatic</button>
+        </div>
+      </div>`;
+    };
+    return `
+    <div class="ds-wshare-card">
+      <div class="ds-wshare-card__hd"><b>${_esc(p.name)}</b><span class="m">${p.count} table${p.count === 1 ? "" : "s"}</span></div>
+      ${_wizardGroups.map(row).join("") || '<div class="ds-btray-empty">No groups on this instance yet.</div>'}
+    </div>`;
+  };
+  host.innerHTML = _wizardPackages.map(card).join("");
+}
+
+async function _shareAndFinish() {
+  const btn = document.getElementById("ds-wizard-share-btn");
+  const errEl = document.getElementById("ds-share-error");
+  errEl.style.display = "none";
+  btn.disabled = true;
+  try {
+    const failures = [];
+    for (const p of _wizardPackages) {
+      for (const s of _wizardShares[p.localId] || []) {
+        const r = await fetch("/api/admin/grants", {
+          method: "POST", credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            group_id: s.group_id, resource_type: "data_package",
+            resource_id: p.id, requirement: s.tier,
+          }),
+        });
+        if (!r.ok && r.status !== 409) failures.push(`${p.name} → ${s.name}`);
+      }
+    }
+    if (failures.length) {
+      errEl.textContent = "Some grants could not be written: " + failures.join(", ") +
+        ". Finish anyway — they stay editable from the package's Share editor.";
+      errEl.style.display = "block";
+    }
+    _showDoneSlab();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function _showDoneSlab() {
+  const lines = _wizardPackages.map((p) => {
+    const shares = _wizardShares[p.localId] || [];
+    if (!shares.length) {
+      return `<li><b>${_esc(p.name)}</b> — created, shared with nobody yet. It waits on the Overview.</li>`;
+    }
+    const det = shares.map((s) => `${_esc(s.name)} <span style="color:var(--ds-text-muted)">(${s.tier === "required" ? "automatic" : "optional"})</span>`).join(", ");
+    return `<li><b>${_esc(p.name)}</b> — shared with ${det}.</li>`;
+  });
+  if (_wizardBoard && _wizardBoard.out.length) {
+    lines.push(`<li><b>${_wizardBoard.out.length} table${_wizardBoard.out.length === 1 ? "" : "s"}</b> left unpackaged — see the tray on Data packages.</li>`);
+  }
+  const shared = _wizardPackages.filter((p) => (_wizardShares[p.localId] || []).length).length;
+  document.getElementById("ds-wdone-slab").innerHTML = `
+    <div class="big">✓</div>
+    <h3>${_wizardPackages.length} package${_wizardPackages.length === 1 ? "" : "s"} created${shared ? ` · ${shared} shared` : ""}</h3>
+    <ul>${lines.join("")}</ul>
+    <a class="btn btn-secondary" href="/admin/data-packages">Open Data packages</a>
+    <button type="button" class="btn btn-primary" id="ds-wdone-close">Done</button>`;
+  const share = document.getElementById("ds-wizard-step-share");
+  share.querySelector(".ds-wshare").style.display = "none";
+  share.querySelector(".ds-wdone").style.display = "";
+  for (const id of _WIZ_ALL_BUTTONS) document.getElementById(id).style.display = "none";
+  document.getElementById("ds-wdone-close").addEventListener("click", finishWizard);
+}
+
 /* ── Event wiring ────────────────────────────────────────────────────────── */
 
 document.getElementById("ds-add-btn").addEventListener("click", openWizard);
 document.getElementById("ds-wizard-close").addEventListener("click", closeWizard);
 document.getElementById("ds-wizard-cancel").addEventListener("click", closeWizard);
 document.getElementById("ds-wizard-connect-btn").addEventListener("click", connectAndValidate);
-document.getElementById("ds-wizard-register-btn").addEventListener("click", () => {
-  if (_wizardConnId) registerSelected(_wizardConnId);
+
+// Step 1: the semantic-layer opt-in reveals its token field.
+document.getElementById("ds-new-semantic").addEventListener("change", (e) => {
+  document.querySelector(".ds-wsl-opt__field").hidden = !e.target.checked;
+  if (e.target.checked) document.getElementById("ds-new-master").focus();
 });
+
+// Step 2 → 3: register the selection, then bundle it.
+document.getElementById("ds-wizard-register-btn").addEventListener("click", async () => {
+  if (!_wizardConnId) return;
+  const btn = document.getElementById("ds-wizard-register-btn");
+  btn.disabled = true;
+  try {
+    const result = await registerSelected(_wizardConnId);
+    if (!result || !result.ok.length) return; // per-row statuses say why
+    _wizardTables = result.ok;
+    _seedBoard("one");
+    _setWizStep(3);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// Step 2 escape hatch: the pre-redesign behavior — register and stop.
+document.getElementById("ds-wizard-finish-early-btn").addEventListener("click", async () => {
+  if (!_wizardConnId) return;
+  const result = await registerSelected(_wizardConnId);
+  if (result && result.ok.length) finishWizard();
+});
+
+document.getElementById("ds-wizard-bundle-btn").addEventListener("click", _createPackagesAndContinue);
+document.getElementById("ds-wizard-share-btn").addEventListener("click", _shareAndFinish);
+document.getElementById("ds-wizard-skip-btn").addEventListener("click", _showDoneSlab);
 document.getElementById("ds-wizard-done-btn").addEventListener("click", finishWizard);
+
+// Step 3 board: seeds, selection, moves, renames, new tray.
+document.getElementById("ds-wizard-step-bundle").addEventListener("click", (e) => {
+  const seed = e.target.closest("[data-wseed]");
+  if (seed) { _seedBoard(seed.dataset.wseed); return; }
+  const mv = e.target.closest("[data-wmove]");
+  if (mv) { _moveSelected(mv.dataset.wmove); return; }
+  if (e.target.closest("#ds-new-tray-btn")) {
+    _wizardBoard.trays.push({ id: "t" + (++_wizardTrayIdSeq), name: "New package", tables: [] });
+    _renderBoard();
+    const names = document.querySelectorAll(".ds-tray-name");
+    const last = names[names.length - 1];
+    if (last) { last.focus(); last.select(); }
+  }
+});
+document.getElementById("ds-wizard-step-bundle").addEventListener("change", (e) => {
+  if (e.target.classList.contains("ds-bt-check")) _updateMovebar();
+});
+document.getElementById("ds-wizard-step-bundle").addEventListener("input", (e) => {
+  if (e.target.classList.contains("ds-tray-name")) {
+    const tray = _wizardBoard.trays.find((t) => t.id === e.target.closest(".ds-btray").dataset.tray);
+    if (tray) tray.name = e.target.value;
+  }
+});
+
+// Step 4 cards: checkbox = share with default Optional; tier segmented.
+document.getElementById("ds-share-cards").addEventListener("click", (e) => {
+  const row = e.target.closest(".ds-wshare-row");
+  if (!row) return;
+  const pkgLocal = row.dataset.pkg;
+  const groupId = row.dataset.group;
+  const group = (_wizardGroups || []).find((g) => g.id === groupId);
+  const shares = _wizardShares[pkgLocal] || (_wizardShares[pkgLocal] = []);
+  if (e.target.matches('input[type="checkbox"]')) {
+    const i = shares.findIndex((s) => s.group_id === groupId);
+    if (e.target.checked && i === -1) shares.push({ group_id: groupId, name: group ? group.name : groupId, tier: "available" });
+    else if (!e.target.checked && i !== -1) shares.splice(i, 1);
+    _renderShareStep();
+    return;
+  }
+  const tierBtn = e.target.closest("[data-wtier]");
+  if (tierBtn) {
+    const share = shares.find((s) => s.group_id === groupId);
+    if (share) { share.tier = tierBtn.dataset.wtier; _renderShareStep(); }
+  }
+});
 
 document.getElementById("ds-wizard-overlay").addEventListener("click", function (e) {
   if (e.target === this) closeWizard();
@@ -1249,5 +1896,7 @@ document.getElementById("ds-wizard-overlay").addEventListener("keydown", functio
 });
 
 loadConnections();
+// Deep-link: the Overview's "+ Add data" lands here with ?add=1.
+if (new URLSearchParams(window.location.search).has("add")) openWizard();
 </script>
 {% endblock %}
