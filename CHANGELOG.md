@@ -12,7 +12,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Added
 
+- **"Sign in with Keboola" OAuth login provider.** Binds an instance to one Keboola project via `auth.keboola.project_id`; a user who authenticates against that project (optionally narrowed to specific `allowed_roles`) auto-provisions on first login, same as the existing Google flow. Opt-in `X-StorageApi-Token` header authentication lets already-provisioned users call the API with a plain Keboola Storage token instead of a session — off by default (`auth.keboola.allow_token_header`, env `AGNES_KEBOOLA_ALLOW_TOKEN_HEADER`) because a Storage token carries no interactive factor and bypasses any MFA/SSO the organization enforces on web logins; see `docs/feature-flags.md`. Configuration and trust-boundary notes: `config/instance.yaml.example`.
 - **`auth.providers` lets an instance narrow which login methods it offers** (`instance.yaml`, env override `AGNES_AUTH_PROVIDERS`, comma-separated). Unset keeps today's behavior — every available provider — byte-for-byte; an excluded provider's routes (including the shared `POST /auth/token` password grant and its `/login/*` sub-pages) return 404, not 403, so a disabled method doesn't advertise its own existence. An explicitly empty list is rejected by the admin server-config API (422) and, if it ever reaches runtime some other way, is treated as unset with a loud error log — one bad overlay write can't lock every user out of the instance.
+
+### Removed
+
+- Dead `auth.disabled_providers` example config (never consumed) — superseded by `auth.providers`.
 
 ## [0.83.7] - 2026-08-12
 

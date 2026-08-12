@@ -10499,7 +10499,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.83.5"
+    "version": "0.83.7"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -47105,6 +47105,46 @@
         ]
       }
     },
+    "/auth/keboola/callback": {
+      "get": {
+        "description": "Exchange the code, verify the access token at the stack, sign in.",
+        "operationId": "keboola_callback_auth_keboola_callback_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Keboola Callback",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/keboola/login": {
+      "get": {
+        "description": "Redirect to the Keboola OAuth authorize endpoint (state in session).",
+        "operationId": "keboola_login_auth_keboola_login_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Keboola Login",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
     "/auth/password/login": {
       "post": {
         "description": "Login with email + password.",
@@ -47549,7 +47589,7 @@
     },
     "/auth/token": {
       "post": {
-        "description": "Issue a JWT token. Requires password authentication.",
+        "description": "Issue a JWT token. Requires password authentication.\n\nGated by the ``password`` provider allowlist entry (route-level\n``Depends`` rather than an inline check) \u2014 the body is a JSON Pydantic\nmodel, and FastAPI resolves body validation together with dependencies\nin ``solve_dependencies()``; an inline guard as the first line of the\nfunction never runs when the body fails to parse (e.g. a form-encoded\nPOST), so an excluded provider would 422 instead of 404. The\ndependency raises before body validation gets a chance to.",
         "operationId": "create_token_auth_token_post",
         "requestBody": {
           "content": {
