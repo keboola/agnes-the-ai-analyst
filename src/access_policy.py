@@ -523,6 +523,26 @@ def rewrite_sql(
 # ---------------------------------------------------------------------------
 
 
+def _leading_with_node(statement: exp.Expression) -> exp.With | None:
+    """Return the outer ``WITH`` clause node if ``statement``'s TOP-LEVEL
+    query carries one -- either because ``statement`` itself parsed as an
+    ``exp.With``, or (the shape sqlglot actually produces for
+    ``WITH ... SELECT ...``: the with-clause is an arg of the top
+    ``Select``/``Union``/etc. node, not a wrapping node) it is attached
+    directly to one of ``statement``'s own args. ``None`` for a plain,
+    WITH-less body -- the ordinary case, and the only thing a WITH clause
+    nested inside a subquery of ``statement`` (never a direct arg of the
+    TOP node) can produce here, which is correct: that inner WITH belongs
+    to the subquery's own scope, not the policy body's outer one.
+    """
+    if isinstance(statement, exp.With):
+        return statement
+    for value in statement.args.values():
+        if isinstance(value, exp.With):
+            return value
+    return None
+
+
 def policied_from_sql(relation: PoliciedRelation, *, table_name: str, source_sql: str) -> str:
     """Wrap a policied relation so its own ``FROM <table_name>`` resolves
     against ``source_sql`` -- the calling surface's OWN read of its physical
@@ -548,10 +568,61 @@ def policied_from_sql(relation: PoliciedRelation, *, table_name: str, source_sql
     Returns a parenthesized derived-table expression, directly usable as a
     ``FROM {result}`` target or a ``DESCRIBE {result}`` subject (both
     verified against a parenthesized ``WITH ... SELECT ...`` body).
+
+    §15's flagship ``policy_mapping`` join idiom is authored as
+    ``WITH allowed AS (...) SELECT ... FROM <table> JOIN allowed ...`` -- a
+    policy body that ALREADY opens with its own ``WITH`` clause, a shape
+    the save-time validator's allowlist explicitly permits (``exp.With`` /
+    ``exp.CTE`` are both in ``_PERMITTED_NODE_TYPES``). Simply
+    concatenating ``WITH <table_name> AS (...) `` in front of
+    ``relation.relation_sql`` verbatim -- what this function used to do
+    unconditionally -- then produces TWO adjacent ``WITH`` keywords, which
+    DuckDB's parser rejects outright; every one of this function's callers
+    broke on that shape, each differently, because none of them executes
+    the string this function hands back until well past any point that
+    could have caught a malformed policy at save time.
+
+    When the body opens with its own ``WITH``, the two CTE lists are
+    merged into ONE ``WITH`` clause instead: this function's own CTE is
+    PREPENDED, a comma joins it to the policy's own CTE list, and
+    everything from there on -- the rest of the policy's own CTEs
+    (``RECURSIVE``, if the policy used it, kept in its only valid grammar
+    position: directly after ``WITH``, applying to the whole merged list),
+    and the policy's final ``SELECT`` -- is spliced in as the ORIGINAL
+    TEXT, untouched, located via the tokenizer (the lexical stage of the
+    same ``read="duckdb"`` parser that already validated this text) rather
+    than a hand-rolled string search, so a case difference (``with``),
+    unusual whitespace, or a leading comment token can never mis-locate the
+    split point. This is deliberately NOT a re-parse-and-regenerate of the
+    policy body: sqlglot's own ``duckdb`` generator silently rewrites
+    constructs it round-trips (e.g. ``list_contains(...)`` ->
+    ``ARRAY_CONTAINS(...)``, verified empirically), which would drift from
+    what the admin wrote and what the save-time validator approved -- the
+    same verbatim property ``rewrite_sql`` documents at length for its
+    own, sentinel-based splice.
     """
     if not relation.policied:
         raise ValueError("policied_from_sql() called on a non-policied relation -- use source_sql directly instead")
-    return f"(WITH {quote_ident(table_name)} AS (SELECT * FROM {source_sql}) {relation.relation_sql})"
+
+    body = relation.relation_sql
+    source_cte = f"{quote_ident(table_name)} AS (SELECT * FROM {source_sql})"
+
+    try:
+        with_node = _leading_with_node(sqlglot.parse_one(body, read="duckdb"))
+    except Exception:
+        with_node = None
+
+    if with_node is None:
+        # The common case: a plain SELECT. Byte-identical to what this
+        # function has always produced.
+        return f"(WITH {source_cte} {relation.relation_sql})"
+
+    is_recursive = bool(with_node.args.get("recursive"))
+    skip_tokens = 2 if is_recursive else 1
+    tokens = sqlglot.Dialect.get_or_raise("duckdb").tokenizer().tokenize(body)
+    rest = body[tokens[skip_tokens - 1].end + 1 :]
+    recursive_kw = "RECURSIVE " if is_recursive else ""
+    return f"(WITH {recursive_kw}{source_cte}, {rest})"
 
 
 # ---------------------------------------------------------------------------
