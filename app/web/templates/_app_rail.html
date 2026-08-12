@@ -5,15 +5,17 @@
    IA: the rail is TWO fixed zones with the conversation list between them.
    Top — New chat, then the caller's conversations in two collapsible sections
    (Pinned · Recent), closing on a "View all chats" link to /chats. Bottom —
-   the browse destinations Library · Agents · Memory · Apps, then
+   the browse destinations Library · Agents, then
    Admin behind a divider, then the onboarding card, then the profile pinned to
    the very bottom. The Studio dropdown and the Marketplace entry have both
    been retired from the rail; /catalog and the Skill/Plugin builders remain
    live routes, reached from the Library header's "+ Add" menu (its "Browse"
    entries are the rail's ONLY way in — the rail renders no global search box,
    so a route missing from both the rail and that menu is unreachable;
-   tests/test_web_nav_user_parity.py guards the set). The topnav chrome
-   keeps its flat link row — this IA applies only to the rail layout.
+   tests/test_web_nav_user_parity.py guards the set). Memory and Data apps
+   fold into the Library outright: /corporate-memory and /apps 302 to its
+   sections under rail (REDIRECTED_UNDER_RAIL in the same guard). The topnav
+   chrome keeps its flat link row — this IA applies only to the rail layout.
 
    TODO(#1088): My Stack is UNLINKED, not resolved. /stack is still a live,
    fully-featured surface — it is simply not a rail destination any more, and
@@ -303,28 +305,11 @@
             <span class="rail-i-label">Agents</span>
         </a>
         {% endif %}
-        {# Memory — the analyst-facing read surface for shared org knowledge
-           (/corporate-memory), a browse destination of exactly Library's kind.
-           The topnav has carried it in the primary nav since the "Memory
-           promoted" change (tests/test_web_nav_memory_promoted.py); the first
-           rail carried it too, and the rail redesign dropped it without a
-           documented replacement — unlike Marketplace and Data Packages,
-           whose retirement the header note records. Restored as drift, not
-           re-litigated IA. (Granted memory domains also surface as Library
-           rows, but that list is not the browse-everything surface.) #}
-        <a class="rail-i {% if _path == '/corporate-memory' %}on{% endif %}" href="/corporate-memory">
-            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 4a4 4 0 0 0-4 4 3.5 3.5 0 0 0-2 6.3A3.5 3.5 0 0 0 8.5 20H12M12 4a4 4 0 0 1 4 4 3.5 3.5 0 0 1 2 6.3A3.5 3.5 0 0 1 15.5 20H12M12 4v16" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
-            <span class="rail-i-label">Memory</span>
-        </a>
-        {# Apps — hosted data apps (/apps). Same `data_apps_enabled()` gate as
-           the topnav entry (see _app_header.html); the rail never carried it,
-           so under `rail` the whole surface was URL-only. #}
-        {% if data_apps_enabled() %}
-        <a class="rail-i {% if _path == '/apps' or _path.startswith('/apps/detail') %}on{% endif %}" href="/apps">
-            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.7"/><rect x="13" y="4" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.7"/><rect x="4" y="13" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.7"/><rect x="13" y="13" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.7"/></svg>
-            <span class="rail-i-label">Apps</span>
-        </a>
-        {% endif %}
+        {# Memory and Data apps are NOT rows here: both fold into the Library
+           (their standalone pages 302 to its sections — see
+           tests/test_web_nav_user_parity.py::REDIRECTED_UNDER_RAIL). They
+           were briefly restored as rows by #1276 when the pages were plain
+           orphans; the merge (spec 2026-08-12) is the durable answer. #}
     </div>
 
     {% if session.user.is_admin %}

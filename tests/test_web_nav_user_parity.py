@@ -45,6 +45,17 @@ KNOWN_TOPNAV_ONLY = {
     "/admin/studio",
 }
 
+# Topnav entries whose rail answer is a REDIRECT into the Library rather
+# than a link: the page still exists (topnav renders it), but under rail it
+# folds into the Library section the redirect names (spec 2026-08-12). Kept
+# separate from KNOWN_TOPNAV_ONLY because these are not "deliberately
+# unreachable" — the behavioral test below proves each really redirects, so
+# this set can never rot into a silent allowlist.
+REDIRECTED_UNDER_RAIL = {
+    "/corporate-memory": "/library?section=memory_domain",
+    "/apps": "/library?section=data_app",
+}
+
 
 def _topnav_user_links() -> set[str]:
     """Literal hrefs a user can click in the topnav chrome: the primary nav
@@ -68,7 +79,7 @@ def _rail_reachable_links() -> set[str]:
 
 
 def test_every_topnav_user_page_is_reachable_under_rail():
-    missing = _topnav_user_links() - _rail_reachable_links() - KNOWN_TOPNAV_ONLY
+    missing = _topnav_user_links() - _rail_reachable_links() - KNOWN_TOPNAV_ONLY - set(REDIRECTED_UNDER_RAIL)
     assert not missing, (
         f"User-facing pages linked in the topnav but unreachable under the rail "
         f"chrome: {sorted(missing)}. Rail-layout instances cannot reach them at "
@@ -76,6 +87,19 @@ def test_every_topnav_user_page_is_reachable_under_rail():
         "menu in library.html), or add the page to KNOWN_TOPNAV_ONLY with the "
         "reason it is deliberately topnav-only."
     )
+
+
+def test_redirected_entries_really_redirect(seeded_app, monkeypatch):
+    """REDIRECTED_UNDER_RAIL is a claim, not an allowlist: every entry must
+    actually 302 into its Library section under rail."""
+    monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+    monkeypatch.setenv("AGNES_DATA_APPS_ENABLED", "1")
+    c = seeded_app["client"]
+    headers = {"Authorization": f"Bearer {seeded_app['analyst_token']}"}
+    for src, target in REDIRECTED_UNDER_RAIL.items():
+        resp = c.get(src, headers=headers, follow_redirects=False)
+        assert resp.status_code == 302, f"{src} did not redirect under rail"
+        assert resp.headers["location"] == target
 
 
 def test_rail_replacement_paths_for_retired_entries_exist():
