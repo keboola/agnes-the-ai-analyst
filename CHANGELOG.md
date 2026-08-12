@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+
+- **Under the rail chrome, the Library is now the one browse surface for memory domains and hosted data apps.** The Memory band carries the item/required counts the standalone cards had and hides empty optional domains; a new Data apps band lists the caller's visible apps (gated on `data_apps.enabled`), fulfilling the Files band's "Data apps coming soon" promise. `/corporate-memory` and `/apps` now 302 to their Library sections under rail — the interim rail nav rows for both are gone again, and a memory-domain detail's back link points straight at the band. Default (topnav) instances render exactly what they rendered before; detail pages (`/memory/d/…`, `/apps/detail/…`) stay live in both chromes.
+
 ### Fixed
 
 - **Five live pages were unreachable under the rail chrome** (`ui_layout: rail` — the redesign's default). The rail renders *instead of* the topnav header, no fallback, and it shipped without links the topnav carries: **My connections** (`/me/connections` — per-user MCP OAuth self-service; restored to the account menu), **Memory** (`/corporate-memory`; restored as a nav destination — the first rail had it, the redesign dropped it), and **Apps** (`/apps`, same `data_apps.enabled` gate as the topnav). **Marketplace** and **Data Packages** (`/catalog`) were retired from the rail deliberately, onto in-page paths that were never built — the Library "+ Add" menu now really carries both ("Install from the marketplace", "Add shared data & recipes"). With Memory back in the nav, a memory-domain detail's back link under `rail` returns to the `/corporate-memory` browse again (the Library detour existed only because that page was unreachable; `?source=library` arrivals still return to the Library). Guarded from here on: the existing `/me/connections` nav test now runs over both chromes, and a new static parity guard (`tests/test_web_nav_user_parity.py`, sibling of the admin one) fails on any topnav-linked user page the rail cannot reach.
