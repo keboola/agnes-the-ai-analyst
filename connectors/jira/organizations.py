@@ -298,15 +298,30 @@ def refresh_organizations(
     dest = table_dir / "data.parquet"
     # Write-then-replace so a reader never observes a truncated parquet: the extract
     # views glob this directory on every query, including mid-write.
-    tmp_dest = table_dir / "data.parquet.tmp"
+    #
+    # The temp name is per-process. A shared one held a real race between the nightly
+    # job and the documented manual run — and those overlap by design, since `--force`
+    # exists precisely for when the guard is refusing on the scheduled path. Two writers
+    # on one temp path let either `os.replace` a parquet the other was still writing,
+    # publishing a truncated file under the name every query reads, while the loser's
+    # `finally` could delete the other's in-flight temp (Devin Review on #1274). The job
+    # queue's idempotency key serialises job rows against each other, but nothing
+    # serialises the CLI against the worker.
+    #
+    # Deliberately NOT `tempfile.mkstemp`, which the raw-JSON writers use: it creates the
+    # file 0600 and `os.replace` preserves the mode, so the published parquet would
+    # silently drop from 0644 to 0600 — the permissions regression incident #203
+    # documents for exactly this pattern. Measured both before choosing.
+    tmp_dest = table_dir / f"data.parquet.{os.getpid()}.tmp"
     try:
         pq.write_table(table, tmp_dest, **PARQUET_WRITE_OPTIONS)
         os.replace(tmp_dest, dest)
     finally:
-        # A failed write would otherwise leave `data.parquet.tmp` behind, and the
-        # extract view globs `*.parquet` — a stray `.tmp` is not matched, but the
-        # sibling writers (connectors/keboola/incremental.py) clean up for the same
-        # reason and an accumulating temp file is nobody's friend.
+        # A failed write would otherwise leave the temp behind. The extract view globs
+        # `*.parquet`, so a stray `.tmp` is never read, but the sibling writers
+        # (connectors/keboola/incremental.py) clean up for the same reason and an
+        # accumulating temp file is nobody's friend. Unlinking only this process's own
+        # temp is what makes the cleanup safe under concurrency.
         tmp_dest.unlink(missing_ok=True)
 
     # Refresh the catalog row + rebuild the view so the new column set is visible.

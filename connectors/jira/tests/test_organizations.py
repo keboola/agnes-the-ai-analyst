@@ -13,6 +13,7 @@ Covers:
 """
 
 import json
+import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -1126,3 +1127,64 @@ class TestEmptyEnumerationSignals:
         assert stats["skipped_reason"] == "existing_unreadable"
         svc.fetch_organization_ids.assert_not_called()
         svc.fetch_organization.assert_not_called()
+
+
+class TestConcurrentPublishSafety:
+    """The nightly job and the documented manual run can overlap by design.
+
+    `--force` exists for when the mass-removal guard is refusing on the scheduled
+    path, so an operator running it during the nightly window is the intended use. A
+    shared temp filename let either writer publish the other's half-written parquet.
+    """
+
+    def test_temp_name_is_per_process(self, tmp_path: Path, org_env: None) -> None:
+        from connectors.jira import organizations as orgs
+
+        seen: list[str] = []
+        real_write = orgs.pq.write_table
+
+        def _spy(table, where, **kw):
+            seen.append(Path(where).name)
+            return real_write(table, where, **kw)
+
+        svc = _fake_service(["1"], [_org("1", "Acme", "ACC-1")])
+        with (
+            patch.object(orgs, "get_jira_service", return_value=svc),
+            patch.object(orgs, "update_meta"),
+            patch.object(orgs.time, "sleep"),
+            patch.object(orgs.pq, "write_table", side_effect=_spy),
+        ):
+            orgs.refresh_organizations(extract_dir=tmp_path)
+
+        assert seen, "expected a parquet write"
+        assert seen[0] == f"data.parquet.{os.getpid()}.tmp", seen
+        # A second process would pick a different name, so neither can replace or
+        # delete the other's in-flight temp.
+        assert str(os.getpid()) in seen[0]
+
+    def test_published_file_stays_group_readable(self, tmp_path: Path, org_env: None) -> None:
+        """Guards the #203 class of regression: mkstemp would publish 0600 via os.replace."""
+        from connectors.jira import organizations as orgs
+
+        svc = _fake_service(["1"], [_org("1", "Acme", "ACC-1")])
+        with (
+            patch.object(orgs, "get_jira_service", return_value=svc),
+            patch.object(orgs, "update_meta"),
+            patch.object(orgs.time, "sleep"),
+        ):
+            orgs.refresh_organizations(extract_dir=tmp_path)
+
+        mode = (tmp_path / "data" / "organizations" / "data.parquet").stat().st_mode & 0o777
+        assert mode & 0o044, f"published parquet must stay readable beyond its owner, got {oct(mode)}"
+
+    def test_a_stray_temp_is_never_read_as_data(self, tmp_path: Path) -> None:
+        """A crashed run leaves a temp behind; the view glob must not pick it up."""
+        from connectors.jira.extract_init import _table_parquets
+
+        table_dir = tmp_path / "organizations"
+        table_dir.mkdir()
+        (table_dir / "data.parquet").write_bytes(b"real")
+        (table_dir / "data.parquet.99999.tmp").write_bytes(b"half-written")
+
+        _, files = _table_parquets("organizations", table_dir)
+        assert [f.name for f in files] == ["data.parquet"]
