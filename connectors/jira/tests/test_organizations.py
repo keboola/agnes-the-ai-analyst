@@ -1245,3 +1245,103 @@ class TestCloudIdResolvedOnce:
         with patch("connectors.jira.organizations.refresh_organizations", return_value=stats):
             with pytest.raises(RuntimeError, match="cloud_id_unresolved"):
                 kinds._run_jira_org_refresh({})
+
+
+class TestForcedEmptyEnumeration:
+    """`--force` must clear the empty-enumeration refusal, like the sibling guard.
+
+    Neither refusal self-clears — the rows stay on disk, so the next run enumerates
+    zero again and refuses again. Without a working escape hatch the only recovery on a
+    site that really deleted every organization was removing the parquet by hand.
+    """
+
+    def _seed(self, tmp_path: Path, orgs_mod) -> None:
+        two = [_org("1", "Org 1", "ACC-1"), _org("2", "Org 2", "ACC-2")]
+        svc = _fake_service(["1", "2"], two)
+        with (
+            patch.object(orgs_mod, "get_jira_service", return_value=svc),
+            patch.object(orgs_mod, "update_meta"),
+            patch.object(orgs_mod.time, "sleep"),
+        ):
+            orgs_mod.refresh_organizations(extract_dir=tmp_path)
+
+    def test_force_publishes_the_empty_state(self, tmp_path: Path, org_env: None) -> None:
+        from connectors.jira import organizations as orgs
+
+        self._seed(tmp_path, orgs)
+        assert len(_read_table(tmp_path)) == 2
+
+        svc = _fake_service([], [])
+        with (
+            patch.object(orgs, "get_jira_service", return_value=svc),
+            patch.object(orgs, "update_meta"),
+            patch.object(orgs.time, "sleep"),
+        ):
+            stats = orgs.refresh_organizations(extract_dir=tmp_path, force=True)
+
+        assert "skipped_reason" not in stats
+        assert stats["removed"] == 2
+        # The table is published empty, with its schema intact rather than deleted.
+        df = _read_table(tmp_path)
+        assert len(df) == 0
+        assert "org_id" in df.columns and "crm_account_id" in df.columns
+
+    def test_force_does_not_need_the_cloud_id(self, tmp_path: Path, org_env: None) -> None:
+        """Nothing is fetched, so an unresolvable cloud id must not mask the truncate."""
+        from connectors.jira import organizations as orgs
+
+        self._seed(tmp_path, orgs)
+
+        svc = MagicMock()
+        svc.is_configured.return_value = True
+        svc.fetch_organization_ids.return_value = []
+        svc.resolve_cloud_id.side_effect = JiraFetchError("tenant_info unreachable")
+
+        with (
+            patch.object(orgs, "get_jira_service", return_value=svc),
+            patch.object(orgs, "update_meta"),
+            patch.object(orgs.time, "sleep"),
+        ):
+            stats = orgs.refresh_organizations(extract_dir=tmp_path, force=True)
+
+        assert "skipped_reason" not in stats
+        svc.resolve_cloud_id.assert_not_called()
+        assert len(_read_table(tmp_path)) == 0
+
+    def test_recovery_is_permanent(self, tmp_path: Path, org_env: None) -> None:
+        """After a forced clear, an ordinary run stops refusing — no existing rows left."""
+        from connectors.jira import organizations as orgs
+
+        self._seed(tmp_path, orgs)
+        svc = _fake_service([], [])
+        with (
+            patch.object(orgs, "get_jira_service", return_value=svc),
+            patch.object(orgs, "update_meta"),
+            patch.object(orgs.time, "sleep"),
+        ):
+            orgs.refresh_organizations(extract_dir=tmp_path, force=True)
+
+        svc2 = _fake_service([], [])
+        with (
+            patch.object(orgs, "get_jira_service", return_value=svc2),
+            patch.object(orgs, "update_meta"),
+            patch.object(orgs.time, "sleep"),
+        ):
+            stats = orgs.refresh_organizations(extract_dir=tmp_path)
+
+        assert "skipped_reason" not in stats, "the refusal must not come back after a forced clear"
+
+    def test_without_force_it_still_refuses(self, tmp_path: Path, org_env: None) -> None:
+        from connectors.jira import organizations as orgs
+
+        self._seed(tmp_path, orgs)
+        svc = _fake_service([], [])
+        with (
+            patch.object(orgs, "get_jira_service", return_value=svc),
+            patch.object(orgs, "update_meta"),
+            patch.object(orgs.time, "sleep"),
+        ):
+            stats = orgs.refresh_organizations(extract_dir=tmp_path)
+
+        assert stats["skipped_reason"] == "enumeration_empty"
+        assert len(_read_table(tmp_path)) == 2

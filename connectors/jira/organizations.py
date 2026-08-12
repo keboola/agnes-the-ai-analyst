@@ -134,13 +134,23 @@ def refresh_organizations(
     forward, so a transient 429 or 5xx costs freshness, never data. Only a 404
     (organization genuinely gone) drops a row.
 
-    Four outcomes refuse to publish rather than reporting a healthy run, all named in
-    ``FAILURE_REASONS`` so the CLI and the worker handler agree: the existing table
-    cannot be read (``existing_unreadable``), enumeration comes back empty while the
-    table holds rows (``enumeration_empty``), nothing fresh resolved at all
-    (``all_fetches_failed``), or the sweep would drop more than
-    ``MAX_REMOVED_FRACTION`` of the existing rows (``mass_removal_guard``, which
-    ``force=True`` overrides). In every case the rows already on disk are left standing.
+    Five outcomes refuse to publish rather than reporting a healthy run, all named in
+    ``FAILURE_REASONS`` so the CLI and the worker handler agree, and in every one the
+    rows already on disk are left standing:
+
+    * ``existing_unreadable`` — the current table cannot be read, so there is no
+      baseline to reason about.
+    * ``cloud_id_unresolved`` — the site's cloud id cannot be resolved, so no
+      organization can be read at all.
+    * ``enumeration_empty`` — enumeration returned nothing while the table holds rows.
+    * ``all_fetches_failed`` — nothing fresh resolved.
+    * ``mass_removal_guard`` — the sweep would drop more than
+      ``MAX_REMOVED_FRACTION`` of the existing rows.
+
+    ``force=True`` overrides the last two, which are the two that will not clear
+    themselves: both leave the rows in place, so the next run sees the same state and
+    refuses again. The other three describe conditions that a later run can find
+    resolved on its own.
 
     Returns a stats dict: ``organizations``, ``written``, ``preserved``, ``removed``,
     ``failed``, ``elapsed_sec``, ``dry_run``, and ``skipped_reason`` when it did not run.
@@ -195,18 +205,38 @@ def refresh_organizations(
         # enumerates none is at least as suspicious as the mass-removal guard's trigger,
         # so it gets the same signal (Devin Review on #1274). With no existing table it
         # is simply an instance with no organizations, which is not a failure.
-        if existing:
+        if not existing:
+            logger.info("Jira returned no organizations — nothing to refresh")
+            stats["elapsed_sec"] = round(time.time() - start, 1)
+            return stats
+
+        if not force:
             logger.error(
                 "Jira enumerated no organizations while %s holds %d rows — refusing to treat "
-                "that as a healthy run. The existing rows are left untouched.",
+                "that as a healthy run. The existing rows are left untouched; re-run with "
+                "--force if every organization really was deleted.",
                 TABLE_NAME,
                 len(existing),
             )
             stats["skipped_reason"] = "enumeration_empty"
-        else:
-            logger.info("Jira returned no organizations — nothing to refresh")
-        stats["elapsed_sec"] = round(time.time() - start, 1)
-        return stats
+            stats["elapsed_sec"] = round(time.time() - start, 1)
+            return stats
+
+        # Forced. `--force` has to work here for the same reason it exists on the
+        # mass-removal guard: the two refusals are the same shape, and neither clears
+        # itself — the rows stay on disk, so the next run enumerates zero again and
+        # refuses again. Without this the only recovery on a site that really did delete
+        # every organization was removing the parquet by hand (Devin Review on #1274).
+        #
+        # Counting them as removals is not bookkeeping sleight of hand: they are exactly
+        # the rows this run drops, and it also carries the empty result past the
+        # "nothing resolved" check below into the one code path that writes.
+        logger.warning(
+            "--force: publishing an empty %s over %d existing rows, on an enumeration that returned nothing.",
+            TABLE_NAME,
+            len(existing),
+        )
+        stats["removed"] = len(existing)
 
     if dry_run:
         configured = [column for _, column in organization_detail_fields()]
@@ -234,13 +264,17 @@ def refresh_organizations(
     #
     # Deliberately after the dry-run return: `--dry-run` only enumerates, so it has no
     # business requiring CSM reachability.
-    try:
-        service.resolve_cloud_id()
-    except JiraFetchError as e:
-        logger.error("Cannot resolve the site's cloud id, so no organization can be read: %s", e)
-        stats["skipped_reason"] = "cloud_id_unresolved"
-        stats["elapsed_sec"] = round(time.time() - start, 1)
-        return stats
+    # Only when there is something to fetch. A forced empty enumeration reaches this
+    # point with no organizations to read, and resolving would be a pointless request
+    # whose failure would mask the truncate the operator explicitly asked for.
+    if org_ids:
+        try:
+            service.resolve_cloud_id()
+        except JiraFetchError as e:
+            logger.error("Cannot resolve the site's cloud id, so no organization can be read: %s", e)
+            stats["skipped_reason"] = "cloud_id_unresolved"
+            stats["elapsed_sec"] = round(time.time() - start, 1)
+            return stats
 
     records: list[dict] = []
     # One client for the whole sweep. Per-request clients cost a fresh TLS handshake

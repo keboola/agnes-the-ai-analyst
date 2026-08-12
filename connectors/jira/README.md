@@ -526,6 +526,18 @@ GET https://api.atlassian.com/jsm/csm/cloudid/{cloudId}/api/v1/organization/{org
 
 A sweep that would drop more than half the existing rows is refused rather than published, and logs what to check. Rows disappear in two ways that never show up in the failure count: an enumerated organization 404ing on the CSM read — which means enumerated-but-unreadable (a wrong `JIRA_CLOUD_ID`, or an account without Customer Service Management access), since a genuinely deleted organization is simply absent from enumeration — and a short enumeration losing organizations by omission. The guard does not clear itself: if the removals are real, re-run with `--force`.
 
+**When the refresh refuses.** Five outcomes leave the existing rows standing rather than publishing, and each one fails the job (visible in job history) instead of finishing green:
+
+| `skipped_reason` | Meaning | Clears itself? |
+|---|---|---|
+| `existing_unreadable` | the current table could not be read, so there is no baseline | yes, once the parquet reads |
+| `cloud_id_unresolved` | the site's cloud id could not be resolved, so nothing can be read | yes, once reachable |
+| `all_fetches_failed` | nothing fresh resolved | yes, once the API recovers |
+| `enumeration_empty` | enumeration returned nothing while the table holds rows | **no** — `--force` |
+| `mass_removal_guard` | the sweep would drop more than half the rows | **no** — `--force` |
+
+The last two do not clear themselves: they deliberately leave the rows in place, so the next run sees the same state and refuses again. `--force` publishes anyway — including publishing an *empty* table when every organization really was deleted, which is the recovery on a site that has legitimately removed all of them. `jira_not_configured` is not in this list: an instance without Jira ingest skips the job rather than failing it.
+
 **Layout.** Unpartitioned: a single `data/organizations/data.parquet`, written temp-then-`os.replace()` so a reader never sees a truncated file. The extract view uses `union_by_name=true` but no `hive_partitioning` — there is no partition key, because an organization has one current state rather than a history.
 
 ```bash
