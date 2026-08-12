@@ -497,7 +497,7 @@ def test_error_state_returns_409_with_detail(client_granted, fake_runner):
     assert r.json()["state_detail"] == "boom"
 
 
-def test_running_app_upstream_unreachable_sets_error(client_granted, fake_runner, monkeypatch, running_app):
+def _refuse_connections(monkeypatch):
     import app.api.data_apps_proxy as proxy_api
 
     def _broken_client():
@@ -508,12 +508,60 @@ def test_running_app_upstream_unreachable_sets_error(client_granted, fake_runner
 
     monkeypatch.setattr(proxy_api, "_upstream_client", _broken_client)
 
+
+def test_unreachable_while_the_container_is_up_does_not_latch_error(
+    client_granted, fake_runner, monkeypatch, running_app
+):
+    """A container that is up but not yet listening is STARTING, not broken.
+
+    `error` is a latch — nothing clears it but a redeploy — so latching on a
+    refused connection let one badly-timed request brick a healthy app. The
+    window is wide: a first deploy clones, installs and builds before
+    anything listens, while the row reads `running` from the moment the
+    runner accepted the container. Watched live on a running instance: the
+    app served 200 inside its container while Agnes answered `app_error /
+    container unreachable` to every caller.
+    """
+    fake_runner._status = {"container": "running", "ready": False}
+    _refuse_connections(monkeypatch)
+
+    r = client_granted.get("/apps/s/hello")
+    assert r.status_code == 503, "a starting app gets the waking page, not an error"
+
+    from src.repositories import data_apps_repo
+
+    assert data_apps_repo().get_by_slug("s")["state"] == "running", "state must not be latched"
+
+
+def test_unreachable_with_a_dead_container_still_sets_error(client_granted, fake_runner, monkeypatch, running_app):
+    """The latch is still right when the container is genuinely gone."""
+    fake_runner._status = {"container": "stopped", "ready": False}
+    _refuse_connections(monkeypatch)
+
     r = client_granted.get("/apps/s/hello")
     assert r.status_code == 502
 
     from src.repositories import data_apps_repo
 
-    assert data_apps_repo().get_by_slug("s")["state"] == "error"
+    row = data_apps_repo().get_by_slug("s")
+    assert row["state"] == "error"
+    assert "stopped" in (row["state_detail"] or ""), "the detail should name what the container was"
+
+
+def test_unreachable_with_a_dead_runner_says_nothing_about_the_app(
+    client_granted, dead_runner, monkeypatch, running_app
+):
+    """If the runner itself is down we know nothing about the container, and
+    guessing `error` would blame the app for the sidecar's outage — with a
+    latch the user can only clear by redeploying."""
+    _refuse_connections(monkeypatch)
+
+    r = client_granted.get("/apps/s/hello")
+    assert r.status_code == 502
+
+    from src.repositories import data_apps_repo
+
+    assert data_apps_repo().get_by_slug("s")["state"] == "running"
 
 
 def test_get_apps_slug_redirects_to_trailing_slash(client_granted, running_app):
