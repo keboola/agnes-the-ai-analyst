@@ -295,8 +295,8 @@
        and library's blue but not either, which is what the section list has
        to distinguish. The paper theme re-points this onto
        --ds-resource-app-* like every sibling. */
-    --ds-kind-app: #1e40af;
-    --ds-kind-app-soft: #e6ecfb;
+    --ds-kind-app: #1f6b32;
+    --ds-kind-app-soft: #e7f2ea;
 
     --ds-agnes: #047857;
     --ds-agnes-soft: #ecfdf5;
@@ -371,13 +371,17 @@
     --ds-resource-plugin-soft: #e7eefc;
     --ds-resource-plugin-line: #b6cbf4;
 
-    /* App — hosted data apps. Indigo: adjacent to plugin's azure but pulled
-       violet-ward, since the two never share a row (a plugin extends the
-       harness, an app is a thing you open) but do share the Library's
-       section list. */
-    --ds-resource-app-ink:  #3f3aa8;
-    --ds-resource-app-soft: #ebeafa;
-    --ds-resource-app-line: #c3c0ee;
+    /* App — hosted data apps, the ninth kind. Forest green, chosen by
+       measurement rather than taste: the blue-violet region already holds
+       plugin (azure), agent (indigo) and skill (violet), and an indigo app
+       measured dE 19-20 from two of them — inside the range where a
+       categorical palette stops being categorical. Green is the one hue this
+       family had not spent, and it lands dE 33 from its nearest neighbour
+       (data's teal), against a tightest-existing-pair of 17. 6.5:1 on white,
+       so it is safe as text per the family's own -ink contract. */
+    --ds-resource-app-ink:  #1f6b32;
+    --ds-resource-app-soft: #e7f2ea;
+    --ds-resource-app-line: #b9d9c4;
 
     /* File / Upload — amber. Deepened well past the warn vocabulary's
        ink so a file's accent never reads as a warning about the file. */
@@ -431,7 +435,7 @@
     --ds-resource-plugin-soft: color-mix(in srgb, var(--ds-resource-plugin-ink) 16%, var(--ds-surface));
     --ds-resource-plugin-line: color-mix(in srgb, var(--ds-resource-plugin-ink) 38%, var(--ds-surface));
 
-    --ds-resource-app-ink:  #a5a0f0;
+    --ds-resource-app-ink:  #74d19a;
     --ds-resource-app-soft: color-mix(in srgb, var(--ds-resource-app-ink) 16%, var(--ds-surface));
     --ds-resource-app-line: color-mix(in srgb, var(--ds-resource-app-ink) 38%, var(--ds-surface));
 
