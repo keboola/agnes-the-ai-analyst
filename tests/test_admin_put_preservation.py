@@ -7,6 +7,7 @@ must survive. If a future maintainer flips ``model_dump()`` to
 these tests fire before partitioned rows or primary keys silently
 regress.
 """
+
 import pytest
 
 
@@ -24,22 +25,30 @@ def test_put_preserves_omitted_sync_strategy(seeded_app):
     token = seeded_app["admin_token"]
     auth = _auth(token)
 
-    r = c.post("/api/admin/register-table", headers=auth, json={
-        "name": "events_partitioned",
-        "source_type": "keboola",
-        "bucket": "in.c-events",
-        "source_table": "events",
-        "query_mode": "local",
-        "sync_strategy": "partitioned",
-        "partition_by": "event_date",
-        "partition_granularity": "month",
-    })
+    r = c.post(
+        "/api/admin/register-table",
+        headers=auth,
+        json={
+            "name": "events_partitioned",
+            "source_type": "keboola",
+            "bucket": "in.c-events",
+            "source_table": "events",
+            "query_mode": "local",
+            "sync_strategy": "partitioned",
+            "partition_by": "event_date",
+            "partition_granularity": "month",
+        },
+    )
     assert r.status_code == 201, r.text
 
-    r = c.put("/api/admin/registry/events_partitioned", headers=auth, json={
-        "sync_schedule": "daily 03:00",
-        "description": "now daily",
-    })
+    r = c.put(
+        "/api/admin/registry/events_partitioned",
+        headers=auth,
+        json={
+            "sync_schedule": "daily 03:00",
+            "description": "now daily",
+        },
+    )
     assert r.status_code == 200
 
     r = c.get("/api/admin/registry", headers=auth)
@@ -54,19 +63,27 @@ def test_put_preserves_omitted_primary_key(seeded_app):
     token = seeded_app["admin_token"]
     auth = _auth(token)
 
-    r = c.post("/api/admin/register-table", headers=auth, json={
-        "name": "orders_with_pk",
-        "source_type": "keboola",
-        "bucket": "in.c-shop",
-        "source_table": "orders",
-        "query_mode": "local",
-        "primary_key": ["order_id", "tenant_id"],
-    })
+    r = c.post(
+        "/api/admin/register-table",
+        headers=auth,
+        json={
+            "name": "orders_with_pk",
+            "source_type": "keboola",
+            "bucket": "in.c-shop",
+            "source_table": "orders",
+            "query_mode": "local",
+            "primary_key": ["order_id", "tenant_id"],
+        },
+    )
     assert r.status_code == 201, r.text
 
-    r = c.put("/api/admin/registry/orders_with_pk", headers=auth, json={
-        "description": "shop orders",
-    })
+    r = c.put(
+        "/api/admin/registry/orders_with_pk",
+        headers=auth,
+        json={
+            "description": "shop orders",
+        },
+    )
     assert r.status_code == 200
 
     r = c.get("/api/admin/registry", headers=auth)
