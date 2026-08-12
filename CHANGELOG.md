@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **A per-instance switch hides the MCP connector surface for VPN/intranet-only deployments.** In-network MCP clients always worked fine on such an instance, but a cloud-side connector client resolved from outside the network can never reach the endpoint — yet users still saw install instructions for a surface that could never work for them. `mcp.connector_ui_enabled: false` (env `AGNES_MCP_CONNECTOR_UI_ENABLED=0`, default `true` — current behavior unchanged) hides the `/me/ai-connector` and `/mcp-connect` pages, the MCP tab of `/how-it-works#connect`, and every nav/command-palette entry pointing at them, on both chrome variants. It is UI only: the MCP protocol endpoints (`/api/mcp/http`, `/api/mcp/sse`) keep serving in-network clients regardless. `docs/DEPLOYMENT.md` documents the two supported postures for a private-network instance — expose the endpoint through an authenticated TLS reverse proxy, or hide the surface with this switch.
+
 ## [0.83.7] - 2026-08-12
 
 ### Fixed

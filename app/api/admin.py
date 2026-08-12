@@ -443,6 +443,19 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                 "use is third-party — it makes an internal source unconfigurable."
             ),
         },
+        "connector_ui_enabled": {
+            "kind": "bool",
+            "default": _flag_default("mcp", "connector_ui_enabled", True),
+            "hint": (
+                "Expose the user-facing MCP connector surface — /me/ai-connector, "
+                "/mcp-connect, and the MCP tab of /how-it-works#connect, plus their "
+                "nav/palette entries. On by default. Turn off on a VPN/intranet-only "
+                "instance whose cloud-side MCP clients can never reach the endpoint, "
+                "so users are not shown a setup path that cannot work for them. UI "
+                "only — the MCP protocol endpoints keep serving in-network clients "
+                "regardless."
+            ),
+        },
     },
     "instance": {
         # Experience preset — registry-backed (app/switches.py `experience`,

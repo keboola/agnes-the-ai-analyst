@@ -696,7 +696,11 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
         <summary>
           <div>
             <p class="aic-eyebrow">Where you can use it</p>
-            <h2>Four ways in, one knowledge layer</h2>
+            {# Card count in the heading tracks the "Your own AI tool" card
+               below (#1024): with the MCP connector UI hidden that card is
+               gone too, so the count must not overclaim a route that isn't
+               offered here. #}
+            <h2>{% if can_mcp_connector_ui %}Four{% else %}Three{% endif %} ways in, one knowledge layer</h2>
             <p class="hiw-lede">Same data access, same skills, same permissions &mdash; whichever you pick. Nothing to keep in sync by hand.</p>
           </div>
           <span class="aic-chev">{{ ico.icon('chevron', 20) }}</span>
@@ -709,12 +713,14 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
           <p>Ask in chat, browse your Library, build agents. Everything below this card is optional.</p>
           <a href="/chat">Start a chat &rarr;</a>
         </div>
+        {% if can_mcp_connector_ui %}
         <div class="hiw-surface">
           <p class="hiw-surface-ey">A couple of minutes</p>
           <h3>Your own AI tool</h3>
           <p>Claude, Cursor, VS Code, ChatGPT. One connector URL brings the same knowledge into the assistant you already use.</p>
           <a href="#connect">Connect your tool &darr;</a>
         </div>
+        {% endif %}
         <div class="hiw-surface">
           <p class="hiw-surface-ey">For data work</p>
           <h3>Your terminal</h3>
@@ -767,17 +773,23 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
         <div class="hiw-fold-body">
 
     <div class="aic-modecard">
+    {# Two tabs only when the MCP connector UI is on (#1024) — with it hidden
+       there is exactly one route left (CLI), so the CLI button renders alone
+       and defaults to active/selected rather than a one-button "tablist". #}
     <div class="aic-mode-tabs" role="tablist" aria-label="Choose how to set up">
+      {% if can_mcp_connector_ui %}
       <button type="button" class="aic-mode-tab is-active" id="aic-mode-mcp" role="tab" aria-selected="true" aria-controls="aic-mode-panel-mcp" data-mode="mcp">
         <span class="aic-mode-tab-label">Connect your AI tool</span>
         <span class="aic-mode-tab-sub">Claude, Cursor, VS Code, ChatGPT&hellip;</span>
       </button>
-      <button type="button" class="aic-mode-tab" id="aic-mode-cli" role="tab" aria-selected="false" aria-controls="cli" data-mode="cli">
+      {% endif %}
+      <button type="button" class="aic-mode-tab{% if not can_mcp_connector_ui %} is-active{% endif %}" id="aic-mode-cli" role="tab" aria-selected="{% if can_mcp_connector_ui %}false{% else %}true{% endif %}" aria-controls="cli" data-mode="cli">
         <span class="aic-mode-tab-label">Terminal &amp; data agent</span>
         <span class="aic-mode-tab-sub">The agnes CLI on your machine</span>
       </button>
     </div>
 
+    {% if can_mcp_connector_ui %}
     {# ── MCP mode — connector URL + per-tool configuration ────────── #}
     <div class="aic-mode-panel is-active" id="aic-mode-panel-mcp" role="tabpanel" aria-labelledby="aic-mode-mcp" data-mode-panel="mcp">
       {# Procedure only. "Bring your company knowledge into the assistant you
@@ -1058,6 +1070,7 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
     </p>
     </div>{# /.aic-card — connector URL + tool tabs #}
     </div>{# /.aic-mode-panel[mcp] #}
+    {% endif %}{# /can_mcp_connector_ui #}
 
     {# ── CLI mode — install + the collapsed beginner tutorial ───────
        `id="cli"` lives on the panel, not on a section: the anchor is the
@@ -1065,8 +1078,9 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
        the TOC and outside bookmarks all point at it), the section
        wrapper is not. The one-click 90-day-token button stays HERE
        rather than moving to an explainer block — it mints a real
-       credential. #}
-    <div class="aic-mode-panel" id="cli" role="tabpanel" aria-labelledby="aic-mode-cli" data-mode-panel="cli">
+       credential. Default-active when the MCP tab is hidden (#1024) — it is
+       then the only route, so it must not start on a blank tablist. #}
+    <div class="aic-mode-panel{% if not can_mcp_connector_ui %} is-active{% endif %}" id="cli" role="tabpanel" aria-labelledby="aic-mode-cli" data-mode-panel="cli">
       {# Was a near-verbatim repeat of the #surfaces "Your terminal" card. This
          line now carries the PREREQUISITE instead, which is the thing a reader
          who lands on this tab most often does not know and which used to be
