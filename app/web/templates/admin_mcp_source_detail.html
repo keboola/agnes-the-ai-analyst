@@ -7,6 +7,17 @@
    `dropdown` macro. #}
 <link rel="stylesheet" href="{{ static_url('css/ds_dropdown.css') }}">
 <style>
+  /* A stored auth method this build no longer offers. `[hidden]` first, so the
+     layout rule below cannot resurrect an empty strip. */
+  .auth-stale[hidden] { display: none; }
+  .auth-stale {
+    display: block; margin-top: 8px; padding: 8px 10px; border-radius: 8px;
+    font-size: 12px; line-height: 1.5;
+    background: var(--ds-accent-warn-bg);
+    border: 1px solid var(--ds-accent-warn-line);
+    color: var(--ds-accent-warn-ink);
+  }
+
   .src-toolbar {
     display: flex; justify-content: space-between; align-items: center;
     gap: 12px; margin-bottom: 18px; flex-wrap: wrap;
@@ -266,7 +277,6 @@
           <option value="">none</option>
           <option value="bearer">bearer (env var)</option>
           <option value="oauth">oauth (per-user browser connect)</option>
-          <option value="header">custom header</option>
         </select>
         {{ ds.dropdown(
           id='edit-auth-method-dd', target='edit-auth-method',
@@ -275,9 +285,10 @@
             {'value': '', 'label': 'none'},
             {'value': 'bearer', 'label': 'bearer (env var)'},
             {'value': 'oauth', 'label': 'oauth (per-user browser connect)'},
-            {'value': 'header', 'label': 'custom header'},
           ],
         ) }}
+
+        <div id="edit-auth-method-stale" class="auth-stale" hidden></div>
 
         <label for="edit-auth-secret-env" style="margin-top:16px;">Auth secret env var — Advanced (legacy)</label>
         <input id="edit-auth-secret-env" type="text" autocomplete="off">
@@ -538,8 +549,43 @@ document.getElementById("edit-toggle-btn").addEventListener("click", () => {
   document.getElementById("edit-args").value = (source.args || []).join("\n");
   document.getElementById("edit-url-http").value = source.transport === "http" ? (source.url || "") : "";
   document.getElementById("edit-url-sse").value = source.transport === "sse" ? (source.url || "") : "";
-  document.getElementById("edit-auth-method").value = source.auth_method || "";
-  syncDropdown("edit-auth-method", source.auth_method || "");
+  // A stored value with no matching <option> silently selects the FIRST one
+  // ("none"), so opening and saving a server saved under the removed "custom
+  // header" method rewrote its auth to none without saying anything. Surface
+  // the stale value instead, as a disabled option the admin has to replace.
+  // (Devin Review on this PR.)
+  const authSel = document.getElementById("edit-auth-method");
+  const storedAuth = source.auth_method || "";
+  // Ignore an option THIS function added on a previous open, or the warning
+  // disappears the second time the form is opened: the first open inserts the
+  // stale value as an option, which then makes it look "known". Marked with a
+  // data attribute rather than removed, so re-opening re-evaluates from the
+  // real option list every time. (Devin Review on this PR.)
+  Array.from(authSel.querySelectorAll("option[data-stale]")).forEach(o => o.remove());
+  const knownAuth = Array.from(authSel.options).some(o => o.value === storedAuth);
+  const staleNote = document.getElementById("edit-auth-method-stale");
+  if (!knownAuth) {
+    const opt = document.createElement("option");
+    opt.value = storedAuth;
+    opt.textContent = `${storedAuth} — no longer supported, pick another`;
+    opt.disabled = true;
+    opt.dataset.stale = "1";
+    authSel.insertBefore(opt, authSel.firstChild);
+    if (staleNote) {
+      staleNote.textContent =
+        // The remedy names the options this form actually offers. It listed
+        // "basic", which the selector does not have, so an admin following
+        // the instruction went looking for a choice that is not there.
+        // (Devin Review on this PR.)
+        `This server is saved with auth method "${storedAuth}", which Agnes no longer implements — ` +
+        `it connects with no credential. Choose none, bearer or oauth before saving.`;
+      staleNote.hidden = false;
+    }
+  } else if (staleNote) {
+    staleNote.hidden = true;
+  }
+  authSel.value = storedAuth;
+  syncDropdown("edit-auth-method", storedAuth);
   document.getElementById("edit-auth-secret-env").value = source.auth_secret_env || "";
   document.getElementById("edit-scope").value = source.scope || "shared";
   syncDropdown("edit-scope", source.scope || "shared");

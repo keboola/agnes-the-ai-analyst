@@ -1349,3 +1349,225 @@ class TestIsOwnedBySource:
 
     def test_no_existing_row_is_owned(self):
         assert self._gate(None) is True
+
+
+class TestUpstreamErrorClassification:
+    """Which upstream failures are the admin's to fix, and which are outages.
+
+    Everything used to collapse into 502 Bad Gateway, so "you pasted the wrong
+    token" and "Keboola is down" were indistinguishable — operators read Bad
+    Gateway and went looking for an infrastructure problem.
+    """
+
+    def test_4xx_is_a_client_error(self):
+        from connectors.keboola.storage_api import StorageApiError, is_upstream_client_error
+
+        assert is_upstream_client_error(StorageApiError("nope", status=401))
+        assert is_upstream_client_error(StorageApiError("nope", status=403))
+
+    def test_5xx_is_not_a_client_error(self):
+        from connectors.keboola.storage_api import StorageApiError, is_upstream_client_error
+
+        assert not is_upstream_client_error(StorageApiError("boom", status=500))
+        assert not is_upstream_client_error(StorageApiError("boom", status=503))
+
+    def test_statusless_transport_failure_is_not_a_client_error(self):
+        """A ConnectionError/Timeout carries no status. Absence of a 4xx must
+        never be read as "not the upstream's fault"."""
+        import requests
+
+        from connectors.keboola.storage_api import StorageApiError, is_upstream_client_error
+
+        assert not is_upstream_client_error(requests.ConnectionError("dns"))
+        assert not is_upstream_client_error(StorageApiError("no status at all"))
+
+    def test_metastore_error_classifies_without_a_cross_import(self):
+        """The classifier is duck-typed on `.status`, so it covers the
+        Metastore client's error type too."""
+        from connectors.keboola.metastore_client import MetastoreApiError
+        from connectors.keboola.storage_api import is_upstream_client_error
+
+        assert is_upstream_client_error(MetastoreApiError("nope", status=401))
+        assert not is_upstream_client_error(MetastoreApiError("boom", status=502))
+
+
+class TestSyncErrorCodes:
+    def test_missing_credentials_reports_a_config_code(self, e2e_env):
+        """The endpoint maps this to 400: nothing is configured yet, which is
+        a setup step, not a gateway failure."""
+        from connectors.keboola.semantic_layer import sync_semantic_layer
+
+        with patch("connectors.keboola.semantic_layer._enumerate_master_sources", return_value=[]):
+            with patch(
+                "connectors.keboola.semantic_layer._resolve_keboola_credentials_slot",
+                return_value=("", "", "none"),
+            ):
+                result = sync_semantic_layer()
+
+        assert result["status"] == "error"
+        assert result["code"] == "credentials_not_configured"
+
+
+class TestProjectMismatchAtSyncTime:
+    """A connection bound to one project must never import another's layer.
+
+    The preflight already fetches the token's owner, so this costs nothing —
+    and the alternative is silent: the wrong project's metrics land under this
+    connection's `source_ref`, inside its prune scope, so the next sync of the
+    correct project deletes them again. Nothing on the page would say why.
+    """
+
+    def _fakes(self, owner_id):
+        fake_storage = MagicMock()
+        fake_storage.verify_token.return_value = {
+            "isMasterToken": True,
+            "owner": {"id": owner_id, "name": f"Project {owner_id}"},
+        }
+        fake_metastore = MagicMock()
+        fake_metastore.list_items.side_effect = lambda item_type, model_uuid=None: {
+            "semantic-model": [_model_item()],
+            "semantic-dataset": [],
+            "semantic-metric": [_metric_item("a", 'SUM("amount")', "in.c-example_source.orders")],
+            "semantic-constraint": [],
+            "semantic-relationship": [],
+            "semantic-glossary": [],
+        }[item_type]
+        return fake_storage, fake_metastore
+
+    def test_mismatched_project_fails_the_source_without_writing(self, e2e_env):
+        from connectors.keboola.semantic_layer import _sync_one_source
+        from src.repositories import metric_repo
+
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+        fake_storage, fake_metastore = self._fakes(owner_id=9999)
+
+        with (
+            patch("connectors.keboola.storage_api.KeboolaStorageClient", return_value=fake_storage),
+            patch("connectors.keboola.metastore_client.MetastoreClient", return_value=fake_metastore),
+        ):
+            result = _sync_one_source(
+                "https://connection.keboola.com",
+                "master-tok",
+                "conn-a",
+                adopt_null=False,
+                expected_project=(1234, "Acme Analytics"),
+            )
+
+        assert result["status"] == "error"
+        assert result["code"] == "project_mismatch"
+        assert "9999" in result["error"] and "1234" in result["error"]
+        # Refused BEFORE the Metastore was touched — nothing imported.
+        assert metric_repo().get("keboola/model-1/a") is None
+        fake_metastore.list_items.assert_not_called()
+
+    def test_matching_project_survives_an_id_stored_as_text(self, e2e_env):
+        """The stored id round-trips through a JSON config column on two
+        backends. A 1234 coming back as "1234" must not fail a correctly
+        configured project — and here the only escape is re-pointing the
+        connection to another stack. Devin Review on #1242.
+        """
+        from connectors.keboola.semantic_layer import _sync_one_source
+        from src.repositories import metric_repo
+
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+        fake_storage, fake_metastore = self._fakes(owner_id=1234)
+
+        with (
+            patch("connectors.keboola.storage_api.KeboolaStorageClient", return_value=fake_storage),
+            patch("connectors.keboola.metastore_client.MetastoreClient", return_value=fake_metastore),
+        ):
+            result = _sync_one_source(
+                "https://connection.keboola.com",
+                "master-tok",
+                "conn-a",
+                adopt_null=False,
+                expected_project=("1234", "Acme Analytics"),
+            )
+
+        assert result["status"] == "ok", result
+        assert metric_repo().get("keboola/model-1/a") is not None
+
+    def test_matching_project_syncs_normally(self, e2e_env):
+        from connectors.keboola.semantic_layer import _sync_one_source
+        from src.repositories import metric_repo
+
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+        fake_storage, fake_metastore = self._fakes(owner_id=1234)
+
+        with (
+            patch("connectors.keboola.storage_api.KeboolaStorageClient", return_value=fake_storage),
+            patch("connectors.keboola.metastore_client.MetastoreClient", return_value=fake_metastore),
+        ):
+            result = _sync_one_source(
+                "https://connection.keboola.com",
+                "master-tok",
+                "conn-a",
+                adopt_null=False,
+                expected_project=(1234, "Acme Analytics"),
+            )
+
+        assert result["status"] == "ok"
+        assert metric_repo().get("keboola/model-1/a") is not None
+
+    def test_unbound_connection_still_syncs(self, e2e_env):
+        """expected_project=None (identity never recorded) must not block a
+        sync that worked before this check existed."""
+        from connectors.keboola.semantic_layer import _sync_one_source
+        from src.repositories import metric_repo
+
+        _register_keboola_table("in.c-example_source", "orders", "crm_orders")
+        fake_storage, fake_metastore = self._fakes(owner_id=777)
+
+        with (
+            patch("connectors.keboola.storage_api.KeboolaStorageClient", return_value=fake_storage),
+            patch("connectors.keboola.metastore_client.MetastoreClient", return_value=fake_metastore),
+        ):
+            result = _sync_one_source(
+                "https://connection.keboola.com",
+                "master-tok",
+                "conn-a",
+                adopt_null=False,
+                expected_project=None,
+            )
+
+        assert result["status"] == "ok"
+        assert metric_repo().get("keboola/model-1/a") is not None
+
+
+def test_legacy_connection_slot_path_also_gets_the_mismatch_guard(e2e_env):
+    """Mode 3 stamps rows with the default connection's id, so the same
+    cross-attribution the master-token loop refuses is reachable there
+    whenever that connection's STORAGE token opens a different project than
+    the one it is bound to. Devin Review on #1242.
+    """
+    from connectors.keboola.semantic_layer import sync_semantic_layer
+
+    conn = {
+        "id": "conn-default",
+        "name": "Bound Project",
+        "config": {
+            "stack_url": "https://connection.keboola.com",
+            "project_id": 1234,
+            "project_name": "Acme Analytics",
+        },
+    }
+    fake_storage = MagicMock()
+    fake_storage.verify_token.return_value = {
+        "isMasterToken": True,
+        "owner": {"id": 9999, "name": "Some Other Project"},
+    }
+
+    with (
+        patch("connectors.keboola.semantic_layer._enumerate_master_sources", return_value=[]),
+        patch(
+            "connectors.keboola.semantic_layer._resolve_keboola_credentials_slot",
+            return_value=("https://connection.keboola.com", "storage-tok", "connection"),
+        ),
+        patch("connectors.keboola.semantic_layer._default_keboola_connection", return_value=conn),
+        patch("connectors.keboola.storage_api.KeboolaStorageClient", return_value=fake_storage),
+    ):
+        result = sync_semantic_layer()
+
+    assert result["status"] == "error"
+    assert result["code"] == "project_mismatch"
+    assert "9999" in result["error"] and "1234" in result["error"]

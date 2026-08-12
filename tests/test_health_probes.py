@@ -23,6 +23,42 @@ def _reset_drain_deadline():
     health_probes._drain_deadline = None
 
 
+class _FakeClock:
+    """Hand-advanced stand-in for the monotonic clock, exposing the one
+    attribute `health_probes` reads off its `time` import."""
+
+    def __init__(self, now: float = 1_000.0) -> None:
+        self._now = now
+
+    def monotonic(self) -> float:
+        return self._now
+
+    def advance(self, seconds: float) -> None:
+        self._now += seconds
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    """Freeze the clock the drain budget is measured against.
+
+    `health_probes` reads `time.monotonic()` both when arming the budget and
+    when spending it, so replacing that one source lets the budget tests pin
+    exact remaining values instead of racing real elapsed time — which is
+    what made the shared-budget test flaky under parallel CI load (a 0.3s
+    `asyncio.sleep` was observed taking 1.3s, blowing a +/-0.5s window).
+
+    Patched into the module's namespace rather than onto stdlib `time`:
+    `time.monotonic` is process-global and also times the event loop,
+    pytest's own bookkeeping, and any thread still alive from an earlier
+    test. Only `_FakeClock.monotonic` is provided, so a future `time.*` call
+    added to the module fails loudly here instead of silently mixing a real
+    clock into a frozen one.
+    """
+    fake = _FakeClock()
+    monkeypatch.setattr(health_probes, "time", fake)
+    return fake
+
+
 def make_client():
     app = FastAPI()
     app.include_router(router)
@@ -187,27 +223,32 @@ def test_cancelled_canary_drain_is_bounded(monkeypatch):
     asyncio.run(drive())
 
 
-def test_drain_budget_is_shared_across_the_whole_shutdown(monkeypatch):
-    """Two drains must share one budget, not get a full timeout each.
+def test_drain_budget_is_shared_across_the_whole_shutdown(monkeypatch, clock):
+    """Every drain must spend from one budget, not get a full timeout each.
 
     app/main.py's lifespan cancels the checkpoint loop, then the canary
     loop, then the worker loop sequentially, and the worker drains a
     heartbeat per in-flight entry. Per-call budgets would stack and overrun
     the container's stop_grace_period — reintroducing the SIGKILL the bound
     exists to avoid.
+
+    Time is advanced by hand rather than slept through, so the remaining
+    budget is asserted exactly: each drain must see the timeout minus the
+    time spent since `begin_shutdown`, cumulatively.
     """
     monkeypatch.setenv("AGNES_DRAIN_TIMEOUT_S", "10")
 
-    async def drive() -> None:
-        health_probes.begin_shutdown()
-        first = health_probes._drain_budget_s()
-        assert first == pytest.approx(10.0, abs=0.5)
-        await asyncio.sleep(0.3)
-        second = health_probes._drain_budget_s()
-        assert second < first, "second drain must inherit the remaining budget, not a fresh one"
-        assert second == pytest.approx(9.7, abs=0.5)
+    health_probes.begin_shutdown()
+    assert health_probes._drain_budget_s() == 10.0, "the first drain gets the whole budget"
 
-    asyncio.run(drive())
+    clock.advance(0.25)
+    assert health_probes._drain_budget_s() == 9.75, "second drain inherits the remainder"
+
+    # A third drain must keep spending from the same budget: were each call
+    # bounded on its own, both this and the previous assertion would read a
+    # fresh 10.0 and the drains would stack to 30s of a 10s allowance.
+    clock.advance(0.5)
+    assert health_probes._drain_budget_s() == 9.25, "budget tracks total elapsed, not per call"
 
 
 def test_drain_budget_floors_at_zero_once_spent(monkeypatch):
@@ -247,29 +288,39 @@ def test_routine_cancellation_does_not_arm_the_shutdown_budget(monkeypatch):
 
     asyncio.run(drive())
     assert health_probes._drain_deadline is None, "a routine cancellation must not arm the shutdown budget"
-    assert health_probes._drain_budget_s() == pytest.approx(10.0, abs=0.5), "full timeout outside shutdown"
+    # Exact, not approx: with no deadline armed this returns the configured
+    # timeout outright without reading the clock, so there is no drift to
+    # tolerate — and a tolerance implies one, hiding any margin applied to it.
+    assert health_probes._drain_budget_s() == 10.0, "full timeout outside shutdown"
 
 
-def test_each_shutdown_gets_its_own_budget(monkeypatch):
+def test_each_shutdown_gets_its_own_budget(monkeypatch, clock):
     """Arming only once would starve every app after the first in a process.
 
     A test run starts and stops the app many times; if the deadline were
     armed once and never re-armed, the second shutdown onward would get zero
     drain and the original hang would come straight back.
+
+    The clock is advanced *between* the two shutdowns, which is what makes
+    "fresh" checkable at all: on real time the gap is microseconds, so a
+    second `begin_shutdown` that reused the first deadline instead of
+    re-arming from now satisfied both `>= first` and a full-timeout budget
+    purely because no measurable time had passed.
     """
     monkeypatch.setenv("AGNES_DRAIN_TIMEOUT_S", "10")
+    armed_at = clock.monotonic()
     health_probes.begin_shutdown()
     first = health_probes._drain_deadline
-    assert first is not None
+    assert first == armed_at + 10.0, "armed at now plus the configured timeout"
 
     health_probes.end_shutdown()
     assert health_probes._drain_deadline is None, "budget must not leak into normal operation"
-    assert health_probes._drain_budget_s() == pytest.approx(10.0, abs=0.5)
+    assert health_probes._drain_budget_s() == 10.0, "outside shutdown every drain gets the full timeout"
 
+    clock.advance(4.0)  # the first shutdown, then a stretch of normal operation
     health_probes.begin_shutdown()
-    assert health_probes._drain_deadline is not None
-    assert health_probes._drain_deadline >= first, "a later shutdown gets a fresh budget"
-    assert health_probes._drain_budget_s() == pytest.approx(10.0, abs=0.5)
+    assert health_probes._drain_deadline == first + 4.0, "a later shutdown re-arms from now, not from the first"
+    assert health_probes._drain_budget_s() == 10.0, "and draws a whole budget, not the first one's remains"
 
 
 @pytest.mark.parametrize("raw", ["inf", "-inf", "nan", "NaN", "Infinity"])

@@ -31,7 +31,7 @@ class TestMcpSourceDetailEditFormDropdowns:
         for dd_id, target, values in (
             ("edit-transport-dd", "edit-transport", ("stdio", "http", "sse")),
             ("edit-scope-dd", "edit-scope", ("shared", "per_user")),
-            ("edit-auth-method-dd", "edit-auth-method", ("", "bearer", "header")),
+            ("edit-auth-method-dd", "edit-auth-method", ("", "bearer", "oauth")),
         ):
             assert f'data-ds-dropdown-target="{target}"' in text
             assert f'id="{dd_id}-btn"' in text
@@ -56,5 +56,62 @@ class TestMcpSourceDetailEditFormDropdowns:
         assert resp.status_code == 200
         text = resp.text
         assert 'syncDropdown("edit-transport", source.transport || "stdio");' in text
-        assert 'syncDropdown("edit-auth-method", source.auth_method || "");' in text
+        # Intent, not the literal argument: the edit form must push the loaded
+        # value into the paired dropdown. The auth select now resolves its value
+        # through `storedAuth` (a stored method this build no longer offers is
+        # surfaced as a disabled option instead of silently becoming "none"), so
+        # pinning the old expression made the guard fail on a change it does not
+        # care about. (Devin Review on #1249.)
+        assert 'syncDropdown("edit-auth-method"' in text
         assert 'syncDropdown("edit-scope", source.scope || "shared");' in text
+
+
+def test_a_removed_auth_method_is_surfaced_not_silently_rewritten(seeded_app):
+    """Devin Review on #1249: removing an option rewrote stored data.
+
+    A `<select>` given a value with no matching `<option>` selects the FIRST
+    one — "none" here — so opening and saving a server stored under the
+    removed "custom header" method silently changed its authentication to
+    none, on an edit to some unrelated field.
+    """
+    import pathlib
+
+    src = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "app"
+        / "web"
+        / "templates"
+        / "admin_mcp_source_detail.html"
+    ).read_text(encoding="utf-8")
+
+    assert "const knownAuth = Array.from(authSel.options)" in src, "the stored value is never checked"
+    assert "opt.disabled = true" in src, "the stale value must not be selectable as-is"
+    assert "no longer supported" in src
+    assert "edit-auth-method-stale" in src, "nothing tells the admin why"
+    # And the notice must not render as an empty strip when there is nothing
+    # to say — the same `[hidden]` vs `display` trap fixed on the sibling page.
+    assert ".auth-stale[hidden]" in src
+    assert src.index(".auth-stale[hidden]") < src.index(".auth-stale {")
+
+
+def test_the_stale_auth_warning_survives_reopening_the_form():
+    """Devin Review on #1249: the first open made the value look "known".
+
+    The notice is shown when the stored method has no matching `<option>` —
+    but the first open INSERTS one for it, so a second open found it and said
+    nothing, on a server whose authentication is still unsupported.
+    """
+    import pathlib
+
+    src = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "app"
+        / "web"
+        / "templates"
+        / "admin_mcp_source_detail.html"
+    ).read_text(encoding="utf-8")
+
+    assert 'option[data-stale]' in src, "the injected option is never cleared, so the check self-poisons"
+    assert 'opt.dataset.stale = "1"' in src, "the injected option is not marked"
+    # …and the clear must run BEFORE the known-value check.
+    assert src.index('querySelectorAll("option[data-stale]")') < src.index("const knownAuth =")
