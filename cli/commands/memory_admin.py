@@ -25,6 +25,19 @@ duplicates_app = typer.Typer(
 memory_admin_app.add_typer(duplicates_app, name="duplicates")
 
 
+def _plain_excerpt(value: object) -> str:
+    """A note's own words, with nothing that can rewrite the admin's terminal.
+
+    The excerpt is analyst-authored text echoed to a TTY. `click.echo` does not
+    strip ANSI escapes when stdout is a terminal, so a crafted note could
+    repaint or erase the warning line printed about it — the one line whose
+    job is to be read. Control characters are dropped; the words are not
+    touched. (Adversarial review of #1268.)
+    """
+    text = str(value or "")
+    return "".join(ch for ch in text if ch == "\t" or (ch.isprintable() and ch not in "\r\n"))
+
+
 def _fail(resp, what: str) -> None:
     """Print a CLI-friendly error and exit non-zero."""
     try:
@@ -236,7 +249,7 @@ def _echo_delivery_warnings(data: dict) -> None:
     for item_id, findings in by_item.items():
         kinds_by_excerpt: dict[str, list[str]] = {}
         for f in findings:
-            excerpt = str(f.get("excerpt") or "")
+            excerpt = _plain_excerpt(f.get("excerpt"))
             kind = str(f.get("kind") or "")
             kinds = kinds_by_excerpt.setdefault(excerpt, [])
             if kind not in kinds:

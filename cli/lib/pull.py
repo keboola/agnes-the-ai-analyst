@@ -1452,6 +1452,12 @@ def _sync_knowledge_artifacts(manifest: dict, workspace: Path, local_state: dict
             result.knowledge_removed += 1
 
 
+#: Bump when `_digest_to_md`'s wrapper text changes, so already-synced
+#: workspaces re-render once instead of keeping the old wording until the
+#: digest's own content happens to change.
+_DIGEST_RENDER_VERSION = 2
+
+
 def _digest_to_md(body: dict) -> str:
     """Render one maintained-digest content response as `ka_<slug>.md`.
 
@@ -1516,15 +1522,28 @@ def _sync_knowledge_digests(manifest: dict, workspace: Path, local_state: dict, 
         fname = f"ka_{slug}.md"
         listed_files.add(fname)
         target = rules_dir / fname
-        if md5 and known.get(did, {}).get("md5") == md5 and target.exists():
-            continue  # hash-equal AND file present — same guard as parquets/artifacts
+        # The stored md5 covers the digest's CONTENT, not the wording this
+        # module wraps it in — so a change to the template (like the provenance
+        # line added here) would never reach a workspace whose digests happen
+        # not to change. The render version rides along, and a bump re-writes
+        # every digest once. (Adversarial review of this PR: the CHANGELOG
+        # claimed `ka_*.md` gets the header; for already-synced digests it did
+        # not.)
+        cached = known.get(did, {})
+        if (
+            md5
+            and cached.get("md5") == md5
+            and cached.get("render") == _DIGEST_RENDER_VERSION
+            and target.exists()
+        ):
+            continue  # hash-equal, same template, file present
         try:
             resp = api_get(entry.get("url") or f"/api/knowledge/digests/{did}/content")
             resp.raise_for_status()
             body = resp.json()
             rules_dir.mkdir(parents=True, exist_ok=True)  # lazy mkdir, km_ contract
             target.write_text(_digest_to_md(body), encoding="utf-8")
-            known[did] = {"md5": md5, "slug": slug}
+            known[did] = {"md5": md5, "slug": slug, "render": _DIGEST_RENDER_VERSION}
             result.digests_updated += 1
         except Exception as exc:
             result.errors.append({"stage": "knowledge_digests", "digest": slug, "error": str(exc)})
@@ -1819,13 +1838,55 @@ def _register_snapshot_views(conn, workspace: Path, blocked_names: set[str] | No
 # baseline. So the clause cost trust and bought nothing, while the plain facts
 # — who wrote this, when, how it got here — are what let a reader classify the
 # text themselves. Same lesson as the 0.83.5 CLI-help fix, one file over.
-_PROVENANCE_LEAD = (
-    "_Source: this instance's corporate memory. Each note below was written by "
-    "a colleague during their own session and approved by an administrator of "
-    "this instance"
+# The claim has to be one the file can keep. "Approved by an administrator"
+# was not: the bundle's required tier is selected on `is_required` alone
+# (`app/api/memory.py`), so a required item ships whatever its status, and an
+# instance running the collector in `auto_publish` mode files mined items as
+# approved with nobody looking. So state the RECORD — required, or approved —
+# and let the reader decide what that is worth on their instance.
+# (Devin Review + an adversarial review of this PR.)
+_PROVENANCE_LEAD_REQUIRED = (
+    "_Source: this instance's corporate memory. The note below was written by a "
+    "colleague during their own session and is marked *required* in this "
+    "instance's memory"
 )
-_PROVENANCE_CREDIT = "; the credit line under each heading names who and when"
-_PROVENANCE_TAIL = ". Written by `agnes pull` and regenerated on every sync, so edits made here are lost._"
+_PROVENANCE_LEAD_APPROVED = (
+    "_Source: this instance's corporate memory. Each note below was written by a "
+    "colleague during their own session and carries the status *approved* in "
+    "this instance's memory"
+)
+#: The rollup states how many notes it carries. In-band framing cannot be made
+#: forgery-proof — a note's body is delivered verbatim, so it can contain a
+#: `---` and a heading of its own — but a stated count a reader can compare
+#: against the headings they see turns a silent forgery into a visible
+#: discrepancy. (Adversarial review of this PR.)
+_PROVENANCE_COUNT = ". This file carries {n} note{s}"
+_PROVENANCE_CREDIT_ONE = "; the credit line under the heading names who and when"
+_PROVENANCE_CREDIT_MANY = "; the credit line under each heading names who and when"
+# A note's own text is delivered verbatim — including any line that looks like
+# a heading, a rule, or a credit. Saying so is the difference between a header
+# a reader can rely on and one that vouches for whatever a note puts under it.
+_PROVENANCE_TAIL = (
+    ". Note text is reproduced unchanged, so a note may itself contain lines "
+    "that look like headings or credits — those are part of the note. Written "
+    "by `agnes pull` and regenerated on every sync, so edits made here are lost._"
+)
+
+
+def _one_line(value: object, *, limit: int = 200) -> str:
+    """A title as a title: one line, no structure of its own.
+
+    Titles, domains and categories are analyst-authored and land in a file an
+    agent reads as project rules. Interpolated raw, a title carrying newlines
+    writes its own headings and its own `— author, date` credit line — under
+    somebody else's name — and the provenance header this module adds then
+    vouches for the forgery. Collapsing whitespace is not editing a note: the
+    note's BODY is delivered byte-for-byte (that promise is the point), while
+    a title's job is to name it on one line.
+    (Found by an adversarial review of this PR.)
+    """
+    flat = " ".join(str(value or "").split())
+    return flat[: limit - 1] + "…" if len(flat) > limit else flat
 
 
 def _attribution(item: dict) -> str:
@@ -1836,14 +1897,21 @@ def _attribution(item: dict) -> str:
     reads as their note, where an uncredited one reads as the instance
     speaking.
     """
-    who = (item.get("source_user") or "").strip()
-    when = (item.get("created_at") or "")[:10]
+    who = _one_line(item.get("source_user"), limit=120)
+    # Stripped: a whitespace-only `created_at` rendered as `_—    _` — a credit
+    # line with nothing in it, which also made the header promise credits it
+    # could not show.
+    when = (item.get("created_at") or "").strip()[:10]
     parts = [p for p in (who, when) if p]
     return f"_— {', '.join(parts)}_" if parts else ""
 
 
-def _memory_provenance(items: list) -> str:
+def _memory_provenance(items: list, *, required: bool = False) -> str:
     """The header, promising a credit line only when there is one to find.
+
+    ``required=True`` renders the single-note wording for a per-item
+    ``km_<id>.md``: that file holds exactly one note, so "each note below" and
+    "under each heading" described a file the reader was not looking at.
 
     ``source_user`` and ``created_at`` are both nullable in the bundle, so the
     sentence about credit lines is conditional. Stated unconditionally it was a
@@ -1855,21 +1923,32 @@ def _memory_provenance(items: list) -> str:
     by a clause does the opposite of what it is for.
     """
     credited = any(_attribution(it) for it in items)
-    return _PROVENANCE_LEAD + (_PROVENANCE_CREDIT if credited else "") + _PROVENANCE_TAIL
+    if required:
+        lead, credit, count = _PROVENANCE_LEAD_REQUIRED, _PROVENANCE_CREDIT_ONE, ""
+    else:
+        lead, credit = _PROVENANCE_LEAD_APPROVED, _PROVENANCE_CREDIT_MANY
+        n = len(items)
+        count = _PROVENANCE_COUNT.format(n=n, s="" if n == 1 else "s")
+    return lead + (credit if credited else "") + count + _PROVENANCE_TAIL
 
 
 def _item_to_md(item: dict) -> str:
     """Render a knowledge item as a Markdown rule file."""
-    lines = [f"# {item.get('title', 'Untitled')}", "", _memory_provenance([item]), ""]
-    if item.get("domain"):
-        lines.append(f"_Domain: {item['domain']}_")
-    if item.get("category"):
-        lines.append(f"_Category: {item['category']}_")
+    lines = [
+        f"# {_one_line(item.get('title')) or 'Untitled'}",
+        "",
+        _memory_provenance([item], required=True),
+        "",
+    ]
+    if domain := _one_line(item.get("domain"), limit=120):
+        lines.append(f"_Domain: {domain}_")
+    if category := _one_line(item.get("category"), limit=120):
+        lines.append(f"_Category: {category}_")
     if attribution := _attribution(item):
         lines.append(attribution)
     lines.append("")
     lines.append(item.get("content", ""))
-    return "\n".join(lines)
+    return "\n".join(lines) + "\n"
 
 
 def _fetch_and_write_rules(workspace: Path) -> int:
@@ -1921,7 +2000,7 @@ def _fetch_and_write_rules(workspace: Path) -> int:
         lines = ["# Approved Corporate Knowledge\n", _memory_provenance(approved) + "\n"]
         for item in approved:
             lines.append("---\n")
-            lines.append(f"## {item.get('title', 'Untitled')}\n")
+            lines.append(f"## {_one_line(item.get('title')) or 'Untitled'}\n")
             if attribution := _attribution(item):
                 lines.append(attribution + "\n")
             lines.append(item.get("content", "") + "\n")

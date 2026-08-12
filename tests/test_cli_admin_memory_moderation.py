@@ -331,3 +331,16 @@ class TestDeliveryWarnings:
             result = runner.invoke(app, ["admin", "memory", "approve", "item_1", "--json"])
         payload = json.loads(result.stdout)
         assert payload["success"] == ["item_1"]
+
+
+def test_a_crafted_excerpt_cannot_repaint_the_warning_line():
+    """The excerpt is a note's own words echoed to a TTY, and `click.echo`
+    does not strip ANSI escapes there — so a crafted note could erase the very
+    warning printed about it. (Adversarial review of #1268.)"""
+    from cli.commands.memory_admin import _plain_excerpt
+
+    out = _plain_excerpt("before \x1b[2K\x1b[1G erased \r\n and a newline")
+
+    assert "\x1b" not in out and "\r" not in out and "\n" not in out
+    # The words survive; only the control characters go.
+    assert "before" in out and "erased" in out and "and a newline" in out
