@@ -2079,6 +2079,9 @@ KNOWN_UNTESTED = {
     "DELETE /api/admin/mcp-sources/{source_id}/secret",
     "DELETE /api/admin/mcp-tools/{tool_id}",
     "DELETE /api/admin/mcp-tools/{tool_id}/grants/{group_id}",
+    # Grant/revoke a whole MCP source at once — tested in test_keboola_chat_tools.py
+    "POST /api/admin/mcp-sources/{source_id}/grants",
+    "DELETE /api/admin/mcp-sources/{source_id}/grants/{group_id}",
     "GET /api/admin/mcp-sources",
     "GET /api/admin/mcp-sources/{source_id}",
     "GET /api/admin/mcp-tools",

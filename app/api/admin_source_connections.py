@@ -173,8 +173,14 @@ def _with_secret_status(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any
         # nothing because the row was there all along. (Devin Review.)
         derived = mcp_sources_repo().get(derived_source_id(row["id"]))
         row["has_chat_tools"] = bool(derived) and derived.get("enabled", True) is not False
+        # The page needs the source id to grant the whole set in one call.
+        # Served rather than recomputed in JS: `derived_source_id` is server
+        # logic, and a second copy of it in the template is a rename away from
+        # pointing the grant at a source that does not exist.
+        row["chat_tools_source_id"] = derived["id"] if derived else None
     except Exception:
         row["has_chat_tools"] = False
+        row["chat_tools_source_id"] = None
     return row
 
 
@@ -1107,6 +1113,10 @@ async def enable_chat_tools(
         connection_id=connection_id,
         connection_name=row.get("name") or connection_id,
         stack_url=stack_url,
+        # Present only on connections whose token is not a master one; see
+        # `build_stdio_spec`. Read from the connection so the admin sets it in
+        # one place rather than editing the derived MCP source by hand.
+        workspace_schema=(config.get("workspace_schema") or "").strip() or None,
     )
     # What the vault held before this call decides how a failed write is undone.
     # This endpoint is idempotent by design — re-running is how a rotated token
