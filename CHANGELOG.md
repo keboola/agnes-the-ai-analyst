@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **`agnes self-upgrade` went silent against a moved server — the one command run to repair a stale install.** Measured against the real relocated hostname: the plain form printed nothing and exited 0, so the caller could not tell the upgrade had not happened, and `--force` reported `cannot reach <old>/cli/latest` for a server that answers `308` with a `Location` header. `cli/update_check.py::_fetch_latest` calls `raise_for_status()`, which does not treat 3xx as an error, then `.json()` on a redirect's empty body; the exception is swallowed into `None`, and `_resolve_info` maps that to "probe failed". #1266 taught both HTTP clients and the setup-token exchange to name the new address, but this path reaches the server through neither. A redirect is now its own verdict (`_Moved`), diagnosed by a re-probe that runs **only** after the normal probe already came back empty — so the happy path pays nothing — and worded by the same `cli/server_moved.py` the other callers use, so the three cannot drift. `--quiet` stays silent: that is the SessionStart hook, whose non-noisy contract (#601) outranks this diagnosis. A genuinely unreachable server keeps its existing `cannot reach` message, which is a test in its own right.
+
 ## [0.83.6] - 2026-08-12
 
 ### Changed
