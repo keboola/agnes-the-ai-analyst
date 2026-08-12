@@ -919,6 +919,31 @@ discovery helper for the /admin/data-sources add-project wizard, #755).
 - /api/admin/source-connections/{connection_id}/secret
 - /api/admin/source-connections/{connection_id}/test
 - /api/admin/source-connections/{connection_id}/tables
+- /api/admin/source-connections/{connection_id}/chat-tools
+
+`POST …/{connection_id}/chat-tools` lends the chat agent the connected project's
+own upstream MCP tools (SQL, buckets/tables, search, semantic context): it derives
+an `mcp_sources` stdio row from the connection, copies the connection's storage
+token into the MCP vault, then **introspects the upstream and registers its tools**
+as `tool_registry` passthrough rows — the agent's passthrough surface is built from
+that table, so a source alone would give it nothing to call. `mutating` comes from
+each tool's `readOnlyHint`; a tool the upstream does not annotate is recorded as
+mutating rather than assumed safe. Exposed names are prefixed per connection, so
+two projects' identically-named tools stay apart, and capped at 64 characters —
+the tool-name limit model APIs enforce. Returns `tools_registered` plus
+`tools_admin_only`, the number of registered tools recorded as mutating: the
+passthrough policy gate refuses those for every non-admin even when granted, and
+on an upstream that annotates nothing that is all of them — the caller needs to
+see that before promising analysts anything. A registration failure returns 502
+and rolls back the previous chat-tools state; a failed local config write
+propagates instead of being dressed up as an upstream problem.
+`DELETE` removes both (idempotent), and deleting the connection itself does the
+same. Keboola-only; 400 without a resolvable token — a source that connected
+anonymously would fail every call at the far end instead. Enabling is idempotent
+and re-running is how a rotated token reaches the derived source. The derived
+source lands with **no** `tool_grants`, so nothing is exposed until an admin
+grants the tools to a group. CLI: `agnes admin connection chat-tools [--disable]`.
+Deliberately not MCP-exposed (credential-provisioning exemption, `CONTRIBUTING.md`).
 
 ### `/api/admin/contributed-skills` — Contributed skill management
 
@@ -967,6 +992,29 @@ Admin-only, write-only vault for datasource secrets (`KEBOOLA_STORAGE_TOKEN`, `B
 - /api/admin/store/submissions/{submission_id}/override
 - /api/admin/store/submissions/{submission_id}/rescan
 - /api/admin/store/submissions/{submission_id}/retry
+
+### `/api/admin/semantic-layer` — Keboola semantic-layer import status
+
+- /api/admin/semantic-layer/coverage
+
+`GET /api/admin/semantic-layer/coverage` (admin) reports, per Keboola
+connection holding a master token, how much of that project's semantic layer
+actually reaches `metric_definitions`: `metrics.upstream` vs
+`metrics.importable`, the glossary count, metrics `blocked` by their own
+definition (with the skip reason), and the datasets that have no registered
+table. Computed live against the Metastore and `table_registry` — it reads no
+stored sync counters, so it is accurate immediately after a restart.
+
+`warnings[]` carries the two conditions worth acting on:
+`token_project_mismatch` (the connection's storage and master tokens resolve to
+different projects, so tables sync from one project while the semantic layer is
+read from another — no metric can bind) and `no_metrics_bound` (the project
+publishes metrics but none bind to a registered table). Datasets with no
+registered table are reported as a plain count, never as pending work — a
+semantic layer routinely describes more of a project than an instance registers.
+
+CLI: `agnes admin semantic-layer coverage [--json]`. MCP:
+`admin_semantic_layer_coverage`.
 
 ### `/api/admin/run-*` — Background job triggers
 

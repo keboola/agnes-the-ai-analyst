@@ -263,3 +263,41 @@ def test_fetch_error_keeps_prior_file(tmp_path, monkeypatch):
     assert "prior good content" in text
     assert any(e.get("stage") == "knowledge_digests" for e in result.errors)
     assert result.digests_updated == 0
+
+
+def test_a_template_change_re_renders_an_already_synced_digest(tmp_path, monkeypatch):
+    """The stored md5 covers the digest's CONTENT, not the wording `agnes pull`
+    wraps it in — so the provenance line added in #1268 would never have
+    reached a workspace whose digests happen not to change. The render version
+    rides along with the hash. (Adversarial review of #1268.)"""
+    from unittest.mock import MagicMock, patch
+
+    from cli.lib import pull as pullmod
+
+    manifest = {
+        "knowledge_artifacts": [
+            {"kind": "digest", "id": "d1", "slug": "ops", "md5": "abc", "url": "/api/knowledge/digests/d1/content"}
+        ]
+    }
+    body = {"slug": "ops", "title": "Ops", "output_md": "text", "generated_at": "2026-08-01"}
+    resp = MagicMock()
+    resp.json.return_value = body
+    resp.raise_for_status.return_value = None
+
+    target = tmp_path / ".claude" / "rules" / "ka_ops.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("stale wording", encoding="utf-8")
+
+    # Same md5, OLD render version → must re-fetch and re-write.
+    state = {"knowledge_digests": {"d1": {"md5": "abc", "slug": "ops", "render": 1}}}
+    result = pullmod.PullResult()
+    with patch.object(pullmod, "api_get", return_value=resp) as api:
+        pullmod._sync_knowledge_digests(manifest, tmp_path, state, result)
+    assert api.called, "an old render version did not force a re-render"
+    assert "Maintained digest" in target.read_text()
+    assert state["knowledge_digests"]["d1"]["render"] == pullmod._DIGEST_RENDER_VERSION
+
+    # Same md5, CURRENT render version → no fetch.
+    with patch.object(pullmod, "api_get", return_value=resp) as api2:
+        pullmod._sync_knowledge_digests(manifest, tmp_path, state, result)
+    assert not api2.called, "a current digest was re-fetched for nothing"

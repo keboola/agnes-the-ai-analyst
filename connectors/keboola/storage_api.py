@@ -341,6 +341,22 @@ class StorageApiError(RuntimeError):
         self.body = body
 
 
+def is_upstream_client_error(exc: Exception) -> bool:
+    """True when an upstream API refused us for a reason WE control — a wrong
+    or expired token, a stack URL pointing at the wrong project (4xx).
+
+    Callers use it to keep 502 Bad Gateway for what it means (the upstream is
+    unreachable or broken) instead of reporting the admin's own bad token as
+    a gateway failure — which reads as "Agnes is down" and sends people
+    hunting infrastructure. Duck-typed on ``.status`` so it covers both
+    ``StorageApiError`` and ``MetastoreApiError`` without either module
+    having to import the other; a transport-level ``requests`` exception has
+    no status and is correctly NOT a client error.
+    """
+    status = getattr(exc, "status", None)
+    return isinstance(status, int) and 400 <= status < 500
+
+
 def normalize_source_table(bucket: str, source_table: str) -> str:
     """Return the bare in-bucket table name for ``source_table``.
 

@@ -58,6 +58,26 @@ def require_master_token(storage_client) -> None:
     check_master_token(storage_client.verify_token())
 
 
+# Cap on how many unresolved table ids a run names — in a log line and in the
+# per-source result the admin page renders. A model with hundreds of unregistered
+# datasets should still produce a readable line; the count next to it stays exact.
+_MAX_REPORTED_UNRESOLVED_TABLES = 20
+
+
+def _upstream_error_code(exc: Exception) -> str:
+    """Classify an upstream Keboola failure for the endpoint's status mapping.
+
+    ``upstream_client_error`` — Keboola understood the request and refused it
+    (4xx): an invalid/expired token, or a stack URL pointing at a project the
+    token doesn't belong to. The admin fixes that, so the endpoint answers
+    4xx. ``upstream_error`` — unreachable, timed out, or 5xx: a real gateway
+    failure, and the only case that still deserves a 502.
+    """
+    from connectors.keboola.storage_api import is_upstream_client_error
+
+    return "upstream_client_error" if is_upstream_client_error(exc) else "upstream_error"
+
+
 def table_lookup_from_registry(rows: list[dict]) -> dict[tuple[str, str], str]:
     """Build {(bucket, source_table): agnes_view_name} from table_registry
     rows (from `table_registry_repo().list_by_source("keboola")`).
@@ -257,15 +277,24 @@ def try_join_composition(
     if relationship is None:
         return None, skip_reason
 
+    # These two failures are AGNES-side, not definition defects: the metric's
+    # SQL is fine, one of the tables it joins simply is not registered here
+    # (or is registered without its columns). Reporting them as
+    # `foreign_alias_reference` put them in the coverage report's "blocked by
+    # their own definition" bucket, telling the admin that registering a table
+    # would not help — when registering a table is exactly the fix.
+    # Deliberately a new reason rather than a new counter: it folds into
+    # `skipped_foreign_alias` below, so the published sync counters are
+    # unchanged. (Devin Review on this PR.)
     table_name = resolve_table_name(dataset_table_id, table_lookup)
     joined_table_name = resolve_table_name(relationship["from"], table_lookup)
     if table_name is None or joined_table_name is None:
-        return None, "foreign_alias_reference"
+        return None, "unresolved_joined_table"
 
     to_columns = column_lookup.get(table_name)
     from_columns = column_lookup.get(joined_table_name)
     if not to_columns or not from_columns:
-        return None, "foreign_alias_reference"
+        return None, "unresolved_joined_table"
 
     alias_sides = resolve_join_aliases(relationship["on"], from_columns, to_columns)
     if alias_sides is None:
@@ -455,9 +484,22 @@ def _resolve_keboola_credentials_slot(
     except Exception:
         conn_token = ""
     if not conn_token:
-        token_env = conn.get("token_env") or ""
-        if token_env:
-            conn_token = os.environ.get(token_env, "")
+        # BEHAVIOUR CHANGE, stated rather than slipped in: this read was
+        # ungated, so an instance whose `token_env` names something outside
+        # `AGNES_REMOTE_ATTACH_TOKEN_ENVS` (default: KBC_TOKEN,
+        # KBC_STORAGE_TOKEN, KEBOOLA_STORAGE_TOKEN, …) stops syncing on
+        # upgrade until the name is added. That is the right side of the
+        # trade — the ungated read let an admin point a connection at any host
+        # env var and have its value sent to the stack as a token — and the
+        # remedy is one operator-set variable, logged by name when it bites.
+        # Same gate as `_connection_storage_token` and as `/test` / `/tables`.
+        # An admin can point `token_env` at any name, so an ungated read makes
+        # a connection row a way to send an arbitrary host environment
+        # variable to the configured stack as a Storage token. Pre-existing
+        # rather than introduced here, but leaving one of two reads in this
+        # module gated and the other not is the shape that gets the gate
+        # removed later as "inconsistent". (Devin Review on this PR.)
+        conn_token = _token_from_env(conn)
 
     # url/token here are at most a PARTIAL legacy pair (the full-pair case
     # returned above) — mixing that partial half with the named connection's
@@ -602,12 +644,19 @@ def _enumerate_master_sources() -> list[dict]:
                 conn["id"],
             )
             continue
+        config = conn.get("config") or {}
         sources.append(
             {
                 "connection_id": conn["id"],
                 "name": conn.get("name") or conn["id"],
                 "stack_url": stack_url,
                 "token": token,
+                # The project this connection is bound to, when known. Carried
+                # so the sync can refuse to import a DIFFERENT project's
+                # semantic layer under this connection's name — the token
+                # preflight already fetches the owner, so the check is free.
+                "project_id": config.get("project_id"),
+                "project_name": config.get("project_name") or "",
             }
         )
 
@@ -625,6 +674,7 @@ def _sync_one_source(
     adopt_null: bool,
     prune_scope_refs: Optional[set] = None,
     seen_project_keys: Optional[set[tuple[str, Any]]] = None,
+    expected_project: Optional[tuple[Any, str]] = None,
 ) -> dict:
     """Fetch ONE Keboola project's semantic layer (Metastore) and upsert it
     into Agnes's metric_definitions / glossary_terms tables, pruning stale
@@ -643,6 +693,14 @@ def _sync_one_source(
     already synced in this run: if this source resolves to one of them it
     short-circuits as ``skipped_duplicate_project`` before touching any row;
     otherwise its own identity is added to the set.
+
+    ``expected_project`` is the ``(project_id, project_name)`` the connection
+    is bound to. When the token turns out to open a DIFFERENT project the
+    source fails with ``project_mismatch`` instead of importing, because the
+    alternative is silent and expensive: another project's metrics land under
+    this connection's name and its prune scope, so the next sync of the right
+    project deletes them again. The preflight already fetched the owner, so
+    the check costs nothing.
 
     Raises MasterTokenRequiredError if the token is not a master token (see
     require_master_token) — a configuration error the caller surfaces loudly
@@ -666,8 +724,45 @@ def _sync_one_source(
         token_info = storage_client.verify_token()
     except (StorageApiError, requests.RequestException) as e:
         logger.error("Keboola Storage API preflight (verify_token) failed: %s", e)
-        return {"status": "error", "error": f"Storage API preflight failed: {e}", "source_ref": source_ref}
+        return {
+            "status": "error",
+            "error": f"Storage API preflight failed: {e}",
+            "code": _upstream_error_code(e),
+            "source_ref": source_ref,
+        }
     check_master_token(token_info)
+
+    if expected_project is not None:
+        expected_id, expected_name = expected_project
+        actual_id = (token_info.get("owner") or {}).get("id")
+        # Compared as text for the same reason the API-layer check is
+        # (app/api/admin_source_connections.py): `expected_id` comes straight
+        # out of a JSON config column on either backend, so a 5947 returning
+        # as "5947" would fail a correctly-configured project forever — and
+        # here the only way out is re-pointing the connection to another
+        # stack. Normalising in one layer and not the other was the gap
+        # (Devin Review on #1242).
+        if expected_id is not None and actual_id is not None and str(actual_id) != str(expected_id):
+            logger.error(
+                "Keboola semantic layer: connection %s is bound to project %s but its master "
+                "token opens project %s; refusing to import one project's semantic layer under "
+                "another's name",
+                source_ref,
+                expected_id,
+                actual_id,
+            )
+            actual_name = (token_info.get("owner") or {}).get("name") or "unnamed"
+            return {
+                "status": "error",
+                "error": (
+                    f"Master token belongs to Keboola project {actual_id} ({actual_name}), but this "
+                    f"connection is bound to project {expected_id} ({expected_name or 'unnamed'}). "
+                    "Replace the master token with one from the bound project, or connect the other "
+                    "project as its own data source."
+                ),
+                "code": "project_mismatch",
+                "source_ref": source_ref,
+            }
 
     project_key = _project_key(url, token_info)
     # A missing owner id (project_key is None) gives no reliable identity to
@@ -700,7 +795,12 @@ def _sync_one_source(
         models = metastore.list_items("semantic-model")
     except (MetastoreApiError, requests.RequestException) as e:
         logger.error("Keboola Metastore fetch failed (semantic-model): %s", e)
-        return {"status": "error", "error": f"Metastore fetch failed: {e}", "source_ref": source_ref}
+        return {
+            "status": "error",
+            "error": f"Metastore fetch failed: {e}",
+            "code": _upstream_error_code(e),
+            "source_ref": source_ref,
+        }
 
     empty_result = {"status": "ok", **_empty_counters(), "source_ref": source_ref, "project_key": project_key}
     if not models:
@@ -739,13 +839,39 @@ def _sync_one_source(
             per_model.append((model_uuid, {t: metastore.list_items(t, model_uuid) for t in item_types}))
         except (MetastoreApiError, requests.RequestException) as e:
             logger.error("Keboola Metastore fetch failed (model %s): %s", model_uuid, e)
-            return {"status": "error", "error": f"Metastore fetch failed: {e}", "source_ref": source_ref}
+            return {
+                "status": "error",
+                "error": f"Metastore fetch failed: {e}",
+                "code": _upstream_error_code(e),
+                "source_ref": source_ref,
+            }
 
     table_lookup = table_lookup_from_registry(table_registry_repo().list_by_source("keboola"))
     column_metadata = column_metadata_repo()
     column_lookup = {
         name: {c["column_name"] for c in column_metadata.list_for_table(name)} for name in set(table_lookup.values())
     }
+
+    # Every metric hangs off a dataset, and a dataset whose Keboola table is not
+    # registered in Agnes takes all of its metrics down with it as
+    # `skipped_unresolved_table`. That count alone is a dead end — verified on a
+    # live instance where 50 of 50 metrics vanished and neither the UI nor the
+    # log named a single table, so the only way to find out was querying the
+    # Metastore by hand. Name the tables here, once, and hand them to the caller
+    # so the admin page can say which ones to register. Computed over the union
+    # of every model's datasets, since the write loop below is per-model.
+    all_dataset_table_ids: set[str] = set()
+    for _model_uuid, model_items in per_model:
+        all_dataset_table_ids.update(dataset_lookup_by_table_id(model_items["semantic-dataset"]).keys())
+    unresolved_tables = sorted(tid for tid in all_dataset_table_ids if resolve_table_name(tid, table_lookup) is None)
+    if unresolved_tables:
+        logger.warning(
+            "Keboola semantic layer: %d of %d datasets reference tables that are not registered "
+            "in Agnes; every metric on them will be skipped. Register them to pick the metrics up: %s",
+            len(unresolved_tables),
+            len(all_dataset_table_ids),
+            ", ".join(unresolved_tables[:_MAX_REPORTED_UNRESOLVED_TABLES]),
+        )
 
     repo = metric_repo()
     seen_ids: set[str] = set()
@@ -790,7 +916,10 @@ def _sync_one_source(
             if row is None:
                 if skip_reason == "unresolved_table":
                     skipped_unresolved_table += 1
-                elif skip_reason == "foreign_alias_reference":
+                elif skip_reason in ("foreign_alias_reference", "unresolved_joined_table"):
+                    # One counter for both: the published per-source counters are a
+                    # stable surface, and the distinction only matters to the
+                    # coverage report's fixable/unfixable split.
                     skipped_foreign_alias += 1
                 elif skip_reason == "embedded_sql_comment":
                     skipped_embedded_comment += 1
@@ -933,6 +1062,13 @@ def _sync_one_source(
         "glossary_pruned": glossary_pruned,
         "skipped_missing_term": skipped_missing_term,
         "skipped_duplicate_project": 0,
+        # Truncated for the payload, but the TOTAL rides along: the admin
+        # page presents this list as the set to go and register, so a
+        # silent cut at 20 meant an admin could register everything shown,
+        # sync again, and still lose metrics with nothing naming the rest.
+        # (Devin Review on this PR.)
+        "unresolved_tables": unresolved_tables[:_MAX_REPORTED_UNRESOLVED_TABLES],
+        "unresolved_tables_total": len(unresolved_tables),
         "source_ref": source_ref,
         "project_key": project_key,
     }
@@ -964,17 +1100,25 @@ def _aggregate_sources(sources: list[dict]) -> dict:
 
     Top-level ``status`` is "ok" when at least one source synced; otherwise
     "error" carrying the first source's error message — which keeps the
-    endpoint's 502-on-returned-error contract intact for the single-source
-    (legacy) shape it has always seen.
+    endpoint's error-on-returned-error contract intact for the single-source
+    (legacy) shape it has always seen. The first source's ``code`` rides along
+    so the endpoint can tell an admin-fixable failure (bad token, nothing
+    configured) from a genuine upstream outage instead of calling both 502.
     """
     totals = {key: sum(int(s.get(key) or 0) for s in sources) for key in _COUNTER_KEYS}
     any_ok = any(s.get("status") == "ok" for s in sources)
     result: dict[str, Any] = {"status": "ok" if any_ok else "error", **totals, "sources": sources}
     if not any_ok:
-        result["error"] = next(
-            (s.get("error") for s in sources if s.get("error")),
-            "Keboola semantic layer sync failed",
-        )
+        # BOTH from the same source. Two independent `next(...)` scans could
+        # take the message from one failing project and the code from another,
+        # so an admin read a reason that did not belong to the failure type
+        # they were shown — the worst possible pairing when several projects
+        # fail at once and only one of them is the one they are debugging.
+        # (Devin Review on this PR.)
+        first_failed = next((s for s in sources if s.get("error") or s.get("code")), None) or {}
+        result["error"] = first_failed.get("error") or "Keboola semantic layer sync failed"
+        if first_failed.get("code"):
+            result["code"] = first_failed["code"]
     return result
 
 
@@ -1029,10 +1173,22 @@ def sync_semantic_layer(
                     # connection may claim them.
                     adopt_null=connection_id == default_id,
                     seen_project_keys=seen_project_keys,
+                    expected_project=(
+                        (source["project_id"], source["project_name"]) if source.get("project_id") is not None else None
+                    ),
                 )
             except MasterTokenRequiredError as e:
                 logger.error("Keboola semantic layer: connection %s rejected: %s", connection_id, e)
-                result = {"status": "error", "error": str(e)}
+                # Coded, because this path CAPTURES the exception instead of
+                # letting it propagate: the single-source paths let it reach
+                # the endpoint, which maps it to 400. Without a code here the
+                # aggregate carries none and the endpoint falls back to 502 —
+                # so the very same misconfiguration answered 400 on a
+                # one-connection instance and 502 once a master token existed
+                # (Devin Review on #1242). Reachable whenever a stored master
+                # token is later downgraded upstream; the store-time preflight
+                # cannot see that.
+                result = {"status": "error", "error": str(e), "code": "master_token_required"}
             except Exception as e:
                 # Per-source isolation is the whole point of the loop: one
                 # connection blowing up in an unforeseen way (a client bug, an
@@ -1048,6 +1204,7 @@ def sync_semantic_layer(
         return {
             "status": "error",
             "error": "Keboola credentials not configured",
+            "code": "credentials_not_configured",
             **_empty_counters(),
             "sources": [],
         }
@@ -1059,12 +1216,25 @@ def sync_semantic_layer(
     # later master-token sync. The prune scope stays "NULL or default id"
     # either way, so a downgrade still cleans up what it previously owned.
     stamp = default_id if slot == "connection" else None
+    # Guard this path too when the credentials carry a connection identity:
+    # rows here are stamped with the default connection's id, so the same
+    # cross-attribution the master-token loop refuses is reachable whenever
+    # that connection's STORAGE token opens a different project than the one
+    # it is bound to (Devin Review on #1242). A legacy env pair stamps nothing
+    # (`stamp` is None), so there is no binding to contradict and no guard to
+    # apply.
+    expected_project = None
+    if slot == "connection" and default_conn is not None:
+        default_config = default_conn.get("config") or {}
+        if default_config.get("project_id") is not None:
+            expected_project = (default_config["project_id"], default_config.get("project_name") or "")
     result = _sync_one_source(
         url,
         token,
         stamp,
         adopt_null=True,
         prune_scope_refs={None, default_id},
+        expected_project=expected_project,
     )
     return _aggregate_sources([_as_source_entry(default_id, default_conn["name"] if default_conn else None, result)])
 
@@ -1292,3 +1462,338 @@ def build_glossary_row(
         "model_uuid": model_uuid,
         "source": "keboola_semantic_layer",
     }, None
+
+
+# --- Coverage (live, no stored state) ---------------------------------------
+
+# Skip reasons that mean the metric's own DEFINITION cannot be composed. These
+# are defects in the upstream semantic layer — registering a table will not fix
+# one — so they are reported separately from `unresolved_table`, which is the
+# ordinary steady state of any project whose semantic layer describes more
+# tables than the instance registers.
+DEFINITION_BLOCKED_REASONS = frozenset(
+    {
+        "missing_name",
+        "embedded_sql_comment",
+        "foreign_alias_reference",
+        "ambiguous_relationship",
+        "unsupported_relationship_type",
+        "unverified_relationship_direction",
+    }
+)
+
+
+def _token_from_env(conn: dict) -> str:
+    """``token_env``'s value, but only for an allowlisted name.
+
+    The single gated reader for both places this module resolves a Storage
+    token from the environment. See `src.orchestrator_security` for why the
+    allowlist exists: `token_env` is admin-supplied and otherwise unbounded.
+    """
+    token_env = conn.get("token_env") or ""
+    if not token_env:
+        return ""
+    from src.orchestrator_security import is_token_env_allowed
+
+    if not is_token_env_allowed(token_env):
+        logger.warning(
+            "connection %s names token_env %r, which is not in the allowlist — not read",
+            conn.get("id"),
+            token_env,
+        )
+        return ""
+    return os.environ.get(token_env, "")
+
+
+def _connection_storage_token(conn: dict) -> str:
+    """The connection's regular (non-master) Storage token, vault first then
+    ``token_env`` — the same precedence
+    :func:`_resolve_keboola_credentials_slot` applies to its connection branch.
+    """
+    from src.repositories import connection_secrets_repo
+
+    try:
+        secrets = connection_secrets_repo()
+        if secrets.has(conn["id"]):
+            token = secrets.get(conn["id"]) or ""
+            if token:
+                return token
+    except Exception:
+        logger.warning("Could not read storage token for connection %s", conn.get("id"))
+    return _token_from_env(conn)
+
+
+def _project_identity(url: str, token: str) -> Optional[dict]:
+    """``{"id", "name"}`` for whichever project ``token`` belongs to, or None
+    when it cannot be established. Never raises and never echoes the token."""
+    import requests
+
+    from connectors.keboola.storage_api import KeboolaStorageClient, StorageApiError
+
+    if not (url and token):
+        return None
+    try:
+        info = KeboolaStorageClient(url=url, token=token).verify_token()
+        owner = info.get("owner") or {}
+    except (StorageApiError, requests.RequestException) as e:
+        logger.warning("Project identity lookup failed for %s: %s", url, e)
+        return None
+    if owner.get("id") is None:
+        return None
+    # `is_master` rides along because the call that establishes identity is the
+    # same call `check_master_token` reads — the sync aborts on a downgraded
+    # token, and coverage would otherwise report happily for a project whose
+    # sync cannot run. One round-trip, two answers. (Devin Review.)
+    return {
+        "id": owner.get("id"),
+        "name": owner.get("name") or "",
+        "is_master": bool(info.get("isMasterToken")),
+    }
+
+
+def compute_semantic_coverage(*, warnings_only: bool = False) -> dict:
+    """How much of each connected Keboola project's semantic layer actually
+    lands in Agnes, computed live against the Metastore and the table registry.
+
+    ``warnings_only=True`` stops after the identity checks — the three token
+    comparisons, which are two `verify_token` calls per connection — and skips
+    the Metastore enumeration entirely. That is what the Data sources page
+    needs for its warning strip, and enumerating every project's whole
+    semantic model on every page view to draw it was work nobody asked for.
+    (Devin Review on this PR.) Counts come back zeroed in that mode; the
+    Semantic layer page still asks for the full report.
+
+    Deliberately stateless: nothing is persisted and no counter from the last
+    sync is read. The sync's own counters live in an in-memory dict that resets
+    on every process restart, so a status built on them goes blank exactly when
+    someone restarts and comes looking. This recomputes on demand instead —
+    at the cost of a handful of upstream calls per connection.
+
+    Two things are worth an admin's attention, and they are NOT the same:
+
+    - ``importable == 0`` while the project publishes metrics. Nobody chooses
+      that; it means the two sides never meet — most often because a
+      connection's storage token and master token point at DIFFERENT projects,
+      so tables sync from one project and the semantic layer is read from
+      another. Reported as ``token_project_mismatch``.
+    - metrics blocked by their own definition
+      (:data:`DEFINITION_BLOCKED_REASONS`).
+
+    ``unregistered_tables`` is neither: a semantic layer routinely describes far
+    more tables than an instance registers, and those metrics are *supposed* to
+    stay out. It is reported as a plain fact, never as a pending queue.
+
+    Constraints are not fetched — they only decorate a successfully mapped row
+    (``merge_constraints``) and cannot change a skip decision, so the extra
+    round-trip buys nothing here.
+    """
+    import requests
+
+    from connectors.keboola.metastore_client import MetastoreApiError, MetastoreClient
+    from src.repositories import (
+        column_metadata_repo,
+        metric_repo,
+        source_connections_repo,
+        table_registry_repo,
+    )
+
+    conns_by_id = {c["id"]: c for c in source_connections_repo().list(source_type="keboola")}
+    metric_repository = metric_repo()
+    table_lookup = table_lookup_from_registry(table_registry_repo().list_by_source("keboola"))
+    column_metadata = column_metadata_repo()
+    column_lookup = {
+        name: {c["column_name"] for c in column_metadata.list_for_table(name)} for name in set(table_lookup.values())
+    }
+
+    # The sync lets the DEFAULT connection claim legacy unattributed rows
+    # (`adopt_null=(connection_id == default_id)`); coverage must judge
+    # ownership the same way or it reports a name as taken by another source
+    # that the sync would in fact adopt and import — telling the admin a
+    # metric will not land when it will, which is the direction that costs
+    # them the most. (Devin Review on this PR.)
+    _default = _default_keboola_connection()
+    default_id = _default["id"] if _default else None
+
+    sources: list[dict] = []
+    for source in _enumerate_master_sources():
+        conn_id = source["connection_id"]
+        stack_url = source["stack_url"]
+        entry: dict[str, Any] = {
+            "connection_id": conn_id,
+            "name": source["name"],
+            "stack_url": stack_url,
+            "project": None,
+            "storage_project": None,
+            "token_project_mismatch": False,
+            "metrics": {"upstream": 0, "importable": 0},
+            "glossary": {"upstream": 0},
+            "blocked": [],
+            "unregistered_tables": [],
+            "conflicts": [],
+            "warnings": [],
+            "error": None,
+        }
+
+        entry["project"] = _project_identity(stack_url, source["token"])
+        conn = conns_by_id.get(conn_id) or {}
+        entry["storage_project"] = _project_identity(stack_url, _connection_storage_token(conn))
+
+        # The connection's RECORDED project (#1242) is a third identity, and
+        # the one the sync actually enforces: a master token that opens a
+        # different project than the connection is locked to is refused
+        # outright, so the sync never runs. Comparing only storage-vs-master
+        # missed that entirely — the report gave a clean bill of health to a
+        # connection whose sync cannot start, which is the single most
+        # misleading thing this page can say.
+        # The sync's own preflight, applied to the same payload: a master
+        # token that has been downgraded makes `_sync_one_source` abort with
+        # `MasterTokenRequiredError`, and the Metastore rejects it with an
+        # opaque "Failed to create project scope" — so a report that skips
+        # this check describes a sync that never runs. (Devin Review.)
+        if entry["project"] and entry["project"].get("is_master") is False:
+            entry["warnings"].append(
+                {
+                    "code": "master_token_downgraded",
+                    "message": (
+                        "The stored owner token is no longer a master token, so the sync aborts "
+                        "before it reads anything. Store the project's owner token again on the "
+                        "Data sources page."
+                    ),
+                }
+            )
+
+        bound_id = (conn.get("config") or {}).get("project_id")
+        if bound_id is not None and entry["project"] and str(entry["project"]["id"]) != str(bound_id):
+            entry["token_project_mismatch"] = True
+            entry["warnings"].append(
+                {
+                    "code": "master_token_project_mismatch",
+                    "message": (
+                        f"This connection is locked to project {bound_id}, but its master token "
+                        f"opens project {entry['project']['id']}. The sync refuses to run at all "
+                        f"until one of the two is corrected — unbind the connection on the Data "
+                        f"sources page, or store a master token for the project it is bound to."
+                    ),
+                }
+            )
+
+        both = (entry["project"], entry["storage_project"])
+        if all(both) and str(both[0]["id"]) != str(both[1]["id"]):
+            entry["token_project_mismatch"] = True
+            entry["warnings"].append(
+                {
+                    "code": "token_project_mismatch",
+                    "message": (
+                        f"Storage token points at project {both[1]['id']}, master token at "
+                        f"project {both[0]['id']}. Tables sync from one project and the semantic "
+                        f"layer is read from another, so no metric can bind to a table."
+                    ),
+                }
+            )
+
+        if warnings_only:
+            sources.append(entry)
+            continue
+
+        try:
+            metastore = MetastoreClient(url=stack_url, token=source["token"])
+            models = metastore.list_items("semantic-model")
+            if not models:
+                sources.append(entry)
+                continue
+            model_uuid = models[0]["id"]
+            entry["model"] = {"uuid": model_uuid, "name": (models[0].get("attributes") or {}).get("name") or ""}
+            datasets = metastore.list_items("semantic-dataset", model_uuid)
+            metrics = metastore.list_items("semantic-metric", model_uuid)
+            relationships = metastore.list_items("semantic-relationship", model_uuid)
+            entry["glossary"]["upstream"] = len(metastore.list_items("semantic-glossary", model_uuid))
+        except (MetastoreApiError, requests.RequestException) as e:
+            entry["error"] = f"Metastore fetch failed: {e}"
+            entry["warnings"].append({"code": "fetch_failed", "message": entry["error"]})
+            sources.append(entry)
+            continue
+
+        dataset_lookup = dataset_lookup_by_table_id(datasets)
+        relationship_lookup = relationship_lookup_by_dataset(relationships)
+
+        importable = 0
+        unregistered: set[str] = set()
+        for item in metrics:
+            row, reason = build_metric_row(
+                item,
+                table_lookup,
+                dataset_lookup,
+                [],
+                model_uuid,
+                relationship_lookup=relationship_lookup,
+                column_lookup=column_lookup,
+            )
+            if row is not None:
+                # Mapping cleanly is not enough to land: the sync refuses to
+                # take a name another source already holds, and that check
+                # happens after the mapper, so counting mapped rows alone
+                # overstates coverage by exactly the number of conflicts.
+                # Found live — a Keboola `mrr` never landed because the
+                # bundled yaml starter pack already owned that name, and the
+                # sync's own `skipped_unresolved_table` counter read 0.
+                existing = metric_repository.find_by_name(row["name"])
+                if not _is_owned_by_source(existing, row["id"], {conn_id}, adopt_null=(conn_id == default_id)):
+                    entry["conflicts"].append(
+                        {
+                            "metric": row["name"],
+                            "held_by": (existing or {}).get("source") or "",
+                            "held_id": (existing or {}).get("id") or "",
+                        }
+                    )
+                    continue
+                importable += 1
+                continue
+            attrs = item.get("attributes") or {}
+            if reason == "unresolved_table":
+                unregistered.add(attrs.get("dataset") or "")
+            elif reason in DEFINITION_BLOCKED_REASONS:
+                entry["blocked"].append(
+                    {
+                        "metric": attrs.get("name") or "",
+                        "dataset": attrs.get("dataset") or "",
+                        "reason": reason,
+                    }
+                )
+
+        entry["metrics"] = {"upstream": len(metrics), "importable": importable}
+        entry["unregistered_tables"] = sorted(t for t in unregistered if t)
+
+        if metrics and importable == 0:
+            entry["warnings"].append(
+                {
+                    "code": "no_metrics_bound",
+                    "message": (
+                        f"None of the {len(metrics)} metrics this project publishes can bind to a registered table."
+                    ),
+                }
+            )
+        if entry["blocked"]:
+            entry["warnings"].append(
+                {
+                    "code": "metrics_blocked",
+                    "message": (
+                        f"{len(entry['blocked'])} metric(s) cannot be composed from their own "
+                        f"definition; registering a table will not fix these."
+                    ),
+                }
+            )
+        if entry["conflicts"]:
+            names = ", ".join(c["metric"] for c in entry["conflicts"][:5])
+            entry["warnings"].append(
+                {
+                    "code": "name_conflict",
+                    "message": (
+                        f"{len(entry['conflicts'])} metric name(s) are already held by another "
+                        f"source and are never overwritten ({names}). Two definitions of the same "
+                        f"metric exist; the one in use is not this project's."
+                    ),
+                }
+            )
+        sources.append(entry)
+
+    return {"sources": sources}

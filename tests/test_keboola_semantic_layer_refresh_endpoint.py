@@ -76,22 +76,92 @@ def test_run_refresh_maps_master_token_error_to_400(seeded_app):
     assert "master token" in r.json()["detail"]
 
 
-def test_run_refresh_maps_returned_error_status_to_502(seeded_app):
+def test_non_master_token_answers_400_however_many_connections_exist(seeded_app):
+    """The same misconfiguration must not change status with the topology.
+
+    The single-source paths let MasterTokenRequiredError propagate and the
+    endpoint maps it to 400 (test above). The multi-source loop CAPTURES it
+    per connection, so without a code the aggregate carried none and fell
+    back to 502 — the same broken token answering 400 on one instance and
+    502 on another, which is exactly the inconsistency this endpoint's status
+    mapping exists to remove. Devin Review on #1242.
+    """
+    from connectors.keboola.semantic_layer import MasterTokenRequiredError
+
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+
+    # Drive the REAL master-source loop — patching only its two edges, so the
+    # code the loop attaches (or fails to attach) is what decides the status.
+    # Hard-coding the aggregate here would have tested the mapping table and
+    # nothing else, and passed just as happily with the bug in place.
+    fake_source = {
+        "connection_id": "conn-a",
+        "name": "Production",
+        "stack_url": "https://connection.keboola.com",
+        "token": "downgraded-token",
+        "project_id": None,
+        "project_name": "",
+    }
+    with (
+        patch("connectors.keboola.semantic_layer._enumerate_master_sources", return_value=[fake_source]),
+        patch(
+            "connectors.keboola.semantic_layer._sync_one_source",
+            side_effect=MasterTokenRequiredError("needs a master token"),
+        ),
+    ):
+        r = c.post(
+            "/api/admin/run-keboola-semantic-layer-refresh",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert r.status_code == 400, r.text
+    assert "master token" in r.json()["detail"]
+
+
+def test_run_refresh_maps_returned_error_to_an_error_status(seeded_app):
     """sync_semantic_layer() reports config/upstream failures (missing
     credentials, Storage/Metastore API errors) by *returning*
     {"status": "error"} rather than raising — the endpoint must not treat
     that as a 200 success (previously: the admin UI showed a false "OK"
-    after a failed sync)."""
+    after a failed sync).
+
+    A result with no ``code`` keeps the historical 502 so an older/unknown
+    error shape never silently becomes a 4xx."""
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
-    fake_result = {"status": "error", "error": "Keboola credentials not configured"}
+    fake_result = {"status": "error", "error": "Keboola semantic layer sync failed"}
     with patch("app.api.keboola_semantic_layer_refresh.sync_semantic_layer", return_value=fake_result):
         r = c.post(
             "/api/admin/run-keboola-semantic-layer-refresh",
             headers={"Authorization": f"Bearer {token}"},
         )
     assert r.status_code == 502
-    assert r.json()["detail"] == "Keboola credentials not configured"
+    assert r.json()["detail"] == "Keboola semantic layer sync failed"
+
+
+@pytest.mark.parametrize(
+    "code,expected_status",
+    [
+        # The admin can fix these, so 502 Bad Gateway is a lie that reads as an
+        # Agnes outage — the misdiagnosis this mapping exists to prevent.
+        ("credentials_not_configured", 400),
+        ("upstream_client_error", 400),
+        # A genuine outage is still a gateway failure.
+        ("upstream_error", 502),
+        ("something_new", 502),
+    ],
+)
+def test_run_refresh_status_follows_the_error_code(seeded_app, code, expected_status):
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    fake_result = {"status": "error", "error": "nope", "code": code}
+    with patch("app.api.keboola_semantic_layer_refresh.sync_semantic_layer", return_value=fake_result):
+        r = c.post(
+            "/api/admin/run-keboola-semantic-layer-refresh",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert r.status_code == expected_status
+    assert r.json()["detail"] == "nope"
 
 
 def test_run_refresh_requires_admin(seeded_app):
@@ -183,13 +253,17 @@ class TestLastRefreshSummary:
 
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
-        fake_result = {"status": "error", "error": "Keboola credentials not configured"}
+        fake_result = {
+            "status": "error",
+            "error": "Keboola credentials not configured",
+            "code": "credentials_not_configured",
+        }
         with patch("app.api.keboola_semantic_layer_refresh.sync_semantic_layer", return_value=fake_result):
             r = c.post(
                 "/api/admin/run-keboola-semantic-layer-refresh",
                 headers={"Authorization": f"Bearer {token}"},
             )
-        assert r.status_code == 502
+        assert r.status_code == 400
 
         summary = get_last_refresh_summary()
         assert summary["last_status"] == "error"
@@ -278,3 +352,42 @@ def endpoint_module_state():
     from app.api import keboola_semantic_layer_refresh as endpoint_module
 
     return endpoint_module._refresh_state
+
+
+def test_coverage_endpoint_returns_computed_sources(seeded_app):
+    c = seeded_app["client"]
+    token = seeded_app["admin_token"]
+    fake = {
+        "sources": [
+            {
+                "connection_id": "conn-1",
+                "name": "Demo project",
+                "metrics": {"upstream": 50, "importable": 0},
+                "glossary": {"upstream": 9},
+                "unregistered_tables": ["in.c-demo.subscriptions"],
+                "blocked": [],
+                "warnings": [{"code": "no_metrics_bound", "message": "…"}],
+            }
+        ]
+    }
+    with patch(
+        "connectors.keboola.semantic_layer.compute_semantic_coverage",
+        return_value=fake,
+    ):
+        r = c.get(
+            "/api/admin/semantic-layer/coverage",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert r.status_code == 200, r.text
+    source = r.json()["sources"][0]
+    assert source["metrics"] == {"upstream": 50, "importable": 0}
+    assert source["unregistered_tables"] == ["in.c-demo.subscriptions"]
+    assert [w["code"] for w in source["warnings"]] == ["no_metrics_bound"]
+
+
+def test_coverage_endpoint_requires_admin(seeded_app):
+    """Coverage names upstream project ids and dataset paths — admin-only, like
+    every other surface over a connection's configuration."""
+    c = seeded_app["client"]
+    r = c.get("/api/admin/semantic-layer/coverage")
+    assert r.status_code in (401, 403), r.text

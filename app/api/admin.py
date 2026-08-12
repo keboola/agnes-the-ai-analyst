@@ -4919,7 +4919,9 @@ def run_jira_sla_poll(
     stale ``status`` / ``resolution`` fields on the same pass — tickets
     closed during a webhook outage get corrected.
 
-    Cadence: every 15 min by default (SCHEDULER_JIRA_SLA_POLL_INTERVAL).
+    Cadence: every 45 min by default (SCHEDULER_JIRA_SLA_POLL_INTERVAL) —
+    long enough that a serial pass over every open ticket finishes before
+    the next one is due; see the DEFAULTS comment in services/scheduler.
     Skipped gracefully when JIRA_SLA_* env vars aren't set.
     """
     from connectors.jira.scripts.poll_sla import run as _run_poll_sla

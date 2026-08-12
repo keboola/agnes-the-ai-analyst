@@ -3,6 +3,8 @@
 import socket
 
 import httpx
+
+from cli.server_moved import is_redirect, moved_server_message
 import typer
 
 from cli.client import api_post
@@ -299,6 +301,13 @@ def import_token(
             raise typer.Exit(1)
 
         if resp is not None:
+            # A moved server answers 3xx here; `httpx.Client` without
+            # `follow_redirects` returns it verbatim, and the checks below
+            # read it as neither a rejection nor a fault, so login "verified"
+            # against a server it never reached. (Devin Review on #1266.)
+            if is_redirect(resp.status_code):
+                typer.echo(moved_server_message(resp.status_code, resp.headers.get("Location", ""), verify_url), err=True)
+                raise typer.Exit(1)
             if resp.status_code == 401:
                 detail = "unauthorized"
                 try:
@@ -364,6 +373,9 @@ def refresh_groups(
         typer.echo(f"Could not reach server {server}: {e}", err=True)
         raise typer.Exit(1)
 
+    if is_redirect(resp.status_code):
+        typer.echo(moved_server_message(resp.status_code, resp.headers.get("Location", ""), server), err=True)
+        raise typer.Exit(1)
     if resp.status_code != 200:
         detail = resp.text
         try:

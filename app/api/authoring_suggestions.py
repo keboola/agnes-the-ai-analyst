@@ -71,7 +71,7 @@ logger = logging.getLogger(__name__)
 # a stdio ``command`` / git ``url`` past the admin) is mitigated because the
 # moderation UI renders the COMPLETE payload before the admin clicks approve:
 # approval is informed consent, not a silent replay.
-def _replay_data_package(payload: dict, by: str) -> str:
+def _replay_data_package(payload: dict, by: str, submitted_by: Optional[str] = None) -> str:
     return data_packages_repo().create(
         name=payload["name"],
         slug=payload["slug"],
@@ -82,18 +82,72 @@ def _replay_data_package(payload: dict, by: str) -> str:
     )
 
 
-def _replay_corporate_memory(payload: dict, by: str) -> str:
-    return memory_domains_repo().create(
-        name=payload["name"],
-        slug=payload["slug"],
+def _replay_corporate_memory(payload: dict, by: str, submitted_by: Optional[str] = None) -> str:
+    """Create the domain AND the knowledge the author wrote.
+
+    Copying only name/slug/description silently dropped the whole point of a
+    corporate-memory submission: the author filled in the knowledge, saw
+    "Submitted for approval", and approval produced an empty domain. The
+    seeding is shared with the admin endpoint so the two creation paths cannot
+    diverge again. (Devin Review on #1263.)
+    """
+    from app.api.memory_domains import seed_domain_item
+
+    # Normalize ONCE, and use the same values for both writes: the domain was
+    # being created with the slug exactly as submitted while the item was
+    # filed under a trimmed copy, so a submission whose slug carried a stray
+    # space failed every approval attempt — the seeding raises on a slug it
+    # cannot resolve, which rolls the whole approval back, forever.
+    # (Devin Review on #1263.)
+    name = (payload["name"] or "").strip()
+    slug = (payload["slug"] or "").strip()
+    if not name or not slug:
+        # Present-but-empty is as unusable as absent, and the caller maps a
+        # KeyError to 400 invalid_payload — creating a nameless, slugless
+        # domain instead would be the worst of both. (Devin Review on #1263.)
+        raise KeyError("name" if not name else "slug")
+    domain_id = memory_domains_repo().create(
+        name=name,
+        slug=slug,
         description=payload.get("description"),
         icon=None,
         color=None,
         created_by=by,
     )
+    try:
+        seed_domain_item(
+            slug=slug,
+            name=name,
+            content=payload.get("content"),
+            content_title=payload.get("content_title"),
+            # The SUBMITTER, not the approver — `by` is the admin who approved,
+            # and attributing someone else's knowledge to them would be wrong in
+            # the one field corporate memory uses to say who knows this.
+            source_user=submitted_by or by,
+        )
+    except Exception:
+        # The caller reopens the suggestion on failure so the admin can retry —
+        # but the domain is already created, and a retry then dies on the
+        # duplicate slug, leaving the submission impossible to approve and an
+        # empty domain nobody asked for. Undo our own half before letting the
+        # error out. (Devin Review on #1263.)
+        try:
+            # HARD delete: the soft one only stamps `deleted_at`, and the slug
+            # stays unique-constrained — a retry would still collide, which is
+            # the whole failure being undone. Nothing was ever published under
+            # this domain; it was created moments ago in this same request.
+            memory_domains_repo().hard_delete(domain_id)
+        except Exception:
+            logger.exception(
+                "authoring: seeding failed for domain %s and the rollback failed too — "
+                "the domain must be deleted by hand before this suggestion can be approved",
+                domain_id,
+            )
+        raise
+    return domain_id
 
 
-def _replay_mcp(payload: dict, by: str) -> str:
+def _replay_mcp(payload: dict, by: str, submitted_by: Optional[str] = None) -> str:
     # Re-validate transport/shape via the endpoint's own request model.
     from app.api.admin_mcp import CreateMCPSourceRequest, _require_safe_source_name
     from src.repositories import mcp_sources_repo
@@ -121,7 +175,7 @@ def _replay_mcp(payload: dict, by: str) -> str:
     return source_id
 
 
-def _replay_marketplace(payload: dict, by: str) -> str:
+def _replay_marketplace(payload: dict, by: str, submitted_by: Optional[str] = None) -> str:
     from app.api.marketplaces import CreateMarketplaceRequest
     from src.repositories import marketplace_registry_repo
 
@@ -228,7 +282,7 @@ async def approve_suggestion(
     replay = _SAFE_REPLAY.get(sug["domain"])
     if replay is not None:
         try:
-            created_resource_id = replay(sug.get("payload") or {}, admin["email"])
+            created_resource_id = replay(sug.get("payload") or {}, admin["email"], sug.get("created_by"))
         except KeyError as exc:
             repo.reopen(sid)
             raise HTTPException(status_code=400, detail={"kind": "invalid_payload", "hint": str(exc)})

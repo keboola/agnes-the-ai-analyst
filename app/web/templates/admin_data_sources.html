@@ -1,4 +1,5 @@
 {% extends "base_admin.html" %}
+{% import "macros/_icon.html" as ico %}
 {% block title %}Data sources — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block head_extra %}
@@ -52,6 +53,21 @@
   }
   .ds-semantic-summary a { color: inherit; font-weight: 600; text-decoration: underline; }
 
+  /* Storage token and master token resolving to different projects — the fix
+     belongs on this page, so the warning does too. */
+  /* `display:flex` beats the UA sheet's `[hidden] { display: none }`, so
+     without this the empty warning strip rendered under EVERY Keboola
+     connection card — an orange band warning about nothing. (Devin Review.) */
+  .ds-token-mismatch[hidden] { display: none; }
+  .ds-token-mismatch {
+    display: flex; gap: 8px; align-items: flex-start;
+    margin-top: 8px; padding: 8px 10px; border-radius: 8px;
+    font-size: 12px; line-height: 1.5;
+    background: var(--ds-accent-warn-bg);
+    border: 1px solid var(--ds-accent-warn-line);
+    color: var(--ds-accent-warn-ink);
+  }
+
   .ds-section-header {
     display: flex;
     align-items: center;
@@ -101,6 +117,15 @@
   }
   .ds-conn-header-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
   .ds-conn-name { font-size: 13px; font-weight: 600; color: var(--text-primary, var(--ds-text-primary)); }
+  /* Project identity sits between the connection's own name and the stack
+     host: it is what distinguishes two connections to the same stack. */
+  .ds-unbind { margin-left: 8px; padding: 0; border: 0; background: none; font-size: 11px;
+    color: var(--ds-text-muted); text-decoration: underline; cursor: pointer; }
+  .ds-conn-project {
+    font-size: 11px; color: var(--ds-text-secondary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    max-width: 260px;
+  }
   .ds-conn-stack {
     font-size: 11px; color: var(--text-secondary, var(--ds-text-secondary));
     font-family: var(--font-mono, ui-monospace, monospace);
@@ -281,9 +306,13 @@
     padding: 10px 16px; border-radius: 8px;
     font-size: 13px; font-weight: 500;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
-    z-index: 9999; display: none; align-items: center; gap: 8px; max-width: 360px;
+    z-index: 9999; display: none; align-items: center; gap: 8px; max-width: 520px;
+    /* The failure text carries the upstream reason ("HTTP 401: invalid token"),
+       so it has to stay readable and selectable rather than clipped. */
+    white-space: pre-wrap; user-select: text;
   }
   .ds-toast.show { display: flex; }
+  .ds-toast.toast-fail { cursor: pointer; }
   .ds-toast.toast-ok   { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); border: 1px solid var(--ds-accent-success-line); }
   .ds-toast.toast-fail { background: var(--ds-accent-danger-bg); color: var(--ds-accent-danger-ink); border: 1px solid var(--ds-accent-danger-line); }
 </style>
@@ -316,6 +345,10 @@
      an admin who hasn't synced yet, or whose last attempt failed, needs to
      see that state instead of nothing. #}
   {% set rs = semantic_refresh_summary or {} %}
+  {# Connection cards are built in JS; the mismatch warning's icon is rendered
+     once here by the shared macro and cloned, never assembled as markup. #}
+  <template id="ds-warn-icon">{{ ico.icon('warning', 16) }}</template>
+
   <div class="ds-semantic-summary {{ 'ds-semantic-summary--error' if rs.last_status == 'error' else ('ds-semantic-summary--pending' if not rs.last_status else '') }}">
     <span>
       <strong>Semantic layer:</strong>
@@ -412,8 +445,18 @@ function showToast(msg, ok) {
   el.textContent = msg;
   el.className = "ds-toast show " + (ok ? "toast-ok" : "toast-fail");
   clearTimeout(el._t);
-  el._t = setTimeout(() => { el.className = "ds-toast"; }, 3500);
+  // Only successes auto-dismiss. A failed token save reports the upstream
+  // reason, and a 3.5s window meant it was gone before anyone read it — the
+  // error got relayed as "I get a 502" with the actual cause lost.
+  el.title = ok ? "" : "Click to dismiss";
+  if (ok) {
+    el._t = setTimeout(() => { el.className = "ds-toast"; }, 3500);
+  }
 }
+document.addEventListener("DOMContentLoaded", () => {
+  const el = document.getElementById("ds-toast");
+  if (el) el.addEventListener("click", () => { el.className = "ds-toast"; });
+});
 
 /* ── Connections list ─────────────────────────────────────────────────── */
 
@@ -452,7 +495,8 @@ function _masterTokenRowHtml(row) {
     <input type="password" id="ds-master-input-${id}" placeholder="paste master (owner) token" autocomplete="off">
     <button type="button" class="btn btn-primary" onclick="saveMasterToken('${id}')">Save token</button>
     <button type="button" class="btn btn-secondary" onclick="toggleMasterToken('${id}')">Cancel</button>
-  </div>`;
+  </div>
+  <div class="ds-token-mismatch" id="ds-mismatch-${id}" hidden></div>`;
 }
 
 function _connectionCardHtml(row) {
@@ -462,6 +506,23 @@ function _connectionCardHtml(row) {
   const stackUrl = _esc((config.stack_url || "").replace(/\/$/, ""));
   const isDefault = row.is_default === true || row.is_default === 1;
   const defaultBadge = isDefault ? `<span class="ds-badge badge-default">default</span>` : "";
+  // Which Keboola project this connection actually opens, recorded from the
+  // token's own owner block. Several projects on one stack render as the same
+  // host, so the URL alone never told two connections apart — and the "master
+  // token: SET" badge said nothing about WHICH project that token unlocks.
+  // …and an explicit way OUT of that binding. The connection is locked to the
+  // first project it verified against, so a token for a different project on
+  // the same stack is refused — correct, and the whole point — but re-pointing
+  // an existing connection to another project then had no route at all from
+  // this page: an edit no longer clears the binding (it used to, silently, on
+  // every save, which is the bug that made the lock necessary). "Unbind" is
+  // that route. (Devin Review.)
+  const projectLine = config.project_id != null
+    ? `<div class="ds-conn-project">${_esc(config.project_name || "unnamed")} · project ${_esc(String(config.project_id))}
+        <button type="button" class="ds-unbind" onclick="unbindProject('${id}')"
+                title="Forget which project this connection is locked to, so a token for another project on the same stack can be stored">unbind</button>
+      </div>`
+    : "";
 
   return `
 <div class="ds-conn-card" id="ds-conn-${id}" data-id="${id}">
@@ -469,6 +530,7 @@ function _connectionCardHtml(row) {
     <div class="ds-conn-header-left">
       <div>
         <div class="ds-conn-name">${name}</div>
+        ${projectLine}
         <div class="ds-conn-stack">${stackUrl || "(no stack URL)"}</div>
       </div>
     </div>
@@ -477,8 +539,9 @@ function _connectionCardHtml(row) {
       ${_secretBadgeHtml(row)}
     </div>
   </div>
+  ${_chatToolsRowHtml(row)}
   <div class="ds-conn-actions">
-    <button type="button" class="btn btn-secondary" onclick="testConn('${id}')">Test</button>
+    <button type="button" class="btn btn-secondary" data-role="test" onclick="testConn('${id}')">Test</button>
     <button type="button" class="btn btn-secondary" onclick="toggleBrowse('${id}')">Browse &amp; register tables</button>
     ${!isDefault ? `<button type="button" class="btn btn-secondary" onclick="setDefaultConn('${id}')">Set as default</button>` : ""}
     <button type="button" class="btn btn-secondary" onclick="toggleRotate('${id}')">Rotate token</button>
@@ -517,13 +580,62 @@ function renderConnList() {
     return;
   }
   list.innerHTML = _connections.map(_connectionCardHtml).join("");
+  loadTokenMismatchWarnings();
+}
+
+// A connection whose storage token and master token resolve to DIFFERENT
+// projects syncs tables from one project while reading the semantic layer of
+// another — so no imported metric can ever bind to a table. It looks like a
+// working connection from every other angle, which is exactly why it earns a
+// warning here, next to the two tokens that disagree.
+//
+// Coverage is computed server-side on demand; this runs after the cards paint
+// so a slow upstream never delays the list itself.
+async function loadTokenMismatchWarnings() {
+  let sources;
+  try {
+    // `warnings_only`: this strip needs the token-identity checks, not every
+    // project's semantic model — the full report enumerates each Metastore,
+    // which is a heavy upstream sweep to draw one line of text.
+    // (Devin Review on this PR.)
+    const r = await fetch("/api/admin/semantic-layer/coverage?warnings_only=true", { credentials: "include" });
+    if (!r.ok) return;
+    sources = (await r.json()).sources || [];
+  } catch (e) {
+    return; // Additive only — the page is fully usable without it.
+  }
+  for (const source of sources) {
+    const box = document.getElementById(`ds-mismatch-${source.connection_id}`);
+    if (!box) continue;
+    // BOTH mismatch codes. Matching only the storage-vs-master one filtered
+    // out the more serious warning — a master token that contradicts the
+    // project the connection is locked to, which stops the sync outright —
+    // on the very page its message tells the admin to visit. (Devin Review.)
+    const warning = (source.warnings || []).find(
+      (w) => w.code === "token_project_mismatch" || w.code === "master_token_project_mismatch",
+    );
+    box.hidden = !warning;
+    box.textContent = "";
+    if (!warning) continue;
+    // Upstream project names/ids — untrusted, so textContent, never innerHTML.
+    const iconTpl = document.getElementById("ds-warn-icon");
+    if (iconTpl) box.appendChild(iconTpl.content.cloneNode(true));
+    const text = document.createElement("span");
+    text.textContent = warning.message || "";
+    box.appendChild(text);
+  }
 }
 
 async function testConn(id) {
   const resultEl = document.getElementById(`ds-test-${id}`);
   const card = document.getElementById(`ds-conn-${id}`);
-  const btn = card.querySelector("button");
-  btn.disabled = true;
+  // Explicitly the Test button. This was `querySelector("button")` — the
+  // FIRST button in the card — which stopped being Test the moment the unbind
+  // control landed in the header above the action row: the link greyed out
+  // instead, Test stayed live, and repeated presses fired duplicate requests
+  // with no sign anything was happening. (Devin Review.)
+  const btn = card.querySelector('button[data-role="test"]');
+  if (btn) btn.disabled = true;
   resultEl.className = "ds-conn-test-result";
   try {
     const r = await fetch(`${API_CONNECTIONS}/${id}/test`, { method: "POST", credentials: "include" });
@@ -538,7 +650,7 @@ async function testConn(id) {
   } catch (e) {
     resultEl.className = "ds-conn-test-result show fail";
     resultEl.textContent = "✗ Request failed";
-  } finally { btn.disabled = false; }
+  } finally { if (btn) btn.disabled = false; }
 }
 
 async function deleteConn(id) {
@@ -558,15 +670,7 @@ async function deleteConn(id) {
       renderConnList();
     } else {
       const body = await r.json().catch(() => ({}));
-      const detail = body.detail;
-      let msg = "unknown error";
-      if (detail && typeof detail === "object") {
-        msg = detail.message || detail.error || msg;
-        if (Array.isArray(detail.tables) && detail.tables.length) msg += " (" + detail.tables.join(", ") + ")";
-      } else if (detail) {
-        msg = detail;
-      }
-      showToast("Delete failed: " + msg, false);
+      showToast("Delete failed: " + detailMessage(body, "unknown error"), false);
     }
   } catch (_) {
     showToast("Request failed.", false);
@@ -585,7 +689,7 @@ async function setDefaultConn(id) {
       await loadConnections();
     } else {
       const body = await r.json().catch(() => ({}));
-      showToast("Failed: " + (body.detail || "unknown error"), false);
+      showToast("Failed: " + detailMessage(body, "unknown error"), false);
     }
   } catch (_) {
     showToast("Request failed.", false);
@@ -679,14 +783,127 @@ async function removeMasterToken(id) {
       await loadConnections();
     } else {
       const body = await r.json().catch(() => ({}));
-      showToast("Failed: " + (body.detail || "unknown error"), false);
+      showToast("Failed: " + detailMessage(body, "unknown error"), false);
     }
   } catch (_) {
     showToast("Request failed.", false);
   }
 }
 
-/* ── Browse & register (inline, per existing connection) ─────────────────── */
+/* Clear a connection's recorded project identity.
+   Sends the keys explicitly as null rather than omitting them: `PUT /{id}`
+   replaces the stored config, and the handler carries `project_id` /
+   `project_name` FORWARD when they are absent (an admin form posts neither,
+   so an ordinary edit must not drop the binding). An explicit null is how
+   the caller says "clear it" — see `update_connection`. */
+async function unbindProject(id) {
+  const row = _connections.find(c => c.id === id);
+  if (!row) return;
+  if (!confirm("Forget which Keboola project this connection is locked to?\n\nThe next token you store will re-bind it to whichever project that token opens.")) return;
+  try {
+    const r = await fetch(`/api/admin/source-connections/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config: { ...(row.config || {}), project_id: null, project_name: null } }),
+    });
+    if (r.ok) {
+      showToast("Project binding cleared.", true);
+      await loadConnections();
+    } else {
+      const body = await r.json().catch(() => ({}));
+      showToast("Failed: " + detailMessage(body, `HTTP ${r.status}`), false);
+    }
+  } catch (_) {
+    showToast("Request failed.", false);
+  }
+}
+
+/* A FastAPI `detail` is a string on some paths and a structured object on
+   others (`{error, message, …}` plus a path-specific list: `tables` for a
+   connection still in use, `still_present` for a partial chat-tools
+   teardown). Pasting it into a template literal renders "[object Object]"
+   and throws away the one thing the admin needs — which is what the chat-
+   tools toast did. One reader for every caller. (Devin Review.) */
+function detailMessage(body, fallback) {
+  const detail = body && body.detail;
+  if (detail && typeof detail === "object") {
+    let msg = detail.message || detail.error || fallback;
+    for (const key of ["tables", "still_present"]) {
+      const list = detail[key];
+      if (Array.isArray(list) && list.length) msg += " (" + list.join(", ") + ")";
+    }
+    return msg;
+  }
+  return detail || fallback;
+}
+
+function _chatToolsRowHtml(row) {
+  // Exposes this Keboola project's own MCP tools (query_data, buckets, search,
+  // semantic layer, …) to the chat agent by deriving an MCP source from this
+  // connection. Keboola-only; needs a stored storage token to be useful.
+  if (row.source_type !== "keboola") return "";
+  const id = row.id;
+  const on = row.has_chat_tools === true;
+  const badgeClass = on ? "badge-vault" : "badge-unset";
+  const badgeLabel = on ? "on" : "off";
+  const hint = on
+    // Enabling registers the source AND its tools, so there is something to
+    // grant — but registered is not reachable, and the grant lives on each
+    // tool's own page (/admin/mcp-tools/{id}/grants), not on Access. Saying
+    // "done" here, or naming the wrong screen, both leave the admin one step
+    // short of the agent seeing anything. The manual Introspect detour this
+    // text used to describe is gone; the endpoint does it.
+    ? "Tools are registered but not yet reachable — grant them under Admin -> MCP sources, on each tool's Grants page."
+    : "Give the chat agent this project's own Keboola tools. The first run downloads the server, so it can take a minute.";
+  return `
+  <div class="ds-master-row">
+    <span class="ds-master-label" title="${_esc(hint)}">Chat tools (Keboola MCP)</span>
+    <span class="ds-badge ${badgeClass}">${badgeLabel}</span>
+    <button type="button" class="btn btn-secondary" onclick="toggleChatTools('${id}', ${on ? "true" : "false"})">${on ? "Turn off" : "Turn on"}</button>
+    ${on ? `<button type="button" class="btn btn-secondary" onclick="toggleChatTools('${id}', false, true)">Re-sync token</button>` : ""}
+  </div>`;
+}
+
+async function toggleChatTools(id, isOn, resync) {
+  // `resync` re-runs enable on an already-enabled source: the derived source
+  // holds its own copy of the token, so a rotated connection token does not
+  // reach it until enable runs again.
+  const turningOff = isOn && !resync;
+  if (turningOff && !confirm("Turn off chat tools for this project? The agent loses its Keboola tools and the stored copy of the token is deleted.")) return;
+  try {
+    const r = await fetch(`${API_CONNECTIONS}/${id}/chat-tools`, {
+      method: turningOff ? "DELETE" : "POST",
+      credentials: "include",
+    });
+    if (r.ok || r.status === 204) {
+      const ok = await r.json().catch(() => ({}));
+      const n = ok.tools_registered;
+      // Mutating tools are refused for non-admins by the policy gate even
+      // when granted, and an upstream with no read-only annotations makes
+      // that ALL of them — the "grant them" advice must say so or it is a
+      // false promise. (Devin Review on this PR, fifth round.)
+      const adminOnly = ok.tools_admin_only;
+      const allAdminOnly = n > 0 && adminOnly === n;
+      showToast(
+        turningOff
+          ? "Chat tools turned off."
+          : (resync
+              ? "Token re-synced."
+              : `Chat tools on — ${n === undefined ? "tools" : n + " tools"} registered. Grant them under Admin -> MCP sources to make them reachable.`
+                + (allAdminOnly ? " All are recorded as mutating (no read-only annotations upstream), and mutating tools stay admin-only even when granted." : "")),
+        true,
+      );
+      await loadConnections();
+    } else {
+      const body = await r.json().catch(() => ({}));
+      showToast("Failed: " + detailMessage(body, `HTTP ${r.status}`), false);
+    }
+  } catch (_) {
+    showToast("Request failed.", false);
+  }
+}
+
+/* ── Browse & register (inline, per existing connection) ─────────────────────── */
 
 async function toggleBrowse(id) {
   const panel = document.getElementById(`ds-browse-${id}`);
@@ -850,7 +1067,10 @@ async function connectAndValidate() {
   const btn = document.getElementById("ds-wizard-connect-btn");
   errEl.style.display = "none";
 
-  if (!stack || !stack.startsWith("http")) {
+  // `https://` specifically — the message already said so, but the check
+  // accepted `http://` and the server rejects it, so the admin got a server
+  // error for input the form had told them was fine. (Devin Review.)
+  if (!stack || !stack.toLowerCase().startsWith("https://")) {
     errEl.textContent = "Enter a valid connection URL (starts with https://).";
     errEl.style.display = "block";
     return;
@@ -866,6 +1086,43 @@ async function connectAndValidate() {
     // 1. Create the connection (blank name gets a provisional placeholder;
     //    renamed to the detected project name below on success).
     const provisionalName = name || `Untitled project ${Date.now()}`;
+    // A retry reuses the connection this wizard already created. Every step
+    // after creation can fail — a mistyped token is the common one — and the
+    // wizard returns with the row already saved, so re-running step 1 minted
+    // another "Untitled project" per attempt and left the admin to clean them
+    // up. Reusing it also means the eventual success lands on the row the
+    // admin has been looking at. (Devin Review.)
+    let connId = null;
+    if (_wizardConnId) {
+      const still = await fetch(`${API_CONNECTIONS}/${_wizardConnId}`, { credentials: "include" });
+      if (still.ok) {
+        connId = _wizardConnId;
+        // Apply whatever the admin just corrected. Reuse without this made a
+        // mistyped URL unfixable: the wizard told them to correct it and
+        // retry, then talked to the original address every time, failing
+        // identically with nothing to say the new value was ignored.
+        // (Devin Review.)
+        const patch = await fetch(`${API_CONNECTIONS}/${connId}`, {
+          method: "PUT", credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          // The NAME too: the admin may have corrected it on the retry, and
+          // sending only the URL threw that away while the success banner went
+          // on to claim the new name was used. (Devin Review.)
+          body: JSON.stringify(name ? { name, config: { stack_url: stack } } : { config: { stack_url: stack } }),
+        });
+        if (!patch.ok) {
+          const pb = await patch.json().catch(() => ({}));
+          const pd = pb.detail;
+          errEl.textContent = "Failed to update the connection URL: " +
+            ((pd && typeof pd === "object" ? (pd.message || pd.error) : pd) || `HTTP ${patch.status}`);
+          errEl.style.display = "block";
+          return;
+        }
+      } else {
+        _wizardConnId = null; // deleted underneath us — re-create below
+      }
+    }
+    if (!connId) {
     const createResp = await fetch(API_CONNECTIONS, {
       method: "POST", credentials: "include",
       headers: { "Content-Type": "application/json" },
@@ -879,8 +1136,9 @@ async function connectAndValidate() {
       errEl.style.display = "block";
       return;
     }
-    const connId = createBody.id;
+    connId = createBody.id;
     _wizardConnId = connId;
+    }
 
     // 2. Store the token.
     const secretResp = await fetch(`${API_CONNECTIONS}/${connId}/secret`, {
@@ -890,7 +1148,9 @@ async function connectAndValidate() {
     });
     if (!secretResp.ok && secretResp.status !== 204) {
       const sb = await secretResp.json().catch(() => ({}));
-      errEl.textContent = "Connection saved but storing the token failed: " + (sb.detail || "unknown error");
+      errEl.innerHTML = "Connection saved but storing the token failed: " + _esc(sb.detail || "unknown error") +
+        `. Fix the token and retry — this connection is reused, not duplicated — or ` +
+        `<a href="#" onclick="deleteConn('${connId}'); closeWizard(); return false;">discard it</a>.`;
       errEl.style.display = "block";
       return;
     }

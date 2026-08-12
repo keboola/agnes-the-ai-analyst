@@ -85,8 +85,13 @@ def search(
     for r in results:
         t = r.get("type")
         if t == "chunk":
+            # A name match carries the file's opening text, which does NOT
+            # contain the query — without the marker the line reads as a
+            # quotation that answers the question. (Devin Review on #1267.)
+            how = " (matched by file name)" if r.get("matched_on") == "filename" else ""
             typer.echo(
-                f"[{r.get('score')}] doc  {r.get('filename')} #{r.get('ordinal')}: {(r.get('text') or '')[:110]}"
+                f"[{r.get('score')}] doc  {r.get('filename')} #{r.get('ordinal')}{how}: "
+                f"{(r.get('text') or '')[:110]}"
             )
         elif t == "knowledge":
             typer.echo(f"[{r.get('score')}] know {r.get('title')}: {(r.get('snippet') or '')[:110]}")

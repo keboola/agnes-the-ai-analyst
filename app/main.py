@@ -48,8 +48,10 @@ setup_logging("app")
 from app.version import APP_VERSION, MIN_COMPAT_CLI_VERSION, SERVER_CAPABILITIES
 
 from fastapi import Depends, FastAPI
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.gzip import GZipMiddleware
@@ -2744,6 +2746,44 @@ def create_app() -> FastAPI:
             request_id=request_id_var.get(),
         )
         return _web_templates.TemplateResponse(request, "error.html", ctx, status_code=code)
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_error_handler(request, exc: RequestValidationError):
+        """422 body without the rejected input echoed back.
+
+        FastAPI's default validation error puts the offending value in an
+        ``input`` key. On a request body that carries a credential that hands
+        the secret straight back to the caller — and into every access log,
+        proxy and error tracker on the way. Found live: a ``PUT
+        /api/admin/source-connections/{id}/secret`` sent with the wrong field
+        name answered 422 with the Keboola master token verbatim in the body.
+
+        Redaction is not field-name-based on purpose. An allowlist of
+        "secret-looking" names is a guess that silently misses the next
+        endpoint someone adds, and at least five request models already carry a
+        credential in a plain ``value`` / ``token`` field
+        (``admin_source_connections``, ``admin_datasource_secrets``,
+        ``admin_slack_secrets``, ``admin_mcp``, ``cli_auth``).
+
+        So the shape is a keep-list, not a drop-list: only ``loc``, ``msg``,
+        ``type`` and ``url`` are echoed. Dropping ``input`` alone was still a
+        guess — a Pydantic v2 error also carries ``ctx``, and for a
+        ``value_error`` raised by a field validator that mapping holds the
+        validator's own exception, whose text routinely embeds the rejected
+        value (``got {v!r}`` appears in ~37 validators here). A keep-list also
+        covers whatever key a future Pydantic adds. What survives is what a
+        client needs to fix the call — the wrong field name in that live case
+        is still named. (Devin Review on this PR.)
+
+        The one channel a keep-list cannot close is ``msg`` itself, which is
+        author-controlled: a validator that interpolates the value it rejected
+        publishes it. That is a rule for validators on credential-carrying
+        fields, not something this handler can decide — it cannot tell a
+        rejected enum from a rejected token.
+        """
+        keep = ("loc", "msg", "type", "url")
+        redacted = [{k: error[k] for k in keep if k in error} for error in exc.errors()]
+        return JSONResponse(status_code=422, content=jsonable_encoder({"detail": redacted}))
 
     @app.exception_handler(StarletteHTTPException)
     async def _html_auth_redirect_handler(request, exc: StarletteHTTPException):

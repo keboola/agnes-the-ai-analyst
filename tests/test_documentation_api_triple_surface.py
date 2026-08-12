@@ -75,6 +75,12 @@ _COHORT: dict[str, tuple[str, str]] = {
     "/api/admin/config-surface": ("admin config-surface", "admin_config_surface"),
     # Multi-project Keboola: named source-connections (#731).
     "/api/admin/source-connections": ("admin connection list", "admin_source_connections_list"),
+    # Semantic-layer coverage: why a connected project's metrics are (or are
+    # not) landing in metric_definitions.
+    "/api/admin/semantic-layer/coverage": (
+        "admin semantic-layer coverage",
+        "admin_semantic_layer_coverage",
+    ),
     # Contributed-skill triple-surface (GET list + DELETE; POST contribute is _EXEMPT below).
     "/api/admin/contributed-skills": ("admin skill list", "list_contributed_skills"),
     "/api/admin/contributed-skills/{name}": ("admin skill delete", "delete_contributed_skill"),
@@ -620,6 +626,14 @@ _EXEMPT: dict[str, str] = {
     "/api/admin/source-connections/{connection_id}": _SOURCE_CONNECTIONS_CRUD_REASON,
     "/api/admin/source-connections/{connection_id}/secret": _SOURCE_CONNECTIONS_CRUD_REASON,
     "/api/admin/source-connections/{connection_id}/test": _SOURCE_CONNECTIONS_CRUD_REASON,
+    "/api/admin/source-connections/{connection_id}/chat-tools": (
+        "derives a Keboola MCP source from a connection and copies that "
+        "connection's storage token into the MCP vault — a credential-"
+        "provisioning write under the standing exemption in CONTRIBUTING.md "
+        "(an agent-invokable tool that can re-point which upstream a "
+        "credential authenticates against is a privilege-escalation seam). "
+        "Reachable via `agnes admin connection chat-tools`; never MCP-exposed"
+    ),
     "/api/admin/source-connections/{connection_id}/tables": (
         "admin-only bucket/table discovery for the 'Add data source' wizard (#755) — "
         "keboola-only browse-and-register primitive with no analyst CLI/MCP analogue; "
@@ -740,6 +754,17 @@ _EXEMPT: dict[str, str] = {
         "like the other /api/broker/* routes. No analyst CLI/MCP analogue: "
         "the agent calls the real /api/data-apps* endpoints through this "
         "relay, which already carry their own triple-surface contract."
+    ),
+    "/api/broker/data-apps.git/{slug}/{path}": (
+        "git smart-HTTP transport for the sandboxed authoring agent; not a "
+        "user-facing API — internal sandbox->server route, ticket-gated (not "
+        "user auth) like the other /api/broker/* routes. Its consumer is the "
+        "`git` binary inside the sandbox, not a person: a CLI or MCP wrapper "
+        "would have nothing to wrap, since the client speaks the git wire "
+        "protocol end to end. An analyst on a laptop clones the same repo "
+        "directly from /data-apps.git/<slug> with the credential "
+        "`agnes app git-credential` / `data_app_git_credential` mints, and "
+        "THAT pair carries the triple-surface contract."
     ),
     # reap-idle is a scheduler-triggered admin maintenance op (Task 9) —
     # mirrors the run-knowledge-digests/run-corporate-memory exemptions

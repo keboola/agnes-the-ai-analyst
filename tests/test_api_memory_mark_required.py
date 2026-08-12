@@ -67,7 +67,12 @@ class TestMarkMandatory:
         assert resp.json()["is_required"] is True
         assert _get_item(item_id)["is_required"] is True
         rows = _audit_rows_for(item_id)
-        assert rows[-1]["params"] == {"new_value": True}
+        # `delivery_warning_count` rides along since #1258: marking an item
+        # required publishes it into every analyst's rule files, and the count
+        # of instruction-shaped spans is part of that record. The flag itself
+        # is what this test is about.
+        assert rows[-1]["params"]["new_value"] is True
+        assert set(rows[-1]["params"]) <= {"new_value", "delivery_warning_count"}
 
     def test_mark_mandatory_requires_admin(self, seeded_app):
         item_id = _create_item()

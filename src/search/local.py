@@ -72,9 +72,16 @@ def local_search(query: str, *, workspace: Path, k: int = 10) -> List[Dict[str, 
     if not chunks:
         return []
 
-    from src.ingest.retrieval import rank_chunks
+    from src.ingest.retrieval import apply_filename_fallback, rank_chunks
 
     top, confidence = rank_chunks(chunks, query, k=k)
+    # The same fallback the server runs, from the same function — this module
+    # promises "the exact same ranking behavior", and `agnes search --local`
+    # plus the stdio MCP fallback are the offline half of the same question.
+    # The artifact denormalizes `filename` onto every chunk row, so there is
+    # nothing to prepare. (Devin Review on #1267.)
+    names = {ch.get("file_id"): ch.get("filename") for ch in chunks}
+    top, confidence, filename_ids = apply_filename_fallback(chunks, query, names.get, top, confidence, k=k)
     return [
         {
             "type": "chunk",
@@ -86,7 +93,8 @@ def local_search(query: str, *, workspace: Path, k: int = 10) -> List[Dict[str, 
             "section_path": ch.get("section_path"),
             "text": ch.get("text"),
             "score": round(float(score), 4),
-            "confidence": confidence,
+            "confidence": "low" if ch.get("id") in filename_ids else confidence,
+            "matched_on": "filename" if ch.get("id") in filename_ids else "body",
         }
         for score, ch in top
     ]

@@ -1645,6 +1645,14 @@ KNOWN_UNTESTED = {
     # Sandboxed data-apps authoring replay (Task 7, wave 3B) — same
     # ticket-authed, never parameter-free shape as the broker routes above.
     "POST /api/broker/data-apps",
+    # Git smart-HTTP transport for that same authoring agent — ticket-authed
+    # like its siblings, and additionally never reachable with parameter-free
+    # inputs: the client is `git` speaking the wire protocol (its first call
+    # carries ?service=git-upload-pack and expects a pkt-line body back), so a
+    # bare GET/POST from this harness exercises nothing the route is for.
+    # Behaviourally covered in tests/test_broker_data_apps_git.py.
+    "GET /api/broker/data-apps.git/{slug}/{path}",
+    "POST /api/broker/data-apps.git/{slug}/{path}",
     # Collections (bring-your-files) — behaviorally covered in the dedicated
     # suites tests/test_api_collections.py (CRUD/upload/search/reingest, RBAC fail-closed,
     # SessionPrincipal) and tests/test_web_library.py (/library pages), plus the
@@ -1878,6 +1886,15 @@ KNOWN_UNTESTED = {
     "DELETE /api/admin/source-connections/{connection_id}/secret",
     "POST /api/admin/source-connections/{connection_id}/test",
     "GET /api/admin/source-connections/{connection_id}/tables",
+    # Semantic-layer coverage — behaviour is backend-independent (it reads the
+    # table registry through the repo factory and calls the Metastore), and is
+    # covered by tests/test_keboola_semantic_layer_coverage.py plus the endpoint
+    # tests in test_keboola_semantic_layer_refresh_endpoint.py. A parameter-free
+    # smoke hit here would reach a live Keboola stack.
+    "GET /api/admin/semantic-layer/coverage",
+    # Derived Keboola chat-tools MCP source — tested in test_keboola_chat_tools.py
+    "POST /api/admin/source-connections/{connection_id}/chat-tools",
+    "DELETE /api/admin/source-connections/{connection_id}/chat-tools",
     # Admin datasource credentials — vault-backed GWS/BQ instance secrets (web UI only)
     "GET /api/admin/datasource-secrets",
     "GET /admin/datasource-credentials",

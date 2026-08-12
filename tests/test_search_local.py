@@ -84,3 +84,32 @@ def test_rank_parity_with_server_engine(workspace):
     server_top, _conf = rank_chunks(list(CHUNKS), "monthly invoices", k=5)
     local_hits = local_search("monthly invoices", workspace=workspace, k=5)
     assert [c["id"] for _s, c in server_top] == [h["chunk_id"] for h in local_hits]
+
+
+def test_a_filename_query_works_offline_too(workspace):
+    """Devin Review on #1267: offline must not answer "nothing" to a query the
+    server answers.
+
+    `handbook` appears in the FILE NAME and in no chunk body. The server's
+    `search()` falls back to names; this module promises "the exact same
+    ranking behavior", and it backs `agnes search --local` plus the stdio MCP
+    fallback — the offline half of the same question.
+    """
+    from src.search.local import local_search
+
+    hits = local_search("handbook", workspace=workspace, k=5)
+
+    assert hits, "a name-only query found nothing offline"
+    assert hits[0]["filename"] == "handbook.md"
+    assert hits[0]["matched_on"] == "filename"
+    assert hits[0]["confidence"] == "low"
+
+
+def test_a_body_hit_is_still_labelled_a_body_hit(workspace):
+    """The label must distinguish the two, or the combined search's cap on
+    name-only hits fires on real matches."""
+    from src.search.local import local_search
+
+    hits = local_search("monthly invoices", workspace=workspace, k=5)
+
+    assert hits and hits[0]["matched_on"] == "body"

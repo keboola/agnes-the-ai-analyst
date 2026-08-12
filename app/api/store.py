@@ -3668,6 +3668,28 @@ def _entity_review_blocked(entity_id: str) -> bool:
     return any((s.get("status") or "") in BLOCKING_SUBMISSION_STATUSES for s in subs)
 
 
+def entity_has_adverse_verdict(entity_id: str) -> bool:
+    """True when review REJECTED any submission for ``entity_id``.
+
+    The shared list, not a second copy: `_entity_review_blocked` and the
+    install repo already decide "review rejected this" from
+    `BLOCKING_SUBMISSION_STATUSES`, and two lists would silently disagree
+    about the same upload the first time one of them gained a status.
+    Unreadable history counts as adverse — never fail open.
+
+    Exported because the DETAIL PAGE has to reach the same verdict: the
+    endpoint permitting a withdrawal while the button stays disabled is the
+    same bug in a different place, and the author only ever sees the button.
+    (Devin Review on #1263, twice.)
+    """
+    try:
+        subs = store_submissions_repo().list_for_entity(entity_id)
+    except Exception:
+        logger.exception("store: could not read submissions for entity %s", entity_id)
+        return True
+    return any((s.get("status") or "") in BLOCKING_SUBMISSION_STATUSES for s in subs)
+
+
 def is_own_unflagged_private(entity: Dict[str, Any], user_id: str) -> bool:
     """True when ``entity`` is THIS caller's own deliberately-Private row.
 
@@ -3758,8 +3780,33 @@ async def delete_entity(
     # ever delete a plugin nobody else can even see (#1177). Genuinely
     # quarantined rows (guardrails rejected a submission) still refuse, which
     # is the evidence-preservation the gate exists for.
+    # The gate exists to stop an author erasing a *flagged* upload before
+    # triage — but `visibility_status` cannot tell "flagged" from "not judged
+    # yet": the runner writes `hidden` for a blocked verdict AND for a
+    # review_error, and `pending` while the verdict is still in flight. Keying
+    # the refusal on visibility alone therefore trapped submissions nothing
+    # had ever objected to. Observed in production: a skill whose inline
+    # checks all passed sat in `review_error` (the LLM call crashed) for a
+    # month, un-deletable and un-editable, while re-uploading 409'd with
+    # "delete the existing entity first". The owner had no exit at all.
+    #
+    # So read the verdict, not the visibility. An adverse verdict keeps the
+    # evidence-preservation refusal; "no verdict yet" and "the reviewer
+    # crashed" are the author's own not-yet-public upload to withdraw. The
+    # submission row, its sha256 and its size survive a withdrawal either way
+    # (see src/store_guardrails/purge.py), so forensic correlation is intact.
+    # Every submission, not just the latest — the sibling predicate
+    # `_entity_review_blocked` scans the whole chain for exactly this reason.
+    # Reading only the newest row let an author clear an adverse verdict by
+    # re-uploading: the fresh, unjudged submission becomes "latest" and the
+    # objection stops counting, which is the withdrawal this gate exists to
+    # prevent. `pending` / `review_error` are still not verdicts, so an upload
+    # nothing ever objected to remains the author's to withdraw.
+    # (Devin Review on #1263.)
+    ever_adverse = entity_has_adverse_verdict(entity_id)
     if (
         entity.get("visibility_status") not in ("approved", "archived")
+        and ever_adverse
         and not is_admin_caller
         and not is_own_unflagged_private(entity, user["id"])
     ):
@@ -3767,9 +3814,9 @@ async def delete_entity(
             status_code=403,
             detail={
                 "code": "quarantined_owner_cannot_delete",
-                "hint": "This submission is under quarantine while admins "
-                "review it. Edit and re-upload to fix the issues, "
-                "or wait for an admin to resolve the quarantine.",
+                "hint": "Review flagged this submission, so it stays until an "
+                "admin resolves the quarantine. Edit and re-upload to "
+                "fix the issues.",
             },
         )
 

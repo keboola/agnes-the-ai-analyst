@@ -2875,6 +2875,28 @@
             ],
             "title": "Color"
           },
+          "content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content"
+          },
+          "content_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Title"
+          },
           "cover_image_url": {
             "anyOf": [
               {
@@ -23342,7 +23364,7 @@
     },
     "/api/admin/run-jira-sla-poll": {
       "post": {
-        "description": "Refresh SLA + status fields for open Jira tickets.\n\nWebhooks update tickets on activity. Tickets that sit idle for hours\ndon't fire webhooks; their ``elapsed_millis`` ages out, and SLA\nbreaches go undetected. This job polls every open ticket with SLA\ndata and re-fetches the live values from the Jira API. Self-heals\nstale ``status`` / ``resolution`` fields on the same pass \u2014 tickets\nclosed during a webhook outage get corrected.\n\nCadence: every 15 min by default (SCHEDULER_JIRA_SLA_POLL_INTERVAL).\nSkipped gracefully when JIRA_SLA_* env vars aren't set.",
+        "description": "Refresh SLA + status fields for open Jira tickets.\n\nWebhooks update tickets on activity. Tickets that sit idle for hours\ndon't fire webhooks; their ``elapsed_millis`` ages out, and SLA\nbreaches go undetected. This job polls every open ticket with SLA\ndata and re-fetches the live values from the Jira API. Self-heals\nstale ``status`` / ``resolution`` fields on the same pass \u2014 tickets\nclosed during a webhook outage get corrected.\n\nCadence: every 45 min by default (SCHEDULER_JIRA_SLA_POLL_INTERVAL) \u2014\nlong enough that a serial pass over every open ticket finishes before\nthe next one is due; see the DEFAULTS comment in services/scheduler.\nSkipped gracefully when JIRA_SLA_* env vars aren't set.",
         "operationId": "run_jira_sla_poll_api_admin_run_jira_sla_poll_post",
         "parameters": [
           {
@@ -23396,7 +23418,7 @@
     },
     "/api/admin/run-keboola-semantic-layer-refresh": {
       "post": {
-        "description": "Sync the configured Keboola project's semantic layer into\nmetric_definitions. See connectors/keboola/semantic_layer.py for the\nmapping/prune logic.",
+        "description": "Sync the configured Keboola project's semantic layer into\nmetric_definitions. See connectors/keboola/semantic_layer.py for the\nmapping/prune logic.\n\n409 if a sync is already in flight. 400 when the sync fails for a reason\nthe admin controls \u2014 no Keboola credentials configured, or a token the\nStorage/Metastore API refuses (4xx). 502 only when the upstream is\nunreachable or answers 5xx.",
         "operationId": "run_keboola_semantic_layer_refresh_api_admin_run_keboola_semantic_layer_refresh_post",
         "parameters": [
           {
@@ -23778,6 +23800,67 @@
         "tags": [
           "admin"
         ]
+      }
+    },
+    "/api/admin/semantic-layer/coverage": {
+      "get": {
+        "description": "How much of each connected Keboola project's semantic layer actually\nreaches Agnes, recomputed live (see\n``connectors.keboola.semantic_layer.compute_semantic_coverage``).\n\nRead-only and stateless \u2014 it does not touch metric_definitions and does not\nread the last sync's counters, which live in a process-local dict that\nempties on restart. Two conditions are worth acting on and are surfaced as\n``warnings[]``: a connection whose storage and master tokens point at\ndifferent projects, and a project none of whose metrics can bind to a\nregistered table. Tables the instance simply does not register are reported\nas a plain count, never as pending work.\n\n``?warnings_only=true`` answers with the token-identity checks alone and\nskips the Metastore enumeration \u2014 two `verify_token` calls per connection\ninstead of every project's whole semantic model. The Data sources page\ndraws its warning strip from that: it uses only the mismatch messages, and\npulling the full report on every page view was work nobody asked for.\nCounts are zeroed in that mode. (Devin Review on this PR.)\n\nUpstream calls run off the event loop \u2014 one project's Metastore being slow\nmust not stall every other request in the process.",
+        "operationId": "get_semantic_layer_coverage_api_admin_semantic_layer_coverage_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "warnings_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Warnings Only",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Semantic Layer Coverage"
       }
     },
     "/api/admin/server-config": {
@@ -24835,7 +24918,7 @@
         ]
       },
       "put": {
-        "description": "Update name/config/token_env/is_default of an existing connection.\n\n404 if missing; 409 if renaming to a name already taken by a different\nconnection.",
+        "description": "Update name/config/token_env/is_default of an existing connection.\n\n404 if missing; 409 if renaming to a name already taken by a different\nconnection.\n\nMoving the connection to a different ``stack_url`` drops any recorded\nproject identity: a project id is only meaningful on the stack it came\nfrom, and keeping the old binding would make every token from the new\nstack fail ``project_mismatch`` with no way to clear it from the UI. This\nis also the supported way to re-point a bound connection \u2014 see the note\non :func:`project_mismatch_message`.",
         "operationId": "update_connection_api_admin_source_connections__connection_id__put",
         "parameters": [
           {
@@ -24901,6 +24984,125 @@
           }
         },
         "summary": "Update Connection",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/source-connections/{connection_id}/chat-tools": {
+      "delete": {
+        "description": "Remove the derived MCP source and its copy of the token (idempotent).",
+        "operationId": "disable_chat_tools_api_admin_source_connections__connection_id__chat_tools_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "title": "Connection Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Disable Chat Tools",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "description": "Expose this Keboola project's own MCP tools to the chat agent.\n\nDerives an ``mcp_sources`` stdio row from the connection (see\n``src/keboola_chat_tools.py``) and copies the connection's storage token\ninto the MCP shared vault, so the admin registers the project once rather\nthan a second time under ``/admin/mcp``.\n\nIdempotent, and it always leaves the source ENABLED \u2014 the page's switch\ncalls this to turn chat tools on, so a stored \"off\" must not survive it.\nA rotated token no longer needs a re-run here: ``set_connection_secret``\ncopies a new token to the derived source on its own. The derived source\nlands with **no** ``tool_grants``, so enabling exposes nothing until an\nadmin grants the tools to a group.\n\n400 if the connection isn't ``source_type='keboola'`` or has no resolvable\ntoken; 404 if the connection doesn't exist; 409 if the vault key is unset.",
+        "operationId": "enable_chat_tools_api_admin_source_connections__connection_id__chat_tools_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "title": "Connection Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Enable Chat Tools",
         "tags": [
           "admin"
         ]
@@ -24974,7 +25176,7 @@
         ]
       },
       "put": {
-        "description": "Store (or rotate) the vault secret for a connection token.\n\n``kind=\"storage\"`` (default): the plain Storage API token used for pulls.\n``kind=\"master\"``: a *separate* slot for a Keboola master (owner) Storage\nAPI token, required by the semantic-layer sync (Metastore API rejects\nnon-master tokens). 400 if the connection isn't ``source_type=\"keboola\"``,\nor if the token fails a live ``verify_token`` preflight (not a master\ntoken). 502 if the Storage API preflight call itself fails.\n\n409 if AGNES_VAULT_KEY is not configured on the server.",
+        "description": "Store (or rotate) the vault secret for a connection token.\n\n``kind=\"storage\"`` (default): the plain Storage API token used for pulls.\nFor a Keboola connection it is preflighted like the master token, and the\nproject it opens (``owner.id``/``owner.name``) is recorded on the\nconnection \u2014 that identity is what later tokens are checked against.\n400 ``project_mismatch`` if the token opens a different project than the\none this connection is already bound to; a connection is one project.\n``kind=\"master\"``: a *separate* slot for a Keboola master (owner) Storage\nAPI token, required by the semantic-layer sync (Metastore API rejects\nnon-master tokens). 400 if the connection isn't ``source_type=\"keboola\"``,\nif the token fails a live ``verify_token`` preflight (not a master token),\nor if the Storage API refuses the token outright (4xx \u2014 an invalid or\nexpired token is the admin's to fix, not a gateway failure). 502 only when\nthe Storage API is unreachable or answers 5xx.\n\n409 if AGNES_VAULT_KEY is not configured on the server \u2014 checked FIRST, so\nan instance that cannot store secrets says so instead of spending an\nupstream round-trip and reporting a token problem it never had.",
         "operationId": "set_connection_secret_api_admin_source_connections__connection_id__secret_put",
         "parameters": [
           {
@@ -25105,7 +25307,7 @@
     },
     "/api/admin/source-connections/{connection_id}/test": {
       "post": {
-        "description": "Verify connectivity for the connection.\n\nResolves the stack URL and token from the connection row (token_env \u2192\nenvironment lookup, or vault secret), then calls\n``GET {stack_url}/v2/storage?exclude=components`` with a 10-second\ntimeout.\n\nReturns ``{ok: true, project_name: \"\u2026\"}`` on success or\n``{ok: false, error: \"\u2026\"}`` on failure.",
+        "description": "Verify connectivity for the connection.\n\nResolves the stack URL and token from the connection row (token_env \u2192\nenvironment lookup, or vault secret), then calls\n``GET {stack_url}/v2/storage/tokens/verify`` with a 10-second timeout.\n\nReturns ``{ok: true, project_name: \"\u2026\"}`` on success or\n``{ok: false, error: \"\u2026\"}`` on failure.\n\nIt used to probe ``/v2/storage?exclude=components``, which measured\nverified live (2026-08-10): that endpoint is the unauthenticated stack\nindex \u2014 it answers **200 with no token at all** and carries no ``owner``\nblock. So \"Test\" reported OK for any token, including a garbage one, and\nthe ``project_name`` it returned was always the empty string. Verifying\nthe token is the only probe that answers the question the button asks,\nand it is what makes the project identity below readable at all.",
         "operationId": "test_connection_api_admin_source_connections__connection_id__test_post",
         "parameters": [
           {
@@ -28398,6 +28600,116 @@
           }
         },
         "summary": "Data Apps Broker",
+        "tags": [
+          "broker"
+        ]
+      }
+    },
+    "/api/broker/data-apps.git/{slug}/{path}": {
+      "get": {
+        "description": "Carry a sandbox's git traffic to a hosted app's repo.\n\nWithout this the authoring flow has no transport at all. The sandbox\nreaches Agnes only through the in-sandbox relay \u2014 `runner.py` rewrites\n`AGNES_SERVER` to it so \"the relay is the only thing that ever holds a\nreal credential\" \u2014 and the relay's `data_apps` ticket is confined by\n`_within_data_apps_prefix` to `/api/data-apps*`. A repo lives at\n`/data-apps.git/<slug>`, a different top-level prefix, so `git clone`\nfrom a sandbox was refused by the broker and (going direct) by the\nsandbox's own egress hook. Watched live: the agent fetched a credential,\nthen failed to clone by name, by hostname and by IP.\n\nUnlike its `{method, path, body}` siblings this is a **proxy**, not an\nenvelope replay: git speaks binary bodies and its own content types, and\nits first call is a GET. It is also the one broker route that attaches a\ncredential rather than an identity JWT \u2014 the git surface authenticates\nonly a `data-app-git:<slug>` PAT in basic auth (see\n`app/api/data_apps_git.py`). That token is minted per request and revoked\nin `finally`, so the sandbox never holds one and nothing outlives the\ncall.\n\nAuthorization is layered, not replaced: this route pins the slug to an app\nthe ticket's owner may reach, and the git surface then applies its own\nowner-or-admin check and its own scope-vs-slug pin. Bodies are buffered\n(an app repo is a scaffold, not a monorepo); a genuinely large push is a\nreason to revisit, not a reason to stream today.",
+        "operationId": "broker_data_apps_git_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "title": "Path",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Data Apps Git Broker",
+        "tags": [
+          "broker"
+        ]
+      },
+      "post": {
+        "description": "Carry a sandbox's git traffic to a hosted app's repo.\n\nWithout this the authoring flow has no transport at all. The sandbox\nreaches Agnes only through the in-sandbox relay \u2014 `runner.py` rewrites\n`AGNES_SERVER` to it so \"the relay is the only thing that ever holds a\nreal credential\" \u2014 and the relay's `data_apps` ticket is confined by\n`_within_data_apps_prefix` to `/api/data-apps*`. A repo lives at\n`/data-apps.git/<slug>`, a different top-level prefix, so `git clone`\nfrom a sandbox was refused by the broker and (going direct) by the\nsandbox's own egress hook. Watched live: the agent fetched a credential,\nthen failed to clone by name, by hostname and by IP.\n\nUnlike its `{method, path, body}` siblings this is a **proxy**, not an\nenvelope replay: git speaks binary bodies and its own content types, and\nits first call is a GET. It is also the one broker route that attaches a\ncredential rather than an identity JWT \u2014 the git surface authenticates\nonly a `data-app-git:<slug>` PAT in basic auth (see\n`app/api/data_apps_git.py`). That token is minted per request and revoked\nin `finally`, so the sandbox never holds one and nothing outlives the\ncall.\n\nAuthorization is layered, not replaced: this route pins the slug to an app\nthe ticket's owner may reach, and the git surface then applies its own\nowner-or-admin check and its own scope-vs-slug pin. Bodies are buffered\n(an app repo is a scaffold, not a monorepo); a genuinely large push is a\nreason to revisit, not a reason to stream today.",
+        "operationId": "broker_data_apps_git_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "title": "Path",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Data Apps Git Broker",
         "tags": [
           "broker"
         ]
@@ -36598,6 +36910,7 @@
     },
     "/api/memory/admin/approve": {
       "post": {
+        "description": "Approve an item \u2014 status \u2192 approved.\n\nThe response echoes ``delivery_warnings`` because approval is the moment\nthe item enters the rules channel, and a caller that approves through the\nAPI (or the CLI on top of it) never sees the review page's banner. The\ncount also lands on the audit row, so \"who approved a note carrying agent\ndirectives\" is answerable after the fact.",
         "operationId": "admin_approve_api_memory_admin_approve_post",
         "parameters": [
           {
@@ -36750,7 +37063,7 @@
     },
     "/api/memory/admin/batch": {
       "post": {
-        "description": "Batch governance action on multiple items.\n\nv49: ``mandate`` flips the new ``is_required`` boolean to TRUE (was\n``status='mandatory'`` overload). Other actions still drive ``status``.",
+        "description": "Batch governance action on multiple items.\n\nv49: ``mandate`` flips the new ``is_required`` boolean to TRUE (was\n``status='mandatory'`` overload). Other actions still drive ``status``.\n\n``approve`` and ``mandate`` are the two actions that put an item into the\n``.claude/rules/`` delivery channel, so those responses carry\n``delivery_warnings`` per item \u2014 this endpoint backs ``agnes admin memory\napprove``, where a batch of ids is exactly the path on which nobody reads\nthe content first. ``reject`` and ``revoke`` take items *out* of the\nchannel and report nothing.",
         "operationId": "admin_batch_api_memory_admin_batch_post",
         "parameters": [
           {
@@ -37410,7 +37723,7 @@
     },
     "/api/memory/admin/pending": {
       "get": {
-        "description": "Get pending items queue for admin review.\n\n``search`` narrows by title/content substring (same ``repo.search``\nbacking the main list endpoint, pinned to ``status='pending'``) so an\nadmin can find specific items inside a large review queue without\npaging through it.",
+        "description": "Get pending items queue for admin review.\n\n``search`` narrows by title/content substring (same ``repo.search``\nbacking the main list endpoint, pinned to ``status='pending'``) so an\nadmin can find specific items inside a large review queue without\npaging through it.\n\nEach row carries ``delivery_warnings`` \u2014 the spans that will read as\ninstructions once the item is approved and ``agnes pull`` writes it into\nevery analyst's ``.claude/rules/``. ``delivery_notice`` states what that\nchannel is, once per response rather than per row.",
         "operationId": "admin_pending_api_memory_admin_pending_get",
         "parameters": [
           {
@@ -37660,7 +37973,7 @@
     },
     "/api/memory/admin/{item_id}": {
       "get": {
-        "description": "Single-item GET \u2014 powers the ``#item-<id>`` deep link from\n`/memory/d/<slug>`'s Edit affordance. The admin page uses this to\nfetch the row directly (bypassing pagination of the All-Items list)\nso the edit modal opens reliably regardless of which page the item\nhappens to fall on. Returns the same dict shape as the list rows.\n\nRoute placement note: declared AFTER all named ``/admin/<word>`` GET\nroutes (pending, audit, contradictions, duplicate-candidates) so the\ncatch-all ``{item_id}`` doesn't shadow them \u2014 FastAPI matches in\ndeclaration order.",
+        "description": "Single-item GET \u2014 powers the ``#item-<id>`` deep link from\n`/memory/d/<slug>`'s Edit affordance. The admin page uses this to\nfetch the row directly (bypassing pagination of the All-Items list)\nso the edit modal opens reliably regardless of which page the item\nhappens to fall on. Returns the same dict shape as the list rows.\n\nRoute placement note: declared AFTER all named ``/admin/<word>`` GET\nroutes (pending, audit, contradictions, duplicate-candidates) so the\ncatch-all ``{item_id}`` doesn't shadow them \u2014 FastAPI matches in\ndeclaration order.\n\nCarries ``delivery_warnings`` for the same reason the pending queue does:\nthis is the row the edit modal reads, and an admin editing a note before\napproving it should see which of its lines will read as an instruction.",
         "operationId": "admin_get_item_api_memory_admin__item_id__get",
         "parameters": [
           {

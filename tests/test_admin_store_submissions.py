@@ -1729,6 +1729,71 @@ class TestQuarantineGates:
         body = r.json()["detail"]
         assert body["code"] == "quarantined_owner_cannot_delete"
 
+    def test_owner_can_withdraw_a_crashed_review(self, web_client):
+        """`review_error` is not a verdict — the owner must have an exit.
+
+        Seen in production: a skill whose inline checks all passed sat in
+        `review_error` (the LLM call crashed) for a month. Delete and Edit
+        were both locked and re-uploading 409'd with "delete the existing
+        entity first", so the author had no way out of a state nothing had
+        ever objected to.
+        """
+        user_id, user_cookies = _create_user(web_client, "crash@x.com")
+        entity_id, _ = _seed_quarantined_entity(
+            user_id, "crash@x.com", "crashed", status="review_error",
+        )
+
+        r = web_client.delete(
+            f"/api/store/entities/{entity_id}", cookies=user_cookies,
+        )
+        assert r.status_code == 204, r.text
+
+    def test_owner_can_withdraw_while_the_verdict_is_pending(self, web_client):
+        """Nothing has been judged yet — withdrawing your own not-yet-public
+        upload erases no evidence."""
+        user_id, user_cookies = _create_user(web_client, "pend@x.com")
+        entity_id, _ = _seed_quarantined_entity(
+            user_id, "pend@x.com", "pending", status="pending_llm",
+        )
+
+        r = web_client.delete(
+            f"/api/store/entities/{entity_id}", cookies=user_cookies,
+        )
+        assert r.status_code == 204, r.text
+
+    def test_a_newer_unjudged_upload_does_not_clear_an_adverse_verdict(self, web_client):
+        """Devin Review on #1263: the objection must not expire.
+
+        Reading only the LATEST submission let an author walk out of the gate:
+        re-upload once, and the fresh `pending_llm` row becomes "latest" while
+        the `blocked_llm` verdict stops counting — exactly the withdrawal this
+        refusal exists to prevent. The sibling predicate
+        `_entity_review_blocked` scans the whole chain for the same reason.
+        """
+        from src.db import get_system_db
+        from src.repositories.store_submissions import StoreSubmissionsRepository
+
+        user_id, user_cookies = _create_user(web_client, "evade@x.com")
+        entity_id, _ = _seed_quarantined_entity(user_id, "evade@x.com", "evader")
+
+        conn = get_system_db()
+        StoreSubmissionsRepository(conn).create(
+            submitter_id=user_id,
+            submitter_email="evade@x.com",
+            type="skill",
+            name="evader",
+            version="1.0.1",
+            status="pending_llm",
+            entity_id=entity_id,
+            inline_checks={"manifest": {"status": "pass", "issues": []}},
+        )
+        conn.close()
+
+        r = web_client.delete(f"/api/store/entities/{entity_id}", cookies=user_cookies)
+
+        assert r.status_code == 403, r.text
+        assert r.json()["detail"]["code"] == "quarantined_owner_cannot_delete"
+
     def test_admin_can_delete_quarantined(self, web_client):
         user_id, _ = _create_user(web_client, "u@x.com")
         entity_id, _sub_id = _seed_quarantined_entity(user_id, "u@x.com", "q2")
@@ -2684,3 +2749,47 @@ class TestListPageFilterDropdowns:
         r = web_client.get("/admin/store/submissions", cookies=admin_cookies)
         assert r.status_code == 200
         assert "js/components/ds_dropdown.js" in r.text
+
+
+def test_the_withdrawal_gate_reads_the_shared_status_list():
+    """Devin Review on #1263: two copies of "review rejected it" would drift.
+
+    `_entity_review_blocked` and `user_store_installs.list_for_user` both
+    decide from `BLOCKING_SUBMISSION_STATUSES`; the withdrawal gate must not
+    keep its own.
+    """
+    import inspect
+
+    from app.api import store
+    from src.repositories.store_submissions import BLOCKING_SUBMISSION_STATUSES
+
+    # One function answers it now, and both the endpoint and the detail page
+    # call it — see `entity_has_adverse_verdict`.
+    assert "BLOCKING_SUBMISSION_STATUSES" in inspect.getsource(store.entity_has_adverse_verdict)
+    assert "entity_has_adverse_verdict(" in inspect.getsource(store.delete_entity)
+    assert "blocked_llm" in BLOCKING_SUBMISSION_STATUSES
+
+
+class TestTheArchiveButtonAgreesWithTheEndpoint:
+    """Devin Review on #1263: the API allowed the withdrawal, the page did not.
+
+    The author only ever sees the button, so an endpoint that permits what the
+    template hides is the same trap in a different place — and this change set
+    exists to give the author an exit.
+    """
+
+    def test_the_owner_sees_archive_on_an_unjudged_upload(self, web_client):
+        user_id, cookies = _create_user(web_client, "exit@x.com")
+        entity_id, _ = _seed_quarantined_entity(user_id, "exit@x.com", "unjudged", status="review_error")
+
+        page = web_client.get(f"/marketplace/flea/{entity_id}", cookies=cookies)
+        assert page.status_code == 200, page.text[:200]
+        assert 'id="owner-archive-btn"' in page.text, "the author has no visible way out"
+
+    def test_a_flagged_upload_keeps_the_button_locked(self, web_client):
+        user_id, cookies = _create_user(web_client, "flagged@x.com")
+        entity_id, _ = _seed_quarantined_entity(user_id, "flagged@x.com", "flagged")
+
+        page = web_client.get(f"/marketplace/flea/{entity_id}", cookies=cookies)
+        assert page.status_code == 200
+        assert 'id="owner-archive-btn"' not in page.text, "review objected; the button must stay locked"
