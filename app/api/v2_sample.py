@@ -16,6 +16,7 @@ from src.access_policy import (
     PolicyIdentityUnresolvable,
     policied_from_sql,
     policied_relation,
+    policy_cache_identity,
     row_scope_payload,
 )
 from app.api.v2_cache import TTLCache
@@ -235,14 +236,19 @@ def build_sample(
 
     # A policied table's sample is caller-scoped the same way an internal
     # source's is (§9) — row filtering + column masking both depend on the
-    # caller's identity, so a shared cache would serve team A's rows to
-    # team B on the next request. Skip the cache entirely for now (mirrors
-    # the internal-source trade-off above); Task 12 owns keying it by
-    # caller identity instead of bypassing it outright.
+    # caller's identity, so a shared `table_id|n` key would serve team A's
+    # rows to team B on the next request. `cache_key`/`cacheable` default to
+    # the plain (pre-existing) shape; a policied table re-derives both
+    # below, once identity resolution has actually run — only the
+    # local-parquet branch does that today (the BQ-sample branch has no
+    # identity to key on yet, see the Task 10 note in `_fetch_bq_sample`
+    # above, so it keeps skipping the cache entirely, exactly as before
+    # this task).
     has_access_policy = bool(row.get("access_policy_sql"))
 
     cache_key = f"{table_id}|{n}"
-    if not has_access_policy:
+    cacheable = not has_access_policy
+    if cacheable:
         cached = _sample_cache.get(cache_key)
         if cached is not None:
             return cached
@@ -291,6 +297,22 @@ def build_sample(
             raise HTTPException(status_code=403, detail={"reason": "policy_identity_unresolvable"})
         except PolicyError as exc:
             raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": exc.table_id})
+
+        if has_access_policy:
+            # Task 12 (§9): re-key on the caller's identity now that
+            # identity resolution has actually run — covers BOTH the
+            # genuinely-filtered case AND the admin-bypass one (a policied
+            # table with `relation.policied=False` for an admin must still
+            # not be cached under the same key a non-admin's filtered
+            # slice would read from). Re-check the cache now that the real
+            # key is known — a hit skips the DuckDB read below entirely —
+            # and write under the SAME key at the bottom.
+            cache_key = f"{table_id}|{n}|policy:{policy_cache_identity(user, table_id=table_id)!r}"
+            cacheable = True
+            cached = _sample_cache.get(cache_key)
+            if cached is not None:
+                return cached
+
         # Task 11 (§10): disclose that these sample rows are a caller-scoped
         # slice, not the whole table. `None` (no key added below) for the
         # inert/admin-bypass case, matching /api/query's row_scope contract.
@@ -325,7 +347,7 @@ def build_sample(
     payload = {"table_id": table_id, "rows": rows, "source": source_type}
     if row_scope is not None:
         payload["row_scope"] = row_scope
-    if not has_access_policy:
+    if cacheable:
         _sample_cache.set(cache_key, payload)
     return payload
 

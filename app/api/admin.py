@@ -3951,6 +3951,28 @@ async def update_table(
                             ),
                         )
 
+        # §14.6 — the live LIMIT 0 execution probe. Runs LAST among the
+        # policy-write checks: after static validation (rule 1-5, above)
+        # AND after the §3.1/§3.2 interlocks, so a table this PUT would be
+        # rejected for on distribution grounds gets that specific, cheaper
+        # rejection instead of a probe failure — and never pays for a live
+        # DuckDB execution it was always going to reject anyway. Static
+        # analysis alone cannot catch a policy that references a column
+        # the underlying table has since dropped (or never had) — this
+        # turns that failure into a rejected write here, instead of the
+        # first analyst's request.
+        if "access_policy_sql" in updates and updates["access_policy_sql"] is not None:
+            from src.access_policy_validate import PolicyValidationError, probe_policy
+            from src.db import get_analytics_db_readonly
+
+            probe_conn = get_analytics_db_readonly()
+            try:
+                probe_policy(updates["access_policy_sql"], table_id, probe_conn)
+            except PolicyValidationError as e:
+                raise HTTPException(status_code=422, detail=f"{e.reason}: {e.detail}") from e
+            finally:
+                probe_conn.close()
+
         # Capture the fully-validated policy fields before stripping them
         # out of ``merged`` (register() doesn't accept them — see the v116
         # comment above) so the setter calls after register() below persist

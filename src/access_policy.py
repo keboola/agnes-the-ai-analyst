@@ -692,3 +692,47 @@ def row_scope_payload(policied_table_ids: "list[str] | tuple[str, ...] | None") 
         "policied_tables": ids,
         "note": f"rows in {names} are filtered by an access policy — this is your slice, not the whole table",
     }
+
+
+# ---------------------------------------------------------------------------
+# Task 12 -- response-cache identity keying (§9). `_sample_cache`
+# (app/api/v2_sample.py) and `_schema_cache` (app/api/v2_schema.py) are both
+# process-global, keyed on `table_id` (plus `n` for sample) alone -- exactly
+# right for a non-policied table, where every caller gets the identical
+# response, but wrong the moment a table carries a policy: the response
+# becomes CALLER-dependent, so a shared key would serve team A's cached
+# slice to team B for up to the cache's TTL. §5.1 names this precise
+# shape -- a caller who would have been correctly filtered on a live read
+# instead gets someone else's rows because a cache entry beat them to it --
+# "worse than no policy". `policy_cache_identity` is the one place both
+# endpoints derive the extra key component that closes it.
+# ---------------------------------------------------------------------------
+
+
+def policy_cache_identity(principal, *, table_id: str) -> tuple[str | None, tuple[str, ...]]:
+    """``(user_id, sorted-group-tuple)`` -- the identity component a
+    policied table's response-cache key must carry (§9), so one caller's
+    filtered/masked slice out of ``_sample_cache`` / ``_schema_cache`` is
+    never served to another.
+
+    Reuses ``_resolve_identity``'s own principal-shape handling rather than
+    inventing a second one: a plain user dict binds itself, an
+    ``AgentPrincipal`` binds its OWNER -- the same identity
+    ``policied_relation`` would actually execute the policy as for it, so
+    an agent's cached slice is correctly shared with (and only with) other
+    callers reading as that same owner -- and a ``SessionPrincipal`` raises
+    ``PolicyIdentityUnresolvable`` here exactly as ``policied_relation``
+    would a moment later: refused before a cache lookup ever computes a key
+    from an identity the resolver is about to refuse outright, rather than
+    silently falling back to some shared or guessed key.
+
+    Always includes the caller's LIVE group list, whether or not the
+    table's policy text currently references ``$user_groups`` -- unlike
+    ``policied_relation``'s own lazy ``params`` (only the variables ONE
+    specific policy body references), a cache key must stay correct across
+    an admin editing that policy body to start referencing groups it did
+    not before, without an old, narrower-keyed cache entry ever being
+    mistaken for a hit against the new policy.
+    """
+    user_id, _user_email, live_groups = _resolve_identity(principal, table_id=table_id)
+    return (user_id, tuple(sorted(live_groups())))

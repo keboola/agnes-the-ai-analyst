@@ -15,9 +15,15 @@ not explicitly recognized is rejected, whether or not it is *known* to be
 dangerous. That is what keeps the boundary meaningful once §1.2's (currently
 out of scope) non-admin authoring arrives.
 
-``probe_policy`` -- the live ``LIMIT 0`` execution probe of §14.6 -- needs a
-connection and lives in a later task; this module is pure static analysis
-over the parsed SQL text and never executes anything.
+``validate_policy_sql`` itself is pure static analysis over the parsed SQL
+text and never executes anything. ``probe_policy`` -- the live ``LIMIT 0``
+execution probe of §14.6 -- is the one deliberate exception: static rules
+cannot catch a policy that references a column the underlying table has
+since dropped (or never had), so it actually runs the candidate SQL, with
+``LIMIT 0`` and a throwaway identity, against a connection the caller
+supplies. Both are called from the same save-time path (``app/api/admin.py``'s
+policy-write handler) -- ``probe_policy`` only after ``validate_policy_sql``
+has already accepted the SQL's shape.
 """
 
 from __future__ import annotations
@@ -416,3 +422,110 @@ def _warn_group_membership_idiom(statement: exp.Select, *, table_id: str) -> Non
                     table_id,
                 )
                 return
+
+
+# --------------------------------------------------------------------------
+# §14.6 -- the live LIMIT 0 execution probe. Everything above this point is
+# static analysis; this is the one function in the module that runs SQL.
+# --------------------------------------------------------------------------
+
+
+def probe_policy(sql: str, table_id: str, conn) -> list[dict]:
+    """Execute ``sql`` -- a policy body that has already passed
+    ``validate_policy_sql`` -- against the real table with ``LIMIT 0`` and a
+    throwaway, empty-groups identity (§14.6), and return the effective
+    column list it produces: ``[{"name": ..., "type": ...}, ...]``.
+
+    Static analysis alone cannot catch a policy that references a column
+    the underlying table has since dropped, or never had --
+    ``SELECT nonexistent_col FROM t`` parses cleanly and satisfies every
+    rule ``validate_policy_sql`` enforces, but fails the moment it actually
+    runs. Running it here, at save time, turns that failure into a
+    rejected write instead of the first analyst's request -- the module
+    docstring's closing point about what a policy body actually is (SQL
+    executed on the server's analytics connection on every analyst request
+    from the moment it is saved) is exactly why this cannot wait.
+
+    ``conn`` is borrowed, never opened or closed here: the production
+    caller (``app/api/admin.py``'s policy-write handler) passes
+    ``get_analytics_db_readonly()``, which already has every registered
+    table's master view attached under its registry ``name`` -- the same
+    name a valid policy's own ``FROM`` clause must reference, per
+    ``validate_policy_sql``'s table-reference rule. A test passes its own
+    fixture connection. Either way this function only ever runs a read
+    against what it is given.
+
+    The bound identity is a throwaway: this is a SHAPE check against the
+    real table, not a real preview (§13.1's persona matrix owns that) --
+    every ``$user_email`` / ``$user_id`` / ``$user_groups`` the policy text
+    actually references (re-parsed here rather than reusing a caller's
+    already-resolved set, since the candidate SQL being probed may not be
+    the one already persisted on the row) is bound to a value no real row
+    could plausibly match.
+
+    Raises ``PolicyValidationError(reason="policy_probe_failed", ...)`` on
+    a failure that is actually about the CANDIDATE POLICY -- the table no
+    longer being registered, ``sql`` failing to parse, or the probe
+    execution itself raising once the base table is known to exist.
+    Unlike ``PolicyError`` elsewhere in this feature, the raw engine
+    message IS surfaced in ``.detail`` here, deliberately: this runs on
+    SQL an admin is actively editing, at save time, never on a live
+    analyst request, so the engine's own "column X does not exist" is
+    exactly the actionable detail the admin needs to fix the write -- not
+    the leak §16 guards against for the ALREADY-SAVED body every other
+    execution path runs.
+
+    A table that is registered but has never synced -- the ordinary
+    "register, then attach a policy, then run the first sync" admin
+    workflow (pinned by
+    ``tests/test_journey_access_policy_interlock.py``'s own happy path) --
+    has no master view on ``conn`` yet, so there is no schema to validate
+    a column reference against. That is NOT a probe failure: checked via a
+    plain, policy-free ``DESCRIBE`` of the base table BEFORE running the
+    candidate SQL at all, so this distinguishes "nothing to check yet"
+    from "checked, and the policy is broken" without parsing engine error
+    text to tell them apart. Every subsequent save re-probes, so a
+    genuinely bad reference is still caught the moment real data (and
+    therefore a real schema) lands.
+    """
+    from src.repositories import table_registry_repo
+    from src.sql_ident import quote_ident
+
+    repo = table_registry_repo()
+    row = repo.get(table_id) or repo.get_by_name(table_id)
+    if row is None:
+        raise PolicyValidationError("policy_probe_failed", f"no such registered table: {table_id!r}")
+    table_name = row["name"]
+
+    try:
+        conn.execute(f"DESCRIBE {quote_ident(table_name)}").fetchall()
+    except Exception:
+        return []
+
+    try:
+        statement = sqlglot.parse_one(sql, read="duckdb")
+        referenced = {p.name for p in statement.find_all(exp.Placeholder) if p.name in _KNOWN_VARIABLES}
+    except Exception as exc:
+        raise PolicyValidationError("policy_probe_failed", f"could not parse policy SQL: {exc}") from exc
+
+    params: dict[str, object] = {}
+    if "user_email" in referenced:
+        params["user_email"] = "__agnes_policy_probe__"
+    if "user_id" in referenced:
+        params["user_id"] = "__agnes_policy_probe__"
+    if "user_groups" in referenced:
+        params["user_groups"] = []
+
+    # Wrapped in an outer SELECT rather than appending `LIMIT 0` to `sql`
+    # directly -- a policy body is allowed its own LIMIT/OFFSET (Rule 3's
+    # permitted node types), and `... LIMIT 5 LIMIT 0` is a syntax error.
+    probe_sql = f"SELECT * FROM ({sql}) AS __agnes_policy_probe__ LIMIT 0"
+    try:
+        described = conn.execute(f"DESCRIBE {probe_sql}", params).fetchall()
+    except Exception as exc:
+        raise PolicyValidationError(
+            "policy_probe_failed",
+            f"policy failed to execute against {table_name!r}: {exc}",
+        ) from exc
+
+    return [{"name": r[0], "type": r[1]} for r in described]

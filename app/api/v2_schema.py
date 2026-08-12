@@ -10,7 +10,7 @@ from app.auth.dependencies import get_current_user, _get_db
 from src.db import _open_duckdb
 from src.audit_helpers import identity_for_audit, client_kind_from_user
 from src.rbac import can_access_table
-from src.access_policy import PolicyError, PolicyIdentityUnresolvable, effective_schema
+from src.access_policy import PolicyError, PolicyIdentityUnresolvable, effective_schema, policy_cache_identity
 from app.api.v2_cache import TTLCache
 from connectors.bigquery.access import BqAccess, BqAccessError, get_bq_access
 
@@ -114,25 +114,32 @@ def build_schema(
     if not can_access_table(user, table_id, conn):
         raise PermissionError(table_id)
 
-    # Table access policies (§11): a policied table's schema is caller-scoped
-    # the same way its rows are (§9) -- a non-admin must never see a column
-    # an EXCLUDE'd policy has already removed from every read surface, and
-    # `_schema_cache` is keyed on `table_id` alone, so serving it here would
-    # hand one caller's (or the admin's raw) schema to the next caller
-    # regardless of identity. Skip the cache read entirely for a policied
-    # table (mirrors Task 8's `_sample_cache` bypass); `build_schema_uncached`
-    # mirrors the same bypass on the write side below.
+    # Table access policies (§11 + §9): a policied table's schema is
+    # caller-scoped the same way its rows are -- a non-admin must never see
+    # a column an EXCLUDE'd policy has already removed from every read
+    # surface. `_schema_cache` keyed on `table_id` alone would hand one
+    # caller's (or the admin's raw) schema to the next caller regardless of
+    # identity, so a policied table's key carries the caller's identity
+    # tuple instead (`policy_cache_identity`, §9) -- never the bare
+    # `table_id` a non-policied table's cache entry lives under.
+    # `build_schema_uncached` mirrors the plain-`table_id` write for the
+    # non-policied case below; the identity-keyed write for the policied
+    # case happens here, after `_apply_effective_schema`, because
+    # `build_schema_uncached` deliberately never takes `user`.
     has_access_policy = bool(row.get("access_policy_sql"))
+    cache_key = table_id
+    if has_access_policy:
+        cache_key = f"{table_id}|policy:{policy_cache_identity(user, table_id=table_id)!r}"
 
-    if not has_access_policy:
-        cached = _schema_cache.get(table_id)
-        if cached is not None:
-            return cached
+    cached = _schema_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     payload = build_schema_uncached(conn, table_id, bq=bq, row=row)
 
     if has_access_policy:
         payload = _apply_effective_schema(payload, table_id, user)
+        _schema_cache.set(cache_key, payload)
 
     return payload
 
@@ -272,12 +279,14 @@ def build_schema_uncached(
             "where_dialect_hints": {},
         }
 
-    # Mirrors the read-side bypass in `build_schema`: a policied table's
-    # schema is caller-scoped (§11), so it must never land in a cache keyed
-    # on `table_id` alone — `row` (not `user`; this function never takes
-    # one, see the class-level note in `tests/test_v2_schema.py`) already
-    # carries `access_policy_sql`, which is all the information needed to
-    # withhold the write.
+    # A policied table's schema is caller-scoped (§11), so it must never
+    # land in a cache keyed on `table_id` alone — `row` (not `user`; this
+    # function never takes one, see the class-level note in
+    # `tests/test_v2_schema.py`) already carries `access_policy_sql`, which
+    # is all the information needed to withhold the write here. The
+    # identity-keyed write for the policied case happens in `build_schema`
+    # instead (§9, `policy_cache_identity`), which has the `user` this
+    # function deliberately does not.
     if not row.get("access_policy_sql"):
         _schema_cache.set(table_id, payload)
     return payload
