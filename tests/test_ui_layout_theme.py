@@ -2309,6 +2309,7 @@ class TestDetailPageParity:
         "marketplace_item_detail",
         "library_detail",
         "memory_domain_detail",
+        "data_app_detail",
     )
 
     def test_detail_template_switch_resolves_by_redesign_opt_in(self, monkeypatch):

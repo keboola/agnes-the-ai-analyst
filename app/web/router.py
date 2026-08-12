@@ -438,6 +438,9 @@ _RAIL_DETAIL_BACK: dict[str, tuple[str, str]] = {
     # (memory_domain_detail.html).
     "memory_domain": ("/library?section=memory_domain", "All memory"),
     "recipe": ("/library?section=recipe", "All recipes"),
+    # Same reasoning as memory_domain: /apps 302s to this section under rail,
+    # so the detail's back link points straight at the band.
+    "data_app": ("/library?section=data_app", "All data apps"),
     "plugin": ("/library?section=plugin", "All plugins"),
     "skill": ("/library?section=skill", "All skills"),
     "agent": ("/library?section=agent", "All agents"),
@@ -5051,7 +5054,7 @@ async def data_app_detail_page(
 
     return templates.TemplateResponse(
         request,
-        "data_app_detail.html",
+        _detail_template("data_app_detail"),
         {
             **_chrome_ctx(request, user),
             "app": serialized,
