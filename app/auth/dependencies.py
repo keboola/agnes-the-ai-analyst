@@ -440,3 +440,39 @@ def require_session_token(request: Request, user: dict = Depends(get_current_use
                 detail="This endpoint requires an interactive session, not a PAT",
             )
     return user
+
+
+def reject_keboola_header_credential(user: dict = Depends(get_current_user)) -> dict:
+    """Block the X-StorageApi-Token header credential from routes that mint
+    durable follow-on credentials — a Cowork setup bundle (setup token +
+    pre-baked PAT), or a data-app service/git-push/preview-cookie token.
+
+    Narrower than ``require_session_token``: it rejects ONLY
+    ``token_type == "keboola_token"`` (the header path), not a regular PAT.
+    Blocking PATs here too would be a second, unrelated hardening (tracked
+    separately — #1292) and is out of scope for closing this laundering
+    hole: a Storage API token — a data-plane credential meant for
+    programmatic Storage access, never displayed to the holder as an
+    Agnes login — must never be exchanged for a persistent Agnes PAT or a
+    data-app credential, exactly as ``require_session_token`` already
+    guarantees for the endpoints it gates (token issuance, MCP connect,
+    agent management).
+
+    Applied as a route-level dependency (``dependencies=[Depends(...)]`` on
+    the ``@router`` decorator) rather than a handler parameter, so the
+    handler's own ``user: dict = Depends(get_current_user)`` keeps
+    populating ``user`` — FastAPI's per-request dependency cache dedupes
+    the two ``Depends(get_current_user)`` calls, so auth only runs once.
+
+    Plain ``def`` — same Tier 1 threadpool convention as
+    ``require_session_token`` (PR #188): the body is a synchronous dict
+    read, and ``async def`` would offload nothing while risking blocking
+    the event loop if ``get_current_user`` itself ever grows a blocking
+    call.
+    """
+    if isinstance(user, dict) and user.get("token_type") == "keboola_token":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This endpoint requires an interactive or PAT session, not a Storage API token",
+        )
+    return user

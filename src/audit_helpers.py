@@ -49,7 +49,12 @@ def client_kind_from_user(user) -> str:
 
     Order of precedence:
     1. scheduler user → 'scheduler'
-    2. PAT-authenticated (token_type='pat' set by get_current_user) → 'cli'
+    2. PAT-authenticated (token_type='pat' set by get_current_user), or the
+       X-StorageApi-Token header credential (token_type='keboola_token',
+       Task 7) → 'cli'. Both are non-interactive, programmatic credentials —
+       an audit trail that read the header path as an interactive browser
+       session ('web') would misrepresent a stack credential as a human
+       clicking through the UI.
     3. anything else → 'web'
 
     ``user`` is a plain dict for almost every caller, but a restricted
@@ -65,7 +70,7 @@ def client_kind_from_user(user) -> str:
         return "web"
     if user.get("email") == SCHEDULER_USER_EMAIL:
         return "scheduler"
-    if user.get("token_type") == "pat":
+    if user.get("token_type") in ("pat", "keboola_token"):
         return "cli"
     return "web"
 

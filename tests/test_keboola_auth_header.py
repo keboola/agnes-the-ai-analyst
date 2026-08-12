@@ -64,10 +64,14 @@ class TestHeaderAuth:
         assert "sign in" in resp.json()["detail"].lower()
 
     def test_switch_off_ignores_header(self, client, monkeypatch):
+        called = []
         monkeypatch.setenv("AGNES_KEBOOLA_ALLOW_TOKEN_HEADER", "0")
-        monkeypatch.setattr(kv, "verify_storage_token", lambda tok: _identity())
+        monkeypatch.setattr(kv, "verify_storage_token", lambda tok: called.append(tok) or _identity())
         resp = client.get("/api/catalog/tables", headers={"X-StorageApi-Token": "tok-3"})
         assert resp.status_code == 401
+        # Switched off means the header is never even consulted — verify
+        # must not be invoked at all.
+        assert called == []
 
     def test_bearer_takes_precedence(self, client, monkeypatch):
         called = []
@@ -79,6 +83,49 @@ class TestHeaderAuth:
         # The bogus bearer fails auth; the storage header must NOT rescue it.
         assert resp.status_code == 401
         assert called == []
+
+    def test_cookie_takes_precedence(self, client, monkeypatch):
+        # Mirrors test_bearer_takes_precedence for the cookie half of the
+        # precedence rule: a present-but-invalid session cookie must not be
+        # rescued by a valid X-StorageApi-Token header either.
+        called = []
+        monkeypatch.setattr(kv, "verify_storage_token", lambda tok: called.append(tok) or _identity())
+        client.cookies.set("access_token", "not-a-jwt")
+        resp = client.get(
+            "/api/catalog/tables",
+            headers={"X-StorageApi-Token": "tok-cookie"},
+        )
+        assert resp.status_code == 401
+        assert called == []
+
+    def test_deactivation_takes_effect_immediately(self, client, monkeypatch):
+        # The upstream Keboola verify result is cached for 60s, but the
+        # Agnes-side users_repo().active check is NOT — an admin flipping
+        # a user inactive must lock them out on the very next request, not
+        # after the cache expires.
+        calls = []
+
+        def counting(tok):
+            calls.append(tok)
+            return _identity()
+
+        monkeypatch.setattr(kv, "verify_storage_token", counting)
+        from src.repositories import users_repo
+
+        # Warm the cache with one successful request.
+        resp = client.get("/api/catalog/tables", headers={"X-StorageApi-Token": "tok-deactivate"})
+        assert resp.status_code == 200
+        assert len(calls) == 1
+
+        jane = users_repo().get_by_email("jane@example.com")
+        users_repo().update(jane["id"], active=False)
+
+        resp = client.get("/api/catalog/tables", headers={"X-StorageApi-Token": "tok-deactivate"})
+        assert resp.status_code == 401
+        assert resp.json()["detail"] == "Account deactivated"
+        # The upstream verify was NOT re-invoked — the deactivation is
+        # caught by the uncached users_repo lookup, not by re-verifying.
+        assert len(calls) == 1
 
     def test_verify_cache_hits_within_ttl(self, client, monkeypatch):
         calls = []
@@ -102,6 +149,34 @@ class TestHeaderAuth:
         )
         assert resp.status_code == 403
 
+    def test_cannot_mint_cowork_bundle(self, client, monkeypatch):
+        # Same laundering hole, different mint: a Cowork Setup Bundle embeds
+        # a setup token AND a pre-baked 90-day PAT (app/api/cowork_bundle.py
+        # generate_bundle) — a captured Storage API token must not be able
+        # to walk away with either.
+        monkeypatch.setattr(kv, "verify_storage_token", lambda tok: _identity())
+        resp = client.post(
+            "/api/user/cowork-bundle",
+            headers={"X-StorageApi-Token": "tok-bundle"},
+        )
+        assert resp.status_code == 403
+
+    def test_cannot_create_data_app(self, client, monkeypatch):
+        # Same laundering hole for the data-apps credential-minting surface
+        # (app/api/data_apps.py create/deploy/git-credential/preview-grant/
+        # drafts) — exercised here via the create route. The
+        # reject_keboola_header_credential dependency runs during FastAPI's
+        # dependency-resolution phase, before the handler body's own
+        # _feature_gate() check, so this 403s regardless of whether
+        # data_apps is enabled in this test environment.
+        monkeypatch.setattr(kv, "verify_storage_token", lambda tok: _identity())
+        resp = client.post(
+            "/api/data-apps",
+            json={"slug": "laundered-app", "name": "Laundered"},
+            headers={"X-StorageApi-Token": "tok-app"},
+        )
+        assert resp.status_code == 403
+
     def test_flood_guard_trips_on_distinct_invalid_tokens(self, client, monkeypatch):
         def failing(tok):
             raise kv.KeboolaVerifyError("invalid_token", "no")
@@ -112,6 +187,20 @@ class TestHeaderAuth:
             last = client.get("/api/catalog/tables", headers={"X-StorageApi-Token": f"junk-{i}"})
         assert last.status_code == 429
 
+    def test_flood_guard_does_not_trip_on_successful_bursts(self, client, monkeypatch):
+        # The bug being fixed: the global cache-miss cap used to count
+        # SUCCESSFUL verifies too, so >30 distinct legitimate tokens (each a
+        # cache miss, each a valid master token) per 60s window would 429
+        # every caller after the cap. Only FAILED verifies may consume the
+        # flood budget — a burst of 35 distinct, always-successful tokens
+        # (more than the old _MAX_FAILURES_GLOBAL=30 cap) must all succeed.
+        monkeypatch.setattr(kv, "verify_storage_token", lambda tok: _identity())
+        statuses = [
+            client.get("/api/catalog/tables", headers={"X-StorageApi-Token": f"good-{i}"}).status_code
+            for i in range(35)
+        ]
+        assert statuses == [200] * 35
+
 
 class TestResolveUnit:
     def test_credential_surface_is_stack(self, client, monkeypatch):
@@ -120,5 +209,78 @@ class TestResolveUnit:
 
         user, reason = resolve_header_user("tok-7", None)
         assert reason == ""
+        assert user["email"] == "jane@example.com"
         assert user["credential_surface"] == "stack"
         assert user["token_type"] == "keboola_token"
+
+
+class TestRejectKeboolaHeaderCredential:
+    """Unit coverage for app.auth.dependencies.reject_keboola_header_credential
+    independent of any route — the FastAPI-level 403s above prove it's wired
+    in; these prove the predicate itself is correct for both classes of
+    caller it must distinguish.
+    """
+
+    def test_rejects_keboola_token_user(self):
+        from app.auth.dependencies import reject_keboola_header_credential
+        from fastapi import HTTPException
+
+        user = {"id": "u1", "email": "jane@example.com", "token_type": "keboola_token"}
+        with pytest.raises(HTTPException) as exc_info:
+            reject_keboola_header_credential(user=user)
+        assert exc_info.value.status_code == 403
+
+    def test_passes_through_pat_user(self):
+        from app.auth.dependencies import reject_keboola_header_credential
+
+        user = {"id": "u1", "email": "jane@example.com", "token_type": "pat"}
+        assert reject_keboola_header_credential(user=user) is user
+
+    def test_passes_through_regular_session_user(self):
+        from app.auth.dependencies import reject_keboola_header_credential
+
+        # No token_type at all — the shape of a plain cookie-session user.
+        user = {"id": "u1", "email": "jane@example.com"}
+        assert reject_keboola_header_credential(user=user) is user
+
+
+class TestAuditClientKind:
+    """The header credential is non-interactive, like a PAT — the audit
+    trail must bucket it the same way, not as 'web' (an interactive browser
+    session).
+    """
+
+    def test_keboola_token_buckets_as_cli(self):
+        from src.audit_helpers import client_kind_from_user
+
+        user = {"id": "u1", "email": "jane@example.com", "token_type": "keboola_token"}
+        assert client_kind_from_user(user) == "cli"
+
+
+class TestBackoffDecay:
+    """Direct, deterministic coverage of the per-IP backoff arming/decay in
+    app.auth.keboola_header — driven with synthetic ``now`` values so it
+    needs no real sleeping. Calls the module's private helpers directly
+    (single-threaded test, no concurrent caller to race the lock).
+    """
+
+    def test_backoff_decays_after_window_elapses(self):
+        from app.auth import keboola_header as kh
+
+        kh.reset_state_for_tests()
+        ip = "203.0.113.5"
+        t0 = 1_000_000.0
+        # Arm the backoff: 5 consecutive failures.
+        for i in range(kh._FAILURES_BEFORE_BACKOFF):
+            assert kh._admit_miss(ip, t0 + i) is None
+            kh._record_failure(ip, t0 + i)
+
+        # Still inside the backoff window — blocked without a decay.
+        t_inside = t0 + kh._FAILURES_BEFORE_BACKOFF + 1
+        assert kh._admit_miss(ip, t_inside) == "rate_limited"
+
+        # Well past backoff_until with no further failures — must decay,
+        # not stay armed forever.
+        t_after = t0 + kh._FAILURES_BEFORE_BACKOFF + kh._FAILURE_BACKOFF_SECONDS + 1
+        assert kh._admit_miss(ip, t_after) is None
+        assert ip not in kh._failure_state

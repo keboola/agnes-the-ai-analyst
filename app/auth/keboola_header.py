@@ -23,18 +23,34 @@ logger = logging.getLogger(__name__)
 VERIFY_CACHE_TTL_SECONDS = 60.0
 _CACHE_MAX_ENTRIES = 1024
 
-_MISS_WINDOW_SECONDS = 60.0
-_MAX_MISSES_PER_IP = 10  # cache-miss verify calls per IP per window
-_MAX_MISSES_GLOBAL = 30  # ... and per process per window
+_FAILURE_WINDOW_SECONDS = 60.0
+_MAX_FAILURES_PER_IP = 10  # FAILED cache-miss verify calls per IP per window
+_MAX_FAILURES_GLOBAL = 30  # ... and per process per window
 _FAILURES_BEFORE_BACKOFF = 5  # consecutive failures from one IP → backoff
 _FAILURE_BACKOFF_SECONDS = 60.0
 
+# Sentinel key for the process-wide counter in ``_failure_windows``. Per-IP
+# keys are namespaced ``f"ip:{ip}"`` (see ``_ip_key``) so a client whose
+# resolved IP literally is the string "__global__" can never alias the
+# global bucket.
 _GLOBAL_KEY = "__global__"
 
 _lock = threading.Lock()
 _cache: dict[str, tuple[float, "kv.VerifiedKeboolaIdentity"]] = {}
-_miss_windows: dict[str, tuple[float, int]] = {}
+# Only FAILED verify attempts are recorded here (see _record_failure) — a
+# successful upstream verify must never consume flood budget, or a burst of
+# legitimate concurrent callers (bounded only by distinct valid master
+# tokens) would 429 each other out. Keyed by "ip:<ip>" plus one shared
+# _GLOBAL_KEY entry.
+_failure_windows: dict[str, tuple[float, int]] = {}
+# Consecutive-failure backoff arming, per IP. Decayed lazily in
+# _admit_miss once the backoff window has fully elapsed (see there) so a
+# once-armed IP that goes quiet isn't semi-permanently flagged.
 _failure_state: dict[str, tuple[float, int]] = {}
+
+
+def _ip_key(ip: str) -> str:
+    return f"ip:{ip}"
 
 
 def enabled() -> bool:
@@ -48,31 +64,66 @@ def enabled() -> bool:
 def reset_state_for_tests() -> None:
     with _lock:
         _cache.clear()
-        _miss_windows.clear()
+        _failure_windows.clear()
         _failure_state.clear()
 
 
-def _bump_window(key: str, now: float) -> int:
-    start, count = _miss_windows.get(key, (now, 0))
-    if now - start >= _MISS_WINDOW_SECONDS:
+def _window_count(key: str, now: float) -> int:
+    """Current count in the failure window for ``key``, without mutating
+    state — an expired window reads as 0. Read-only counterpart to
+    ``_bump_failure_window``; callers must hold ``_lock``.
+    """
+    start, count = _failure_windows.get(key, (now, 0))
+    if now - start >= _FAILURE_WINDOW_SECONDS:
+        return 0
+    return count
+
+
+def _bump_failure_window(key: str, now: float) -> int:
+    start, count = _failure_windows.get(key, (now, 0))
+    if now - start >= _FAILURE_WINDOW_SECONDS:
         start, count = now, 0
-    _miss_windows[key] = (start, count + 1)
-    return count + 1
+    count += 1
+    _failure_windows[key] = (start, count)
+    return count
 
 
 def _admit_miss(ip: str, now: float) -> Optional[str]:
-    """None to admit the upstream verify; 'rate_limited' to refuse."""
+    """None to admit the upstream verify attempt; 'rate_limited' to refuse
+    it before ever contacting the stack.
+
+    Admission is gated ONLY on prior FAILURES (backoff arming + the two
+    failure-window counters) — never on the volume of cache misses itself.
+    A successful upstream verify records nothing here (see
+    ``resolve_header_user``), so a burst of distinct legitimate callers
+    (bounded only by distinct valid master tokens × the 60 s positive
+    cache) can never trip this guard; only a failure flood — genuine
+    invalid-token abuse, whether concentrated on one IP or spread across
+    many under the per-IP cap — does. Callers must hold ``_lock``.
+    """
     backoff_until, failures = _failure_state.get(ip, (0.0, 0))
-    if failures >= _FAILURES_BEFORE_BACKOFF and now < backoff_until:
+    if failures >= _FAILURES_BEFORE_BACKOFF:
+        if now < backoff_until:
+            return "rate_limited"
+        # The backoff window has fully elapsed with no further failures —
+        # decay the arming so a once-flagged IP isn't semi-permanently
+        # penalized; the next failure (if any) re-arms it from scratch.
+        _failure_state.pop(ip, None)
+    if _window_count(_ip_key(ip), now) >= _MAX_FAILURES_PER_IP:
         return "rate_limited"
-    if _bump_window(ip, now) > _MAX_MISSES_PER_IP:
-        return "rate_limited"
-    if _bump_window(_GLOBAL_KEY, now) > _MAX_MISSES_GLOBAL:
+    if _window_count(_GLOBAL_KEY, now) >= _MAX_FAILURES_GLOBAL:
         return "rate_limited"
     return None
 
 
 def _record_failure(ip: str, now: float) -> None:
+    """Record a FAILED cache-miss verify against the per-IP and global
+    failure windows, and re-arm the per-IP backoff. Callers must hold
+    ``_lock``. Never called on a successful verify — see
+    ``resolve_header_user``.
+    """
+    _bump_failure_window(_ip_key(ip), now)
+    _bump_failure_window(_GLOBAL_KEY, now)
     _, failures = _failure_state.get(ip, (0.0, 0))
     failures += 1
     _failure_state[ip] = (now + _FAILURE_BACKOFF_SECONDS, failures)
