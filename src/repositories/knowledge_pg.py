@@ -177,6 +177,28 @@ class KnowledgePgRepository:
                     "now": now,
                 },
             )
+            # The junction too, not just the inline column. Every domain-scoped
+            # query in this repo joins `knowledge_item_domains` (visibility
+            # filters, the admin domain view), so an item created with a
+            # `domain` but no junction row was invisible under its own domain
+            # here while the DuckDB sibling showed it — a divergence the
+            # domain builder's seeded item made user-visible.
+            # (Devin Review on #1263.) Unknown slug behaves like the DuckDB
+            # repo: the caller hears about it rather than getting a silent
+            # half-write.
+            if domain:
+                row = conn.execute(
+                    sa.text("SELECT id FROM memory_domains WHERE slug = :slug"), {"slug": domain}
+                ).fetchone()
+                if not row:
+                    raise ValueError(f"Unknown memory domain slug: {domain}")
+                conn.execute(
+                    sa.text(
+                        "INSERT INTO knowledge_item_domains(item_id, domain_id, added_by) "
+                        "VALUES (:item, :dom, :by) ON CONFLICT DO NOTHING"
+                    ),
+                    {"item": id, "dom": row[0], "by": source_user or "system"},
+                )
 
     def _resolve_domain_slug(self, slug: str) -> Optional[str]:
         """slug → ``memory_domains.id``. Returns None for unknown slug (parity with DuckDB repo)."""
@@ -217,6 +239,29 @@ class KnowledgePgRepository:
                 sa.text(f"UPDATE knowledge_items SET {', '.join(sets)} WHERE id = :item_id"),
                 params,
             )
+            # Keep the junction in step with the inline column, the way
+            # `create` now does — two sources of truth for an item's domain
+            # is how a moved item ends up listed under its old domain by one
+            # query and its new one by another. Replace semantics, matching
+            # the DuckDB sibling. (Devin Review on #1263.)
+            if "domain" in safe:
+                conn.execute(
+                    sa.text("DELETE FROM knowledge_item_domains WHERE item_id = :item"),
+                    {"item": item_id},
+                )
+                if safe["domain"]:
+                    row = conn.execute(
+                        sa.text("SELECT id FROM memory_domains WHERE slug = :slug"), {"slug": safe["domain"]}
+                    ).fetchone()
+                    if not row:
+                        raise ValueError(f"Unknown memory domain slug: {safe['domain']}")
+                    conn.execute(
+                        sa.text(
+                            "INSERT INTO knowledge_item_domains(item_id, domain_id, added_by) "
+                            "VALUES (:item, :dom, :by) ON CONFLICT DO NOTHING"
+                        ),
+                        {"item": item_id, "dom": row[0], "by": "system"},
+                    )
 
     def update_status(self, item_id: str, status: str) -> None:
         now = datetime.now(timezone.utc)
