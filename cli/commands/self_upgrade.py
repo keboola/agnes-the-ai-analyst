@@ -67,6 +67,22 @@ class _Offline:
 _OFFLINE = _Offline()
 
 
+class _Moved:
+    """Sentinel for "the server answered, with a redirect somewhere else".
+
+    Distinct from ``_Unreachable``/``_Offline`` because the probe did NOT
+    fail: a relocated deployment leaves the old hostname answering `308`,
+    and `_fetch_latest` swallows that into `None` (its `raise_for_status()`
+    ignores 3xx, then `.json()` trips on the redirect's empty body). Mapped
+    to "probe failed", that produced a silent no-op without `--force` and
+    the untrue `cannot reach <old>/cli/latest` with it — on the very
+    command someone runs to repair a stale install.
+    """
+
+    def __init__(self, message: str) -> None:
+        self.message = message
+
+
 def _invalidate_update_cache() -> None:
     """Drop update_check.json so the next CLI invocation re-probes /cli/latest."""
     (_config_dir() / "update_check.json").unlink(missing_ok=True)
@@ -649,7 +665,36 @@ def _try_refresh_hooks(*, quiet: bool) -> None:
             sys.stderr.write(f"agnes self-upgrade: hook refresh failed: {exc}\n")
 
 
-def _resolve_info(force: bool) -> Union[UpdateInfo, _Unreachable, _Offline, None]:
+#: Diagnostic re-probe budget. Matches `update_check`'s own probe timeout —
+#: this only runs after that one already failed, so it must not add a second
+#: long stall to a SessionStart hook.
+_PROBE_TIMEOUT_SECONDS = 3.0
+
+
+def _probe_moved(server_url: str) -> Optional[str]:
+    """A moved-server explanation when ``/cli/latest`` redirects, else ``None``.
+
+    Runs only after the normal probe already came back empty, so the happy
+    path pays nothing. Deliberately does not follow the redirect: httpx
+    strips ``Authorization`` on a cross-origin hop, and the point here is to
+    report where the server went, not to chase it. Shares the wording with
+    both HTTP clients via ``cli.server_moved`` so the three cannot drift.
+    """
+    import httpx
+
+    from cli.server_moved import is_redirect, moved_server_message
+
+    try:
+        with httpx.Client(base_url=server_url, timeout=_PROBE_TIMEOUT_SECONDS) as c:
+            resp = c.get("/cli/latest")
+    except Exception:
+        return None  # genuinely unreachable — the caller's existing verdict stands
+    if not is_redirect(resp.status_code):
+        return None
+    return moved_server_message(resp.status_code, resp.headers.get("Location", ""), server_url)
+
+
+def _resolve_info(force: bool) -> Union[UpdateInfo, _Unreachable, _Offline, _Moved, None]:
     """Returns:
     UpdateInfo  — install this wheel
     _UNREACHABLE — --force specified, server probe failed
@@ -663,8 +708,15 @@ def _resolve_info(force: bool) -> Union[UpdateInfo, _Unreachable, _Offline, None
     # `/cli/latest` on every invocation; it has no place gating the
     # explicit upgrade command.
     _invalidate_update_cache()
-    info = check(get_server_url(), bypass_disabled=True)
+    server_url = get_server_url()
+    info = check(server_url, bypass_disabled=True)
     if info is None:
+        # `check` is silent on every failure path, so a probe that came back
+        # as a REDIRECT is indistinguishable here from a dead server. Ask
+        # once, on the failure path only, before calling it unreachable.
+        moved = _probe_moved(server_url)
+        if moved:
+            return _Moved(moved)
         return _UNREACHABLE if force else _OFFLINE
     if not info.download_url:
         return None
@@ -866,6 +918,18 @@ def self_upgrade(
         # --check-only is read-only intent — never exit non-zero on
         # transport errors. If unreachable or offline, treat as "can't
         # tell, current" and exit 0 silently.
+        # A moved server is the one probe failure with an actionable answer,
+        # so it is reported before the generic ones — including under
+        # --check-only, which otherwise swallows every transport verdict.
+        # --quiet stays silent: that is the SessionStart hook, and its
+        # non-noisy contract (#601) outranks this diagnosis.
+        if isinstance(info, _Moved):
+            if quiet:
+                _try_refresh_hooks(quiet=quiet)
+                raise typer.Exit(0)
+            sys.stderr.write(f"agnes self-upgrade: {info.message}\n")
+            raise typer.Exit(1)
+
         if check_only:
             if isinstance(info, (_Unreachable, _Offline)) or info is None or not info.is_outdated():
                 raise typer.Exit(0)
