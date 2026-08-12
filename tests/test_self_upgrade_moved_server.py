@@ -29,6 +29,8 @@ non-noisy by contract (#601), so the new message is gated on it.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import httpx
 import pytest
 from typer.testing import CliRunner
@@ -157,6 +159,26 @@ class TestCheckOnlySaysSomething:
         assert result.exit_code == 1
         assert "new.example" in result.output
 
+    def test_but_it_still_records_nothing(self, moved_server):
+        """Read-only intent. No upgrade was attempted, so none can have failed.
+
+        `test_check_only_does_not_touch_failure_counter` guards this already
+        — on the outdated path only, which this branch does not take.
+        """
+        runner.invoke(app, ["self-upgrade", "--check-only"])
+        assert read_status() == {}, "a status check inflated the failure tally"
+
+    def test_and_it_still_touches_no_workspace(self, moved_server, monkeypatch):
+        monkeypatch.setenv("AGNES_LOCAL_DIR", "/fake/workspace")
+        with patch("cli.commands.self_upgrade.maybe_refresh_claude_hooks") as refresh:
+            runner.invoke(app, ["self-upgrade", "--check-only"])
+        refresh.assert_not_called()
+
+    def test_quiet_and_check_only_together_stay_read_only(self, moved_server):
+        result = runner.invoke(app, ["self-upgrade", "--check-only", "--quiet"])
+        assert result.exit_code == 0
+        assert read_status() == {}
+
     def test_the_help_text_admits_this_second_exit_1(self):
         """It used to promise exit 1 meant `outdated`, and only that."""
         result = runner.invoke(app, ["self-upgrade", "--help"])
@@ -190,6 +212,30 @@ class TestTheQuietPathIsNotInvisibleForever:
     def test_the_noisy_path_records_it_too(self, moved_server):
         runner.invoke(app, ["self-upgrade"])
         assert consecutive_failures() == 1
+
+
+class TestWorkspaceConvergenceSurvivesTheError:
+    """Hook refresh is orthogonal to where `/cli/latest` points.
+
+    This case used to reach `_Offline`, which refreshes and exits 0. Dropping
+    the refresh on the way to the new exit 1 would freeze an analyst's hooks
+    for as long as their server stays relocated — a second, unrelated thing
+    quietly stopping. Devin Review on #1275 asked whether the asymmetry was
+    deliberate; it is now decided rather than incidental.
+    """
+
+    def test_hooks_still_converge_on_the_noisy_path(self, moved_server, monkeypatch):
+        monkeypatch.setenv("AGNES_LOCAL_DIR", "/fake/workspace")
+        with patch("cli.commands.self_upgrade.maybe_refresh_claude_hooks") as refresh:
+            result = runner.invoke(app, ["self-upgrade"])
+        assert result.exit_code == 1
+        refresh.assert_called_once()
+
+    def test_and_on_the_quiet_one(self, moved_server, monkeypatch):
+        monkeypatch.setenv("AGNES_LOCAL_DIR", "/fake/workspace")
+        with patch("cli.commands.self_upgrade.maybe_refresh_claude_hooks") as refresh:
+            runner.invoke(app, ["self-upgrade", "--quiet"])
+        refresh.assert_called_once()
 
 
 class TestAGenuinelyDeadServerIsUnchanged:
