@@ -10,13 +10,19 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-## [0.83.7] - 2026-08-12
+## [0.83.8] - 2026-08-12
+
+### Fixed
+
+- **A derived chat-tools source now follows its connection's `workspace_schema` in both directions.** Set on an already-enabled connection it used to arrive only after the admin toggled chat tools off and on; removed, it never went away at all — the env merge was `existing | derived`, which cannot delete, so the agent kept running SQL against a workspace the admin had taken away and nothing said so. The keys this module derives are now authoritative (absent means absent) while any key an admin added to the derived source survives untouched, and both the enable path and the unrelated-edit resync go through one shared merge rather than two copies of it.
 
 ### Added
 
 - **A whole MCP source can be granted to a group in one action** — `POST /api/admin/mcp-sources/{id}/grants` (`agnes admin mcp source grant <src> --group <id>`, plus a group picker on the Chat tools row of `/admin/data-sources`), with `DELETE …/grants/{group_id}` to take it back. The per-tool grant is the right granularity for an upstream curated a few tools at a time; it is the wrong one for a source that arrives with its whole toolset at once. A connected Keboola project registers around forty tools, so granting them one page at a time reintroduced by hand exactly the friction the chat-tools switch removes — registration was automated and the admin was left forty clicks later. The revoke half matters more than the convenience: an admin who granted a whole project in one action must be able to withdraw it in one, rather than clicking through forty tools while access stays live. Idempotent per tool. It refuses (409 `no_tools_registered`) rather than reporting success over a source with no registered tools, and returns `granted` / `already_granted` / `total` separately, because "granted 0 of 37" and "granted 37 of 37" are different news and look identical otherwise. Deliberately **not** MCP-exposed: a tool an agent can call that widens which tools a group may call is a privilege-escalation seam, and this one widens by a whole source at a time.
-
 - **A connection can carry `config.workspace_schema`**, passed to its derived chat-tools source as `KBC_WORKSPACE_SCHEMA`. This is what makes a **non-master, read-only** token usable: only a master token gets a workspace created for it behind the scenes, so an admin who narrowed the token to read-only — the obvious thing to do when lending a project to an agent — got a source where every tool worked except `query_data`, the one they most wanted. Absent unless the connection sets it, because with a master token inventing one would be wrong.
+
+
+## [0.83.7] - 2026-08-12
 
 ### Fixed
 

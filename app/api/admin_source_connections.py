@@ -42,6 +42,7 @@ from connectors.keboola.storage_api import KeboolaStorageClient, StorageApiError
 from connectors.mcp.client import exc_summary
 from src.keboola_chat_tools import (
     build_stdio_spec,
+    merge_env,
     derived_source_id,
     derived_tool_id,
     exposed_tool_name,
@@ -551,6 +552,11 @@ def _resync_derived_chat_tools(connection_id: str) -> None:
             connection_id=connection_id,
             connection_name=row.get("name") or connection_id,
             stack_url=stack_url,
+            # Connection-derived exactly like the stack URL: added later it has
+            # to arrive, removed it has to go. Without it here, setting a
+            # workspace schema on an already-enabled connection did nothing
+            # until the admin toggled chat tools off and on.
+            workspace_schema=((row.get("config") or {}).get("workspace_schema") or "").strip() or None,
         )
         # Only what the CONNECTION determines is re-derived — its name and its
         # stack URL, the two things that actually go stale when it is edited.
@@ -565,11 +571,10 @@ def _resync_derived_chat_tools(connection_id: str) -> None:
             for field in ("enabled", "scope", "connect_hint", "command", "args", "auth_method", "auth_secret_env"):
                 if field in existing:
                     spec[field] = existing[field]
-            # `env` is merged rather than replaced: the stack URL is ours, any
-            # other key the admin added is theirs.
-            merged_env = dict(existing.get("env") or {})
-            merged_env.update(spec.get("env") or {})
-            spec["env"] = merged_env
+            # `env` is merged rather than replaced: the keys this module
+            # derives are ours (and absent means absent — see `merge_env`),
+            # any other key the admin added is theirs.
+            spec["env"] = merge_env(existing.get("env"), spec.get("env") or {})
         # A rename onto a name another MCP source already holds cannot be
         # upserted — `mcp_sources.name` is unique. Skipping loudly beats
         # letting the upsert raise into the broad handler below, which would
@@ -1184,9 +1189,7 @@ async def enable_chat_tools(
         # request to re-derive anything. (Devin Review on this PR, both sides.)
         if "connect_hint" in existing_row:
             spec["connect_hint"] = existing_row["connect_hint"]
-        merged_env = dict(existing_row.get("env") or {})
-        merged_env.update(spec.get("env") or {})
-        spec["env"] = merged_env
+        spec["env"] = merge_env(existing_row.get("env"), spec.get("env") or {})
     was_enabled = existing_row is not None
     # What the registry held before this call. The registration step both
     # writes fresh rows and reconciles stale ones away, so a failed re-run has

@@ -155,6 +155,30 @@ def runner_args(*, version: str = KEBOOLA_MCP_VERSION) -> List[str]:
     ]
 
 
+#: Env keys this module derives from the connection. Everything else in a
+#: derived source's ``env`` belongs to the admin who put it there.
+DERIVED_ENV_KEYS = frozenset({STACK_URL_ENV, WORKSPACE_SCHEMA_ENV, "UV_CACHE_DIR"})
+
+
+def merge_env(existing: Dict[str, str] | None, derived: Dict[str, str]) -> Dict[str, str]:
+    """Combine a derived source's existing env with a freshly built one.
+
+    A plain ``existing | derived`` looks right and quietly cannot delete: a
+    connection that *drops* ``workspace_schema`` still has the old
+    ``KBC_WORKSPACE_SCHEMA`` in the row, so the agent keeps running SQL against
+    a workspace the admin removed and nothing says so. Keys this module derives
+    are therefore authoritative — absent from the new spec means absent, full
+    stop — while any other key is the admin's and survives untouched.
+
+    One definition because there are two callers (enable and the
+    unrelated-edit resync); the same merge written twice is the shape that
+    gets fixed on one path and not the other.
+    """
+    kept = {k: v for k, v in (existing or {}).items() if k not in DERIVED_ENV_KEYS}
+    kept.update(derived)
+    return kept
+
+
 def build_stdio_spec(
     *,
     connection_id: str,

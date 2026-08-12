@@ -1937,7 +1937,7 @@ class TestBulkSourceGrant(TestChatToolsEndpoint):
         assert all(gid in repo.grants_for_tool(t["tool_id"]) for t in repo.list_for_source(source_id))
 
     def test_grant_is_idempotent_and_says_what_changed(self, seeded_app):
-        """"granted 0 of 37" and "granted 37 of 37" both read as success
+        """ "granted 0 of 37" and "granted 37 of 37" both read as success
         unless the counts are reported separately."""
         c, token = seeded_app["client"], seeded_app["admin_token"]
         _, source_id = self._enabled_source(c, token, "kbc-bulk-idem")
@@ -2076,3 +2076,76 @@ class TestBulkGrantReportsWhatAGrantCannotReach(TestChatToolsEndpoint):
         expected = sum(1 for t in FAKE_TOOLS if t.read_only is not True)
         assert body["admin_only"] == expected
         assert body["granted"] == len(FAKE_TOOLS)
+
+
+class TestWorkspaceSchemaFollowsTheConnection(TestChatToolsEndpoint):
+    """A derived env key must track the connection in BOTH directions.
+
+    Adding a workspace schema to an already-enabled connection used to do
+    nothing until the admin toggled chat tools off and on. Removing one did
+    nothing at all — the merge was `existing | derived`, which cannot delete,
+    so the agent kept running SQL against a workspace the admin had removed.
+    """
+
+    def _set_config(self, c, token, conn_id, config):
+        assert c.put(f"{BASE}/{conn_id}", json={"config": config}, headers=_auth(token)).status_code == 200
+
+    def _env(self, conn_id):
+        from src.repositories import mcp_sources_repo
+
+        return mcp_sources_repo().get(derived_source_id(conn_id))["env"]
+
+    def test_added_after_enabling_reaches_the_source(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-ws-added")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+        assert "KBC_WORKSPACE_SCHEMA" not in self._env(conn_id)
+
+        self._set_config(
+            c, token, conn_id, {"stack_url": "https://connection.example.com", "workspace_schema": "WS_LATE"}
+        )
+        assert self._env(conn_id)["KBC_WORKSPACE_SCHEMA"] == "WS_LATE"
+
+    def test_removed_from_the_connection_is_removed_from_the_source(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-ws-removed")
+        self._set_config(
+            c, token, conn_id, {"stack_url": "https://connection.example.com", "workspace_schema": "WS_GONE"}
+        )
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+        assert self._env(conn_id)["KBC_WORKSPACE_SCHEMA"] == "WS_GONE"
+
+        self._set_config(c, token, conn_id, {"stack_url": "https://connection.example.com"})
+        assert "KBC_WORKSPACE_SCHEMA" not in self._env(conn_id), "a removed workspace schema must not survive"
+
+    def test_an_admins_own_env_key_survives_the_merge(self, seeded_app):
+        """Only the keys this module derives are authoritative — anything the
+        admin added to the derived source stays."""
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-ws-adminenv")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.repositories import mcp_sources_repo
+
+        repo = mcp_sources_repo()
+        row = repo.get(derived_source_id(conn_id))
+        writable = (
+            "id",
+            "name",
+            "transport",
+            "command",
+            "args",
+            "url",
+            "auth_method",
+            "auth_secret_env",
+            "enabled",
+            "scope",
+            "connect_hint",
+        )
+        repo.upsert(
+            **{k: row[k] for k in writable if k in row},
+            env={**row["env"], "HTTPS_PROXY": "http://proxy.internal:3128"},
+        )
+
+        self._set_config(c, token, conn_id, {"stack_url": "https://connection.example.com/"})
+        assert self._env(conn_id)["HTTPS_PROXY"] == "http://proxy.internal:3128"
