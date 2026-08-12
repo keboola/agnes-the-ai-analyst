@@ -1457,3 +1457,150 @@ class TestUvCacheLocation:
         # Without this the first tool call after every auto-upgrade re-downloads
         # the package, and a HOME-less container may not resolve a cache at all.
         assert spec["env"]["UV_CACHE_DIR"] == "/data/cache/uv"
+
+
+class TestBulkSourceGrant(TestChatToolsEndpoint):
+    """Granting a whole source at once.
+
+    Per-tool grants are the right granularity for an upstream curated a few
+    tools at a time. A connected Keboola project registers around forty in one
+    go, and granting them one page at a time is the same friction the switch
+    was built to remove — solving registration and leaving the admin forty
+    clicks later just moves it.
+    """
+
+    GRANTS = "/api/admin/mcp-sources"
+
+    def _enabled_source(self, c, token, name):
+        conn_id = self._create_keboola(c, token, name=name)
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+        return conn_id, derived_source_id(conn_id)
+
+    def _group(self):
+        from src.repositories import user_groups_repo
+
+        return user_groups_repo().get_by_name("Everyone")["id"]
+
+    def test_grant_covers_every_registered_tool(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        _, source_id = self._enabled_source(c, token, "kbc-bulk-grant")
+        gid = self._group()
+
+        resp = c.post(f"{self.GRANTS}/{source_id}/grants", json={"group_id": gid}, headers=_auth(token))
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["granted"] == len(FAKE_TOOLS)
+
+        from src.repositories import tool_registry_repo
+
+        repo = tool_registry_repo()
+        assert all(gid in repo.grants_for_tool(t["tool_id"]) for t in repo.list_for_source(source_id))
+
+    def test_grant_is_idempotent_and_says_what_changed(self, seeded_app):
+        """"granted 0 of 37" and "granted 37 of 37" both read as success
+        unless the counts are reported separately."""
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        _, source_id = self._enabled_source(c, token, "kbc-bulk-idem")
+        gid = self._group()
+
+        c.post(f"{self.GRANTS}/{source_id}/grants", json={"group_id": gid}, headers=_auth(token))
+        again = c.post(f"{self.GRANTS}/{source_id}/grants", json={"group_id": gid}, headers=_auth(token)).json()
+
+        assert again["granted"] == 0
+        assert again["already_granted"] == len(FAKE_TOOLS)
+        assert again["total"] == len(FAKE_TOOLS)
+
+    def test_revoke_takes_the_whole_source_back(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        _, source_id = self._enabled_source(c, token, "kbc-bulk-revoke")
+        gid = self._group()
+        c.post(f"{self.GRANTS}/{source_id}/grants", json={"group_id": gid}, headers=_auth(token))
+
+        assert c.delete(f"{self.GRANTS}/{source_id}/grants/{gid}", headers=_auth(token)).status_code == 204
+
+        from src.repositories import tool_registry_repo
+
+        repo = tool_registry_repo()
+        assert not any(gid in repo.grants_for_tool(t["tool_id"]) for t in repo.list_for_source(source_id))
+
+    def test_granting_a_source_with_no_tools_is_refused(self, seeded_app):
+        """Reporting success over an empty set is how "it says it worked and
+        the agent sees nothing" happens."""
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        _, source_id = self._enabled_source(c, token, "kbc-bulk-empty")
+
+        from src.repositories import tool_registry_repo
+
+        tool_registry_repo().delete_for_source(source_id)
+        resp = c.post(f"{self.GRANTS}/{source_id}/grants", json={"group_id": self._group()}, headers=_auth(token))
+        assert resp.status_code == 409
+        assert "no_tools_registered" in resp.text
+
+    def test_grant_requires_a_real_group_and_source(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        _, source_id = self._enabled_source(c, token, "kbc-bulk-404")
+
+        assert (
+            c.post(f"{self.GRANTS}/nope/grants", json={"group_id": self._group()}, headers=_auth(token)).status_code
+            == 404
+        )
+        assert (
+            c.post(f"{self.GRANTS}/{source_id}/grants", json={"group_id": "nope"}, headers=_auth(token)).status_code
+            == 404
+        )
+
+    def test_grant_requires_admin(self, seeded_app):
+        c = seeded_app["client"]
+        _, source_id = self._enabled_source(c, seeded_app["admin_token"], "kbc-bulk-rbac")
+        resp = c.post(
+            f"{self.GRANTS}/{source_id}/grants",
+            json={"group_id": self._group()},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert resp.status_code == 403
+
+
+class TestWorkspaceSchemaPassthrough:
+    """A read-only (non-master) token needs a workspace to run SQL in.
+
+    Only a master token gets one created behind the scenes, so without this an
+    admin who narrowed the token to read-only got a source where every tool
+    worked except `query_data` — the one they most wanted.
+    """
+
+    def test_absent_when_the_connection_carries_none(self):
+        spec = build_stdio_spec(
+            connection_id="c1",
+            connection_name="Demo",
+            stack_url="https://connection.example.com",
+        )
+        # Not invented: with a master token Keboola creates the workspace.
+        assert "KBC_WORKSPACE_SCHEMA" not in spec["env"]
+
+    def test_passed_through_when_set(self):
+        spec = build_stdio_spec(
+            connection_id="c1",
+            connection_name="Demo",
+            stack_url="https://connection.example.com",
+            workspace_schema="WORKSPACE_123",
+        )
+        assert spec["env"]["KBC_WORKSPACE_SCHEMA"] == "WORKSPACE_123"
+
+
+class TestWorkspaceSchemaReachesTheSource(TestChatToolsEndpoint):
+    def test_connection_config_reaches_the_derived_source(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-ws-schema")
+        assert (
+            c.put(
+                f"{BASE}/{conn_id}",
+                json={"config": {"stack_url": "https://connection.example.com", "workspace_schema": "WS_9"}},
+                headers=_auth(token),
+            ).status_code
+            == 200
+        )
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.repositories import mcp_sources_repo
+
+        env = mcp_sources_repo().get(derived_source_id(conn_id))["env"]
+        assert env["KBC_WORKSPACE_SCHEMA"] == "WS_9"

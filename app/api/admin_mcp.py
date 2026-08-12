@@ -1897,6 +1897,107 @@ async def delete_mcp_tool(
 # ---------------------------------------------------------------------------
 
 
+@router.post("/mcp-sources/{source_id}/grants")
+async def add_mcp_source_grant(
+    source_id: str,
+    payload: AddGrantRequest,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Grant a user group every tool registered under one source.
+
+    The per-tool grant is the right granularity for curating an upstream a
+    handful of tools at a time. It is the wrong one for a source that arrives
+    with its whole toolset at once — a connected Keboola project registers
+    around forty, and granting them one page at a time is the friction the
+    chat-tools switch exists to remove. This grants the set.
+
+    Idempotent per tool, and it does NOT widen anything the source did not
+    register: the set is exactly ``tool_registry`` rows for this source, so a
+    tool that arrives later needs another call rather than being granted in
+    advance. Returns what changed and what was already granted, because
+    "granted 0 of 37" and "granted 37 of 37" mean very different things to an
+    admin and both look like success otherwise.
+    """
+    src = mcp_sources_repo().get(source_id)
+    if src is None:
+        raise HTTPException(status_code=404, detail="mcp_source_not_found")
+    group_id = (payload.group_id or "").strip()
+    if not group_id:
+        raise HTTPException(status_code=400, detail="group_id is required")
+
+    from src.repositories import user_groups_repo
+
+    if not user_groups_repo().get(group_id):
+        raise HTTPException(status_code=404, detail="user_group_not_found")
+
+    repo = tool_registry_repo()
+    tools = repo.list_for_source(source_id)
+    if not tools:
+        # Saying "granted" over an empty set would report success for a source
+        # whose tools were never registered — the failure this whole feature
+        # keeps running into.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "no_tools_registered",
+                "message": (
+                    f"Source {source_id!r} has no registered tools to grant. "
+                    "Register them first (for a connected project, turn chat "
+                    "tools on), then grant."
+                ),
+            },
+        )
+
+    granted, already = [], []
+    for tool in tools:
+        tool_id = tool["tool_id"]
+        if group_id in repo.grants_for_tool(tool_id):
+            already.append(tool_id)
+            continue
+        repo.add_grant(tool_id, group_id)
+        granted.append(tool_id)
+
+    _audit(
+        conn,
+        user["id"],
+        "mcp_source.grant.add",
+        f"mcp_source:{source_id}",
+        {"group_id": group_id, "granted": len(granted), "already_granted": len(already)},
+    )
+    return {"granted": len(granted), "already_granted": len(already), "total": len(tools)}
+
+
+@router.delete("/mcp-sources/{source_id}/grants/{group_id}", status_code=204)
+async def remove_mcp_source_grant(
+    source_id: str,
+    group_id: str,
+    user: dict = Depends(require_admin),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Revoke a group's access to every tool of one source (idempotent).
+
+    The counterpart matters more than the convenience: an admin who granted a
+    whole project in one action must be able to take it back in one action,
+    rather than revoking forty tools by hand while access stays live.
+    """
+    if mcp_sources_repo().get(source_id) is None:
+        raise HTTPException(status_code=404, detail="mcp_source_not_found")
+    repo = tool_registry_repo()
+    removed = 0
+    for tool in repo.list_for_source(source_id):
+        if group_id in repo.grants_for_tool(tool["tool_id"]):
+            repo.remove_grant(tool["tool_id"], group_id)
+            removed += 1
+    _audit(
+        conn,
+        user["id"],
+        "mcp_source.grant.remove",
+        f"mcp_source:{source_id}",
+        {"group_id": group_id, "removed": removed},
+    )
+
+
 @router.post("/mcp-tools/{tool_id}/grants")
 async def add_mcp_tool_grant(
     tool_id: str,

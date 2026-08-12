@@ -730,6 +730,19 @@ section for the full operator flow. CLI: `agnes admin analytics migrate
 - /api/admin/mcp-tools/{tool_id}
 - /api/admin/mcp-tools/{tool_id}/grants
 - /api/admin/mcp-tools/{tool_id}/grants/{group_id}
+- /api/admin/mcp-sources/{source_id}/grants
+- /api/admin/mcp-sources/{source_id}/grants/{group_id}
+
+`POST …/mcp-sources/{source_id}/grants` grants a group **every** tool registered
+under one source, and `DELETE …/grants/{group_id}` revokes the set. Per-tool
+grants suit an upstream curated a few tools at a time; a connected Keboola
+project registers around forty at once, and granting those one page at a time is
+the friction the chat-tools switch exists to remove. Idempotent per tool, refuses
+(409 `no_tools_registered`) rather than reporting success over a source with no
+tools, and returns `granted` / `already_granted` / `total` separately — "granted
+0 of 37" and "granted 37 of 37" are different news. CLI: `agnes admin mcp source
+grant <src> --group <id> [--revoke]`. Not MCP-exposed: a tool an agent can call
+that widens which tools a group may call is a privilege-escalation seam.
 
 ### `/api/admin/memory-domains` — Knowledge domain management (admin)
 
@@ -918,7 +931,10 @@ each tool's `readOnlyHint`; a tool the upstream does not annotate is recorded as
 mutating rather than assumed safe. Exposed names are prefixed per connection, so
 two projects' identically-named tools stay apart. Returns `tools_registered`.
 A registration failure returns 502 and rolls back; a failed local config write
-propagates instead of being dressed up as an upstream problem.
+propagates instead of being dressed up as an upstream problem. A connection
+carrying `config.workspace_schema` passes it through as `KBC_WORKSPACE_SCHEMA`,
+which is what makes a non-master (read-only) token able to run `query_data` —
+with a master token Keboola creates the workspace itself, so it stays absent.
 `DELETE` removes both (idempotent), and deleting the connection itself does the
 same. Keboola-only; 400 without a resolvable token — a source that connected
 anonymously would fail every call at the far end instead. Enabling is idempotent

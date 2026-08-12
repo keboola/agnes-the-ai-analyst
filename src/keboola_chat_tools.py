@@ -46,6 +46,12 @@ KEBOOLA_MCP_VERSION = "1.74.6"
 # name the subprocess expects.
 TOKEN_ENV = "KBC_STORAGE_TOKEN"
 STACK_URL_ENV = "KBC_STORAGE_API_URL"
+# Only a MASTER token gets a workspace created for it behind the scenes. A
+# custom token — the one an admin reaches for when they want the agent to have
+# read-only rights — has to be told which workspace to run SQL in, or
+# `query_data` fails while every other tool works. Optional here because the
+# master-token setup genuinely does not need it.
+WORKSPACE_SCHEMA_ENV = "KBC_WORKSPACE_SCHEMA"
 
 # uv ships in the runtime image at /usr/local/bin/uv (Dockerfile), so a bare
 # name resolves through the PATH the MCP SDK inherits (its
@@ -124,6 +130,7 @@ def build_stdio_spec(
     connection_id: str,
     connection_name: str,
     stack_url: str,
+    workspace_schema: str | None = None,
     version: str = KEBOOLA_MCP_VERSION,
 ) -> Dict[str, Any]:
     """Build the ``mcp_sources`` row for a Keboola connection.
@@ -133,6 +140,11 @@ def build_stdio_spec(
     resulting tools is decided downstream by ``tool_grants`` — the derived
     source lands with no grants at all, so enabling it exposes nothing until
     an admin grants explicitly.
+
+    ``workspace_schema`` is passed through when the connection carries one
+    (``config.workspace_schema``). It is what makes a non-master token usable:
+    with a master token Keboola creates the workspace itself, so the setting
+    stays absent rather than being invented.
     """
     return {
         "id": derived_source_id(connection_id),
@@ -140,7 +152,11 @@ def build_stdio_spec(
         "transport": "stdio",
         "command": RUNNER_COMMAND,
         "args": runner_args(version=version),
-        "env": {STACK_URL_ENV: stack_url.rstrip("/"), "UV_CACHE_DIR": uv_cache_dir()},
+        "env": {
+            STACK_URL_ENV: stack_url.rstrip("/"),
+            "UV_CACHE_DIR": uv_cache_dir(),
+            **({WORKSPACE_SCHEMA_ENV: workspace_schema} if workspace_schema else {}),
+        },
         "auth_secret_env": TOKEN_ENV,
         "auth_method": None,
         "scope": "shared",
