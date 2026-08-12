@@ -153,8 +153,10 @@ def chat_tools(
     — storing a new secret on the connection updates both — so this does not
     have to be re-run for a rotation.
 
-    The derived source lands with no tool grants: run
-    ``agnes admin grant`` before analysts see anything.
+    The derived source lands with no tool grants — grant its tools under
+    ``/admin/mcp-sources`` (each tool's Grants page) before analysts see
+    anything; ``agnes admin grant`` works on resource grants and cannot
+    touch MCP tool grants.
     """
     if disable:
         resp = api_delete(f"/api/admin/source-connections/{connection_id}/chat-tools")

@@ -21,6 +21,7 @@ Surface (all gated by ``Depends(require_admin)``):
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -59,6 +60,45 @@ from src.repositories.tool_registry import PASSTHROUGH
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin/source-connections", tags=["admin"])
+
+# Ceiling on the chat-tools introspection dial-out. Generous because the first
+# run downloads the upstream server (~157 MB through `uv`), but finite so a
+# stalled download turns into the endpoint's 502-with-retry-hint instead of an
+# admin request that never returns.
+CHAT_TOOLS_INTROSPECT_TIMEOUT_S = 300.0
+
+# The exact keyword surface of the repos' `upsert`s. A rollback replays rows it
+# read with `get`/`list_for_source`, and those carry `created_at`/`updated_at`
+# too, which the upserts do not accept.
+_MCP_SOURCE_UPSERT_FIELDS = (
+    "id",
+    "name",
+    "transport",
+    "command",
+    "args",
+    "env",
+    "url",
+    "auth_method",
+    "auth_secret_env",
+    "enabled",
+    "scope",
+    "connect_hint",
+)
+_TOOL_UPSERT_FIELDS = (
+    "tool_id",
+    "source_id",
+    "original_name",
+    "exposed_name",
+    "mode",
+    "table_id",
+    "input_schema",
+    "description",
+    "mutating",
+    "pii_fields",
+    "rate_limit_pm",
+    "schedule",
+    "enabled",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -939,7 +979,12 @@ async def _register_derived_tools(source: Dict[str, Any], connection_id: str, co
     """
     from connectors.mcp.client import list_tools_async
 
-    tools = await list_tools_async(source)
+    # Bounded: the introspection spawns `uv tool run …`, whose first run
+    # downloads the server, and neither the stdio session nor the subprocess
+    # sets a read timeout — an upstream that hangs would otherwise hold the
+    # admin request open forever instead of failing into the 502 path this
+    # handler was written for. (Devin Review on this PR.)
+    tools = await asyncio.wait_for(list_tools_async(source), timeout=CHAT_TOOLS_INTROSPECT_TIMEOUT_S)
     prefix = tool_name_prefix(connection_id, connection_name)
     registry = tool_registry_repo()
     for tool in tools:
@@ -956,6 +1001,19 @@ async def _register_derived_tools(source: Dict[str, Any], connection_id: str, co
             # would mark every tool of such a server safe to call unattended.
             mutating=tool.read_only is not True,
         )
+    # Reconcile: a tool the upstream no longer offers must not stay callable.
+    # `derived_tool_id` is deterministic per name, so the loop above updates
+    # matching rows in place but never removes one whose name vanished (e.g.
+    # after a `KEBOOLA_MCP_VERSION` bump drops a tool) — and the passthrough
+    # surface joins `tool_registry` to grants only, so a stale row with a
+    # grant would keep being served and fail at the far end. Matching on
+    # `original_name` also retires hand-registered rows under this source
+    # whose upstream tool is gone — those would fail identically.
+    # (Devin Review on this PR.)
+    fresh_names = {tool.name for tool in tools}
+    for row in registry.list_for_source(source["id"]):
+        if row["original_name"] not in fresh_names:
+            registry.delete(row["tool_id"])  # cascades the tool's grants
     return len(tools)
 
 
@@ -1089,6 +1147,14 @@ async def enable_chat_tools(
         merged_env.update(spec.get("env") or {})
         spec["env"] = merged_env
     was_enabled = existing_row is not None
+    # What the registry held before this call. The registration step both
+    # writes fresh rows and reconciles stale ones away, so a failed re-run has
+    # real tool-set damage to put back, not just a credential slot. Grants are
+    # captured too: `delete` cascades them, and a rollback that resurrects the
+    # tool but not its permissions would silently revoke analyst access.
+    registry = tool_registry_repo()
+    previous_tools = registry.list_for_source(spec["id"]) if was_enabled else []
+    previous_grants = {t["tool_id"]: registry.grants_for_tool(t["tool_id"]) for t in previous_tools}
 
     def _undo() -> None:
         """Put back what was here. Never raises — it runs inside an exception
@@ -1099,8 +1165,31 @@ async def enable_chat_tools(
                 # First enable: never leave a source, its tools or the token
                 # behind under an id the admin does not know exists.
                 _remove_chat_tools(connection_id)
-            elif previous_secret is not None:
+                return
+            # Re-run: by the time registration fails the source row has been
+            # rewritten and forced on, the vault slot rewritten, and the
+            # registration loop may have written rows before dying. The 502's
+            # "nothing was changed" is made true here, not just claimed —
+            # earlier this branch put back only the credential, so an admin
+            # re-enabling a deliberately disabled source was told the project
+            # was untouched while it sat enabled with a fresh token.
+            # (Devin Review on this PR, fourth round.)
+            mcp_sources_repo().upsert(**{k: existing_row[k] for k in _MCP_SOURCE_UPSERT_FIELDS if k in existing_row})
+            if previous_secret is not None:
                 shared_secrets_repo().upsert(spec["id"], previous_secret)
+            else:
+                # The pre-call state held no credential (e.g. auto-cleared when
+                # the connection's token was removed) — so neither may this one.
+                shared_secrets_repo().delete(spec["id"])
+            undo_registry = tool_registry_repo()
+            keep = {t["tool_id"] for t in previous_tools}
+            for r in undo_registry.list_for_source(spec["id"]):
+                if r["tool_id"] not in keep:
+                    undo_registry.delete(r["tool_id"])
+            for t in previous_tools:
+                undo_registry.upsert(**{k: t[k] for k in _TOOL_UPSERT_FIELDS if k in t})
+                for group_id in previous_grants.get(t["tool_id"], []):
+                    undo_registry.add_grant(t["tool_id"], group_id)
         except Exception:
             logger.warning("could not roll back a failed enable for %s", connection_id, exc_info=True)
 
@@ -1130,7 +1219,7 @@ async def enable_chat_tools(
             detail=(
                 f"could not reach the Keboola MCP server: {exc_summary(exc)}. "
                 "The first run downloads it, so a retry is usually quick; "
-                "nothing was changed."
+                "the previous chat-tools state was restored."
             ),
         ) from exc
 

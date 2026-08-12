@@ -452,6 +452,187 @@ class TestAFailedResyncKeepsTheLiveSetupWorking(TestChatToolsEndpoint):
         assert shared_secrets_repo().get(derived_source_id(conn_id)) is None
 
 
+class TestAFailedReRunPutsEverythingBack(TestChatToolsEndpoint):
+    """Devin Review on this PR (fourth round): the 502 claimed "nothing was
+    changed", but on a re-run only the credential went back. By the time the
+    registration step fails, the source row has already been rewritten and
+    forced on — so an admin re-enabling a source they had deliberately
+    disabled was told the project was untouched while it sat enabled — and
+    any rows the registration loop wrote before dying stayed."""
+
+    @staticmethod
+    def _upstream_dies(mp):
+        import connectors.mcp.client as client_mod
+
+        async def _boom(source, *, caller_user_id=None):
+            raise RuntimeError("upstream did not answer")
+
+        mp.setattr(client_mod, "list_tools_async", _boom)
+
+    def test_a_failed_rerun_does_not_reenable_a_disabled_source(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-chat-rerun-off")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from app.api.admin_source_connections import _MCP_SOURCE_UPSERT_FIELDS
+        from src.repositories import mcp_sources_repo
+
+        source_id = derived_source_id(conn_id)
+        row = mcp_sources_repo().get(source_id)
+        # The admin switched the derived server off under /admin/mcp.
+        off = {k: row[k] for k in _MCP_SOURCE_UPSERT_FIELDS if k in row}
+        off["enabled"] = False
+        mcp_sources_repo().upsert(**off)
+
+        with pytest.MonkeyPatch.context() as mp:
+            self._upstream_dies(mp)
+            resp = c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token))
+
+        assert resp.status_code == 502
+        assert "restored" in resp.text
+        restored = mcp_sources_repo().get(source_id)
+        assert restored["enabled"] is False, (
+            "a failed re-run left a deliberately disabled source enabled while claiming nothing changed"
+        )
+
+    def test_a_failed_rerun_restores_the_tool_set_and_grants(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-chat-rerun-tools")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.repositories import tool_registry_repo, user_groups_repo
+
+        source_id = derived_source_id(conn_id)
+        before = tool_registry_repo().list_for_source(source_id)
+        assert before, "enable registered nothing — fixture is broken"
+        granted_id = before[0]["tool_id"]
+        everyone = user_groups_repo().get_by_name("Everyone")
+        tool_registry_repo().add_grant(granted_id, everyone["id"])
+
+        # This run's upstream offers a NEW tool first, then the registry dies
+        # on the second write: one half-written addition, zero reconcile.
+        import app.api.admin_source_connections as mod
+
+        class _DiesOnSecondUpsert:
+            def __init__(self, real):
+                self._real = real
+                self.upserts = 0
+
+            def __getattr__(self, name):
+                attr = getattr(self._real, name)
+                if name != "upsert":
+                    return attr
+
+                def _counted(*a, **kw):
+                    self.upserts += 1
+                    if self.upserts == 2:
+                        raise RuntimeError("registry write died")
+                    return attr(*a, **kw)
+
+                return _counted
+
+        with pytest.MonkeyPatch.context() as mp:
+            import connectors.mcp.client as client_mod
+
+            async def _bigger_upstream(source, *, caller_user_id=None):
+                return [
+                    ToolInfo(name="brand_new", description=None, input_schema=None, read_only=None),
+                    *FAKE_TOOLS,
+                ]
+
+            mp.setattr(client_mod, "list_tools_async", _bigger_upstream)
+            shared = _DiesOnSecondUpsert(tool_registry_repo())
+            mp.setattr(mod, "tool_registry_repo", lambda: shared)
+            resp = c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token))
+
+        assert resp.status_code == 502
+        after = tool_registry_repo().list_for_source(source_id)
+        assert {t["tool_id"] for t in after} == {t["tool_id"] for t in before}, (
+            "a failed re-run left a half-written tool behind (or lost one) while claiming nothing changed"
+        )
+        assert tool_registry_repo().grants_for_tool(granted_id) == [everyone["id"]], (
+            "the rollback resurrected the tool but silently dropped its grant"
+        )
+
+
+class TestReEnableRetiresToolsTheUpstreamDropped(TestChatToolsEndpoint):
+    """Devin Review on this PR (fourth round): registration was upsert-only.
+
+    `derived_tool_id` is deterministic per name, so a re-run updated matching
+    rows in place but a tool the upstream dropped (e.g. after a
+    `KEBOOLA_MCP_VERSION` bump) kept its row AND its grants — analysts kept
+    seeing and calling a tool that failed at the far end forever."""
+
+    def test_a_vanished_tool_and_its_grant_are_gone_after_a_rerun(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-chat-reconcile")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.repositories import tool_registry_repo, user_groups_repo
+
+        source_id = derived_source_id(conn_id)
+        everyone = user_groups_repo().get_by_name("Everyone")
+
+        # A tool an earlier enable registered while the upstream still offered
+        # it, granted since — the upstream's current listing no longer has it.
+        stale_id = f"{source_id}__dropped_tool"
+        tool_registry_repo().upsert(
+            tool_id=stale_id,
+            source_id=source_id,
+            original_name="dropped_tool",
+            exposed_name="kbc_dropped_tool",
+            mode="passthrough",
+            description="no longer offered upstream",
+            input_schema={},
+        )
+        tool_registry_repo().add_grant(stale_id, everyone["id"])
+        # A grant on a tool the upstream STILL offers must survive the re-run.
+        kept = tool_registry_repo().list_for_source(source_id)[0]
+        if kept["tool_id"] == stale_id:
+            kept = tool_registry_repo().list_for_source(source_id)[1]
+        tool_registry_repo().add_grant(kept["tool_id"], everyone["id"])
+
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        surviving = {t["original_name"] for t in tool_registry_repo().list_for_source(source_id)}
+        assert surviving == {t.name for t in FAKE_TOOLS}, "the vanished tool kept its row"
+        assert tool_registry_repo().grants_for_tool(stale_id) == [], (
+            "the vanished tool's grant survived — it would still be served and fail at the far end"
+        )
+        assert tool_registry_repo().grants_for_tool(kept["tool_id"]) == [everyone["id"]], (
+            "reconcile must not touch grants on tools the upstream still offers"
+        )
+
+
+class TestIntrospectionCannotHangTheAdminRequest(TestChatToolsEndpoint):
+    """Devin Review on this PR (fourth round): no read timeout anywhere on the
+    introspection path, so a stalled first-run download held the admin request
+    open indefinitely instead of failing into the 502 it was written for."""
+
+    def test_a_hung_upstream_becomes_the_502_not_a_hang(self, seeded_app, monkeypatch):
+        import asyncio
+
+        import app.api.admin_source_connections as mod
+        import connectors.mcp.client as client_mod
+
+        async def _hangs(source, *, caller_user_id=None):
+            await asyncio.sleep(3600)
+
+        monkeypatch.setattr(client_mod, "list_tools_async", _hangs)
+        monkeypatch.setattr(mod, "CHAT_TOOLS_INTROSPECT_TIMEOUT_S", 0.05)
+
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-chat-hang")
+        resp = c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token))
+        assert resp.status_code == 502
+
+        from src.repositories import mcp_sources_repo
+
+        assert mcp_sources_repo().get(derived_source_id(conn_id)) is None, (
+            "a timed-out first enable left the derived source behind"
+        )
+
+
 class TestDisableDoesNotClaimSuccessItCannotVouchFor(TestChatToolsEndpoint):
     """Devin Review on this PR: every removal step swallowed its own failure.
 
