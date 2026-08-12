@@ -70,6 +70,11 @@ class ToolInfo:
     name: str
     description: Optional[str]
     input_schema: Optional[Dict[str, Any]]
+    # MCP's ``readOnlyHint`` annotation, when the upstream sets one. ``None``
+    # means "the server said nothing" — which is NOT the same as "this tool
+    # mutates", so callers that map this onto ``tool_registry.mutating`` must
+    # decide what an unannotated tool means rather than reading None as False.
+    read_only: Optional[bool] = None
 
 
 @dataclass
@@ -705,7 +710,16 @@ async def list_tools_async(
         out: List[ToolInfo] = []
         for t in result.tools:
             schema = getattr(t, "inputSchema", None)
-            out.append(ToolInfo(name=t.name, description=t.description, input_schema=schema))
+            annotations = getattr(t, "annotations", None)
+            read_only = getattr(annotations, "readOnlyHint", None) if annotations else None
+            out.append(
+                ToolInfo(
+                    name=t.name,
+                    description=t.description,
+                    input_schema=schema,
+                    read_only=read_only,
+                )
+            )
         return out
 
 
