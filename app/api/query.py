@@ -1,6 +1,7 @@
 """Query endpoint — execute SQL against server DuckDB."""
 
 import contextlib
+import functools
 import logging
 import os
 import re
@@ -22,7 +23,12 @@ from app.auth.access import is_user_admin
 from app.auth.dependencies import _get_db, get_current_user
 from app.auth.session_principal import PRINCIPAL_TYPES
 from app.instance_config import get_value
-from connectors.bigquery.access import BqAccessError, get_bq_access, run_bq_query_to_arrow
+from connectors.bigquery.access import (
+    BqAccessError,
+    bq_query_parameters_from_policy_params,
+    get_bq_access,
+    run_bq_query_to_arrow,
+)
 from connectors.bigquery.labels import job_labels_for
 from connectors.internal.access import (
     InternalAccessError,
@@ -34,6 +40,7 @@ from src.access_policy import (
     PolicyError,
     PolicyIdentityUnresolvable,
     PolicyNameCollision,
+    policied_relation,
     rewrite_sql,
 )
 from src.audit_helpers import client_kind_from_user
@@ -1198,89 +1205,136 @@ def execute_query(
             # original SQL unchanged when rewriting would be unsafe
             # (cross-source JOIN, no BQ tables referenced, double-wrap).
             #
-            # Task 10: this plans the push-down against ``request.sql`` — the
-            # caller's ORIGINAL SQL, not ``policy_rewritten_sql`` above. A
-            # policy on a query_mode='remote' table is therefore not yet
-            # enforced when this rewrite fires (only on the ATTACH-catalog
-            # path below, when did_rewrite is False). Per spec §7.3, closing
-            # this requires policy substitution to run FIRST — resolved
-            # against the table's physical bq.<dataset>.<table> path
-            # (``policied_relation(..., dialect='bigquery')``, §7.2) — before
-            # this bare-name→backtick rewrite runs on the substituted
-            # subtree, with named params threaded through
-            # ``run_bq_query_to_arrow``'s ``query_parameters`` (§7.1) instead
-            # of a DuckDB bind, since this push-down payload is a
-            # dollar-quoted string literal that ``conn.execute()`` never
-            # scans for ``$name`` placeholders.
+            # This plans the push-down against ``request.sql`` — the
+            # caller's ORIGINAL, unfiltered SQL. Fine for a query that
+            # touches no policied table (the common case). When
+            # ``policied_table_ids`` is non-empty, the resulting
+            # ``execution_sql`` below is NEVER used to execute anything —
+            # see the branch immediately below, which routes those
+            # queries around this push-down entirely (§7.1: a
+            # dollar-quoted ``bigquery_query()`` payload has no bind
+            # mechanism, so ``$user_groups`` would either blow up with a
+            # DuckDB parameter-count mismatch, or — when the policy needs
+            # no bind value at all — nothing would raise and the
+            # unfiltered result would silently ship with a 200).
+            # ``did_rewrite`` is still meaningful on its own: it is True
+            # only when EVERY table this query touches is
+            # ``query_mode='remote'`` (``_bq_remote_execution_plan``'s own
+            # cross-source bail, Skip 3) — exactly the condition under
+            # which the policied branch below can run the whole query
+            # directly against BigQuery.
             execution_sql, did_rewrite = _rewrite_user_sql_for_bigquery_query(
                 request.sql,
                 conn,
             )
-            if did_rewrite:
-                # Memory-safety: ``bigquery_query()`` materialises the entire
-                # BQ result into DuckDB before fetchmany sees it (vs the
-                # ATTACH-catalog Storage Read API path, which streams rows
-                # lazily). Wrap the rewritten SQL in an outer ``LIMIT N+1``
-                # so a `SELECT *` against a billion-row remote table doesn't
-                # buffer the full table into the worker process — the cap
-                # is pushed into the BQ job itself. Aliased subquery so the
-                # outer LIMIT applies to the final rewritten result.
-                execution_sql = f"SELECT * FROM ({execution_sql}) AS _bqq_outer LIMIT {request.limit + 1}"
-                logger.info(
-                    "query_rewrite_to_bigquery_query: user_id=%s — wrapped "
-                    "SQL in bigquery_query() with outer LIMIT for BQ "
-                    "predicate pushdown",
-                    user_id,
-                )
-            else:
-                # Non-push-down (plain ATTACH-catalog) path: run the
-                # access-policy-rewritten SQL instead of the raw analyst SQL.
-                # Byte-identical to request.sql — so this branch is a no-op
-                # change — unless a table this query touches is policied
-                # (rewrite_sql's inert-until-attached guarantee).
-                execution_sql = policy_rewritten_sql
-                logger.debug(
-                    "query_rewrite_skipped: user_id=%s — running original SQL via ATTACH-catalog path",
-                    user_id,
-                )
 
-            # Open in read-only mode for extra safety. If the rewritten
-            # path errors (e.g. user SQL contained DuckDB-only syntax —
-            # ``::INT`` casts, ``STRPTIME``, COALESCE arity differences —
-            # that survives identifier rewrite but BQ refuses), fall back
-            # to the original SQL via the legacy ATTACH-catalog path so
-            # the request still succeeds (slower, but correct). Same
-            # safety contract as the dry-run fallback in
-            # ``_bq_quota_and_cap_guard``. Bind ``policy_params`` (DuckDB
-            # named params) whenever the executed SQL carries a policy's
-            # ``$name`` markers — never string-interpolated (§6.2).
-            try:
-                if policy_params:
-                    result = analytics.execute(execution_sql, policy_params).fetchmany(request.limit + 1)
-                else:
-                    result = analytics.execute(execution_sql).fetchmany(request.limit + 1)
-            except Exception as exc:
-                if did_rewrite and _looks_like_bq_rewrite_parse_error(exc):
-                    logger.warning(
-                        "query_rewrite_fallback: user_id=%s — bigquery_query() "
-                        "rewrite rejected by BQ (%s); retrying via "
-                        "ATTACH-catalog path",
-                        user_id,
-                        type(exc).__name__,
+            if did_rewrite and policied_table_ids:
+                # §7.1-§7.4: this query touches a policied
+                # ``query_mode='remote'`` table and is otherwise
+                # push-down-eligible. Never use the ``bigquery_query()``
+                # push-down above for it — run the whole query directly
+                # against the BQ jobs API instead, with the policy
+                # transpiled to BigQuery dialect and bound as named
+                # parameters (§7.2). Any failure past collision detection —
+                # building the query parameters, or the BQ job itself —
+                # becomes a table-scoped ``policy_error``; it NEVER falls
+                # back to the push-down or to an unfiltered execution
+                # (§17 — every failure denies).
+                try:
+                    bq = get_bq_access()
+                    table = _execute_policied_remote_bq(
+                        request.sql,
+                        user,
+                        bq,
+                        name_lookups=name_lookups,
+                        labels=job_labels_for(user, "query"),
+                        outer_limit=request.limit + 1,
                     )
-                    # Retry on the policy-rewritten SQL, not the raw
-                    # request.sql — this fallback re-enters the ATTACH-catalog
-                    # path (same as the did_rewrite=False branch above), so
-                    # it must stay policy-filtered too.
-                    if policy_params:
-                        result = analytics.execute(policy_rewritten_sql, policy_params).fetchmany(request.limit + 1)
-                    else:
-                        result = analytics.execute(policy_rewritten_sql).fetchmany(request.limit + 1)
+                except PolicyNameCollision as exc:
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "reason": "policy_name_collision",
+                            "table": exc.table_id,
+                            "fix": "rename your CTE",
+                        },
+                    )
+                except PolicyIdentityUnresolvable:
+                    raise HTTPException(status_code=403, detail={"reason": "policy_identity_unresolvable"})
+                except PolicyError as exc:
+                    raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": exc.table_id})
+                columns, rows, truncated = _arrow_table_to_rows(table, request.limit)
+            else:
+                if did_rewrite:
+                    # Memory-safety: ``bigquery_query()`` materialises the entire
+                    # BQ result into DuckDB before fetchmany sees it (vs the
+                    # ATTACH-catalog Storage Read API path, which streams rows
+                    # lazily). Wrap the rewritten SQL in an outer ``LIMIT N+1``
+                    # so a `SELECT *` against a billion-row remote table doesn't
+                    # buffer the full table into the worker process — the cap
+                    # is pushed into the BQ job itself. Aliased subquery so the
+                    # outer LIMIT applies to the final rewritten result.
+                    execution_sql = f"SELECT * FROM ({execution_sql}) AS _bqq_outer LIMIT {request.limit + 1}"
+                    logger.info(
+                        "query_rewrite_to_bigquery_query: user_id=%s — wrapped "
+                        "SQL in bigquery_query() with outer LIMIT for BQ "
+                        "predicate pushdown",
+                        user_id,
+                    )
                 else:
-                    raise
-            columns = [desc[0] for desc in analytics.description] if analytics.description else []
-            truncated = len(result) > request.limit
-            rows = result[: request.limit]
+                    # Non-push-down (plain ATTACH-catalog) path: run the
+                    # access-policy-rewritten SQL instead of the raw analyst SQL.
+                    # Byte-identical to request.sql — so this branch is a no-op
+                    # change — unless a table this query touches is policied
+                    # (rewrite_sql's inert-until-attached guarantee).
+                    execution_sql = policy_rewritten_sql
+                    logger.debug(
+                        "query_rewrite_skipped: user_id=%s — running original SQL via ATTACH-catalog path",
+                        user_id,
+                    )
+
+                # Open in read-only mode for extra safety. If the rewritten
+                # path errors (e.g. user SQL contained DuckDB-only syntax —
+                # ``::INT`` casts, ``STRPTIME``, COALESCE arity differences —
+                # that survives identifier rewrite but BQ refuses), fall back
+                # to the original SQL via the legacy ATTACH-catalog path so
+                # the request still succeeds (slower, but correct). Same
+                # safety contract as the dry-run fallback in
+                # ``_bq_quota_and_cap_guard``. Bind ``policy_params`` (DuckDB
+                # named params) whenever the executed SQL carries a policy's
+                # ``$name`` markers — never string-interpolated (§6.2). This
+                # branch is reachable ONLY when NOT (did_rewrite and
+                # policied_table_ids) — i.e. either no table this query
+                # touches is policied, or the policied one isn't BQ-remote —
+                # so a retry on ``policy_rewritten_sql`` below never
+                # re-exposes the unfiltered original (§7.4).
+                try:
+                    if policy_params:
+                        result = analytics.execute(execution_sql, policy_params).fetchmany(request.limit + 1)
+                    else:
+                        result = analytics.execute(execution_sql).fetchmany(request.limit + 1)
+                except Exception as exc:
+                    if did_rewrite and _looks_like_bq_rewrite_parse_error(exc):
+                        logger.warning(
+                            "query_rewrite_fallback: user_id=%s — bigquery_query() "
+                            "rewrite rejected by BQ (%s); retrying via "
+                            "ATTACH-catalog path",
+                            user_id,
+                            type(exc).__name__,
+                        )
+                        # Retry on the policy-rewritten SQL, not the raw
+                        # request.sql — this fallback re-enters the ATTACH-catalog
+                        # path (same as the did_rewrite=False branch above), so
+                        # it must stay policy-filtered too.
+                        if policy_params:
+                            result = analytics.execute(policy_rewritten_sql, policy_params).fetchmany(request.limit + 1)
+                        else:
+                            result = analytics.execute(policy_rewritten_sql).fetchmany(request.limit + 1)
+                    else:
+                        raise
+                columns = [desc[0] for desc in analytics.description] if analytics.description else []
+                truncated = len(result) > request.limit
+                rows = result[: request.limit]
 
             # Post-flight: bill the dry-run estimate against the user's daily
             # quota. Do this AFTER execute so a downstream failure (e.g. BQ
@@ -2111,6 +2165,139 @@ def _bq_remote_execution_plan(
     return rewritten, True, billing_project, inner_sql
 
 
+# ---------------------------------------------------------------------------
+# Task 10 -- BigQuery arm: transpile, named params, ordering, fail-closed
+# (design §7). A query touching a policied `query_mode='remote'` table
+# cannot use the `bigquery_query()` push-down above at all (§7.1: its
+# dollar-quoted payload has no bind mechanism, so `$user_groups` would
+# either blow up with a DuckDB parameter-count mismatch or -- worse, when
+# the policy needs no bind value -- silently ship the UNFILTERED original
+# query with a 200). Both `execute_query` and `run_remote_select_to_arrow`
+# route a policied-and-otherwise-pushable query through
+# `_execute_policied_remote_bq` instead, which never falls back to either
+# the push-down or an unfiltered execution on failure (§7.4/§17).
+# ---------------------------------------------------------------------------
+
+
+def _bq_policied_execution_sql(
+    sql: str,
+    principal,
+    bq,
+    *,
+    name_lookups: list,
+) -> tuple[str, dict, list[str]]:
+    """Build the final, executable BigQuery-native SQL for a query that
+    touches a policied `query_mode='remote'` table (§7.1-§7.3).
+
+    Ordering (§7.3): the policy substitution runs FIRST -- via `rewrite_sql`
+    (Task 6) with its `resolve` callable bound to
+    `policied_relation(..., dialect='bigquery')`, so the policied table's
+    node is replaced by its policy body already transpiled to BigQuery
+    dialect (§7.2) -- and the existing bare-name -> physical-path pass
+    (`_rewrite_bq_table_refs_to_native`, the same one the non-policied
+    push-down uses) runs SECOND, over the whole substituted result. That
+    second pass is what resolves the spliced-in policy body's own
+    `FROM <name>` (still a bare registry name after transpile) to its
+    physical ``\\`project.dataset.table\\``` path -- along with any OTHER
+    bare BQ table name elsewhere in the query. Reversing the order would
+    leave the AST substitution nothing to match (a prior bare-name pass
+    would have already turned the caller's own reference into an opaque
+    backtick path sqlglot no longer recognises as the same table, §7.3).
+
+    Safe to call `rewrite_sql` a second time (the first, `dialect='duckdb'`
+    call already ran in the caller to decide whether to reach this
+    function at all): collision detection and identity resolution are
+    dialect-independent, so the only NEW failure mode here is the
+    BigQuery transpile itself, surfaced as `PolicyError` exactly like
+    every other resolution failure (§16).
+
+    `name_lookups` is the SAME bare-name -> (dataset, table, project)
+    mapping the non-policied push-down already computed from the
+    caller's original SQL (`_bq_guardrail_inputs`) -- it covers every
+    registered BQ name in the query, policied or not, so it is reused
+    as-is rather than recomputed.
+
+    Returns `(bq_sql, params, policied_table_ids)` -- `params` are the
+    RAW identity values (§6.2), not yet BigQuery `QueryParameter` objects;
+    convert via `bq_query_parameters_from_policy_params` before binding.
+    Raises `PolicyNameCollision` / `PolicyIdentityUnresolvable` /
+    `PolicyError` exactly like `rewrite_sql` -- callers map these the
+    same way they already map the `dialect='duckdb'` call's exceptions.
+    """
+    spliced_sql, params, policied_table_ids = rewrite_sql(
+        sql,
+        principal,
+        resolve=functools.partial(policied_relation, dialect="bigquery"),
+    )
+    data_project = bq.projects.data
+    bq_sql = _rewrite_bq_table_refs_to_native(spliced_sql, name_lookups, data_project)
+    return bq_sql, params, policied_table_ids
+
+
+def _execute_policied_remote_bq(
+    sql: str,
+    principal,
+    bq,
+    *,
+    name_lookups: list,
+    labels: dict,
+    outer_limit: Optional[int] = None,
+):
+    """Execute a query that touches a policied `query_mode='remote'` table
+    directly against the BigQuery jobs API (§7.1) -- never through the
+    `bigquery_query()` DuckDB-extension push-down, and never falling back
+    to an unfiltered execution when this fails (§7.4/§17): ANY exception
+    past the `rewrite_sql`/collision-detection step -- building the query
+    parameters or the BQ job itself -- becomes a table-scoped `PolicyError`
+    rather than propagating the raw engine detail (§16's rule that a
+    `policy_error` never quotes the underlying message, which for a BQ
+    rejection can otherwise echo literal identifiers from the policy body).
+
+    `outer_limit`, when given, wraps the final SQL in an outer
+    `LIMIT <outer_limit>` -- mirroring the non-policied push-down's
+    `_bqq_outer` wrap -- so a preview-sized caller (`/api/query`) doesn't
+    materialise an entire remote table into the worker process. `None`
+    for a caller that wants the full, uncapped result (the
+    snapshot-materialize path, `run_remote_select_to_arrow`).
+
+    Returns the full `pyarrow.Table` (labeled cost-attribution job, #752
+    -- same shape `run_bq_query_to_arrow` always returns); callers needing
+    a row/column/truncated triple convert via `_arrow_table_to_rows`.
+    """
+    bq_sql, policy_params, policied_table_ids = _bq_policied_execution_sql(
+        sql, principal, bq, name_lookups=name_lookups
+    )
+    if outer_limit is not None:
+        bq_sql = f"SELECT * FROM ({bq_sql}) AS _bqq_policy_outer LIMIT {outer_limit}"
+
+    query_parameters = bq_query_parameters_from_policy_params(policy_params)
+    try:
+        table, _job_info = run_bq_query_to_arrow(
+            bq,
+            bq_sql,
+            query_parameters=query_parameters,
+            labels=labels,
+        )
+    except Exception as exc:
+        raise PolicyError(next(iter(policied_table_ids), "unknown")) from exc
+    return table
+
+
+def _arrow_table_to_rows(table, limit: int) -> tuple[list, list, bool]:
+    """Convert a fully-materialized ``pyarrow.Table`` into the same
+    ``(columns, rows, truncated)`` shape a DuckDB cursor's
+    ``.fetchmany(limit + 1)`` call + slice produces, so a caller's
+    existing "convert to serializable types" step (`execute_query`) works
+    unchanged regardless of which execution path produced the result.
+    """
+    columns = list(table.column_names)
+    truncated = table.num_rows > limit
+    if truncated:
+        table = table.slice(0, limit)
+    rows = [[row.get(c) for c in columns] for row in table.to_pylist()]
+    return columns, rows, truncated
+
+
 def _view_targets_in(dry_run_set: list) -> list[str]:
     """Return registry IDs from ``dry_run_set`` whose ``bq_metadata_cache``
     row classifies them as ``VIEW`` or ``MATERIALIZED VIEW``.
@@ -2524,83 +2711,121 @@ def run_remote_select_to_arrow(conn, user, sql, bq, quota):
                         },
                     ) from exc
 
-            # Task 10: plans the push-down against the ORIGINAL `sql`, not
-            # `policy_rewritten_sql` — same deferred ordering gap as
-            # execute_query's identically-commented call site above
-            # (§7.1-§7.3); `inner_sql`'s labeled client.query path doesn't
-            # enforce a policy on a query_mode='remote' table yet either.
+            # Plans the push-down against the ORIGINAL `sql`, not
+            # `policy_rewritten_sql`. Fine when no table this query
+            # touches is policied (the common case) — when
+            # `policied_table_ids` is non-empty, `inner_sql`/`execution_sql`
+            # below are NEVER used to execute anything; see the branch
+            # immediately below (mirrors execute_query's identically
+            # structured branch, §7.1-§7.4).
             execution_sql, did_rewrite, billing_project, inner_sql = _bq_remote_execution_plan(sql, conn)
-            if not (did_rewrite and inner_sql is not None):
-                # Non-push-down (ATTACH-catalog) path: run the
-                # access-policy-rewritten SQL instead of the raw analyst
-                # SQL. Byte-identical to `execution_sql` here (a no-op)
-                # unless a table this query touches is policied.
-                execution_sql = policy_rewritten_sql
-            try:
+
+            if did_rewrite and policied_table_ids:
+                # §7.1-§7.4: see execute_query's identically commented
+                # branch — this query touches a policied
+                # `query_mode='remote'` table and is otherwise
+                # push-down-eligible, so it runs directly against the BQ
+                # jobs API with the policy transpiled + bound as named
+                # parameters, never through the unlabeled `bigquery_query()`
+                # extension and never falling back to an unfiltered
+                # execution on failure. No outer LIMIT here — a snapshot
+                # materialize wants the full, uncapped result.
                 try:
-                    if did_rewrite and inner_sql is not None:
-                        # #752: this path fully materializes the result to Arrow
-                        # anyway, so run the billable job through
-                        # google-cloud-bigquery `client.query(labels=...)` (like
-                        # /api/v2/scan) instead of the unlabeled DuckDB
-                        # `bigquery_query()` extension. The job then carries
-                        # cost-attribution labels for the requesting user. The
-                        # BQ-native `inner_sql` is what the extension would have
-                        # sent to `jobs.query`. The bq client bills under
-                        # `bq.projects.billing` (quota_project_id), matching the
-                        # billing_project the extension path passes as
-                        # bigquery_query()'s first arg.
-                        table, _job_info = run_bq_query_to_arrow(
-                            bq,
-                            inner_sql,
-                            labels=job_labels_for(user, "query"),
-                        )
-                    elif policy_params:
-                        table = analytics.execute(execution_sql, policy_params).arrow()
-                    else:
-                        table = analytics.execute(execution_sql).arrow()
+                    table = _execute_policied_remote_bq(
+                        sql,
+                        user,
+                        bq,
+                        name_lookups=name_lookups,
+                        labels=job_labels_for(user, "query"),
+                    )
+                except PolicyNameCollision as exc:
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "reason": "policy_name_collision",
+                            "table": exc.table_id,
+                            "fix": "rename your CTE",
+                        },
+                    )
+                except PolicyIdentityUnresolvable:
+                    raise HTTPException(status_code=403, detail={"reason": "policy_identity_unresolvable"})
+                except PolicyError as exc:
+                    raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": exc.table_id})
+            else:
+                if not (did_rewrite and inner_sql is not None):
+                    # Non-push-down (ATTACH-catalog) path: run the
+                    # access-policy-rewritten SQL instead of the raw analyst
+                    # SQL. Byte-identical to `execution_sql` here (a no-op)
+                    # unless a table this query touches is policied.
+                    execution_sql = policy_rewritten_sql
+                try:
+                    try:
+                        if did_rewrite and inner_sql is not None:
+                            # #752: this path fully materializes the result to Arrow
+                            # anyway, so run the billable job through
+                            # google-cloud-bigquery `client.query(labels=...)` (like
+                            # /api/v2/scan) instead of the unlabeled DuckDB
+                            # `bigquery_query()` extension. The job then carries
+                            # cost-attribution labels for the requesting user. The
+                            # BQ-native `inner_sql` is what the extension would have
+                            # sent to `jobs.query`. The bq client bills under
+                            # `bq.projects.billing` (quota_project_id), matching the
+                            # billing_project the extension path passes as
+                            # bigquery_query()'s first arg.
+                            table, _job_info = run_bq_query_to_arrow(
+                                bq,
+                                inner_sql,
+                                labels=job_labels_for(user, "query"),
+                            )
+                        elif policy_params:
+                            table = analytics.execute(execution_sql, policy_params).arrow()
+                        else:
+                            table = analytics.execute(execution_sql).arrow()
+                    except HTTPException:
+                        raise
+                    except Exception as exc:
+                        # A rewritten query rejected by BQ (DuckDB-only syntax that
+                        # survived identifier rewrite) falls back to the original SQL
+                        # via the ATTACH-catalog extension path — slower but correct.
+                        # This fallback job is unlabeled (extension-owned), matching
+                        # the interactive /api/query fallback contract. Retries on
+                        # the policy-rewritten SQL, not the raw `sql` — this
+                        # fallback re-enters the ATTACH-catalog path, so it must
+                        # stay policy-filtered too. Reachable ONLY when NOT
+                        # (did_rewrite and policied_table_ids) — see the branch
+                        # above — so this never re-exposes the unfiltered
+                        # original (§7.4).
+                        if did_rewrite and _looks_like_bq_rewrite_parse_error(exc):
+                            if policy_params:
+                                table = analytics.execute(policy_rewritten_sql, policy_params).arrow()
+                            else:
+                                table = analytics.execute(policy_rewritten_sql).arrow()
+                        else:
+                            raise
                 except HTTPException:
+                    # Don't re-wrap structured rejections raised below (RBAC,
+                    # SELECT-only, registry) — let them propagate.
+                    raise
+                except BqAccessError:
+                    # #752: the labeled client.query path raises BqAccessError with
+                    # a kind (auth_failed / bq_forbidden / bq_bad_request / …). Let
+                    # it propagate so scan_endpoint maps it to the right HTTP status
+                    # (500 / 502 / 400) instead of flattening every BQ failure into
+                    # a generic 400 duckdb_execution_error.
                     raise
                 except Exception as exc:
-                    # A rewritten query rejected by BQ (DuckDB-only syntax that
-                    # survived identifier rewrite) falls back to the original SQL
-                    # via the ATTACH-catalog extension path — slower but correct.
-                    # This fallback job is unlabeled (extension-owned), matching
-                    # the interactive /api/query fallback contract. Retries on
-                    # the policy-rewritten SQL, not the raw `sql` — this
-                    # fallback re-enters the ATTACH-catalog path, so it must
-                    # stay policy-filtered too.
-                    if did_rewrite and _looks_like_bq_rewrite_parse_error(exc):
-                        if policy_params:
-                            table = analytics.execute(policy_rewritten_sql, policy_params).arrow()
-                        else:
-                            table = analytics.execute(policy_rewritten_sql).arrow()
-                    else:
-                        raise
-            except HTTPException:
-                # Don't re-wrap structured rejections raised below (RBAC,
-                # SELECT-only, registry) — let them propagate.
-                raise
-            except BqAccessError:
-                # #752: the labeled client.query path raises BqAccessError with
-                # a kind (auth_failed / bq_forbidden / bq_bad_request / …). Let
-                # it propagate so scan_endpoint maps it to the right HTTP status
-                # (500 / 502 / 400) instead of flattening every BQ failure into
-                # a generic 400 duckdb_execution_error.
-                raise
-            except Exception as exc:
-                # Map DuckDB execution errors (syntax error, missing table,
-                # type mismatch) to a structured 400 mirroring the normal
-                # /api/query path (`app/api/query.py` ~line 714) so the
-                # scan_endpoint caller surfaces a user-friendly error
-                # instead of a raw 500. Devin Review ANALYSIS_0003 on #620.
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "reason": "duckdb_execution_error",
-                        "message": str(exc),
-                    },
-                ) from exc
+                    # Map DuckDB execution errors (syntax error, missing table,
+                    # type mismatch) to a structured 400 mirroring the normal
+                    # /api/query path (`app/api/query.py` ~line 714) so the
+                    # scan_endpoint caller surfaces a user-friendly error
+                    # instead of a raw 500. Devin Review ANALYSIS_0003 on #620.
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "reason": "duckdb_execution_error",
+                            "message": str(exc),
+                        },
+                    ) from exc
 
             if dry_run_set and total_bq_bytes:
                 try:

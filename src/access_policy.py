@@ -1,13 +1,14 @@
 """The access-policy resolver — the single junction every enforcement point
 binds against (table access policies design doc §5, §6, §12).
 
-``policied_relation(table_id, principal)`` turns a registered table and the
-calling principal into a :class:`PoliciedRelation`: an *unexecuted*,
-parenthesizable ``SELECT`` a caller can read from, plus the bind parameters
-for it. This module never runs that SQL — each enforcement surface (Task 6's
-AST rewrite for SQL surfaces, Task 8's ``FROM``-builder for ``table_id``
-surfaces) does, binding ``params`` through the engine's own named-parameter
-mechanism, never string interpolation (§6.2).
+``policied_relation(table_id, principal, *, dialect="duckdb")`` turns a
+registered table and the calling principal into a :class:`PoliciedRelation`:
+an *unexecuted*, parenthesizable ``SELECT`` a caller can read from, plus the
+bind parameters for it. This module never runs that SQL — each enforcement
+surface (Task 6's AST rewrite for SQL surfaces, Task 8's ``FROM``-builder for
+``table_id`` surfaces, Task 10's BigQuery jobs-API path) does, binding
+``params`` through the engine's own named-parameter mechanism, never string
+interpolation (§6.2).
 
 Two outcomes:
 
@@ -16,12 +17,17 @@ Two outcomes:
   (§12: admin bypass follows the credential *surface*, not merely group
   membership). ``relation_sql`` is a bare ``SELECT * FROM <base view>``.
 - **Policied** (``policied=True``) — a policy is attached and the caller has
-  a resolvable identity. ``relation_sql`` is the policy body *verbatim* —
-  its ``$name`` placeholders are left as bind markers, never rewritten,
-  because DuckDB (and, from Task 10, BigQuery via transpile) both bind named
-  parameters natively (§6.2, §7.2). ``params`` carries only the
-  ``user_email`` / ``user_id`` / ``user_groups`` keys the policy text
-  actually references.
+  a resolvable identity. On ``dialect="duckdb"`` (the default) ``relation_sql``
+  is the policy body *verbatim* — its ``$name`` placeholders left as bind
+  markers, never rewritten, because DuckDB binds named parameters natively
+  (§6.2). On ``dialect="bigquery"`` it is the SAME body transpiled to
+  BigQuery Standard SQL (§7.2) — ``$name`` survives the transpile as
+  BigQuery's own ``@name`` named-parameter syntax, so the binding guarantee
+  holds on both engines from one authored policy. Either way ``params``
+  carries only the ``user_email`` / ``user_id`` / ``user_groups`` keys the
+  policy text actually references — identical Python values on both
+  dialects; converting them to a BigQuery ``QueryParameter`` is the
+  enforcement site's job, not this resolver's.
 
 Identity resolution (§12): a plain user dict binds itself; an
 ``AgentPrincipal`` binds its *owner*'s identity (an agent's declared scope
@@ -119,13 +125,22 @@ def policied_relation(table_id: str, principal, *, dialect: str = "duckdb") -> P
     every caller who only knows one of the two can call this directly; the
     returned ``.table_id`` is always the normalized registry ``id``.
 
+    ``dialect='bigquery'`` (Task 10, §7.2) shares every step below with the
+    default ``'duckdb'`` arm — table resolution, no-policy passthrough,
+    admin bypass (§12), identity resolution, and which of the three
+    variables get bound — and differs ONLY in the final ``relation_sql``:
+    the policy body is transpiled to BigQuery Standard SQL via
+    ``sqlglot.transpile(..., read="duckdb", write="bigquery")`` instead of
+    returned verbatim. ``$name`` placeholders survive the transpile as
+    BigQuery's own ``@name`` named-parameter syntax (verified on sqlglot
+    30.6.0), so ``params`` carries the SAME identity values on both
+    dialects — the enforcement site (Task 10's BQ jobs-API path) converts
+    them to ``bigquery.QueryParameter`` objects, never string-interpolates
+    them.
+
     Never executes ``relation_sql`` — that is each enforcement surface's job.
     """
-    if dialect == "bigquery":
-        # Task 10 fills this arm: transpile the policy to BigQuery SQL and
-        # bind named ``@param`` parameters (§7.2).
-        raise NotImplementedError("policied_relation(dialect='bigquery') is not implemented yet (Task 10)")
-    if dialect != "duckdb":
+    if dialect not in ("duckdb", "bigquery"):
         raise ValueError(f"unknown dialect: {dialect!r}")
 
     row = _resolve_table_row(table_id)
@@ -154,7 +169,46 @@ def policied_relation(table_id: str, principal, *, dialect: str = "duckdb") -> P
                 raise PolicyError(resolved_id)
         params["user_groups"] = groups
 
-    return PoliciedRelation(relation_sql=policy_sql, params=params, policied=True, table_id=resolved_id)
+    relation_sql = (
+        _transpile_policy_to_bigquery(policy_sql, table_id=resolved_id) if dialect == "bigquery" else policy_sql
+    )
+
+    return PoliciedRelation(relation_sql=relation_sql, params=params, policied=True, table_id=resolved_id)
+
+
+def _transpile_policy_to_bigquery(policy_sql: str, *, table_id: str) -> str:
+    """§7.2 — transpile an admin-authored, DuckDB-dialect policy body to
+    BigQuery Standard SQL via sqlglot.
+
+    Verified end to end on sqlglot 30.6.0: ``EXCLUDE`` → ``EXCEPT``,
+    ``md5(x)`` → ``TO_HEX(MD5(x))``, ``list_contains($g, col)`` →
+    ``EXISTS(SELECT 1 FROM UNNEST(@g) AS _col WHERE _col = col)`` — and,
+    the part that makes the whole feature work on this engine, every
+    ``$name`` placeholder → BigQuery's own ``@name`` named-parameter
+    syntax, so the binding guarantee (§6.2) holds on both engines from one
+    authored policy. The transpiled body's own ``FROM <name>`` stays a
+    bare registry name here, exactly like the DuckDB arm's verbatim
+    ``relation_sql`` — resolving it to the table's physical
+    ``bq.<dataset>.<table>`` path is the enforcement site's job (§7.3),
+    not this resolver's; ``policied_relation`` only ever answers "what
+    should a caller read", never "where does that physically live".
+
+    A transpile failure is a ``PolicyError`` — the admin never writes BQ
+    SQL directly (§7.2: only the DuckDB-dialect body is authored, and the
+    save-time preview shows the transpiled form, §13), so a failure here
+    means the policy body uses a construct sqlglot cannot carry across
+    dialects. Raising the SAME reason code every other resolution failure
+    uses (rather than leaking sqlglot's own exception text) keeps §16's
+    contract — no engine detail in a policy failure — true for this new
+    failure mode too.
+    """
+    try:
+        statements = sqlglot.transpile(policy_sql, read="duckdb", write="bigquery")
+    except Exception as exc:
+        raise PolicyError(table_id) from exc
+    if not statements:
+        raise PolicyError(table_id)
+    return statements[0]
 
 
 def _resolve_table_row(table_id: str) -> dict:
