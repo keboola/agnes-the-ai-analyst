@@ -108,6 +108,36 @@ def _parse_target(location: str, configured: str) -> tuple[bool, str]:
     return moved, new_base
 
 
+def classify_redirect(location: str, configured: str) -> tuple[str, str]:
+    """``(code, blocked_or_new_base)`` for a redirect.
+
+    One classifier, so every caller uses the same names:
+
+    - ``server_moved`` + the new base — a cross-origin move worth re-pointing at.
+    - ``insecure_redirect`` + the refused target — the destination is plaintext
+      while the configured address is not. Never handed over as a new base.
+    - ``unexpected_redirect`` + ``""`` — same address; nothing to re-point.
+
+    Introduced because ``cli/commands/init.py`` had re-derived this and the two
+    disagreed on the code name. (Devin Review on #1266.)
+    """
+    location = location or ""
+    moved, new_base = _parse_target(location, configured)
+    if moved and new_base:
+        return "server_moved", new_base
+    try:
+        target = httpx.URL(location) if "://" in location else None
+    except Exception:
+        target = None
+    if target is not None and target.netloc and target.scheme == "http":
+        try:
+            if httpx.URL(configured).scheme == "https":
+                return "insecure_redirect", location
+        except Exception:
+            pass
+    return "unexpected_redirect", ""
+
+
 def moved_server_message(status_code: int, location: str, configured: str) -> str:
     """Explain a redirect in prose, for the client that writes to stderr.
 
@@ -187,17 +217,30 @@ def redirect_body(response: "httpx.Response", configured: str) -> dict:
     # proxy or an in-app redirect answering 3xx has nothing to re-point, and
     # calling it `server_moved` sent the reader hunting for a hostname change
     # that never happened. (Devin Review on #1266.)
-    detail: dict = {"code": "server_moved" if new_base else "unexpected_redirect"}
-    if new_base:
-        detail["moved_to"] = new_base
-        detail["fix"] = f"AGNES_SERVER={new_base} agnes <command>"
-        detail["config"] = f"server: {new_base}"
+    code, target = classify_redirect(location or "", configured)
+    detail: dict = {"code": code}
+    if code == "server_moved":
+        detail["moved_to"] = target
+        detail["fix"] = f"AGNES_SERVER={target} agnes <command>"
+        detail["config"] = f"server: {target}"
         detail["hint"] = (
             f"{configured} answered HTTP {response.status_code} and that address has moved. "
             "Redirects are not followed automatically — credentials are stripped on a "
             "cross-origin hop, so the retry would fail as 'not authenticated' rather than "
             "work. Use the one-off command above, or set the config line in "
             f"{config_file_path()}."
+        )
+    elif code == "insecure_redirect":
+        # The address goes in its OWN key: `cli.error_render` wraps `hint` at
+        # 80 columns, and an address split across two lines cannot be copied —
+        # the same reason the moved case keeps `fix`/`config` separate.
+        # (Devin Review on #1266.)
+        detail["blocked_target"] = target
+        detail["hint"] = (
+            f"{configured} answered HTTP {response.status_code} pointing at an unencrypted "
+            "address (above). The CLI will not send credentials there. If the server really "
+            "moved, use its https address; if it did not, a proxy in front of it is rewriting "
+            "the scheme."
         )
     else:
         detail["hint"] = moved_server_message(response.status_code, location or "", configured)

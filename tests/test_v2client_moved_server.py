@@ -344,13 +344,17 @@ class TestTheSetupExchangeNamesAFixThatWorks:
 
     def test_the_fix_is_the_init_flag(self):
         page = (ROOT / "cli" / "commands" / "init.py").read_text(encoding="utf-8")
-        assert 'f"agnes init --server-url {moved_to} …"' in page
+        assert 'f"agnes init --server-url {target} …"' in page
         assert "AGNES_SERVER=" not in page.split("is_redirect(exchange_resp.status_code)")[1][:1200]
 
     def test_a_same_origin_redirect_is_not_reported_as_a_move(self):
+        """Classification comes from the shared module — including the
+        `unexpected_redirect` name, which init used to spell for itself."""
+        assert server_moved.classify_redirect(
+            "https://agnes.example.com/api/v1/agents/", "https://agnes.example.com"
+        ) == ("unexpected_redirect", "")
         page = (ROOT / "cli" / "commands" / "init.py").read_text(encoding="utf-8")
-        block = page.split("is_redirect(exchange_resp.status_code)")[1][:1200]
-        assert '"unexpected_redirect"' in block
+        assert "classify_redirect(" in page.split("is_redirect(exchange_resp.status_code)")[1][:1200]
 
 
 class TestATlsUpgradeIsAMove:
