@@ -1,17 +1,31 @@
 """Canonical inventory for the grouped `/admin` sidebar (`_admin_nav.html`).
 
-Single source of truth for the sidebar's seven sections — People & access,
-Data, Connections, Moderation, Content, Instance, Insights — a follow-up on
-the original four-section shape (issue #896 mock) that grouped routes closer
-to "what the table underneath is" than to what an admin is trying to do; the
-seven below are grab-bag-free (each section is one job: manage who can get
-in, manage the data plumbing, manage outbound connections, moderate
-submitted content, curate what analysts see, configure the instance itself,
-watch what's happening). Kept as a plain Python module (not inline in the
-Jinja partial) so `tests/test_web_admin_nav.py` can import it directly and
-assert every `require_admin`-gated, template-rendering GET route in
-`app/web/router.py` is reachable from some entry here — the guard fails
-loudly the moment a new admin page ships without a nav entry.
+Single source of truth for the sidebar's sections. The IA is the admin's
+JOBS, in the order the work happens — the shape decided by the admin
+redesign (docs/superpowers/specs/2026-08-12-admin-redesign-exploration.md):
+
+    Overview                     where am I, what needs me, what's next
+    People                       accounts · groups · tokens
+    Data                         sources · tables · packages · sync · semantics
+    ── maintain ──
+    Library                      what analysts can find: curation + moderation
+    Instance                     the machine: config, secrets, connections
+    Activity                     what's happening: audit, telemetry, adoption
+
+Two intent sections up front (getting people in, getting data to them — with
+access edited from both of those: a group's Access tab and a package's Share
+editor), three maintenance sections behind a divider. This replaced a
+seven-section shape (People & access / Data / Connections / Moderation /
+Content / Instance / Insights) that grouped routes closer to "what the table
+underneath is" than to what an admin is trying to do — Moderation and Content
+were both really "the Library, from two directions", and Connections was
+plumbing that belongs to the Instance. A dedicated Access surface (the
+group-x-package matrix with simulate) is designed but not built; when it
+ships it becomes the third intent section. Kept as a plain Python module
+(not inline in the Jinja partial) so `tests/test_web_admin_nav.py` can import
+it directly and assert every `require_admin`-gated, template-rendering GET
+route in `app/web/router.py` is reachable from some entry here — the guard
+fails loudly the moment a new admin page ships without a nav entry.
 
 Each section:
     key   — stable slug used as the collapse-state key (localStorage) and as
@@ -61,7 +75,7 @@ Deliberately out of scope:
 
 from __future__ import annotations
 
-# The hub, as the sidebar's FIRST ROW — above the seven sections, in none of
+# The hub, as the sidebar's FIRST ROW — above the sections, in none of
 # them. `/admin` is the landing surface every admin area is reachable from
 # (its card grid is the long form of this whole sidebar), so it is a
 # destination in its own right, not a heading.
@@ -82,15 +96,20 @@ from __future__ import annotations
 #
 # No `icon`: rows in this column are label-only (the icons belong to the
 # primary rail, one tier up — see admin-nav.css's header).
-ADMIN_NAV_HOME: dict = {"label": "Dashboard", "href": "/admin"}
+ADMIN_NAV_HOME: dict = {"label": "Overview", "href": "/admin"}
 
+# `divider_before` — the section opens the MAINTAIN half of the column. The
+# partial renders a small labelled rule above it; the flag lives here rather
+# than in the template so the split is part of the pinned IA, not styling.
 ADMIN_NAV_SECTIONS: list[dict] = [
     {
         "key": "people",
-        "label": "People & access",
+        "label": "People",
         "icon": "users",
         "items": [
             {"label": "Users", "href": "/admin/users", "match": ["/admin/users"]},
+            # A group's page carries its Access tab — the grant editor — which
+            # is why /admin/access and /admin/grants fold in here.
             {"label": "Groups", "href": "/admin/groups", "match": ["/admin/groups", "/admin/access", "/admin/grants"]},
             {"label": "Tokens", "href": "/admin/tokens", "match": ["/admin/tokens"]},
         ],
@@ -100,32 +119,26 @@ ADMIN_NAV_SECTIONS: list[dict] = [
         "label": "Data",
         "icon": "data",
         "items": [
+            # Source → tables → packages: the order the work happens. Sync and
+            # the semantic layer are per-source states, kept as rows until the
+            # source-panel surface (spec §3.7) absorbs them as tabs.
             {"label": "Data sources", "href": "/admin/data-sources", "match": ["/admin/data-sources"]},
             {"label": "Tables", "href": "/admin/tables", "match": ["/admin/tables"]},
-            {"label": "Sync", "href": "/admin/sync", "match": ["/admin/sync"]},
             {"label": "Data packages", "href": "/admin/data-packages", "match": ["/admin/data-packages"]},
+            {"label": "Sync", "href": "/admin/sync", "match": ["/admin/sync"]},
             {"label": "Semantic layer", "href": "/admin/semantic-layer", "match": ["/admin/semantic-layer"]},
         ],
     },
     {
-        "key": "connections",
-        "label": "Connections",
-        "icon": "link",
+        "key": "library",
+        "label": "Library",
+        "icon": "package",
+        "divider_before": True,
         "items": [
-            {"label": "MCP sources", "href": "/admin/mcp-sources", "match": ["/admin/mcp-sources", "/admin/mcp-tools"]},
-            {"label": "Linked apps", "href": "/admin/linked-apps", "match": ["/admin/linked-apps"]},
-            {
-                "label": "Instance secrets",
-                "href": "/admin/datasource-credentials",
-                "match": ["/admin/datasource-credentials"],
-            },
-        ],
-    },
-    {
-        "key": "moderation",
-        "label": "Moderation",
-        "icon": "shield-check",
-        "items": [
+            # What analysts can find — curation and moderation are the same
+            # job from two directions, so the old Moderation + Content
+            # sections merge here.
+            {"label": "Marketplaces", "href": "/admin/marketplaces", "match": ["/admin/marketplaces"]},
             {"label": "Store moderation", "href": "/admin/store", "match": ["/admin/store"]},
             {"label": "Flea submissions", "href": "/admin/store/submissions", "match": ["/admin/store/submissions"]},
             {"label": "Store lint", "href": "/admin/store/lint", "match": ["/admin/store/lint"]},
@@ -134,22 +147,13 @@ ADMIN_NAV_SECTIONS: list[dict] = [
                 "href": "/admin/studio/suggestions",
                 "match": ["/admin/studio/suggestions"],
             },
-        ],
-    },
-    {
-        "key": "content",
-        "label": "Content",
-        "icon": "package",
-        "items": [
-            {"label": "Marketplaces", "href": "/admin/marketplaces", "match": ["/admin/marketplaces"]},
-            {"label": "Knowledge digests", "href": "/admin/knowledge-digests", "match": ["/admin/knowledge-digests"]},
             {"label": "Corporate memory", "href": "/admin/corporate-memory", "match": ["/admin/corporate-memory"]},
+            {"label": "Knowledge digests", "href": "/admin/knowledge-digests", "match": ["/admin/knowledge-digests"]},
             {"label": "News", "href": "/admin/news", "match": ["/admin/news"]},
             {"label": "Contribute a skill", "href": "/admin/contribute-skill", "match": ["/admin/contribute-skill"]},
             # Conditional — see the module docstring. `match` stays the bare
-            # prefix: `/admin/studio/suggestions` is its own row under
-            # Moderation and wins on longest-prefix, so the two never light
-            # together.
+            # prefix: `/admin/studio/suggestions` is its own row above and
+            # wins on longest-prefix, so the two never light together.
             {
                 "label": "Studio",
                 "href": "/admin/studio",
@@ -163,6 +167,9 @@ ADMIN_NAV_SECTIONS: list[dict] = [
         "label": "Instance",
         "icon": "tools",
         "items": [
+            # The machine itself — configuration, secrets, and outbound
+            # connections (the old Connections section was Instance plumbing
+            # wearing its own heading).
             {"label": "Server config", "href": "/admin/server-config", "match": ["/admin/server-config"]},
             {"label": "Database backend", "href": "/admin/database", "match": ["/admin/database"]},
             {"label": "Initial workspace", "href": "/admin/initial-workspace", "match": ["/admin/initial-workspace"]},
@@ -171,11 +178,18 @@ ADMIN_NAV_SECTIONS: list[dict] = [
                 "href": "/admin/prompts",
                 "match": ["/admin/prompts", "/admin/agent-prompt", "/admin/workspace-prompt"],
             },
+            {
+                "label": "Instance secrets",
+                "href": "/admin/datasource-credentials",
+                "match": ["/admin/datasource-credentials"],
+            },
+            {"label": "MCP sources", "href": "/admin/mcp-sources", "match": ["/admin/mcp-sources", "/admin/mcp-tools"]},
+            {"label": "Linked apps", "href": "/admin/linked-apps", "match": ["/admin/linked-apps"]},
         ],
     },
     {
-        "key": "insights",
-        "label": "Insights",
+        "key": "activity",
+        "label": "Activity",
         "icon": "rows",
         "items": [
             {"label": "Audit log", "href": "/admin/activity", "match": ["/admin/activity"]},
@@ -187,14 +201,13 @@ ADMIN_NAV_SECTIONS: list[dict] = [
     },
 ]
 
-# API documentation — a footer strip in `_admin_nav.html`, NOT an eighth
+# API documentation — a footer strip in `_admin_nav.html`, NOT a
 # section. These are not `/admin/*` routes (`/documentation/api` is
 # `get_current_user`-gated; `/docs` and `/redoc` are FastAPI's own), so they
 # cannot be section items without widening
 # `tests/test_web_admin_nav.py::test_every_nav_href_is_a_real_admin_route`
-# past the job it exists to do — and an eighth section would break the
-# deliberate seven-section IA that `test_exactly_the_seven_decided_sections_in_order`
-# pins. They landed here when `/admin`'s card grid was replaced by the
+# past the job it exists to do — and another section would break the
+# deliberate IA that `test_exactly_the_decided_sections_in_order` pins. They landed here when `/admin`'s card grid was replaced by the
 # dashboard; the grid was the only place they were linked from.
 #
 # No `match` key: these never render active. The admin column is not visible
@@ -257,7 +270,7 @@ def resolve_home_active(path: str) -> bool:
     """Whether the sidebar's first row (``ADMIN_NAV_HOME``) is the active one.
 
     EXACT match on ``/admin`` — not a prefix. Every ``/admin/*`` path belongs
-    to one of the seven sections, and a prefix rule here would light the hub
+    to one of the sections, and a prefix rule here would light the hub
     row on all of them, giving the column two active rows at once.
     """
     return path.rstrip("/") == "/admin"

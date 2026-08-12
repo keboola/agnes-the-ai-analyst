@@ -367,6 +367,52 @@ html[data-ui-layout="topnav"] .admin-nav {
     margin-bottom: 10px;
 }
 
+/* The way out — quiet by design: muted ink, no fill at rest, the row's own
+   hover. It sits between the title and the list, outside the scroll region,
+   so it is reachable however long the section list grows. */
+.admin-nav__link--back {
+    display: block;
+    padding: 6px var(--admin-nav-inset) 8px;
+    margin-bottom: 4px;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--ds-text-muted);
+    text-decoration: none;
+    border-radius: var(--ds-radius-btn);
+}
+
+.admin-nav__link--back:hover {
+    color: var(--ds-text-secondary);
+    background: var(--admin-nav-hover-bg);
+}
+
+/* The intent/maintain split — a labelled hairline, not a section: People and
+   Data above it are the daily jobs, everything below is maintenance. The
+   label reuses the section-heading vocabulary one shade quieter so it reads
+   as a landmark, never as an operable row. */
+.admin-nav__divider {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 14px 0 6px;
+    padding: 0 var(--admin-nav-inset);
+}
+
+.admin-nav__divider span {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--ds-text-muted);
+    flex: 0 0 auto;
+}
+
+.admin-nav__divider::after {
+    content: '';
+    flex: 1 1 auto;
+    border-top: 1px solid var(--ds-border-light);
+}
+
 .admin-nav__link:hover {
     background: var(--admin-nav-hover-bg);
     color: var(--ds-text-primary);

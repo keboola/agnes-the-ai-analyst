@@ -52,6 +52,11 @@
            directly below instead. #}
         <span class="admin-nav__title">Admin</span>
     </div>
+    {# The way OUT — admin is a place you visit, not where you live. The rail
+       collapses to its icon strip on /admin, so without this row leaving the
+       area means finding a 56px glyph; a labelled link at the top of the
+       column is the mock's answer and the cheaper one. #}
+    <a class="admin-nav__link admin-nav__link--back" href="/dashboard">← Back to the app</a>
     <div class="admin-nav__sections">
         {# The hub, first and outside every section — see admin_nav.py's
            ADMIN_NAV_HOME. Active on `/admin` EXACTLY, so it never competes
@@ -59,6 +64,12 @@
         <a class="admin-nav__link admin-nav__link--home{% if admin_nav_home_active(_admin_path) %} is-active{% endif %}"
            href="{{ admin_nav_home['href'] }}">{{ admin_nav_home['label'] }}</a>
         {% for section in admin_nav_sections %}
+        {% if section.get('divider_before') %}
+        {# The intent/maintain split — part of the pinned IA (admin_nav.py),
+           not styling: People + Data are the daily jobs, everything below is
+           maintenance of an instance that already does them. #}
+        <div class="admin-nav__divider" aria-hidden="true"><span>Maintain</span></div>
+        {% endif %}
         {% set _sec_open = section['key'] == _active_section_key %}
         <div class="admin-nav__group{% if _sec_open %} is-open{% endif %}" data-admin-nav-group="{{ section['key'] }}">
             <button type="button" class="admin-nav__group-hd" data-admin-nav-toggle

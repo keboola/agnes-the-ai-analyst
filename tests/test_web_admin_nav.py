@@ -197,19 +197,30 @@ class TestAdminNavInventoryCoverage:
                     dead.append(href)
         assert not dead, f"nav entr(ies) point at a URL with no matching router route: {dead}"
 
-    def test_exactly_the_seven_decided_sections_in_order(self) -> None:
-        """The IA is a decision, not a projection — pin the seven section
+    def test_exactly_the_decided_sections_in_order(self) -> None:
+        """The IA is a decision, not a projection — pin the section
         keys/labels and their order so a future edit that reshuffles them
-        (or quietly drops one) fails loudly."""
+        (or quietly drops one) fails loudly.
+
+        The shape is the admin redesign's: two INTENT sections first (People,
+        Data — the daily jobs), then the maintenance half behind the divider
+        (Library, Instance, Activity). A dedicated Access section joins the
+        intent half when its surface ships; until then access is edited from
+        a group's Access tab and a package's Share editor."""
         assert [(s["key"], s["label"]) for s in ADMIN_NAV_SECTIONS] == [
-            ("people", "People & access"),
+            ("people", "People"),
             ("data", "Data"),
-            ("connections", "Connections"),
-            ("moderation", "Moderation"),
-            ("content", "Content"),
+            ("library", "Library"),
             ("instance", "Instance"),
-            ("insights", "Insights"),
+            ("activity", "Activity"),
         ]
+
+    def test_the_maintain_divider_opens_the_library_section(self) -> None:
+        """The intent/maintain split is part of the pinned IA: exactly one
+        section carries `divider_before`, and it is the first maintenance
+        one."""
+        flagged = [s["key"] for s in ADMIN_NAV_SECTIONS if s.get("divider_before")]
+        assert flagged == ["library"]
 
     def test_every_section_has_a_distinct_key_and_icon(self) -> None:
         keys = [s["key"] for s in ADMIN_NAV_SECTIONS]
@@ -266,11 +277,11 @@ class TestAdminNavActiveSection:
     def test_active_section_matches_the_active_item_s_section(self) -> None:
         assert resolve_active_section_key("/admin/users") == "people"
         assert resolve_active_section_key("/admin/tables") == "data"
-        assert resolve_active_section_key("/admin/mcp-sources") == "connections"
-        assert resolve_active_section_key("/admin/store/lint") == "moderation"
-        assert resolve_active_section_key("/admin/news") == "content"
+        assert resolve_active_section_key("/admin/mcp-sources") == "instance"
+        assert resolve_active_section_key("/admin/store/lint") == "library"
+        assert resolve_active_section_key("/admin/news") == "library"
         assert resolve_active_section_key("/admin/server-config") == "instance"
-        assert resolve_active_section_key("/admin/activity") == "insights"
+        assert resolve_active_section_key("/admin/activity") == "activity"
 
     def test_hub_page_has_no_active_section_key(self) -> None:
         assert resolve_active_section_key("/admin") is None
@@ -730,28 +741,37 @@ class TestRailCollapseCss:
         assert "function releasePeek" in RAIL_TOGGLE_JS
         assert "pointermove" in RAIL_TOGGLE_JS, "release must not rely on mouseleave alone (the rail shrinks away)"
 
-    def test_peeked_labels_wait_for_the_width_to_hold_them(self) -> None:
-        """`display` can't be transitioned, so every label is laid out at t=0
-        while the column is still 56px, and `.rail` is `overflow: visible` for
-        its popovers — so a label that becomes legible before the width catches
-        up paints OUTSIDE the rail, over the page. One shared delay token,
-        longer than the width's own 120ms, keeps that from happening and keeps
-        the three label rules from drifting apart."""
+    def test_the_column_opens_before_anything_inside_it_appears(self) -> None:
+        """The sequence the whole peek depends on: width first, content second,
+        and the reverse on the way out.
+
+        The width carries a 120ms opening delay (anti pass-through); every reveal
+        trails it on one shared token, so the column is already moving before a
+        label, the conversation list or the collapse toggle starts to appear —
+        and none of them can out-run it. The close token is shorter and undelayed,
+        so content releases while the column is still wide."""
         assert "--rail-peek-text-delay:" in RAIL_CSS
-        delay = RAIL_CSS.split("--rail-peek-text-delay:", 1)[1].split(";", 1)[0].strip()
-        assert float(delay.rstrip("s")) > 0.12, "the label fade must trail the width's 120ms opening delay"
-        # Every rule that brings TEXT back uses the token, none a hardcoded
-        # delay. Keyed on restoring `display` as well as `opacity`, which is
-        # what separates them from the peek's other opacity flips (the orb/
-        # toggle swap in the logo row, which has no text to out-run).
+        assert "--rail-peek-text-out:" in RAIL_CSS
+        reveal = float(RAIL_CSS.split("--rail-peek-text-delay:", 1)[1].split(";", 1)[0].strip().rstrip("s"))
+        out = float(RAIL_CSS.split("--rail-peek-text-out:", 1)[1].split(";", 1)[0].strip().rstrip("s"))
+        assert reveal > 0.12, "the reveal must trail the width's 120ms opening delay, not race it"
+        assert out <= reveal, "closing must not linger longer than opening — content leads on the way out"
+
+        # Every rule that reveals something uses the token, none a hardcoded
+        # delay: the labels, the conversation region AND the collapse toggle,
+        # which is content too and used to appear at t=0 on its own trigger.
         block = self._desktop_block()
-        restores = [
+        reveals = [
             rule
-            for rule in re.findall(r":is\(:hover, :focus-within\)[^{]*\{[^}]*\}", block)
-            if "opacity: 1;" in rule and "display:" in rule
+            for rule in re.findall(r"\.rail-icon-mode[^{]*(?::hover|:focus-within)[^{]*\{[^}]*\}", block)
+            if "opacity: 1;" in rule
         ]
-        assert len(restores) >= 3, restores
-        for rule in restores:
+        assert len(reveals) >= 3, reveals
+        for rule in reveals:
+            # The orb's restore is the one opacity flip with nothing to reveal —
+            # it is already on screen; the peek only undoes the touch swap.
+            if ".rail-logo-row .rail-logo" in rule:
+                continue
             assert "var(--rail-peek-text-delay)" in rule, rule
 
     def test_body_clearance_is_the_icon_width_and_constant(self) -> None:
@@ -792,19 +812,61 @@ class TestRailCollapseCss:
         SAME collapse/expand selector lists as `.rail-i-label` — same
         mechanism as every other row, not a bespoke rule of its own."""
         block = self._desktop_block()
-        # Matched on the SELECTOR LIST, not on an exact declaration block: the
-        # rules carry an opacity pair alongside `display` (the peek's label
-        # fade waits out the width's 120ms opening delay), and pinning the
-        # literal `{ display: none; }` made this test fail for a change that
-        # kept its actual invariant — one shared mechanism — intact.
-        collapsed = re.search(r"\.rail-icon-mode \.rail-logo-txt,(.*?)\{[^}]*display: none;[^}]*\}", block, re.S)
+        # Matched on the SELECTOR LIST, never on the property doing the hiding.
+        # This test has now been rewritten twice for changes that kept its actual
+        # invariant — one shared mechanism — perfectly intact: once when the rules
+        # gained an opacity pair, and again when the mechanism moved off `display`
+        # onto `visibility` (see test_hidden_content_stays_in_flow). The selector
+        # list is the invariant; the declaration is an implementation detail.
+        collapsed = re.search(r"\.rail-icon-mode \.rail-logo-txt,(.*?)\{[^}]*visibility: hidden;[^}]*\}", block, re.S)
         assert collapsed and "rail-getstarted-body" in collapsed.group(1)
-        expanded = re.search(
-            r":is\(:hover, :focus-within\) \.rail-getstarted-body,(.*?)\{[^}]*display: flex;[^}]*\}",
+        revealed = re.search(
+            r":is\(:hover, :focus-within\) \.rail-logo-txt,(.*?)\{[^}]*visibility: visible;[^}]*\}",
             block,
             re.S,
         )
-        assert expanded is not None
+        assert revealed and "rail-getstarted-body" in revealed.group(1)
+
+    def test_hidden_content_stays_in_flow(self) -> None:
+        """The collapsed rail hides its labels and conversation list with
+        `visibility`, NEVER `display`.
+
+        `display: none` took them out of flow, so peeking had to put them back —
+        an un-animatable relayout of the whole column on the frame the pointer
+        arrived, with text laid out in a 40px box before the panel had gained a
+        pixel. That is what made the peek look broken: content moving before the
+        container did. `visibility: hidden` keeps the same boxes in flow, so hover
+        changes nothing but the rail's width, and it keeps the strip inert (a
+        hidden row takes no clicks, where `opacity: 0` alone would leave the
+        conversation list clickable under the pointer)."""
+        # Comments stripped first — this rule's own note recounts the bug by
+        # name, and the first version of this test matched that.
+        css = re.sub(r"/\*.*?\*/", "", self._desktop_block(), flags=re.S)
+        hide = css.split(".rail-icon-mode .rail-logo-txt,", 1)[1].split("}", 1)[0]
+        assert "visibility: hidden;" in hide
+        assert "opacity: 0;" in hide, "opacity is what animates; visibility only steps behind it"
+        assert "display:" not in hide, "display is back in the collapse hide rule — that is the relayout-on-hover bug"
+        # `visibility` is discrete: it MUST be stepped behind the opacity it
+        # guards (0s duration, delayed), or it flips at the wrong end and the
+        # fade it is protecting never renders.
+        assert re.search(r"visibility 0s[^;]*var\(--rail-peek-text-out\)", hide)
+
+    def test_nothing_discrete_flips_on_peek(self) -> None:
+        """The other half of the same bug. Every property the peek changes has
+        to be interpolatable, or it lands in full on the first frame — ahead of
+        the width, which is the one thing that should lead.
+
+        Two were: `justify-content` (centre -> flex-start), which snapped every
+        icon in the column sideways, and the toggle's `position` (absolute ->
+        static), which teleported it from the middle of the 56px strip to the
+        right end of a column that had not widened yet. Icons now travel by
+        padding and the toggle rides a `right` anchor."""
+        block = self._desktop_block()
+        peek_rules = re.findall(r":is\(:hover, :focus-within\)[^{]*\{([^}]*)\}", block)
+        assert peek_rules
+        for body in peek_rules:
+            for prop in ("justify-content:", "position:", "display:", "inset:"):
+                assert prop not in body, f"discrete property {prop} flips on peek: {body!r}"
 
     def test_onboarding_row_icon_is_a_constant_size_ring_in_both_states(self) -> None:
         """The ring's own box (`.rail-getstarted-ring`) must be an unconditional
