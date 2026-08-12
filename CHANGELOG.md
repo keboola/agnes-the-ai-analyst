@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.6] - 2026-08-12
+
 ### Changed
 
 - **The provenance line states the record, not an act nobody verified.** It said each note was "approved by an administrator of this instance" — but the bundle's required tier is selected on `is_required` alone, so a required note ships whatever its status, and an instance running the collector in `auto_publish` mode files mined items as approved with nobody looking. A per-item file now says the note is *marked required*, the rollup says the notes carry the status *approved*, and the single-note file stopped describing "each note below". A title is also rendered as a title — one line — because a title carrying newlines wrote its own heading and its own `— author, date` credit under somebody else's name, which the header then vouched for; the note's BODY is still delivered byte-for-byte, and the header now says so, since what it cannot prevent it must not vouch for. The rollup states how many notes it carries, so a body that forges a section makes a discrepancy the reader can see. Found by Devin Review and an adversarial review of this PR.
