@@ -624,6 +624,151 @@ class TestAFailedReRunPutsEverythingBack(TestChatToolsEndpoint):
         )
 
 
+class TestAResyncKeepsTheAdminsPerToolCuration(TestChatToolsEndpoint):
+    """Devin Review on this PR (sixth round): the re-run upsert was full-row,
+    so pressing "Re-sync token" silently reset every per-tool setting an admin
+    had curated — PII masking stopped, rate limits vanished, a deliberately
+    disabled tool re-armed, and a hand-corrected `mutating` reverted."""
+
+    def _curate(self, tool_id: str, **overrides):
+        from src.repositories import tool_registry_repo
+
+        repo = tool_registry_repo()
+        row = repo.get(tool_id)
+        fields = {
+            k: row[k]
+            for k in (
+                "tool_id",
+                "source_id",
+                "original_name",
+                "exposed_name",
+                "mode",
+                "table_id",
+                "input_schema",
+                "description",
+                "mutating",
+                "pii_fields",
+                "rate_limit_pm",
+                "schedule",
+                "enabled",
+            )
+        }
+        fields.update(overrides)
+        repo.upsert(**fields)
+
+    def test_a_resync_keeps_pii_masking_rate_limit_and_the_off_switch(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-chat-curated")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.keboola_chat_tools import derived_tool_id
+        from src.repositories import tool_registry_repo
+
+        tool_id = derived_tool_id(conn_id, "query_data")
+        self._curate(tool_id, pii_fields=["email"], rate_limit_pm=5, enabled=False)
+
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        row = tool_registry_repo().get(tool_id)
+        assert row["pii_fields"] == ["email"], "re-sync silently stopped PII redaction"
+        assert row["rate_limit_pm"] == 5, "re-sync silently removed the rate limit"
+        assert row["enabled"] is False, "re-sync re-armed a tool the admin had switched off"
+
+    def test_a_resync_keeps_a_hand_corrected_mutating_on_an_unannotated_tool(self, seeded_app):
+        """The CLI explicitly invites this correction ("Review any that are
+        actually read-only…") — the next re-sync must not undo it."""
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-chat-mutfix")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.keboola_chat_tools import derived_tool_id
+        from src.repositories import tool_registry_repo
+
+        # "mystery" ships unannotated (read_only=None) → registered mutating;
+        # the admin, who knows the tool, corrects it.
+        tool_id = derived_tool_id(conn_id, "mystery")
+        assert tool_registry_repo().get(tool_id)["mutating"] is True
+        self._curate(tool_id, mutating=False)
+
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+        assert tool_registry_repo().get(tool_id)["mutating"] is False, (
+            "re-sync reverted the admin's correction on an unannotated tool"
+        )
+
+    def test_an_explicit_not_read_only_claim_still_tightens(self, seeded_app):
+        """Preserving is for the absent-annotation case. When the upstream
+        EXPLICITLY declares a tool not read-only, trusting the claim to
+        restrict is safe — relaxing stays a human decision."""
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-chat-tighten")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.keboola_chat_tools import derived_tool_id
+        from src.repositories import tool_registry_repo
+
+        # "run_job" is explicitly read_only=False upstream.
+        tool_id = derived_tool_id(conn_id, "run_job")
+        self._curate(tool_id, mutating=False)
+
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+        assert tool_registry_repo().get(tool_id)["mutating"] is True, (
+            "an explicitly not-read-only tool stayed relaxed after re-sync"
+        )
+
+
+class TestAnEmptyListingDoesNotMassRevoke(TestChatToolsEndpoint):
+    """Devin Review on this PR (sixth round): reconcile trusted any successful
+    listing. An upstream that starts but answers with an empty list (expired
+    token, a runner resolving an older package) would have retired every
+    registered tool and its grants behind a 201."""
+
+    @staticmethod
+    def _empty_upstream(mp):
+        import connectors.mcp.client as client_mod
+
+        async def _nothing(source, *, caller_user_id=None):
+            return []
+
+        mp.setattr(client_mod, "list_tools_async", _nothing)
+
+    def test_an_empty_listing_on_rerun_is_a_502_and_destroys_nothing(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-chat-emptylist")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.repositories import tool_registry_repo, user_groups_repo
+
+        source_id = derived_source_id(conn_id)
+        before = tool_registry_repo().list_for_source(source_id)
+        everyone = user_groups_repo().get_by_name("Everyone")
+        tool_registry_repo().add_grant(before[0]["tool_id"], everyone["id"])
+
+        with pytest.MonkeyPatch.context() as mp:
+            self._empty_upstream(mp)
+            resp = c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token))
+
+        assert resp.status_code == 502
+        assert "empty tool list" in resp.text
+        after = tool_registry_repo().list_for_source(source_id)
+        assert {t["tool_id"] for t in after} == {t["tool_id"] for t in before}, (
+            "an empty listing retired registered tools"
+        )
+        assert tool_registry_repo().grants_for_tool(before[0]["tool_id"]) == [everyone["id"]], (
+            "an empty listing revoked a grant"
+        )
+
+    def test_a_first_enable_with_an_empty_listing_stays_permissive(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-chat-emptyfirst")
+
+        with pytest.MonkeyPatch.context() as mp:
+            self._empty_upstream(mp)
+            resp = c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token))
+
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["tools_registered"] == 0
+
+
 class TestReEnableRetiresToolsTheUpstreamDropped(TestChatToolsEndpoint):
     """Devin Review on this PR (fourth round): registration was upsert-only.
 

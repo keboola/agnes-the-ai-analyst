@@ -986,12 +986,40 @@ async def _register_derived_tools(source: Dict[str, Any], connection_id: str, co
     # handler was written for. (Devin Review on this PR.)
     tools = await asyncio.wait_for(list_tools_async(source), timeout=CHAT_TOOLS_INTROSPECT_TIMEOUT_S)
     registry = tool_registry_repo()
+    existing = {r["tool_id"]: r for r in registry.list_for_source(source["id"])}
+    # An upstream that starts but lists nothing (expired token, a runner that
+    # resolved an older package) must not be read as "the server dropped all
+    # its tools" — reconciling on it would retire every registered tool AND
+    # its grants, unrecoverably, behind a 201. Refuse into the 502 path
+    # instead; a first enable has nothing to destroy and stays permissive.
+    # (Devin Review on this PR, sixth round.)
+    if not tools and existing:
+        raise RuntimeError("the upstream answered with an empty tool list — refusing to retire the registered tools")
     mutating_count = 0
     for tool in tools:
-        # `read_only is True` — not `not read_only`. An upstream that
-        # annotates nothing yields None, and treating that as read-only
-        # would mark every tool of such a server safe to call unattended.
-        mutating = tool.read_only is not True
+        row = existing.get(derived_tool_id(connection_id, tool.name))
+        if row is None:
+            # `read_only is True` — not `not read_only`. An upstream that
+            # annotates nothing yields None, and treating that as read-only
+            # would mark every tool of such a server safe to call unattended.
+            mutating = tool.read_only is not True
+            curated: Dict[str, Any] = {}
+        else:
+            # A re-run re-derives what is THIS release's (names, schema,
+            # description) and keeps what is the ADMIN's: PII masking, rate
+            # limit and the off-switch are per-tool curation that a token
+            # re-sync must not silently reset. `mutating` is the admin's too
+            # once the row exists — the CLI explicitly invites correcting it —
+            # but an upstream that EXPLICITLY declares a tool not-read-only
+            # re-tightens: trusting an explicit claim to restrict is safe,
+            # relaxing stays a human decision.
+            # (Devin Review on this PR, sixth round.)
+            mutating = bool(row["mutating"]) or tool.read_only is False
+            curated = {
+                "pii_fields": row["pii_fields"],
+                "rate_limit_pm": row["rate_limit_pm"],
+                "enabled": row["enabled"],
+            }
         mutating_count += int(mutating)
         registry.upsert(
             tool_id=derived_tool_id(connection_id, tool.name),
@@ -1002,6 +1030,7 @@ async def _register_derived_tools(source: Dict[str, Any], connection_id: str, co
             input_schema=tool.input_schema,
             description=tool.description,
             mutating=mutating,
+            **curated,
         )
     # Reconcile: a tool the upstream no longer offers must not stay callable.
     # `derived_tool_id` is deterministic per name, so the loop above updates
