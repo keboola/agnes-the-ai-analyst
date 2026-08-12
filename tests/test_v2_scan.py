@@ -464,7 +464,7 @@ class TestMaxResultBytesTruncation:
         monkeypatch.setattr(
             query_mod,
             "run_remote_select_to_arrow",
-            lambda conn, user, sql, *, bq, quota: result,
+            lambda conn, user, sql, *, bq, quota, policy_info=None: result,
         )
         monkeypatch.setattr(v2_scan, "_max_result_bytes", lambda: cap)
         conn = reload_db.get_system_db()

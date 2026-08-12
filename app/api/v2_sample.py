@@ -16,6 +16,7 @@ from src.access_policy import (
     PolicyIdentityUnresolvable,
     policied_from_sql,
     policied_relation,
+    row_scope_payload,
 )
 from app.api.v2_cache import TTLCache
 from connectors.bigquery.access import BqAccess, BqAccessError, get_bq_access
@@ -246,6 +247,12 @@ def build_sample(
         if cached is not None:
             return cached
 
+    # Task 11 (§10): populated below only on the local-parquet branch, which
+    # is the only one that currently resolves through policied_relation —
+    # the BQ-sample branch keeps today's unfiltered behavior (Task 10 note
+    # in _fetch_bq_sample above), so there is nothing to disclose there yet.
+    row_scope: dict | None = None
+
     if source_type == "bigquery" and (row.get("query_mode") or "") != "materialized":
         rows = _fetch_bq_sample(bq, row.get("bucket") or "", row.get("source_table") or table_id, n)
     else:
@@ -284,6 +291,11 @@ def build_sample(
             raise HTTPException(status_code=403, detail={"reason": "policy_identity_unresolvable"})
         except PolicyError as exc:
             raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": exc.table_id})
+        # Task 11 (§10): disclose that these sample rows are a caller-scoped
+        # slice, not the whole table. `None` (no key added below) for the
+        # inert/admin-bypass case, matching /api/query's row_scope contract.
+        if relation.policied:
+            row_scope = row_scope_payload([relation.table_id])
 
         c = _open_duckdb(":memory:")
         try:
@@ -311,6 +323,8 @@ def build_sample(
 
     rows = _sanitize_for_json(rows)
     payload = {"table_id": table_id, "rows": rows, "source": source_type}
+    if row_scope is not None:
+        payload["row_scope"] = row_scope
     if not has_access_policy:
         _sample_cache.set(cache_key, payload)
     return payload

@@ -1,6 +1,7 @@
 """POST /api/v2/scan and POST /api/v2/scan/estimate (spec §3.4 + §3.5)."""
 
 from __future__ import annotations
+import json
 import logging
 import re
 import time
@@ -22,6 +23,7 @@ from src.access_policy import (
     PolicyIdentityUnresolvable,
     policied_from_sql,
     policied_relation,
+    row_scope_payload,
 )
 from app.api.where_validator import (
     safe_where_predicate,
@@ -450,13 +452,23 @@ def run_scan(
             raise ValueError("from_query is mutually exclusive with select/where/order_by/limit")
         from app.api.query import run_remote_select_to_arrow
 
+        # Task 11 (§10): `policy_info` reports back which tables (if any)
+        # this raw SELECT touched a policy on -- `run_remote_select_to_arrow`
+        # has no response envelope of its own to carry it. Folded into the
+        # caller's own `job_info` so `scan_endpoint` builds the
+        # `X-Agnes-Row-Scope` header the same way for both branches of
+        # `run_scan`.
+        policy_info: dict = {}
         table = run_remote_select_to_arrow(
             conn,
             user,
             raw_request["from_query"],
             bq=bq,
             quota=quota,
+            policy_info=policy_info,
         )
+        if job_info is not None and policy_info.get("policied_table_ids"):
+            job_info["policied_table_ids"] = policy_info["policied_table_ids"]
         return arrow_to_ipc_bytes_capped(table, _max_result_bytes())
 
     req = ScanRequest(**raw_request)
@@ -528,6 +540,12 @@ def run_scan(
                 raise HTTPException(status_code=403, detail={"reason": "policy_identity_unresolvable"})
             except PolicyError as exc:
                 raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": exc.table_id})
+            # Task 11 (§10): report through job_info, the same out-param
+            # _run_bq_scan already uses for BQ job metadata, so scan_endpoint
+            # builds the X-Agnes-Row-Scope header from one place regardless
+            # of which branch of run_scan actually ran.
+            if relation.policied and job_info is not None:
+                job_info["policied_table_ids"] = [relation.table_id]
 
             local = _open_duckdb(":memory:")
             try:
@@ -636,7 +654,18 @@ def scan_endpoint(
             )
         except Exception:
             logger.exception("audit_log write failed for snapshot.create; continuing")
-        return Response(content=ipc, media_type=CONTENT_TYPE)
+        # Task 11 (§10): this endpoint returns raw Arrow IPC bytes -- no JSON
+        # body to carry `row_scope` -- so disclose via a response header
+        # instead, built from whichever branch of `run_scan` populated
+        # `job_info["policied_table_ids"]`. `json.dumps` default
+        # `ensure_ascii=True` keeps the em dash in the note ASCII/Latin-1
+        # safe, which raw HTTP header encoding requires (Starlette encodes
+        # header values as latin-1).
+        response_headers: dict[str, str] = {}
+        row_scope = row_scope_payload(job_info.get("policied_table_ids"))
+        if row_scope is not None:
+            response_headers["X-Agnes-Row-Scope"] = json.dumps(row_scope)
+        return Response(content=ipc, media_type=CONTENT_TYPE, headers=response_headers or None)
     except HTTPException as exc:
         # `run_remote_select_to_arrow` (from_query mode, #616) raises
         # HTTPException directly for RBAC / SELECT-only / registry

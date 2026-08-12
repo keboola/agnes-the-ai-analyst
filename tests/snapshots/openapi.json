@@ -6853,6 +6853,18 @@
             "title": "Row Count",
             "type": "integer"
           },
+          "row_scope": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Row Scope"
+          },
           "rows": {
             "items": {},
             "title": "Rows",
@@ -10532,7 +10544,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.83.7"
+    "version": "0.83.5"
   },
   "openapi": "3.1.0",
   "paths": {

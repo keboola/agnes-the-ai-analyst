@@ -655,3 +655,40 @@ def effective_schema(table_id: str, principal) -> list[dict] | None:
             seen_names.add(r[0])
 
     return columns
+
+
+# ---------------------------------------------------------------------------
+# Task 11 -- disclosure (§10). "Silent partial scope is forbidden"
+# (command-ux.md) applies with particular force to row filtering: an analyst
+# (or an agent, with more confidence) who sums a policied table's own column
+# and reports the total has no way to know it was never the whole table.
+# Tasks 7/8 already collect `policied_table_ids` at every enforcement site
+# (`rewrite_sql`'s third return value; a policied `PoliciedRelation.table_id`
+# for the `table_id`-shaped surfaces) -- this is the ONE place that turns
+# that list into the `row_scope` envelope every read surface exposes, so the
+# sentence an analyst sees on `/api/query`, `/api/v2/sample`, the
+# `X-Agnes-Row-Scope` header `/api/v2/scan` sets in place of a JSON body, and
+# the CLI's `[scope]` line is authored once and cannot drift across surfaces.
+# ---------------------------------------------------------------------------
+
+
+def row_scope_payload(policied_table_ids: "list[str] | tuple[str, ...] | None") -> dict | None:
+    """Build the ``row_scope`` disclosure envelope (§10) for a response that
+    read through one or more policied tables.
+
+    Returns ``None`` -- never an empty-list envelope -- when
+    ``policied_table_ids`` is empty (or ``None``), so every read surface can
+    gate disclosure with a plain ``if row_scope:`` and a JSON caller sees an
+    absent/null key rather than a misleading ``{"policied_tables": [], ...}``.
+
+    De-dupes while preserving first-seen order (a query touching the same
+    policied table via two aliases still names it once).
+    """
+    ids = list(dict.fromkeys(policied_table_ids or []))
+    if not ids:
+        return None
+    names = ", ".join(f"'{i}'" for i in ids)
+    return {
+        "policied_tables": ids,
+        "note": f"rows in {names} are filtered by an access policy — this is your slice, not the whole table",
+    }

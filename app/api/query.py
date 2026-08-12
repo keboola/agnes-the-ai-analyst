@@ -42,6 +42,7 @@ from src.access_policy import (
     PolicyNameCollision,
     policied_relation,
     rewrite_sql,
+    row_scope_payload,
 )
 from src.audit_helpers import client_kind_from_user
 from src.db import get_analytics_db_readonly
@@ -525,6 +526,14 @@ class QueryResponse(BaseModel):
     # BigQuery dry-run scan estimate (bytes) for `query_mode='remote'`
     # queries; ``None`` for local DuckDB queries (no BQ tables involved).
     bytes_scanned: Optional[int] = None
+    # Task 11 (§10): disclosure envelope when this result read through one
+    # or more access-policied tables -- ``{"policied_tables": [id, ...],
+    # "note": str}``, built by ``row_scope_payload``. ``None`` when no table
+    # this query touched carries a policy, or the caller is the admin
+    # bypass (§12) -- either way the result is the raw table, so there is
+    # nothing to disclose. "Silent partial scope is forbidden"
+    # (command-ux.md) applies to row filtering as much as to source scope.
+    row_scope: Optional[dict] = None
 
 
 def _run_internal_query(
@@ -1368,16 +1377,17 @@ def execute_query(
         # Computed before building the response so it can be surfaced to
         # REST/CLI/MCP consumers; ``None`` for local queries (no BQ tables).
         _bytes_scanned = sum(b for _, _, b in _dry_run_set) if _dry_run_set else None
-        # Task 11: policied_table_ids (from the rewrite_sql call above)
-        # surfaces here as response.row_scope, disclosing to the caller that
-        # this result is a caller-scoped slice, not the raw table — not
-        # added to QueryResponse in this task.
+        # Task 11 (§10): policied_table_ids (from the rewrite_sql call above)
+        # discloses here as response.row_scope -- None unless this query
+        # actually touched a policied table (empty list otherwise, or the
+        # admin bypass, per rewrite_sql's own contract).
         response = QueryResponse(
             columns=columns,
             rows=serializable_rows,
             row_count=len(serializable_rows),
             truncated=truncated,
             bytes_scanned=_bytes_scanned,
+            row_scope=row_scope_payload(policied_table_ids),
         )
         # Determine action: remote when BQ tables were involved (_dry_run_set non-empty),
         # local otherwise.
@@ -2601,7 +2611,7 @@ def _bq_quota_and_cap_guard(
         )
 
 
-def run_remote_select_to_arrow(conn, user, sql, bq, quota):
+def run_remote_select_to_arrow(conn, user, sql, bq, quota, *, policy_info: Optional[dict] = None):
     """Materialize a raw SELECT against BigQuery into an Arrow table (#616).
 
     Backs the snapshot ``from_query`` mode used by ``agnes query --remote
@@ -2620,6 +2630,15 @@ def run_remote_select_to_arrow(conn, user, sql, bq, quota):
     result is fully materialized either way, so this is shape-equivalent. Queries
     that can't be pushed (cross-source joins, DuckDB-only syntax) fall back to
     the extension path unlabeled.
+
+    ``policy_info`` (Task 11, §10): an optional caller-supplied dict, mutated
+    in place with ``{"policied_table_ids": [...]}`` when this SELECT touched
+    an access-policied table -- the disclosure counterpart of ``job_info`` in
+    ``app/api/v2_scan.py``'s ``_run_bq_scan``. This function returns a bare
+    ``pyarrow.Table`` with no envelope of its own to carry the field, so
+    ``/api/v2/scan``'s ``from_query`` branch passes a dict here to build the
+    ``X-Agnes-Row-Scope`` response header. Callers that don't care leave it
+    ``None`` and see no behavior change.
 
     Returns a ``pyarrow.Table`` of the FULL result. Raises:
         HTTPException — on RBAC / registry / SELECT-only rejection (same
@@ -2832,9 +2851,13 @@ def run_remote_select_to_arrow(conn, user, sql, bq, quota):
                     quota.record_bytes(user=user_id, n=total_bq_bytes)
                 except Exception:
                     logger.warning("quota record_bytes failed for user=%s", user_id)
-        # Task 11: policied_table_ids (from the rewrite_sql call above) has
-        # no carrier on this function's plain pyarrow.Table return — the
-        # v2_scan caller will need it for the X-Agnes-Row-Scope header.
+        # Task 11 (§10): this function's plain pyarrow.Table return has no
+        # envelope of its own to carry policied_table_ids (from the
+        # rewrite_sql call above) — report it through policy_info instead,
+        # so /api/v2/scan's from_query branch can build the
+        # X-Agnes-Row-Scope header.
+        if policy_info is not None:
+            policy_info["policied_table_ids"] = list(policied_table_ids)
         return table
     finally:
         analytics.close()

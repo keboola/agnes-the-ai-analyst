@@ -1273,6 +1273,12 @@ def _table_manifest_entry(state: dict, reg: dict) -> dict:
         # #607 — distribution flag. Listed in the manifest (catalog + RBAC)
         # but `agnes pull` skips its parquet download when true.
         "server_only": bool(reg.get("server_only")),
+        # Task 11 (§10 item 4) — disclosure marker, not an enforcement gate:
+        # `agnes pull` reads this to name policied tables in a
+        # `.claude/rules/` entry BEFORE an agent writes a query, the only
+        # link in the disclosure chain that reaches an agent's context
+        # ahead of the fact rather than after a response comes back.
+        "access_policy": bool(reg.get("access_policy_sql")),
         "source_type": reg.get("source_type") or "",
         "updated": (state.get("last_sync").isoformat() if state.get("last_sync") else None),
     }
