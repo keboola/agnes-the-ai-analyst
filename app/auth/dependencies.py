@@ -45,6 +45,20 @@ _AUTH_DETAIL_BY_REASON = {
     "agent_pat_agent_deleted": "Agent deleted",
 }
 
+# X-StorageApi-Token header rejections → 401 detail. Reasons come from
+# app.auth.keboola_header.resolve_header_user.
+_KEBOOLA_HEADER_DETAIL = {
+    "keboola_user_unknown": "No account exists for this Keboola identity — sign in via the web login first",
+    "not_master_token": "Only a master (admin) Storage API token can authenticate",
+    "no_admin_identity": "The verified token carries no admin identity",
+    "project_mismatch": "The token belongs to a different Keboola project than this instance",
+    "role_forbidden": "This Keboola project role is not permitted on this instance",
+    "deactivated": "Account deactivated",
+    "invalid_token": "Invalid or expired token",
+    "verify_failed": "Could not verify the token against the Keboola stack",
+    "not_configured": "Keboola token authentication is not configured",
+}
+
 
 def is_local_dev_mode() -> bool:
     """True when LOCAL_DEV_MODE=1 — unsafe for production, bypasses auth."""
@@ -249,6 +263,28 @@ def get_current_user(
         token = request.cookies.get("access_token")
 
     if not token:
+        # X-StorageApi-Token is consulted ONLY when no bearer credential and
+        # no session cookie are present — a Storage token never shadows an
+        # established Agnes credential (spec precedence rule).
+        sapi_token = request.headers.get("X-StorageApi-Token") if request is not None else None
+        if sapi_token:
+            from app.auth.keboola_header import enabled as keboola_header_enabled
+            from app.auth.keboola_header import resolve_header_user
+
+            if keboola_header_enabled():
+                user, kb_reason = resolve_header_user(sapi_token, request)
+                if user:
+                    _attach_admin_flag(user, conn)
+                    return _stash_user(request, user)
+                if kb_reason == "rate_limited":
+                    raise HTTPException(
+                        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                        detail="Too many token verification attempts — retry later",
+                    )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=_KEBOOLA_HEADER_DETAIL.get(kb_reason, "Invalid or expired token"),
+                )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing or invalid Authorization header",
@@ -375,6 +411,17 @@ def require_session_token(request: Request, user: dict = Depends(get_current_use
         token = auth.removeprefix("Bearer ")
     if not token and request:
         token = request.cookies.get("access_token")
+    if not token and request.headers.get("x-storageapi-token"):
+        # A request authenticated by the X-StorageApi-Token header is a
+        # non-interactive service credential (get_current_user resolved it) —
+        # it must never mint PATs, connect MCP, or manage agents, exactly
+        # like a PAT. Without this check the header path would be classified
+        # as an interactive session because only Authorization/cookie are
+        # inspected here.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This endpoint requires an interactive session, not a Storage API token",
+        )
     if token:
         from app.auth.scheduler_token import is_scheduler_token
 

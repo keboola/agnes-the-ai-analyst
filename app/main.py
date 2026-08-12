@@ -1937,7 +1937,10 @@ def create_app() -> FastAPI:
                 # Bearer callers (CLI/PAT/service tokens) have no cookie jar
                 # to re-elevate with — the instance-wide default must not
                 # apply to them (an explicit paused cookie still would).
-                bearer_auth=request.headers.get("authorization", "").lower().startswith("bearer "),
+                bearer_auth=(
+                    request.headers.get("authorization", "").lower().startswith("bearer ")
+                    or bool(request.headers.get("x-storageapi-token"))
+                ),
             )
         )
         try:
