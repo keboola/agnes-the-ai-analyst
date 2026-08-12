@@ -431,7 +431,11 @@ def _detail_template(base: str) -> str:
 #: `semantics` — see below.
 _RAIL_DETAIL_BACK: dict[str, tuple[str, str]] = {
     "data_package": ("/library?section=data_package", "All data packages"),
-    "memory_domain": ("/library?section=memory_domain", "All memory"),
+    # Memory is a rail destination again (#1276 restored the nav entry the
+    # redesign dropped), so its browse home is somewhere a rail caller really
+    # arrives from — back keeps the same target the topnav passes. Library
+    # arrivals still override via ?source=library (memory_domain_detail.html).
+    "memory_domain": ("/corporate-memory", "All memory domains"),
     "recipe": ("/library?section=recipe", "All recipes"),
     "plugin": ("/library?section=plugin", "All plugins"),
     "skill": ("/library?section=skill", "All skills"),
@@ -6442,8 +6446,7 @@ async def admin_semantic_layer_page(
     # here. So the page says a subset is shown, without a number it cannot
     # compute honestly. (Devin Review on this PR.)
     ctx["unresolved_tables_truncated"] = any(
-        int(e.get("unresolved_tables_total") or 0) > len(e.get("unresolved_tables") or [])
-        for e in last_by_ref.values()
+        int(e.get("unresolved_tables_total") or 0) > len(e.get("unresolved_tables") or []) for e in last_by_ref.values()
     )
     ctx["skipped_unresolved_total"] = sum(int(e.get("skipped_unresolved_table") or 0) for e in last_by_ref.values())
     ctx["default_connection_id"] = default_id
