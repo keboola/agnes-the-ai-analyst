@@ -153,3 +153,40 @@ def project_from_extract(
             len(unlinkable_ids),
         )
     return project(source_id, linkable, repo=repo, keep_external_ids=unlinkable_ids)
+
+
+def project_from_keboola_connection(
+    connection_id: str,
+    *,
+    repo: Optional[Any] = None,
+) -> ProjectionResult:
+    """Ingest one Keboola connection's hosted data apps into the registry.
+
+    The connection-based sibling of :func:`project_from_extract`: same
+    reconcile, different source of records. `project_from_extract` reads a
+    table an MCP lister materialized; this reads Keboola's own REST contracts
+    directly, because the Keboola MCP server's `get_data_apps` returns a
+    human-readable text block that the materialize path cannot parse (see
+    `keboola_adapter`'s note).
+
+    The connection id doubles as the projection's `connection_id`, so linked
+    rows are scoped and pruned per connection exactly as before.
+    """
+    from src.repositories import connection_secrets_repo, source_connections_repo
+
+    conn_row = source_connections_repo().get(connection_id)
+    if not conn_row:
+        raise ValueError(f"unknown source connection: {connection_id}")
+    stack_url = ((conn_row.get("config") or {}) or {}).get("stack_url") or ""
+    token = connection_secrets_repo().get(connection_id)
+    if not token:
+        raise ValueError(f"source connection {connection_id} has no stored token")
+
+    records, keep = adapter.fetch_records(stack_url, token)
+    logger.info(
+        "linked projection [%s]: keboola API returned %d linkable app(s), %d unlinkable",
+        connection_id,
+        len(records),
+        len(keep),
+    )
+    return project(connection_id, records, repo=repo, keep_external_ids=keep)

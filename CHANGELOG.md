@@ -10,6 +10,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **Hosted data apps from a connected Keboola project can finally be ingested.** The linked-app pipeline had exactly one ingest path — a `keboola_data_apps` table materialized from an MCP lister — and it does not work against Keboola's own MCP server: verified against a live keboola-mcp-server 1.74.6, `get_data_apps` answers with a compact human-readable block (`data_apps[0]: links[1]{type,title,url}: …`) rather than the list-of-dicts the materialize path requires, and it ships only `TextContent`, so there is no `structuredContent` to fall back to. The run fails with "did not return parseable JSON" and no rows are ever projected. `project_from_keboola_connection(connection_id)` reads Keboola's two stable REST contracts directly instead, joined because neither is sufficient alone: `GET data-science.<stack>/apps` carries the numeric id, the public URL and the `configId` but a **null name** on every row, while `GET connection.<stack>/v2/storage/components/keboola.data-apps/configs` carries the name and description but no URL (the config holds `slug`/`type`/`git`; the address is assigned at deploy). Credentials and project scope come from the existing source connection, so this inherits the connection↔project binding rather than re-deriving it. Rows whose `componentId` is not `keboola.data-apps` are dropped — the same endpoint returns `keboola.sandboxes` entries whose `url` is a Snowflake warehouse host, and linking one would put a database endpoint behind an "Open" button. An app whose config was deleted upstream is still named (by id) rather than rendered blank, a deleted config never names anything, and an app with no usable URL is kept out of the prune rather than read as a deletion. The `javascript:` scheme gate on `external_url` applies here too — this is the only writer of that field. Verified end to end against a live project: 8 upstream rows → 6 linked apps with their real names and URLs, 2 sandboxes correctly excluded, and the reconcile idempotent across repeated runs (`created=6` then `updated=6, hidden=0`).
+
+
 ## [0.83.7] - 2026-08-12
 
 ### Fixed

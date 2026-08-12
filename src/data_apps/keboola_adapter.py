@@ -101,3 +101,117 @@ def map_row(raw: Dict[str, Any]) -> LinkedAppRecord:
         description=pick("description", "desc"),
         external_url=_safe_url(pick("external_url", "url", "app_url", "deployment_url")),
     )
+
+
+# ---------------------------------------------------------------------------
+# Storage/Data-Science API ingest — the path that actually works today
+# ---------------------------------------------------------------------------
+#
+# The MCP lister (`map_row` above, fed by a materialized `keboola_data_apps`
+# table) stays for sources that emit JSON rows. It does NOT work against the
+# Keboola MCP server: `get_data_apps` returns a compact human-readable text
+# block (`data_apps[0]: links[1]{...}`) rather than the list-of-dicts the
+# materialize path requires, and it ships only `TextContent` blocks, so there
+# is no `structuredContent` to fall back to. Verified against a live server
+# (keboola-mcp-server 1.74.6): the materialize run fails with "did not return
+# parseable JSON".
+#
+# So this path reads the two stable REST contracts directly. Neither alone is
+# enough, which is why they are joined here rather than one being picked:
+#
+#   * `GET data-science.<stack>/apps`  — the deployment truth: numeric `id`,
+#     the public `url`, `state`, and the `configId` that ties it to storage.
+#     It carries NO usable name (`name` is null on every row observed).
+#   * `GET connection.<stack>/v2/storage/components/keboola.data-apps/configs`
+#     — the naming truth: `name` and `description` per config id. It carries
+#     no URL: the config's `parameters.dataApp` holds `slug`/`type`/`git`, and
+#     the public address is assigned at deploy time, not stored here.
+#
+# Both are token-scoped to the project the connection is bound to, so this
+# inherits that binding rather than re-deriving it.
+
+_DATA_APPS_COMPONENT = "keboola.data-apps"
+
+
+def _data_science_base(stack_url: str) -> str:
+    """`https://connection.<stack>` → `https://data-science.<stack>`.
+
+    The Data Science service is a sibling host of the Storage endpoint on
+    every Keboola stack, and the connection stores only the latter. The
+    Keboola MCP server derives it the same way.
+    """
+    base = (stack_url or "").strip().rstrip("/")
+    if not base:
+        return ""
+    return base.replace("://connection.", "://data-science.", 1)
+
+
+def records_from_apis(apps: Any, configs: Any) -> tuple[list[LinkedAppRecord], list[str]]:
+    """Join a Data-Science `/apps` payload with storage component configs.
+
+    Returns ``(records, keep_external_ids)`` — the second list is app ids seen
+    upstream that could not be turned into a record (no usable URL), which
+    `linked_projection.project` treats as present-but-unlinkable so a metadata gap
+    never reads as a deletion.
+
+    Rows whose ``componentId`` is not ``keboola.data-apps`` are dropped: the
+    same endpoint also returns ``keboola.sandboxes`` entries (Snowflake
+    workspaces, whose ``url`` is a warehouse host) and linking those as "apps"
+    would put a database endpoint behind an "Open" button.
+    """
+    names: Dict[str, tuple[str, str]] = {}
+    for cfg in configs or []:
+        if not isinstance(cfg, dict) or cfg.get("isDeleted"):
+            continue
+        names[str(cfg.get("id"))] = (str(cfg.get("name") or ""), str(cfg.get("description") or ""))
+
+    records: list[LinkedAppRecord] = []
+    keep: list[str] = []
+    for app in apps or []:
+        if not isinstance(app, dict) or str(app.get("componentId")) != _DATA_APPS_COMPONENT:
+            continue
+        app_id = str(app.get("id") or "")
+        if not app_id:
+            continue
+        name, description = names.get(str(app.get("configId")), ("", ""))
+        url = _safe_url(str(app.get("url") or ""))
+        if not url:
+            # Present upstream, not linkable — exempt from the prune.
+            keep.append(app_id)
+            continue
+        records.append(
+            LinkedAppRecord(
+                external_app_id=app_id,
+                # An app whose config was deleted out from under it still has a
+                # deployment; name it by id rather than showing a blank row.
+                name=name or f"Keboola app {app_id}",
+                description=description,
+                external_url=url,
+            )
+        )
+    return records, keep
+
+
+def fetch_records(stack_url: str, token: str, *, timeout: float = 30.0) -> tuple[list[LinkedAppRecord], list[str]]:
+    """Fetch both payloads for one connection and join them.
+
+    Network errors propagate — the caller decides whether a failed sync is
+    worth surfacing. What must NOT happen is an empty list standing in for a
+    failure: `linked_projection.project` would read that as "everything is gone",
+    and its own empty-result valve is a backstop, not a licence to swallow
+    exceptions here.
+    """
+    import httpx
+
+    headers = {"X-StorageApi-Token": token}
+    ds = _data_science_base(stack_url)
+    storage = (stack_url or "").strip().rstrip("/")
+    if not ds or not storage:
+        raise ValueError("keboola linked apps: connection has no stack_url")
+
+    with httpx.Client(timeout=timeout, headers=headers) as client:
+        apps = client.get(f"{ds}/apps", params={"limit": 100, "offset": 0})
+        apps.raise_for_status()
+        configs = client.get(f"{storage}/v2/storage/components/{_DATA_APPS_COMPONENT}/configs")
+        configs.raise_for_status()
+    return records_from_apis(apps.json(), configs.json())
