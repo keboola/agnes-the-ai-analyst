@@ -329,6 +329,8 @@ Gate endpoints with `Depends(require_admin)` (app-level mutations) or `Depends(r
 
 Admin UI: `/admin/access`. CLI: `agnes admin group …` and `agnes admin grant …`. Full reference: [`docs/RBAC.md`](docs/RBAC.md).
 
+A third, optional layer sits above these two and answers a narrower question: not "can this group reach the table", but "what does a caller who can reach it actually see". An admin may attach **one SQL policy** to a registered table — only one that never leaves the server, i.e. `query_mode='remote'` or `server_only=true` — that Agnes substitutes for the table on every server-side read, filtering rows and masking columns by the caller's `$user_email` / `$user_id` / `$user_groups`. Off by default behind `access_policies.enabled`. Full reference: [`docs/table-access-policies.md`](docs/table-access-policies.md).
+
 ## Extensibility
 
 ### Data Sources (extract.duckdb contract)
