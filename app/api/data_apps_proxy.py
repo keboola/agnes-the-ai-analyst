@@ -319,12 +319,46 @@ def _not_running_response(slug: str, state: str, accepts_json: bool) -> Response
     return Response(_STOPPED_HTML.format(state=state), media_type="text/html", status_code=409)
 
 
+def _readiness_poll_url(request: Request, slug: str) -> str:
+    """Where the holding page should poll for readiness.
+
+    Relative by default — correct for the path-prefix form, and it avoids
+    pinning a host into the page.
+
+    ABSOLUTE when the request arrived on an app subdomain.
+    `DataAppSubdomainMiddleware` rewrites EVERY path on `<slug>.<base>` to
+    `/apps/<slug>/…`, with no carve-out for `/api/*` — so a relative poll
+    became `/apps/<slug>/api/data-apps/<slug>/readiness`, landed back on the
+    proxy, got the holding page's own HTML, threw in `r.json()`, was
+    swallowed by the `catch`, and the page spun forever while the app was up
+    (Devin Review on this PR).
+
+    A carve-out in the middleware would be the wrong fix: an app may serve
+    its own `/api/*` — the scaffolded dashboard does exactly that — so
+    diverting those to Agnes would break the app it is hosting.
+    """
+    if not request.scope.get("agnes_data_app_subdomain"):
+        return f"/api/data-apps/{slug}/readiness"
+    from app.instance_config import get_public_url
+
+    base = (get_public_url() or "").rstrip("/")
+    # With no configured public URL there is nothing to point at but the
+    # subdomain itself, which is what swallows the poll. Keep the relative
+    # form (unchanged behaviour) rather than guessing a host.
+    return f"{base}/api/data-apps/{slug}/readiness" if base else f"/api/data-apps/{slug}/readiness"
+
+
 def _waking_response(request: Request, slug: str, accepts_json: bool) -> Response:
     if accepts_json:
         return JSONResponse({"status": "waking"}, status_code=503)
     from app.web.router import templates
 
-    return templates.TemplateResponse(request, "data_app_waking.html", {"slug": slug}, status_code=503)
+    return templates.TemplateResponse(
+        request,
+        "data_app_waking.html",
+        {"slug": slug, "readiness_url": _readiness_poll_url(request, slug)},
+        status_code=503,
+    )
 
 
 #: How long after a deploy a live-but-silent container is still read as
@@ -384,6 +418,7 @@ def _within_start_grace(row: dict) -> bool:
         return False
     now = datetime.now(timezone.utc)
     return abs((now - max(stamps)).total_seconds()) < _START_GRACE_SECONDS
+
 
 def _error_response(row: dict) -> Response:
     return JSONResponse(

@@ -3331,7 +3331,16 @@ async def library_page(
             # Grants on this type are keyed by SLUG (see `_can_view`), not id.
             _app_grants = _granted_ids(ResourceType.DATA_APP.value)
 
-            for a in _apps_repo().list(include_drafts=False):
+            # `limit=100000` like every sibling listing in this function
+            # (`data_packages_repo`, `memory_domains_repo`, `recipes_repo`).
+            # The repo defaults to 1000 ordered `created_at DESC`, and that
+            # cap applies BEFORE the ownership/grant filter below — so on an
+            # instance with more apps than that, a caller's older apps drop
+            # off their own Library silently, and under the rail chrome this
+            # page is the only way to click through to one. Linked rows are
+            # created one-per-upstream-app by the MCP listers, so the count is
+            # not bounded by what people build by hand (Devin Review).
+            for a in _apps_repo().list(include_drafts=False, limit=100000):
                 if a.get("state") == "linked_hidden":
                     continue
                 if a.get("owner_user_id") != uid and a.get("slug") not in _app_grants:

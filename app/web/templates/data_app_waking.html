@@ -5,7 +5,10 @@
 <script>
   const poll = async () => {
     try {
-      const r = await fetch("/api/data-apps/{{ slug }}/readiness");
+      {# Absolute on an app subdomain: the subdomain middleware rewrites every
+         path to /apps/<slug>/… with no /api carve-out, so a relative poll came
+         back as this very page and the loop spun forever. #}
+      const r = await fetch("{{ readiness_url }}");
       const j = await r.json();
       if (j.ready) { location.reload(); return; }
     } catch (e) {}

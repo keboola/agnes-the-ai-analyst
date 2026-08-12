@@ -910,3 +910,49 @@ def test_a_preview_token_for_another_app_cannot_poll_readiness(proxy_client, fak
         "/api/data-apps/s/readiness", headers={"cookie": tok.cookie}, follow_redirects=False
     )
     assert r.status_code in (401, 403), r.text
+
+
+def test_the_waking_page_polls_a_relative_url_on_the_path_form(client_granted, fake_runner, sleeping_app):
+    """No host pinned into the page when it is not needed."""
+    r = client_granted.get("/apps/s/", headers={"accept": "text/html"})
+    assert r.status_code == 503
+    assert 'fetch("/api/data-apps/s/readiness")' in r.text
+
+
+def test_the_waking_page_polls_an_absolute_url_on_a_subdomain(monkeypatch):
+    """`DataAppSubdomainMiddleware` rewrites EVERY path on `<slug>.<base>` to
+    `/apps/<slug>/…` with no `/api` carve-out, so a relative poll came back as
+    this very page: `r.json()` threw, the `catch` swallowed it, and the page
+    spun forever while the app was up (Devin Review on this PR).
+
+    A middleware carve-out would be the wrong fix — an app may serve its own
+    `/api/*`, as the scaffolded dashboard does.
+    """
+    import app.instance_config as public_url_mod
+    from app.api.data_apps_proxy import _readiness_poll_url
+
+    monkeypatch.setattr(public_url_mod, "get_public_url", lambda: "https://agnes.example.com/", raising=True)
+
+    class _Req:
+        scope = {"agnes_data_app_subdomain": "s"}
+
+    assert _readiness_poll_url(_Req(), "s") == "https://agnes.example.com/api/data-apps/s/readiness"
+
+    class _PathReq:
+        scope: dict = {}
+
+    assert _readiness_poll_url(_PathReq(), "s") == "/api/data-apps/s/readiness"
+
+
+def test_the_subdomain_poll_falls_back_rather_than_guessing_a_host(monkeypatch):
+    """With no configured public URL there is nothing to point at — keep the
+    previous (relative) behaviour instead of inventing an origin."""
+    import app.instance_config as public_url_mod
+    from app.api.data_apps_proxy import _readiness_poll_url
+
+    monkeypatch.setattr(public_url_mod, "get_public_url", lambda: "", raising=True)
+
+    class _Req:
+        scope = {"agnes_data_app_subdomain": "s"}
+
+    assert _readiness_poll_url(_Req(), "s") == "/api/data-apps/s/readiness"
