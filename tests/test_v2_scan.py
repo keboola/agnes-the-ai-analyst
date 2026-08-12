@@ -765,3 +765,101 @@ class TestMaterializedScanServedLocally:
         tracker = QuotaTracker(max_concurrent_per_user=5, max_daily_bytes_per_user=10**9)
         self._run(reload_db, monkeypatch, {"table_id": "mat_t", "select": ["v"]}, tracker=tracker)
         assert tracker.bytes_used_today("a@x.com") > 0
+
+
+class TestScanAccessPolicyBqBranch:
+    """Task 13 (§8 ratchet) — `run_scan`'s BQ `use_bq` branch had NO
+    access-policy enforcement at all: `_build_bq_sql` + `_run_bq_scan` push
+    straight to BigQuery with no `policied_relation` call anywhere on the
+    path. `_run_bq_scan` is monkeypatched to return a recognizable Arrow
+    table so a regression (the new guard silently not firing) shows up as
+    leaked content reaching the caller's IPC bytes, not just a passing
+    assert.
+    """
+
+    def _register_policied_bq_table(self, conn, table_id: str) -> None:
+        from src.repositories.table_registry import TableRegistryRepository
+
+        repo = TableRegistryRepository(conn)
+        repo.register(
+            id=table_id,
+            name=table_id,
+            source_type="bigquery",
+            bucket="ds",
+            source_table=table_id,
+            query_mode="remote",
+        )
+        repo.set_access_policy(table_id, sql=f"SELECT * FROM {table_id}", note="test", updated_by="admin")
+
+    def test_non_admin_fails_closed_instead_of_leaking_the_raw_bq_rows(self, reload_db, monkeypatch):
+        monkeypatch.setenv("AGNES_ACCESS_POLICIES_ENABLED", "true")
+        from app.api import v2_scan
+
+        leaked = pa.table({"secret_col": ["leaked-row"]})
+        monkeypatch.setattr(v2_scan, "_run_bq_scan", lambda bq, sql, **kw: (leaked, {}))
+        monkeypatch.setattr(v2_scan, "_resolve_schema", lambda *a, **kw: {"secret_col": "STRING"})
+        # can_access_table's real stack-gate needs a data-package grant this
+        # test has no reason to set up — the policy-guard behavior under
+        # test fires AFTER that check.
+        monkeypatch.setattr(v2_scan, "can_access_table", lambda user, tid, conn: True)
+
+        conn = reload_db.get_system_db()
+        try:
+            _ensure_admin1(conn)
+            self._register_policied_bq_table(conn, "bq_scan_policied")
+            non_admin = {"id": "viewer1", "email": "viewer@x.com"}
+            req = {"table_id": "bq_scan_policied", "select": ["secret_col"], "limit": 10}
+            tracker = v2_scan._build_quota_tracker()
+            with pytest.raises(HTTPException) as exc_info:
+                v2_scan.run_scan(conn, non_admin, req, bq=_bq(data="proj"), quota=tracker)
+        finally:
+            conn.close()
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail == {"reason": "policy_error", "table": "bq_scan_policied"}
+
+    def test_admin_bypass_is_unaffected(self, reload_db, monkeypatch):
+        """Admin/no-policy unchanged (§12)."""
+        monkeypatch.setenv("AGNES_ACCESS_POLICIES_ENABLED", "true")
+        from app.api import v2_scan
+
+        admin_table = pa.table({"secret_col": ["admin-visible-row"]})
+        monkeypatch.setattr(v2_scan, "_run_bq_scan", lambda bq, sql, **kw: (admin_table, {}))
+        monkeypatch.setattr(v2_scan, "_resolve_schema", lambda *a, **kw: {"secret_col": "STRING"})
+
+        conn = reload_db.get_system_db()
+        try:
+            _ensure_admin1(conn)
+            self._register_policied_bq_table(conn, "bq_scan_policied_admin")
+            admin = {"id": "admin1", "email": "admin1@test.com"}
+            req = {"table_id": "bq_scan_policied_admin", "select": ["secret_col"], "limit": 10}
+            tracker = v2_scan._build_quota_tracker()
+            ipc_bytes = v2_scan.run_scan(conn, admin, req, bq=_bq(data="proj"), quota=tracker)
+        finally:
+            conn.close()
+        got = parse_ipc_bytes(ipc_bytes)
+        assert got.column("secret_col").to_pylist() == ["admin-visible-row"]
+
+    def test_non_policied_bq_table_is_unaffected(self, reload_db, monkeypatch):
+        """The inert case: a table with no access_policy_sql keeps the
+        pre-existing (unfiltered) BQ-scan behavior exactly."""
+        from app.api import v2_scan
+
+        monkeypatch.setattr(
+            v2_scan,
+            "_resolve_schema",
+            lambda *a, **kw: {"event_date": "DATE", "country_code": "STRING"},
+        )
+        fake_table = pa.table({"event_date": ["2026-04-27"], "country_code": ["CZ"]})
+        monkeypatch.setattr(v2_scan, "_run_bq_scan", lambda bq, sql, **kw: (fake_table, {}))
+
+        conn = reload_db.get_system_db()
+        try:
+            _seed(conn)  # registers "bq_view" with no access_policy_sql
+            user = {"id": "admin1", "email": "a@x.com"}
+            req = {"table_id": "bq_view", "select": ["event_date", "country_code"], "limit": 100}
+            tracker = v2_scan._build_quota_tracker()
+            ipc_bytes = v2_scan.run_scan(conn, user, req, bq=_bq(data="proj"), quota=tracker)
+        finally:
+            conn.close()
+        got = parse_ipc_bytes(ipc_bytes)
+        assert got.num_rows == 1

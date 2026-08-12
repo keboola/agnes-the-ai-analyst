@@ -210,9 +210,13 @@ def _build_bq_sql(
 
     select_sql = ", ".join(f"`{c}`" for c in req.select) if req.select else "*"
     table_ref = f"`{project_id}.{bucket}.{src_table}`"
-    # Task 10: BigQuery policy enforcement is not wired yet — a policied
-    # `query_mode='remote'` BigQuery table keeps today's unfiltered
-    # behavior on this branch (used by both `estimate()` and `run_scan()`).
+    # Task 10/13: BigQuery policy enforcement is not wired into this SQL
+    # builder itself yet — it still builds the raw, unfiltered query (used
+    # by both `estimate()` and `run_scan()`). `estimate()` never returns row
+    # content (a byte/row/cost NUMBER only), so it stays as-is; `run_scan()`
+    # guards its OWN call site (see the Task 13 comment there) so a policied
+    # table's non-admin caller never reaches this builder in the first
+    # place.
     sql = f"SELECT {select_sql} FROM {table_ref}"
     if safe_where:
         sql += f" WHERE {safe_where}"
@@ -596,6 +600,36 @@ def run_scan(
             finally:
                 local.close()
         else:
+            if bool(row.get("access_policy_sql")):
+                # Task 13 (§8 ratchet): this branch pushes the scan straight
+                # to BigQuery via `_build_bq_sql`/`_run_bq_scan` -- Task 10
+                # only wired `policied_relation(dialect="bigquery")` into
+                # `/api/query`'s AST-rewrite path, never into this
+                # table_id-shaped surface's live-BQ branch (`_build_bq_sql`'s
+                # own comment already flagged this), so unguarded it would
+                # hand back the RAW, unfiltered physical table -- select/
+                # where/order_by are validated against the (COVERED)
+                # effective schema above, but that only stops REQUESTING an
+                # EXCLUDE'd column by name, not ROW filtering, and an
+                # implicit `SELECT *` would still return every column. Fail
+                # closed (§17) exactly like the local-parquet branch's own
+                # `policied_relation` failure handling just above. Admin
+                # bypass preserved via `policied_relation` itself, not a
+                # bare `access_policy_sql` check.
+                #
+                # TODO(follow-up): same as `app/api/v2_sample.py`'s BQ
+                # branch -- wire via `policied_relation(dialect="bigquery")`
+                # + the BQ jobs API (`run_bq_query_to_arrow`) instead of the
+                # `_run_bq_scan` push-down, once this endpoint's cost/quota/
+                # label semantics are worked out for that execution path.
+                try:
+                    bq_relation = policied_relation(req.table_id, user)
+                except PolicyIdentityUnresolvable:
+                    raise HTTPException(status_code=403, detail={"reason": "policy_identity_unresolvable"})
+                except PolicyError as exc:
+                    raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": exc.table_id})
+                if bq_relation.policied:
+                    raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": req.table_id})
             bq_sql = _build_bq_sql(row, bq.projects.data, req, safe_where=safe_where)
             table, bq_job_info = _run_bq_scan(bq, bq_sql, user=user)
             if job_info is not None:

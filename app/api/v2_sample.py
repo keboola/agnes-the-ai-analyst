@@ -160,10 +160,13 @@ def _fetch_bq_sample(bq, dataset: str, table: str, n: int) -> list[dict]:
     ):
         raise ValueError("unsafe BQ identifier in registry — refusing to query")
 
-    # Task 10: BigQuery policy enforcement (transpile + named params via
-    # `policied_relation(..., dialect="bigquery")`) is not wired yet — a
-    # policied `query_mode='remote'` BigQuery table keeps today's
-    # unfiltered behavior on this branch.
+    # Task 10/13: BigQuery policy enforcement (transpile + named params via
+    # `policied_relation(..., dialect="bigquery")`) is not wired into this
+    # execution path yet -- this function itself still runs the raw,
+    # unfiltered physical table. The Task 13 caller guard (`build_sample`,
+    # above) fails closed before reaching here for a policied table's
+    # non-admin caller, so this remains reachable only for a non-policied
+    # table or an admin bypass -- never silently for a filtered caller.
     bq_sql = f"SELECT * FROM `{bq.projects.data}.{dataset}.{table}` LIMIT {int(n)}"
     with bq.duckdb_session() as conn:
         try:
@@ -255,11 +258,46 @@ def build_sample(
 
     # Task 11 (§10): populated below only on the local-parquet branch, which
     # is the only one that currently resolves through policied_relation —
-    # the BQ-sample branch keeps today's unfiltered behavior (Task 10 note
-    # in _fetch_bq_sample above), so there is nothing to disclose there yet.
+    # the BQ-sample branch has no execution path that could carry it yet
+    # (see the Task 13 fail-closed guard immediately below), so there is
+    # nothing to disclose there.
     row_scope: dict | None = None
 
     if source_type == "bigquery" and (row.get("query_mode") or "") != "materialized":
+        if has_access_policy:
+            # Task 13 (§8 ratchet): this branch pushes the sample straight to
+            # BigQuery via the DuckDB `bigquery_query()` extension -- Task 10
+            # only wired `policied_relation(dialect="bigquery")` into
+            # `/api/query`'s AST-rewrite path (app/api/query.py), never into
+            # this table_id-shaped surface's live-BQ branch, so unguarded it
+            # would hand back the RAW, unfiltered physical table to any
+            # caller with base table-level access. Fail closed (§17: "every
+            # failure denies") instead: the same `policy_error` 500 the
+            # local-parquet branch below already returns for an
+            # unresolvable policy. Admin bypass is preserved --
+            # `policied_relation` itself decides that (not a bare
+            # `access_policy_sql` check), so an admin keeps seeing the raw
+            # sample exactly as before this change.
+            #
+            # TODO(follow-up): wire this branch the way
+            # `app/api/query.py::_execute_policied_remote_bq` wires the
+            # AST-rewrite surface -- transpile via
+            # `policied_relation(table_id, user, dialect="bigquery")`,
+            # resolve the policy body's own `FROM <name>` to the physical
+            # `` `project.dataset.table` `` path, convert `.params` to BQ
+            # `QueryParameter`s, and execute through the jobs API
+            # (`run_bq_query_to_arrow`) instead of the `bigquery_query()`
+            # push-down this branch uses today. Left undone here: it needs
+            # its own cost/quota/label design pass for this endpoint (which
+            # has none of those today), not just a mechanical swap.
+            try:
+                bq_relation = policied_relation(table_id, user)
+            except PolicyIdentityUnresolvable:
+                raise HTTPException(status_code=403, detail={"reason": "policy_identity_unresolvable"})
+            except PolicyError as exc:
+                raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": exc.table_id})
+            if bq_relation.policied:
+                raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": table_id})
         rows = _fetch_bq_sample(bq, row.get("bucket") or "", row.get("source_table") or table_id, n)
     else:
         # Resolve by source-name-agnostic lookup — the extract directory is not
