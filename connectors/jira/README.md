@@ -227,7 +227,7 @@ bash server/scripts/sync_data.sh
 ```
 
 This syncs:
-- `server/parquet/jira/` - Parquet tables (issues, comments, attachments metadata, changelog, issuelinks, remote_links)
+- `server/parquet/jira/` - Parquet tables (issues, comments, attachments metadata, changelog, issuelinks, remote_links, organizations)
 
 For attachment files, see [Attachment Access](#attachment-access) section below.
 
@@ -533,6 +533,29 @@ python -m connectors.jira.organizations
 # Enumerate only, no fetch or write
 python -m connectors.jira.organizations --dry-run
 ```
+
+### Backfilling `issues.organization_ids` on an existing install
+
+The `organizations` table needs no backfill — it is current-state, so the first refresh populates it completely. `issues.organization_ids` is different: it is written by the transform, so partitions produced before this shipped read NULL and those tickets will not join. Nothing errors; the join just silently covers recent tickets only.
+
+The ids are already in the stored raw issue JSON, so no re-fetch from Jira is needed. Re-running the batch transform over the existing raw files is enough:
+
+```bash
+python -m connectors.jira.transform \
+  --raw-dir /data/extracts/jira/raw \
+  --output-dir /data/extracts/jira/data
+```
+
+Then check the history reaches as far back as `issues` itself does — this is what catches an incomplete backfill:
+
+```sql
+SELECT min(month) AS earliest,
+       max(month) AS latest,
+       count(*) FILTER (WHERE organization_ids IS NOT NULL) AS with_ids
+FROM issues;
+```
+
+`earliest` should be the earliest month in `issues`, not the month this was deployed.
 
 Joining a ticket to its organizations:
 

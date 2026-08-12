@@ -647,3 +647,63 @@ class TestMalformedJsonStaysInsideTheErrorBoundary:
         assert stats["failed"] == 1 and stats["preserved"] == 1
         df = _read_table(tmp_path)
         assert dict(zip(df["org_id"], df["crm_account_id"])) == {"1": "ACC-1", "2": "ACC-2"}
+
+
+class TestFlatTableSurvivesHiveMigration:
+    """A dimension table's `data.parquet` must not be mistaken for a month partition.
+
+    `migrate_flat_to_hive` globs every `*.parquet` directly under a table dir and
+    treats the filename stem as a month key. Unguarded, `organizations/data.parquet`
+    became `month=data/data.parquet` — which the flat view (a top-level `*.parquet`
+    glob) then cannot see, so the table silently reported zero rows. `init_extract`
+    skips flat tables, but the guard belongs in the migrator so a future caller
+    cannot destroy the table by omission.
+    """
+
+    def test_data_parquet_is_not_migrated(self, tmp_path: Path) -> None:
+        import pandas as pd
+
+        from connectors.jira.incremental_transform import migrate_flat_to_hive
+
+        table_dir = tmp_path / "organizations"
+        table_dir.mkdir()
+        pd.DataFrame([{"org_id": "1", "name": "Acme"}]).to_parquet(table_dir / "data.parquet")
+
+        assert migrate_flat_to_hive(table_dir) == []
+        assert (table_dir / "data.parquet").exists()
+        assert not (table_dir / "month=data").exists()
+        # Still visible to the flat view's top-level glob.
+        assert [p.name for p in table_dir.glob("*.parquet")] == ["data.parquet"]
+
+    def test_real_month_partitions_still_migrate(self, tmp_path: Path) -> None:
+        import pandas as pd
+
+        from connectors.jira.incremental_transform import migrate_flat_to_hive
+
+        table_dir = tmp_path / "issues"
+        table_dir.mkdir()
+        pd.DataFrame([{"issue_key": "SUPPORT-1"}]).to_parquet(table_dir / "2026-01.parquet")
+
+        assert migrate_flat_to_hive(table_dir) == ["2026-01"]
+        assert (table_dir / "month=2026-01" / "data.parquet").exists()
+
+    def test_init_extract_leaves_the_dimension_queryable(self, tmp_path: Path, org_env: None) -> None:
+        """End to end: init_extract must not strand the table it just registered."""
+        import pandas as pd
+
+        from connectors.jira.extract_init import init_extract
+        from src.duckdb_conn import _open_duckdb
+
+        table_dir = tmp_path / "data" / "organizations"
+        table_dir.mkdir(parents=True)
+        pd.DataFrame([{"org_id": "1", "name": "Acme", "crm_account_id": "ACC-1"}]).to_parquet(
+            table_dir / "data.parquet"
+        )
+
+        init_extract(tmp_path)
+
+        conn = _open_duckdb(str(tmp_path / "extract.duckdb"))
+        try:
+            assert conn.execute("SELECT count(*) FROM organizations").fetchone()[0] == 1
+        finally:
+            conn.close()
