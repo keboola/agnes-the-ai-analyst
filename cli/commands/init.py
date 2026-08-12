@@ -50,6 +50,7 @@ import typer
 from cli.client import api_get
 from cli.config import _config_dir, save_config, save_token
 from cli.error_render import render_error
+from cli.server_moved import classify_redirect, is_redirect
 from cli.lib.automode import (
     TrustResult,
     ensure_marketplace_trusted,
@@ -521,6 +522,44 @@ def init(
                 json={"setup_token": setup_token_raw},
                 timeout=30,
             )
+            # A moved server answers 3xx here too, and `raise_for_status()`
+            # does not treat that as an error — the flow fell through to
+            # `.json()` on an empty body and reported a JSON decode failure
+            # for a server that had simply changed address. Same diagnosis as
+            # both HTTP clients use. (Devin Review on #1266.)
+            if is_redirect(exchange_resp.status_code):
+                # One classifier for every caller (`cli/server_moved.py`) —
+                # re-deriving it here is how the two ended up disagreeing on
+                # the code name. Only the REMEDY is local: `agnes init` reads
+                # neither `AGNES_SERVER` nor `config.yaml`, it takes the
+                # address as an argument. (Devin Review on #1266, twice.)
+                code, target = classify_redirect(exchange_resp.headers.get("Location", "") or "", server_url)
+                detail: dict = {"code": code}
+                if code == "server_moved":
+                    detail["moved_to"] = target
+                    detail["fix"] = f"agnes init --server-url {target} …"
+                    detail["hint"] = (
+                        f"{server_url} answered HTTP {exchange_resp.status_code} and that address has "
+                        "moved. Redirects are not followed automatically — credentials are stripped on a "
+                        "cross-origin hop. Re-run setup against the new address with the command above; "
+                        "the setup token is unchanged."
+                    )
+                elif code == "insecure_redirect":
+                    detail["blocked_target"] = target
+                    detail["hint"] = (
+                        f"{server_url} answered HTTP {exchange_resp.status_code} pointing at the "
+                        "unencrypted address above. Setup will not send a token there. If the server "
+                        "really moved, re-run with an https address; if it did not, a proxy in front of "
+                        "it is rewriting the scheme."
+                    )
+                else:
+                    detail["hint"] = (
+                        f"{server_url} answered HTTP {exchange_resp.status_code} instead of exchanging "
+                        "the setup token, and the redirect stays on the same address. Check whether a "
+                        "proxy sits in front of the server."
+                    )
+                typer.echo(render_error(exchange_resp.status_code, {"detail": detail}), err=True)
+                raise typer.Exit(1)
             if exchange_resp.status_code == 401:
                 typer.echo(
                     render_error(

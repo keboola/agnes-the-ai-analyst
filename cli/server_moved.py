@@ -1,0 +1,247 @@
+"""One redirect diagnosis, shared by every CLI HTTP client.
+
+A deployment that changes hostname leaves the old name answering `308` for
+a while. Neither CLI client follows redirects, and that is deliberate:
+httpx strips `Authorization` on a cross-origin hop
+(``httpx._client.Client._redirect_headers``), so following one would land
+unauthenticated — the same failure under a more confusing name, and a
+credential sent to a host the user never configured.
+
+So a 3xx has to become an explanation instead. This module owns that
+explanation because the CLI has TWO HTTP clients and the first attempt
+(#1225) taught only one of them: ``cli/client.py`` runs an event hook,
+while ``cli/v2_client.py`` calls module-level ``httpx.get`` / ``httpx.post``
+and raises only on ``>= 400`` — so a redirect fell through to ``r.json()``
+on a redirect's empty body and ten command modules answered
+
+    Error: internal CLI error (JSONDecodeError).
+
+Anything new that talks HTTP should call ``moved_server_message`` rather
+than re-deriving this, and ``tests/test_v2client_moved_server.py`` fails a
+client that makes httpx calls without consulting it.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Optional
+
+import httpx
+
+#: Redirect statuses an API call can come back with. All of them mean the
+#: same thing here: the request never reached a handler.
+REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+
+
+def is_redirect(status_code: int) -> bool:
+    return status_code in REDIRECT_STATUSES
+
+
+def config_file_path() -> str:
+    """The file `server:` is actually read from — the path, not a generic name.
+
+    Resolved here rather than imported from ``cli.config`` because
+    ``_config_dir`` creates the directory as a side effect, and printing an
+    error message must not write to disk. ``tests/test_v2client_moved_server.py``
+    pins the two to the same location so the duplication cannot drift.
+    (Devin Review on #1266: the refactor dropped the real path, leaving the
+    user to guess which file to edit.)
+    """
+    base = os.environ.get("AGNES_CONFIG_DIR", os.path.expanduser("~/.config/agnes"))
+    return str(Path(base) / "config.yaml")
+
+
+def _parse_target(location: str, configured: str) -> tuple[bool, str]:
+    """``(is_cross_host_move, new_base_url)`` for a ``Location`` header.
+
+    One parser for both the prose message and the typed body, so the two can
+    never disagree about whether a redirect is a move.
+
+    ``location`` may be absolute, protocol-relative (``//host/path`` —
+    absolute despite the leading slash), or relative.
+    """
+    configured = (configured or "").rstrip("/")
+    moved = False
+    new_base = ""
+    if location:
+        try:
+            target = httpx.URL(location)
+            if not target.scheme:
+                # Protocol-relative (`//host/path`): inherit the scheme we
+                # dialed with, so the hint is a URL the user can paste rather
+                # than `//host`. Must happen before the host test — the scheme
+                # is what makes the rendered `new_base` usable.
+                target = target.copy_with(scheme=httpx.URL(configured).scheme or "https")
+            # A move is "the target names a DIFFERENT host", decided on the
+            # parsed URL rather than on how the header is spelled. `Location`
+            # may be any URI-reference, so a path-relative `v2/agents` has no
+            # host at all — a textual "does not start with /" test read that
+            # as absolute and derived a hostless `AGNES_SERVER=https://`,
+            # telling the user to point at an address that cannot exist.
+            # No host means same origin, which falls through to the generic
+            # message below.
+            # ORIGIN, not just host: `http://host` → `https://host` keeps the
+            # netloc and changes the scheme, which is the commonest redirect
+            # of all (a server that got TLS) and is cross-origin as far as
+            # httpx is concerned — credentials are stripped on that hop too.
+            # Calling it "not a move" left the user with no remedy for the
+            # one case they can fix in a second. (Devin Review on #1266.)
+            current = httpx.URL(configured)
+            same_host = target.netloc == current.netloc
+            # A scheme change counts as a move only UPWARD. `https` → `http`
+            # on the same host is a misconfigured proxy, not a relocation, and
+            # printing "point your CLI at http://…" would talk someone out of
+            # TLS on the strength of a redirect anyone on the path can forge.
+            # (Devin Review on #1266, after the upgrade case was added.)
+            upgraded = same_host and current.scheme == "http" and target.scheme == "https"
+            # A downgrade is never followed, whether or not the host changes:
+            # `https://old` → `http://new` would otherwise be handed over as a
+            # new address in plaintext. (Devin Review on #1266, twice — the
+            # first version only covered the same-host case.)
+            downgrade = current.scheme == "https" and target.scheme == "http"
+            moved = bool(target.netloc) and not downgrade and (not same_host or upgraded)
+            if moved:
+                new_base = str(target.copy_with(raw_path=b"/")).rstrip("/")
+        except Exception:
+            moved = False
+    return moved, new_base
+
+
+def classify_redirect(location: str, configured: str) -> tuple[str, str]:
+    """``(code, blocked_or_new_base)`` for a redirect.
+
+    One classifier, so every caller uses the same names:
+
+    - ``server_moved`` + the new base — a cross-origin move worth re-pointing at.
+    - ``insecure_redirect`` + the refused target — the destination is plaintext
+      while the configured address is not. Never handed over as a new base.
+    - ``unexpected_redirect`` + ``""`` — same address; nothing to re-point.
+
+    Introduced because ``cli/commands/init.py`` had re-derived this and the two
+    disagreed on the code name. (Devin Review on #1266.)
+    """
+    location = location or ""
+    moved, new_base = _parse_target(location, configured)
+    if moved and new_base:
+        return "server_moved", new_base
+    try:
+        target = httpx.URL(location) if "://" in location else None
+    except Exception:
+        target = None
+    if target is not None and target.netloc and target.scheme == "http":
+        try:
+            if httpx.URL(configured).scheme == "https":
+                return "insecure_redirect", location
+        except Exception:
+            pass
+    return "unexpected_redirect", ""
+
+
+def moved_server_message(status_code: int, location: str, configured: str) -> str:
+    """Explain a redirect in prose, for the client that writes to stderr.
+
+    Only a genuine cross-host move gets the re-point instructions; telling
+    someone to change a hostname they are already using is noise.
+    """
+    configured = (configured or "").rstrip("/")
+    moved, new_base = _parse_target(location, configured)
+
+    where = f" (redirect to {location})" if location else " (redirect)"
+    head = f"{configured} answered HTTP {status_code}{where} instead of handling the request."
+
+    # A cross-host move to a plaintext address is a MOVE we refuse to follow,
+    # not a proxy quirk — say so, and name the address, or the reader is sent
+    # looking for a proxy that does not exist. (Devin Review on #1266.)
+    if not moved and location:
+        try:
+            target = httpx.URL(location if "://" in location else "")
+            if target.netloc and target.scheme == "http" and httpx.URL(configured).scheme == "https":
+                return "\n".join(
+                    [
+                        head,
+                        f"That address points at {location}, which is unencrypted.",
+                        "The CLI will not send credentials there, and does not follow redirects:",
+                        "your token would be stripped on the hop anyway.",
+                        "If the server really moved, use its https address;",
+                        "if it did not, a proxy in front of it is rewriting the scheme.",
+                    ]
+                )
+        except Exception:
+            pass
+
+    if moved and new_base:
+        return "\n".join(
+            [
+                head,
+                "That address has moved. Redirects are not followed automatically:",
+                "your credentials are stripped on a cross-origin hop, so the retry",
+                "would fail as 'not authenticated' rather than work.",
+                "Point the CLI at the new address:",
+                f"  AGNES_SERVER={new_base} agnes <command>     (one-off)",
+                f"  or set `server: {new_base}` in {config_file_path()}",
+            ]
+        )
+    return (
+        f"{head}\nThe CLI does not follow redirects on API calls. If this is "
+        "unexpected, check whether a proxy sits in front of the server."
+    )
+
+
+def redirect_target(location: str, configured: str) -> str:
+    """The moved-to base URL, or ``""`` when this is not a cross-host move."""
+    _, new_base = _parse_target(location, configured)
+    return new_base
+
+
+def redirect_body(response: "httpx.Response", configured: str) -> dict:
+    """A typed error body for a redirect, for clients that raise rather than exit.
+
+    The remedy is split across ``fix`` / ``config`` rather than folded into
+    ``hint``, because ``cli.error_render`` WRAPS ``hint`` at 80 columns: the
+    whole explanation in one field reflowed into a paragraph and split the
+    new hostname mid-token —
+
+        or set `server: https://agnes-analytics-
+        platform.example.com` in your agnes config.yaml
+
+    — so the command the message exists to hand over could not be copied.
+    Keys outside the wrap set render through ``_kv_line``, one per line,
+    untouched (Devin Review on #1266).
+    """
+    location: Optional[str] = response.headers.get("Location", "")
+    configured = (configured or "").rstrip("/")
+    new_base = redirect_target(location or "", configured)
+
+    # The code names what happened. A same-origin redirect is not a move — a
+    # proxy or an in-app redirect answering 3xx has nothing to re-point, and
+    # calling it `server_moved` sent the reader hunting for a hostname change
+    # that never happened. (Devin Review on #1266.)
+    code, target = classify_redirect(location or "", configured)
+    detail: dict = {"code": code}
+    if code == "server_moved":
+        detail["moved_to"] = target
+        detail["fix"] = f"AGNES_SERVER={target} agnes <command>"
+        detail["config"] = f"server: {target}"
+        detail["hint"] = (
+            f"{configured} answered HTTP {response.status_code} and that address has moved. "
+            "Redirects are not followed automatically — credentials are stripped on a "
+            "cross-origin hop, so the retry would fail as 'not authenticated' rather than "
+            "work. Use the one-off command above, or set the config line in "
+            f"{config_file_path()}."
+        )
+    elif code == "insecure_redirect":
+        # The address goes in its OWN key: `cli.error_render` wraps `hint` at
+        # 80 columns, and an address split across two lines cannot be copied —
+        # the same reason the moved case keeps `fix`/`config` separate.
+        # (Devin Review on #1266.)
+        detail["blocked_target"] = target
+        detail["hint"] = (
+            f"{configured} answered HTTP {response.status_code} pointing at an unencrypted "
+            "address (above). The CLI will not send credentials there. If the server really "
+            "moved, use its https address; if it did not, a proxy in front of it is rewriting "
+            "the scheme."
+        )
+    else:
+        detail["hint"] = moved_server_message(response.status_code, location or "", configured)
+    return {"detail": detail}
