@@ -537,13 +537,14 @@ def build_jobs() -> list[JobRow | EnqueueJobRow]:
             _ENQUEUE_TIMEOUT_SEC,
             _ENQUEUE_BODIES["marketplaces"],
         ),
-        # Offset an hour from marketplaces so the two daily jobs don't fire on the
-        # same tick. A fixed daily schedule rather than an interval env var on
-        # purpose: an interval would have to join the `smallest` min() above and
-        # constrain SCHEDULER_TICK_SECONDS for a job that needs no precision at all.
+        # Offset from the other daily rows so none of them fire on the same tick:
+        # `marketplaces` at 03:00 and `store-blocked-purge` at 04:00. A fixed daily
+        # schedule rather than an interval env var on purpose — an interval would have
+        # to join the `smallest` min() above and constrain SCHEDULER_TICK_SECONDS for a
+        # job that needs no precision at all.
         (
             "jira-org-refresh",
-            "daily 04:00",
+            "daily 04:30",
             "/api/jobs",
             "POST",
             _ENQUEUE_TIMEOUT_SEC,

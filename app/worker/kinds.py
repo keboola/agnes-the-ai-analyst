@@ -145,7 +145,9 @@ _DEFAULT_DATA_REFRESH_LEASE_S = 900
 _DEFAULT_JIRA_REFRESH_LEASE_S = 300
 # One API request per organization, gently paced — a few-hundred-organization site
 # takes minutes, so the lease has to outlast the whole sweep or the job would be
-# reclaimed mid-run and start over.
+# reclaimed mid-run and start over. At ~0.2s pacing plus request latency this covers
+# roughly 3,500 organizations; an estate materially larger than that wants a
+# size-derived lease rather than a bigger constant, or it will reclaim in a loop.
 _DEFAULT_JIRA_ORG_REFRESH_LEASE_S = 1800
 _DEFAULT_LIGHT_LEASE_S = 300
 # merge_adjacent_files/expire_snapshots/cleanup_old_files/VACUUM can each
@@ -397,8 +399,11 @@ def _run_jira_org_refresh(payload: dict) -> None:
     detail *ids* (see ``JiraService.fetch_organization``). A day-stale name is
     immaterial; a per-event refresh would spend hundreds of requests to learn nothing.
 
-    No source rebuild is triggered afterwards. The extract views glob the parquet per
-    query, so fresh rows are served immediately, and ``refresh_organizations`` already
+    This handler triggers no rebuild itself, but ``refresh_organizations`` enqueues a
+    coalesced ``jira-refresh`` after a successful write, and that enqueue is
+    load-bearing rather than housekeeping: ``_attach_and_create_views`` skips any
+    ``_meta`` row whose inner object did not exist when it ran, so on the first
+    refresh the table would otherwise stay invisible in the master database. It also
     refreshes this table's ``_meta`` row (under ``rebuild_mutex()``) for the catalog's
     row/size numbers. Failures propagate so the job retries rather than silently
     leaving the dimension stale.

@@ -56,6 +56,14 @@ def _rebuild_view_and_stats(conn, table_name: str, table_dir: Path) -> tuple[int
 
     ``(0, 0)`` when the table has no parquet yet — DuckDB's glob fails on an empty
     directory, so the view is left uncreated rather than pointing at nothing.
+
+    A failure to build the view is warned about and reported as ``(0, 0)`` rather than
+    raised. That is deliberate, and it makes ``init_extract`` more forgiving than it
+    used to be: it previously created views outside its try, so one unreadable parquet
+    aborted the whole init. ``update_meta`` already swallowed the same failure, and it
+    runs after every webhook transform — so raising here would turn a single corrupt
+    partition into a failing ingest path. The table simply reports zero rows until the
+    parquet is readable again.
     """
     glob_path, files = _table_parquets(table_name, table_dir)
     if not files:

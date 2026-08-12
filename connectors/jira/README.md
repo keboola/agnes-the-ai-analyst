@@ -499,7 +499,7 @@ cp -r /data/src_data/parquet/jira/* ~/server/parquet/jira/
 
 Tickets carry organization **ids** in `issues.organization_ids` (a JSON array — the Jira field is multi-valued). The `organizations` table resolves those ids to the organization's current name plus one column per organization detail field named in `JIRA_ORG_DETAIL_FIELDS`.
 
-**File:** `connectors/jira/organizations.py` · **Job kind:** `jira-org-refresh` · **Cadence:** `daily 04:00`
+**File:** `connectors/jira/organizations.py` · **Job kind:** `jira-org-refresh` · **Cadence:** `daily 04:30`
 
 **Why ids and not names.** `issues.organizations` holds names captured at ingest. Rename an organization and its existing tickets keep the old name, so a name join silently splits one customer into several. Ids do not change on rename.
 

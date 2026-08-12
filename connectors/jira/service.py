@@ -97,6 +97,21 @@ def refresh_fields() -> list[tuple[str, str]]:
 ORGANIZATION_DETAIL_PREFIX = "detail_"
 
 
+def _organization_json(response: httpx.Response, what: str) -> Any:
+    """Decode a 200 body, converting a malformed one into ``JiraFetchError``.
+
+    ``response.json()`` raises a plain ``ValueError`` on a body that is not JSON —
+    an HTML error page from an intermediary answering 200, say. That escapes the
+    per-organization ``except JiraFetchError`` in the refresh sweep, so one bad
+    response would abort the whole run before anything was written instead of
+    preserving that organization's previous row.
+    """
+    try:
+        return response.json()
+    except ValueError as e:
+        raise JiraFetchError(f"{what} failed: malformed JSON in a {response.status_code} response — {e}") from e
+
+
 def _organization_reserved_columns() -> frozenset[str]:
     """Built-in `organizations` columns a configured detail must never overwrite.
 
@@ -500,7 +515,7 @@ class JiraService:
                 f"tenant_info lookup for {self.domain} failed: status {response.status_code}. "
                 "Set JIRA_CLOUD_ID explicitly to skip this lookup."
             )
-        cloud_id = (response.json() or {}).get("cloudId")
+        cloud_id = (_organization_json(response, f"tenant_info lookup for {self.domain}") or {}).get("cloudId")
         if not cloud_id:
             raise JiraFetchError(f"tenant_info for {self.domain} returned no cloudId")
         self._cloud_id = cloud_id
@@ -549,7 +564,7 @@ class JiraService:
                         f"Organization enumeration failed at start={start}: status {response.status_code}"
                     )
 
-                payload = response.json() or {}
+                payload = _organization_json(response, f"Organization enumeration at start={start}") or {}
                 values = payload.get("values") or []
                 for org in values:
                     org_id = org.get("id")
@@ -603,7 +618,7 @@ class JiraService:
             raise JiraFetchError(f"Organization fetch for {org_id} failed: connection — {e}") from e
 
         if response.status_code == 200:
-            return response.json()
+            return _organization_json(response, f"Organization fetch for {org_id}")
         if response.status_code == 404:
             return None
         if response.status_code in (401, 403):

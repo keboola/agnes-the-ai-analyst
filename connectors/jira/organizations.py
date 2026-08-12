@@ -257,9 +257,11 @@ def main() -> None:
     load_config()
 
     stats = refresh_organizations(dry_run=args.dry_run)
-    # Non-zero on a run where nothing resolved, so a cron/CI caller notices. Partial
-    # failures are deliberately NOT fatal: the rows that did resolve were written and
-    # the ones that did not kept their previous values.
+    # Non-zero when the run resolved nothing fresh, so a cron/CI caller notices.
+    # Deliberately keyed on `written`, not on whether a parquet was produced: a sweep
+    # where every fetch failed still rewrites the table from preserved rows, and
+    # reporting that as success would hide a total outage. A partial failure IS
+    # success — those rows resolved, and the rest kept their previous values.
     if stats.get("failed") and not stats.get("written"):
         sys.exit(1)
 

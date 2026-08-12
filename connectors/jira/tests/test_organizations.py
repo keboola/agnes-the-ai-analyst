@@ -583,3 +583,67 @@ class TestReservedColumnsCoverEveryBuiltin:
         )
         assert rec["_synced_at"] != "CLOBBERED"
         assert rec["detail__synced_at"] == "CLOBBERED"
+
+
+class TestMalformedJsonStaysInsideTheErrorBoundary:
+    """A 200 with a non-JSON body must raise JiraFetchError, not ValueError.
+
+    The refresh sweep catches JiraFetchError per organization and preserves that
+    organization's previous row. A bare ValueError escapes that handler and aborts
+    the whole run before anything is written, so one bad response from an
+    intermediary would discard every organization fetched so far.
+    """
+
+    @staticmethod
+    def _bad_json_client() -> MagicMock:
+        response = MagicMock()
+        response.status_code = 200
+        response.json.side_effect = ValueError("Expecting value: line 1 column 1 (char 0)")
+        client = MagicMock()
+        client.get.return_value = response
+        client.__enter__ = MagicMock(return_value=client)
+        client.__exit__ = MagicMock(return_value=False)
+        return client
+
+    def test_fetch_organization(self, svc: JiraService, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(jira_service.Config, "JIRA_CLOUD_ID", "cloud-xyz", raising=False)
+        with patch.object(jira_service.httpx, "Client", return_value=self._bad_json_client()):
+            with pytest.raises(JiraFetchError):
+                svc.fetch_organization("325")
+
+    def test_fetch_organization_ids(self, svc: JiraService) -> None:
+        with patch.object(jira_service.httpx, "Client", return_value=self._bad_json_client()):
+            with pytest.raises(JiraFetchError):
+                svc.fetch_organization_ids()
+
+    def test_resolve_cloud_id(self, svc: JiraService) -> None:
+        with patch.object(jira_service.httpx, "Client", return_value=self._bad_json_client()):
+            with pytest.raises(JiraFetchError):
+                svc.resolve_cloud_id()
+
+    def test_sweep_preserves_the_row_instead_of_aborting(self, tmp_path: Path, org_env: None) -> None:
+        """End to end: the malformed response is absorbed per organization."""
+        from connectors.jira import organizations as orgs
+
+        svc = _fake_service(["1", "2"], [_org("1", "Acme", "ACC-1"), _org("2", "Globex", "ACC-2")])
+        with (
+            patch.object(orgs, "get_jira_service", return_value=svc),
+            patch.object(orgs, "update_meta"),
+            patch.object(orgs.time, "sleep"),
+        ):
+            orgs.refresh_organizations(extract_dir=tmp_path)
+
+        svc2 = _fake_service(
+            ["1", "2"],
+            [_org("1", "Acme", "ACC-1"), JiraFetchError("malformed JSON in a 200 response")],
+        )
+        with (
+            patch.object(orgs, "get_jira_service", return_value=svc2),
+            patch.object(orgs, "update_meta"),
+            patch.object(orgs.time, "sleep"),
+        ):
+            stats = orgs.refresh_organizations(extract_dir=tmp_path)
+
+        assert stats["failed"] == 1 and stats["preserved"] == 1
+        df = _read_table(tmp_path)
+        assert dict(zip(df["org_id"], df["crm_account_id"])) == {"1": "ACC-1", "2": "ACC-2"}
