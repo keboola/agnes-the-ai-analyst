@@ -1,43 +1,181 @@
 {% extends "base_admin_page.html" %}
 {% from "macros/_stack_card.html" import card %}
-{# Admin audit view — every Data Package + Memory Domain regardless of
-   grant. The Catalog reshape (follow-up to auto-membership) removed the
-   ``browse_admin`` god-mode path from the user-facing /catalog and
-   /corporate-memory pages — both now show the same grant-scoped,
-   addable-only view for every visitor, admin included. This page is
-   where the "see everything" audit affordance moved: a read-only
-   inventory grid, not a stack-management surface (no Add/Remove wiring —
-   see admin_hub.html → Data Packages → "All packages"). #}
-{% block title %}All Packages — {{ config.INSTANCE_NAME }}{% endblock %}
+{# The Packages workspace — every Data Package + Memory Domain regardless of
+   grant (the ``browse_admin`` audit affordance moved here when the Catalog
+   reshape made /catalog grant-scoped for everyone), PLUS the sharing state
+   and editor rendered from the package's side.
+
+   Before this page grew the editor, "who can use this package?" had no
+   answer anywhere in the product: grants were written only from a group's
+   detail page (Access tab), and this page explicitly hid the stack-card
+   footer buttons to stay read-only. The group-side matrix remains the
+   canonical, full-breadth editor (every ResourceType); this page edits the
+   ONE type it is about, through the same /api/admin/grants rows, so the two
+   surfaces can never disagree.
+
+   Tier vocabulary: the API says ``available`` / ``required``; this page says
+   **Optional** / **Automatic** — what each one does to an analyst's
+   workspace — with the system word carried in a title attribute. #}
+{% block title %}Data Packages — {{ config.INSTANCE_NAME }}{% endblock %}
 {% block container_modifier %}container--wide{% endblock %}
 
 {% set page_hero_eyebrow = "Admin" %}
-{% set page_hero_title = "All Packages" %}
-{% set page_hero_subtitle = "Every Data Package and Memory Domain on this instance, regardless of who's been granted access — for auditing coverage and spotting empty or ungranted entries." %}
+{% set page_hero_title = "Data Packages" %}
+{% set page_hero_subtitle = "Every Data Package and Memory Domain on this instance — and who can use each package. Share a package with a group here, or from the group's Access tab; both edit the same grants." %}
 
 {% block head_extra %}
 <style>
   .adp-section { margin: 28px 0 8px; }
   .adp-section h2 { font-size: 18px; margin: 0 0 4px; color: var(--ds-text-primary); }
   .adp-section .adp-count { font-size: 12px; color: var(--ds-text-secondary); margin: 0 0 14px; }
-  .adp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; margin-bottom: 8px; }
-  /* Read-only audit grid: the shared _stack_card macro renders an
-     interactive Add/Remove footer button meant for /catalog + /stack,
-     where page JS wires POST/DELETE against /api/stack/*. This page ships
-     no such JS (it's an inventory, not a stack-management surface) — hide
-     the button so it doesn't look actionable while doing nothing. The
-     drilldown link and the "0 tables — assign some →" CTA stay untouched. */
+  .adp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; margin-bottom: 8px; }
+  /* The _stack_card macro renders an Add/Remove stack footer button wired by
+     /catalog + /stack page JS; this page ships no such wiring, so it stays
+     hidden — the sharing strip below each card is this page's own footer. */
   .adp-grid .stack-card__btn { display: none; }
+
+  /* ── Sharing strip — one per package card ── */
+  .adp-cell { display: flex; flex-direction: column; }
+  .adp-cell .stack-card { flex: 1; }
+  .adp-share {
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    padding: 8px 10px;
+    margin-top: -6px;
+    border: 1px solid var(--ds-border);
+    border-top: none;
+    border-radius: 0 0 12px 12px;
+    background: var(--ds-surface-dim);
+    font-size: 12px;
+  }
+  .adp-share__chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 1px 8px; border-radius: var(--ds-radius-pill);
+    background: var(--ds-surface); border: 1px solid var(--ds-border);
+    color: var(--ds-text-secondary); font-weight: 600; font-size: 11.5px;
+  }
+  .adp-share__chip.is-auto { color: var(--ds-primary-dark); border-color: var(--ds-primary); }
+  .adp-share__none { color: var(--ds-accent-warn-ink); font-weight: 600; }
+  .adp-share__btn {
+    margin-left: auto;
+    border: 1px solid var(--ds-border); background: var(--ds-surface);
+    border-radius: var(--ds-radius-btn); padding: 3px 10px;
+    font-size: 12px; font-weight: 600; color: var(--ds-text-primary); cursor: pointer;
+  }
+  .adp-share__btn:hover { border-color: var(--ds-text-muted); }
+
+  /* ── Unpackaged tray ── */
+  .adp-tray {
+    border: 1px dashed var(--ds-accent-warn-line);
+    background: var(--ds-accent-warn-bg);
+    border-radius: 12px; padding: 14px 18px; margin: 18px 0 6px;
+  }
+  .adp-tray__hd { display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; }
+  .adp-tray__hd h3 { margin: 0; font-size: 14px; font-weight: 700; color: var(--ds-accent-warn-ink); }
+  .adp-tray__hd p { margin: 2px 0 0; font-size: 12.5px; color: var(--ds-accent-warn-ink); opacity: 0.9; }
+  .adp-tray__cta {
+    margin-left: auto; align-self: center;
+    font-size: 12.5px; font-weight: 700; color: var(--ds-text-link); text-decoration: none;
+  }
+  .adp-tray__tables { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .adp-tray__t {
+    font-family: var(--font-mono, ui-monospace, monospace); font-size: 11.5px;
+    background: var(--ds-surface); border: 1px solid var(--ds-border);
+    border-radius: 6px; padding: 2px 7px; color: var(--ds-text-secondary);
+  }
+
+  /* ── Share editor modal ── */
+  .adp-modal-overlay {
+    position: fixed; inset: 0; background: rgba(15, 23, 42, 0.48);
+    display: none; align-items: center; justify-content: center; z-index: 1000; padding: 16px;
+  }
+  .adp-modal-overlay.open { display: flex; }
+  .adp-modal {
+    width: min(560px, 96vw); max-height: 86vh; overflow-y: auto;
+    background: var(--ds-surface); border-radius: 12px; box-shadow: var(--ds-shadow-lg);
+    padding: 18px 20px;
+  }
+  .adp-modal h3 { margin: 0 0 2px; font-size: 16px; color: var(--ds-text-primary); }
+  .adp-modal .sub { margin: 0 0 14px; font-size: 12.5px; color: var(--ds-text-secondary); }
+  .adp-modal-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 0; border-bottom: 1px solid var(--ds-border-light);
+  }
+  .adp-modal-row:last-of-type { border-bottom: none; }
+  .adp-modal-row input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--ds-primary); }
+  .adp-modal-row .g-name { font-weight: 600; font-size: 13.5px; color: var(--ds-text-primary); }
+  .adp-modal-row .g-sub { font-size: 12px; color: var(--ds-text-muted); }
+  .adp-modal-row .g-sub.everyone { color: var(--ds-accent-info-ink); }
+  .adp-tier {
+    margin-left: auto; display: inline-flex; padding: 2px;
+    background: var(--ds-surface-sunken); border-radius: var(--ds-radius-btn);
+  }
+  .adp-tier button {
+    border: none; background: transparent; padding: 3px 10px;
+    font-size: 12px; font-weight: 600; border-radius: 7px;
+    color: var(--ds-text-muted); cursor: pointer;
+  }
+  .adp-tier button.on { background: var(--ds-surface); color: var(--ds-text-primary); box-shadow: var(--ds-shadow-sm); }
+  .adp-tier button.on.auto { color: var(--ds-primary-dark); }
+  .adp-tier[aria-disabled="true"] { opacity: .45; pointer-events: none; }
+  .adp-modal-hint { font-size: 12px; color: var(--ds-text-muted); margin: 12px 0 0; }
+  .adp-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+
+  .adp-toast {
+    position: fixed; bottom: 24px; right: 24px;
+    padding: 10px 16px; border-radius: 8px;
+    font-size: 13px; font-weight: 500;
+    box-shadow: var(--ds-shadow-md);
+    z-index: 1100; display: none; max-width: 380px;
+  }
+  .adp-toast.show { display: block; }
+  .adp-toast.ok   { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); border: 1px solid var(--ds-accent-success-line); }
+  .adp-toast.fail { background: var(--ds-accent-danger-bg); color: var(--ds-accent-danger-ink); border: 1px solid var(--ds-accent-danger-line); }
 </style>
 {% endblock %}
 
 {% block page %}
+{# ── Unpackaged tray — the invisible rule, said out loud. Tables outside a
+      package are added and syncing, but no analyst manifest carries them. #}
+{% if unpackaged_tables %}
+<div class="adp-tray">
+  <div class="adp-tray__hd">
+    <div>
+      <h3>{{ unpackaged_tables|length }} table{{ '' if unpackaged_tables|length == 1 else 's' }} in no package</h3>
+      <p>Tables reach analysts only through a data package — these are registered and syncing, but nobody can pull them.</p>
+    </div>
+    <a class="adp-tray__cta" href="/admin/tables">Assign them on Tables →</a>
+  </div>
+  <div class="adp-tray__tables">
+    {% for t in unpackaged_tables[:24] %}<span class="adp-tray__t">{{ t.name }}</span>{% endfor %}
+    {% if unpackaged_tables|length > 24 %}<span class="adp-tray__t">+ {{ unpackaged_tables|length - 24 }} more</span>{% endif %}
+  </div>
+</div>
+{% endif %}
+
 <div class="adp-section">
   <h2>Data Packages</h2>
   <p class="adp-count">{{ package_cards|length }} package{{ '' if package_cards|length == 1 else 's' }} total</p>
   {% if package_cards %}
   <div class="stack-grid adp-grid">
-    {% for entry in package_cards %}{{ card(entry) }}{% endfor %}
+    {% for entry in package_cards %}
+    <div class="adp-cell" data-pkg-id="{{ entry.id }}" data-pkg-name="{{ entry.name }}">
+      {{ card(entry) }}
+      <div class="adp-share" data-share-strip="{{ entry.id }}">
+        {% set shares = pkg_sharing.get(entry.id, []) %}
+        {% if shares %}
+          {% for s in shares %}
+          <span class="adp-share__chip {{ 'is-auto' if s.requirement == 'required' else '' }}"
+                title="{{ 'Automatic — added to members\' workspaces on next sync (required)' if s.requirement == 'required' else 'Optional — members can add it themselves (available)' }}">
+            {{ s.group_name }}{{ ' · auto' if s.requirement == 'required' else '' }}
+          </span>
+          {% endfor %}
+        {% else %}
+          <span class="adp-share__none">Shared with nobody — invisible to analysts</span>
+        {% endif %}
+        <button type="button" class="adp-share__btn" data-share-btn="{{ entry.id }}">Share…</button>
+      </div>
+    </div>
+    {% endfor %}
   </div>
   {% else %}
   <div class="empty-state">
@@ -61,4 +199,189 @@
   </div>
   {% endif %}
 </div>
+
+{# ── Share editor — one modal, opened per package. Same grant rows as a
+      group's Access tab; only the entry point differs. #}
+<div class="adp-modal-overlay" id="adp-share-modal" role="dialog" aria-modal="true" aria-labelledby="adp-share-title">
+  <div class="adp-modal">
+    <h3 id="adp-share-title">Share package</h3>
+    <p class="sub">
+      Pick who can use it. <strong>Optional</strong> shows it in members' Library to add themselves;
+      <strong>Automatic</strong> puts it in their workspace on the next sync.
+    </p>
+    <div id="adp-share-rows"></div>
+    <p class="adp-modal-hint">
+      Changes save immediately. The same grants are editable from each
+      <a href="/admin/groups">group's Access tab</a>.
+    </p>
+    <div class="adp-modal-actions">
+      <button type="button" class="btn btn-primary" id="adp-share-done">Done</button>
+    </div>
+  </div>
+</div>
+
+<div class="adp-toast" id="adp-toast" role="status" aria-live="polite"></div>
+
+<script>
+(function () {
+  "use strict";
+  // Groups + current grants, server-rendered so the modal opens instantly.
+  const GROUPS = {{ all_groups | tojson }};
+  // {pkg_id: [{grant_id, group_id, group_name, requirement}]}
+  const SHARING = {{ pkg_sharing | tojson }};
+  const GRANTS_API = "/api/admin/grants";
+
+  const overlay = document.getElementById("adp-share-modal");
+  const rowsHost = document.getElementById("adp-share-rows");
+  const toastEl = document.getElementById("adp-toast");
+  let currentPkg = null;
+
+  function toast(msg, ok) {
+    toastEl.textContent = msg;
+    toastEl.className = "adp-toast show " + (ok ? "ok" : "fail");
+    clearTimeout(toastEl._t);
+    toastEl._t = setTimeout(() => { toastEl.className = "adp-toast"; }, 3500);
+  }
+  function esc(s) {
+    return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+  function grantsFor(pkgId) { return SHARING[pkgId] || (SHARING[pkgId] = []); }
+  function grantOf(pkgId, groupId) { return grantsFor(pkgId).find(g => g.group_id === groupId); }
+
+  function renderModal() {
+    rowsHost.innerHTML = GROUPS.map(g => {
+      const grant = grantOf(currentPkg.id, g.id);
+      const tier = grant ? (grant.requirement === "required" ? "required" : "available") : null;
+      const everyone = g.is_system && g.name === "Everyone";
+      return `
+      <div class="adp-modal-row" data-group="${esc(g.id)}">
+        <input type="checkbox" ${grant ? "checked" : ""} aria-label="Share with ${esc(g.name)}">
+        <div>
+          <div class="g-name">${esc(g.name)}</div>
+          <div class="g-sub ${everyone ? "everyone" : ""}">
+            ${everyone ? "the whole company — every account, automatically" : `${g.member_count} member${g.member_count === 1 ? "" : "s"}`}
+          </div>
+        </div>
+        <div class="adp-tier" ${grant ? "" : 'aria-disabled="true"'} role="group" aria-label="Access tier for ${esc(g.name)}">
+          <button type="button" data-tier="available" class="${tier === "available" ? "on" : ""}" title="available">Optional</button>
+          <button type="button" data-tier="required" class="${tier === "required" ? "on auto" : ""}" title="required">Automatic</button>
+        </div>
+      </div>`;
+    }).join("");
+  }
+
+  function renderStrip(pkgId) {
+    const strip = document.querySelector(`[data-share-strip="${CSS.escape(pkgId)}"]`);
+    if (!strip) return;
+    const shares = grantsFor(pkgId);
+    const chips = shares.length
+      ? shares.map(s => `<span class="adp-share__chip ${s.requirement === "required" ? "is-auto" : ""}">${esc(s.group_name)}${s.requirement === "required" ? " · auto" : ""}</span>`).join("")
+      : `<span class="adp-share__none">Shared with nobody — invisible to analysts</span>`;
+    strip.innerHTML = chips + `<button type="button" class="adp-share__btn" data-share-btn="${esc(pkgId)}">Share…</button>`;
+  }
+
+  async function createGrant(pkgId, group, requirement) {
+    const r = await fetch(GRANTS_API, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ group_id: group.id, resource_type: "data_package", resource_id: pkgId, requirement }),
+    });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `HTTP ${r.status}`);
+    const created = await r.json();
+    grantsFor(pkgId).push({ grant_id: created.id, group_id: group.id, group_name: group.name, requirement });
+  }
+  async function updateGrant(pkgId, grant, requirement) {
+    const r = await fetch(`${GRANTS_API}/${encodeURIComponent(grant.grant_id)}`, {
+      method: "PUT",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ requirement }),
+    });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `HTTP ${r.status}`);
+    grant.requirement = requirement;
+  }
+  async function deleteGrant(pkgId, grant) {
+    const r = await fetch(`${GRANTS_API}/${encodeURIComponent(grant.grant_id)}`, {
+      method: "DELETE",
+      credentials: "include",
+    });
+    if (!r.ok && r.status !== 404) throw new Error(`HTTP ${r.status}`);
+    const list = grantsFor(pkgId);
+    list.splice(list.indexOf(grant), 1);
+  }
+
+  document.addEventListener("click", async (e) => {
+    const openBtn = e.target.closest("[data-share-btn]");
+    if (openBtn) {
+      const cell = openBtn.closest(".adp-cell");
+      currentPkg = { id: openBtn.dataset.shareBtn, name: cell ? cell.dataset.pkgName : "" };
+      document.getElementById("adp-share-title").textContent = `Share “${currentPkg.name || currentPkg.id}”`;
+      renderModal();
+      overlay.classList.add("open");
+      return;
+    }
+    if (e.target === overlay || e.target.id === "adp-share-done") {
+      overlay.classList.remove("open");
+      return;
+    }
+    if (!currentPkg) return;
+
+    const row = e.target.closest(".adp-modal-row");
+    if (!row) return;
+    const groupId = row.dataset.group;
+    const group = GROUPS.find(g => g.id === groupId);
+
+    // Checkbox: create with the default tier (Optional) / delete.
+    if (e.target.matches('input[type="checkbox"]')) {
+      const box = e.target;
+      box.disabled = true;
+      try {
+        const grant = grantOf(currentPkg.id, groupId);
+        if (box.checked && !grant) {
+          await createGrant(currentPkg.id, group, "available");
+          toast(`Shared with ${group.name} (optional)`, true);
+        } else if (!box.checked && grant) {
+          await deleteGrant(currentPkg.id, grant);
+          toast(`No longer shared with ${group.name}`, true);
+        }
+      } catch (err) {
+        box.checked = !box.checked;
+        toast("Could not save: " + err.message, false);
+      } finally {
+        box.disabled = false;
+        renderModal();
+        renderStrip(currentPkg.id);
+      }
+      return;
+    }
+
+    // Tier toggle on an existing grant.
+    const tierBtn = e.target.closest("[data-tier]");
+    if (tierBtn) {
+      const grant = grantOf(currentPkg.id, groupId);
+      if (!grant) return;
+      const requirement = tierBtn.dataset.tier;
+      if (grant.requirement === requirement) return;
+      try {
+        await updateGrant(currentPkg.id, grant, requirement);
+        toast(
+          requirement === "required"
+            ? `${group.name}: automatic — lands in members' workspaces on next sync`
+            : `${group.name}: optional — members add it themselves`,
+          true,
+        );
+      } catch (err) {
+        toast("Could not save: " + err.message, false);
+      }
+      renderModal();
+      renderStrip(currentPkg.id);
+    }
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") overlay.classList.remove("open");
+  });
+})();
+</script>
 {% endblock %}

@@ -6168,11 +6168,65 @@ async def admin_data_packages(
     domain_entries = sorted(domain_entries, key=lambda e: e.name or "")
     domain_cards = [_adapt_domain(e) for e in domain_entries]
 
+    # ── Sharing state, per package — who can use it, at which tier. ──
+    # The grant matrix on a group's detail page stays the canonical editor;
+    # this page adds the OTHER direction ("who can use Revenue?"), which
+    # previously had no answer anywhere in the product. Same rows, same API
+    # (/api/admin/grants) — rendered from the package's side.
+    pkg_sharing: dict[str, list[dict]] = {}
+    all_groups: list[dict] = []
+    try:
+        for g in resource_grants_repo().list_all(resource_type="data_package"):
+            pkg_sharing.setdefault(g["resource_id"], []).append(
+                {
+                    "grant_id": g["id"],
+                    "group_id": g["group_id"],
+                    "group_name": g.get("group_name") or g["group_id"],
+                    # 'available' | 'required' in the API; the page words them
+                    # Optional / Automatic — what each one DOES.
+                    "requirement": g.get("requirement") or "available",
+                }
+            )
+        members_repo = user_group_members_repo()
+        for grp in user_groups_repo().list_all():
+            all_groups.append(
+                {
+                    "id": grp["id"],
+                    "name": grp["name"],
+                    "is_system": bool(grp.get("is_system")),
+                    "member_count": members_repo.count_members(grp["id"]),
+                }
+            )
+    except Exception as e:
+        logger.warning("admin data-packages: could not enumerate sharing state: %s", e)
+
+    # ── The unpackaged tray — distributable tables no analyst can pull. ──
+    # Same fold as the /admin gap card: blank query_mode reads as local,
+    # `remote` rows are excluded (they answer server-side without a package).
+    unpackaged_tables: list[dict] = []
+    try:
+        packaged_ids: set[str] = set()
+        for ids in pkg_repo.list_member_ids_bulk().values():
+            packaged_ids.update(ids)
+        for t in table_registry_repo().list_all():
+            if (t.get("source_type") or "") == "internal":
+                continue
+            if (t.get("query_mode") or "") not in ("", "local", "materialized"):
+                continue
+            if t["id"] not in packaged_ids:
+                unpackaged_tables.append({"id": t["id"], "name": t.get("name") or t["id"]})
+        unpackaged_tables.sort(key=lambda t: t["name"])
+    except Exception as e:
+        logger.warning("admin data-packages: could not enumerate unpackaged tables: %s", e)
+
     ctx = _build_context(
         request,
         user=user,
         package_cards=package_cards,
         domain_cards=domain_cards,
+        pkg_sharing=pkg_sharing,
+        all_groups=all_groups,
+        unpackaged_tables=unpackaged_tables,
     )
     return templates.TemplateResponse(request, "admin_data_packages.html", ctx)
 
