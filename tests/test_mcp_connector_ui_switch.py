@@ -83,7 +83,7 @@ class TestAiConnectorRouteBothChromes:
             follow_redirects=False,
         )
         assert resp.status_code == 302
-        assert resp.headers["location"] == "/home"
+        assert resp.headers["location"] == "/"
 
     def test_redesign_chrome_redirects_home_when_disabled(self, seeded_app, monkeypatch):
         monkeypatch.setattr("app.web.router.get_mcp_connector_ui_enabled", lambda: False)
@@ -95,7 +95,7 @@ class TestAiConnectorRouteBothChromes:
             follow_redirects=False,
         )
         assert resp.status_code == 302
-        assert resp.headers["location"] == "/home"
+        assert resp.headers["location"] == "/"
 
     def test_still_renders_by_default(self, seeded_app):
         """Sanity: default (unset) stays exactly the current behavior."""
@@ -120,7 +120,7 @@ class TestMcpConnectPage:
             follow_redirects=False,
         )
         assert resp.status_code == 302
-        assert resp.headers["location"] == "/home"
+        assert resp.headers["location"] == "/"
 
     def test_still_renders_by_default(self, seeded_app):
         c = seeded_app["client"]

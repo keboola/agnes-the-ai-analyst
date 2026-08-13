@@ -1346,7 +1346,7 @@ async def me_ai_connector_page(
     from fastapi.responses import RedirectResponse
 
     if not get_mcp_connector_ui_enabled():
-        return RedirectResponse("/home", status_code=302)
+        return RedirectResponse("/", status_code=302)
 
     if get_ui_layout() == "rail" or _is_paper_theme():
         return RedirectResponse("/how-it-works#connect", status_code=302)
@@ -1437,7 +1437,7 @@ async def mcp_connect_page(
     if not get_mcp_connector_ui_enabled():
         from fastapi.responses import RedirectResponse
 
-        return RedirectResponse("/home", status_code=302)
+        return RedirectResponse("/", status_code=302)
 
     ctx = _build_context(
         request,
