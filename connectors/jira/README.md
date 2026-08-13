@@ -564,24 +564,27 @@ python -m connectors.jira.transform \
   --attachments-dir /data/src_data/raw/jira/attachments
 ```
 
-Then check the history reaches as far back as `issues` itself does — this is what catches an incomplete backfill:
+Then check the backfilled history reaches as far back as `issues` itself does — the `FILTER` on `min`/`max` is what makes this catch an incomplete backfill (unfiltered, they always report the full range of `issues`, backfilled or not):
 
 ```sql
-SELECT min(month) AS earliest,
-       max(month) AS latest,
+SELECT min(month) FILTER (WHERE organization_ids IS NOT NULL) AS earliest_backfilled,
+       max(month) FILTER (WHERE organization_ids IS NOT NULL) AS latest_backfilled,
        count(*) FILTER (WHERE organization_ids IS NOT NULL) AS with_ids
 FROM issues;
 ```
 
-`earliest` should be the earliest month in `issues`, not the month this was deployed.
+`earliest_backfilled` should be the earliest month in `issues` (compare `SELECT min(month) FROM issues`), not the month this was deployed. A re-transformed row always carries a non-NULL value — `'[]'` when the ticket has no organizations — so NULL means the partition has not been re-transformed yet.
 
-Joining a ticket to its organizations:
+Joining a ticket to its organizations, keeping tickets that have none. The `LEFT JOIN LATERAL … ON true` is load-bearing: a bare `FROM issues i, UNNEST(…)` is an *inner* lateral join, so a ticket whose `organization_ids` is `'[]'` or NULL produces zero unnest rows and silently disappears no matter what the later join says:
 
 ```sql
 SELECT i.issue_key, o.name, o.crm_account_id
-FROM issues i, UNNEST(from_json(i.organization_ids, '["VARCHAR"]')) AS t(org_id)
+FROM issues i
+LEFT JOIN LATERAL UNNEST(from_json(i.organization_ids, '["VARCHAR"]')) AS t(org_id) ON true
 LEFT JOIN organizations o ON o.org_id = t.org_id;
 ```
+
+Use the comma form only when you deliberately want organization-bearing tickets alone.
 
 ## Field Refresh Polling (Open Tickets)
 
