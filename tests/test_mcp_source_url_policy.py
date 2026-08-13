@@ -22,7 +22,7 @@ import socket
 
 import pytest
 
-from src.net.mcp_source_url import check_source_url
+from src.net.mcp_source_url import check_source_url, check_source_url_dns_free
 
 PUBLIC = ["93.184.216.34"]
 PRIVATE = ["10.10.0.7"]
@@ -383,3 +383,105 @@ def test_host_resolving_to_no_address_gets_the_same_cleartext_warning():
     v = check_source_url("http://not-yet.example/mcp", _resolver=_res([]))
     assert v.ok and v.reach == "unknown"
     assert "cleartext" in v.warning
+
+
+# ── the DNS-free half, standalone (#1216) ───────────────────────────────────
+#
+# `check_source_url_dns_free` is the subset of the policy a caller can run
+# with no resolver at all — a hot forward path, or a sweep over every
+# registered row. It is judged exactly like `check_source_url` for a scheme
+# problem or a literal IP (that is what stops the metadata-endpoint url of
+# #1154 regardless of whether resolving is safe at the calling seam) and
+# answers "unknown" for an ordinary hostname, which it never attempts to
+# resolve.
+
+
+def test_dns_free_refuses_the_literal_metadata_ip():
+    v = check_source_url_dns_free("http://169.254.169.254/mcp")
+    assert not v.ok
+    assert "blocked_range" in v.reason
+
+
+def test_dns_free_refuses_a_literal_public_ip_over_cleartext_http():
+    v = check_source_url_dns_free("http://93.184.216.34/mcp")
+    assert not v.ok
+    assert v.reason == "cleartext_http_to_public_address"
+
+
+def test_dns_free_allows_a_literal_private_ip():
+    v = check_source_url_dns_free("http://10.10.0.7:8080/mcp")
+    assert v.ok
+    assert v.reach == "internal"
+
+
+def test_dns_free_allows_a_literal_ipv6_loopback():
+    v = check_source_url_dns_free("http://[::1]:3000/mcp")
+    assert v.ok
+    assert v.reach == "internal"
+
+
+def test_dns_free_refuses_a_literal_ipv6_link_local():
+    v = check_source_url_dns_free("https://[fe80::1]/mcp")
+    assert not v.ok
+
+
+def test_dns_free_cannot_judge_an_ordinary_hostname_and_says_so():
+    """No resolver means no reach — `unknown` is "I could not tell", not "I
+    checked and it's fine". A caller that needs the full answer for a
+    hostname must go through `check_source_url` with a resolver."""
+    v = check_source_url_dns_free("https://mcp.vendor.example/mcp")
+    assert v.ok
+    assert v.reach == "unknown"
+
+
+def test_dns_free_refuses_an_unsupported_scheme_with_no_resolver_involved():
+    v = check_source_url_dns_free("ftp://mcp.example/x")
+    assert not v.ok
+    assert v.reason == "unsupported_scheme: ftp"
+
+
+def test_dns_free_refuses_missing_url_and_missing_host():
+    assert not check_source_url_dns_free("").ok
+    assert not check_source_url_dns_free("https://").ok
+
+
+def test_dns_free_strict_mode_still_requires_https_with_no_resolver():
+    v = check_source_url_dns_free("http://mcp.internal:8080/mcp", strict=True)
+    assert not v.ok
+    assert v.reason == "strict_mode_requires_https"
+
+
+def test_dns_free_allowlist_still_requires_https_under_strict():
+    """Mirrors `check_source_url`'s rule: the allowlist exempts the
+    public-address demand, not the transport demand — even in the half that
+    never gets far enough to resolve anything."""
+    v = check_source_url_dns_free(
+        "http://mcp.internal/mcp",
+        strict=True,
+        allowed_hosts=frozenset({"mcp.internal"}),
+    )
+    assert not v.ok
+    assert v.reason == "strict_mode_requires_https"
+
+
+def test_dns_free_agrees_with_the_full_check_on_every_literal_ip_case():
+    """The two functions must not drift on the part they share. Parametrizing
+    against `check_source_url` itself (rather than duplicating expectations)
+    is what would catch that drift."""
+    cases = [
+        "http://169.254.169.254/mcp",
+        "http://93.184.216.34/mcp",
+        "http://10.10.0.7:8080/mcp",
+        "http://[::1]:3000/mcp",
+        "https://[fe80::1]/mcp",
+    ]
+
+    def _unreachable(host):
+        raise AssertionError("a literal IP must never need the resolver")
+
+    for url in cases:
+        full = check_source_url(url, _resolver=_unreachable)
+        dns_free = check_source_url_dns_free(url)
+        assert dns_free.ok == full.ok, url
+        assert dns_free.reason == full.reason, url
+        assert dns_free.reach == full.reach, url
