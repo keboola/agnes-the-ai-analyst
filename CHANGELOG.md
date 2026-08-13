@@ -61,6 +61,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- **Paper theme: static cards no longer lift on hover.** The design system makes the card hover-lift opt-in — `.ds-card[data-clickable]`, with the default theme's own comment reading "cards stay still by default — calm" — and `paper-skin.css` applied it to every `.ds-card` regardless. Any static container under the paper theme (an "At a glance" panel, a form section, a read-out) therefore rose 2px and grew a shadow when the pointer crossed it: elevation promising an interaction the card does not have. Paper now honours the same `[data-clickable]` gate, so cards that ARE clickable still lift and containers stay put. `.stack-card` and `.card` keep the ungated rule deliberately — neither sets that attribute and both are genuinely clickable where they are used, so gating them on it would remove the hover from the cards that have earned it.
+
 - **A filter chip no longer eats a name that ends in a number.** The shared toolbar read a chip's label off its menu option and stripped a trailing number from it, on the theory that the text ended in the option's tally — but every caller puts the tally in a sibling element, so the label held the name alone and the strip took the digits with it: a data package called `Customer 360` chipped as **Customer**, a tag `Q3 2026` as **Q3**. The strip now runs only on the fallback path, where the row's own text really does carry the count. Affects every surface with a chip row (`/library`, `/chats`, `/stack`, the package picker, and now Tables).
 
 ### Added
