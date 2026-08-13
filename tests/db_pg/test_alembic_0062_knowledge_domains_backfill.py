@@ -437,3 +437,64 @@ def test_0062_marks_its_writes_and_downgrade_takes_back_only_those(pg_engine):
             ).fetchall()
         )
     assert left == {"ki_organic": "alice@example.com"}, "downgrade must remove only the rows the backfill wrote"
+
+
+def test_0062_trims_edge_separators_from_padded_or_punctuated_values(pg_engine):
+    """`' Finance '` and `'(Ops)'` must land on the real domains, not mint
+    `'-finance'` / `'-ops-'` junk (Devin Review on #1290, third round): the
+    collapse step turns surrounding whitespace/punctuation into leading and
+    trailing `-`, which the slug formula now ``btrim``s in BOTH steps."""
+    from alembic import command
+
+    cfg = _alembic_config(str(pg_engine.url))
+    command.upgrade(cfg, "0061_agent_status_backfill_v115")
+
+    with pg_engine.begin() as conn:
+        finance_id, ops_id = str(uuid.uuid4()), str(uuid.uuid4())
+        conn.execute(
+            sa.text(
+                "INSERT INTO memory_domains (id, slug, name, created_at, updated_at) "
+                "VALUES (:f, 'finance', 'Finance', now(), now()), (:o, 'ops', 'Ops', now(), now())"
+            ),
+            {"f": finance_id, "o": ops_id},
+        )
+        _insert_legacy_item(conn, id="ki_padded", domain=" Finance ")
+        _insert_legacy_item(conn, id="ki_punctuated", domain="(Ops)")
+
+    command.upgrade(cfg, "0062_knowledge_domains_backfill")
+
+    with pg_engine.connect() as conn:
+        pairs = conn.execute(
+            sa.text(
+                "SELECT kid.item_id, md.slug FROM knowledge_item_domains kid "
+                "JOIN memory_domains md ON md.id = kid.domain_id "
+                "WHERE kid.item_id IN ('ki_padded', 'ki_punctuated')"
+            )
+        ).fetchall()
+        assert sorted(pairs) == [("ki_padded", "finance"), ("ki_punctuated", "ops")]
+
+        junk = conn.execute(
+            sa.text("SELECT slug FROM memory_domains WHERE slug LIKE '-%' OR slug LIKE '%-' OR slug = ''")
+        ).fetchall()
+        assert junk == [], f"backfill minted junk edge-separator slugs: {[r[0] for r in junk]}"
+
+
+def test_0062_skips_a_whitespace_only_legacy_value(pg_engine):
+    """`'   '` passes the scalar ``<> ''`` guard but normalizes to nothing —
+    the migration must neither mint a domain for it nor write a junction row,
+    and must complete without error."""
+    from alembic import command
+
+    cfg = _alembic_config(str(pg_engine.url))
+    command.upgrade(cfg, "0061_agent_status_backfill_v115")
+
+    with pg_engine.begin() as conn:
+        _insert_legacy_item(conn, id="ki_blank", domain="   ")
+
+    command.upgrade(cfg, "0062_knowledge_domains_backfill")
+
+    with pg_engine.connect() as conn:
+        junction = conn.execute(sa.text("SELECT 1 FROM knowledge_item_domains WHERE item_id = 'ki_blank'")).fetchone()
+        minted = conn.execute(sa.text("SELECT slug FROM memory_domains WHERE created_by = 'migration_0062'")).fetchall()
+    assert junction is None, "a whitespace-only legacy value must not produce a junction row"
+    assert minted == [], f"no domain may be minted for a value that normalizes to '': {[r[0] for r in minted]}"

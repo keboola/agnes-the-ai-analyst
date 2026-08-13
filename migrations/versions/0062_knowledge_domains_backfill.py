@@ -64,6 +64,14 @@ legacy ``'Finance'`` into ``'-inance'`` — a junk ``memory_domains`` row
 with every such item filed under it instead of the real domain, and
 ``downgrade()`` below cannot take it back.
 
+The normalized value is also ``btrim``-med of leading/trailing ``-`` for
+the same reason: the collapse step turns surrounding whitespace or
+punctuation into edge separators (``' finance'`` → ``'-finance'``,
+``'(Ops)'`` → ``'-ops-'``), which would again miss the real slug and mint
+a junk domain. A value that normalizes to nothing at all (``'   '``
+passes the ``<> ''`` guard but trims to ``''``) is excluded outright —
+there is no domain to resolve it to and nothing sane to mint.
+
 Revision ID: 0062_knowledge_domains_backfill
 Revises: 0061_agent_status_backfill_v115
 Create Date: 2026-08-13
@@ -99,6 +107,14 @@ _UNMIGRATED = """
     )
 """
 
+#: One normalization expression used by BOTH steps (they must stay identical
+#: or step 2's join misses the row step 1 minted): lowercase first (PG's
+#: regex classes are case-sensitive), collapse non-alnum runs to '-', then
+#: btrim the edge separators that surrounding whitespace/punctuation leaves
+#: behind (' finance' → 'finance', '(Ops)' → 'ops'). A whitespace-only
+#: value trims to '' and is excluded by the ``<> ''`` guards below.
+_SLUG = "btrim(regexp_replace(lower(ki.domain), '[^a-z0-9]+', '-', 'g'), '-')"
+
 
 def upgrade() -> None:
     # 1) Create a memory_domains row for any legacy scalar value that has no
@@ -127,11 +143,12 @@ def upgrade() -> None:
             '{MARKER}',
             now(), now()
           FROM (
-              SELECT regexp_replace(lower(ki.domain), '[^a-z0-9]+', '-', 'g') AS slug,
-                     min(ki.domain) AS name
+              SELECT {_SLUG} AS slug,
+                     min(btrim(ki.domain)) AS name
                 FROM knowledge_items ki
                WHERE {_UNMIGRATED}
-               GROUP BY regexp_replace(lower(ki.domain), '[^a-z0-9]+', '-', 'g')
+                 AND {_SLUG} <> ''
+               GROUP BY {_SLUG}
           ) d
          WHERE NOT EXISTS (
              SELECT 1 FROM memory_domains md WHERE md.slug = d.slug
@@ -149,8 +166,9 @@ def upgrade() -> None:
         SELECT ki.id, md.id, '{MARKER}', now()
           FROM knowledge_items ki
           JOIN memory_domains md
-            ON md.slug = regexp_replace(lower(ki.domain), '[^a-z0-9]+', '-', 'g')
+            ON md.slug = {_SLUG}
          WHERE {_UNMIGRATED}
+           AND {_SLUG} <> ''
         ON CONFLICT (item_id, domain_id) DO NOTHING
         """
     )

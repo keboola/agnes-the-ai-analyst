@@ -625,3 +625,60 @@ def test_duplicate_candidates_follow_the_junction_not_a_stale_scalar_column(k_re
 
     assert "ki_moved" in found_ops, "duplicate candidates must follow the junction, not a stale scalar column"
     assert "ki_moved" not in found_q_team, "the item moved off q-team — it must not still show up there"
+
+
+# ---------------------------------------------------------------------------
+# list_items / search / count_items — junction parity (Devin Review on #1290,
+# third round)
+#
+# Same divergence class once more: PG's admin item list, FTS search and the
+# count variants filtered `domain` on the scalar `knowledge_items.domain`
+# column. DuckDB resolves the slug and EXISTS-joins the junction in all three
+# (and short-circuits an unknown slug to [] / 0). An item moved between
+# domains via `replace_domains_for_item` therefore kept showing under its old
+# domain — and never under its new one — in the PG list/search/count paths.
+# ---------------------------------------------------------------------------
+
+
+def _move_item_between_domains(k_repo):
+    domains = _domain_repo_for(k_repo)
+    domains.create(name="Q-Team", slug="q-team", description=None, icon=None, color=None, created_by="u")
+    domains.create(name="Ops", slug="ops", description=None, icon=None, color=None, created_by="u")
+    k_repo.create(
+        id="ki_moved",
+        title="Moved item",
+        content="unmistakable needle content",
+        category="general",
+        status="approved",
+        domain="q-team",
+    )
+    domains.replace_domains_for_item("ki_moved", ["ops"], added_by="admin@example.com")
+
+
+def test_list_items_domain_filter_follows_the_junction(k_repo):
+    _move_item_between_domains(k_repo)
+    assert {r["id"] for r in k_repo.list_items(domain="ops")} == {"ki_moved"}
+    assert {r["id"] for r in k_repo.list_items(domain="q-team")} == set()
+
+
+def test_list_items_unknown_domain_slug_is_empty_on_both_engines(k_repo):
+    _move_item_between_domains(k_repo)
+    assert k_repo.list_items(domain="no-such-domain") == []
+
+
+def test_search_domain_filter_follows_the_junction(k_repo):
+    _move_item_between_domains(k_repo)
+    assert {r["id"] for r in k_repo.search("needle", domain="ops")} == {"ki_moved"}
+    assert {r["id"] for r in k_repo.search("needle", domain="q-team")} == set()
+
+
+def test_search_unknown_domain_slug_is_empty_on_both_engines(k_repo):
+    _move_item_between_domains(k_repo)
+    assert k_repo.search("needle", domain="no-such-domain") == []
+
+
+def test_count_items_domain_filter_follows_the_junction(k_repo):
+    _move_item_between_domains(k_repo)
+    assert k_repo.count_items(domain="ops") == 1
+    assert k_repo.count_items(domain="q-team") == 0
+    assert k_repo.count_items(domain="no-such-domain") == 0
