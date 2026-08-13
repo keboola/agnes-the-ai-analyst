@@ -285,6 +285,18 @@ auth:
 #   # on-prem source does not stop an instance from adopting it.
 #   # Env override: AGNES_MCP_SOURCE_URL_STRICT.
 #   source_url_strict: false
+#
+#   # Expose the user-facing MCP connector surface — Agnes's OWN server, i.e.
+#   # the /me/ai-connector and /mcp-connect install-instruction pages, the MCP
+#   # tab of /how-it-works#connect, and their nav/palette entries. On by
+#   # default (current behavior). Set false on a VPN/intranet-only instance
+#   # whose cloud-side MCP clients (e.g. a hosted connector resolved from
+#   # outside the network) can never reach the endpoint, so users are not
+#   # shown a setup path that cannot work for them. UI only — the MCP
+#   # protocol endpoints (/api/mcp/http, /api/mcp/sse) keep serving in-network
+#   # clients regardless. See docs/DEPLOYMENT.md. Env override:
+#   # AGNES_MCP_CONNECTOR_UI_ENABLED.
+#   connector_ui_enabled: true
 
 # --- Access control (optional) ---
 # access:

@@ -282,6 +282,26 @@ SWITCHES: tuple[Switch, ...] = (
         ),
     ),
     Switch(
+        name="mcp_connector_ui",
+        config_keys=("mcp", "connector_ui_enabled"),
+        env_var="AGNES_MCP_CONNECTOR_UI_ENABLED",
+        kind="bool",
+        default=True,
+        effect="live",
+        category="product",
+        editable=True,
+        description=(
+            "User-facing MCP connector surface: the /me/ai-connector and /mcp-connect "
+            "install-instruction pages, the MCP tab of /how-it-works#connect, and their nav / "
+            "command-palette entries. On by default (current behavior unchanged). Turn off on a "
+            "VPN/intranet-only instance where cloud-side MCP clients (e.g. a hosted connector "
+            "resolved from outside the network) can never reach the endpoint — so users are not "
+            "shown a setup path that cannot work for them. This hides UI ONLY: the MCP protocol "
+            "endpoints (/api/mcp/http, /api/mcp/sse) keep serving in-network clients regardless "
+            "of this switch."
+        ),
+    ),
+    Switch(
         name="agent_profiles",
         config_keys=("agent_profiles", "enabled"),
         env_var="AGNES_AGENT_PROFILES_ENABLED",
