@@ -442,6 +442,11 @@ class TestBackfillRefetchesIncompleteJson:
         marked = _issue_with_comments(total=190, embedded=124, issue_key="PROJ-600")
         marked["_comments_incomplete"] = True
         self._write_existing(backfill, "PROJ-600", marked)
+        # The sidecar marker save_issue leaves next to a JSON whose
+        # _comments_incomplete is True — _needs_refetch is now a stat on
+        # this file, not a json.load() of the JSON body (Devin Review on
+        # #1283, finding 3).
+        (backfill.issues_dir / "PROJ-600.json.incomplete").touch()
 
         healed = _issue_with_comments(total=190, embedded=190, issue_key="PROJ-600")
         with (
@@ -454,6 +459,10 @@ class TestBackfillRefetchesIncompleteJson:
         assert ok is True
         fetch.assert_called_once_with("PROJ-600")
         assert backfill.stats["skipped"] == 0
+        assert not (backfill.issues_dir / "PROJ-600.json.incomplete").exists(), (
+            "healing the issue (re-fetch with a complete comment set) must clear "
+            "the sidecar marker, or a later run would refetch it forever"
+        )
 
     def test_unmarked_json_is_still_skipped(self, tmp_path):
         backfill = self._make_backfill(tmp_path)
@@ -556,6 +565,370 @@ class TestCommentPaginationHonoursRetryAfter:
             complete_issue_comments(issue_data, BASE_URL, AUTH, client)
 
         assert sleep.call_args.args[0] <= 300, "an hours-long Retry-After stalls the whole worker"
+
+
+class TestCommentPaginationCallerSuppliedRetryBudget:
+    """``complete_issue_comments`` must accept a caller-supplied retry budget
+    so the webhook path (an active FastAPI request) can pass a much smaller
+    one than the batch path's generous default — the 429 retry loop's
+    ``time.sleep()`` (up to 3 x 300s) otherwise blocks whatever thread runs
+    it for up to 15 minutes. (Devin Review on #1283)
+    """
+
+    def _rate_limited(self, retry_after: str = "3") -> MagicMock:
+        resp = MagicMock()
+        resp.status_code = 429
+        resp.headers = {"Retry-After": retry_after}
+        return resp
+
+    def test_max_retries_zero_marks_incomplete_on_first_429_without_sleeping(self):
+        issue_data = _issue_with_comments(total=124, embedded=100)
+        client = MagicMock()
+        client.get.side_effect = [self._rate_limited("3")]
+
+        with patch("connectors.jira.service.time.sleep") as sleep:
+            complete_issue_comments(issue_data, BASE_URL, AUTH, client, max_retries=0)
+
+        sleep.assert_not_called()
+        assert issue_data.get("_comments_incomplete") is True
+        assert client.get.call_count == 1
+
+    def test_max_retries_omitted_keeps_the_module_default_budget(self):
+        """Existing callers (backfill.py, direct calls) that don't pass
+        max_retries must see today's unchanged, generous retry count."""
+        issue_data = _issue_with_comments(total=124, embedded=100)
+        client = MagicMock()
+        client.get.side_effect = [self._rate_limited("1") for _ in range(20)]
+
+        with patch("connectors.jira.service.time.sleep"):
+            complete_issue_comments(issue_data, BASE_URL, AUTH, client)
+
+        assert issue_data.get("_comments_incomplete") is True
+        assert client.get.call_count <= 5, "omitting max_retries changed the default budget"
+
+    def test_max_retries_positive_bound_is_honoured(self):
+        issue_data = _issue_with_comments(total=124, embedded=100)
+        client = MagicMock()
+        client.get.side_effect = [self._rate_limited("0") for _ in range(20)]
+
+        with patch("connectors.jira.service.time.sleep"):
+            complete_issue_comments(issue_data, BASE_URL, AUTH, client, max_retries=1)
+
+        assert issue_data.get("_comments_incomplete") is True
+        assert client.get.call_count == 2, "max_retries=1 should allow exactly one retry (2 attempts total)"
+
+
+class TestWebhookFetchIssueUsesAZeroCommentRetryBudget:
+    """``process_webhook_event``'s full-refetch runs off an active FastAPI
+    request. It must pass a zero comment-retry budget to ``fetch_issue``,
+    relying on the ``_comments_incomplete`` marker plus a later backfill
+    heal (``_needs_refetch``) rather than sleeping in-request. (Devin
+    Review on #1283)
+    """
+
+    def _make_service(self, tmp_path):
+        from connectors.jira import service as svc
+
+        svc.Config.JIRA_DOMAIN = "mycompany.atlassian.net"
+        svc.Config.JIRA_EMAIL = "bot@mycompany.com"
+        svc.Config.JIRA_API_TOKEN = "test-token-xyz"
+        svc.Config.JIRA_DATA_DIR = tmp_path
+        svc._jira_service = None
+        return svc.JiraService()
+
+    def test_fetch_issue_forwards_comment_max_retries_to_complete_issue_comments(self, tmp_path):
+        service = self._make_service(tmp_path)
+
+        issue_response = MagicMock()
+        issue_response.status_code = 200
+        issue_response.json.return_value = _issue_with_comments(total=124, embedded=100, issue_key="PROJ-801")
+
+        client = MagicMock()
+        client.get.side_effect = [issue_response]
+        client.__enter__ = lambda s: client
+        client.__exit__ = MagicMock(return_value=False)
+
+        with (
+            patch("connectors.jira.service.httpx.Client", return_value=client),
+            patch("connectors.jira.service.complete_issue_comments") as mock_complete,
+        ):
+            service.fetch_issue("PROJ-801", comment_max_retries=0)
+
+        assert mock_complete.call_args.kwargs.get("max_retries") == 0
+
+    def test_webhook_path_does_not_sleep_on_a_rate_limited_comment_page(self, tmp_path):
+        service = self._make_service(tmp_path)
+
+        issue_response = MagicMock()
+        issue_response.status_code = 200
+        issue_response.json.return_value = _issue_with_comments(total=124, embedded=100, issue_key="PROJ-800")
+
+        rate_limited = MagicMock()
+        rate_limited.status_code = 429
+        rate_limited.headers = {"Retry-After": "3"}
+
+        client = MagicMock()
+        client.get.side_effect = [issue_response, rate_limited]
+        client.__enter__ = lambda s: client
+        client.__exit__ = MagicMock(return_value=False)
+
+        saved: dict = {}
+
+        def _capture(issue_data):
+            saved["payload"] = issue_data
+            return tmp_path / "issues" / "x.json"
+
+        with (
+            patch("connectors.jira.service.httpx.Client", return_value=client),
+            patch.object(service, "save_issue", side_effect=_capture),
+            patch("connectors.jira.service.time.sleep") as sleep,
+        ):
+            ok = service.process_webhook_event({"webhookEvent": "jira:issue_updated", "issue": {"key": "PROJ-800"}})
+
+        assert ok is True
+        sleep.assert_not_called()
+        assert saved["payload"].get("_comments_incomplete") is True
+
+
+class TestBackfillFetchIssueRateLimitRetryIsBounded:
+    """Before this PR, the 429 branch lived AFTER the ``with
+    httpx.Client(...)`` block; the PR moved the 200 branch inside it (so it
+    could hand ``client`` to ``complete_issue_comments``) and left the 429
+    branch's recursive retry inside too — so N consecutive 429s held N open
+    httpx.Client instances plus N stack frames, unbounded (no retry cap on
+    this path). Fixed by converting the recursion into a bounded loop where
+    only a successful response is read inside ``with``; the retry sleeps
+    OUTSIDE a closed client. (Devin Review on #1283)
+    """
+
+    def _make_backfill(self, tmp_path):
+        from connectors.jira.scripts.backfill import Config as BackfillConfig
+        from connectors.jira.scripts.backfill import JiraBackfill
+
+        config = BackfillConfig(
+            jira_domain="mycompany.atlassian.net",
+            jira_email="bot@mycompany.com",
+            jira_api_token="test-token-xyz",
+            data_dir=tmp_path,
+        )
+        return JiraBackfill(config)
+
+    def _rate_limited(self, retry_after: str = "0") -> MagicMock:
+        resp = MagicMock()
+        resp.status_code = 429
+        resp.headers = {"Retry-After": retry_after}
+        return resp
+
+    def _ok_response(self, issue_key: str) -> MagicMock:
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = _issue_with_comments(total=1, embedded=1, issue_key=issue_key)
+        return resp
+
+    def test_retry_is_bounded_and_gives_up_instead_of_recursing_forever(self, tmp_path):
+        backfill = self._make_backfill(tmp_path)
+
+        with (
+            patch("connectors.jira.scripts.backfill.httpx.Client") as mock_client_cls,
+            patch("connectors.jira.scripts.backfill.time.sleep") as sleep,
+        ):
+            entered_client = mock_client_cls.return_value.__enter__.return_value
+            entered_client.get.side_effect = [self._rate_limited() for _ in range(20)]
+
+            result = backfill.fetch_issue("PROJ-RL")
+
+        assert result is None
+        assert sleep.call_count == backfill.ISSUE_FETCH_RATE_LIMIT_RETRIES, (
+            "429 retry on the issue fetch must be bounded, not recurse forever"
+        )
+
+    def test_each_retry_closes_its_client_before_the_next_attempt_opens(self, tmp_path):
+        """The pre-fix recursion opened client N+1 while client N's ``with``
+        block (and thus its ``__exit__``) had not yet run. A correctly
+        bounded loop closes each client before sleeping and opening the
+        next one."""
+        backfill = self._make_backfill(tmp_path)
+        events: list[tuple] = []
+        responses = [self._rate_limited(), self._rate_limited(), self._ok_response("PROJ-RL2")]
+        counter = {"n": 0}
+
+        class _FakeClient:
+            def __init__(self, index):
+                self.index = index
+
+            def __enter__(self):
+                events.append(("enter", self.index))
+                return self
+
+            def __exit__(self, *exc):
+                events.append(("exit", self.index))
+                return False
+
+            def get(self, *a, **kw):
+                return responses[self.index]
+
+        def _make_client(*a, **kw):
+            client = _FakeClient(counter["n"])
+            counter["n"] += 1
+            return client
+
+        with (
+            patch("connectors.jira.scripts.backfill.httpx.Client", side_effect=_make_client),
+            patch("connectors.jira.scripts.backfill.time.sleep"),
+            patch("connectors.jira.scripts.backfill.complete_issue_comments"),
+        ):
+            result = backfill.fetch_issue("PROJ-RL2")
+
+        assert result is not None
+        assert events == [("enter", 0), ("exit", 0), ("enter", 1), ("exit", 1), ("enter", 2), ("exit", 2)], (
+            "a client must be fully closed before the next retry attempt opens a new one "
+            "— the pre-fix recursion nested them instead"
+        )
+
+    def test_eventual_success_after_retries_returns_the_issue(self, tmp_path):
+        backfill = self._make_backfill(tmp_path)
+
+        with (
+            patch("connectors.jira.scripts.backfill.httpx.Client") as mock_client_cls,
+            patch("connectors.jira.scripts.backfill.time.sleep"),
+            patch("connectors.jira.scripts.backfill.complete_issue_comments"),
+        ):
+            entered_client = mock_client_cls.return_value.__enter__.return_value
+            entered_client.get.side_effect = [
+                self._rate_limited(),
+                self._rate_limited(),
+                self._ok_response("PROJ-RL3"),
+            ]
+
+            result = backfill.fetch_issue("PROJ-RL3")
+
+        assert result is not None
+        assert result["key"] == "PROJ-RL3"
+
+
+class TestNeedsRefetchSidecarMarker:
+    """``_needs_refetch`` must decide via a cheap stat (a sidecar marker),
+    not ``open()`` + ``json.load()`` on every existing file — at six-figure
+    issue counts with hundreds-of-KB ``fields=*all`` payloads, doing so on
+    every ``--skip-existing`` run is tens of GB of reads/parses just to
+    skip files. (Devin Review on #1283)
+    """
+
+    def _make_backfill(self, tmp_path):
+        from connectors.jira.scripts.backfill import Config as BackfillConfig
+        from connectors.jira.scripts.backfill import JiraBackfill
+
+        config = BackfillConfig(
+            jira_domain="mycompany.atlassian.net",
+            jira_email="bot@mycompany.com",
+            jira_api_token="test-token-xyz",
+            data_dir=tmp_path,
+        )
+        return JiraBackfill(config)
+
+    def test_sidecar_present_means_refetch_without_reading_json_body(self, tmp_path):
+        from connectors.jira.scripts.backfill import _needs_refetch
+
+        json_path = tmp_path / "PROJ-1.json"
+        json_path.write_text("this is not valid json at all")
+        (tmp_path / "PROJ-1.json.incomplete").touch()
+
+        assert _needs_refetch(json_path) is True
+
+    def test_sidecar_absent_and_well_formed_json_means_no_refetch(self, tmp_path):
+        import json as _json
+
+        from connectors.jira.scripts.backfill import _needs_refetch
+
+        json_path = tmp_path / "PROJ-2.json"
+        json_path.write_text(_json.dumps({"key": "PROJ-2"}))
+
+        assert _needs_refetch(json_path) is False
+
+    def test_needs_refetch_does_not_parse_the_json_body(self, tmp_path, monkeypatch):
+        """The whole point: the skip-existing check must cost a stat, not a parse."""
+        import json as _json
+
+        from connectors.jira.scripts import backfill as backfill_module
+
+        json_path = tmp_path / "PROJ-3.json"
+        json_path.write_text(_json.dumps({"key": "PROJ-3", "fields": {"summary": "x" * 10_000}}))
+
+        called = {"n": 0}
+        real_load = backfill_module.json.load
+
+        def spy_load(*a, **kw):
+            called["n"] += 1
+            return real_load(*a, **kw)
+
+        monkeypatch.setattr(backfill_module.json, "load", spy_load)
+
+        assert backfill_module._needs_refetch(json_path) is False
+        assert called["n"] == 0, "a stat-based skip check must not parse the JSON body"
+
+    def test_empty_json_file_means_refetch(self, tmp_path):
+        from connectors.jira.scripts.backfill import _needs_refetch
+
+        json_path = tmp_path / "PROJ-4.json"
+        json_path.write_text("")
+
+        assert _needs_refetch(json_path) is True
+
+    def test_save_issue_writes_sidecar_when_comments_incomplete(self, tmp_path):
+        backfill = self._make_backfill(tmp_path)
+        issue = _issue_with_comments(total=190, embedded=124, issue_key="PROJ-5")
+        issue["_comments_incomplete"] = True
+
+        backfill.save_issue(issue)
+
+        assert (backfill.issues_dir / "PROJ-5.json.incomplete").exists()
+
+    def test_save_issue_clears_sidecar_when_comments_now_complete(self, tmp_path):
+        backfill = self._make_backfill(tmp_path)
+        backfill.issues_dir.mkdir(parents=True, exist_ok=True)
+        (backfill.issues_dir / "PROJ-6.json.incomplete").touch()
+
+        healed = _issue_with_comments(total=3, embedded=3, issue_key="PROJ-6")
+        backfill.save_issue(healed)
+
+        assert not (backfill.issues_dir / "PROJ-6.json.incomplete").exists()
+
+
+class TestDryRunCountsMatchRealSkipDecision:
+    """``--dry-run``'s "already downloaded" counters must use the same
+    decision ``process_issue`` makes under ``--skip-existing`` (marker
+    aware), not a bare ``.exists()`` — otherwise a run with
+    ``_comments_incomplete``-marked issues under-reports how many issues a
+    real run would actually re-fetch. (Devin Review on #1283)
+    """
+
+    def test_marked_issue_is_not_counted_as_already_downloaded(self, tmp_path):
+        import json as _json
+
+        from connectors.jira.scripts.backfill import _count_already_downloaded
+
+        issues_dir = tmp_path / "issues"
+        issues_dir.mkdir()
+        (issues_dir / "PROJ-1.json").write_text(_json.dumps({"key": "PROJ-1"}))
+        (issues_dir / "PROJ-2.json").write_text(_json.dumps({"key": "PROJ-2"}))
+        (issues_dir / "PROJ-2.json.incomplete").touch()
+
+        existing = _count_already_downloaded(issues_dir, ["PROJ-1", "PROJ-2", "PROJ-3"])
+
+        assert existing == 1, "the marked (incomplete) issue must not count as already downloaded"
+
+    def test_missing_issue_is_not_counted(self, tmp_path):
+        import json as _json
+
+        from connectors.jira.scripts.backfill import _count_already_downloaded
+
+        issues_dir = tmp_path / "issues"
+        issues_dir.mkdir()
+        (issues_dir / "PROJ-1.json").write_text(_json.dumps({"key": "PROJ-1"}))
+
+        existing = _count_already_downloaded(issues_dir, ["PROJ-1", "PROJ-404"])
+
+        assert existing == 1
 
 
 class TestWebhookFallbackPayloadIsNotAuthoritative:

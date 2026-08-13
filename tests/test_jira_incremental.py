@@ -460,3 +460,60 @@ def test_incremental_writes_partial_comments_when_nothing_stored(tmp_path):
         "A first fetch that hit a pagination failure wrote no comments at all — "
         "preserve semantics fired with nothing to preserve"
     )
+
+
+def test_incremental_skips_partial_comments_when_created_at_unparseable(tmp_path):
+    """A ``_comments_incomplete`` payload with no parseable ``created_at``
+    (realistic via the webhook fallback path) has no meaningful month to
+    probe: ``get_month_key(None)`` falls back to the CURRENT month, which is
+    not necessarily where the issue's real comments live. Probing that
+    (empty) month would read "nothing stored" and write the partial list
+    THERE, while the genuine thread sits in the true creation month — same
+    issue_key with comment rows in two partitions (views glob ``month=*``,
+    so they'd double-count). Without a reliable month to probe, this must
+    behave the same as "something is stored" and skip the write."""
+    raw_dir = tmp_path / "raw"
+    output_dir = tmp_path / "parquet"
+    attachments_dir = tmp_path / "attachments"
+    output_dir.mkdir()
+    attachments_dir.mkdir()
+
+    _write_raw_issue(
+        raw_dir,
+        "PROJ-5",
+        {
+            "key": "PROJ-5",
+            "id": "10005",
+            "fields": {
+                "summary": "test",
+                "status": {"name": "Open"},
+                "issuetype": {"name": "Bug"},
+                "attachment": [],
+                "comment": {
+                    "total": 190,
+                    "comments": [{"id": f"c{i}", "author": {}, "updateAuthor": {}, "body": {}} for i in range(124)],
+                },
+                # NOTE: no "created" field at all — created_at will not parse.
+                "updated": "2026-05-15T00:00:00.000+0000",
+            },
+            "_comments_incomplete": True,
+        },
+    )
+
+    ok = transform_single_issue(
+        issue_key="PROJ-5",
+        raw_dir=raw_dir,
+        output_dir=output_dir,
+        attachments_dir=attachments_dir,
+    )
+    assert ok is True
+
+    from connectors.jira.incremental_transform import get_month_key
+
+    fallback_month = get_month_key(None)
+    df = load_parquet_month(output_dir / "comments", fallback_month)
+    assert df is None or df.empty, (
+        "A _comments_incomplete payload with no parseable created_at wrote its "
+        "partial comment list into the fallback (current) month — this can "
+        "double-count the thread once the real creation month is known"
+    )

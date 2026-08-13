@@ -283,7 +283,8 @@ def transform_single_issue(
         issue_record["_raw_file"] = json_path.name
 
         # Determine month
-        month_key = get_month_key(issue_record.get("created_at"))
+        created_at = issue_record.get("created_at")
+        month_key = get_month_key(created_at)
         logger.info(f"Updating {issue_key} in month {month_key}")
 
         # Transform related data
@@ -339,7 +340,19 @@ def transform_single_issue(
                     and "issue_key" in existing_comments.columns
                     and bool((existing_comments["issue_key"] == issue_key).any())
                 )
-                if has_stored_comments or not partial_comments_records:
+                # `month_key` above is only a genuine signal when `created_at`
+                # parsed; get_month_key(None) falls back to the CURRENT
+                # month, which is not necessarily where this issue's
+                # comments really live (realistic via the webhook fallback
+                # path — see _embedded_comments_are_complete). Probing an
+                # unrelated (empty) month would read "nothing stored" and
+                # write the partial list THERE, while the genuine thread
+                # sits in the true creation month — same issue_key with
+                # comment rows in two partitions; views glob month=*, so
+                # they'd double-count. Without a reliable month to probe,
+                # treat it the same as "something is stored" and preserve
+                # (Devin Review on #1283).
+                if created_at is None or has_stored_comments or not partial_comments_records:
                     logger.warning(
                         f"Skipping comments upsert for {issue_key}: pagination incomplete "
                         f"(fetch failure). Existing rows preserved."

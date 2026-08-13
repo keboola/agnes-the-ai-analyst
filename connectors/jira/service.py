@@ -387,6 +387,7 @@ def complete_issue_comments(
     base_url: str,
     auth: tuple[str, str],
     client: httpx.Client,
+    max_retries: int | None = None,
 ) -> None:
     """Fill in comments Jira's issue payload truncated at its embed page size.
 
@@ -413,12 +414,20 @@ def complete_issue_comments(
     residual shortfall after completion is only logged (WARNING), never
     raised — this is a best-effort enrichment step, not a hard requirement.
 
-    A ``429`` is retried up to ``JIRA_COMMENT_RATE_LIMIT_RETRIES`` times,
-    honouring ``Retry-After`` (defaulted when absent or an HTTP-date, capped
-    at ``JIRA_COMMENT_RETRY_AFTER_MAX`` so one worker cannot park on an
-    hours-long value) — the same treatment the issue and remote-link fetchers
-    give it. Rate limiting is the batch path's likeliest failure, and without
-    the retry it would routinely mark issues incomplete.
+    A ``429`` is retried up to ``max_retries`` times (``JIRA_COMMENT_RATE_LIMIT_RETRIES``
+    when ``max_retries`` is ``None``), honouring ``Retry-After`` (defaulted
+    when absent or an HTTP-date, capped at ``JIRA_COMMENT_RETRY_AFTER_MAX`` so
+    one worker cannot park on an hours-long value) — the same treatment the
+    issue and remote-link fetchers give it. Rate limiting is the batch path's
+    likeliest failure, and without the retry it would routinely mark issues
+    incomplete. The caller-supplied override exists because the webhook path
+    runs on an active request: ``JiraService.fetch_issue`` passes a
+    much smaller (zero) budget there, so a 429 marks the issue incomplete
+    immediately instead of sleeping for up to
+    ``JIRA_COMMENT_RATE_LIMIT_RETRIES * JIRA_COMMENT_RETRY_AFTER_MAX`` seconds
+    — the marker plus a later backfill heal (``_needs_refetch``) recovers it
+    (Devin Review on #1283). The batch path (``JiraBackfill.fetch_issue``)
+    omits the override and keeps the generous default.
 
     If a page request itself fails (RequestError, a non-200 status other than
     a retryable 429, or a 429 that outlives its retries — legitimate
@@ -443,6 +452,7 @@ def complete_issue_comments(
     comment_field = fields.get("comment") or {}
     embedded = comment_field.get("comments") or []
     total = comment_field.get("total", len(embedded))
+    retry_budget = JIRA_COMMENT_RATE_LIMIT_RETRIES if max_retries is None else max_retries
 
     incomplete = False
     if issue_key and total > len(embedded):
@@ -467,7 +477,7 @@ def complete_issue_comments(
                 incomplete = True
                 break
             if response.status_code == 429:
-                if rate_limit_retries >= JIRA_COMMENT_RATE_LIMIT_RETRIES:
+                if rate_limit_retries >= retry_budget:
                     logger.warning(
                         "Jira issue %s: comment pagination still rate limited at startAt=%d "
                         "after %d retries — giving up",
@@ -485,7 +495,7 @@ def complete_issue_comments(
                     start_at,
                     wait,
                     rate_limit_retries,
-                    JIRA_COMMENT_RATE_LIMIT_RETRIES,
+                    retry_budget,
                 )
                 time.sleep(wait)
                 continue
@@ -589,12 +599,17 @@ class JiraService:
         """Check if Jira service is properly configured."""
         return all([self.domain, self.email, self.api_token])
 
-    def fetch_issue(self, issue_key: str) -> dict[str, Any] | None:
+    def fetch_issue(self, issue_key: str, comment_max_retries: int | None = None) -> dict[str, Any] | None:
         """
         Fetch complete issue data from Jira.
 
         Args:
             issue_key: Issue key (e.g., "PROJ-123")
+            comment_max_retries: Forwarded to ``complete_issue_comments`` as
+                ``max_retries`` — ``None`` keeps its own (generous) default.
+                ``process_webhook_event`` passes ``0`` here: its caller is an
+                active request, so a 429 must mark the issue
+                ``_comments_incomplete`` immediately rather than sleep.
 
         Returns:
             Issue data dict or None if fetch failed
@@ -620,7 +635,9 @@ class JiraService:
 
                 if response.status_code == 200:
                     issue_data = response.json()
-                    complete_issue_comments(issue_data, self.base_url, self.auth, client)
+                    complete_issue_comments(
+                        issue_data, self.base_url, self.auth, client, max_retries=comment_max_retries
+                    )
                     return issue_data
                 elif response.status_code == 404:
                     logger.warning(f"Issue {issue_key} not found")
@@ -1217,8 +1234,15 @@ class JiraService:
         if "deleted" in webhook_event.lower():
             return self._handle_deletion(issue_key)
 
-        # Fetch fresh data from API (webhook payload may not have all fields)
-        issue_data = self.fetch_issue(issue_key)
+        # Fetch fresh data from API (webhook payload may not have all fields).
+        # comment_max_retries=0: this runs off an active request (see
+        # app/api/jira_webhooks.py's run_in_threadpool dispatch), so a 429 on
+        # the comment-pagination endpoint must mark the issue
+        # _comments_incomplete immediately rather than sleep — the marker,
+        # plus a later backfill heal (_needs_refetch), recovers it without
+        # tying up a request thread for up to 15 minutes (Devin Review on
+        # #1283).
+        issue_data = self.fetch_issue(issue_key, comment_max_retries=0)
         if not issue_data:
             # If fetch fails, try to use embedded issue data from webhook
             if issue and issue.get("fields"):
