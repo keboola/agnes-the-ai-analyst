@@ -140,6 +140,7 @@ class TestRegistration:
             "session-collector",
             "corporate-memory",
             "jira-refresh",
+            "jira-org-refresh",
             "ducklake-maintenance",
             "analytics-migrate",
             "distribution-mirror",

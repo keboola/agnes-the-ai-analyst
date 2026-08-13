@@ -364,8 +364,10 @@
           {% if can_agent_profiles %}
           { label: 'My agents',                   hint: 'user',         href: '/agents' },
           {% endif %}
+          {% if can_mcp_connector_ui %}
           { label: 'AI Connector',                hint: 'user',         href: '/me/ai-connector' },
           { label: 'Connect editor (token)',      hint: 'user',         href: '/mcp-connect' },
+          {% endif %}
           {# /news is linked from /home's "What's new" strip, which only
              renders when a version is published AND the instance resolves
              home_route to /home — on the /dashboard default the page had no
