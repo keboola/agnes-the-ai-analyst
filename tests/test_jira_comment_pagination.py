@@ -14,6 +14,7 @@ full-refetch (``JiraService.fetch_issue``).
 
 from unittest.mock import MagicMock, patch
 
+import httpx
 
 from connectors.jira.service import complete_issue_comments
 from connectors.jira.transform import transform_comments, transform_issue
@@ -140,6 +141,102 @@ class TestCompleteIssueComments:
             complete_issue_comments(issue_data, BASE_URL, AUTH, client)
 
         assert not any("comment.total" in record.message for record in caplog.records)
+
+
+class TestPaginationFailureMarksIncomplete:
+    """A page-fetch FAILURE must be distinguishable from a completed fetch.
+
+    The incremental transform performs an issue-scoped delete-then-insert on
+    the comments parquet, so overlaying a known-truncated list would delete
+    previously stored rows. On failure, ``complete_issue_comments`` marks the
+    issue with the ``_comments_incomplete`` sidecar key (a sibling of the
+    ``_remote_links`` overlay-absent contract) so the transform preserves
+    existing rows instead.
+    """
+
+    def test_non_200_page_marks_comments_incomplete(self):
+        issue_data = _issue_with_comments(total=124, embedded=100)
+        failing_response = MagicMock()
+        failing_response.status_code = 500
+        client = MagicMock()
+        client.get.side_effect = [failing_response]
+
+        complete_issue_comments(issue_data, BASE_URL, AUTH, client)
+
+        assert issue_data.get("_comments_incomplete") is True
+
+    def test_request_error_marks_comments_incomplete(self):
+        issue_data = _issue_with_comments(total=124, embedded=100)
+        client = MagicMock()
+        client.get.side_effect = httpx.RequestError("connection dropped")
+
+        complete_issue_comments(issue_data, BASE_URL, AUTH, client)
+
+        assert issue_data.get("_comments_incomplete") is True
+
+    def test_successful_completion_sets_no_marker(self):
+        issue_data = _issue_with_comments(total=124, embedded=100)
+        extra_page = [_comment(f"extra{i}") for i in range(24)]
+        client = _mock_client([extra_page])
+
+        complete_issue_comments(issue_data, BASE_URL, AUTH, client)
+
+        assert "_comments_incomplete" not in issue_data
+
+    def test_under_cap_issue_sets_no_marker(self):
+        issue_data = _issue_with_comments(total=42, embedded=42)
+        client = _mock_client([])
+
+        complete_issue_comments(issue_data, BASE_URL, AUTH, client)
+
+        assert "_comments_incomplete" not in issue_data
+
+    def test_stale_total_empty_page_sets_no_marker(self):
+        """An empty page means the endpoint has no more comments — the fetched
+        set IS complete relative to the endpoint; ``total`` was stale (e.g.
+        comments deleted between the two requests). That is not a failure."""
+        issue_data = _issue_with_comments(total=124, embedded=100)
+        empty_response = MagicMock()
+        empty_response.status_code = 200
+        empty_response.json.return_value = {"comments": []}
+        client = MagicMock()
+        client.get.side_effect = [empty_response]
+
+        complete_issue_comments(issue_data, BASE_URL, AUTH, client)
+
+        assert "_comments_incomplete" not in issue_data
+
+
+class TestPaginationDeduplicatesByCommentId:
+    """The embed and GET /issue/{key}/comment are two separate requests; on
+    ordering drift or deletions between them, ``startAt = len(embedded)`` can
+    re-serve comments already embedded. Concatenation must de-duplicate by
+    comment id (first occurrence wins, order preserved)."""
+
+    def test_overlapping_page_produces_no_duplicate_ids(self):
+        issue_data = _issue_with_comments(total=4, embedded=2)  # embeds c0, c1
+        overlap_page = [_comment("c1"), _comment("c2"), _comment("c3")]
+        client = _mock_client([overlap_page])
+
+        complete_issue_comments(issue_data, BASE_URL, AUTH, client)
+
+        comments = issue_data["fields"]["comment"]["comments"]
+        ids = [c["id"] for c in comments]
+        assert ids == ["c0", "c1", "c2", "c3"]
+
+    def test_first_occurrence_wins_on_duplicate_id(self):
+        issue_data = _issue_with_comments(total=3, embedded=2)  # embeds c0, c1
+        embedded_c1 = issue_data["fields"]["comment"]["comments"][1]
+        embedded_c1["body"] = {"type": "doc", "content": [], "marker": "embedded"}
+        paged_c1 = _comment("c1")
+        paged_c1["body"] = {"type": "doc", "content": [], "marker": "paged"}
+        client = _mock_client([[paged_c1, _comment("c2")]])
+
+        complete_issue_comments(issue_data, BASE_URL, AUTH, client)
+
+        comments = issue_data["fields"]["comment"]["comments"]
+        c1 = next(c for c in comments if c["id"] == "c1")
+        assert c1["body"].get("marker") == "embedded"
 
 
 class TestServiceFetchIssuePaginates:

@@ -426,8 +426,26 @@ def transform_issue(raw_issue: dict) -> dict:
     return record
 
 
-def transform_comments(raw_issue: dict) -> list[dict]:
-    """Extract and transform comments from an issue."""
+def transform_comments(raw_issue: dict) -> list[dict] | None:
+    """Extract and transform comments from an issue.
+
+    Returns:
+      - list[dict]: transformed comment records. May be empty — the issue
+        legitimately has no comments.
+      - None: ``_comments_incomplete`` is set on ``raw_issue``, meaning
+        ``complete_issue_comments`` (connectors/jira/service.py) hit a
+        page-fetch failure mid-pagination and ``fields.comment.comments``
+        is a KNOWN-TRUNCATED subset of the full thread. This is the same
+        overlay-absent contract as ``transform_remote_links``: callers that
+        upsert onto an issue-scoped delete-then-insert store (the
+        incremental comments parquet) MUST treat ``None`` as "skip the
+        upsert, preserve existing rows" — otherwise a transient pagination
+        failure on a refetch would overwrite a previously-complete stored
+        comment thread with a known-incomplete one.
+    """
+    if raw_issue.get("_comments_incomplete") is True:
+        return None
+
     issue_key = raw_issue.get("key")
     fields = raw_issue.get("fields", {})
     comments_data = fields.get("comment", {})
@@ -719,7 +737,14 @@ def transform_all(
             issues_by_month[month_key].append(issue_record)
 
             # Transform related data (all go to same month as parent issue)
-            comments_by_month[month_key].extend(transform_comments(raw_issue))
+            comment_records = transform_comments(raw_issue)
+            if comment_records is not None:
+                comments_by_month[month_key].extend(comment_records)
+            # else: comment pagination failed mid-fetch (_comments_incomplete).
+            # Same reasoning as the _remote_links skip below — this is a full
+            # rebuild from raw JSON, not the hot preserving path, so this issue
+            # simply contributes no comment rows to this rebuild; a later
+            # successful re-fetch (webhook or next batch run) repopulates.
 
             # Transform attachments with hierarchical paths
             issue_key = raw_issue.get("key", "unknown")

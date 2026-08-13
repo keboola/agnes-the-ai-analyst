@@ -167,6 +167,31 @@ def trigger_incremental_transform(issue_key: str, deleted: bool = False) -> bool
         return False
 
 
+def _dedupe_comments_by_id(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """De-duplicate ``comments`` by ``id``, first occurrence wins, order preserved.
+
+    The embed (``GET /issue/{key}``) and the paginated ``GET
+    .../issue/{key}/comment`` are two separate requests. ``startAt =
+    len(embedded)`` assumes the paged endpoint's ordering exactly matches the
+    embed and that nothing was deleted between the two calls; when that
+    assumption breaks (ordering drift, a comment added/removed mid-fetch) the
+    same comment id can arrive from both the embed and a page. Concatenating
+    without dedup would then store it twice. A page skipping an id instead of
+    repeating one is a different, already-covered risk (the stored-vs-total
+    shortfall WARNING below), not something dedup can fix.
+    """
+    seen: set[str] = set()
+    deduped: list[dict[str, Any]] = []
+    for comment in comments:
+        comment_id = comment.get("id")
+        if comment_id is not None:
+            if comment_id in seen:
+                continue
+            seen.add(comment_id)
+        deduped.append(comment)
+    return deduped
+
+
 def complete_issue_comments(
     issue_data: dict[str, Any],
     base_url: str,
@@ -184,8 +209,9 @@ def complete_issue_comments(
     ``fields.comment.total`` carries the true count. When it exceeds what's
     embedded, page through ``GET /issue/{key}/comment`` (``startAt``,
     ``maxResults=100``) for the remainder and replace the embedded list with
-    the complete one — mutated in place on ``issue_data``, using the same
-    ``client``/``auth`` as the issue fetch that produced it.
+    the complete, de-duplicated (by comment id) one — mutated in place on
+    ``issue_data``, using the same ``client``/``auth`` as the issue fetch that
+    produced it.
 
     This is the single fetch-layer seam shared by both ingestion paths that
     call it right after their issue GET: ``JiraService.fetch_issue`` (webhook
@@ -196,6 +222,21 @@ def complete_issue_comments(
     Comments can legitimately be added between the two requests, so a
     residual shortfall after completion is only logged (WARNING), never
     raised — this is a best-effort enrichment step, not a hard requirement.
+
+    If a page request itself fails (RequestError, or a non-200 status —
+    legitimate rate limiting/outages, not "no more comments"), the loop stops
+    and ``issue_data["_comments_incomplete"]`` is set to ``True``. This is a
+    sibling of the ``_remote_links`` overlay-absent contract
+    (``transform_remote_links``): the incremental transform performs an
+    issue-scoped delete-then-insert on the comments parquet, so overlaying a
+    known-truncated list here would let a transient fetch error wipe a
+    previously-complete stored thread down to whatever this attempt managed
+    to fetch. ``transform_comments`` reads this marker and returns ``None``
+    instead of a truncated list so the caller preserves the existing rows.
+    An empty page (200, ``comments: []``) is NOT a failure — it means the
+    paged endpoint has no more comments, so the fetched set is complete
+    relative to the endpoint even if ``total`` was stale (e.g. comments
+    deleted between the two requests).
     """
     issue_key = issue_data.get("key")
     fields = issue_data.get("fields") or {}
@@ -203,6 +244,7 @@ def complete_issue_comments(
     embedded = comment_field.get("comments") or []
     total = comment_field.get("total", len(embedded))
 
+    incomplete = False
     if issue_key and total > len(embedded):
         extra: list[dict[str, Any]] = []
         start_at = len(embedded)
@@ -221,6 +263,7 @@ def complete_issue_comments(
                     start_at,
                     e,
                 )
+                incomplete = True
                 break
             if response.status_code != 200:
                 logger.warning(
@@ -229,6 +272,7 @@ def complete_issue_comments(
                     start_at,
                     response.status_code,
                 )
+                incomplete = True
                 break
             page = response.json().get("comments") or []
             if not page:
@@ -237,9 +281,12 @@ def complete_issue_comments(
             start_at += len(page)
 
         if extra:
-            comment_field["comments"] = embedded + extra
+            comment_field["comments"] = _dedupe_comments_by_id(embedded + extra)
             fields["comment"] = comment_field
             issue_data["fields"] = fields
+
+    if incomplete:
+        issue_data["_comments_incomplete"] = True
 
     stored = len(comment_field.get("comments", embedded))
     if stored < total:

@@ -288,10 +288,22 @@ def transform_single_issue(
             updated_paths.append(path)
 
             # Comments
-            existing_comments = load_parquet_month(output_dir / "comments", month_key)
-            updated_comments = upsert_dataframe(existing_comments, comments_records, "issue_key", issue_key)
-            path = save_parquet_month(updated_comments, COMMENTS_SCHEMA, output_dir / "comments", month_key)
-            updated_paths.append(path)
+            if comments_records is not None:
+                existing_comments = load_parquet_month(output_dir / "comments", month_key)
+                updated_comments = upsert_dataframe(existing_comments, comments_records, "issue_key", issue_key)
+                path = save_parquet_month(updated_comments, COMMENTS_SCHEMA, output_dir / "comments", month_key)
+                updated_paths.append(path)
+            else:
+                # complete_issue_comments (service.py) hit a page-fetch failure
+                # mid-pagination and marked the issue `_comments_incomplete`.
+                # This upsert is an issue-scoped delete-then-insert, so writing
+                # the known-truncated list would overwrite a previously-complete
+                # stored comment thread with a shorter one. Preserve existing
+                # rows instead — the same contract as the remote_links skip below.
+                logger.warning(
+                    f"Skipping comments upsert for {issue_key}: pagination incomplete "
+                    f"(fetch failure). Existing rows preserved."
+                )
 
             # Attachments
             existing_attachments = load_parquet_month(output_dir / "attachments", month_key)
