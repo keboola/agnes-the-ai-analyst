@@ -44,7 +44,7 @@ ExecStart=/bin/bash -c 'id -u agnes-applier >/dev/null 2>&1 || useradd --system 
 # current, looser mode until an operator frees uid 999 or realigns
 # agnes-applier — see docs/postgres-cutover-runbook.md for the remediation
 # commands.
-ExecStart=/bin/bash -c 'APPLIER_UID=$(id -u agnes-applier 2>/dev/null || echo ""); if [ "$APPLIER_UID" != "999" ]; then logger -t agnes-state-applier-bootstrap -p user.warning "agnes-applier is uid $APPLIER_UID, not 999 -- /data/state/instance.yaml (0600) is unreadable by the app container (uid 999) whenever agnes-applier owns it. Free uid 999 (check what holds it: getent passwd 999) or realign agnes-applier onto it, then re-run this unit; see docs/postgres-cutover-runbook.md."; fi'
+ExecStart=/bin/bash -c 'APPLIER_UID=$$(id -u agnes-applier 2>/dev/null || echo ""); if [ "$$APPLIER_UID" != "999" ]; then logger -t agnes-state-applier-bootstrap -p user.warning "agnes-applier is uid $$APPLIER_UID, not 999 -- /data/state/instance.yaml (0600) is unreadable by the app container (uid 999) whenever agnes-applier owns it. Free uid 999 (check what holds it: getent passwd 999) or realign agnes-applier onto it, then re-run this unit; see docs/postgres-cutover-runbook.md."; fi'
 ExecStart=/usr/sbin/usermod -aG docker agnes-applier
 ExecStart=/bin/mkdir -p /data/state /data/postgres
 ExecStart=/bin/chown -R agnes-applier:agnes-applier /data/state

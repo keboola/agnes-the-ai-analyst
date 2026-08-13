@@ -301,3 +301,23 @@ def test_compose_postgres_migrate_services_carry_prebuilt_image():
             f"the pulled image instead of attempting a build (got "
             f"image={spec.get('image')!r})"
         )
+
+
+def test_bootstrap_readback_dollars_are_escaped_from_systemd():
+    """Devin on #1298 — systemd expands `$VAR` in ExecStart at unit-parse
+    time (undefined vars become empty), so an unescaped `$APPLIER_UID`
+    reaches bash as "" and the uid-mismatch warning fires on every boot,
+    healthy machines included. A literal `$` for bash must be written `$$`.
+    Guard: every `$` in the unit's ExecStart lines is either `$$` or part
+    of one."""
+    from pathlib import Path
+
+    text = Path("scripts/ops/agnes-state-applier-bootstrap.service").read_text()
+    for line in text.splitlines():
+        if not line.startswith("ExecStart"):
+            continue
+        stripped = line.replace("$$", "")
+        assert "$" not in stripped, (
+            f"unescaped $ reaches systemd expansion in: {line!r} — "
+            "write it as $$ so bash receives a literal dollar"
+        )
