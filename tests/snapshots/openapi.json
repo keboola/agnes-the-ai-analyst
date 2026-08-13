@@ -1140,6 +1140,24 @@
         "title": "Body_reset_request_auth_password_reset_post",
         "type": "object"
       },
+      "Body_send_magic_link_web_auth_email_send_link_web_post": {
+        "properties": {
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "next": {
+            "default": "",
+            "title": "Next",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email"
+        ],
+        "title": "Body_send_magic_link_web_auth_email_send_link_web_post",
+        "type": "object"
+      },
       "Body_setup_confirm_auth_password_setup_confirm_post": {
         "properties": {
           "confirm_password": {
@@ -46977,6 +46995,46 @@
         ]
       }
     },
+    "/auth/email/send-link/web": {
+      "post": {
+        "description": "Web form variant of ``/send-link`` \u2014 renders the 'check your email'\npage instead of returning JSON. Mirrors ``password_login_web``'s\nHTML-form sibling of the JSON ``/auth/password/login`` endpoint.\n\nSame anti-enumeration behavior as ``send_magic_link``: always renders\nthe sent-page, regardless of whether the account exists.\n\n``next`` round-trips into the hidden field on ``login_magic_link.html``\nbut does not yet thread through the magic-link token to the post-verify\nredirect \u2014 that redirect still lands on the operator-configured home\nroute (see ``verify_magic_link_get``).",
+        "operationId": "send_magic_link_web_auth_email_send_link_web_post",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_send_magic_link_web_auth_email_send_link_web_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Send Magic Link Web",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
     "/auth/email/verify": {
       "get": {
         "description": "Click-through variant \u2014 verifies token, sets cookie, redirects to the\noperator-configured home route.\n\nThis is the URL we embed in outgoing emails (and the dev-fallback link), so\nclicking it in a mail client logs the user in without a separate API call.\n\nRate limited 10/min per IP for the same reason as the POST variant \u2014\ndon't let the click-through path bypass the brute-force throttle.",
@@ -49148,7 +49206,7 @@
     },
     "/login/email": {
       "get": {
-        "description": "Email magic link login form.",
+        "description": "Email magic link login form.\n\nRenders `login_magic_link.html` \u2014 the actual magic-link form, whose\n\"Send Sign-In Link\" button posts to `/auth/email/send-link/web`. This\nroute used to render `login_email.html` (the password form, which posts\nto `/auth/password/*`) by mistake: with `auth.providers: [email]`, the\nentire `/auth/password` router 404s, so the wrong template locked out\nthe web UI end to end.",
         "operationId": "login_email_page_login_email_get",
         "responses": {
           "200": {

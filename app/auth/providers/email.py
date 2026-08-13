@@ -6,7 +6,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 import duckdb
@@ -70,6 +70,42 @@ def _build_magic_link(email: str, token: str) -> str:
     return f"{server_url}/auth/email/verify?email={quote(email, safe='')}&token={token}"
 
 
+def _generate_and_deliver_magic_link(email: str) -> tuple[dict | None, str | None, str | None]:
+    """Look up the user, mint + persist a magic-link token, and attempt
+    delivery via SMTP/SendGrid. Shared by the JSON (``/send-link``) and web
+    form (``/send-link/web``) variants so the token/email plumbing lives in
+    one place.
+
+    Returns ``(user, link, send_error)``. ``user`` is ``None`` when the
+    account doesn't exist — callers must still respond as if a link was
+    sent (anti-enumeration) and must not use ``link``/``send_error`` in
+    that case. ``send_error`` carries the exception string when the
+    transport is configured but delivery failed.
+    """
+    repo = users_repo()
+    user = repo.get_by_email(email)
+    if not user:
+        return None, None, None
+
+    token = secrets.token_urlsafe(32)
+    repo.update(
+        id=user["id"],
+        reset_token=hash_token(token),
+        reset_token_created=datetime.now(timezone.utc),
+    )
+
+    link = _build_magic_link(email, token)
+    send_error: str | None = None
+    if _has_email_transport():
+        try:
+            _send_email(email, token)
+        except Exception as e:
+            send_error = str(e)
+            logger.error("Failed to send magic link email to %s: %s", email, e)
+
+    return user, link, send_error
+
+
 @router.post("/send-link")
 @_rate_limiter.limit("5/minute")
 async def send_magic_link(
@@ -83,29 +119,11 @@ async def send_magic_link(
     logged to stderr and returned in the response body so a developer can
     click it without an email transport.
     """
-    repo = users_repo()
-    user = repo.get_by_email(body.email)
+    user, link, send_error = _generate_and_deliver_magic_link(body.email)
 
     # Always return success to prevent email enumeration
     if not user:
         return {"message": "If this email is registered, you will receive a login link."}
-
-    # Generate token
-    token = secrets.token_urlsafe(32)
-    repo.update(
-        id=user["id"],
-        reset_token=hash_token(token),
-        reset_token_created=datetime.now(timezone.utc),
-    )
-
-    link = _build_magic_link(body.email, token)
-    send_error: str | None = None
-    if _has_email_transport():
-        try:
-            _send_email(body.email, token)
-        except Exception as e:
-            send_error = str(e)
-            logger.error("Failed to send magic link email to %s: %s", body.email, e)
 
     # Dev fallback: expose the link in logs + response so you can click it without SMTP.
     # Scoped strictly to LOCAL_DEV_MODE so test and production behavior are unchanged.
@@ -123,6 +141,54 @@ async def send_magic_link(
         return response
 
     return {"message": "If this email is registered, you will receive a login link."}
+
+
+@router.post("/send-link/web")
+@_rate_limiter.limit("5/minute")
+async def send_magic_link_web(
+    request: Request,
+    email: str = Form(...),
+    next: str = Form(""),
+    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
+):
+    """Web form variant of ``/send-link`` — renders the 'check your email'
+    page instead of returning JSON. Mirrors ``password_login_web``'s
+    HTML-form sibling of the JSON ``/auth/password/login`` endpoint.
+
+    Same anti-enumeration behavior as ``send_magic_link``: always renders
+    the sent-page, regardless of whether the account exists.
+
+    ``next`` round-trips into the hidden field on ``login_magic_link.html``
+    but does not yet thread through the magic-link token to the post-verify
+    redirect — that redirect still lands on the operator-configured home
+    route (see ``verify_magic_link_get``).
+    """
+    from app.auth._common import safe_next_path
+    from app.web.router import _build_context, templates
+
+    # Match the rest of the codebase's case-sensitive lookup (password_login,
+    # reset_request, setup_request). Lowercasing here would silently fail
+    # for mixed-case emails the admin stored as-is.
+    email = (email or "").strip()
+    next_path = safe_next_path(next, default="")
+
+    user, link, _send_error = _generate_and_deliver_magic_link(email)
+
+    console_mode = bool(user) and is_local_dev_mode()
+    if console_mode:
+        logger.warning("=" * 60)
+        logger.warning("Magic link for %s (LOCAL_DEV_MODE fallback):", email)
+        logger.warning("    %s", link)
+        logger.warning("=" * 60)
+
+    ctx = _build_context(
+        request,
+        email=email,
+        console_mode=console_mode,
+        magic_url=link if console_mode else None,
+        next_path=next_path,
+    )
+    return templates.TemplateResponse(request, "login_magic_link_sent.html", ctx)
 
 
 def _consume_token(email: str, token: str) -> dict:

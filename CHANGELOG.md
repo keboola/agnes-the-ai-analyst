@@ -19,6 +19,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 - Dead `auth.disabled_providers` example config (never consumed) — superseded by `auth.providers`.
 
+### Fixed
+
+- **`GET /login/email` now renders the magic-link form instead of the password form.** The route was always meant to be the email-only sign-in door, but it rendered `login_email.html` (whose forms post to `/auth/password/*`) by mistake. That was harmless while every provider's routes were always mounted, but the new `auth.providers` allowlist puts `Depends(require_provider("password"))` on the whole `/auth/password` router — so an instance configured with `auth.providers: [email]` 404'd on every form submit from its only login page, locking the instance out of the web UI entirely. `/login/email` now renders the previously-orphaned `login_magic_link.html`, and its form posts to a new `POST /auth/email/send-link/web` (the HTML-form sibling of the existing JSON `/auth/email/send-link`, mirroring the password provider's `/login` + `/login/web` pair).
+
 ## [0.83.7] - 2026-08-12
 
 ### Fixed

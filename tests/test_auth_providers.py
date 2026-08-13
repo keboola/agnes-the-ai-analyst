@@ -155,6 +155,19 @@ class TestEmailAuth:
         assert resp.status_code == 200
         assert "If this email" in resp.json()["message"]
 
+    def test_send_link_web_registered(self, client):
+        """Web-form variant renders the 'check your email' page (the door
+        that /login/email now points at) instead of JSON."""
+        resp = client.post("/auth/email/send-link/web", data={"email": "ml@test.com"})
+        assert resp.status_code == 200
+        assert "Check Your Email" in resp.text
+
+    def test_send_link_web_unregistered(self, client):
+        """Anti-enumeration: an unknown email gets the identical sent page."""
+        resp = client.post("/auth/email/send-link/web", data={"email": "nobody@test.com"})
+        assert resp.status_code == 200
+        assert "Check Your Email" in resp.text
+
     def test_verify_invalid_token(self, client):
         resp = client.post(
             "/auth/email/verify",

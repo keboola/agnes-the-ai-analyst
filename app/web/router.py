@@ -578,6 +578,7 @@ _URL_MAP = {
     "password_auth.request_access": "/auth/password/setup",
     "email_auth.login_email_form": "/login/email",
     "email_auth.send_magic_link": "/auth/email/send-link",
+    "email_auth.send_magic_link_web": "/auth/email/send-link/web",
     "register": "/auth/password/setup",
     "setup": "/first-time-setup",
 }
@@ -1057,14 +1058,22 @@ async def login_password_page(request: Request):
 
 @router.get("/login/email", response_class=HTMLResponse)
 async def login_email_page(request: Request):
-    """Email magic link login form."""
+    """Email magic link login form.
+
+    Renders `login_magic_link.html` — the actual magic-link form, whose
+    "Send Sign-In Link" button posts to `/auth/email/send-link/web`. This
+    route used to render `login_email.html` (the password form, which posts
+    to `/auth/password/*`) by mistake: with `auth.providers: [email]`, the
+    entire `/auth/password` router 404s, so the wrong template locked out
+    the web UI end to end.
+    """
     from app.auth.provider_registry import provider_allowed
 
     if not provider_allowed("email"):
         raise HTTPException(status_code=404, detail="Not Found")
-    next_path = request.query_params.get("next", "")
-    if not next_path.startswith("/") or next_path.startswith("//"):
-        next_path = ""
+    from app.auth._common import safe_next_path
+
+    next_path = safe_next_path(request.query_params.get("next", ""), default="")
     google_ok = False
     try:
         from app.auth.providers.google import is_available as google_available
@@ -1072,8 +1081,15 @@ async def login_email_page(request: Request):
         google_ok = google_available() and provider_allowed("google")
     except Exception:
         pass
-    ctx = _build_context(request, google_available=google_ok, next_path=next_path)
-    return templates.TemplateResponse(request, "login_email.html", ctx)
+    from app.instance_config import get_allowed_domains
+
+    ctx = _build_context(
+        request,
+        google_available=google_ok,
+        next_path=next_path,
+        allowed_domains=get_allowed_domains(),
+    )
+    return templates.TemplateResponse(request, "login_magic_link.html", ctx)
 
 
 def _compute_data_stats() -> dict:

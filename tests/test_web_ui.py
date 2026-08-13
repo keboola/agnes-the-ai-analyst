@@ -655,6 +655,17 @@ class TestUnauthenticatedHtmlRedirects:
         # Empty string is the sanitized default.
         assert 'name="next" value=""' in body
 
+    def test_login_email_page_renders_magic_link_form(self, web_client):
+        """/login/email must render the magic-link form, not the password
+        form. The password form posts to /auth/password/*, which 404s
+        under an `auth.providers: [email]` allowlist — that mismatch used
+        to lock the whole web UI out (regression)."""
+        resp = web_client.get("/login/email")
+        assert resp.status_code == 200
+        body = resp.text
+        assert 'action="/auth/email/send-link/web"' in body
+        assert "/auth/password/login/web" not in body
+
     def test_google_login_stashes_safe_next_in_session(self, web_client, monkeypatch):
         """google_login() must stash the sanitized next_path in the session.
 
