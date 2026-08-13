@@ -2084,6 +2084,9 @@ def create_app() -> FastAPI:
         minimum_size=1024,
         skip_prefixes=(
             "/api/data/",
+            # Attachment binaries (PDF/PNG/ZIP …) are already compressed;
+            # same rationale as the parquet exclusion above.
+            "/api/attachments/",
             "/api/mcp",  # SSE stream — do not gzip
             # Chat sandbox LLM proxy: the model completion streams back as
             # text/event-stream. GZipMiddleware buffers a StreamingResponse

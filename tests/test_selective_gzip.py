@@ -131,3 +131,19 @@ def test_selective_gzip_skips_configured_sse_prefixes():
 
     asyncio.run(_drive("/api/broker/anthropic/v1/messages"))
     assert calls["raw"] == 1, "skip-listed SSE path must bypass GZip (delegate to raw app)"
+
+
+def test_attachments_path_is_in_gzip_skip_list():
+    """Attachment binaries (PDF/PNG/ZIP …) are already compressed — the same
+    rationale the skip list states for parquet downloads. Left off the list,
+    GZipMiddleware re-compresses every FileResponse chunk at compresslevel 9
+    on the event loop, burning CPU for no size win on up-to-50MB files."""
+    import inspect
+
+    import app.main as main_mod
+
+    src = inspect.getsource(main_mod.create_app)
+    assert '"/api/attachments/"' in src, (
+        "the attachment download endpoint must be in _SelectiveGZipMiddleware "
+        "skip_prefixes — its payloads are already-compressed binaries"
+    )
