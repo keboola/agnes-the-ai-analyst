@@ -423,6 +423,12 @@ def refresh_organizations(
     tmp_dest = table_dir / f"data.parquet.{os.getpid()}.tmp"
     try:
         pq.write_table(table, tmp_dest, **PARQUET_WRITE_OPTIONS)
+        # Explicit mode, not the umask's: pq.write_table creates the temp as
+        # 0666 & umask, so under a restrictive umask (0077 in some container/
+        # systemd units) the replace would publish 0600 — the same #203 outcome
+        # the mkstemp avoidance above defends against, arriving from the other
+        # side. 0o660 matches the raw-JSON writers' fchmod (group rw for ACL).
+        os.chmod(tmp_dest, 0o660)
         os.replace(tmp_dest, dest)
     finally:
         # A failed write would otherwise leave the temp behind. The extract view globs

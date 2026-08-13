@@ -1322,19 +1322,29 @@ class TestConcurrentPublishSafety:
         assert str(os.getpid()) in seen[0]
 
     def test_published_file_stays_group_readable(self, tmp_path: Path, org_env: None) -> None:
-        """Guards the #203 class of regression: mkstemp would publish 0600 via os.replace."""
+        """Guards the #203 class of regression: mkstemp would publish 0600 via os.replace.
+
+        Run under a restrictive umask deliberately — pq.write_table creates the temp
+        as 0666 & umask, so without an explicit chmod a 0077 umask (some container/
+        systemd units) published 0600 and this test passed only because pytest
+        inherits a permissive umask (Devin Review on #1274).
+        """
         from connectors.jira import organizations as orgs
 
         svc = _fake_service(["1"], [_org("1", "Acme", "ACC-1")])
-        with (
-            patch.object(orgs, "get_jira_service", return_value=svc),
-            patch.object(orgs, "update_meta"),
-            patch.object(orgs.time, "sleep"),
-        ):
-            orgs.refresh_organizations(extract_dir=tmp_path)
+        old_umask = os.umask(0o077)
+        try:
+            with (
+                patch.object(orgs, "get_jira_service", return_value=svc),
+                patch.object(orgs, "update_meta"),
+                patch.object(orgs.time, "sleep"),
+            ):
+                orgs.refresh_organizations(extract_dir=tmp_path)
+        finally:
+            os.umask(old_umask)
 
         mode = (tmp_path / "data" / "organizations" / "data.parquet").stat().st_mode & 0o777
-        assert mode & 0o044, f"published parquet must stay readable beyond its owner, got {oct(mode)}"
+        assert mode == 0o660, f"published parquet must be 0660 like the sibling writers, got {oct(mode)}"
 
     def test_a_stray_temp_is_never_read_as_data(self, tmp_path: Path) -> None:
         """A crashed run leaves a temp behind; the view glob must not pick it up."""
