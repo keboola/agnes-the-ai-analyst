@@ -80,6 +80,7 @@ class TestRegisterAllKinds:
         "session-collector",
         "corporate-memory",
         "jira-refresh",
+        "jira-org-refresh",
         "ducklake-maintenance",
         "analytics-migrate",
         "distribution-mirror",
