@@ -275,6 +275,35 @@ Two ways to handle it, in order of preference:
    on the path, so treat any PAT used this way as exposed and rotate it if the
    log retention worries you.
 
+#### VPN/intranet-only instances — MCP connector reachability
+
+An instance reachable only on a private network (VPN, an intranet hostname or
+address) serves **in-network MCP clients normally** — the MCP endpoints
+(`/api/mcp/http`, `/api/mcp/sse`) answer any request that reaches them,
+authenticated the same way as everywhere else on the deployment.
+
+The gap is **cloud-side connector clients**: a client whose connector setup
+resolves the endpoint URL from outside your network (e.g. a hosted
+assistant's own connector registry, configured from a browser that never
+joins the VPN) cannot reach a private-network address at all — the
+connection fails outright, no matter how correctly it is configured. Two
+supported responses, pick one:
+
+1. **Expose the endpoint.** Put a TLS-terminating reverse proxy in front of
+   Agnes that is reachable from the public internet and authenticates the
+   same way as the rest of the deployment (see [TLS](#tls-optional) above).
+   This is the only way to make a cloud-side client work.
+2. **Accept the surface doesn't apply, and hide it.** If in-network clients
+   are the only ones you support, set `mcp.connector_ui_enabled: false` in
+   `instance.yaml` (or `AGNES_MCP_CONNECTOR_UI_ENABLED=0`) — see
+   [`CONFIGURATION.md`](CONFIGURATION.md). This hides the user-facing install
+   instructions (`/me/ai-connector`, `/mcp-connect`, the MCP tab of
+   `/how-it-works#connect`, and their nav entries) so users on a
+   private-network-only instance are never shown a setup path that cannot
+   work for them. **UI only** — the MCP endpoints themselves keep serving
+   in-network clients exactly as before; this does not disable the MCP
+   protocol.
+
 ### Upgrades (manual)
 
 ```bash

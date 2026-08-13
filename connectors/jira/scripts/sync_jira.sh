@@ -106,6 +106,14 @@ tables = {
     'jira_changelog': 'server/parquet/jira/changelog/*.parquet',
     'jira_issuelinks': 'server/parquet/jira/issuelinks/*.parquet',
     'jira_remote_links': 'server/parquet/jira/remote_links/*.parquet',
+    # Unpartitioned dimension — a single data.parquet, so the same top-level glob
+    # matches it. NOTE: the batch transform does not produce this table (the daily
+    # refresh writes it to the extract tree), so it reaches the legacy root only if
+    # the server-side distribution step copies it there (see the connector README,
+    # step: Copy to distribution directory). Until then the glob is empty and the
+    # view is skipped, which is harmless. No quote characters in this comment —
+    # this whole program is one double-quoted shell string.
+    'jira_organizations': 'server/parquet/jira/organizations/*.parquet',
 }
 created = 0
 for view, pattern in tables.items():
