@@ -334,7 +334,7 @@
             Grant per-group access tiers — <em>available</em> surfaces
             the recipe on the group's Recipes tab; <em>required</em>
             pins it. Leave blank to manage later from
-            <a href="/admin/groups">a group's Access tab</a>.
+            <a href="/admin/access">the Access workspace</a>.
           </p>
           <div id="rcp-rbac-rows"
                style="display:flex; flex-direction:column; gap:6px; max-height:30vh; overflow-y:auto;">
@@ -991,7 +991,7 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
       const body = await r.json();
       const groups = Array.isArray(body) ? body : (body.groups || []);
       if (!groups.length) {
-        rowsEl.innerHTML = '<div style="padding:8px; color:var(--text-secondary); font-size:12px;">No groups defined yet. Create groups in <a href="/admin/groups">Groups</a> first.</div>';
+        rowsEl.innerHTML = '<div style="padding:8px; color:var(--text-secondary); font-size:12px;">No groups defined yet. Create groups in <a href="/admin/access">Access</a> first.</div>';
         return;
       }
       const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c =>
@@ -1118,7 +1118,7 @@ window.IS_ADMIN = {{ (user.is_admin if user else False) | tojson }};
       _ercpRbacOriginal = Object.assign({}, current);
 
       if (!groups.length) {
-        rowsEl.innerHTML = '<div style="padding:8px; color:var(--text-secondary); font-size:12px;">No groups defined yet. Create groups in <a href="/admin/groups">Groups</a> first.</div>';
+        rowsEl.innerHTML = '<div style="padding:8px; color:var(--text-secondary); font-size:12px;">No groups defined yet. Create groups in <a href="/admin/access">Access</a> first.</div>';
         return;
       }
       const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c =>

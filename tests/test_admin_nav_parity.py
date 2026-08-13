@@ -28,7 +28,12 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from app.web.admin_nav import ADMIN_NAV_HOME, ADMIN_NAV_SECTIONS
+from app.web.admin_nav import (
+    ADMIN_NAV_HOME,
+    ADMIN_NAV_OFFNAV,
+    ADMIN_NAV_SECTIONS,
+    _section_entries,
+)
 
 HEADER = Path("app/web/templates/_app_header.html")
 RAIL = Path("app/web/templates/_app_rail.html")
@@ -46,9 +51,30 @@ def _header_admin_links() -> set[str]:
 
 
 def _inventory_hrefs() -> set[str]:
+    """Every URL the admin column can reach, across BOTH tiers.
+
+    A section carries its children under `tabs` (a destination with a tab
+    strip) or `items` (a legacy disclosure group) — never both — and a
+    destination's own `href` is a link in its own right. Reading `["items"]`
+    directly raised KeyError the moment the first section became tabbed, so
+    this walks the same accessor the resolvers do. Query strings are dropped:
+    a lens tab (`/admin/access?lens=simulate`) reaches the same PAGE as its
+    sibling, which is the granularity the topnav is compared at.
+
+    `ADMIN_NAV_OFFNAV` counts as reachable. It is the explicit list of admin
+    pages that deliberately carry no nav row because they are reached from
+    somewhere specific instead — `/admin/sync` from a source card's SYNC cell,
+    since a sync run is per-source and a nav row would imply a cross-source
+    page that does not exist. Each entry there already records the door it IS
+    reached from, which is the property this test is really asserting; treating
+    them as missing would push a row back into the column that was removed on
+    purpose."""
     hrefs = {ADMIN_NAV_HOME["href"]}
     for section in ADMIN_NAV_SECTIONS:
-        hrefs.update(item["href"] for item in section["items"])
+        if section.get("href"):
+            hrefs.add(section["href"])
+        hrefs.update(entry["href"].split("?", 1)[0] for entry in _section_entries(section))
+    hrefs.update(entry["href"].split("?", 1)[0] for entry in ADMIN_NAV_OFFNAV)
     return hrefs
 
 

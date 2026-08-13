@@ -35,7 +35,7 @@
        {{ ds.button('Cancel', variant='secondary') }}
        {{ ds.button('Delete', variant='danger', size='sm') }}
        {{ ds.button(label='Add group', variant='primary',
-                    href='/admin/groups/new') }}
+                    href='/admin/access') }}
        {% call ds.button(variant='ghost', icon_only=True,
                          attrs='aria-label="Copy"') %}
          <svg class="ds-icon" aria-hidden="true">…</svg>
@@ -274,7 +274,7 @@
        {% call ds.panel(title='Resource access') %}
          <p>This group has access to 3 tables.</p>
          {{ ds.button('Manage', variant='secondary', size='sm',
-                      href='/admin/groups') }}
+                      href='/admin/access') }}
        {% endcall %}
 
        {% call ds.panel(accent='warn', title='Cron paused') %}

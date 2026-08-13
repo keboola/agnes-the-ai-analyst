@@ -40,8 +40,17 @@ class TestDatasourceCredentialsPageAuth:
         # GWS + BigQuery cards untouched.
         assert 'id="gws-card"' in body
         assert 'id="bq-card"' in body
-        assert "Google Workspace" in body
         assert "BigQuery" in body
+
+        # The GWS card is titled by what it CONNECTS TO, not "Google Workspace":
+        # that name covers three unrelated roles in this product and this card is
+        # only one of them. An admin who read "Google Workspace" here and filled
+        # it in expecting Workspace LOGIN got no login and no error — the card
+        # now says which of the three it is, and where the other one is
+        # configured. Asserted as strings because the trap is the wording.
+        assert "Google Drive, Gmail &amp; Calendar" in body
+        assert "analysts in Claude Code" in body
+        assert "auth.google_client_id" in body
 
         # Keboola project management fully removed — ported to /admin/data-sources.
         assert "kbc-add-btn" not in body

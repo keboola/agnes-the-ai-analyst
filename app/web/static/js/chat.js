@@ -686,7 +686,7 @@ async function api(path, init = {}) {
 let _sessionsCache = [];
 
 /** How many recent conversations the RAIL shows under its pinned shelf. The
- *  rest are reached through "View all chats" → /chats.
+ *  rest are reached through the rail's Chats destination row → /chats.
  *
  *  Duplicated from rail_history.js (which owns the rationale, and renders this
  *  same list on every page except this one) for the same reason the row
@@ -718,9 +718,9 @@ async function loadSidebar() {
     // RAIL — the presence of the Pinned section's own list is what identifies
     // it. A capped, ungrouped "Recent" feed: the server already sorts
     // pinned-first then most-recent-first, so the head of the list is the most
-    // recent work, and the rest lives on /chats behind the rail's
-    // "View all chats" link. See RAIL_RECENT_LIMIT for why a cap is right here
-    // and was wrong before that page existed. Pins are above and uncapped.
+    // recent work, and the rest lives on /chats behind the rail's Chats row.
+    // See RAIL_RECENT_LIMIT for why a cap is right here and was wrong before
+    // that page existed. Pins are above and uncapped.
     const recent = list.filter(s => !s.pinned).slice(0, RAIL_RECENT_LIMIT);
     for (const s of recent) ul.appendChild(_makeSidebarItem(s));
   } else {

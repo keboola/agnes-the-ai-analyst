@@ -85,6 +85,27 @@
     align-items: start;
 }
 
+/* ── The split must span every scrollable pixel ───────────────────────────
+   `.admin-nav` sticks within its GRID AREA, so anything the page puts BELOW
+   `.admin-split` is scroll the column cannot stick through: at the end of the
+   page it gets dragged up by exactly that distance, taking its title and the
+   Overview row off the top of the screen. It reads as "the sidebar scrolls",
+   and it is invisible until the document is tall enough to reach the bottom.
+
+   Two things were below the split, and both are handled where they belong:
+   the shared footer, which moved INSIDE `.admin-main` (see `page_footer` in
+   base_admin.html), and the container's own 48px of bottom padding, which is
+   what this rule trims. 16px is what the column already leaves below itself
+   inside the viewport (`--admin-nav-top`), so the two bottom edges agree; the
+   footer carries its own 48px top margin and 8px of trailing padding, so the
+   page loses no air by moving the gutter inside the column.
+
+   `:has()` keeps it to the admin chromes even though this sheet only loads
+   there — the selector states the precondition rather than relying on it. */
+.container:has(> main > .admin-split) {
+    padding-bottom: 16px;
+}
+
 @media (max-width: 820px) {
     .admin-split {
         grid-template-columns: 1fr;
@@ -92,6 +113,29 @@
     .admin-nav {
         display: none;
     }
+}
+
+/* ── FLUSH WITH THE RAIL, under rail chrome ───────────────────────────────
+   The column is the second tier of the chrome, so it should start where the
+   rail ends — but it lives inside `.container`, which owns a page gutter for
+   the CONTENT. `container--full` (set by both admin bases) already removed the
+   centring that put this column 84px off the rail; this removes the last
+   16px — the container's own left padding.
+
+   Why it matters after the pills already measure 6px left / 7px right: the eye
+   compares INK to EDGE, not box to box. With the gutter in place a row's label
+   sat 22px from the rail (16 container + 6 column) while its pill ended 7px
+   from the hairline, which is the asymmetry you see even though every box is
+   balanced. Flush, the label sits 6px from the rail against the pill's 7px on
+   the right.
+
+   `width` grows by exactly what `margin-left` takes back, so the grid still
+   ends on the container's right padding and the page keeps its right gutter.
+   Both in `var(--space-4)`, the same token the container uses, so the two
+   cannot drift. */
+html[data-ui-layout="rail"] .admin-split {
+    margin-left: calc(-1 * var(--space-4));
+    width: calc(100% + var(--space-4));
 }
 
 .admin-nav {
@@ -156,6 +200,23 @@ html[data-ui-layout="topnav"] .admin-nav {
     --admin-nav-top: calc(var(--app-header-height, 57px) + 16px);
 }
 
+/* ── Type scale, RAIL CHROME ONLY ─────────────────────────────────────────
+   One step down — 13px rows against the base 14px — matching the rail beside
+   it (rail.css's TYPE SCALE NOTE). Navigation type sits below page type so the
+   content leads; two columns of 14px nav on an admin page put more emphasis on
+   the chrome than on the table you came to read.
+
+   Scoped to `rail`, not applied to the base rule, because `topnav` is still the
+   DEFAULT layout and its look must not shift under an upgrade — the same reason
+   the head's heading treatment hangs off `--mode`. The row HEIGHT is untouched
+   in both (`--admin-nav-row-h`), so the pill ladder still lines up with the
+   rail's, and `.is-active` already carries 600, so the active row keeps earning
+   weight as well as tint at the smaller size. */
+html[data-ui-layout="rail"] .admin-nav .admin-nav__link,
+html[data-ui-layout="rail"] .admin-nav .admin-nav__group-hd {
+    font-size: 13px;
+}
+
 /* ── Head: the column's title ─────────────────────────────────────────── */
 
 .admin-nav__head {
@@ -180,6 +241,85 @@ html[data-ui-layout="topnav"] .admin-nav {
     font-weight: 700;
     line-height: 1.2;
     color: var(--ds-text-primary);
+}
+
+/* ── Head, rail chrome: a heading, not a label ────────────────────────────
+   Scoped to `--mode` (set only under `data-ui-layout="rail"`, see
+   `_admin_nav.html`) so the default topnav chrome keeps the uppercase label
+   above, unchanged.
+
+   Why it grows here: under rail this column IS the page's primary navigation —
+   the rail beside it is a 56px glyph strip — and a 11.5px uppercase micro-label
+   was the smallest type in the column announcing the most important thing in it.
+   It also stopped being the only way back to the hub some passes ago, so nothing
+   about it needs to stay whisper-quiet. What it must NOT become is a fourth row
+   treatment: no fill, no hover, no radius. It is type on the canvas.
+
+   The two parts sit on one baseline and wrap as a unit, so a long instance name
+   drops under the word rather than pushing a chip off the column. */
+.admin-nav__head--mode {
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 8px;
+    /* Same 12px of clear air under the head as the label version — the hub row
+       below must read as the first ENTRY, not as the heading's second line. */
+    padding: 2px 0 12px;
+}
+
+.admin-nav__head--mode .admin-nav__title {
+    font-size: 16px;
+    letter-spacing: -0.015em;
+    text-transform: none;
+    font-weight: 650;
+    line-height: 1.25;
+}
+
+/* The instance chip. Deliberately the quietest thing in the head: it answers a
+   question you ask once on arrival ("which deployment is this?") and then stop
+   asking, so it takes the section labels' muted ink and the sunken wash already
+   used for insets in this column — no border, no accent. Monospace because it is
+   an identifier, and identifiers that differ by one character
+   (`acme-prod` / `acme-preprod`) have to be comparable at a glance.
+
+   It truncates rather than wrapping mid-token: the head is 200px wide and a long
+   name is still recognizable from its head, while `title` carries the whole
+   string for anyone who needs it. */
+.admin-nav__instance {
+    max-width: 100%;
+    padding: 1px 6px;
+    /* Half the row pill's radius — a chip inside a heading, not a small pill in
+       a column of pills. */
+    border-radius: 5px;
+    background: var(--ds-surface-sunken);
+    color: var(--ds-text-muted);
+    font-family: var(--ds-font-mono);
+    font-size: 10.5px;
+    line-height: 1.5;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* The head's sub-line — one quiet sentence naming the CONSEQUENCE of standing
+   here: nothing on these pages is yours, it is everyone's. It replaces the
+   two-segment `Admin ⇄ {brand}` switch this head briefly carried (see
+   `_admin_nav.html` for why that went), so the head is now two things — a
+   heading and its consequence — instead of four stacked blocks above the first
+   destination. */
+.admin-nav__sub {
+    margin: 0 0 14px;
+    padding: 0 var(--admin-nav-inset);
+    font-size: 11.5px;
+    line-height: 1.4;
+    color: var(--ds-text-muted);
+}
+
+/* Content beside the column takes its own comfortable measure. The container is
+   `--full` on admin pages (see the note in base_admin.html) so this column can
+   hug the rail instead of drifting with the page's centring — without this cap
+   the page body would then sprawl to whatever width the monitor happens to be. */
+.admin-main {
+    max-width: var(--width-app, 1280px);
 }
 
 /* ── Section list ────────────────────────────────────────────────────── */
@@ -221,27 +361,89 @@ html[data-ui-layout="topnav"] .admin-nav {
     margin-top: 0;
 }
 
+/* ── Tier two: the per-section tab strip ──────────────────────────────────
+   `_admin_tabs.html`, rendered inside the PAGE (under its hero and toolbar),
+   not in this column. It lives in this stylesheet anyway because it is admin
+   navigation and this sheet is already loaded on every admin page by the two
+   admin bases — a second stylesheet for one spacing rule would be worse.
+
+   One rule, deliberately: the strip itself is the shared `.tab-strip`
+   component (style-custom.css), identical to /library's and /chats'. All this
+   adds is the air under it, so the tabs read as belonging to the content they
+   introduce rather than floating between the hero and the page. */
+.admin-tabs {
+    margin: 0 0 18px;
+}
+
+/* ── Destination row ──────────────────────────────────────────────────────
+   A section that is ONE PAGE WITH TABS renders as a single flat row (see
+   `admin_nav.py`'s two-tier note). It is an ordinary `.admin-nav__link` — same
+   pill, same height, same hover, same one accent — plus the section's icon in
+   the leading slot.
+
+   The icon is what tells the two tiers apart at a glance: a destination row
+   carries one, a disclosure heading carries a chevron, and nothing carries
+   both. That is also why these rows sit at the same optical left edge as the
+   uppercase group labels below them rather than being indented — they are
+   peers of those sections, not children of anything.
+
+   `is-active` here means "you are somewhere in this section", so it stays lit
+   while you move between that page's tabs. Without that the sidebar would go
+   dark the moment you left a section's first tab, and the column would be
+   saying you are nowhere. */
+.admin-nav__link--dest {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+}
+
+.admin-nav__dest-ico {
+    flex: 0 0 auto;
+    color: inherit;
+    /* One notch back, like the group chevron: it identifies the row, it does
+       not compete with the word. The active row's own ink lifts it back. */
+    opacity: 0.8;
+}
+
+.admin-nav__link--dest.is-active .admin-nav__dest-ico {
+    opacity: 1;
+}
+
 /* Section header — a LABEL that happens to be operable. No background in any
    state (only rows fill), no border, no divider. Hover/focus spend INK, the
    one channel still free here. */
+/* ONE ROW COMPONENT, TWO BEHAVIOURS. This was a 27px uppercase micro-label,
+   deliberately off the row pitch on the theory that a label ladder and a row
+   ladder must not share one. That was right while every section was a
+   disclosure; it went wrong the moment three of them became flat destinations,
+   because the column then carried two treatments for one job — title-case icon
+   rows beside uppercase labels — and read as a list that had lost half its
+   styling rather than as two tiers.
+
+   So: same height, same inset, same type, same icon slot as
+   `.admin-nav__link--dest`. What separates them is the chevron at the far right
+   (see `.admin-nav__group-chev`), which is the only difference that matters —
+   one row opens, the other goes. */
 .admin-nav__group-hd {
     display: flex;
     align-items: center;
-    /* The caret sits against the label, so this is the only gap in the row. */
-    gap: 3px;
+    gap: 9px;
     width: 100%;
-    /* 27px tall. Deliberately short of the 32px rows — a label ladder and a
-       row ladder should not share a pitch, or the seven collapsed sections
-       read as seven destinations. Still a comfortable target: the button
-       spans the full width, so the hit area is the whole line. */
-    padding: 7px var(--admin-nav-inset);
+    min-height: var(--admin-nav-row-h);
+    padding: 6px var(--admin-nav-inset);
     border: none;
     background: none;
     border-radius: var(--ds-radius-btn);
     font: inherit;
-    color: var(--ds-text-muted);
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--ds-text-secondary);
     cursor: pointer;
     text-align: left;
+}
+
+.admin-nav__group-hd:hover {
+    background: var(--admin-nav-hover-bg);
 }
 
 /* The open section's label steps one shade darker than the closed ones — so
@@ -262,23 +464,25 @@ html[data-ui-layout="topnav"] .admin-nav {
     outline-offset: var(--ds-focus-outline-offset);
 }
 
-/* Same type as the rail's section labels — the app already reads this
-   size/weight/tracking as "label for what follows". Colour is inherited from
-   the button so the hover ink-shift moves the word and its caret together. */
+/* Inherits the row's type — a section label is no longer a different KIND of
+   thing from a destination's label, so it must not look like one. Colour is
+   inherited from the button so the hover ink-shift moves the word, its icon and
+   its chevron together. */
 .admin-nav__group-txt {
-    font-size: 10.5px;
-    letter-spacing: 0.07em;
-    text-transform: uppercase;
-    font-weight: 700;
     line-height: 1.2;
     color: inherit;
 }
 
 .admin-nav__group-chev {
     flex-shrink: 0;
+    /* At the row's right END, not against the word. Against the word it read as
+       part of the label — correct while the label WAS the control. On a row that
+       is otherwise identical to a destination, the right edge is where a
+       disclosure affordance belongs, and it is the one mark that tells the two
+       rows apart. */
+    margin-left: auto;
     color: inherit;
-    /* It annotates the word; it is not a control competing with it. */
-    opacity: 0.75;
+    opacity: 0.6;
     transition: transform var(--ds-motion-fast) var(--ds-ease-standard);
 }
 
@@ -386,16 +590,24 @@ html[data-ui-layout="topnav"] .admin-nav {
     background: var(--admin-nav-hover-bg);
 }
 
-/* The intent/maintain split — a labelled hairline, not a section: People and
-   Data above it are the daily jobs, everything below is maintenance. The
-   label reuses the section-heading vocabulary one shade quieter so it reads
-   as a landmark, never as an operable row. */
+/* The manage/maintain split — a labelled hairline, not a section: People, Data
+   and Access under the first label are the daily jobs, everything under the
+   second is maintenance. The label reuses the section-heading vocabulary one
+   shade quieter so it reads as a landmark, never as an operable row. */
 .admin-nav__divider {
     display: flex;
     align-items: center;
     gap: 8px;
     margin: 14px 0 6px;
     padding: 0 var(--admin-nav-inset);
+}
+
+/* The FIRST divider follows the hub row, which already pays 10px to sit apart
+   from the index (`--home` above). Full 14px on top of it would open a gap
+   wider than the one between the two halves, making Overview look expelled
+   from a column it heads. */
+.admin-nav__link--home + .admin-nav__divider {
+    margin-top: 4px;
 }
 
 .admin-nav__divider span {
@@ -449,21 +661,24 @@ html[data-ui-layout="topnav"] .admin-nav {
     border-top: 1px solid var(--ds-border-light);
 }
 
-.admin-nav__docs-hd {
-    /* Matches the section headings' rhythm without being operable — there is
-       nothing here to disclose. */
-    padding: 7px var(--admin-nav-inset);
-    font-size: 11px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
+/* No `.admin-nav__docs-hd` any more: a heading over a single row is a heading
+   over nothing. See `_admin_nav.html` for why the three links became one. */
+
+/* One step quieter than a section row: this is reference material, not a place
+   an admin works. */
+.admin-nav__link--doc {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     color: var(--ds-text-muted);
+    font-size: 13px;
 }
 
-/* One step quieter than a section row: these are reference material, not
-   places an admin works. */
-.admin-nav__link--doc {
-    color: var(--ds-text-muted);
+/* The outward arrow — the row leaves the admin area, and that is worth one
+   glyph. Sized off the label rather than in px so it tracks the row's type. */
+.admin-nav__doc-out {
+    font-size: 0.85em;
+    opacity: 0.7;
 }
 
 .admin-main {

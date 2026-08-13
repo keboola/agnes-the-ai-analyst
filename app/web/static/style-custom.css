@@ -1378,6 +1378,38 @@ footer {
     font-size: var(--text-13);
 }
 
+/* Shared footer partial (`_footer.html`): product name, running build, then
+   the operator credit when configured. Only the INSIDE is styled here — the
+   outer `<footer>` keeps the rule above plus every chrome-specific override
+   that keys on the element or on `footer_class` (`.idx > footer`,
+   `body.chat-page-body .container > footer`, the rail detail-page rule, and
+   `.cloud-chat-empty-foot`), so no existing footer treatment moves.
+   Inline spans, not a flex row — see the comment in the partial: inline flow
+   inherits each chrome's own centering and needs no width, which a flex row
+   would have to be given separately in each of the six layout contexts. */
+.site-footer__line {
+    margin: 0;
+}
+.site-footer__brand {
+    font-weight: 600;
+    color: var(--ds-text-secondary);
+}
+.site-footer__build,
+.site-footer__deploy {
+    color: var(--ds-text-muted);
+}
+/* Separators ride the segments they precede, so each one disappears with its
+   own segment — no dangling bullet when /api/version is unreachable or when
+   the instance configures no credit. */
+.site-footer__build::before,
+.site-footer__deploy::before {
+    content: '·';
+    margin: 0 6px;
+}
+.site-footer__build[hidden] {
+    display: none;  /* explicit: `hidden` alone loses to any inline reset */
+}
+
 /* Username box and copy buttons */
 .username-box {
     background: var(--username-box-bg);
@@ -5193,11 +5225,61 @@ textarea.form-textarea::placeholder { color: var(--text-muted); }
     flex-wrap: wrap;
 }
 
+/* Plain variant — the INDEX-PAGE head: a name, a sentence, and nothing
+   drawn around them.
+
+   This is the treatment /library, /agents and /chats already run by hand
+   (`.lib-head`, `.ag-head`, `.ch-head` — 24px title, 15px secondary lede
+   capped at 68ch), lifted onto the shared primitive so a page can opt in
+   with one variable (`page_hero_plain`) instead of a fourth private copy.
+
+   Use it where the page is a WORKSPACE the reader stays in — a list they
+   filter, a table they act on, a two-pane editor. A gradient (or, under
+   paper, a bordered white card) around the title is chrome the reader
+   scrolls past on every visit, and on a page whose body is already made of
+   cards it puts a card above the cards. The hero variant below stays right
+   where a page is a DESTINATION that has to introduce itself: /home, an
+   install walkthrough, a marketing-adjacent surface.
+
+   Only three declarations differ from the base primitive — the type scale,
+   the measure, and the link colour (there is no global `a` rule, so an
+   unstyled link in the lede renders as UA blue). Everything else is
+   inherited, which is what keeps this from becoming a second header
+   component: the theme's own `h1` rule still owns the weight and the
+   tracking, exactly as it does for the three hand-built heads above. */
+.page-header--plain {
+    display: block;
+    margin: 8px 0 0;
+    /* Padding, not margin: the head's clearance must not collapse-adjoin a
+       following notice or tab strip, both of which carry their own top
+       edge. */
+    padding: 0 0 22px;
+}
+.page-header--plain .page-header__title { font-size: 24px; }
+.page-header--plain .page-header__subtitle {
+    margin: 8px 0 0;
+    font-size: 15px;
+    line-height: 1.5;
+    color: var(--ds-text-secondary);
+    max-width: 68ch;
+}
+.page-header--plain .page-header__eyebrow { color: var(--ds-text-muted); }
+.page-header--plain a {
+    color: var(--ds-primary-dark);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+.page-header--plain a:hover { color: var(--ds-primary); }
+
 /* Hero variant — gradient background, larger title, light eyebrow.
-   Tuned to match the look of admin_tokens.html's per-page .tokens-hero
-   (which analysts already liked): tighter padding, 14px radius, soft
-   blue glow shadow. Applied across all primary-content pages so the
-   admin section reads as one product instead of a patchwork. */
+   Tuned to match the look of the per-page hero /admin/tokens used to
+   carry (which analysts already liked): tighter padding, 14px radius,
+   soft blue glow shadow.
+
+   NOT the admin default any more — People, Data and Access (and their tab
+   siblings) run the `--plain` variant above, because a workspace page is
+   not a page that has to introduce itself. This stays for the surfaces
+   that do. */
 .page-header--hero {
     padding: 28px 32px 24px;
     /* Spans the parent container width. `.container` already provides

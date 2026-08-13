@@ -722,7 +722,7 @@ curates its own view like any other group):
 agnes admin grant create <group> marketplace_plugin ai-kit/dataapp-developer
 ```
 
-or the same action via a group's Access tab (`/admin/groups`). Grant it to whichever group should be
+or the same action in the Access workspace (`/admin/access`). Grant it to whichever group should be
 allowed to author data apps — **not** a blanket `Everyone` grant unless every
 analyst on the instance should get the authoring skill.
 

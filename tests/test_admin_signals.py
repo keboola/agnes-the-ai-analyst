@@ -69,9 +69,16 @@ def _known_admin_paths() -> set[str]:
     hrefs the sidebar already vouches for (its own guard proves those are
     real, so reusing them keeps this test from re-deriving the same set)."""
     paths = {m.split("{")[0].rstrip("/") for m in _ROUTE_RE.findall(ROUTER_SRC)}
+    # A section is either a DESTINATION (`href` + `tabs`) or a legacy
+    # disclosure GROUP (`items`) — never both. Reading only `items` skipped
+    # every tabbed section's hrefs, and KeyError'd the moment one existed.
     for section in ADMIN_NAV_SECTIONS:
-        for item in section["items"]:
+        if section.get("href"):
+            paths.add(section["href"])
+        for item in section.get("items", ()):
             paths.add(item["href"])
+        for tab in section.get("tabs", ()):
+            paths.add(tab["href"].split("?")[0].rstrip("/"))
     return paths
 
 

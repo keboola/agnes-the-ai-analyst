@@ -44,17 +44,25 @@ def _make_user_and_session(conn, email: str, role: str):
     return uid, token
 
 
-def _make_pat_row(conn, user_id: str, name: str = "ci",
-                  expires_in_days: int = 30, revoked: bool = False,
-                  last_used_ip: str | None = None,
-                  last_used_ago_days: int | None = None):
+def _make_pat_row(
+    conn,
+    user_id: str,
+    name: str = "ci",
+    expires_in_days: int = 30,
+    revoked: bool = False,
+    last_used_ip: str | None = None,
+    last_used_ago_days: int | None = None,
+):
     from src.repositories.access_tokens import AccessTokenRepository
+
     repo = AccessTokenRepository(conn)
     tid = str(uuid.uuid4())
     raw = "r" * 40
     exp = datetime.now(timezone.utc) + timedelta(days=expires_in_days) if expires_in_days is not None else None
     repo.create(
-        id=tid, user_id=user_id, name=name,
+        id=tid,
+        user_id=user_id,
+        name=name,
         token_hash=hashlib.sha256(raw.encode()).hexdigest(),
         prefix=tid.replace("-", "")[:8],
         expires_at=exp,
@@ -71,6 +79,7 @@ def _make_pat_row(conn, user_id: str, name: str = "ci",
 
 
 # ── /me/profile — "Personal Authentication Tokens" section — every signed-in user ──
+
 
 def test_non_admin_sees_my_tokens_page(fresh_db):
     """Non-admin GET /me/profile: PAT section with New-token CTA + create modal."""
@@ -162,6 +171,7 @@ def test_unauthenticated_redirects_from_tokens_page(fresh_db):
 
 # ── /admin/tokens — admin-only list of ALL tokens ──────────────────────────
 
+
 def test_admin_can_render_admin_tokens_page(fresh_db):
     """Admin GET /admin/tokens: the org-wide list with stat strip + owner
     search + sort-by-owner chip."""
@@ -184,9 +194,14 @@ def test_admin_can_render_admin_tokens_page(fresh_db):
     )
     assert resp.status_code == 200, resp.text
     body = resp.text
-    # Admin-specific title + eyebrow + subtitle
-    assert "Access tokens" in body
-    assert "Administration" in body
+    # Admin-specific title + subtitle. The head is the shared plain one now —
+    # section-level ("People", matching /admin/users, with the tab strip
+    # naming this lens), so what identifies the ADMIN view is the subtitle and
+    # the admin-only controls below, not a title of its own. The eyebrow is
+    # gone with the hero card: the sidebar already says "Administration".
+    assert "Access tokens" in body  # the <title>, and the list's accessible name
+    assert 'class="page-header__title">People<' in body
+    assert "page-header--plain" in body
     assert "incident response and offboarding" in body
     # Role-awareness marker
     assert 'data-is-admin="true"' in body
@@ -274,6 +289,7 @@ def test_admin_tokens_deeplink_preserves_user_query(fresh_db):
 
 # ── Admin list API — expanded fields ───────────────────────────────────────
 
+
 def test_admin_list_includes_user_email_and_last_used_ip(fresh_db):
     from fastapi.testclient import TestClient
     from src.db import get_system_db, close_system_db
@@ -283,8 +299,7 @@ def test_admin_list_includes_user_email_and_last_used_ip(fresh_db):
     try:
         admin_uid, admin_sess = _make_user_and_session(conn, "admin@t", "admin")
         other_uid, _ = _make_user_and_session(conn, "victim@t", "analyst")
-        _make_pat_row(conn, other_uid, name="laptop", last_used_ip="9.9.9.9",
-                      last_used_ago_days=2)
+        _make_pat_row(conn, other_uid, name="laptop", last_used_ip="9.9.9.9", last_used_ago_days=2)
     finally:
         conn.close()
         close_system_db()
@@ -325,6 +340,7 @@ def test_non_admin_cannot_list_admin_tokens(fresh_db):
 
 
 # ── Admin revoke ──────────────────────────────────────────────────────────
+
 
 def test_admin_can_revoke_another_users_token(fresh_db):
     from fastapi.testclient import TestClient

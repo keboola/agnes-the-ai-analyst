@@ -129,7 +129,7 @@ memberships, used by:
 
 - RBAC authorization (`app/auth/access.py`) — `require_resource_access`
   checks group grants
-- Admin UI (`/admin/groups`) — member lists, grant counts
+- Admin UI (`/admin/access`) — member lists, grant counts
 - CLI (`agnes admin group members`) — group membership queries
 - Marketplace filtering (`src/marketplace_filter.py`) — plugin access
   based on group grants
@@ -242,7 +242,7 @@ Common failure modes:
 ## Custom (admin-managed) groups
 
 Admins can still create / rename / delete groups manually via
-`/admin/groups`. Two caveats vs. the prefix-mapped flow:
+`/admin/access`. Two caveats vs. the prefix-mapped flow:
 
 - A renamed group's primary key (`id`) stays put, but DuckDB's UNIQUE
   constraint on `name` combined with the FK from

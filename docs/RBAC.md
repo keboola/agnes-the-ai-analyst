@@ -171,20 +171,25 @@ Removing a user from a group via the admin path (UI/CLI/REST) only deletes admin
 
 ### UI
 
-**Users & Access** is one admin section over three tabbed pages, each a real URL:
+Accounts and access are two sections:
 
-- **People** (`/admin/users`) — accounts: invite, activate/deactivate, passwords, delete.
-- **Groups** (`/admin/groups`) — user-groups with member/grant counts. System groups are read-only.
-- **Tokens** (`/admin/tokens`) — every personal access token across users, for incident response and offboarding.
+- **People** (`/admin/users`) — accounts: invite, activate/deactivate, passwords, delete. **Tokens** (`/admin/tokens`) sits beside it: every personal access token across users, for incident response and offboarding.
+- **Access** (`/admin/access`) — groups, and what each one can use.
 
-Resource grants have no page of their own: `resource_grants` keys on `group_id`, so they are edited on the group they belong to. `/admin/groups/{id}` has two tabs:
+#### The Access workspace
 
-- **Members** — add/remove members (admin-source rows only; see *Group membership sources*).
-- **Access** — the grant matrix for that group, grouped by resource type, with per-block *Grant all* / *Revoke all* and a filter that matches name, `resource_id`, block, category and description. Backed by `/api/admin/access-overview` + `/api/admin/grants`.
+A group is one object with two sides — an audience, and a bundle of what that audience can use — so it has one editor. `/admin/access` is a two-pane workspace:
 
-`/admin/access` and `/admin/grants` are retired URLs and 308 to `/admin/groups` (with `?group=<id>`, straight to that group's Access tab).
+- **Left** — every group, with its origin (system / custom / Google-synced), member count and grant count. Search matches name, description and Workspace address. `+ New group` opens the create drawer and selects the result here.
+- **Right** — the selected group. Its header carries the name, the Workspace address it is really stored under, the origin pill, the description, the created date, and **Rename** / **Delete** (hidden for system and Google-synced rows, which the API refuses to change).
+  - **Who it reaches** — a member count stated as its consequence, avatars, and one search box that both adds someone and answers "is Maria in this group?". **Show all N** expands the full roster with each member's source (`added by admin` / `synced from Google` / `system-managed`) and a Remove button on admin-added rows only.
+  - **What it can use** — the grant matrix, by resource type, with a filter matching name, `resource_id`, block, category and description. Backed by `/api/admin/access-overview` + `/api/admin/grants`.
 
-`/admin/users/{id}` (the user detail page) toggles the Admin-group membership when an operator switches a user's "role" between admin and non-admin — there's no four-level hierarchy left, just admin / non-admin. It also lists that user's **effective access** (each row links to the granting group's Access tab) and their **access tokens**, so an offboarding runs on one page.
+The second lens, **Simulate a person** (`/admin/access?lens=simulate`), walks one person's membership → grant → tier and names what is *not* shared with them.
+
+Retired URLs, all 308 onto the workspace: `/admin/grants` and `/admin/groups` → `/admin/access`; `/admin/groups/{id}` → `/admin/access?group=<id>` (unknown ids still 404). `/admin/tables`' per-row *Manage access* arrives as `/admin/access?resource=<type>:<id>`, which pre-filters the grant tree; the older `#table:<id>` fragment is rewritten to it.
+
+The one editor rule has two deliberate exceptions, both *transposes* rather than copies: a data package's **Share** panel answers "which groups get this package", and `/admin/users/{id}` answers "which groups is this person in". The user detail page also toggles Admin-group membership when an operator switches a user between admin and non-admin — there's no four-level hierarchy, just admin / non-admin — and lists that user's **effective access** (each row links to the granting group in the workspace) and their **access tokens**, so an offboarding runs on one page.
 
 ### CLI
 
@@ -262,7 +267,7 @@ TTL change. See [`docs/HEADLESS_USAGE.md`](./HEADLESS_USAGE.md#renewal-interacti
 1. Creates a `users` row for that email if missing (with `password_hash` from `SEED_ADMIN_PASSWORD` if provided).
 2. Adds an Admin-group membership with `source='system_seed'`.
 
-The hook is idempotent — re-running deploy does not duplicate or revoke. To add additional initial admins post-deploy, log in as the seed admin and use `/admin/groups` or `agnes admin group add-member Admin <email>`.
+The hook is idempotent — re-running deploy does not duplicate or revoke. To add additional initial admins post-deploy, log in as the seed admin and use `/admin/access` or `agnes admin group add-member Admin <email>`.
 
 ---
 

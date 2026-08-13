@@ -64,7 +64,7 @@ Block = dict[str, Any]
 # instance it read the stale, frozen DuckDB system file.
 ListBlocksFn = Callable[[], List[Block]]
 
-# The /admin/groups projection must list EVERY grantable resource — an admin
+# The /admin/access projection must list EVERY grantable resource — an admin
 # can't grant access to something the page doesn't render. The repo ``list()``
 # helpers default to a paginated 200; for these admin-curated, low-cardinality
 # entity types we pass an effectively-unbounded cap so nothing is silently
@@ -148,7 +148,7 @@ def _marketplace_plugin_blocks() -> List[Block]:
                 "description": p.get("description"),
                 "source_type": p.get("source_type"),
                 # v39: drives the SYSTEM pill + disabled checkbox in
-                # /admin/groups. The grant row exists for every group on a
+                # /admin/access. The grant row exists for every group on a
                 # system plugin (materialized by mark_system) — we just
                 # prevent admins from revoking it via the UI to keep the
                 # mandatory-tier semantic honest.
@@ -182,7 +182,7 @@ def _table_blocks() -> List[Block]:
     # agnes_telemetry / agnes_audit). Their RBAC is row-level, enforced
     # in the query path; the table-grain `resource_grants` gate is
     # bypassed for them (see can_access). Surfacing them on
-    # /admin/groups would let admins assign grants that do nothing,
+    # /admin/access would let admins assign grants that do nothing,
     # which is exactly the confusion this filter prevents.
     # ``!= 'internal'`` keeps NULL source_type rows (matches the old
     # ``IS DISTINCT FROM 'internal'`` SQL semantics).
@@ -423,7 +423,7 @@ def _chat_blocks() -> List[Block]:
     No DB entity backs it — the chat feature is a single toggle — so the
     block is static. With no grant the feature is denied to everyone except
     the ``Admin`` god-mode group; admins grant ``(group, chat, chat)`` on
-    /admin/groups to turn it on for a group.
+    /admin/access to turn it on for a group.
     """
     return [
         {
@@ -450,7 +450,7 @@ def _slack_channel_blocks() -> List[Block]:
 
     There is **no domain table** — the ``resource_grants`` rows themselves are
     the allowlist. An admin enables Agnes in a channel by pasting its channel
-    id (e.g. ``C0123ABCD``) into the create-grant form on /admin/groups; that
+    id (e.g. ``C0123ABCD``) into the create-grant form on /admin/access; that
     writes ``(Everyone, slack_channel, <channel_id>)``. We project the distinct
     granted channel ids so the admin UI can list what is currently enabled.
     Scoped to the ``Everyone`` group to mirror enforcement

@@ -64,9 +64,48 @@
 .dsec > summary::-webkit-details-marker { display: none; }
 .dsec > summary::marker { content: ""; }
 .dsec > summary:hover { background: var(--ds-surface-dim); }
-.dsec > summary:focus-visible {
+
+/* ── Focus ring: around the CARD, not around the head ──────────────────────
+   The ring used to sit on the `<summary>` at `outline-offset: -2px`, which
+   inscribes a rectangle just inside the card's own border and around the head
+   ALONE. On an open section that rectangle runs straight along the hairline
+   between the head and its body, so it reads as the head having come loose
+   from the content it opens — a 2px blue box cutting one card into two.
+
+   It is easy to hit without meaning to. `<summary>` is a focusable control, so
+   clicking a section head — the ordinary way to open one — leaves it focused;
+   the click alone shows nothing (Chrome withholds `:focus-visible` for
+   pointer input), and then the FIRST arrow or page key pressed to scroll flips
+   the heuristic to visible and the box appears with no apparent cause.
+
+   The card is what the summary controls, so the card is what the ring belongs
+   around: `:has()` moves it to the parent and `+2px` puts it outside the
+   border, where every other focus ring in the product sits. Nothing about
+   which element is focused changes — only where the ring is drawn.
+
+   The card's `overflow: hidden` is left alone: it clips DESCENDANTS, not the
+   element's own outline, so the ring draws outside the border regardless — and
+   relaxing it here would unclip the head's hover wash from the card's rounded
+   corners for as long as the section held focus. The outline follows the
+   card's own 14px radius. */
+.dsec:has(> summary:focus-visible) {
   outline: var(--ds-focus-outline);
-  outline-offset: -2px;
+  outline-offset: 2px;
+}
+/* The card's ring REPLACES the head's, so the browser's own default outline on
+   the focused summary has to be cleared explicitly — the old rule overrode it
+   by setting one, and dropping that rule would otherwise leave two rings, the
+   UA's inside the card and ours around it. Only ever paired with the rule
+   above: the indication moves, it never disappears. */
+.dsec:has(> summary:focus-visible) > summary:focus-visible { outline: none; }
+/* Fallback for engines without `:has()` — keep a ring on the head rather than
+   none at all, but push it inside the padding so it never lands on the
+   head/body hairline. */
+@supports not selector(:has(*)) {
+  .dsec > summary:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: -4px;
+  }
 }
 
 .dsec-head {

@@ -2049,7 +2049,7 @@ def register_foundation_tools(
         control-plane detail endpoint this calls never returns the
         encrypted secrets blob (by design), so there is no shared
         basic-auth password to surface yet; the chat reply should hint at
-        granting a group access via ``/admin/groups`` instead of sharing a
+        granting a group access via ``/admin/access`` instead of sharing a
         password. Returns a friendly ``data_apps_disabled`` payload (not an
         error) if data apps are disabled on this instance.
         """

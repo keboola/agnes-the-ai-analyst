@@ -565,8 +565,10 @@ function wireRestartOnboardingMenuItem() {
 // The title names the job differently depending on where you are: "Set up
 // Agnes" for someone who hasn't started (it has to say what the row is FOR),
 // "Continue setup" once any step has landed (they know; the accurate word is
-// "continue"). The row no longer retires itself at 5/5 — the ring simply
-// reads full, which is why nothing here hides it at completion.
+// "continue"). At 5/5 the title stops mattering: `.is-complete` retires the
+// whole row (rail.css), which is the outcome "Skip onboarding" — it lands all
+// five steps — promises in its toast. restartJourney() clears the steps and
+// the row comes back.
 const RING_R = 15;
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_R;
 

@@ -34,10 +34,12 @@ import re
 
 from app.web.admin_nav import (
     ADMIN_NAV_HOME,
+    ADMIN_NAV_OFFNAV,
     ADMIN_NAV_SECTIONS,
     resolve_active_href,
     resolve_active_section_key,
     resolve_home_active,
+    resolve_section_tabs,
 )
 
 ROUTER_SRC = Path("app/web/router.py").read_text(encoding="utf-8")
@@ -51,6 +53,10 @@ ROUTER_SRC = Path("app/web/router.py").read_text(encoding="utf-8")
 _EXTERNAL_ADMIN_ROUTE_MODULES = ("app/api/admin_chat.py",)
 RAIL_CSS = Path("app/web/static/css/rail.css").read_text(encoding="utf-8")
 RAIL_HTML = Path("app/web/templates/_app_rail.html").read_text(encoding="utf-8")
+# The bottom-docked filter toolbar — fixed chrome the rail's peek has to
+# outrank; read here so the guard compares the two z-indexes for real
+# instead of pinning a literal that can drift on either side.
+FILTER_TOOLBAR_CSS = Path("app/web/static/css/filter_toolbar.css").read_text(encoding="utf-8")
 ADMIN_NAV_JS = Path("app/web/static/js/admin/admin_nav.js").read_text(encoding="utf-8")
 RAIL_TOGGLE_JS = Path("app/web/static/js/rail_toggle.js").read_text(encoding="utf-8")
 
@@ -152,13 +158,29 @@ def _route_literal_prefix(path: str) -> str:
     return path.split("{")[0].rstrip("/")
 
 
+def _section_entries(section: dict) -> list[dict]:
+    """A section's navigable children in EITHER tier — its ``tabs`` (a
+    destination: one page with a tab strip) or its ``items`` (a legacy
+    disclosure group). Mirrors ``admin_nav._section_entries`` so the guards
+    walk exactly what the sidebar and the tab strip render between them."""
+    return section.get("tabs") or section.get("items") or []
+
+
 def _all_nav_prefixes() -> list[str]:
     # The hub row first — it is a nav entry like any other now, just one that
     # lives above the sections rather than inside one.
     prefixes = [ADMIN_NAV_HOME["href"]]
     for section in ADMIN_NAV_SECTIONS:
-        for item in section["items"]:
-            prefixes.extend(item["match"])
+        # A tabless destination (Access) carries its own `match` and has no
+        # children, so the section's own prefixes count too.
+        prefixes.extend(section.get("match") or [])
+        for entry in _section_entries(section):
+            prefixes.extend(entry["match"])
+    # Pages deliberately in neither tier, each with a recorded reason for where
+    # it IS reached from (see ADMIN_NAV_OFFNAV). Counted as covered so the guard
+    # stays a coverage check rather than a nav-shape check — but an entry has to
+    # be added to that list by hand, which is the point.
+    prefixes.extend(entry["href"] for entry in ADMIN_NAV_OFFNAV)
     return prefixes
 
 
@@ -189,12 +211,48 @@ class TestAdminNavInventoryCoverage:
         route_literals = {_route_literal_prefix(p) for p in routes}
         route_literals |= _external_admin_route_literals()
         dead = []
+        hrefs = []
         for section in ADMIN_NAV_SECTIONS:
-            for item in section["items"]:
-                href = item["href"]
-                if href not in route_literals and href not in routes:
-                    dead.append(href)
+            # A destination row is a link too — a dead one is worse than a dead
+            # item, since it is the only way into the whole section.
+            if section.get("href"):
+                hrefs.append(section["href"])
+            hrefs.extend(entry["href"] for entry in _section_entries(section))
+        hrefs.extend(entry["href"] for entry in ADMIN_NAV_OFFNAV)
+        for href in hrefs:
+            # A tab may address a LENS on a page rather than a page of its own
+            # (`/admin/access?lens=simulate`). The router serves the path; the
+            # query only picks which pane opens, so the query is not part of
+            # what "is this a real route" asks.
+            path = href.split("?", 1)[0]
+            if path not in route_literals and path not in routes:
+                dead.append(href)
         assert not dead, f"nav entr(ies) point at a URL with no matching router route: {dead}"
+
+    def test_a_destination_row_lands_on_its_own_first_tab(self) -> None:
+        """Clicking the sidebar row and clicking the strip's first tab must go
+        to the same place. They are two affordances for one destination, and a
+        row that lands somewhere the strip then marks as "not this tab" is the
+        column and the page disagreeing about where you are."""
+        for section in ADMIN_NAV_SECTIONS:
+            tabs = section.get("tabs")
+            if not tabs:
+                continue
+            assert section["href"] == tabs[0]["href"], section["key"]
+
+    def test_no_section_is_both_tiers(self) -> None:
+        """`tabs` and `items` are the two shapes a section can take and the
+        template branches on which is present — carrying both would render one
+        and silently orphan the other's pages."""
+        for section in ADMIN_NAV_SECTIONS:
+            assert not (section.get("tabs") and section.get("items")), section["key"]
+
+    def test_offnav_pages_record_where_they_are_reached_from(self) -> None:
+        """The escape hatch has to stay expensive to use: an entry without a
+        stated door is just the coverage guard switched off for one page."""
+        for entry in ADMIN_NAV_OFFNAV:
+            assert entry.get("reached_from"), entry
+            assert entry["href"].startswith("/admin/"), entry
 
     def test_exactly_the_decided_sections_in_order(self) -> None:
         """The IA is a decision, not a projection — pin the section
@@ -214,12 +272,13 @@ class TestAdminNavInventoryCoverage:
             ("activity", "Activity"),
         ]
 
-    def test_the_maintain_divider_opens_the_library_section(self) -> None:
-        """The intent/maintain split is part of the pinned IA: exactly one
-        section carries `divider_before`, and it is the first maintenance
-        one."""
-        flagged = [s["key"] for s in ADMIN_NAV_SECTIONS if s.get("divider_before")]
-        assert flagged == ["library"]
+    def test_the_two_halves_are_labelled(self) -> None:
+        """The manage/maintain split is part of the pinned IA: exactly two
+        sections carry `divider_before` — the first of each half — and each
+        carries the half's WORDING, so neither the label text nor which row it
+        sits above can drift into the template."""
+        labelled = [(s["key"], s["divider_before"]) for s in ADMIN_NAV_SECTIONS if s.get("divider_before")]
+        assert labelled == [("people", "Manage"), ("library", "Maintain")]
 
     def test_every_section_has_a_distinct_key_and_icon(self) -> None:
         keys = [s["key"] for s in ADMIN_NAV_SECTIONS]
@@ -228,16 +287,38 @@ class TestAdminNavInventoryCoverage:
         assert all(icons), "every section must carry an icon name for the collapsed rail"
 
 
+class TestAdminNavHalfLabels:
+    """Both halves of the column are named on screen. The inventory pin above
+    is the decision; this is the rendering of it."""
+
+    def test_both_dividers_render_in_order_below_the_hub_row(self, seeded_app) -> None:
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.get("/admin/users", headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 200, resp.text
+        nav = resp.text.split('<aside class="admin-nav"', 1)[1].split("</aside>", 1)[0]
+        labels = re.findall(r'<div class="admin-nav__divider"[^>]*><span>([^<]+)</span>', nav)
+        assert labels == ["Manage", "Maintain"], labels
+        # Overview heads the column and belongs to neither half, so it renders
+        # ABOVE the first label; People renders below it.
+        assert nav.index("admin-nav__link--home") < nav.index("admin-nav__divider")
+        assert nav.index("admin-nav__divider") < nav.index("/admin/users")
+
+
 class TestAdminNavActiveState:
     def test_active_href_resolves_own_section_item(self) -> None:
         assert resolve_active_href("/admin/users") == "/admin/users"
-        assert resolve_active_href("/admin/groups") == "/admin/groups"
+        assert resolve_active_href("/admin/access") == "/admin/access"
         assert resolve_active_href("/admin/tokens") == "/admin/tokens"
 
     def test_active_href_follows_detail_pages_to_the_parent_entry(self) -> None:
         assert resolve_active_href("/admin/users/abc123") == "/admin/users"
-        assert resolve_active_href("/admin/groups/grp-1") == "/admin/groups"
         assert resolve_active_href("/admin/mcp-tools/tool1/grants") == "/admin/mcp-sources"
+        # `/admin/groups/{id}` is a REDIRECT, not a page, so it resolves the
+        # way `/admin/grants` does: the section lights, no tab claims it.
+        # See test_access_and_its_legacy_url_light_the_access_row.
+        assert resolve_active_section_key("/admin/groups/grp-1") == "access"
+        assert resolve_active_href("/admin/groups/grp-1") is None
 
     def test_active_href_does_not_confuse_parent_and_child_sections(self) -> None:
         """/admin/store (the moderation hub) and /admin/store/submissions
@@ -252,12 +333,37 @@ class TestAdminNavActiveState:
         assert resolve_active_href("/admin") is None
 
     def test_access_and_its_legacy_url_light_the_access_row(self) -> None:
-        """`/admin/access` is a real page again (the Access section's row) and
-        `/admin/grants` 308s onto it, so both resolve to that row rather than
-        to Groups, where they pointed while the matrix lived on the group's
-        own detail tab."""
+        """`/admin/access` is the section's only page; `/admin/grants` and
+        both `/admin/groups` URLs 308 onto it. All of them light Access —
+        a redirect is still a path something may have to resolve."""
+        assert resolve_active_section_key("/admin/access") == "access"
+        assert resolve_active_section_key("/admin/groups") == "access"
+        # The redirect carries no tab of its own, so it lands on the section
+        # via the section's own `match` rather than a child's.
+        assert resolve_active_section_key("/admin/grants") == "access"
+        assert resolve_active_href("/admin/grants") is None
+        # Access has tabs now, so its own page IS a child entry.
         assert resolve_active_href("/admin/access") == "/admin/access"
-        assert resolve_active_href("/admin/grants") == "/admin/access"
+
+    def test_the_simulate_lens_is_a_tab_resolved_off_the_query(self) -> None:
+        """Simulate shares `/admin/access` with the Groups workspace — one
+        path, two lenses — so no path prefix can separate them and
+        `resolve_section_tabs` reads the query. The two must never be lit at
+        once, and the bare path must light the workspace, or a deep link and
+        a plain visit would look identical."""
+        bare = {t["label"]: t["active"] for t in resolve_section_tabs("/admin/access")}
+        assert bare == {"Groups": True, "Simulate a person": False}
+
+        sim = {t["label"]: t["active"] for t in resolve_section_tabs("/admin/access", "lens=simulate")}
+        assert sim == {"Groups": False, "Simulate a person": True}
+
+        # An unrelated query is not the lens, and must not disturb the default.
+        other = {t["label"]: t["active"] for t in resolve_section_tabs("/admin/access", "group=abc")}
+        assert other == bare
+
+        # `?resource=` is the /admin/tables deep link, and is not a lens either.
+        pick = {t["label"]: t["active"] for t in resolve_section_tabs("/admin/access", "resource=table:t1")}
+        assert pick == bare
 
     def test_only_one_item_renders_is_active_for_each_page(self, seeded_app) -> None:
         c = seeded_app["client"]
@@ -266,11 +372,34 @@ class TestAdminNavActiveState:
         def _auth(t: str) -> dict:
             return {"Authorization": f"Bearer {t}"}
 
-        for path, expected_label in (("/admin/users", "Users"), ("/admin/groups", "Groups")):
+        # A tabbed section lights ONE sidebar row — the destination — and stays
+        # lit across its tabs. The tab strip on the page marks which lens you
+        # are in; the column marks which place.
+        for path in ("/admin/users", "/admin/groups", "/admin/tables"):
             resp = c.get(path, headers=_auth(token))
             assert resp.status_code == 200, resp.text
-            actives = re.findall(r'admin-nav__link is-active"[^>]*>([^<]+)<', resp.text)
-            assert actives == [expected_label], (path, actives)
+            nav = resp.text.split('<aside class="admin-nav"', 1)[1].split("</aside>", 1)[0]
+            actives = re.findall(
+                r'class="admin-nav__link[^"]*is-active"[^>]*>\s*(?:<svg.*?</svg>)?\s*'
+                r"(?:<span>)?([^<]+)",
+                nav,
+                re.S,
+            )
+            actives = [a.strip() for a in actives if a.strip()]
+            expected = {
+                "/admin/users": "People",
+                # Groups is Access's first tab, so it lights Access — the
+                # section it is a lens of, not the one it used to sit under.
+                "/admin/groups": "Access",
+                "/admin/tables": "Data",
+            }[path]
+            assert actives == [expected], (path, actives)
+
+        # A legacy disclosure GROUP still lights its own item row.
+        resp = c.get("/admin/mcp-sources", headers=_auth(token))
+        nav = resp.text.split('<aside class="admin-nav"', 1)[1].split("</aside>", 1)[0]
+        assert 'class="admin-nav__link is-active"' in nav
+        assert ">MCP sources<" in nav
 
 
 class TestAdminNavActiveSection:
@@ -306,13 +435,34 @@ class TestAdminNavActiveSection:
             r'aria-expanded="(true|false)"',
             text,
         )
-        assert len(groups) == len(ADMIN_NAV_SECTIONS), groups
+        # Only the legacy disclosure GROUPS render a header — the destinations
+        # (People, Data, Access) are flat rows with nothing to expand — plus the
+        # API-docs disclosure at the foot, which is a group in the DOM without
+        # being a section (it holds no /admin routes, so it is outside the
+        # inventory the coverage guard walks; see ADMIN_NAV_DOCS).
+        group_sections = [s for s in ADMIN_NAV_SECTIONS if s.get("items")]
+        assert len(groups) == len(group_sections) + 1, groups
+        assert "docs" in dict(groups), groups
         by_key = dict(groups)
-        assert by_key["people"] == "true"
-        for section in ADMIN_NAV_SECTIONS:
-            if section["key"] == "people":
-                continue
-            assert by_key[section["key"]] == "false", section["key"]
+        # /admin/users is a DESTINATION's page, so no group is expanded at all —
+        # and the docs disclosure is never expanded server-side on any page.
+        for key in [s["key"] for s in group_sections] + ["docs"]:
+            assert by_key[key] == "false", key
+
+        # A page inside a group does expand that one, and only it.
+        resp2 = c.get("/admin/mcp-sources", headers={"Authorization": f"Bearer {token}"})
+        groups2 = dict(
+            re.findall(
+                r'data-admin-nav-group="([\w-]+)">\s*'
+                r'<button type="button" class="admin-nav__group-hd" data-admin-nav-toggle\s*'
+                r'aria-expanded="(true|false)"',
+                resp2.text,
+            )
+        )
+        assert groups2["instance"] == "true"
+        for key in [s["key"] for s in group_sections] + ["docs"]:
+            if key != "instance":
+                assert groups2[key] == "false", key
 
         # The active section's body has no `hidden`; the rest do.
         bodies = re.findall(
@@ -320,11 +470,9 @@ class TestAdminNavActiveSection:
             text,
         )
         by_body_key = dict(bodies)
-        assert by_body_key["people"] == "", "the active section's body must not be hidden"
-        for section in ADMIN_NAV_SECTIONS:
-            if section["key"] == "people":
-                continue
-            assert by_body_key[section["key"]] == " hidden", section["key"]
+        # Same story for the bodies: no group is open on a destination's page.
+        for key in [s["key"] for s in group_sections] + ["docs"]:
+            assert by_body_key[key] == " hidden", key
 
 
 class TestAdminNavDoesNotCollapse:
@@ -392,8 +540,12 @@ class TestAdminNavHomeRow:
         assert nav.index("admin-nav__link--home") < nav.index("admin-nav__group-body")
         # And it is not a member of the seven sections.
         assert all(
-            ADMIN_NAV_HOME["href"] != item["href"] for section in ADMIN_NAV_SECTIONS for item in section["items"]
+            ADMIN_NAV_HOME["href"] != entry["href"]
+            for section in ADMIN_NAV_SECTIONS
+            for entry in _section_entries(section)
         )
+        # ...nor is it a destination row.
+        assert all(ADMIN_NAV_HOME["href"] != s.get("href") for s in ADMIN_NAV_SECTIONS)
 
     def test_title_is_a_label_not_a_link(self, seeded_app) -> None:
         c = seeded_app["client"]
@@ -417,6 +569,78 @@ class TestAdminNavHomeRow:
         assert resp.status_code == 200, resp.text
         actives = re.findall(r'class="admin-nav__link[^"]*is-active"[^>]*>([^<]+)<', resp.text)
         assert actives == [ADMIN_NAV_HOME["label"]], actives
+
+
+class TestAdminNavHeadPerChrome:
+    """The head is the ONE part of this column that differs by chrome.
+
+    Under `rail` the column is the primary navigation of the page (the rail
+    beside it is a 56px glyph strip), so the head is a page-level heading that
+    also answers "which instance am I about to change" — a question that was
+    previously only answerable from the fixed grey build stamp in the corner.
+    "← Back to the app" goes with it: the collapsed strip is a complete set of
+    destinations now (New chat · Chats · Library · Agents, each with an icon),
+    so the row duplicated the wordmark and three of its neighbours.
+
+    Under `topnav` — still the DEFAULT layout — nothing changes: the quiet
+    uppercase label and the back row both stay, because existing instances must
+    see zero difference without opting in (the rule
+    tests/test_ui_layout_theme.py exists to enforce)."""
+
+    def _get(self, seeded_app, path="/admin/users"):
+        return seeded_app["client"].get(path, headers={"Authorization": f"Bearer {seeded_app['admin_token']}"})
+
+    def test_rail_head_names_the_instance_and_drops_the_back_row(self, seeded_app, monkeypatch) -> None:
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        resp = self._get(seeded_app)
+        assert resp.status_code == 200, resp.text
+        nav = resp.text.split('<aside class="admin-nav"', 1)[1].split("</aside>", 1)[0]
+        assert "admin-nav__head--mode" in nav
+        assert '<span class="admin-nav__title">Admin</span>' in nav
+        assert 'class="admin-nav__instance"' in nav
+        # The way out is the rail's own destinations, not a row in here.
+        assert "admin-nav__link--back" not in nav
+        assert "Back to the app" not in nav
+
+    def test_topnav_head_is_unchanged(self, seeded_app) -> None:
+        # No AGNES_UI_LAYOUT — the default chrome.
+        resp = self._get(seeded_app)
+        assert resp.status_code == 200, resp.text
+        nav = resp.text.split('<aside class="admin-nav"', 1)[1].split("</aside>", 1)[0]
+        assert '<span class="admin-nav__title">Admin</span>' in nav
+        assert "admin-nav__head--mode" not in nav
+        assert "admin-nav__instance" not in nav
+        assert 'class="admin-nav__link admin-nav__link--back"' in nav
+        assert "Back to the app" in nav
+
+    def test_no_mode_switch_in_either_chrome(self, seeded_app, monkeypatch) -> None:
+        """The head briefly carried an `Admin ⇄ {brand}` two-segment switch, on
+        the theory that the pressed segment answers "which of the two products am
+        I in". The column already answers that three times over — the heading says
+        Admin, the chip says which deployment, and the rail's Admin row is lit —
+        and the way back to the app is four things away in the strip beside it
+        (wordmark, New chat, Chats, Library). It cost the head a third stacked
+        block above the first destination, so it is gone; a one-line sub stating
+        the consequence took its place.
+
+        Pinned because a control whose halves are all already stated elsewhere is
+        exactly the kind of thing that gets re-added as "helpful"."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        rail_nav = self._get(seeded_app).text.split('<aside class="admin-nav"', 1)[1].split("</aside>", 1)[0]
+        assert "admin-nav__mode" not in rail_nav
+        assert 'class="admin-nav__sub"' in rail_nav
+        css = Path("app/web/static/css/admin-nav.css").read_text(encoding="utf-8")
+        assert ".admin-nav__mode-seg" not in css, "dead mode-switch rules left behind"
+
+    def test_the_heading_treatment_is_scoped_to_the_rail_chrome(self, seeded_app) -> None:
+        """The bigger title and the chip both hang off `--mode`, so the default
+        chrome's uppercase label rule is the one that still applies there."""
+        css = Path("app/web/static/css/admin-nav.css").read_text(encoding="utf-8")
+        assert ".admin-nav__head--mode .admin-nav__title {" in css
+        assert ".admin-nav__instance {" in css
+        # The base rule keeps the uppercase treatment for topnav.
+        base = css.split(".admin-nav__title {", 1)[1].split("}", 1)[0]
+        assert "text-transform: uppercase" in base
 
 
 class TestAdminNavGating:
@@ -565,11 +789,16 @@ class TestRailCollapsePreference:
         for anchor in ('class="rail-orb"', 'id="new-chat"', 'href="/library"', 'id="userMenuTrigger"'):
             assert anchor in text, f"collapsed rail is missing {anchor}"
 
-    def test_conversation_region_renders_on_admin_pages_and_is_css_gated(self, seeded_app, monkeypatch) -> None:
-        """The region is RENDERED on an admin page and hidden by CSS while the
-        rail is collapsed, so hover-peeking it (or persisting expanded) gives
-        you the standard rail — conversations included, identical to any
-        other rail page.
+    def test_admin_pages_carry_the_chats_destination_not_the_conversation_region(self, seeded_app, monkeypatch) -> None:
+        """The region is NOT rendered on an admin page — its rows are text and
+        have no icon form, so the collapsed rail (the /admin default) cannot show
+        them, and both previous answers to that were worse: omitting it left the
+        hover-expanded rail with no conversations in it, rendering it left the way
+        to /chats inside a block CSS had hidden.
+
+        What an admin gets instead is the Chats DESTINATION row, which has a glyph
+        and therefore survives the collapse. Contract owner:
+        tests/test_ui_layout_theme.py::TestRailChatsDestination.
 
         Chat is explicitly enabled+granted (`_enable_chat`) so this is a real
         assertion and not a vacuous pass from `can_chat` being False anyway."""
@@ -577,39 +806,48 @@ class TestRailCollapsePreference:
         self._enable_chat(seeded_app)
         c = seeded_app["client"]
         admin_text = c.get("/admin/users", headers=self._auth(seeded_app["admin_token"])).text
-        assert 'id="rail-history"' in admin_text
-        # The rows are the standard rail's rows, so they get the standard
-        # rail's per-row menu (Pin/Rename/Delete) rather than a degraded copy.
-        assert "js/components/chat_row_menu.js" in admin_text
+        assert 'id="rail-history"' not in admin_text
+        assert 'id="nav-chats"' in admin_text, "an admin must still be able to reach their conversations"
 
-        # Same caller, same grant, a non-admin rail page: identical.
+        # Same caller, same grant, a non-admin rail page: the lists are there, and
+        # so are the standard rail's per-row menus (Pin/Rename/Delete).
         stack_text = c.get("/stack", headers=self._auth(seeded_app["admin_token"])).text
         assert 'id="rail-history"' in stack_text
+        assert 'id="nav-chats"' in stack_text
+        assert "js/components/chat_row_menu.js" in stack_text
 
-    def test_onboarding_row_stays_when_collapsed_same_anatomy_as_other_rows(self, seeded_app, monkeypatch) -> None:
-        """Unlike the conversation region, the onboarding row is NOT removed
-        when collapsed — hiding then materializing it on peek would shift the
-        profile row exactly as the conversation region would. It doesn't
-        need special-casing to avoid that any more, though: its icon IS the
-        progress ring (a fixed size in both states, same as any other row's
-        icon), so only its label — same mechanism as every other row's —
-        appears/disappears, never the row itself."""
+    def test_the_onboarding_row_is_not_on_admin_pages(self, seeded_app, monkeypatch) -> None:
+        """It measures the ANALYST's journey, and it is the only element in the
+        rail with a coloured progress arc — so on an admin page it pulled the eye
+        hardest of anything on screen while measuring something that has nothing to
+        do with the work. Its anatomy is unchanged where it does render (a `.rail-i`
+        whose icon is a progress ring, fixed size in both collapse states, so the
+        row's height never differs); this is a scoping change, not a redesign."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         self._enable_chat(seeded_app)
         c = seeded_app["client"]
         text = c.get("/admin/users", headers=self._auth(seeded_app["admin_token"])).text
-        assert 'id="railGetStarted"' in text
-        assert 'id="rail-getstarted-toggle"' in text
-        assert 'id="rail-getstarted-ring-fill"' in text
-        assert 'id="rail-getstarted-title"' in text
-        assert 'id="rail-getstarted-count"' in text
-        # Retired anatomy stays retired here too — no bar, no chevron.
-        assert "rail-getstarted-bar" not in text
-        assert "rail-getstarted-chev" not in text
-        # The JS that writes its progress (title/count/ring) is loaded on an
-        # admin page, same as everywhere else.
+        assert "rail-getstarted" not in text
+        assert 'id="railGetStarted"' not in text
+        # The module that writes its progress goes with it — nothing to write to.
+        assert "js/chat_onboarding.js" not in text
+        # rail_history.js stays: it also wires the ≤1024px nav collapse toggle,
+        # which an admin page needs as much as any other.
         assert "js/rail_history.js" in text
-        assert "js/chat_onboarding.js" in text
+
+        # Intact on an app page, ring and all.
+        app_text = c.get("/stack", headers=self._auth(seeded_app["admin_token"])).text
+        for anchor in (
+            'id="railGetStarted"',
+            'id="rail-getstarted-toggle"',
+            'id="rail-getstarted-ring-fill"',
+            'id="rail-getstarted-title"',
+            'id="rail-getstarted-count"',
+        ):
+            assert anchor in app_text, anchor
+        # Retired anatomy stays retired — no bar, no chevron.
+        assert "rail-getstarted-bar" not in app_text
+        assert "rail-getstarted-chev" not in app_text
 
     def test_non_admin_rail_page_keeps_the_full_rail_and_a_plain_admin_link(self, seeded_app, monkeypatch) -> None:
         """A rail page outside /admin/* keeps the full-width rail and the
@@ -707,6 +945,30 @@ class TestRailCollapseCss:
         assert peek, "no rule peeks the collapsed rail open"
         assert "width: 240px" in peek.group(1)
         assert "ease) .12s" in peek.group(1)
+
+    def test_the_peek_outranks_the_bottom_docked_bars(self) -> None:
+        """A peeked rail floats 184px over the page without the page's
+        clearance changing — so it lands under `.fbar-dock` / `.ch-bulk`
+        (fixed, z-index 55, correctly above the rail's own 40 in the settled
+        states where the two never share a pixel). The toolbar card and its
+        frosted veil painted over the rail's rows. Raised for the peek only,
+        and it must outlast the collapse: dropping the z-index on mouse-leave
+        while the width is still animating replays the overlap for 160ms."""
+        block = self._desktop_block()
+        peek = re.search(
+            r'html\[data-ui-layout="rail"\] \.rail\.rail-icon-mode[^ ]*:is\(:hover, :focus-within\) \{([^}]*)\}',
+            block,
+        )
+        assert peek
+        z = re.search(r"z-index:\s*(\d+)", peek.group(1))
+        assert z, "the peek must raise the rail's stacking order"
+        dock = re.search(r"z-index:\s*(\d+)", FILTER_TOOLBAR_CSS.split(".fbar-dock {", 1)[1])
+        assert dock, "the dock lost its z-index — this guard has nothing to compare against"
+        assert int(z.group(1)) > int(dock.group(1)), f"peek z-index {z.group(1)} must beat the dock's {dock.group(1)}"
+        collapsed = block.split('html[data-ui-layout="rail"] .rail.rail-icon-mode {', 1)[1].split("}", 1)[0]
+        assert "z-index 0s linear var(--ds-motion-fast" in collapsed, (
+            "the collapsed state must delay the z-index step-down until the width has finished"
+        )
 
     def test_both_widths_animate_and_the_page_moves_with_them(self) -> None:
         """The toggle animates in BOTH directions, and the page's clearance
@@ -865,7 +1127,11 @@ class TestRailCollapseCss:
         static), which teleported it from the middle of the 56px strip to the
         right end of a column that had not widened yet. Icons now travel by
         padding and the toggle rides a `right` anchor."""
-        block = self._desktop_block()
+        # Comments stripped first, same as the sibling guard above: these rules
+        # explain themselves by naming the properties they must NOT set (the
+        # peek's z-index note quotes the toolbar's `position: fixed`), and
+        # matching prose is not matching CSS.
+        block = re.sub(r"/\*.*?\*/", "", self._desktop_block(), flags=re.S)
         peek_rules = re.findall(r":is\(:hover, :focus-within\)[^{]*\{([^}]*)\}", block)
         assert peek_rules
         for body in peek_rules:
@@ -882,10 +1148,14 @@ class TestRailCollapseCss:
         assert "width: 28px" in ring
         assert "height: 28px" in ring
 
-    def test_completed_onboarding_is_not_retired_from_the_rail(self) -> None:
-        """`.is-complete` never sets `display: none` — the row stays on every
-        rail page at 5/5 too, where the arc simply reads a full lap."""
-        assert ".rail-getstarted.is-complete {" not in RAIL_CSS
+    def test_completed_onboarding_retires_from_the_rail(self) -> None:
+        """`.is-complete` hides the row: at 5/5 there is nothing left to
+        continue, and "Skip onboarding" (which lands all five steps) tells the
+        caller in its toast that the card is gone. Restarting clears the steps,
+        drops the class, and the row is back."""
+        assert ".rail-getstarted.is-complete {" in RAIL_CSS
+        block = RAIL_CSS.split(".rail-getstarted.is-complete {", 1)[1].split("}", 1)[0]
+        assert "display: none" in block
 
     def test_the_ring_is_a_bare_progress_meter(self) -> None:
         """Track + arc and NOTHING inside.
@@ -967,3 +1237,68 @@ class TestRailCollapseCss:
         recording why it was retired (history, not a live rule)."""
         for selector in (".rail-icon-toggle {", ".rail-icon-toggle:", ".rail-icon-toggle "):
             assert selector not in RAIL_CSS, selector
+
+
+class TestDataLensFlowStrip:
+    """The Data section's strip is a PIPELINE, not a set of categories.
+
+    Sources, Tables and Packages are one flow seen from three places — where
+    data comes in, what there is, who receives it. Drawn as a flat row of tabs
+    they read as peers, and "why is Sources next to Packages?" is a fair
+    question with no answer. The strip carries each stage's purpose and runs
+    arrows between the chained members.
+
+    Semantic is deliberately NOT chained: `metric_definitions` is ONE
+    instance-wide registry several Keboola projects write into, so it sits
+    ACROSS the pipeline rather than after Packages in it.
+    """
+
+    def _data_tabs(self) -> list[dict]:
+        from app.web.admin_nav import resolve_section_tabs
+
+        return resolve_section_tabs("/admin/tables")
+
+    def test_the_three_pipeline_stages_are_chained(self) -> None:
+        tabs = self._data_tabs()
+        chained = [t for t in tabs if t["chain"]]
+        assert [t["label"] for t in chained] == ["Sources", "Tables", "Data packages"]
+
+    def test_semantic_layer_is_named_in_full_and_not_in_the_chain(self) -> None:
+        """"Semantic" is an adjective with no noun, and "Packages" collides
+        with the marketplace's plugin packages — both shipped with a caption
+        under them explaining what they meant, which is the tell that the name
+        was doing too little. The names carry it now; there are no captions."""
+        tabs = self._data_tabs()
+        semantic = next(t for t in tabs if t["label"] == "Semantic layer")
+        assert semantic["chain"] is False
+
+    def test_no_tab_carries_a_purpose_caption(self) -> None:
+        """A label that needs a gloss should be relabelled, not annotated."""
+        for tab in self._data_tabs():
+            assert "purpose" not in tab, tab["label"]
+
+    def test_every_other_section_keeps_the_plain_strip(self) -> None:
+        """`chain` is what switches `_admin_tabs.html` to the flow variant,
+        so a stray chain elsewhere would silently redraw that section."""
+        from app.web.admin_nav import resolve_section_tabs
+
+        for path in ("/admin/users", "/admin/access"):
+            for tab in resolve_section_tabs(path):
+                assert not tab["chain"], (path, tab["label"])
+
+    def test_data_pages_render_the_flow_and_others_render_ds_tabs(self, seeded_app) -> None:
+        c = seeded_app["client"]
+        headers = {"Authorization": f"Bearer {seeded_app['admin_token']}"}
+
+        data_html = c.get("/admin/tables", headers=headers).text
+        assert 'class="tab-flow"' in data_html
+        assert "tab-flow__arrow" in data_html
+        # The break sits between Packages and Semantic — exactly one.
+        assert data_html.count("tab-flow__break") == 1
+        assert "Data packages" in data_html
+        # No captions under the names.
+        assert "tab-flow__purpose" not in data_html
+
+        people_html = c.get("/admin/users", headers=headers).text
+        assert 'class="tab-strip"' in people_html
+        assert "tab-flow__item" not in people_html

@@ -2,45 +2,27 @@
 {% import "macros/_icon.html" as ico %}
 {% block title %}Semantic layer — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% set page_hero_eyebrow = "Sources" %}
-{% set page_hero_title = "Semantic layer" %}
-{% set page_hero_subtitle = "Per-project sync status for Keboola's semantic layer (business metrics + glossary terms). Connect projects at <a href=\"/admin/data-sources\">Data sources</a>." %}
+{# Section-level and PLAIN, matching /admin/data-sources: the h1 names the
+   section, the tab strip below names the lens (Sources · Tables · Packages ·
+   Semantic). See `.page-header--plain` in style-custom.css. #}
+{% set page_hero_title = "Data" %}
+{% set page_hero_subtitle = "Per-project sync status for Keboola's semantic layer (business metrics + glossary terms). Connect projects at <a href=\"/admin/data-sources\">Sources</a>." %}
+{% set page_hero_plain = True %}
 
 {% block head_extra %}
 <style>
   .sl-page { font-family: var(--font-primary, 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif); }
 
-  .sl-status {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    flex-wrap: wrap;
-    background: var(--ds-accent-success-bg);
-    border: 1px solid var(--ds-accent-success-line);
-    border-radius: 10px;
-    padding: 12px 16px;
-    margin-bottom: 20px;
-    font-size: 13px;
-    color: var(--ds-accent-success-ink);
-  }
-  .sl-status.sl-status--pending {
-    background: var(--ds-surface-dim);
-    border-color: var(--ds-border);
-    color: var(--ds-text-secondary);
-  }
-  .sl-status.sl-status--error {
-    background: var(--ds-accent-danger-bg);
-    border-color: var(--ds-accent-danger-line);
-    color: var(--ds-accent-danger-ink);
-  }
-  .sl-status a { color: inherit; font-weight: 600; text-decoration: underline; }
+  /* The status line, the section heads and their one-sentence descriptions
+     are the shared admin page vocabulary now (`.apg-strip`, `.apg-sechead`,
+     `.apg-sec-desc` in css/admin_page.css) — this page carried a third copy
+     of the same three objects, at its own sizes. */
 
-  .sl-section-title {
-    font-size: 15px; font-weight: 600; color: var(--ds-text-primary);
-    margin: 20px 0 10px;
-  }
-  .sl-section-desc { font-size: 12px; color: var(--ds-text-secondary); margin: -6px 0 12px; }
+  /* A second section stands off the first by air (the shared `.apg-sec`
+     rhythm), not by a heavier heading. */
+  .sl-page .apg-sechead { margin-top: 24px; }
+  .sl-page > .apg-strip + .apg-sechead,
+  .sl-page > template + .apg-sechead { margin-top: 0; }
 
   .sl-empty {
     text-align: center; padding: 28px 20px;
@@ -96,6 +78,10 @@
   .sl-orphan-note {
     font-size: 12px; color: var(--ds-text-secondary); margin-bottom: 10px;
   }
+  /* The tokenless-connection list inside the shared strip. The strip owns the
+     box, the type scale and the ink; all this adds is the list's own rhythm,
+     which a strip has no opinion about because no other strip carries one. */
+  .sl-orphans .sl-empty-list { margin: 4px 0 0; line-height: 1.6; }
 
   /* Toast */
   .sl-toast {
@@ -115,14 +101,16 @@
 </style>
 {% endblock %}
 
-{% block toolbar %}
-<button type="button" class="btn btn-primary" id="sl-refresh-btn">Sync now</button>
-{% endblock %}
+{# No toolbar block: it renders between the head and the tab strip, where a
+   lone button floats with no row to belong to. "Sync now" is an action on the
+   Sources section, so it sits on that section's head — the same place
+   /admin/data-sources puts "+ Add Keboola project". #}
 
 {% block page %}
+{% include "_admin_tabs.html" %}
 <div class="sl-page">
   {% set rs = semantic_refresh_summary or {} %}
-  <div class="sl-status {{ 'sl-status--error' if rs.last_status == 'error' else ('sl-status--pending' if not rs.last_status else '') }}">
+  <div class="apg-strip {{ 'apg-strip--danger' if rs.last_status == 'error' }}">
     <span>
       <strong>Semantic layer:</strong>
       {% if rs.last_status == 'ok' %}
@@ -133,7 +121,7 @@
         Never synced yet.
       {% endif %}
     </span>
-    <span><a href="/catalog/semantics">Browse it →</a></span>
+    <span class="apg-strip__end"><a href="/catalog/semantics">Browse it →</a></span>
   </div>
 
   {# The warning rows are built in JS, but their icon is not: it is rendered
@@ -141,7 +129,13 @@
      client-side. #}
   <template id="sl-warn-icon">{{ ico.icon('warning', 16) }}</template>
 
-  <div class="sl-section-title">Sources</div>
+  <div class="apg-sechead">
+    <h2 class="apg-sechead__title">Sources</h2>
+    <span class="apg-sechead__count">{{ sources|length }} project{{ '' if sources|length == 1 else 's' }}</span>
+    <span class="apg-sechead__end">
+      <button type="button" class="btn btn-primary" id="sl-refresh-btn">Sync now</button>
+    </span>
+  </div>
   {% if not sources %}
   <div class="sl-empty">
     {% if connections_without_master %}
@@ -165,7 +159,7 @@
     {% endif %}
   </div>
   {% else %}
-  <div class="sl-section-desc">One row per Keboola project with a master token. Legacy rows with no recorded project (synced before per-project tracking) fold into the default project's counts.</div>
+  <p class="apg-sec-desc">One row per Keboola project with a master token. Legacy rows with no recorded project (synced before per-project tracking) fold into the default project's counts.</p>
   <table class="ds-table">
     <thead>
       <tr>
@@ -220,15 +214,26 @@
      such a connection is not a Sources row and is not orphaned either (unless
      it happens to own previously-imported rows), so it appeared nowhere at
      all — the same silent state one level up. Devin Review on #1242. #}
+  {# The shared strip, not a bare paragraph: this is a standing fact about the
+     surface with one action that fixes it, which is exactly what `.apg-strip`
+     is for on every other Data lens. `--block` because it wraps to several
+     lines, so the glyph aligns to the top rather than centring against a
+     paragraph, and the fix rides `.apg-strip__end` where the reader already
+     looks for it. Neutral, not tinted: a project with no master token is a
+     configuration state, not a fault. #}
   {% if connections_without_master %}
-  <div class="sl-orphan-note">
-    Also connected, but not syncing:
-    <ul class="sl-empty-list">
-      {% for c in connections_without_master %}
-      <li><strong>{{ c.name }}</strong> — {{ c.reason }}</li>
-      {% endfor %}
-    </ul>
-    Fix these at <a href="/admin/data-sources">Data sources</a>.
+  {# No `.apg-strip__mark`: the glyph is the strip's alarm affordance, and this
+     strip is neutral — the same shape the status strip above it takes. #}
+  <div class="apg-strip apg-strip--block sl-orphans">
+    <span>
+      <strong>Also connected, but not syncing</strong>
+      <ul class="sl-empty-list">
+        {% for c in connections_without_master %}
+        <li><b>{{ c.name }}</b> — {{ c.reason }}</li>
+        {% endfor %}
+      </ul>
+    </span>
+    <span class="apg-strip__end"><a href="/admin/data-sources">Fix at Data sources →</a></span>
   </div>
   {% endif %}
   {% endif %}
@@ -238,7 +243,7 @@
      human: a run reporting "9 glossary terms, 0 metrics" looked like a broken
      import when it was 50 metrics dropped on 12 unregistered tables. Say the
      number, name the tables, and give the one action that fixes it. #}
-  <div class="sl-section-title">Skipped metrics</div>
+  <div class="apg-sechead"><h2 class="apg-sechead__title">Skipped metrics</h2></div>
   <div class="sl-orphan-note">
     {{ skipped_unresolved_total }} metric definition{{ 's' if skipped_unresolved_total != 1 else '' }}
     from the last sync {{ 'were' if skipped_unresolved_total != 1 else 'was' }} skipped: the Keboola
@@ -259,7 +264,7 @@
   {% endif %}
 
   {% if orphaned %}
-  <div class="sl-section-title">Orphaned rows</div>
+  <div class="apg-sechead"><h2 class="apg-sechead__title">Orphaned rows</h2></div>
   <div class="sl-orphan-note">
     These rows carry a project reference that no longer matches any connected Keboola project
     (the connection was deleted or its master token removed). They are left in place — never

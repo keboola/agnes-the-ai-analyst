@@ -99,16 +99,28 @@ class TestDefaultChromeUnchanged:
         assert 'data-ui-layout="topnav"' in resp.text
         assert 'data-theme="blue"' in resp.text
 
-    def test_default_footer_is_config_copyright_not_keboola(self, web_client, admin_cookie, monkeypatch):
-        """Default (blue/topnav) instances keep the config-driven copyright
-        footer; the Keboola-branded credit ships only under the opt-in
-        redesign (paper/rail). Regression guard for the #896 footer leak."""
+    def test_default_footer_is_config_driven_not_keboola(self, web_client, admin_cookie, monkeypatch):
+        """Default (blue/topnav) instances render the shared config-driven
+        footer and no vendor credit. Regression guard for the #896 footer leak.
+
+        The assertion used to be `"AI Harness" in resp.text`, which passed for
+        the wrong reason: that string is the *fallback* the footer printed
+        because INSTANCE_COPYRIGHT was hardcoded empty in the context builder,
+        and it also appears in every <title>. Pin the structure instead."""
+        import app.instance_config as ic
+
         monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
         monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_COPYRIGHT", raising=False)
+        # The "no credit" half needs the YAML layer isolated too, or this fails
+        # only for developers whose own config/instance.yaml sets one.
+        monkeypatch.setattr(ic, "_instance_config", {})
         resp = web_client.get("/dashboard", cookies=admin_cookie)
         assert resp.status_code == 200
-        assert "AI Harness" in resp.text
+        assert 'class="site-footer' in resp.text
         assert "<b>Keboola</b>" not in resp.text
+        # No credit configured → no attribution line invented.
+        assert "Deployed by" not in resp.text
 
     def test_default_favicon_is_svg_not_orb(self, web_client, admin_cookie, monkeypatch):
         """Default instances keep the original SVG favicon; the orb PNG is
@@ -610,13 +622,14 @@ class TestRailOptIn:
 
     def test_paper_footer_is_config_driven_and_keeps_the_orb(self, web_client, admin_cookie, monkeypatch):
         """The redesign carries no vendor branding: the paper footer renders the
-        same config-driven copyright as every other chrome (an instance puts its
+        same config-driven credit as every other chrome (an instance puts its
         own name there via INSTANCE_COPYRIGHT), while the orb favicon — a
         neutral product mark — stays redesign-only."""
         monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
+        monkeypatch.setenv("AGNES_INSTANCE_COPYRIGHT", "Acme Corp")
         resp = web_client.get("/dashboard", cookies=admin_cookie)
         assert resp.status_code == 200
-        assert "AI Harness" in resp.text
+        assert "Deployed by Acme Corp" in resp.text
         assert "<b>Keboola</b>" not in resp.text
         assert "img/agnes-orb.png" in resp.text
 
@@ -664,12 +677,14 @@ class TestRailChatHistory:
         assert 'class="rail-i rail-history-summary"' not in text
         assert "rail-history-summary-txt" not in text
         assert "rail-history-caret" not in text
-        # The recent feed is capped and closes on a LINK to the Chats page — not
-        # on an in-place expander, which is what the retired "Show more" was
-        # (see test_recents_are_capped_by_a_link_not_by_an_expander).
+        # The recent feed is capped, and the way to the rest of it is the Chats
+        # DESTINATION row above the lists — not an in-place expander (the retired
+        # "Show more"), and no longer a link at the foot of the region either
+        # (see TestRailChatsDestination for why that link had to go).
         assert "rail-history-more" not in text
         assert "Show less" not in text
-        assert 'id="rail-view-all-chats"' in text
+        assert 'id="rail-view-all-chats"' not in text
+        assert 'id="nav-chats"' in text
         assert 'href="/chats"' in text
         # The loader that fills the list off /chat is wired in.
         assert "js/rail_history.js" in text
@@ -734,7 +749,7 @@ class TestRailChatHistory:
     def test_onboarding_row_styling_contract(self, web_client, admin_cookie, monkeypatch):
         """Same `.rail-i` treatment as every other row (hover wash, no
         standing tint) — the progress ring carries the DS's brand accent for
-        its filled arc, and the row no longer disappears at 5/5."""
+        its filled arc, and the row retires itself at 5/5."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         css = web_client.get("/static/css/rail.css").text
         # No card chrome left on the button — it relies on `.rail-i` (added
@@ -746,11 +761,9 @@ class TestRailChatHistory:
         assert "stroke: var(--ds-primary)" in fill
         track = css.split('html[data-ui-layout="rail"] .rail-getstarted-ring-track {', 1)[1].split("}", 1)[0]
         assert "stroke: var(--ds-border)" in track
-        # The row must NOT retire itself at 5/5 any more.
-        assert (
-            ".rail-getstarted.is-complete {" not in css
-            or "display: none" not in css.split(".rail-getstarted.is-complete {", 1)[1].split("}", 1)[0]
-        )
+        # ...and it retires itself at 5/5 — nothing left to continue.
+        assert ".rail-getstarted.is-complete {" in css
+        assert "display: none" in css.split(".rail-getstarted.is-complete {", 1)[1].split("}", 1)[0]
 
     def test_onboarding_row_title_and_progress_are_js_driven(self, web_client, admin_cookie, monkeypatch):
         """ "Set up Agnes" until the first step lands, "Continue setup" after —
@@ -988,6 +1001,7 @@ class TestRailTwoZones:
         sequence = [
             'class="rail-nav rail-nav-top"',  # zone 1
             'id="new-chat"',
+            'id="nav-chats"',  # …the destination the lists belong to,
             'class="rail-history"',  # the conversations region…
             'id="rail-pinned"',  # …Pinned first,
             'id="chat-list"',  # …then Chats
@@ -1147,7 +1161,7 @@ class TestRailTwoZones:
             body = css.split(selector, 1)[1].split("}", 1)[0]
             assert "min-height: var(--rail-row-h)" in body, selector
 
-    def test_recents_are_capped_by_a_link_not_by_an_expander(self, web_client, admin_cookie, monkeypatch):
+    def test_recents_are_capped_by_a_destination_not_by_an_expander(self, web_client, admin_cookie, monkeypatch):
         """The region still fills the free space between the two zones and scrolls
         inside its own box, in ONE state — so the bottom zone never moves.
 
@@ -1155,8 +1169,13 @@ class TestRailTwoZones:
         was removed had nowhere to go (five rows on a screen with room for nine,
         plus a "Show more" whose only job was to undo a limit we imposed
         ourselves); this one hands the long tail to a page built for it. So the
-        contract is: a cap, and a LINK — never a second state of this list. The
-        two-state machinery stays retired in CSS and in JS."""
+        contract is: a cap, and a DESTINATION — never a second state of this
+        list. The two-state machinery stays retired in CSS and in JS.
+
+        The destination used to be `.rail-history-all`, a link at the foot of the
+        region. It is the Chats row above the lists now, and the old rules must
+        not come back: a way to a page cannot live inside the one part of the rail
+        that collapse hides."""
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
         css = web_client.get("/static/css/rail.css").text
         body = css.split('html[data-ui-layout="rail"] .rail-history-body {', 1)[1].split("}", 1)[0]
@@ -1177,7 +1196,111 @@ class TestRailTwoZones:
         assert "applyTruncation()" not in js
         # The cap itself, and its destination.
         assert "slice(0, RAIL_RECENT_LIMIT)" in js
-        assert 'html[data-ui-layout="rail"] .rail-history-all {' in css
+        # The foot-of-the-list link is gone from BOTH sheets and the renderer —
+        # the Chats row (a `.rail-i`) is the destination now.
+        assert 'html[data-ui-layout="rail"] .rail-history-all {' not in css
+        assert "rail-view-all-chats" not in js
+
+
+class TestRailChatsDestination:
+    """Chats is a DESTINATION ROW in the rail, and every rail row has an icon.
+
+    These two facts are one contract. The rail collapses to a 56px glyph strip —
+    by default on /admin — so a row with no icon is a row that DISAPPEARS when it
+    collapses. That is exactly how the way to /chats went missing: the whole
+    conversation region is text (two section labels plus titles), its only door
+    out was a "View all chats" link inside it, and that link was itself hidden
+    until the caller had a conversation. On an admin page the product therefore
+    had NO path to the chat list, and on a first run it had none anywhere.
+
+    So: /chats is a `.rail-i` with a glyph, in the nav zone beside New chat; the
+    conversation lists are content underneath it; and the icon rule is asserted
+    directly, because the next text-only row would reintroduce the same bug in a
+    different place."""
+
+    def _enable_chat(self, web_client, monkeypatch) -> None:
+        """Same recipe as TestRailHistory's — chat enabled AND an explicit grant
+        (admin god-mode does not short-circuit has_explicit_grant)."""
+        import app.auth.access as access
+
+        monkeypatch.setattr(access, "has_explicit_grant", lambda *a, **k: True)
+        web_client.app.state.chat_config = SimpleNamespace(enabled=True)
+
+    def _rail(self, web_client, admin_cookie, path: str = "/library") -> str:
+        text = web_client.get(path, cookies=admin_cookie).text
+        # NOT `class="rail"` — on an admin page the element carries the
+        # server-rendered collapsed default too (`class="rail rail-icon-mode"`).
+        return text.split('<nav class="rail', 1)[1].split("</nav>", 1)[0]
+
+    def test_every_rail_row_carries_an_icon(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        self._enable_chat(web_client, monkeypatch)
+        rail = self._rail(web_client, admin_cookie)
+        # Whole elements, so an icon is only credited to the row it is inside.
+        # `.rail-i` is applied to both <a> (destinations) and <button> (the
+        # onboarding row), and the class list may carry a modifier after it.
+        rows = re.findall(
+            r'<(a|button)\b[^>]*class="rail-i[^"]*"[^>]*>(.*?)</\1>',
+            rail,
+            re.DOTALL,
+        )
+        assert rows, "no rail rows found — the slice above must be wrong"
+        for _tag, inner in rows:
+            label = " ".join(re.sub(r"<[^>]+>", " ", inner).split())
+            assert "<svg" in inner, f"rail row {label!r} has no icon — it would vanish when collapsed"
+
+    def test_chats_is_a_destination_row_in_the_nav_zone(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        self._enable_chat(web_client, monkeypatch)
+        rail = self._rail(web_client, admin_cookie)
+        zone = rail[rail.index('class="rail-nav rail-nav-top"') : rail.index('class="rail-history"')]
+        assert 'id="nav-chats"' in zone
+        assert 'href="/chats"' in zone
+        assert ">Chats<" in zone
+        # Peer of New chat, Library and Agents — an ordinary row, no treatment of
+        # its own (the retired link was deliberately quieter; a destination is not).
+        row = zone[zone.index('id="nav-chats"') - 200 : zone.index('id="nav-chats"')]
+        assert "rail-i " in row or 'rail-i"' in row
+
+    def test_the_foot_of_the_list_link_is_gone_everywhere(self, web_client, admin_cookie, monkeypatch):
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        self._enable_chat(web_client, monkeypatch)
+        assert "rail-view-all-chats" not in self._rail(web_client, admin_cookie)
+        css = web_client.get("/static/css/rail.css").text
+        assert ".rail-history-all {" not in css
+        js = web_client.get("/static/js/rail_history.js").text
+        assert "rail-view-all-chats" not in js
+
+    def test_admin_pages_get_the_destination_but_not_the_lists(self, web_client, admin_cookie, monkeypatch):
+        """The one place the rail's item set differs by context, and it differs in
+        the safe direction: the Chats row (icon, survives collapse) is on every
+        page; the text-only lists are only where they can be seen.
+
+        Per PAGE, collapsed and expanded still hold the same set of destinations —
+        that is the invariant. Two pages differing is a full repaint, not a shift."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        self._enable_chat(web_client, monkeypatch)
+        rail = self._rail(web_client, admin_cookie, "/admin/users")
+        assert 'id="nav-chats"' in rail, "an admin must be able to reach their chats"
+        assert 'id="new-chat"' in rail
+        assert 'class="rail-history"' not in rail
+        assert 'id="rail-pinned"' not in rail
+
+    def test_the_onboarding_card_is_not_on_admin_pages(self, web_client, admin_cookie, monkeypatch):
+        """It measures the ANALYST's journey — connect your tools, ask your first
+        question — and it is the only element in the rail with a coloured progress
+        arc, so it pulls hardest of anything on screen while you are registering a
+        table. Nothing is lost: the checklist is still reachable from the account
+        menu and from the chat dashboard's own hero."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+        self._enable_chat(web_client, monkeypatch)
+        admin_rail = self._rail(web_client, admin_cookie, "/admin/users")
+        assert 'id="railGetStarted"' not in admin_rail
+        assert "rail-getstarted" not in admin_rail
+        # …and the module that writes into it is not loaded there either.
+        assert "js/chat_onboarding.js" not in web_client.get("/admin/users", cookies=admin_cookie).text
+        # Still there on an app page — this is a scoping change, not a removal.
+        assert 'id="railGetStarted"' in self._rail(web_client, admin_cookie)
 
 
 class TestRailAdminIsOnePlainLink:

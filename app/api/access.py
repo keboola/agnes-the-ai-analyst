@@ -182,6 +182,12 @@ async def access_overview(
                 "origin": _derive_origin(g),
                 "is_google_managed": _is_google_managed(g),
                 "mapped_email": _mapped_email(g),
+                # The workspace on /admin/access is the only group surface
+                # now, so the snapshot has to carry what the retired list
+                # table showed in its own column — including when the group
+                # came into being. Same `str()` projection as the single-group
+                # payload below, so both spell a timestamp the same way.
+                "created_at": str(g["created_at"]) if g.get("created_at") else None,
                 "member_count": members_repo.count_members(g["id"]),
                 "grant_count": grants_repo.count_for_group(g["id"]),
             }
@@ -193,6 +199,14 @@ async def access_overview(
             "group_id": r["group_id"],
             "resource_type": r["resource_type"],
             "resource_id": r["resource_id"],
+            # The tier belongs in the snapshot: the editor on /admin/access
+            # renders an Optional/Automatic pair per grant off this payload,
+            # and without the field every grant read back as Optional — a
+            # grant saved as Automatic (here, or through the group drawer,
+            # or by `agnes admin grant`) showed the wrong half lit until the
+            # page was reloaded from a different endpoint. Same default the
+            # single-grant response uses.
+            "requirement": r.get("requirement") or "available",
         }
         for r in grants_repo.list_all()
     ]
@@ -352,7 +366,11 @@ async def get_group(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Single-group payload for the /admin/groups/{id} detail page header."""
+    """Single-group payload for one group.
+
+    Fed the retired ``/admin/groups/{id}`` header; still the endpoint the
+    group drawer reads back after a create or rename.
+    """
     g = user_groups_repo().get(group_id)
     if not g:
         raise HTTPException(status_code=404, detail="Group not found")
@@ -406,7 +424,7 @@ async def update_group(
         # System groups: block renames (the canonical names "Admin" /
         # "Everyone" are referenced from app.auth.access and the
         # marketplace filter), but description edits are cosmetic and
-        # allowed (admins curate them in /admin/groups). The repo
+        # allowed (admins curate them in /admin/access). The repo
         # layer's narrowed guard (src/repositories/user_groups.py) is
         # the second line of defense.
         raise HTTPException(
@@ -616,7 +634,7 @@ class CreateGrantRequest(BaseModel):
     resource_id: str
     # v49 added the ``requirement`` enum on ``resource_grants``; the POST
     # endpoint must accept it so clients can create a grant at the
-    # ``required`` tier in one round-trip. Without this, /admin/groups
+    # ``required`` tier in one round-trip. Without this, /admin/access
     # + the inline RBAC matrices (Edit Data Package / Edit Memory Domain
     # / Edit Recipe) silently fell through to the column default
     # (``available``), and a re-open of the same modal showed the

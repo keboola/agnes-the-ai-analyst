@@ -1,0 +1,75 @@
+{# The per-section tab strip — tier two of the admin navigation.
+
+   The sidebar names PLACES (Overview · People · Data · Access · Library ·
+   Instance · Activity); this names the lenses INSIDE the place you are in
+   ("Sources · Tables · Packages · Semantic"). Sub-navigation visible only
+   where it applies, instead of ~28 rows in a column where finding Tables meant
+   knowing which of seven headings owns it.
+
+   Data comes from `app/web/admin_nav.py` — the SAME inventory the sidebar
+   reads, via `resolve_section_tabs(path)` (the Jinja global `admin_nav_tabs`),
+   which also resolves which tab is active. One source of truth, so a tab and a
+   sidebar row can never disagree about what exists, and the coverage guard in
+   `tests/test_web_admin_nav.py` sees both tiers.
+
+   EVERY TAB IS A REAL LINK, not a pane switch. Each lens keeps its own URL, so
+   deep links, bookmarks, the back button and the reverse guard behave exactly
+   as they did when these were sidebar rows — no page in the admin area mixes
+   the two models. A lens that must not lose state on a switch keeps it across
+   the navigation instead (Access's editor restores its selected group from
+   sessionStorage), which costs one small handler and buys a URL you can send
+   to someone.
+
+   The QUERY goes in as well as the path, for the one tab whose page it shares
+   with a sibling: `/admin/access?lens=simulate`. `resolve_section_tabs` needs
+   both to tell those two apart — see its docstring.
+
+   Renders NOTHING when the current section has no tabs — a legacy disclosure
+   group, a tabless destination, or an off-nav page (`ADMIN_NAV_OFFNAV`). A
+   one-tab strip is chrome that says nothing, so the empty case is silence
+   rather than a decorative single tab.
+
+   Include at the TOP of a page's own content block, under the hero and any
+   toolbar actions — that is where sub-navigation reads as belonging to the
+   page rather than to the window. Uses the shared `ds.tabs` component
+   (`.tab-strip`, the same strip /library and /chats use), never a local copy;
+   `ds` is auto-imported by base_ds.html, so no import is needed here. #}
+{% set _tabs = admin_nav_tabs(request.url.path, request.url.query) %}
+{% if _tabs %}
+{% set _flow = _tabs | selectattr('chain') | list %}
+<div class="admin-tabs">
+{% if _flow %}
+    {# ── FLOW variant — one section asks for it: Data ──────────────────
+       Sources → Tables → Data packages are not three categories, they are one
+       pipeline seen from three places, and a flat row of tabs says the
+       opposite. Arrows run between the `chain` members; anything without
+       `chain` (the semantic registry, which sits ACROSS the pipeline rather
+       than in it) renders past a divider with no arrow into it.
+
+       ONE LINE PER TAB. Each item briefly carried a caption under its name
+       ("where data comes in", "who receives it"), which doubled the strip's
+       height to gloss four words — and a label that needs a gloss should be
+       relabelled instead. The names now carry it; see admin_nav.py.
+
+       Still links, still one real URL each — deep links, bookmarks, the back
+       button and the nav coverage guard behave exactly as they do for
+       `ds.tabs`. Only the drawing changes. #}
+    <nav class="tab-flow" role="tablist" aria-label="Section">
+        {%- for item in _tabs %}
+        {%- if loop.index0 > 0 %}
+            {%- if item.chain %}
+        <span class="tab-flow__arrow" aria-hidden="true">→</span>
+            {%- elif _tabs[loop.index0 - 1].chain %}
+        <span class="tab-flow__break" aria-hidden="true"></span>
+            {%- endif %}
+        {%- endif %}
+        <a class="tab-flow__item{% if item.active %} is-active{% endif %}"
+           href="{{ item.href }}" role="tab"
+           aria-selected="{{ 'true' if item.active else 'false' }}">{{ item.label }}</a>
+        {%- endfor %}
+    </nav>
+{% else %}
+    {{ ds.tabs(items=_tabs, aria_label='Section') }}
+{% endif %}
+</div>
+{% endif %}

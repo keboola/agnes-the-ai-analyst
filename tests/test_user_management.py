@@ -243,13 +243,16 @@ def test_admin_users_page_renders_for_admin(app_client, fresh_db):
         cookies={"access_token": token},
     )
     assert resp.status_code == 200
-    # /admin/users uses the canonical .page-header--hero block. The hero is
-    # section-level ("People" — matching the nav section, since Access became
-    # its own section once the cross-group workspace shipped); the tab strip
-    # below it names the sub-view, so People / Groups / Tokens read as one
-    # place.
+    # One head for the whole section, section-level ("People" — matching the
+    # nav row); the tab strip below it names the sub-view, so People and
+    # Tokens read as one place. Groups is no longer a third tab here: it moved
+    # to Access, where a grant is written.
     assert 'class="page-header__title">People<' in resp.text
-    assert "page-header--hero" in resp.text
+    # PLAIN, not the hero card. This page is a workspace an admin stands in
+    # and filters, exactly as /library is, so it wears /library's head — the
+    # name, one sentence, nothing drawn around them.
+    assert "page-header--plain" in resp.text
+    assert "page-header--hero" not in resp.text
     assert 'class="tab-strip"' in resp.text
 
 

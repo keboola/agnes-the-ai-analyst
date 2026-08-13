@@ -49,7 +49,7 @@ the difference is a real gap rather than a decision:
 ``agent`` IS shareable here even though agents are not listed in the Library
 (they live on ``/agents``): the grants are real because ``GET /api/agents``
 honours them, so a shared agent shows up in the grantee's own agent list. The
-owner-facing UI for it is the admin ``/admin/groups`` page today — an agent
+owner-facing UI for it is the admin ``/admin/access`` page today — an agent
 Share control on ``/agents`` is the natural next step.
 """
 

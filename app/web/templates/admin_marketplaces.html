@@ -167,7 +167,7 @@
   .plugin-meta a:hover { text-decoration: underline; }
 
   /* v39: SYSTEM pill + per-plugin toggle button. Pill uses the same
-     amber palette as the .origin-system chip on /admin/groups so the
+     amber palette as the .ax-orig--system chip on /admin/access so the
      "system" semantic reads consistently across the admin surface. */
   .plugin-system-pill {
     display: inline-block; padding: 1px 7px; border-radius: 999px;
@@ -759,7 +759,7 @@ function toggleSystem(btn, marketplaceId, marketplaceName) {
       <ul style="margin: 0; padding-left: 20px;">
         <li>Existing per-group RBAC grants <strong>stay</strong>.</li>
         <li>Existing per-user subscriptions <strong>stay</strong>.</li>
-        <li>Operators can revoke either via a group's <a href="/admin/groups" style="color: var(--ds-primary, #6366f1);">Access tab</a> or by uninstalling on each user's stack.</li>
+        <li>Operators can revoke either via a group's <a href="/admin/access" style="color: var(--ds-primary, #6366f1);">Access workspace</a> or by uninstalling on each user's stack.</li>
       </ul>`;
     okBtn.textContent = "Unmark system";
     okBtn.classList.remove("btn-danger");

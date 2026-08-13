@@ -899,12 +899,9 @@
 
     </main>
 
-    <footer class="footer">
-        {# Footer credit is config-driven on every chrome (INSTANCE_COPYRIGHT):
-           the public distribution carries no vendor branding — an instance puts
-           its own name here via config. #}
-        <p>&copy; {{ now().year if now is defined else 2024 }} {{ config.INSTANCE_COPYRIGHT or 'AI Harness' }}</p>
-    </footer>
+    {# Shared footer partial — see _footer.html. `footer_class` keeps this
+       page's own `.footer` styling on the element. #}
+    {% with footer_class = 'footer' %}{% include '_footer.html' %}{% endwith %}
 {% endblock %}
 
 {% block scripts %}

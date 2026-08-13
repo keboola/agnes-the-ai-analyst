@@ -709,7 +709,7 @@ def unmark_plugin_system(
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """Flip ``is_system`` to FALSE. Materialized grants/subscriptions
-    survive — admin curates cleanup via the standard /admin/groups UI
+    survive — admin curates cleanup via the standard /admin/access UI
     (which immediately unlocks the checkboxes for this plugin) and
     users can unsubscribe normally on /marketplace?tab=my.
     """

@@ -308,7 +308,7 @@ async def list_agents(user: dict = Depends(get_current_user)):
     """The caller's agents plus any shared into a group they belong to.
 
     Deliberately NOT admin god-mode: an admin sees their own agent list here,
-    not every agent in the instance (that audit view is /admin/groups).
+    not every agent in the instance (that audit view is /admin/access).
     """
     uid = user["id"]
     repo = agents_repo()
@@ -415,7 +415,7 @@ async def delete_agent(agent_id: str, user: dict = Depends(get_current_user)):
     """Soft-delete an agent the caller owns, and drop its grants.
 
     Grants are removed too, so a later agent can never inherit a dangling
-    grant through id reuse and /admin/groups shows no orphan rows.
+    grant through id reuse and /admin/access shows no orphan rows.
 
     The seeded default agent is exempt: it is infrastructure every web chat
     session is attributed to (``app/api/chat.py::_default_agent_id``), not a

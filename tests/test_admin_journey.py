@@ -1,14 +1,19 @@
-"""The `/admin` journey layer — the setup path + the People → Data → Access
-gap cards (`app/services/admin_dashboard.py::resolve_journey`).
+"""The `/admin` setup chain — the guided six-step journey
+(`app/services/admin_dashboard.py::resolve_journey`).
 
 A different contract from the signal zones, so a different suite:
 
-  * the setup path SELF-RETIRES (renders until all four stages are done),
-    where the zones render only when something needs an admin;
-  * a gap card ALWAYS renders — the healthy chain is information — so the
-    thing to pin is that each card's gap count derives from the same reads
-    the pages it links to are built on, and that a broken resolver degrades
-    to a visible "could not be checked" rather than a healthy-looking card;
+  * the chain ALWAYS has something to say — the healthy state ("every table
+    is in a package") is information, not noise — where a zone renders only
+    when something needs an admin;
+  * it is ONE list: the gap that used to live in a separate card is now the
+    health line under the step that owns it, so the thing to pin is that a
+    step's counts and its gap derive from the same read;
+  * a step is guidance, not a status: every one of them carries the WHY that
+    makes the step make sense to someone meeting the object for the first
+    time, and a CTA whose verb matches its state;
+  * a broken repo degrades the steps that read it to "could not be checked",
+    never to a green tick and never to a 500;
   * every href lands on a page where the named work can actually be done —
     the same rule the signal registry enforces.
 """
@@ -18,12 +23,17 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import markupsafe
 import pytest
 
 from app.services import admin_dashboard
 from app.services.admin_dashboard import resolve_journey
 
 _SERVICE_SRC = Path("app/services/admin_dashboard.py").read_text(encoding="utf-8")
+
+# The chain, in the order the work happens: get data in, get people in,
+# connect the two, then look at the result the way they will.
+_STEPS = ["connect", "tables", "package", "people", "share", "verify"]
 
 
 def _auth(token: str) -> dict:
@@ -38,12 +48,22 @@ class _Raises:
         raise RuntimeError("repo unavailable")
 
 
-class TestJourneyShape:
-    def test_setup_has_the_four_stages_in_order(self, seeded_app):
-        journey = resolve_journey()
-        assert journey["setup"] is not None
-        keys = [s["key"] for s in journey["setup"]["steps"]]
-        assert keys == ["connect", "tables", "package", "share"]
+class TestChainShape:
+    def test_the_six_steps_in_order(self, seeded_app):
+        setup = resolve_journey()["setup"]
+        assert setup is not None
+        assert [s["key"] for s in setup["steps"]] == _STEPS
+
+    def test_every_step_is_guidance_not_a_status(self, seeded_app):
+        """Title + state + WHY + somewhere to go. The `why` is what separates
+        onboarding from a checklist, so a step without one is a regression
+        even when it renders fine."""
+        for s in resolve_journey()["setup"]["steps"]:
+            assert s["title"] and s["detail"]
+            assert len(s["why"]) > 40, f"{s['key']} has no real 'why'"
+            assert s["href"].startswith("/admin")
+            assert s["cta"] and s["done_cta"]
+            assert s["state"] in {"done", "current", "later"}
 
     def test_exactly_one_step_is_current_until_complete(self, seeded_app):
         setup = resolve_journey()["setup"]
@@ -52,42 +72,57 @@ class TestJourneyShape:
             assert current == []
         else:
             assert len(current) == 1
-            # ...and it is the FIRST not-done step: the path is a sequence,
-            # not four alarms.
+            # ...and it is the FIRST not-done step: the chain is a sequence,
+            # not six alarms.
             first_undone = next(s for s in setup["steps"] if not s["done"])
             assert current[0] is first_undone
 
-    def test_gap_cards_are_the_three_chain_links(self, seeded_app):
-        gaps = resolve_journey()["gaps"]
-        assert [g["key"] for g in gaps] == ["people", "data", "access"]
-        for g in gaps:
-            assert g["href"].startswith("/admin")
-            assert not g["failed"]
+    def test_progress_matches_the_steps(self, seeded_app):
+        setup = resolve_journey()["setup"]
+        assert setup["total"] == len(setup["steps"]) == len(_STEPS)
+        assert setup["done_count"] == sum(1 for s in setup["steps"] if s["done"])
+        assert setup["complete"] == (setup["done_count"] == setup["total"])
+        assert setup["summary"]
+
+    def test_verify_is_the_chain_read_back(self, seeded_app):
+        """The last step is the one an admin cannot tick by visiting a page:
+        it is done only when nothing earlier is merely 'done' while still
+        broken."""
+        setup = resolve_journey()["setup"]
+        steps = {s["key"]: s for s in setup["steps"]}
+        verify = steps["verify"]
+        earlier_all_done = all(steps[k]["done"] for k in _STEPS[:-1])
+        gaps = [s["health"] for s in setup["steps"] if s.get("health")]
+        no_warnings = all(h["level"] != "warn" for h in gaps)
+        assert verify["done"] == (earlier_all_done and no_warnings)
 
     def test_every_journey_href_is_a_real_admin_route(self):
         """Same dead-link rule as the signal registry: these URLs are
         hardcoded in a module the router does not import, so nothing else
-        notices when a destination moves."""
+        notices when a destination moves. Query strings are stripped — the
+        wizard deep link is `/admin/data-sources?add=1`."""
         router_src = Path("app/web/router.py").read_text(encoding="utf-8")
-        declared = set(re.findall(r'"(/admin[^"?]*)"', _SERVICE_SRC))
+        declared = {d.split("?", 1)[0] for d in re.findall(r'"(/admin[^"]*)"', _SERVICE_SRC)}
         routes = set(re.findall(r'@router\.get\("(/admin[^"]*)"', router_src))
         prefixes = tuple(routes)
         missing = [d for d in declared if d not in routes and not d.startswith(prefixes)]
         assert not missing, f"journey hrefs with no matching /admin route: {missing}"
 
 
-class TestGapIsolation:
-    def test_a_raising_repo_degrades_to_a_failed_card(self, seeded_app, monkeypatch):
+class TestStepIsolation:
+    def test_a_raising_repo_degrades_only_the_steps_that_read_it(self, seeded_app, monkeypatch):
         import src.repositories as repos
 
         monkeypatch.setattr(repos, "users_repo", lambda: _Raises())
-        journey = resolve_journey()
-        people = next(g for g in journey["gaps"] if g["key"] == "people")
-        assert people["failed"] is True
-        # The other two cards still resolved — one broken backend must not
-        # blank the whole chain.
-        assert [g["key"] for g in journey["gaps"]] == ["people", "data", "access"]
-        assert not journey["gaps"][1]["failed"]
+        steps = {s["key"]: s for s in resolve_journey()["setup"]["steps"]}
+        assert steps["people"]["failed"] is True
+        assert steps["people"]["done"] is False
+        # ...and the data steps, which never touch that repo, still resolved.
+        assert not steps["tables"]["failed"]
+        # The end-to-end step reads all three areas, so it must not claim the
+        # chain is healthy while one of them is unreadable.
+        assert steps["verify"]["failed"] is True
+        assert steps["verify"]["done"] is False
 
     def test_a_raising_repo_never_500s_the_admin_page(self, seeded_app, monkeypatch):
         import src.repositories as repos
@@ -99,8 +134,8 @@ class TestGapIsolation:
         assert "Could not be checked" in resp.text
 
 
-class TestGapSemantics:
-    def test_everyone_grant_covers_every_account(self, seeded_app, monkeypatch):
+class TestChainSemantics:
+    def test_everyone_grant_covers_every_account(self, seeded_app):
         """Auto-membership: a data-package grant to the system Everyone group
         means nobody is uncovered, without enumerating a single membership."""
         from src.repositories import resource_grants_repo, user_groups_repo
@@ -109,8 +144,8 @@ class TestGapSemantics:
         grants = resource_grants_repo()
         grant_id = grants.create(group_id=everyone["id"], resource_type="data_package", resource_id="pkg-x")
         try:
-            people = next(g for g in resolve_journey()["gaps"] if g["key"] == "people")
-            assert people["gap_count"] == 0
+            people = next(s for s in resolve_journey()["setup"]["steps"] if s["key"] == "people")
+            assert people["health"]["level"] == "ok"
         finally:
             grants.delete(grant_id)
 
@@ -125,41 +160,65 @@ class TestGapSemantics:
         assert admin_dashboard._is_distributable({"query_mode": "materialized"})
         assert not admin_dashboard._is_distributable({"query_mode": "remote"})
 
-    def test_gap_and_ok_text_never_render_together(self, seeded_app):
-        for g in resolve_journey()["gaps"]:
-            # The template branches on gap_count; both texts existing is fine,
-            # but a card must always carry the one its branch will need.
-            if g["gap_count"] > 0:
-                assert g["gap_text"]
-            else:
-                assert g["ok_text"]
+    def test_a_warn_health_line_always_has_somewhere_to_go(self, seeded_app):
+        for s in resolve_journey()["setup"]["steps"]:
+            health = s.get("health")
+            if health and health["level"] == "warn":
+                assert health["text"] and health["href"].startswith("/admin")
+            elif health:
+                assert health["text"]
+
+    def test_people_step_is_about_the_other_people(self, seeded_app):
+        """An instance only its own admin can sign into has not finished
+        setup, however healthy its data is."""
+        from src.repositories import users_repo
+
+        active = [u for u in users_repo().list_all() if u.get("active", True)]
+        people = next(s for s in resolve_journey()["setup"]["steps"] if s["key"] == "people")
+        assert people["done"] == (len(active) > 1)
 
 
-class TestHubRendersTheJourney:
-    def test_gap_cards_render_on_admin(self, seeded_app):
+class TestHubRendersTheChain:
+    def test_steps_render_on_admin(self, seeded_app):
         c = seeded_app["client"]
         body = c.get("/admin", headers=_auth(seeded_app["admin_token"])).text
-        assert 'data-gap="people"' in body
-        assert 'data-gap="data"' in body
-        assert 'data-gap="access"' in body
+        for key in _STEPS:
+            assert f'data-step="{key}"' in body
 
-    def test_setup_path_renders_until_complete(self, seeded_app, monkeypatch):
+    def test_the_open_panel_leads_with_the_next_step(self, seeded_app):
         c = seeded_app["client"]
         body = c.get("/admin", headers=_auth(seeded_app["admin_token"])).text
-        journey = resolve_journey()
-        if journey["setup"]["complete"]:
-            assert "Set up this instance" not in body
-        else:
-            assert "Set up this instance" in body
+        setup = resolve_journey()["setup"]
+        if setup["complete"]:
+            pytest.skip("fixture instance is fully set up")
+        current = next(s for s in setup["steps"] if s["current"])
+        assert "Do this next" in body
+        # The current step's WHY is on the page — the reason the panel exists.
+        # Escaped: the copy carries apostrophes, which Jinja renders as `&#39;`.
+        assert markupsafe.escape(current["why"])[:40] in body
 
-    def test_setup_path_retires_itself_when_complete(self, seeded_app, monkeypatch):
-        monkeypatch.setattr(
-            admin_dashboard,
-            "_resolve_setup",
-            lambda: {"complete": True, "steps": []},
-        )
-        c = seeded_app["client"]
-        body = c.get("/admin", headers=_auth(seeded_app["admin_token"])).text
+    def test_a_completed_chain_graduates_instead_of_disappearing(self, seeded_app, monkeypatch):
+        """The old path deleted itself once done, taking the guidance with it
+        exactly when a second admin inherited the instance. It now collapses
+        to a summary row that reopens the list."""
+        real = admin_dashboard.resolve_journey
+
+        def _complete():
+            journey = real()
+            for s in journey["setup"]["steps"]:
+                s.update(done=True, current=False, state="done", failed=False)
+            journey["setup"].update(
+                complete=True,
+                done_count=journey["setup"]["total"],
+            )
+            return journey
+
+        monkeypatch.setattr(admin_dashboard, "resolve_journey", _complete)
+        body = seeded_app["client"].get("/admin", headers=_auth(seeded_app["admin_token"])).text
+        assert "This instance is set up" in body
+        # Still reachable — every step is still in the DOM, behind the summary.
+        assert 'data-step="verify"' in body
+        # ...and the panel no longer claims the setup is unfinished.
         assert "Set up this instance" not in body
 
 

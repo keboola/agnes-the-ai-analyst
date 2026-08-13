@@ -544,6 +544,116 @@ body:has(.fbar-dock) footer { margin-bottom: 140px; }
   }
 }
 
+/* =====================================================================
+   .fbar-bulk — contextual actions for a SELECTION
+   =====================================================================
+   A bar pinned to the foot of the viewport, revealed only while rows are
+   ticked. It lives beside the toolbar in this sheet because it answers the
+   toolbar's other half: `.fbar` narrows a list, this acts on what you picked
+   out of it. Neither belongs INSIDE the other — bulk verbs are meaningless
+   with nothing selected, and a toolbar carrying five permanently-disabled
+   buttons is worse than a toolbar that never mentions them.
+
+   Bottom-anchored for the reason the dock is: a selection is made at row 200
+   as readily as at row 1, and a bar parked above the list leaves the reader
+   holding a selection they cannot act on. It does NOT replace the toolbar
+   where the toolbar is in-flow (an admin surface): search and Filter stay
+   usable while a selection stands, and swapping one in-flow bar for another
+   moves the table under the pointer that just ticked a row. On a page whose
+   toolbar is itself a floating dock the two would stack in one spot, so
+   there the page hides the dock while a selection lasts — see
+   `.ch-section.has-selection` in chats.css.
+
+   Three-part anatomy, same as `.fbar-dock`: a full-width `pointer-events:
+   none` frame that only centres, and a card that turns pointer events back
+   on for itself. Centring via left/right + flex, never `translateX` — a
+   transform would make the frame the containing block for any
+   `position: fixed` child. The left edge is `--rail-clearance` (rail.css),
+   so the card centres on the CONTENT under either rail width and travels
+   with a collapse instead of jumping.
+
+   The page owes it floor clearance (`padding-bottom` on the list, or the
+   shared `body:has(.fbar-bulk) footer` rule below), reserved
+   unconditionally: adding it at the moment a row is ticked would shift the
+   list under the pointer that ticked it.
+
+   chats.css's `.ch-bulk` is this same object, written first and still
+   private to that page. It should fold into this class next time /chats is
+   touched. TODO(#admin-redesign): one bulk bar. */
+.fbar-bulk {
+  position: fixed;
+  left: var(--rail-clearance, 0px); right: 0; bottom: 20px;
+  transition: left var(--ds-motion-fast, .16s) var(--ds-ease-standard, ease);
+  /* Above the rail (40) and the table, below row-level popovers (which are
+     body-appended portals and must be able to cover this) and modals. */
+  z-index: 55;
+  display: flex; justify-content: center;
+  padding: 0 16px;
+  pointer-events: none;
+}
+/* The rail's width jumps rather than animates with motion reduced (rail.css),
+   so a bar that still slid would arrive after the column it belongs to. */
+@media (prefers-reduced-motion: reduce) { .fbar-bulk { transition: none; } }
+.fbar-bulk[hidden] { display: none; }
+
+.fbar-bulk__card {
+  pointer-events: auto;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  max-width: 100%;
+  padding: 9px 12px 9px 16px;
+  /* The same off-white surface + defined hairline as `.fbar-dock__card`: a
+     floating layer is a *different* white from the rows it floats over, or
+     no shadow can fix a zero-contrast edge. */
+  background: color-mix(in srgb, var(--ds-bg) 30%, var(--ds-surface));
+  border: 1px solid color-mix(in srgb, var(--ds-text-muted) 9%, var(--ds-border));
+  border-radius: var(--ds-radius-pill);
+  /* Three layers: a hairline contact shadow so the card's edge reads against
+     a row of the same surface colour directly under it, a mid ambient layer
+     for the body of the lift, and a wide spread-in bottom layer that does the
+     "this is off the page" work. */
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--ds-text-primary) 5%, transparent),
+    0 4px 12px color-mix(in srgb, var(--ds-text-primary) 10%, transparent),
+    0 18px 40px -12px color-mix(in srgb, var(--ds-text-primary) 26%, transparent);
+}
+/* The tally. Tabular so it doesn't jitter as rows are ticked. */
+.fbar-bulk__n {
+  font-size: 13px; font-weight: 700; color: var(--ds-text-primary);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.fbar-bulk__sep { width: 1px; align-self: stretch; margin: 2px 4px; background: var(--ds-border); }
+/* Bare pills, not `.btn`s: inside a card this small a row of outlined buttons
+   is a second frame drawn around every verb. Hover is the affordance. */
+.fbar-bulk__btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 32px; padding: 0 12px;
+  font: inherit; font-size: 13px; font-weight: 600; color: var(--ds-text-primary);
+  background: transparent; border: 1px solid transparent;
+  border-radius: var(--ds-radius-pill); cursor: pointer; white-space: nowrap;
+}
+.fbar-bulk__btn:hover { background: color-mix(in srgb, var(--ds-text-primary) 6%, transparent); }
+.fbar-bulk__btn:focus-visible { outline: var(--ds-focus-outline); outline-offset: var(--ds-focus-outline-offset); }
+.fbar-bulk__btn[hidden] { display: none; }
+.fbar-bulk__btn:disabled { opacity: .5; cursor: default; }
+.fbar-bulk__btn:disabled:hover { background: transparent; }
+/* The irreversible verb is the only one that spends colour — and only its
+   ink, at rest. */
+.fbar-bulk__btn.is-danger { color: var(--ds-accent-danger-ink); }
+.fbar-bulk__btn.is-danger:hover { background: var(--ds-accent-danger-bg); }
+.fbar-bulk__clear {
+  font: inherit; font-size: 12.5px; font-weight: 600; color: var(--ds-text-muted);
+  background: none; border: none; padding: 0 8px; cursor: pointer; white-space: nowrap;
+}
+.fbar-bulk__clear:hover { color: var(--ds-text-primary); }
+.fbar-bulk__clear:focus-visible { outline: var(--ds-focus-outline); outline-offset: var(--ds-focus-outline-offset); }
+
+/* Footer clearance, for the same reason the dock has it: the bar floats over
+   everything, so the document's last element has to end above it or it sits
+   under the card, unreachable, at the bottom of the scroll. `body:has()` so
+   the rule ships with the component and no page that lacks a bulk bar is
+   touched. */
+body:has(.fbar-bulk) footer { margin-bottom: 96px; }
+
 /* Card grid — the grid-view container a FilterToolbar `view` config projects
    into. Cards are built from the (filtered, sorted) table rows, so the table
    stays the single source of truth. */

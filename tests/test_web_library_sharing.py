@@ -616,8 +616,9 @@ def test_toolbar_is_a_floating_bottom_dock(seeded_app):
     # `--rail-clearance` variable rail.css publishes (240 / 56 / 0 as the rail
     # collapses), not a literal 240px — a literal only matched the EXPANDED
     # rail, slicing the band 184px into the page whenever the rail was
-    # collapsed; tests/test_rail_journey_chrome.py bans the literal outside
-    # rail.css for exactly that reason.
+    # collapsed. `TestRailBodyClearance` in tests/test_ui_layout_theme.py bans
+    # the literal outside rail.css for exactly that reason, and pins the
+    # variable to the `body` padding that encodes the same edge.
     assert "left: var(--rail-clearance, 0px);" in band
 
     # Three layers, each a stronger blur admitted over a shorter distance. That
