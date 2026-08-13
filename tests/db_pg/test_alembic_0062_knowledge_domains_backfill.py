@@ -1,0 +1,500 @@
+"""Alembic 0062 — backfill ``knowledge_item_domains`` from the legacy
+``knowledge_items.domain`` scalar column on Postgres.
+
+Devin Review on #1290: PG's ``create()``/``update()`` did not write the
+junction row until #1263. Any row created between the junction's
+introduction (``0011_data_packages``) and #1263 landing carries a scalar
+``domain`` with no matching ``knowledge_item_domains`` row, so the
+junction-only ``list_by_domain`` (#1290) can no longer find it. DuckDB
+never has this gap: its v49 migration (``src/db.py::_v51_to_v52``) dropped
+the scalar column in the SAME migration that first introduced the junction,
+backfilling every historical value at that moment — there was never a
+window where the junction existed without the write path keeping it in
+sync. PG kept the scalar column indefinitely, so its junction-adoption
+happened in a separate, later commit, leaving a real gap. This migration
+closes it with a one-time backfill; no DuckDB step is needed (see
+``src/db.py`` SCHEMA_VERSION comment / CHANGELOG for the rationale).
+"""
+
+from __future__ import annotations
+
+import uuid
+from pathlib import Path
+
+import sqlalchemy as sa
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _alembic_config(db_url: str):
+    from alembic.config import Config
+
+    cfg = Config(str(REPO_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(REPO_ROOT / "migrations"))
+    cfg.attributes["sqlalchemy.url"] = db_url
+    return cfg
+
+
+def _insert_legacy_item(conn, *, id, domain, title="Legacy item"):
+    """Simulate a pre-#1263 row: scalar ``domain`` set, no junction row —
+    bypasses the repo write path entirely (raw INSERT), which is the only
+    way to reproduce this shape since the current write path always keeps
+    the junction in step."""
+    conn.execute(
+        sa.text(
+            "INSERT INTO knowledge_items (id, title, content, category, status, domain, created_at, updated_at) "
+            "VALUES (:id, :title, 'content', 'general', 'approved', :domain, now(), now())"
+        ),
+        {"id": id, "title": title, "domain": domain},
+    )
+
+
+def test_0062_backfills_junction_for_a_pre_1263_scalar_only_row(pg_engine):
+    from alembic import command
+
+    cfg = _alembic_config(str(pg_engine.url))
+    command.upgrade(cfg, "0061_agent_status_backfill_v115")
+
+    with pg_engine.begin() as conn:
+        domain_id = str(uuid.uuid4())
+        conn.execute(
+            sa.text(
+                "INSERT INTO memory_domains (id, slug, name, created_at, updated_at) VALUES (:id, 'ops', 'Ops', now(), now())"
+            ),
+            {"id": domain_id},
+        )
+        _insert_legacy_item(conn, id="ki_legacy_ops", domain="ops")
+
+    command.upgrade(cfg, "0062_knowledge_domains_backfill")
+
+    with pg_engine.connect() as conn:
+        rows = conn.execute(
+            sa.text("SELECT domain_id FROM knowledge_item_domains WHERE item_id = :id"),
+            {"id": "ki_legacy_ops"},
+        ).fetchall()
+    assert [r[0] for r in rows] == [domain_id]
+
+
+def test_0062_creates_a_missing_memory_domain_from_a_free_text_legacy_value(pg_engine):
+    """Pre-#1263 ``create()`` had no slug validation at all (any string went
+    straight into the scalar column) — so a legacy row's ``domain`` may not
+    match any existing ``memory_domains.slug``. Mirrors DuckDB's own v49
+    migration (``src/db.py::_v51_to_v52`` step 5), which creates a domain
+    row for exactly this case rather than silently dropping the item."""
+    from alembic import command
+
+    cfg = _alembic_config(str(pg_engine.url))
+    command.upgrade(cfg, "0061_agent_status_backfill_v115")
+
+    with pg_engine.begin() as conn:
+        _insert_legacy_item(conn, id="ki_legacy_freeform", domain="q-team notes")
+
+    command.upgrade(cfg, "0062_knowledge_domains_backfill")
+
+    with pg_engine.connect() as conn:
+        domain_row = conn.execute(sa.text("SELECT id, name FROM memory_domains WHERE slug = 'q-team-notes'")).fetchone()
+        assert domain_row is not None, "expected a memory_domains row to be created for the free-text legacy domain"
+        junction_row = conn.execute(
+            sa.text("SELECT domain_id FROM knowledge_item_domains WHERE item_id = 'ki_legacy_freeform'")
+        ).fetchone()
+        assert junction_row is not None and junction_row[0] == domain_row[0]
+
+
+def test_0062_normalizes_a_capitalised_legacy_domain_to_the_canonical_slug(pg_engine):
+    """A mixed-case legacy value must resolve to the existing lowercase slug.
+
+    Pre-#1263 ``create()`` did no slug normalization, so ``'Finance'`` is a
+    perfectly ordinary scalar value in the wild. Postgres' ``regexp_replace``
+    is case-sensitive, so ``[^a-z0-9]`` matches uppercase letters too: applied
+    to the RAW value it turns ``'Finance'`` into ``'-inance'`` and only the
+    trailing ``lower()`` runs afterwards, minting a junk ``memory_domains``
+    row and filing the item under it instead of the real domain — with a
+    no-op ``downgrade()``, unrollable. Lower-casing BEFORE the regexp is what
+    makes the formula produce the slug shape the seed uses.
+    """
+    from alembic import command
+
+    cfg = _alembic_config(str(pg_engine.url))
+    command.upgrade(cfg, "0061_agent_status_backfill_v115")
+
+    with pg_engine.begin() as conn:
+        finance_id = str(uuid.uuid4())
+        conn.execute(
+            sa.text(
+                "INSERT INTO memory_domains (id, slug, name, created_at, updated_at) "
+                "VALUES (:id, 'finance', 'Finance', now(), now())"
+            ),
+            {"id": finance_id},
+        )
+        _insert_legacy_item(conn, id="ki_legacy_caps", domain="Finance")
+        # Mixed case *and* a separator run, so the two halves of the formula
+        # are exercised together rather than one masking the other.
+        _insert_legacy_item(conn, id="ki_legacy_caps_multiword", domain="Q-Team Notes")
+
+    command.upgrade(cfg, "0062_knowledge_domains_backfill")
+
+    with pg_engine.connect() as conn:
+        rows = conn.execute(
+            sa.text("SELECT domain_id FROM knowledge_item_domains WHERE item_id = 'ki_legacy_caps'")
+        ).fetchall()
+        assert [r[0] for r in rows] == [finance_id], (
+            "a capitalised legacy domain must land on the existing 'finance' domain, not a new one"
+        )
+
+        junk = conn.execute(
+            sa.text("SELECT slug FROM memory_domains WHERE slug LIKE '-%' OR slug <> lower(slug)")
+        ).fetchall()
+        assert junk == [], f"backfill minted junk domain slugs: {[r[0] for r in junk]}"
+
+        multiword = conn.execute(
+            sa.text(
+                "SELECT md.slug FROM knowledge_item_domains kid "
+                "JOIN memory_domains md ON md.id = kid.domain_id "
+                "WHERE kid.item_id = 'ki_legacy_caps_multiword'"
+            )
+        ).fetchall()
+        assert [r[0] for r in multiword] == ["q-team-notes"]
+
+
+def test_0062_collapses_legacy_spellings_that_normalize_to_one_slug(pg_engine):
+    """Several raw values normalizing to one slug must yield ONE domain.
+
+    Normalization is many-to-one, and the generated ``md_<slug>`` id collapses
+    with the slug — so a per-raw-value INSERT would push rows sharing a
+    primary key through a single statement, which ``ON CONFLICT (slug)``
+    neither arbitrates nor deduplicates within one statement, aborting the
+    whole migration on the pkey violation. Both axes are covered here: case
+    (``Finance``/``finance``) and separator runs (``q team``/``q-team``).
+    """
+    from alembic import command
+
+    cfg = _alembic_config(str(pg_engine.url))
+    command.upgrade(cfg, "0061_agent_status_backfill_v115")
+
+    with pg_engine.begin() as conn:
+        for i, value in enumerate(["Finance", "finance", "FINANCE", "q team", "q-team", "Q  Team"]):
+            _insert_legacy_item(conn, id=f"ki_variant_{i}", domain=value)
+
+    command.upgrade(cfg, "0062_knowledge_domains_backfill")
+
+    with pg_engine.connect() as conn:
+        slugs = sorted(
+            r[0] for r in conn.execute(sa.text("SELECT slug FROM memory_domains WHERE slug IN ('finance', 'q-team')"))
+        )
+        assert slugs == ["finance", "q-team"]
+
+        # Every one of the six items resolves to one of those two domains.
+        pairs = conn.execute(
+            sa.text(
+                "SELECT kid.item_id, md.slug FROM knowledge_item_domains kid "
+                "JOIN memory_domains md ON md.id = kid.domain_id "
+                "WHERE kid.item_id LIKE 'ki_variant_%'"
+            )
+        ).fetchall()
+        assert sorted(pairs) == [
+            ("ki_variant_0", "finance"),
+            ("ki_variant_1", "finance"),
+            ("ki_variant_2", "finance"),
+            ("ki_variant_3", "q-team"),
+            ("ki_variant_4", "q-team"),
+            ("ki_variant_5", "q-team"),
+        ]
+
+
+def test_0062_does_not_touch_rows_already_carrying_a_junction_entry(pg_engine):
+    """A row created after #1263 already has BOTH scalar + junction rows in
+    sync — the backfill's ``ON CONFLICT DO NOTHING`` must not duplicate or
+    otherwise disturb it."""
+    from alembic import command
+
+    cfg = _alembic_config(str(pg_engine.url))
+    command.upgrade(cfg, "0061_agent_status_backfill_v115")
+
+    with pg_engine.begin() as conn:
+        domain_id = str(uuid.uuid4())
+        conn.execute(
+            sa.text(
+                "INSERT INTO memory_domains (id, slug, name, created_at, updated_at) VALUES (:id, 'ops', 'Ops', now(), now())"
+            ),
+            {"id": domain_id},
+        )
+        _insert_legacy_item(conn, id="ki_synced", domain="ops")
+        conn.execute(
+            sa.text(
+                "INSERT INTO knowledge_item_domains (item_id, domain_id, added_by, added_at) "
+                "VALUES ('ki_synced', :domain_id, 'system', now())"
+            ),
+            {"domain_id": domain_id},
+        )
+
+    command.upgrade(cfg, "0062_knowledge_domains_backfill")
+
+    with pg_engine.connect() as conn:
+        rows = conn.execute(
+            sa.text("SELECT domain_id FROM knowledge_item_domains WHERE item_id = 'ki_synced'")
+        ).fetchall()
+    assert [r[0] for r in rows] == [domain_id]
+
+
+def test_0062_noops_on_a_fresh_install_with_no_legacy_rows(pg_engine):
+    from alembic import command
+
+    cfg = _alembic_config(str(pg_engine.url))
+    command.upgrade(cfg, "head")  # must not raise on an empty knowledge_items table
+
+    with pg_engine.connect() as conn:
+        count = conn.execute(sa.text("SELECT COUNT(*) FROM knowledge_item_domains")).scalar()
+    assert count == 0
+
+
+def test_0062_makes_a_legacy_item_visible_via_list_by_domain(pg_engine, monkeypatch):
+    """End-to-end proof, through the actual repository call the verification
+    detector uses (not just the raw junction table): a pre-#1263 row that
+    ``KnowledgePgRepository.list_by_domain`` (#1290, junction-only) could no
+    longer see becomes visible again once this backfill has run."""
+    from alembic import command
+
+    cfg = _alembic_config(str(pg_engine.url))
+    command.upgrade(cfg, "0061_agent_status_backfill_v115")
+
+    with pg_engine.begin() as conn:
+        domain_id = str(uuid.uuid4())
+        conn.execute(
+            sa.text(
+                "INSERT INTO memory_domains (id, slug, name, created_at, updated_at) "
+                "VALUES (:id, 'ops', 'Ops', now(), now())"
+            ),
+            {"id": domain_id},
+        )
+        _insert_legacy_item(conn, id="ki_legacy_ops", domain="ops")
+
+    command.upgrade(cfg, "0062_knowledge_domains_backfill")
+
+    monkeypatch.setenv("AGNES_DB_URL", str(pg_engine.url))
+    import src.db_pg as db_pg
+
+    db_pg.dispose()
+    db_pg.get_engine()
+    from src.repositories.knowledge_pg import KnowledgePgRepository
+
+    repo = KnowledgePgRepository(db_pg.get_engine())
+    found = {r["id"] for r in repo.list_by_domain("ops")}
+    assert "ki_legacy_ops" in found, "a pre-#1263 scalar-only row must be visible via list_by_domain after the backfill"
+
+
+def test_0062_leaves_an_admin_moved_item_where_the_admin_put_it(pg_engine):
+    """The stale scalar must NOT win over a deliberate admin re-point.
+
+    ``MemoryDomainsPgRepository.replace_domains_for_item`` (the admin
+    item-edit modal's ``domain_ids`` chip-input) rewrites the junction and
+    never touches ``knowledge_items.domain``, so an item created under
+    ``q-team`` and later moved to ``ops`` keeps a stale scalar ``q-team``
+    forever. A backfill keyed on the scalar alone re-files it under
+    ``q-team`` — silently undoing the move on upgrade.
+    """
+    from alembic import command
+
+    cfg = _alembic_config(str(pg_engine.url))
+    command.upgrade(cfg, "0061_agent_status_backfill_v115")
+
+    with pg_engine.begin() as conn:
+        old_id, new_id = str(uuid.uuid4()), str(uuid.uuid4())
+        conn.execute(
+            sa.text(
+                "INSERT INTO memory_domains (id, slug, name, created_at, updated_at) "
+                "VALUES (:old, 'q-team', 'Q Team', now(), now()), "
+                "       (:new, 'ops', 'Ops', now(), now())"
+            ),
+            {"old": old_id, "new": new_id},
+        )
+        # Created under q-team (scalar), then moved to ops through the admin
+        # editor — junction says ops, scalar still says q-team.
+        _insert_legacy_item(conn, id="ki_moved", domain="q-team")
+        conn.execute(
+            sa.text(
+                "INSERT INTO knowledge_item_domains (item_id, domain_id, added_by, added_at) "
+                "VALUES ('ki_moved', :new, 'admin@example.com', now())"
+            ),
+            {"new": new_id},
+        )
+
+    command.upgrade(cfg, "0062_knowledge_domains_backfill")
+
+    with pg_engine.connect() as conn:
+        slugs = sorted(
+            r[0]
+            for r in conn.execute(
+                sa.text(
+                    "SELECT md.slug FROM knowledge_item_domains kid "
+                    "JOIN memory_domains md ON md.id = kid.domain_id "
+                    "WHERE kid.item_id = 'ki_moved'"
+                )
+            )
+        )
+    assert slugs == ["ops"], "the backfill must not resurrect the membership the admin moved the item off"
+
+
+def test_0062_does_not_mint_a_domain_for_a_moved_items_stale_scalar(pg_engine):
+    """Step 1 must scan the same cohort step 2 backfills.
+
+    An item moved off a domain that was later deleted keeps a scalar naming
+    a slug no ``memory_domains`` row has. Minting from the raw scalar column
+    would create that domain again — a grantable, browsable entity nobody
+    asked for — and file the item under it.
+    """
+    from alembic import command
+
+    cfg = _alembic_config(str(pg_engine.url))
+    command.upgrade(cfg, "0061_agent_status_backfill_v115")
+
+    with pg_engine.begin() as conn:
+        live_id = str(uuid.uuid4())
+        conn.execute(
+            sa.text(
+                "INSERT INTO memory_domains (id, slug, name, created_at, updated_at) "
+                "VALUES (:id, 'ops', 'Ops', now(), now())"
+            ),
+            {"id": live_id},
+        )
+        _insert_legacy_item(conn, id="ki_moved_off_retired", domain="retired-team")
+        conn.execute(
+            sa.text(
+                "INSERT INTO knowledge_item_domains (item_id, domain_id, added_by, added_at) "
+                "VALUES ('ki_moved_off_retired', :id, 'admin@example.com', now())"
+            ),
+            {"id": live_id},
+        )
+
+    command.upgrade(cfg, "0062_knowledge_domains_backfill")
+
+    with pg_engine.connect() as conn:
+        minted = conn.execute(sa.text("SELECT id FROM memory_domains WHERE slug = 'retired-team'")).fetchone()
+        slugs = sorted(
+            r[0]
+            for r in conn.execute(
+                sa.text(
+                    "SELECT md.slug FROM knowledge_item_domains kid "
+                    "JOIN memory_domains md ON md.id = kid.domain_id "
+                    "WHERE kid.item_id = 'ki_moved_off_retired'"
+                )
+            )
+        )
+    assert minted is None, "no domain may be minted for a scalar belonging to an item the backfill does not touch"
+    assert slugs == ["ops"]
+
+
+def test_0062_marks_its_writes_and_downgrade_takes_back_only_those(pg_engine):
+    """The residual ambiguity (see the migration docstring) is made
+    reversible by marking every row this migration writes, so an operator
+    can undo exactly the backfill without touching organic junction rows.
+    """
+    from alembic import command
+
+    cfg = _alembic_config(str(pg_engine.url))
+    command.upgrade(cfg, "0061_agent_status_backfill_v115")
+
+    with pg_engine.begin() as conn:
+        domain_id = str(uuid.uuid4())
+        conn.execute(
+            sa.text(
+                "INSERT INTO memory_domains (id, slug, name, created_at, updated_at) "
+                "VALUES (:id, 'ops', 'Ops', now(), now())"
+            ),
+            {"id": domain_id},
+        )
+        _insert_legacy_item(conn, id="ki_legacy_ops", domain="ops")
+        _insert_legacy_item(conn, id="ki_organic", domain="ops")
+        conn.execute(
+            sa.text(
+                "INSERT INTO knowledge_item_domains (item_id, domain_id, added_by, added_at) "
+                "VALUES ('ki_organic', :id, 'alice@example.com', now())"
+            ),
+            {"id": domain_id},
+        )
+
+    command.upgrade(cfg, "0062_knowledge_domains_backfill")
+
+    with pg_engine.connect() as conn:
+        marks = dict(
+            conn.execute(
+                sa.text(
+                    "SELECT item_id, added_by FROM knowledge_item_domains "
+                    "WHERE item_id IN ('ki_legacy_ops', 'ki_organic')"
+                )
+            ).fetchall()
+        )
+    assert marks == {"ki_legacy_ops": "migration_0062", "ki_organic": "alice@example.com"}
+
+    command.downgrade(cfg, "0061_agent_status_backfill_v115")
+
+    with pg_engine.connect() as conn:
+        left = dict(
+            conn.execute(
+                sa.text(
+                    "SELECT item_id, added_by FROM knowledge_item_domains "
+                    "WHERE item_id IN ('ki_legacy_ops', 'ki_organic')"
+                )
+            ).fetchall()
+        )
+    assert left == {"ki_organic": "alice@example.com"}, "downgrade must remove only the rows the backfill wrote"
+
+
+def test_0062_trims_edge_separators_from_padded_or_punctuated_values(pg_engine):
+    """`' Finance '` and `'(Ops)'` must land on the real domains, not mint
+    `'-finance'` / `'-ops-'` junk (Devin Review on #1290, third round): the
+    collapse step turns surrounding whitespace/punctuation into leading and
+    trailing `-`, which the slug formula now ``btrim``s in BOTH steps."""
+    from alembic import command
+
+    cfg = _alembic_config(str(pg_engine.url))
+    command.upgrade(cfg, "0061_agent_status_backfill_v115")
+
+    with pg_engine.begin() as conn:
+        finance_id, ops_id = str(uuid.uuid4()), str(uuid.uuid4())
+        conn.execute(
+            sa.text(
+                "INSERT INTO memory_domains (id, slug, name, created_at, updated_at) "
+                "VALUES (:f, 'finance', 'Finance', now(), now()), (:o, 'ops', 'Ops', now(), now())"
+            ),
+            {"f": finance_id, "o": ops_id},
+        )
+        _insert_legacy_item(conn, id="ki_padded", domain=" Finance ")
+        _insert_legacy_item(conn, id="ki_punctuated", domain="(Ops)")
+
+    command.upgrade(cfg, "0062_knowledge_domains_backfill")
+
+    with pg_engine.connect() as conn:
+        pairs = conn.execute(
+            sa.text(
+                "SELECT kid.item_id, md.slug FROM knowledge_item_domains kid "
+                "JOIN memory_domains md ON md.id = kid.domain_id "
+                "WHERE kid.item_id IN ('ki_padded', 'ki_punctuated')"
+            )
+        ).fetchall()
+        assert sorted(pairs) == [("ki_padded", "finance"), ("ki_punctuated", "ops")]
+
+        junk = conn.execute(
+            sa.text("SELECT slug FROM memory_domains WHERE slug LIKE '-%' OR slug LIKE '%-' OR slug = ''")
+        ).fetchall()
+        assert junk == [], f"backfill minted junk edge-separator slugs: {[r[0] for r in junk]}"
+
+
+def test_0062_skips_a_whitespace_only_legacy_value(pg_engine):
+    """`'   '` passes the scalar ``<> ''`` guard but normalizes to nothing —
+    the migration must neither mint a domain for it nor write a junction row,
+    and must complete without error."""
+    from alembic import command
+
+    cfg = _alembic_config(str(pg_engine.url))
+    command.upgrade(cfg, "0061_agent_status_backfill_v115")
+
+    with pg_engine.begin() as conn:
+        _insert_legacy_item(conn, id="ki_blank", domain="   ")
+
+    command.upgrade(cfg, "0062_knowledge_domains_backfill")
+
+    with pg_engine.connect() as conn:
+        junction = conn.execute(sa.text("SELECT 1 FROM knowledge_item_domains WHERE item_id = 'ki_blank'")).fetchone()
+        minted = conn.execute(sa.text("SELECT slug FROM memory_domains WHERE created_by = 'migration_0062'")).fetchall()
+    assert junction is None, "a whitespace-only legacy value must not produce a junction row"
+    assert minted == [], f"no domain may be minted for a value that normalizes to '': {[r[0] for r in minted]}"
