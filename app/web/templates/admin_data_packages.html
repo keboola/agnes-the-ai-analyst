@@ -48,6 +48,10 @@
    lives in catalog_card.css, `.fbar-card` and its grid in filter_toolbar.css. #}
 <link rel="stylesheet" href="{{ static_url('css/filter_toolbar.css') }}">
 <link rel="stylesheet" href="{{ static_url('css/catalog_card.css') }}">
+{# Creating a package happens HERE, in the shared right-side drawer — see the
+   `+ New package` comment below for why it used to happen on another lens. #}
+<link rel="stylesheet" href="{{ static_url('css/drawer.css') }}">
+<link rel="stylesheet" href="{{ static_url('css/package_drawer.css') }}">
 <style>
   /* Section heads are the shared `.apg-sechead` (css/admin_page.css) — the
      same row, count and type scale People, Access and Sources carry. */
@@ -152,17 +156,23 @@
      floating under the tab strip with no bar around them and nothing to say
      what they acted on, since the head naming the grid came 400px later.
 
-     The flows themselves stay in admin_tables.html — they are large modals
-     wired to the table registry — and these entry points carry the caller in
-     with the flow named in the query, the same ?new_package= contract the
-     empty-package CTA uses. #}
+     "+ New package" is a BUTTON, not a link, and this is the lens that makes
+     packages: it used to send you to `/admin/tables?new_package=1`, because
+     that page owned the only copy of the create form — so asking for a new
+     package on the Packages tab landed you on the Tables tab with a modal
+     over a list of tables. The form is now the shared drawer
+     (js/components/package_drawer.js) and opens over the grid it adds to.
+
+     "Suggest packages by bucket" still crosses to the Tables lens: it reads
+     the registry, proposes one package per bucket and assigns the rows, so
+     the table list IS its subject. #}
   <div class="apg-sechead">
     <h2 class="apg-sechead__title">Data Packages</h2>
     <span class="apg-sechead__count">{{ package_cards|length }} package{{ '' if package_cards|length == 1 else 's' }}</span>
     <span class="apg-sechead__end">
       <a class="btn btn-secondary btn-sm" href="/admin/tables?group_by_bucket=1"
          title="Create one package per distinct bucket and assign its tables">Suggest packages by bucket</a>
-      <a class="btn btn-primary btn-sm" href="/admin/tables?new_package=1">+ New package</a>
+      <button type="button" class="btn btn-primary btn-sm" data-adp-new-package>+ New package</button>
     </span>
   </div>
   {% if package_cards %}
@@ -212,7 +222,11 @@
     <p>
       A package is the unit an analyst receives — bundle related tables, share the
       bundle with a group, and it lands in their workspace.
-      <a href="/admin/tables?new_package=1">Create the first one →</a>
+    </p>
+    <p>
+      <button type="button" class="btn btn-primary btn-sm" data-adp-new-package>
+        Create the first one
+      </button>
     </p>
   </div>
   {% endif %}
@@ -263,4 +277,23 @@
   </div>
   {% endif %}
 </div>
+
+{# ── "+ New package" ─────────────────────────────────────────────────────
+   Both entry points (the section head and the empty state) open the shared
+   drawer over this grid. A created package is a new card with server-side
+   sharing and delivery joins behind it, so the page reloads rather than
+   inventing a card client-side — the same choice the package's own page makes
+   after a grant change, and for the same reason. #}
+<script src="{{ static_url('js/components/package_drawer.js') }}" defer></script>
+<script>
+  document.addEventListener("click", function (e) {
+    if (!e.target.closest("[data-adp-new-package]")) return;
+    // Deferred component, so a click in the first few hundred milliseconds
+    // could land before it exists — do nothing rather than throw.
+    if (!window.AgnesPackageDrawer) return;
+    window.AgnesPackageDrawer.open({
+      onCreated: function () { window.location.reload(); },
+    });
+  });
+</script>
 {% endblock %}

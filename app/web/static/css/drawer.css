@@ -11,9 +11,11 @@
  * body / foot frame so "where am I and how do I get out" never moves.
  *
  * Used by:
- *   - js/components/group_drawer.js  (create/edit a group end to end)
- *   - admin_data_sources.html        (the Add-data wizard)
- *   - admin_users.html               (invite a person → their groups)
+ *   - js/components/group_drawer.js    (create/edit a group end to end)
+ *   - js/components/package_drawer.js  (create a data package, from any lens)
+ *   - admin_data_sources.html          (the Add-data wizard)
+ *   - admin_users.html                 (invite a person → their groups)
+ *   - admin_package_detail.html        (add tables / share)
  *
  * Every value is a `--ds-*` token, so the drawer follows whatever theme
  * it is opened under (blue / paper, light / dark) with no per-theme rule
@@ -247,6 +249,108 @@ button.ds-drawer__step:not([disabled]):hover { background: var(--ds-surface-sunk
   outline-offset: var(--ds-focus-outline-offset);
 }
 .ds-drawer__hint { margin: 5px 0 0; font-size: 11.5px; color: var(--ds-text-muted); }
+.ds-drawer__opt { font-weight: 400; color: var(--ds-text-muted); }
+
+/* Two fields that answer one question sit on one line — and collapse to two
+   lines before either gets too narrow to read its own placeholder. */
+.ds-drawer__row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 0 14px;
+}
+
+/* The three controls the fields above do not cover, because a browser draws
+   each of them in its own house style and none of those is ours. A drawer's
+   form has to look like ONE form: the select borrows the product's own
+   (`.fbar-select`, filter_toolbar.css — this only supplies the metrics), and
+   the colour swatch and the file button are dressed here.
+
+   `<select>` is not styled bare on purpose — `.fbar-select` is the wrapper
+   that carries the chevron, and a caller who forgets it should see a native
+   select rather than a chevron-less box pretending to be ours. */
+.ds-drawer__select { display: flex; }
+.ds-drawer__select select { width: 100%; }
+
+/* Sized like a swatch, not like a text field: it is the escape hatch beside a
+   palette, and a full-width colour bar reads as the answer rather than as the
+   "something else" option. */
+.ds-drawer__color {
+  flex: 0 0 auto;
+  width: 46px;
+  height: 26px;
+  box-sizing: border-box;
+  padding: 2px;
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-btn);
+  background: var(--ds-surface);
+  cursor: pointer;
+}
+.ds-drawer__color::-webkit-color-swatch-wrapper { padding: 0; }
+.ds-drawer__color::-webkit-color-swatch { border: none; border-radius: 5px; }
+.ds-drawer__color::-moz-color-swatch { border: none; border-radius: 5px; }
+
+/* A file input is two controls in one element: the button and the file name.
+   Only the button can be styled, so it takes the secondary button's look and
+   the name beside it takes the hint's. */
+.ds-drawer__file {
+  max-width: 100%;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ds-text-muted);
+}
+.ds-drawer__file::file-selector-button {
+  margin-right: 10px;
+  padding: 7px 12px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ds-text-primary);
+  background: var(--ds-surface);
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-btn);
+  cursor: pointer;
+}
+.ds-drawer__file::file-selector-button:hover {
+  border-color: var(--ds-text-muted);
+  background: var(--ds-surface-dim);
+}
+
+/* An inline verb inside running text ("Remove") — a link's job, not a
+   button's look, but a button's element because it acts on this page. */
+.ds-drawer__linkbtn {
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: inherit;
+  font-weight: 600;
+  color: var(--ds-primary);
+  cursor: pointer;
+  text-decoration: underline;
+}
+.ds-drawer__linkbtn[hidden] { display: none; }
+
+/* An optional part of the flow, folded away: the drawer stays one screen for
+   the common case and the reader can still see what else is on offer. */
+.ds-drawer__disclose {
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-btn);
+  background: var(--ds-surface-dim);
+}
+.ds-drawer__disclose > summary {
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ds-text-primary);
+  user-select: none;
+}
+.ds-drawer__disclose > summary:focus-visible {
+  outline: var(--ds-focus-outline);
+  outline-offset: var(--ds-focus-outline-offset);
+}
+.ds-drawer__disclose[open] > summary { margin-bottom: 4px; }
 .ds-drawer__err {
   margin-top: 10px;
   font-size: 12.5px;

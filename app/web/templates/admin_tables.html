@@ -20,8 +20,11 @@
 {# The shared right-side drawer — the chrome Connect-source, the Add-data
    wizard and the group editor already open in. Registering a table is a setup
    flow, and setup flows in this product come from the right, not from a
-   centred modal. #}
+   centred modal. `package_drawer.css` is the create-a-package flow's own two
+   objects inside that chrome; the flow itself is the shared component, so this
+   page and the Packages lens open the same one. #}
 <link rel="stylesheet" href="{{ static_url('css/drawer.css') }}">
+<link rel="stylesheet" href="{{ static_url('css/package_drawer.css') }}">
 <style>
         /* Design tokens come from the global `:root` block in
            style-custom.css. The local override that used to live
@@ -2222,134 +2225,28 @@
         <a href="{{ url_for('dashboard') }}">Back to Dashboard</a>
         </footer>
 
-    <!-- ═══════════════ Create Data Package modal (Task 8.10) ═══════════════
-         Fired from a chip-input `chip-create` event — the chip-input emits
-         a CustomEvent with the typed name; the handler below opens this
-         modal pre-filled, POSTs to /api/admin/data-packages, and adds the
-         freshly-created chip back into the chip-input host via .addChip(). -->
-    <div class="modal-overlay" id="createDataPackageModal" style="display:none;">
-      <div class="modal" style="max-width:520px;">
-        <div class="modal-header">
-          <h2>Create Data Package</h2>
-          <button class="modal-close" onclick="closeCreateDataPackageModal()">×</button>
-        </div>
-        <div class="modal-body">
-          <div class="form-group">
-            <label class="form-label">Name</label>
-            <input id="cdp-name" type="text" class="form-input" placeholder="Sales bundle">
-          </div>
-          <div class="form-group">
-            <label class="form-label">Slug</label>
-            <input id="cdp-slug" type="text" class="form-input" placeholder="sales-bundle">
-            <div class="form-hint">URL-safe identifier; auto-derived from Name.</div>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Description <span class="optional">(optional)</span></label>
-            <textarea id="cdp-desc" class="form-textarea" rows="2"></textarea>
-          </div>
-          {# v51 lifecycle + classification — drive the hero filter
-             checkboxes on /catalog and the eyebrow line above the
-             card title. Both fields are admin-facing only and have
-             safe defaults (status=prod, category=null). #}
-          <div class="form-group" style="display:flex; gap:12px;">
-            <div style="flex:1;">
-              <label class="form-label">Status</label>
-              <select id="cdp-status" class="form-input" style="height:38px;">
-                <option value="prod" selected>Prod — ready for analyst use</option>
-                <option value="poc">POC — try-before-you-buy</option>
-                <option value="coming-soon">Coming soon — visible but not usable yet</option>
-                <option value="draft">Draft — admin-only, hidden from analysts</option>
-              </select>
-            </div>
-            <div style="flex:1;">
-              <label class="form-label">Category <span class="optional">(optional)</span></label>
-              <input id="cdp-category" type="text" class="form-input"
-                     placeholder="e.g. Sessions &amp; Traffic">
-              <div class="form-hint">Eyebrow line above the card title. Keep it short and consistent.</div>
-            </div>
-          </div>
-          <div class="form-group" style="display:flex; gap:12px;">
-            <div style="flex:1;">
-              <label class="form-label">Icon</label>
-              <input id="cdp-icon" type="text" class="form-input" value="" maxlength="4">
-            </div>
-            <div style="flex:1;">
-              <label class="form-label">Color</label>
-              {# v51 palette row — admin clicks a swatch to set #cdp-color.
-                 Free-form picker stays below as the escape hatch. Palette
-                 is a vendor-neutral design-system set (teal/blue/violet/
-                 pink/red/amber/emerald/slate) — no brand colors. #}
-              <div class="cf-palette-row" data-target="cdp-color"></div>
-              {# type=color forces the native swatch picker so admins can't
-                 type/append a malformed hex into the field. #}
-              <input id="cdp-color" type="color" class="form-input" value="#e0f2fe"
-                     style="height:32px; padding:2px; cursor:pointer;">
-            </div>
-          </div>
-          {# Cover image upload (v50). When set, the /catalog card renders
-             <img src=cover_image_url> instead of letter initials — closes
-             the visual gap with /marketplace cards. PNG/JPEG/GIF/WebP, 5
-             MiB cap server-side. #}
-          <div class="form-group">
-            <label class="form-label">Cover image <span class="optional">(optional)</span></label>
-            <div style="display:flex; gap:12px; align-items:center;">
-              <div id="cdp-cover-preview"
-                   style="width:120px; height:72px; border-radius:8px;
-                          border:1px solid var(--border); background:#f1f5f9;
-                          display:flex; align-items:center; justify-content:center;
-                          font-size:12px; color:var(--text-secondary); overflow:hidden;">
-                No image
-              </div>
-              <div style="flex:1;">
-                <input id="cdp-cover-file" type="file"
-                       accept="image/png,image/jpeg,image/gif,image/webp"
-                       onchange="onCoverFilePicked(this, 'cdp')">
-                <input id="cdp-cover-url" type="hidden" value="">
-                <div class="form-hint">PNG / JPEG / GIF / WebP, max 5 MiB. Uploads on Save.</div>
-              </div>
-            </div>
-          </div>
+    {# ═══════ Creating a Data Package is a DRAWER, and it is shared ═══════
+       The form that used to be here — name, slug, description, lifecycle,
+       category, icon, colour, cover image and a group-access matrix, in a
+       520px centred card whose footer landed on top of its own last field —
+       is now js/components/package_drawer.js, opened from the right.
 
-          {# Inline RBAC matrix — replaces the modal-on-modal step-2 that
-             popped up after Create succeeded. <details> is collapsed by
-             default so the modal stays compact for admins who'll set
-             access later via the Resource Access page; opening it loads
-             the group list lazily. submitCreateDataPackage() reads any
-             chosen requirements and POSTs grants in parallel. #}
-          <details class="form-group" id="cdp-rbac-details"
-                   style="border:1px solid var(--border); border-radius:8px; padding:8px 12px;">
-            <summary style="cursor:pointer; font-weight:600; font-size:13px; user-select:none;">
-              Group access
-              <span style="color:var(--text-secondary); font-weight:normal; font-size:12px;">(optional)</span>
-            </summary>
-            <p class="form-hint" style="margin:8px 0;">
-              Grant per-group access tiers — <em>available</em> shows the
-              package in the group's Browse; <em>required</em>
-              auto-installs it into the group's stack on next pull. Leave
-              everything blank to manage access later from
-              <a href="/admin/groups">a group's Access tab</a>.
-            </p>
-            <div id="cdp-rbac-rows"
-                 style="display:flex; flex-direction:column; gap:6px; max-height:30vh; overflow-y:auto;">
-              <div class="loading" style="padding:6px; color:var(--text-secondary); font-size:12px;">
-                Click to load groups…
-              </div>
-            </div>
-          </details>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-secondary" onclick="closeCreateDataPackageModal()">Cancel</button>
-          <button class="btn btn-primary" id="cdp-submit-btn" onclick="submitCreateDataPackage()">
-            Create &amp; assign
-          </button>
-        </div>
-      </div>
-    </div>
+       Component, not page furniture, for the reason the tab switch made
+       obvious: the Packages lens is where "+ New package" belongs, and while
+       this page owned the only scaffolding, that button had to LINK here, so
+       creating a package moved you to the Tables tab to do it. Both lenses
+       now open the same drawer in place. What is left here is
+       `openCreatePackageDrawer()` — a two-line delegate this page's own two
+       entry points call: the chip-input's `chip-create` handler (which passes
+       the host, so the new package comes back as a chip on the table being
+       edited) and the `?new_package=1` auto-open the legacy catalog CTA
+       lands on. #}
 
     <script>
       // ── Cover image upload helpers (v50) ─────────────────────────────
-      // Shared between Create / Edit Data Package modals. The `prefix`
-      // arg is the modal's id prefix (`cdp` or `edp`); same DOM-id
+      // The Edit Data Package modal's cover picker. The `prefix` arg is the
+      // modal's id prefix (`edp`; the create side took its own copy into the
+      // drawer component with the rest of that form); same DOM-id
       // convention `<prefix>-cover-file`, `<prefix>-cover-url`,
       // `<prefix>-cover-preview`. Uploads on file pick (not on Save) so
       // the admin gets an immediate preview + failure-feedback loop;
@@ -2419,35 +2316,36 @@
         }
       }
 
-      // Track which chip-input host triggered the create flow so we can
-      // append the new chip back into it on success.
-      let _cdpHost = null;
-
-      function openCreateDataPackageModal(typed, host) {
-        _cdpHost = host;
-        document.getElementById('cdp-name').value = typed || '';
-        document.getElementById('cdp-slug').value =
-          (typed || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-        document.getElementById('cdp-desc').value = '';
-        document.getElementById('cdp-icon').value = '';
-        document.getElementById('cdp-color').value = '#e0f2fe';
-        // Reset cover image inputs on every open so a previous typed-and-
-        // cancelled value doesn't leak into the new package.
-        var coverUrl = document.getElementById('cdp-cover-url');
-        var coverFile = document.getElementById('cdp-cover-file');
-        if (coverUrl) coverUrl.value = '';
-        if (coverFile) coverFile.value = '';
-        _renderCoverPreview('cdp', '');
-        document.getElementById('createDataPackageModal').style.display = 'flex';
+      // ── Create a Data Package → the shared drawer ────────────────────
+      // The flow itself is js/components/package_drawer.js. These two keep
+      // the names this page's callers already use (the chip-input's
+      // `chip-create` handler, the `?new_package=1` entry point) so nothing
+      // has to know where the form moved to.
+      //
+      // `host` is the chip-input that asked for the package, if any: the
+      // drawer hands the new package back to it as a chip, so a table's
+      // edit form does not lose the assignment it was in the middle of.
+      function openCreatePackageDrawer(typed, host) {
+        window.AgnesPackageDrawer.open({
+          typed: typed,
+          chipHost: host,
+          onCreated: function (pkg, grantFailures) {
+            if (typeof loadDataPackagesSection === 'function') {
+              try { loadDataPackagesSection(); } catch (_) {}
+            }
+            if (typeof showToast === 'function') {
+              const msg = 'Data Package "' + pkg.name + '" created';
+              if (grantFailures > 0) {
+                showToast(msg + ' — ' + grantFailures + ' grant(s) failed', 'error');
+              } else {
+                showToast(msg, 'success');
+              }
+            }
+          },
+        });
       }
-      function closeCreateDataPackageModal() {
-        _cdpHost = null;
-        // Re-collapse + invalidate the lazy-loaded RBAC matrix so the
-        // next "+ New Data Package" starts with a clean, unloaded state.
-        const det = document.getElementById('cdp-rbac-details');
-        if (det) det.open = false;
-        _cdpRbacLoaded = false;
-        document.getElementById('createDataPackageModal').style.display = 'none';
+      function closeCreatePackageDrawer() {
+        if (window.AgnesPackageDrawer) window.AgnesPackageDrawer.close();
       }
 
       // ── Edit Data Package modal ──────────────────────────────────────
@@ -2899,182 +2797,13 @@
           .replace(/[^a-z0-9]+/g, '-')
           .replace(/^-|-$/g, '');
       }
-      async function submitCreateDataPackage() {
-        const btn = document.getElementById('cdp-submit-btn');
-        btn.disabled = true;
-        try {
-          const nameVal = document.getElementById('cdp-name').value.trim();
-          // Auto-derive slug from name when the slug field is blank —
-          // fixes the silent-fail-on-empty-slug bug where the form just
-          // stayed open with no error if the user typed Name and clicked
-          // Create without focusing-out of the Name input.
-          let slugVal = document.getElementById('cdp-slug').value.trim();
-          if (!slugVal && nameVal) {
-            slugVal = _deriveSlug(nameVal);
-            document.getElementById('cdp-slug').value = slugVal;
-          }
-          // v50: cover_image_url is set by onCoverFilePicked() when the
-          // admin selects + uploads a file. If they didn't, it stays
-          // empty — send null so the server doesn't see "".
-          var cdpCoverUrl = document.getElementById('cdp-cover-url').value;
-          const payload = {
-            name: nameVal,
-            slug: slugVal,
-            description: document.getElementById('cdp-desc').value.trim() || null,
-            icon: document.getElementById('cdp-icon').value.trim() || null,
-            color: document.getElementById('cdp-color').value.trim() || null,
-            cover_image_url: cdpCoverUrl || null,
-            // v51: lifecycle status + classification category.
-            status: document.getElementById('cdp-status').value || 'prod',
-            category: document.getElementById('cdp-category').value.trim() || null,
-          };
-          if (!payload.name || !payload.slug) {
-            await alertModal('Name is required (slug auto-derives from it).');
-            btn.disabled = false;
-            return;
-          }
-          const r = await fetch('/api/admin/data-packages', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'same-origin',
-            body: JSON.stringify(payload),
-          });
-          if (!r.ok) {
-            const detail = await r.json().catch(() => ({}));
-            await alertModal('Failed: ' + (detail.detail || r.statusText));
-            btn.disabled = false;
-            return;
-          }
-          const body = await r.json();
-          const newPkgId = body.id;
-          if (_cdpHost && _cdpHost.addChip) {
-            _cdpHost.addChip({ id: newPkgId, name: payload.name });
-          }
-
-          // Inline grants — read any per-group requirement the admin set
-          // in the collapsible "Group access" section and POST in parallel.
-          // Per-grant failures surface in the success toast; they don't
-          // roll back the package creation (admin can retry from a group's
-          // Access tab).
-          const grantFailures = await _submitCdpGrantsInline(newPkgId);
-
-          closeCreateDataPackageModal();
-
-          if (typeof loadDataPackagesSection === 'function') {
-            try { loadDataPackagesSection(); } catch (_) {}
-          }
-          if (typeof showToast === 'function') {
-            const baseMsg = 'Data Package "' + payload.name + '" created';
-            if (grantFailures > 0) {
-              showToast(baseMsg + ' — ' + grantFailures + ' grant(s) failed', 'error');
-            } else {
-              showToast(baseMsg, 'success');
-            }
-          }
-        } catch (e) {
-          await alertModal('Network error: ' + e.message);
-          btn.disabled = false;
-        } finally {
-          btn.disabled = false;
-        }
-      }
-
-      // Lazy-load groups into the inline RBAC matrix the first time the
-      // <details> is opened. Subsequent opens are no-ops. Groups are
-      // small + admin-only data — cache for the lifetime of the modal.
-      let _cdpRbacLoaded = false;
-      async function _cdpHydrateRbacMatrix() {
-        if (_cdpRbacLoaded) return;
-        const rowsEl = document.getElementById('cdp-rbac-rows');
-        rowsEl.innerHTML = '<div class="loading" style="padding:6px; color:var(--text-secondary); font-size:12px;">Loading groups…</div>';
-        try {
-          const r = await fetch('/api/admin/groups', { credentials: 'same-origin' });
-          if (!r.ok) throw new Error('HTTP ' + r.status);
-          const body = await r.json();
-          const groups = Array.isArray(body) ? body : (body.groups || []);
-          if (!groups.length) {
-            rowsEl.innerHTML = '<div style="padding:8px; color:var(--text-secondary); font-size:12px;">No groups defined yet. Create groups in <a href="/admin/groups">Groups</a> first.</div>';
-            return;
-          }
-          rowsEl.innerHTML = groups.map(g => {
-            const gid = String(g.id || g.name || '');
-            const gname = String(g.name || gid);
-            return (
-              '<div data-group-id="' + gid + '" '
-              + 'style="display:flex; gap:8px; align-items:center; '
-              +        'padding:6px; border:1px solid var(--border); border-radius:6px;">'
-              + '<span style="flex:1;">' + gname + '</span>'
-              + '<select class="cdp-rbac-req" style="padding:4px; border:1px solid var(--border); border-radius:4px;">'
-              + '<option value="">(no grant)</option>'
-              + '<option value="available">available</option>'
-              + '<option value="required">required</option>'
-              + '</select>'
-              + '</div>'
-            );
-          }).join('');
-          _cdpRbacLoaded = true;
-        } catch (e) {
-          rowsEl.innerHTML = '<div style="padding:8px; color:var(--error); font-size:12px;">Failed to load groups: ' + e.message + '</div>';
-        }
-      }
-      // Wire the lazy load on first <details> open. Re-fetched if the
-      // admin re-opens a fresh modal (closeCreateDataPackageModal resets
-      // the flag).
-      document.addEventListener('toggle', (e) => {
-        if (e.target && e.target.id === 'cdp-rbac-details' && e.target.open) {
-          _cdpHydrateRbacMatrix();
-        }
-      }, true);
-
-      async function _submitCdpGrantsInline(pkgId) {
-        const rows = document.querySelectorAll('#cdp-rbac-rows [data-group-id]');
-        const calls = [];
-        rows.forEach(row => {
-          const gid = row.getAttribute('data-group-id');
-          const sel = row.querySelector('.cdp-rbac-req');
-          const req = sel && sel.value;
-          if (!req) return;
-          calls.push(fetch('/api/admin/grants', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'same-origin',
-            body: JSON.stringify({
-              group_id: gid,
-              resource_type: 'data_package',
-              resource_id: pkgId,
-              requirement: req,
-            }),
-          }));
-        });
-        if (!calls.length) return 0;
-        const results = await Promise.allSettled(calls);
-        return results.filter(
-          r => r.status === 'rejected' || (r.value && !r.value.ok)
-        ).length;
-      }
-
-      // ── (removed) Step-2 RBAC modal-on-modal — folded into the
-      // create modal's collapsible "Group access" section. Stubs kept
-      // for callers that may still reference these names; they're no-ops
-      // now. Safe to delete in a follow-up once the audit confirms no
-      // other call sites. ──
-      let _cdpNewId = null;
-      let _cdpNewName = null;
-
-      function openCreateDataPackageRbacModal() { /* deprecated — inlined */ }
-      function skipCreateDataPackageRbac() {
-        if (typeof loadDataPackagesSection === 'function') {
-          loadDataPackagesSection();
-        }
-      }
-      function submitCreateDataPackageRbac() { /* deprecated — inlined */ }
 
       // Hook: chip-input on this page fires `chip-create` when the user
       // selects the "+ Create new" tail row in the dropdown.
       document.addEventListener('chip-create', (e) => {
         const host = e.detail && e.detail.host;
         if (host && host.dataset.chipInput === 'data_package') {
-          openCreateDataPackageModal(e.detail.typed, host);
+          openCreatePackageDrawer(e.detail.typed, host);
         }
       });
 
@@ -3502,9 +3231,9 @@
     </script>
 
     {# (removed) Create Data Package RBAC step-2 modal — the per-group
-       Available|Required matrix is now an inline collapsible section
-       inside #createDataPackageModal (#cdp-rbac-details). The modal-on-
-       modal pattern was confusing per user feedback. #}
+       Available|Required matrix folded into the create form itself, and
+       moved out of this page with it: it is the "Who gets it" section of
+       js/components/package_drawer.js now. #}
 
     <!-- ═══════════════ Bulk-assign tables → package ═══════════════
          Replaces the 50-clicks workflow ("edit each table individually
@@ -3763,6 +3492,10 @@
    classic <script> that arrives later would leave the first render unfiltered
    and unsorted. Same file /library and /chats load. #}
 <script src="{{ static_url('js/filter_toolbar.js') }}"></script>
+{# Create-a-package, as a component: the chip-input's `chip-create` handler and
+   the `?new_package=1` entry point both go through it. NOT deferred — the
+   auto-open on `?new_package=1` runs at DOMContentLoaded. #}
+<script src="{{ static_url('js/components/package_drawer.js') }}"></script>
 <script>
     /* ═══════════════════════════════════════════════════════════════
        Admin Tables - JavaScript
@@ -6774,8 +6507,8 @@
       // doesn't actually depend on it, but the page feels less janky if
       // the layout has rendered first).
       setTimeout(function() {
-        if (typeof openCreateDataPackageModal === 'function') {
-          openCreateDataPackageModal('', null);
+        if (typeof openCreatePackageDrawer === 'function') {
+          openCreatePackageDrawer('', null);
         }
       }, 50);
       // Strip the query param so a manual refresh doesn't re-open the
