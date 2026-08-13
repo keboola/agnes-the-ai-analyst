@@ -94,7 +94,9 @@ async def keboola_callback(request: Request):
         # private/internal address.
         from app.api.admin import _validate_url_not_private
 
-        _validate_url_not_private(kv.oauth_host(), "auth.keboola.oauth_host")
+        # Offload — _validate_url_not_private resolves the host (blocking DNS),
+        # which must not run on the single event loop (Tier-1 convention).
+        await run_in_threadpool(_validate_url_not_private, kv.oauth_host(), "auth.keboola.oauth_host")
         token = await _oauth_client().authorize_access_token(request)
     except Exception:
         logger.exception("Keboola OAuth token exchange failed")

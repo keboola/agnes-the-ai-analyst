@@ -328,20 +328,33 @@ class TestServerConfigAuthProvidersValidation:
             headers=_auth(token),
         )
         assert resp.status_code == 422, resp.text
-        assert "non-empty" in resp.json()["detail"]
+        assert "empty" in resp.json()["detail"]
 
-    def test_non_list_providers_rejected_with_422(self, seeded_app):
-        """The admin API accepts only a list — the comma-separated string
-        form is a YAML/env-var convenience, not a server-config one."""
+    def test_comma_separated_string_providers_accepted(self, seeded_app):
+        """The admin API accepts the comma-separated string form too — it is a
+        value the runtime resolver honors from yaml/env, so rejecting it here
+        would lock an operator whose config spells providers as text out of
+        saving the auth section (Devin review on #1288)."""
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
         resp = c.post(
             "/api/admin/server-config",
-            json={"sections": {"auth": {"providers": "google"}}, "confirm_danger": True},
+            json={"sections": {"auth": {"providers": "google,keboola"}}, "confirm_danger": True},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+
+    def test_all_unknown_string_providers_rejected_with_422(self, seeded_app):
+        """The all-unknown guard applies to the string form as well."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"auth": {"providers": "gogle,keybola"}}, "confirm_danger": True},
             headers=_auth(token),
         )
         assert resp.status_code == 422, resp.text
-        assert "non-empty" in resp.json()["detail"]
+        assert "no known provider" in resp.json()["detail"]
 
     def test_all_unknown_providers_list_rejected_with_422(self, seeded_app):
         """A list of only misspelled names would fail open to all providers at

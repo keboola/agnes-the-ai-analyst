@@ -262,19 +262,32 @@ def _validate_auth_providers_in_patch(sections: Dict[str, Dict[str, Any]]) -> No
     value = auth["providers"]
     if value is None:
         return
-    if not isinstance(value, list) or not value:
+    # Accept both the list form and the comma-separated string form, matching
+    # what the runtime resolver (`provider_registry.configured_allowlist`)
+    # honors from yaml/env — rejecting the string here would lock an operator
+    # whose config spells providers as text out of saving the auth section.
+    if isinstance(value, str):
+        names = [v.strip() for v in value.split(",") if v.strip()]
+    elif isinstance(value, list):
+        names = [str(v).strip() for v in value if str(v).strip()]
+    else:
         raise HTTPException(
             status_code=422,
-            detail="auth.providers must be a non-empty list of provider names (or omitted entirely)",
+            detail="auth.providers must be a list or comma-separated string of provider names (or omitted entirely)",
+        )
+    if not names:
+        raise HTTPException(
+            status_code=422,
+            detail="auth.providers must not be empty — omit it entirely to keep all sign-in methods",
         )
     from app.auth.provider_registry import KNOWN_PROVIDERS
 
-    if not any(isinstance(v, str) and v.strip() in KNOWN_PROVIDERS for v in value):
+    if not any(n in KNOWN_PROVIDERS for n in names):
         raise HTTPException(
             status_code=422,
             detail=(
                 f"auth.providers names no known provider (valid: {sorted(KNOWN_PROVIDERS)}); "
-                "a list of only unknown names would silently re-enable all sign-in methods"
+                "only unknown names would silently re-enable all sign-in methods"
             ),
         )
 
