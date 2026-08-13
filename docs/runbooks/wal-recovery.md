@@ -248,6 +248,40 @@ personal-access-token rows included. Read it as that user (or root) — the
 **This is a manual step only** — `refresh_rolling_snapshot` (`src/db.py`) does
 not participate in `_try_open_system_db`'s auto-recovery; the WAL-replay
 auto-restore in §2 still only ever considers `system.duckdb.pre-migrate`.
+
+**Search indexes rebuild themselves — with one caveat for offline hosts.**
+The snapshot is a real `EXPORT DATABASE`, including the DuckDB FTS artifacts
+`PRAGMA create_fts_index` builds over `knowledge_items` and `glossary_terms`
+(`src/fts.py`) — `fts_main_knowledge_items` / `fts_main_glossary_terms`,
+each its own schema of tables plus an extension-generated `match_bm25`
+macro. `IMPORT DATABASE` replays that macro's `CREATE MACRO` statement,
+which needs DuckDB to resolve the `fts` extension's functions; if the
+extension isn't already loaded on the host running the import, DuckDB
+auto-installs it on the spot (the same autoload it uses for
+`read_json`/spatial/etc.) — invisible on a host with normal network access,
+but on an offline/air-gapped recovery host that auto-install fails, and
+because `IMPORT DATABASE` runs the whole `schema.sql` as one transaction,
+that single failing statement aborts the *entire* import — no table comes
+back, not just search. If `IMPORT DATABASE` fails with an extension-download
+error, import from a copy of the snapshot with the FTS lines stripped out —
+`knowledge_items` and `glossary_terms` themselves are untouched by this,
+only their search index:
+
+```bash
+cp -r "${STATE_DIR}/system.duckdb.rolling-snapshot" /tmp/snapshot-no-fts
+sed -i '/fts_main_/d' /tmp/snapshot-no-fts/schema.sql /tmp/snapshot-no-fts/load.sql
+# then IMPORT DATABASE '/tmp/snapshot-no-fts' in place of the recipe above
+```
+
+Either way — full import or the stripped-copy workaround — both indexes
+rebuild themselves for free the next time the app starts against the
+restored file (`app/main.py`'s boot-time `ensure_knowledge_fts_index` /
+`ensure_glossary_fts_index` call) or the next time either table is written
+through its repository. Until a rebuild completes, `/api/memory?search=` and
+the glossary search box serve unranked `ILIKE` results — the same fallback
+the whole feature already uses whenever the `fts` extension can't load —
+never an error.
+
 Then start the app and verify (see §6).
 
 #### Option B — force the pre-migrate snapshot (data loss: rows since last migration)
@@ -378,6 +412,7 @@ curl -sf http://localhost:5000/api/health | python3 -m json.tool
 | `_peek_schema_version` | `src/db.py` — read-only version probe for the snapshot |
 | `_ensure_schema` | `src/db.py` — takes pre-migrate snapshot; runs post-migration `CHECKPOINT` |
 | `refresh_rolling_snapshot` | `src/db.py` — Option A2: rolling `system.duckdb.rolling-snapshot/` refresh (#380) |
+| `ensure_knowledge_fts_index` / `ensure_glossary_fts_index` | `src/fts.py` — build the `fts_main_*` BM25 index schemas; boot-time rebuild in `app/main.py` (Option A2 search-index note) |
 | `SCHEMA_VERSION` | `src/db.py` line 51 — current target version |
 | `schema_version` table | `src/db.py` `_SYSTEM_SCHEMA` — `version INTEGER`, `applied_at TIMESTAMP` |
 | WAL-recovery tests | `tests/test_db_wal_recovery.py` |

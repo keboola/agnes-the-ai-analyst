@@ -21,6 +21,7 @@ docstring in ``src/db.py`` for the full rationale.
 from __future__ import annotations
 
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -407,3 +408,194 @@ def test_export_runs_outside_the_system_db_lock(system_db):
     assert seen.get("lock_free_during_export") is True, (
         "EXPORT DATABASE executed while _system_db_lock was held — it must run on a dedicated cursor outside the lock"
     )
+
+
+def test_skips_once_shutdown_has_begun(system_db):
+    """Devin on #1294 — a fresh EXPORT DATABASE started after the lifespan
+    has begun tearing down could still be running when close_system_db()
+    is reached. The simplest guard is to never start one: once
+    app.api.health_probes.begin_shutdown() has armed the shared drain
+    budget, refresh_rolling_snapshot() must no-op — even under
+    ``force=True``, which exists for the CLI/tests, not for shutdown.
+    """
+    conn, tmp_path = system_db
+    import src.db as db_mod
+    from app.api.health_probes import begin_shutdown, end_shutdown
+
+    begin_shutdown()
+    try:
+        assert db_mod.refresh_rolling_snapshot(force=True) is False
+    finally:
+        end_shutdown()
+
+    assert not _snapshot_dir(tmp_path).exists()
+    assert not _tmp_scratch_dir(tmp_path).exists()
+
+
+def test_shutdown_interrupts_in_flight_export_and_close_does_not_race_it(system_db, monkeypatch):
+    """Devin on #1294 — if refresh_rolling_snapshot's EXPORT DATABASE is
+    still running when the lifespan reaches close_system_db() (its
+    to_thread_drain_on_cancel budget was exhausted and the thread
+    abandoned), closing the parent connection out from under that
+    still-executing child cursor is the exact wedge the drain helper exists
+    to prevent. close_system_db() must instead interrupt the export and
+    wait (bounded) for it to unwind before closing — never abandoning it,
+    never hanging — leaving the tmp scratch discarded and the previous
+    snapshot intact.
+    """
+    conn, tmp_path = system_db
+    import src.db as db_mod
+
+    _seed(conn, "snap-before-shutdown", "must-survive")
+    assert db_mod.refresh_rolling_snapshot(force=True) is True
+    final_dir = _snapshot_dir(tmp_path)
+    _assert_loadable(final_dir, "snap-before-shutdown", "must-survive")
+
+    export_started = threading.Event()
+    interrupted = threading.Event()
+    real_conn = db_mod._system_db_conn
+
+    class _SlowExportCursor:
+        def __init__(self, inner):
+            self._c = inner
+
+        def execute(self, sql, *a, **kw):
+            if str(sql).lstrip().upper().startswith("EXPORT"):
+                export_started.set()
+                # Mirrors a real multi-second EXPORT DATABASE still in
+                # flight when close_system_db() runs: block until
+                # interrupt() is called. The timeout is only a test
+                # safety net so a regression can't hang the whole suite.
+                interrupted.wait(timeout=5.0)
+                raise RuntimeError("interrupted")
+            return self._c.execute(sql, *a, **kw)
+
+        def interrupt(self):
+            interrupted.set()
+
+        def close(self):
+            pass
+
+        def __getattr__(self, name):
+            return getattr(self._c, name)
+
+    class _SlowExportConn:
+        def cursor(self):
+            return _SlowExportCursor(real_conn.cursor())
+
+        def execute(self, sql, *a, **kw):
+            # close_system_db()'s own post-wait CHECKPOINT/close, once the
+            # interrupt dance above is over — not under test here.
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(db_mod, "_system_db_conn", _SlowExportConn())
+
+    result: dict = {}
+
+    def _run():
+        result["refresh"] = db_mod.refresh_rolling_snapshot(force=True)
+
+    t = threading.Thread(target=_run)
+    t.start()
+    try:
+        assert export_started.wait(timeout=5.0), "EXPORT DATABASE never started"
+
+        # Mirror the lifespan's shutdown sequence: begin_shutdown() runs
+        # well before close_system_db() (app/main.py).
+        from app.api.health_probes import begin_shutdown, end_shutdown
+
+        begin_shutdown()
+        try:
+            start = time.monotonic()
+            db_mod.close_system_db()
+            elapsed = time.monotonic() - start
+        finally:
+            end_shutdown()
+    finally:
+        t.join(timeout=5.0)
+
+    assert interrupted.is_set(), "close_system_db() must interrupt the in-flight export cursor"
+    assert elapsed < 1.0, f"close_system_db() took {elapsed:.1f}s — it must not block for the full interrupt budget"
+    assert not t.is_alive(), "refresh_rolling_snapshot's thread was abandoned, not drained"
+    assert result.get("refresh") is False
+    assert not _tmp_scratch_dir(tmp_path).exists(), "an interrupted export must discard its tmp scratch dir"
+    assert final_dir.is_dir(), "the previous snapshot must survive an interrupted refresh"
+    _assert_loadable(final_dir, "snap-before-shutdown", "must-survive")
+
+    try:
+        real_conn.close()
+    except Exception:
+        pass
+
+
+def test_export_import_round_trips_real_fts_index_schemas(system_db):
+    """Devin on #1294 — production system.duckdb carries DuckDB FTS
+    artifacts: ``PRAGMA create_fts_index`` on ``knowledge_items`` and
+    ``glossary_terms`` (src/fts.py) creates ``fts_main_*`` schemas holding
+    both tables and extension-generated macros. EXPORT/IMPORT DATABASE is a
+    logical round-trip, and the rest of this test module only ever exercises
+    a state DB with no FTS index — so this path was untested. Build the
+    indexes for real, then prove: (1) EXPORT still succeeds with those extra
+    schemas present, and (2) the core tables round-trip into a fresh
+    ``IMPORT DATABASE`` connection.
+
+    BM25 search *functioning* again after a manual restore is a separate,
+    already-documented concern — see docs/runbooks/wal-recovery.md Option A2
+    and app.main's boot-time index rebuild — because DuckDB transparently
+    re-installs the ``fts`` extension the moment the imported schema.sql
+    references its functions (confirmed: ``CREATE MACRO ... AS stem(...)``
+    triggers the same autoload DuckDB uses for ``read_json``/spatial/etc.),
+    which needs the same extension-download access every other FTS path in
+    this codebase already requires and gracefully degrades without
+    (``ensure_fts_loaded`` -> ILIKE fallback).
+    """
+    conn, tmp_path = system_db
+    from src.fts import ensure_fts_loaded, ensure_glossary_fts_index, ensure_knowledge_fts_index
+
+    if not ensure_fts_loaded(conn):
+        pytest.skip("fts extension not loadable in this environment")
+
+    from src.repositories.glossary import GlossaryRepository
+    from src.repositories.knowledge import KnowledgeRepository
+
+    KnowledgeRepository(conn).create(
+        id="k1", title="release process", content="how we cut a release", category="process"
+    )
+    KnowledgeRepository(conn).create(id="k2", title="onboarding", content="new hire checklist", category="process")
+    GlossaryRepository(conn).create(id="g1", term="MRR", definition="Monthly recurring revenue")
+    GlossaryRepository(conn).create(id="g2", term="ARR", definition="Annual recurring revenue")
+
+    # KnowledgeRepository.create / GlossaryRepository.create already rebuild
+    # their index as a side effect of the insert above; call the src/fts.py
+    # helpers explicitly too so this test's intent — real FTS artifacts,
+    # built the same way production builds them — isn't implicit.
+    assert ensure_knowledge_fts_index(conn) is True
+    assert ensure_glossary_fts_index(conn) is True
+
+    schemas = {r[0] for r in conn.execute("SELECT schema_name FROM information_schema.schemata").fetchall()}
+    assert "fts_main_knowledge_items" in schemas, "test setup did not actually create the knowledge FTS schema"
+    assert "fts_main_glossary_terms" in schemas, "test setup did not actually create the glossary FTS schema"
+
+    from src.db import refresh_rolling_snapshot
+
+    assert refresh_rolling_snapshot(force=True) is True, (
+        "EXPORT DATABASE must succeed with real fts_main_* schemas present"
+    )
+
+    snap_dir = _snapshot_dir(tmp_path)
+    fresh = duckdb.connect(":memory:")
+    try:
+        fresh.execute(f"IMPORT DATABASE '{snap_dir}'")
+        assert fresh.execute("SELECT id, title FROM knowledge_items ORDER BY id").fetchall() == [
+            ("k1", "release process"),
+            ("k2", "onboarding"),
+        ]
+        assert fresh.execute("SELECT id, term FROM glossary_terms ORDER BY id").fetchall() == [
+            ("g1", "MRR"),
+            ("g2", "ARR"),
+        ]
+    finally:
+        fresh.close()

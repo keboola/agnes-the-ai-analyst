@@ -1054,11 +1054,17 @@ async def lifespan(app):
     if role_enabled(Role.WORKER):
         _maybe_rebuild_on_boot()
 
-    # Rebuild the FTS BM25 index over knowledge_items at boot (issue #121).
-    # The migration to schema v47 already does this on first upgrade, but
-    # for instances that have been on v47 across restarts the boot-time
-    # rebuild guarantees the index reflects whatever mutations landed via
-    # the BG-task / scheduler paths that bypass the per-mutation hook.
+    # Rebuild the FTS BM25 indexes over knowledge_items and glossary_terms at
+    # boot (issue #121; glossary_terms joined in for #1294 — a rolling/WAL
+    # recovery restore lands a plain system.duckdb with no fts_main_* schemas
+    # until something rebuilds them, and this is the only unconditional
+    # safety net for that: knowledge_items/glossary_terms mutations rebuild
+    # their own index on write, but a table that hasn't been touched since
+    # restore would otherwise stay on the ILIKE fallback indefinitely). The
+    # migration to schema v47 already does this on first upgrade, but for
+    # instances that have been on v47 across restarts the boot-time rebuild
+    # guarantees the index reflects whatever mutations landed via the
+    # BG-task / scheduler paths that bypass the per-mutation hook.
     # Soft-failure — logs WARNING and the repo falls back to ILIKE.
     #
     # DuckDB-only: the BM25 index is a DuckDB FTS-extension artefact built on
@@ -1069,9 +1075,11 @@ async def lifespan(app):
     if not _use_pg():
         try:
             from src.db import get_system_db
-            from src.fts import ensure_knowledge_fts_index
+            from src.fts import ensure_glossary_fts_index, ensure_knowledge_fts_index
 
-            ensure_knowledge_fts_index(get_system_db())
+            _fts_conn = get_system_db()
+            ensure_knowledge_fts_index(_fts_conn)
+            ensure_glossary_fts_index(_fts_conn)
         except Exception:
             logger.exception("startup FTS index rebuild failed; falling back to ILIKE on /api/memory?search=")
 

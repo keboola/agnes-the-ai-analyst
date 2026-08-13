@@ -151,6 +151,19 @@ def end_shutdown() -> None:
     _drain_deadline = None
 
 
+def is_shutdown_started() -> bool:
+    """True once :func:`begin_shutdown` has armed the shared drain budget.
+
+    Lets a periodic background job check, before kicking off new work,
+    whether the lifespan has begun tearing down — see
+    ``src.db.refresh_rolling_snapshot`` (#1294), which must not start a
+    fresh multi-second ``EXPORT DATABASE`` once shutdown is under way: a
+    drain abandoned by :func:`to_thread_drain_on_cancel` would otherwise
+    still be executing when the lifespan reaches ``close_system_db()``.
+    """
+    return _drain_deadline is not None
+
+
 def _drain_timeout_s() -> float:
     raw = os.environ.get("AGNES_DRAIN_TIMEOUT_S")
     if raw is None:
@@ -237,8 +250,7 @@ async def to_thread_drain_on_cancel(fn: Callable[..., _T], /, *args: Any, **kwar
             await asyncio.wait_for(asyncio.shield(future), timeout=budget)
         if not future.done():
             logger.warning(
-                "readiness: drain budget exhausted (%.1fs of %.0fs%s) waiting for %s; "
-                "abandoning the thread",
+                "readiness: drain budget exhausted (%.1fs of %.0fs%s) waiting for %s; abandoning the thread",
                 budget,
                 _drain_timeout_s(),
                 ", shared across shutdown" if _drain_deadline is not None else "",

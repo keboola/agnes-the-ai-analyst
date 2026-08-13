@@ -8665,8 +8665,50 @@ def close_system_db() -> None:
     CHECKPOINT is best-effort: if it raises (locked, disk full, etc.)
     we still proceed to close — the recovery path in ``_try_open_system_db``
     plus the longer ``stop_grace_period`` in compose are the safety nets.
+
+    **Rolling-snapshot handoff (#1294):** if ``refresh_rolling_snapshot`` is
+    mid-``EXPORT DATABASE`` on a cursor derived from this connection —
+    reachable when its ``to_thread_drain_on_cancel`` caller (the
+    checkpoint/rolling-snapshot loop in ``app.main``) abandoned that thread
+    because the export outlived the shared shutdown drain budget — closing
+    the parent connection out from under that still-executing child cursor
+    is the exact wedge the drain helper exists to prevent. So before doing
+    anything else, interrupt that cursor and wait (bounded by
+    ``_ROLLING_SNAPSHOT_INTERRUPT_TIMEOUT_S``) for it to actually finish.
+    The wait is polled rather than a single ``interrupt()`` call because
+    ``interrupt()`` only cancels whatever is *currently* executing on the
+    cursor — if it lands in the gap between the export's own ``CHECKPOINT``
+    and ``EXPORT DATABASE`` statements it is a no-op, so we keep re-issuing
+    it until the export thread reports itself idle or the bound elapses.
+    This never blocks indefinitely: once the bound is spent we log and
+    proceed to close anyway, same fallback philosophy as the CHECKPOINT
+    best-effort below.
     """
     global _system_db_conn, _system_db_path
+
+    with _rolling_snapshot_export_lock:
+        export_cur = _rolling_snapshot_export_cursor
+    if export_cur is not None:
+        deadline = time.monotonic() + _ROLLING_SNAPSHOT_INTERRUPT_TIMEOUT_S
+        while not _rolling_snapshot_export_idle.is_set():
+            try:
+                export_cur.interrupt()
+            except Exception as exc:
+                logger.debug("close_system_db: interrupting in-flight rolling-snapshot export failed (%s)", exc)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            # Short poll, not a single wait for the full remaining budget:
+            # interrupt() must be re-issued once the export moves from
+            # CHECKPOINT into EXPORT DATABASE (see docstring above).
+            _rolling_snapshot_export_idle.wait(timeout=min(remaining, 0.05))
+        if not _rolling_snapshot_export_idle.is_set():
+            logger.warning(
+                "close_system_db: rolling-snapshot export still running %.1fs after being "
+                "interrupted; closing system.duckdb anyway",
+                _ROLLING_SNAPSHOT_INTERRUPT_TIMEOUT_S,
+            )
+
     if _system_db_conn:
         try:
             _system_db_conn.execute("CHECKPOINT")
@@ -8723,6 +8765,29 @@ def checkpoint_system_db() -> bool:
 
 _ROLLING_SNAPSHOT_DIRNAME = "system.duckdb.rolling-snapshot"
 _ROLLING_SNAPSHOT_DEFAULT_INTERVAL_HOURS = 6.0
+
+#: Bounds how long close_system_db() waits for an in-flight rolling-snapshot
+#: EXPORT to unwind after being interrupted (#1294 — see refresh_rolling_snapshot
+#: and close_system_db below). A safety bound, not the expected wait: DuckDB's
+#: interrupt() is checked at operator boundaries and returns in well under a
+#: second even mid-EXPORT of a multi-million-row table (measured).
+_ROLLING_SNAPSHOT_INTERRUPT_TIMEOUT_S = 5.0
+
+# Tracks the cursor (if any) currently running the rolling-snapshot EXPORT, so
+# close_system_db() can interrupt + wait for it instead of closing the parent
+# connection out from under a still-executing child cursor (#1294) — the exact
+# wedge `to_thread_drain_on_cancel` exists to prevent, reachable here because a
+# full-DB EXPORT can outlive that helper's shared shutdown drain budget.
+#
+# A DEDICATED lock, not `_system_db_lock`: close_system_db() holds this only
+# long enough to read the cursor reference, then waits on the Event *unlocked*.
+# refresh_rolling_snapshot's own cleanup needs this same lock (briefly, in its
+# `finally`) to clear the cursor and set the Event — holding it across the wait
+# would deadlock the two against each other.
+_rolling_snapshot_export_lock = threading.Lock()
+_rolling_snapshot_export_cursor: duckdb.DuckDBPyConnection | None = None
+_rolling_snapshot_export_idle = threading.Event()
+_rolling_snapshot_export_idle.set()  # no export in flight by default
 
 
 def _rolling_snapshot_interval_hours() -> float:
@@ -8823,16 +8888,44 @@ def refresh_rolling_snapshot(*, force: bool = False) -> bool:
     file is chmod'd ``0o600`` after — matching :func:`_move_to_broken` and
     the discarded-WAL path rather than landing under the process umask.
 
+    **Shutdown-awareness (#1294):** a full-DB ``EXPORT DATABASE`` can run for
+    whole seconds — long enough to outlive the shared shutdown drain budget
+    that ``app.main``'s checkpoint loop waits on (see
+    ``to_thread_drain_on_cancel`` in ``app.api.health_probes``), which would
+    abandon this function's thread mid-export and let the lifespan's
+    :func:`close_system_db` close the connection out from under the still
+    executing cursor — the exact wedge that drain helper exists to prevent.
+    Two guards close that gap: (1) this function returns ``False``
+    immediately, before doing any work, once
+    :func:`app.api.health_probes.is_shutdown_started` reports the lifespan
+    has begun tearing down — checked again right before the ``EXPORT``
+    statement itself, in case shutdown starts mid-``CHECKPOINT``; and (2)
+    while an export cursor is executing, it is published for
+    :func:`close_system_db` to interrupt and wait (bounded) on, instead of
+    racing it. Neither guard is skipped by ``force=True``.
+
     Args:
-        force: skip both the Postgres-backend guard's cadence check and the
+        force: skip the Postgres-backend guard's cadence check and the
             freshness gate — used by the CLI/tests to refresh unconditionally.
-            The Postgres no-op guard itself is never skipped.
+            The Postgres no-op guard and the shutdown guard (#1294) are both
+            never skipped.
 
     Returns:
-        True if a refresh actually ran, False if skipped (PG backend, no
-        open singleton, still fresh, cadence disabled) or if the export/swap
-        failed (previous snapshot preserved either way).
+        True if a refresh actually ran, False if skipped (PG backend,
+        shutdown under way, no open singleton, still fresh, cadence
+        disabled) or if the export/swap failed (previous snapshot preserved
+        either way).
     """
+    global _rolling_snapshot_export_cursor
+
+    from app.api.health_probes import is_shutdown_started
+
+    if is_shutdown_started():
+        # The lifespan is tearing down; close_system_db() may run at any
+        # moment. Do not start a fresh multi-second EXPORT that could
+        # outlive it — see the docstring's "Shutdown-awareness" section.
+        return False
+
     if _state_backend_is_pg():
         return False
 
@@ -8887,9 +8980,9 @@ def refresh_rolling_snapshot(*, force: bool = False) -> bool:
         # full-DB EXPORT can take whole seconds on a grown system.duckdb;
         # holding the lock across it would stall get_system_db() — and with
         # it every authed request — for the export's entire duration (Devin
-        # on #1294). If close_system_db() closes the parent connection
-        # mid-export, the cursor's execute raises and this cycle fails
-        # harmlessly: the previous snapshot stays untouched.
+        # on #1294). The cursor is published below so close_system_db() can
+        # interrupt + wait for it instead of closing the parent connection
+        # out from under it (#1294 follow-up — see that function's docstring).
         try:
             cur = conn.cursor()
         except Exception as exc:
@@ -8897,6 +8990,10 @@ def refresh_rolling_snapshot(*, force: bool = False) -> bool:
             # the None-check and here — same "no open singleton" outcome.
             logger.debug("refresh_rolling_snapshot: no usable cursor (%s)", exc)
             return False
+
+    with _rolling_snapshot_export_lock:
+        _rolling_snapshot_export_cursor = cur
+        _rolling_snapshot_export_idle.clear()
 
     try:
         # A crashed prior attempt can leave a stale tmp export behind;
@@ -8930,6 +9027,17 @@ def refresh_rolling_snapshot(*, force: bool = False) -> bool:
             # data regardless of what's flushed to the on-disk file.
             logger.debug("refresh_rolling_snapshot: CHECKPOINT failed (%s); exporting anyway", exc)
 
+        if is_shutdown_started():
+            # Shutdown began while we were mid-CHECKPOINT (interrupted by
+            # close_system_db() or not) — do not start EXPORT DATABASE at
+            # all. close_system_db() may already be interrupting/waiting on
+            # this cursor (see its docstring); returning now, instead of
+            # starting a fresh multi-second statement, is what lets that
+            # wait resolve quickly.
+            logger.debug("refresh_rolling_snapshot: shutdown started before EXPORT; aborting")
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return False
+
         try:
             cur.execute(f"EXPORT DATABASE '{tmp_dir}' (FORMAT PARQUET, COMPRESSION ZSTD)")
         except Exception as exc:
@@ -8945,6 +9053,13 @@ def refresh_rolling_snapshot(*, force: bool = False) -> bool:
         # the artifact is never exposed under its final name.
         _tighten_snapshot_modes(tmp_dir)
     finally:
+        # Unpublish the cursor and flip the idle event BEFORE closing it —
+        # close_system_db()'s wait (#1294) is keyed on the event, not on
+        # cur.close() completing, so this is what lets an interrupted wait
+        # unblock as soon as we're done issuing statements on the cursor.
+        with _rolling_snapshot_export_lock:
+            _rolling_snapshot_export_cursor = None
+            _rolling_snapshot_export_idle.set()
         try:
             cur.close()
         except Exception:
