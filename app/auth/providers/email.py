@@ -8,6 +8,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 import duckdb
 
@@ -119,7 +120,10 @@ async def send_magic_link(
     logged to stderr and returned in the response body so a developer can
     click it without an email transport.
     """
-    user, link, send_error = _generate_and_deliver_magic_link(body.email)
+    # The delivery helper does a blocking SMTP/SendGrid send (+ sync repo
+    # writes); offload it so a slow mail server can't freeze the single event
+    # loop for every other request (the Tier-1 convention in get_current_user).
+    user, link, send_error = await run_in_threadpool(_generate_and_deliver_magic_link, body.email)
 
     # Always return success to prevent email enumeration
     if not user:
@@ -172,7 +176,9 @@ async def send_magic_link_web(
     email = (email or "").strip()
     next_path = safe_next_path(next, default="")
 
-    user, link, _send_error = _generate_and_deliver_magic_link(email)
+    # Offload the blocking SMTP/SendGrid send off the event loop — same Tier-1
+    # rationale as the JSON /send-link variant.
+    user, link, _send_error = await run_in_threadpool(_generate_and_deliver_magic_link, email)
 
     console_mode = bool(user) and is_local_dev_mode()
     if console_mode:
