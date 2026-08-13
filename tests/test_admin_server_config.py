@@ -829,6 +829,21 @@ class TestRedactionHelpers:
         assert not _is_secret_key("name")
         assert not _is_secret_key("allowed_domain")
 
+    def test_bool_switch_leaves_are_not_masked_despite_secret_substrings(self):
+        """A bool switch whose leaf name carries a redactor substring must not
+        be masked to ``***`` on the settings screen — ``_mask(False)`` renders
+        as truthy and would silently flip the switch back on (Devin #1183/#1288).
+        Both registries feed the exemption: _KNOWN_FIELDS and SWITCHES."""
+        from app.api.admin import _is_secret_key
+
+        # keboola_token_header switch → auth.keboola.allow_token_header (has "token")
+        assert not _is_secret_key("allow_token_header")
+        # pre-existing sibling from the same failure mode
+        assert not _is_secret_key("allow_query_param_token")
+        # real secrets are still masked
+        assert _is_secret_key("client_secret")
+        assert _is_secret_key("bot_token")
+
     def test_redact_masks_nested_secrets(self):
         from app.api.admin import _redact
 

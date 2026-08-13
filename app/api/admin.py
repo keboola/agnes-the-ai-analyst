@@ -1155,11 +1155,18 @@ def _declared_boolean_fields() -> frozenset[str]:
     name contains the substring "token" (Devin Review on #1183).
 
     Derived from the registry rather than an allowlist so a future boolean is
-    covered without anyone remembering this failure mode.
+    covered without anyone remembering this failure mode. Both registries feed
+    it: the ``_KNOWN_FIELDS`` panel declarations AND the ``SWITCHES`` registry
+    — a bool switch whose leaf name carries a redactor substring (e.g.
+    ``auth.keboola.allow_token_header`` / ``mcp.allow_query_param_token``, both
+    matching "token") would otherwise render as ``***`` on the settings screen,
+    the same failure mode this guards against.
     """
-    return frozenset(
+    from_known = {
         name for section in _KNOWN_FIELDS.values() for name, spec in section.items() if spec.get("kind") == "bool"
-    )
+    }
+    from_switches = {s.config_keys[-1] for s in SWITCHES if s.kind == "bool" and s.config_keys}
+    return frozenset(from_known | from_switches)
 
 
 def _is_secret_key(key: str) -> bool:
