@@ -10,6 +10,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **`agnes status` reported `Parquets: 0` for a workspace holding hundreds of parquet files — a wrong zero in the one command an analyst runs to ask "is my data here?".** Two independent causes, either of which alone produced the zero. The count globbed `server/parquet/*.parquet` **non-recursively**, but a partitioned table is a *directory* of parts (`<tid>/month=…/data.parquet`), so a workspace of partitioned tables counted zero however many parts were on disk; and it ignored `.claude/data/` entirely, the tree the v49 stack sync actually writes for data packages and direct tables. The counter now counts **tables, not files**, across both trees, de-duplicated by table id — matching the field name (`parquet_tables`) that the old file count only coincidentally agreed with for single-file tables. Under `.claude/data/` only the canonical `_shared/` store is counted, because `_direct/` and `<package_slug>/` hold reference links back into it, so a table shipped by several packages counts once rather than once per package. Empty and `.staging-<tid>` directories left behind by an interrupted partitioned sync hold nothing queryable and are skipped, matching what the DuckDB view rebuild already does. The printed label is now `Tables` rather than `Parquets`; a count of tables labelled "Parquets" is the ambiguity that made the wrong zero hard to interpret in the first place. Worth stating plainly for anyone who hit this: the number was wrong, the data was fine.
+- **`agnes status` no longer answers `Initialized: no` beside a populated table count without explaining it.** The two lines answer different questions and can legitimately disagree: `agnes pull` writes into any directory that is workspace-*shaped* (`is_workspace_shaped` accepts a bare `server/parquet/`), whereas "initialized" means `agnes init` ran *there* and installed the Claude Code hooks and workspace template. A directory receiving pulls but never initialized therefore reported `no` and was advised to "bootstrap", which reads as though the data were absent. That case now names the half that is actually missing — the hooks and template, not the data — and asks for `agnes init` to finish setting it up.
+
 ## [0.83.15] - 2026-08-14
 
 ### Added
