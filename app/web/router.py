@@ -3639,7 +3639,7 @@ async def library_page(
         "files": "Files",
         "skill": "Skills",
         "plugin": "Plugins",
-        "agent": "Agents",
+        "agent": "Agent templates",
         "recipe": "Recipes",
         "data_package": "Data packages",
         "memory_domain": "Memory",
@@ -3930,7 +3930,7 @@ async def skills_page(
     request: Request,
     user: dict = Depends(get_current_user),
 ):
-    """Builder — one authoring surface for skills, plugins and shareable agents.
+    """Builder — one authoring surface for skills, plugins and agent templates.
 
     Formerly the single-type Skill Builder. Two in-page steps: a TYPE PICKER,
     then a type-adapted BUILDER that keeps one shell (identity, access,
