@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **`system.duckdb.rolling-snapshot/` — a rolling-refreshed recovery snapshot, refreshed independently of migration transitions.** `system.duckdb.pre-migrate` is captured once per migration and never touched again, so as a recovery aid it goes stale within hours of normal operation — every row written since the last migration is lost on a WAL-recovery restore (#379). `refresh_rolling_snapshot` (`src/db.py`) now maintains a second, rolling-refreshed artifact on a configurable cadence (`backups.rolling_snapshot_interval_hours`, default 6h, `0` disables — see `config/instance.yaml.example`): a `CHECKPOINT` followed by a logical `EXPORT DATABASE (FORMAT PARQUET, COMPRESSION ZSTD)` into a tmp directory, atomically swapped into place only once the export fully succeeds. It runs over the app's own long-lived `system.duckdb` connection on the existing periodic-checkpoint tick (#710) — never a second connection to the file — and is a no-op on a Postgres-state instance. `system.duckdb.pre-migrate` itself is unchanged: it stays the single-file artifact the WAL-recovery auto-restore path (`_try_open_system_db`) reads directly. The rolling snapshot is a manual-recovery aid (`IMPORT DATABASE`) documented as a new "Option A2" in `docs/runbooks/wal-recovery.md` (#380).
+
 ## [0.83.9] - 2026-08-13
 
 ### Added

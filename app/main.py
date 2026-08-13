@@ -664,7 +664,9 @@ def _state_checkpoint_interval_s() -> float:
 
 
 async def _state_checkpoint_loop(interval_s: float) -> None:
-    """Periodically fold the system.duckdb WAL into the main file (#710).
+    """Periodically fold the system.duckdb WAL into the main file (#710),
+    and — on the cadence configured separately — refresh the rolling
+    recovery snapshot (#380).
 
     The app's long-lived singleton connection makes DuckDB defer its own
     threshold checkpoint indefinitely, so without this loop the state-DB
@@ -676,10 +678,18 @@ async def _state_checkpoint_loop(interval_s: float) -> None:
     cancellation waits for an in-flight CHECKPOINT/read instead of letting
     the lifespan's ``close_system_db()`` race it (see that helper's
     docstring in ``app/api/health_probes.py``).
+
+    ``refresh_rolling_snapshot`` piggybacks on this same tick rather than
+    getting its own loop/timer: it needs the identical locking discipline
+    (the app's own ``system.duckdb`` singleton, never a second connection),
+    so reusing this loop is both the simplest wiring and the only safe one.
+    It self-gates on its own (much coarser) cadence — see
+    ``backups.rolling_snapshot_interval_hours`` — so most ticks here no-op
+    for it in a single mtime check.
     """
     from app.api.health_probes import to_thread_drain_on_cancel
     from app.secrets import reapply_all_overlay_tokens_from_vault
-    from src.db import checkpoint_operational_db, checkpoint_system_db
+    from src.db import checkpoint_operational_db, checkpoint_system_db, refresh_rolling_snapshot
 
     while True:
         await asyncio.sleep(interval_s)
@@ -693,6 +703,14 @@ async def _state_checkpoint_loop(interval_s: float) -> None:
             # checkpoint_*_db already swallow DB errors; this guards the loop
             # itself (e.g. to_thread failure) so it never dies.
             logger.exception("state-checkpoint tick failed; loop continues")
+        try:
+            # No-ops instantly on a Postgres-state instance, when no
+            # system.duckdb singleton is open yet, or when the rolling
+            # snapshot is still within its configured cadence — the
+            # EXPORT DATABASE cost only actually runs on the (rare) stale tick.
+            await to_thread_drain_on_cancel(refresh_rolling_snapshot)
+        except Exception:
+            logger.exception("rolling-snapshot refresh tick failed; loop continues")
         try:
             # Belt-and-braces piggyback (wave 2C task 6): re-apply every
             # env_overlay/* vault row to os.environ on every tick. Covers a
