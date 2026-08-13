@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- A sync that actually syncs ≥1 table now publishes a `sync_completed` event to every active user's desktop notification channel (`app.notifications.publish_notification` → the existing `notify:{user}` WebSocket), so a connected desktop client hears about fresh data without polling. The payload follows the existing notification producers' contract — the event kind rides in `kind` (`type` is reserved by the delivery envelope), with a renderable `title`/`message` plus `source`, `table_count`, and the run outcome (`status: "ok" | "partial"` + `error_count`); a run with per-table failures that still synced something announces `partial`, not an unqualified success. The event is scoped to the tables THIS run actually synced, not the orchestrator's full rebuild result (which re-attaches every table from every prior sync) — a scheduled tick where nothing was due sends no notification at all, instead of re-announcing the whole instance's tables on every tick (Devin review). The count is restricted to tables whose data this run actually wrote: a `materialized` or `remote` row named in a scoped `POST /api/sync/trigger?tables=…` is never counted (the extractor skips the former and only creates a view for the latter), and a partial extractor run whose per-table stats could not be recovered claims none of its tables rather than announcing the failed ones as refreshed (Devin review). Partial step toward #412 (`agnes watch`): the CLI side is not shipped — the notifications WebSocket only accepts a `DESKTOP_JWT_SECRET`-signed token from the interactive desktop-app pairing flow, which analyst CLI PATs/JWTs cannot obtain.
+
 ## [0.83.13] - 2026-08-13
 
 ### Added
