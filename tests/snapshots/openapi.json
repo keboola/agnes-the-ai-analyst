@@ -381,6 +381,18 @@
             ],
             "title": "Surfaces"
           },
+          "template_entity_id": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Entity Id"
+          },
           "tone": {
             "default": "concise",
             "maxLength": 50,
@@ -3046,6 +3058,17 @@
       },
       "CreateSessionBody": {
         "properties": {
+          "agent_slug": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Slug"
+          },
           "profile": {
             "anyOf": [
               {
@@ -28089,7 +28112,7 @@
         ]
       },
       "post": {
-        "description": "Create an agent owned by (and private to) the caller.\n\nAn unnamed agent is legal \u2014 the builder creates the row first and the user\nnames it as they go, so a blank name must not 422 the whole flow.",
+        "description": "Create an agent owned by (and private to) the caller.\n\nAn unnamed agent is legal \u2014 the builder creates the row first and the user\nnames it as they go, so a blank name must not 422 the whole flow.\n\n``template_entity_id`` starts the agent from a Library Agent Template. It\nonly ever fills fields the caller left blank, so an explicit value in the\npayload still wins \u2014 the template is a starting point, not an override.",
         "operationId": "create_agent_api_agents_post",
         "parameters": [
           {
@@ -50802,7 +50825,7 @@
     },
     "/skills": {
       "get": {
-        "description": "Builder \u2014 one authoring surface for skills, plugins and shareable agents.\n\nFormerly the single-type Skill Builder. Two in-page steps: a TYPE PICKER,\nthen a type-adapted BUILDER that keeps one shell (identity, access,\nnumbered sections, live preview, advisory check) and swaps only the\ncontent section and its validation.\n\nMarkdown types (skill, agent) publish to\n``POST /api/store/entities/from-markdown``; plugins are real ZIP bundles\nand publish to the multipart ``POST /api/store/entities``. Both honour the\nbuilder's private/everyone ``access`` choice, and both run the same quota,\nguardrail and review pipeline. Category options come from the shared store\ntaxonomy.\n\nThe route keeps its ``/skills`` path: it is the target of the Marketplace\n\"submit\" CTA, the ``?from=skills`` detail back-link and the tour anchors.\n``?type=skill|plugin|agent`` deep-links past the picker.",
+        "description": "Builder \u2014 one authoring surface for skills, plugins and agent templates.\n\nFormerly the single-type Skill Builder. Two in-page steps: a TYPE PICKER,\nthen a type-adapted BUILDER that keeps one shell (identity, access,\nnumbered sections, live preview, advisory check) and swaps only the\ncontent section and its validation.\n\nMarkdown types (skill, agent) publish to\n``POST /api/store/entities/from-markdown``; plugins are real ZIP bundles\nand publish to the multipart ``POST /api/store/entities``. Both honour the\nbuilder's private/everyone ``access`` choice, and both run the same quota,\nguardrail and review pipeline. Category options come from the shared store\ntaxonomy.\n\nThe route keeps its ``/skills`` path: it is the target of the Marketplace\n\"submit\" CTA, the ``?from=skills`` detail back-link and the tour anchors.\n``?type=skill|plugin|agent`` deep-links past the picker.",
         "operationId": "skills_page_skills_get",
         "parameters": [
           {
