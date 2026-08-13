@@ -246,6 +246,61 @@ class TestDrawersNotModals:
             repo.unregister(tid)
 
 
+class TestRemovalAsksFirst:
+    """Both removals on this page are destructive and both now confirm.
+
+    The bulk path always did; the per-row ✕ did not — the wrong way round for
+    a control that sits on every row, inches from the tier buttons beside it.
+    """
+
+    def _html(self, seeded_app) -> str:
+        c = seeded_app["client"]
+        pkg_id = _mk_pkg()
+        return c.get(f"/admin/data-packages/{pkg_id}", headers=_auth(seeded_app["admin_token"])).text
+
+    def test_every_removal_path_confirms(self, seeded_app):
+        html = self._html(seeded_app)
+        # Three call sites: one table, many tables, and un-sharing a group.
+        assert html.count("confirmModal") >= 3
+        # Each names its OWN action rather than a generic "Confirm", so the
+        # button says what pressing it does.
+        assert "Remove table" in html
+        assert "Stop sharing" in html
+
+    def test_the_dialogs_name_the_consequence(self, seeded_app):
+        """"Are you sure?" cannot tell you the thing that makes this safe to
+        confirm — that the table stays registered, or that another group may
+        still carry the package."""
+        html = self._html(seeded_app)
+        # Substrings chosen to sit inside a single source string literal —
+        # these messages are built by concatenation, so a phrase that spans a
+        # `+` boundary is absent from the HTML even though the reader sees it.
+        assert "stays registered" in html
+        assert "unless another group they belong to" in html
+
+    def test_the_remove_control_appears_on_the_row_under_the_cursor(self, seeded_app):
+        """A ✕ on every row at rest reads as a column of destructive buttons.
+        Three details keep hiding it safe, and all three are pinned here
+        because dropping any one of them silently breaks a real input:
+
+          * `pointer-events` — an invisible button that still takes clicks is
+            a trap, and this one deletes something;
+          * `hover: hover` — a touch device has no hover, so hiding it there
+            would hide it permanently;
+          * `focus-within` / `:focus-visible` — the keyboard path.
+        """
+        html = self._html(seeded_app)
+        block = html.split(".apd-rm {", 1)[1].split("</style>", 1)[0]
+        assert "@media (hover: hover)" in block
+        assert "pointer-events: none" in block
+        assert "focus-within" in block
+        assert ":focus-visible" in block
+        # Opacity, not display/visibility: the cell keeps its width so no row
+        # twitches sideways as the pointer crosses it.
+        assert "opacity: 0" in block
+        assert "visibility: hidden" not in block
+
+
 class TestDeliveryReadOut:
     def test_says_nothing_is_delivered_when_shared_with_nobody(self, seeded_app):
         """A package nobody can see is the state that strands analysts, and

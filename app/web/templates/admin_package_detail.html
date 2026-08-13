@@ -272,25 +272,15 @@
 {% endblock %}
 
 {% block page %}
-{# Standing facts about this package, in one line above the work. #}
-<div class="apg-strip">
-  <span class="apg-strip__mark" aria-hidden="true">{{ pkg.icon or '📦' }}</span>
-  <span>
-    <b>{{ tables|length }}</b> table{{ '' if tables|length == 1 else 's' }}
-    {%- if source_types %} from {{ source_types|join(' + ') }}{% endif %}
-    {%- if pkg.category %} · category <b>{{ pkg.category }}</b>{% endif %}
-    · status <b>{{ pkg.status or 'prod' }}</b>
-    {%- if newest_sync_age_minutes is not none %} · newest sync
-      {%- if newest_sync_age_minutes < 60 %} {{ newest_sync_age_minutes }} min ago
-      {%- elif newest_sync_age_minutes < 2880 %} {{ (newest_sync_age_minutes // 60) }} h ago
-      {%- else %} {{ (newest_sync_age_minutes // 1440) }} d ago{% endif %}
-    {%- endif %}
-  </span>
-  <span class="apg-strip__end">
-    {% if pkg.slug %}<a href="/catalog/p/{{ pkg.slug }}">View as analyst →</a>{% endif %}
-  </span>
-</div>
-
+{# NO standing-facts strip above the work. It carried five facts and a link,
+   and every one of them was said again on the same screen: the table count,
+   the sources and the newest sync were already three rows of **At a glance**
+   (category and status have joined them), and "View as analyst" is the
+   button on **Appears as**, where it belongs — beside the sentence about how
+   analysts see this package. A banner that repeats the column beside it is
+   not a summary, it is a second copy that can fall out of step with the
+   first. What remains above the columns is the two WARNING strips below,
+   which are conditions to meet before acting rather than facts to read. #}
 {# ── The two conditions a reader must meet BEFORE acting ──────────────
    Both are states that strand analysts, and both used to be readable only
    by counting rows in a panel further down. Each carries the control that
@@ -432,6 +422,18 @@
         <div class="apd-fact">
           <span class="apd-fact__k">Tables</span>
           <span class="apd-fact__v{{ ' is-warn' if not tables else '' }}">{{ tables|length }}</span>
+        </div>
+        {# Category and status came off the retired banner above the columns.
+           They are standing facts about the package, which is what this card
+           is for; the banner stated them a second time beside three other
+           facts this card already carried. #}
+        <div class="apd-fact">
+          <span class="apd-fact__k">Category</span>
+          <span class="apd-fact__v">{{ pkg.category or '—' }}</span>
+        </div>
+        <div class="apd-fact">
+          <span class="apd-fact__k">Status</span>
+          <span class="apd-fact__v">{{ pkg.status or 'prod' }}</span>
         </div>
         <div class="apd-fact">
           <span class="apd-fact__k">Freshness</span>
