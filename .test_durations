@@ -12224,6 +12224,7 @@
     "tests/test_rolling_snapshot.py::test_cadence_gate_refreshes_when_stale": 0.19,
     "tests/test_rolling_snapshot.py::test_cadence_gate_skips_when_fresh": 0.13,
     "tests/test_rolling_snapshot.py::test_disabled_by_zero_interval": 0.1,
+    "tests/test_rolling_snapshot.py::test_export_runs_outside_the_system_db_lock": 3.0,
     "tests/test_rolling_snapshot.py::test_failed_export_leaves_previous_snapshot_untouched": 0.13,
     "tests/test_rolling_snapshot.py::test_interval_hours_falls_back_on_config_error": 0.01,
     "tests/test_rolling_snapshot.py::test_interval_hours_reads_config[0-0.0]": 0.01,

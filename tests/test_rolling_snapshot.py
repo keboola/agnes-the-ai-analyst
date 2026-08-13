@@ -81,6 +81,14 @@ def test_failed_export_leaves_previous_snapshot_untouched(system_db, monkeypatch
     before = sorted(p.name for p in snap_dir.iterdir())
 
     class _FailingExportConn:
+        def cursor(self):
+            # The export runs on a dedicated cursor outside the lock
+            # (#1294 review); the failure seam moves with it.
+            return self
+
+        def close(self):
+            pass
+
         def execute(self, sql, *a, **k):
             if "EXPORT DATABASE" in sql:
                 raise RuntimeError("disk full")
@@ -182,3 +190,52 @@ def test_interval_hours_falls_back_on_config_error(monkeypatch):
 
     monkeypatch.setattr(cfg_mod, "get_value", _raise)
     assert db_mod._rolling_snapshot_interval_hours() == 6.0
+
+
+def test_export_runs_outside_the_system_db_lock(system_db):
+    """Devin on #1294 — `_system_db_lock` sits on `get_system_db()`'s hot
+    path (every authed request grabs it briefly for a cursor). A full-DB
+    `EXPORT DATABASE` reads and serializes the whole system DB, so holding
+    the lock across it stalls every request for the export's duration. The
+    lock guards the singleton's LIFECYCLE, not query execution — the export
+    must run on its own cursor with the lock released."""
+    import src.db as db
+
+    real = db._system_db_conn
+    seen: dict[str, bool] = {}
+
+    class _Cursor:
+        def __init__(self, c):
+            self._c = c
+
+        def execute(self, sql, *a, **kw):
+            if str(sql).lstrip().upper().startswith("EXPORT"):
+                free = db._system_db_lock.acquire(blocking=False)
+                seen["lock_free_during_export"] = free
+                if free:
+                    db._system_db_lock.release()
+            return self._c.execute(sql, *a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(self._c, name)
+
+    class _Conn:
+        def __init__(self, c):
+            self._c = c
+
+        def cursor(self):
+            return _Cursor(self._c.cursor())
+
+        def __getattr__(self, name):
+            return getattr(self._c, name)
+
+    db._system_db_conn = _Conn(real)
+    try:
+        assert db.refresh_rolling_snapshot(force=True) is True
+    finally:
+        db._system_db_conn = real
+
+    assert seen.get("lock_free_during_export") is True, (
+        "EXPORT DATABASE executed while _system_db_lock was held — it must "
+        "run on a dedicated cursor outside the lock"
+    )

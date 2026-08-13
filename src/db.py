@@ -8824,14 +8824,32 @@ def refresh_rolling_snapshot(*, force: bool = False) -> bool:
             # Never open a second connection to system.duckdb just to
             # snapshot it — DuckDB allows only one writer per file.
             return False
+        # Take a dedicated cursor and run the export OUTSIDE the lock. The
+        # lock guards the singleton GLOBAL's lifecycle (open/close/replace),
+        # not query execution — every request already runs on its own cursor
+        # without holding it, and DuckDB serializes cursors internally. A
+        # full-DB EXPORT can take whole seconds on a grown system.duckdb;
+        # holding the lock across it would stall get_system_db() — and with
+        # it every authed request — for the export's entire duration (Devin
+        # on #1294). If close_system_db() closes the parent connection
+        # mid-export, the cursor's execute raises and this cycle fails
+        # harmlessly: the previous snapshot stays untouched.
+        try:
+            cur = conn.cursor()
+        except Exception as exc:
+            # close_system_db() raced us and closed the singleton between
+            # the None-check and here — same "no open singleton" outcome.
+            logger.debug("refresh_rolling_snapshot: no usable cursor (%s)", exc)
+            return False
 
+    try:
         # A crashed prior attempt can leave a stale tmp export behind;
         # EXPORT DATABASE refuses to write into a non-empty directory.
         if tmp_dir.exists():
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
         try:
-            conn.execute("CHECKPOINT")
+            cur.execute("CHECKPOINT")
         except Exception as exc:
             # Best-effort, like checkpoint_system_db(): a refused CHECKPOINT
             # (concurrent transactions) doesn't block the export — EXPORT
@@ -8840,7 +8858,7 @@ def refresh_rolling_snapshot(*, force: bool = False) -> bool:
             logger.debug("refresh_rolling_snapshot: CHECKPOINT failed (%s); exporting anyway", exc)
 
         try:
-            conn.execute(f"EXPORT DATABASE '{tmp_dir}' (FORMAT PARQUET, COMPRESSION ZSTD)")
+            cur.execute(f"EXPORT DATABASE '{tmp_dir}' (FORMAT PARQUET, COMPRESSION ZSTD)")
         except Exception as exc:
             logger.warning(
                 "refresh_rolling_snapshot: EXPORT DATABASE failed (%s); previous snapshot kept",
@@ -8848,27 +8866,32 @@ def refresh_rolling_snapshot(*, force: bool = False) -> bool:
             )
             shutil.rmtree(tmp_dir, ignore_errors=True)
             return False
-
-        prev_dir = state_dir / f"{_ROLLING_SNAPSHOT_DIRNAME}.prev"
-        shutil.rmtree(prev_dir, ignore_errors=True)
+    finally:
         try:
-            if final_dir.exists():
-                os.rename(final_dir, prev_dir)
-            os.rename(tmp_dir, final_dir)
-        except OSError as exc:
-            logger.warning("refresh_rolling_snapshot: swap failed (%s); previous snapshot kept", exc)
-            # Best-effort restore of the previous snapshot if the swap
-            # partially landed (final_dir moved aside but tmp_dir didn't
-            # take its place).
-            if prev_dir.exists() and not final_dir.exists():
-                os.rename(prev_dir, final_dir)
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-            return False
-        finally:
-            shutil.rmtree(prev_dir, ignore_errors=True)
+            cur.close()
+        except Exception:
+            pass
 
-        logger.info("Rolling snapshot refreshed: %s", final_dir)
-        return True
+    prev_dir = state_dir / f"{_ROLLING_SNAPSHOT_DIRNAME}.prev"
+    shutil.rmtree(prev_dir, ignore_errors=True)
+    try:
+        if final_dir.exists():
+            os.rename(final_dir, prev_dir)
+        os.rename(tmp_dir, final_dir)
+    except OSError as exc:
+        logger.warning("refresh_rolling_snapshot: swap failed (%s); previous snapshot kept", exc)
+        # Best-effort restore of the previous snapshot if the swap
+        # partially landed (final_dir moved aside but tmp_dir didn't
+        # take its place).
+        if prev_dir.exists() and not final_dir.exists():
+            os.rename(prev_dir, final_dir)
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return False
+    finally:
+        shutil.rmtree(prev_dir, ignore_errors=True)
+
+    logger.info("Rolling snapshot refreshed: %s", final_dir)
+    return True
 
 
 def close_analytics_db() -> None:
