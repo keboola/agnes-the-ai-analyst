@@ -888,6 +888,19 @@ async def lifespan(app):
     except Exception:
         pass  # never block startup on a logging convenience
 
+    # Validate auth.providers at boot so an all-unknown value (a typo in
+    # instance.yaml / AGNES_AUTH_PROVIDERS) surfaces its error in the startup
+    # log, not only lazily on the first /auth request. configured_allowlist()
+    # logs the error itself and fails open (all providers) so a bad value can
+    # never lock the instance out; the admin API rejects the same value at
+    # set-time. Fail-soft — a config-read hiccup must not block startup.
+    try:
+        from app.auth.provider_registry import configured_allowlist
+
+        configured_allowlist()
+    except Exception:
+        pass
+
     # Bump anyio's default thread pool size from 40 → AGNES_THREADPOOL_SIZE
     # (default 200). FastAPI auto-runs every plain `def` route handler AND
     # every plain `def` dependency in this pool — the Tier 1 endpoints

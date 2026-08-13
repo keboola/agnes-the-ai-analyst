@@ -30,7 +30,16 @@ _STATE_MAX_ENTRIES = 4096
 
 _FAILURE_WINDOW_SECONDS = 60.0
 _MAX_FAILURES_PER_IP = 10  # FAILED cache-miss verify calls per IP per window
-_MAX_FAILURES_GLOBAL = 30  # ... and per process per window
+# Per-process failure cap. The PRIMARY DoS control is the per-IP cap +
+# consecutive-failure backoff above (one IP is throttled after 5 failures);
+# this global counter is only a coarse backstop bounding a DISTRIBUTED failure
+# flood's amplification against the upstream Keboola stack (each miss = one
+# /tokens/verify). It is deliberately high — with per-IP backoff arming at 5,
+# tripping 300 needs dozens of distinct IPs (a genuine botnet, not "a few bad
+# tokens"), so ordinary abuse can't use it to refuse other users' first
+# (uncached) verifies. Only FAILED verifies count; successful verifies never
+# consume it, so legitimate valid-token traffic never trips it.
+_MAX_FAILURES_GLOBAL = 300
 _FAILURES_BEFORE_BACKOFF = 5  # consecutive failures from one IP → backoff
 _FAILURE_BACKOFF_SECONDS = 60.0
 

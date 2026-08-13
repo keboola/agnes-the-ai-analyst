@@ -189,11 +189,11 @@ class TestHeaderAuth:
 
     def test_flood_guard_does_not_trip_on_successful_bursts(self, client, monkeypatch):
         # The bug being fixed: the global cache-miss cap used to count
-        # SUCCESSFUL verifies too, so >30 distinct legitimate tokens (each a
-        # cache miss, each a valid master token) per 60s window would 429
-        # every caller after the cap. Only FAILED verifies may consume the
-        # flood budget — a burst of 35 distinct, always-successful tokens
-        # (more than the old _MAX_FAILURES_GLOBAL=30 cap) must all succeed.
+        # SUCCESSFUL verifies too, so a burst of distinct legitimate tokens
+        # (each a cache miss, each a valid master token) per 60s window would
+        # 429 every caller after the cap. Only FAILED verifies may consume the
+        # flood budget — a burst of 35 distinct, always-successful tokens must
+        # all succeed regardless of the failure-cap value.
         monkeypatch.setattr(kv, "verify_storage_token", lambda tok: _identity())
         statuses = [
             client.get("/api/catalog/tables", headers={"X-StorageApi-Token": f"good-{i}"}).status_code
