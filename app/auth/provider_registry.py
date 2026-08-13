@@ -20,19 +20,48 @@ logger = logging.getLogger(__name__)
 
 KNOWN_PROVIDERS: tuple[str, ...] = ("google", "email", "password", "keboola")
 
+# Single-slot cache for the parsed allowlist, keyed by the raw configured value.
+# See configured_allowlist() for why parsing + misconfig logging must not re-run
+# per request.
+_ALLOWLIST_CACHE: Optional[tuple[tuple, Optional[list[str]]]] = None
+
 
 def configured_allowlist() -> Optional[list[str]]:
     raw_env = os.environ.get("AGNES_AUTH_PROVIDERS")
     if raw_env is not None:
-        values = [v.strip() for v in raw_env.split(",") if v.strip()]
+        cache_key: tuple = ("env", raw_env)
+        source: Optional[object] = raw_env
     else:
-        configured = get_value("auth", "providers")
-        if configured is None:
-            return None
-        if isinstance(configured, str):
-            values = [v.strip() for v in configured.split(",") if v.strip()]
-        else:
-            values = [str(v).strip() for v in configured if str(v).strip()]
+        source = get_value("auth", "providers")
+        cache_key = ("cfg", repr(source))
+
+    # Single-slot cache keyed on the raw configured value. `configured_allowlist`
+    # runs on every /auth/* request (router dependency) and several times per
+    # /login render, so parsing — and especially the misconfig `logger.warning`/
+    # `logger.error` below — must not re-fire per request: a stale typo would
+    # otherwise write duplicate lines on every page load. The key changes when
+    # the env/config value changes (typical in tests), so the cache transparently
+    # re-parses and the diagnostic is emitted once per distinct configuration.
+    # Same pattern as `_LOCAL_DEV_GROUPS_CACHE` in app.auth.dependencies.
+    global _ALLOWLIST_CACHE
+    if _ALLOWLIST_CACHE is not None and _ALLOWLIST_CACHE[0] == cache_key:
+        return _ALLOWLIST_CACHE[1]
+
+    result = _parse_allowlist(source)
+    _ALLOWLIST_CACHE = (cache_key, result)
+    return result
+
+
+def _parse_allowlist(source: Optional[object]) -> Optional[list[str]]:
+    """Parse the raw ``auth.providers`` value into a known-provider allowlist,
+    logging misconfiguration exactly once per distinct value (the caller caches
+    on the raw value). ``None`` (unset, or set-but-all-unknown) ⇒ all providers."""
+    if source is None:
+        return None
+    if isinstance(source, str):
+        values = [v.strip() for v in source.split(",") if v.strip()]
+    else:
+        values = [str(v).strip() for v in source if str(v).strip()]  # type: ignore[union-attr]
     unknown = [v for v in values if v not in KNOWN_PROVIDERS]
     for name in unknown:
         logger.warning("auth.providers: unknown provider %r ignored", name)
