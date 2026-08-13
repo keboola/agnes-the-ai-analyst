@@ -231,6 +231,19 @@ def refresh_organizations(
         # Counting them as removals is not bookkeeping sleight of hand: they are exactly
         # the rows this run drops, and it also carries the empty result past the
         # "nothing resolved" check below into the one code path that writes.
+        if dry_run:
+            # The dry-run return below would claim this truncate happened: the
+            # warning says "publishing" and the stats say N removed, while nothing
+            # was written (Devin Review on #1274). Preview it in "would" language.
+            logger.info(
+                "Dry run: enumeration returned nothing; --force would publish an empty %s, "
+                "removing all %d existing rows",
+                TABLE_NAME,
+                len(existing),
+            )
+            stats["elapsed_sec"] = round(time.time() - start, 1)
+            return stats
+
         logger.warning(
             "--force: publishing an empty %s over %d existing rows, on an enumeration that returned nothing.",
             TABLE_NAME,

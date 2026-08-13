@@ -594,6 +594,7 @@ class JiraService:
             raise JiraFetchError("Organization enumeration failed: Jira service not configured")
 
         ids: list[str] = []
+        seen: set[str] = set()
         start = 0
         limit = 50
         url = f"{self._servicedesk_url}/organization"
@@ -619,7 +620,14 @@ class JiraService:
                 values = payload.get("values") or []
                 for org in values:
                     org_id = org.get("id")
-                    if org_id is not None:
+                    # De-duplicated because offset pagination over a mutating
+                    # collection can serve the same organization on two consecutive
+                    # pages; a repeated id would become a duplicate row in the
+                    # lookup table and fan out every ticket joined to it (Devin
+                    # Review on #1274). Pagination still advances by the raw page
+                    # length — the duplicate occupied a slot upstream either way.
+                    if org_id is not None and str(org_id) not in seen:
+                        seen.add(str(org_id))
                         ids.append(str(org_id))
 
                 if payload.get("isLastPage") or not values:

@@ -213,6 +213,29 @@ class TestFetchOrganizationIds:
         with patch.object(jira_service.httpx, "Client", return_value=client), pytest.raises(JiraFetchError):
             svc.fetch_organization_ids()
 
+    def test_id_repeated_across_pages_is_returned_once(self, svc: JiraService) -> None:
+        # Offset pagination over a mutating collection can serve the same
+        # organization on two consecutive pages; a duplicate id becomes a
+        # duplicate row in the lookup table and fans out every joined ticket
+        # (Devin Review on #1274).
+        page1 = MagicMock()
+        page1.status_code = 200
+        page1.json.return_value = {
+            "values": [{"id": "1"}, {"id": "2"}],
+            "isLastPage": False,
+            "size": 2,
+        }
+        page2 = MagicMock()
+        page2.status_code = 200
+        page2.json.return_value = {"values": [{"id": "2"}, {"id": "3"}], "isLastPage": True, "size": 2}
+        client = MagicMock()
+        client.get.side_effect = [page1, page2]
+        client.__enter__ = MagicMock(return_value=client)
+        client.__exit__ = MagicMock(return_value=False)
+
+        with patch.object(jira_service.httpx, "Client", return_value=client):
+            assert svc.fetch_organization_ids() == ["1", "2", "3"]
+
 
 # ---------------------------------------------------------------------------
 # extract_organization_details() — id-primary, name fallback
@@ -1355,6 +1378,27 @@ class TestForcedEmptyEnumeration:
         df = _read_table(tmp_path)
         assert len(df) == 0
         assert "org_id" in df.columns and "crm_account_id" in df.columns
+
+    def test_dry_run_previews_the_truncate_without_claiming_it(self, tmp_path: Path, org_env: None) -> None:
+        # `--dry-run --force` on an empty enumeration must not report rows as
+        # removed or log that it published: nothing was written, and a preview
+        # that reports the destructive outcome reads as "the table is already
+        # wiped" (Devin Review on #1274).
+        from connectors.jira import organizations as orgs
+
+        self._seed(tmp_path, orgs)
+
+        svc = _fake_service([], [])
+        with (
+            patch.object(orgs, "get_jira_service", return_value=svc),
+            patch.object(orgs, "update_meta"),
+            patch.object(orgs.time, "sleep"),
+        ):
+            stats = orgs.refresh_organizations(extract_dir=tmp_path, dry_run=True, force=True)
+
+        assert stats["dry_run"] is True
+        assert stats["removed"] == 0
+        assert len(_read_table(tmp_path)) == 2
 
     def test_force_does_not_need_the_cloud_id(self, tmp_path: Path, org_env: None) -> None:
         """Nothing is fetched, so an unresolvable cloud id must not mask the truncate."""
