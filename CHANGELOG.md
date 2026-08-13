@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Internal
+- **`_build_context` now composes `_chrome_ctx` instead of hand-copying its keys.** The two web-template-context builders in `app/web/router.py` each maintained their own list of chrome-level keys (nav, branding, theme, feature toggles) by hand, so every new chrome key gave its author a chance to forget one — the failure was silent because Jinja renders undefined as empty. This bug class had already fired three times (`can_chat`, `can_studio`, and `config`/`can_chat` again in #993/#995). `_chrome_ctx` is now the single owner of every chrome-level key; `_build_context` starts from it and layers only its own heavier, page-specific payloads (the setup-prompt clipboard script, `server_url`). A new chrome key now only needs to be added once. No behavior change: a drift-guard test (`test_build_context_is_a_superset_of_chrome_ctx`) pins that the two stay in lockstep going forward. Closes #996.
+
+
 ### Fixed
 
 - **`agnes self-upgrade` went silent against a moved server — the one command run to repair a stale install.** Measured against the real relocated hostname: the plain form printed nothing and exited 0, so the caller could not tell the upgrade had not happened, and `--force` reported `cannot reach <old>/cli/latest` for a server that answers `308` with a `Location` header. `cli/update_check.py::_fetch_latest` calls `raise_for_status()`, which does not treat 3xx as an error, then `.json()` on a redirect's empty body; the exception is swallowed into `None`, and `_resolve_info` maps that to "probe failed". #1266 taught both HTTP clients and the setup-token exchange to name the new address, but this path reaches the server through neither. A redirect is now its own verdict, diagnosed by a re-probe that runs **only** after the normal probe already came back empty — so the happy path pays nothing — and worded by the same `cli/server_moved.py` the other callers use, so the three cannot drift. Every redirect counts, not only a cross-host move: a same-origin bounce (an SSO proxy answering `302 /login`) is equally a check that did not happen, and `cannot reach` is equally untrue of it — what differs is the remedy, which the shared classifier already picks. `--check-only` reports it too and exits 1, where it swallows every other transport verdict into exit 0; its help text now names that second case rather than promising exit 1 means `outdated` alone.
@@ -28,6 +32,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 - **Setting `chat.docker_egress_allow_hosts` without `chat.docker_egress_mode: allowlist` now warns at startup.** The allow-hosts knob reads like it turns the allowlist on, but only the mode does — set alone (the mode defaults to `open`), the hosts were silently ignored and sandbox egress stayed unrestricted. The startup egress-config check now reports the ignored allowlist and the consequence for the configured mode.
+### Internal
 
 ## [0.83.9] - 2026-08-13
 
