@@ -1332,6 +1332,13 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
           </summary>
           <div class="aic-issue-body"><p>The connection needs a moment to settle after sign-in. Wait a few seconds, then re-send your question.</p></div>
         </details>
+        {# The two connector-specific entries follow the surface they
+           troubleshoot: with can_mcp_connector_ui off the MCP tab is gone from
+           this page, so an entry telling the reader to re-add a connector they
+           were never offered is a promise the instance does not keep. The
+           other entries are transport-agnostic and stay. Devin Review on
+           #1024. #}
+        {% if can_mcp_connector_ui %}
         <details class="aic-issue">
           <summary>
             <span class="aic-issue-icon">{{ ico.icon('tools', 17) }}</span>
@@ -1354,6 +1361,7 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
           </summary>
           <div class="aic-issue-body"><p>Team and Enterprise plans gate custom connectors to workspace admins. Ask an admin to add it once for everyone — use the "Copy request for your admin" button on the Claude.ai tab.</p></div>
         </details>
+        {% endif %}{# /can_mcp_connector_ui #}
         <details class="aic-issue">
           <summary>
             <span class="aic-issue-icon">{{ ico.icon('link', 17) }}</span>
@@ -1386,7 +1394,7 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
             <div class="cowork-skills-note">
               <strong>What this is:</strong> each package bundles one marketplace plugin's skills, agents and commands into a single Cowork-uploadable <code>.zip</code>, available across <strong>all</strong> your Cowork projects once added.
               <br><br>
-              <strong>How to add one:</strong> download a package below, then in Claude Desktop → Cowork open <strong>Customize → Personal plugins → + → Create plugin → Upload plugin</strong> and pick the <code>.zip</code> (one package per zip). For live data access, use the connector above instead.
+              <strong>How to add one:</strong> download a package below, then in Claude Desktop → Cowork open <strong>Customize → Personal plugins → + → Create plugin → Upload plugin</strong> and pick the <code>.zip</code> (one package per zip).{% if can_mcp_connector_ui %} For live data access, use the connector above instead.{% endif %}
             </div>
             <div class="cowork-plugin-list" id="cowork-plugin-list" aria-live="polite">
               <p class="cowork-plugin-empty">Loading your packages&hellip;</p>

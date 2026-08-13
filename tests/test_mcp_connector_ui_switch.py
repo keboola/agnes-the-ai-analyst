@@ -207,3 +207,59 @@ class TestNavEntriesHiddenOnBothContextBuilders:
         body = c.get("/me/memory-mining", headers=_auth(token)).text
         assert "href: '/me/ai-connector'" not in body
         assert "href: '/mcp-connect'" not in body
+
+
+class TestUserMenuKeepsAnOrientationEntry:
+    """The default (non-paper) topnav renders the MCP-only "AI Connector" row
+    where paper renders "Learn how it works". Gating the connector row alone
+    left the default chrome with an entry to NEITHER surface, so hiding MCP
+    silently took `/how-it-works` — which also carries the CLI setup, the
+    first-session narrative and the privacy content — out of the user menu as
+    a side effect. Devin Review on #1024."""
+
+    def test_default_chrome_falls_back_to_learn_how_it_works(self, seeded_app, monkeypatch):
+        c = seeded_app["client"]
+        token = seeded_app["analyst_token"]
+
+        # Sanity: the connector row is what the default chrome shows by default.
+        body = c.get("/dashboard", headers=_auth(token)).text
+        assert 'href="/me/ai-connector">AI Connector</a>' in body
+
+        monkeypatch.setattr("app.web.router.get_mcp_connector_ui_enabled", lambda: False)
+        body = c.get("/dashboard", headers=_auth(token)).text
+        assert 'href="/me/ai-connector"' not in body
+        assert 'href="/how-it-works">Learn how it works</a>' in body
+
+
+class TestInPageConnectorReferencesFollowTheSwitch:
+    """`/how-it-works` keeps serving with the switch off, so its own copy must
+    not keep pointing at the block the switch removed."""
+
+    def test_plugin_packages_note_drops_the_connector_pointer(self, seeded_app, monkeypatch):
+        c = seeded_app["client"]
+        token = seeded_app["analyst_token"]
+
+        body = c.get("/how-it-works", headers=_auth(token)).text
+        assert "use the connector above instead" in body
+
+        monkeypatch.setattr("app.web.router.get_mcp_connector_ui_enabled", lambda: False)
+        body = c.get("/how-it-works", headers=_auth(token)).text
+        assert "use the connector above instead" not in body
+        # The rest of the note — the part that is true either way — stays.
+        assert "one package per zip" in body
+
+    def test_connector_troubleshooting_entries_are_hidden(self, seeded_app, monkeypatch):
+        c = seeded_app["client"]
+        token = seeded_app["analyst_token"]
+
+        body = c.get("/how-it-works", headers=_auth(token)).text
+        assert "MCP endpoint not found" in body
+        assert "Can't add a custom connector on Claude.ai?" in body
+
+        monkeypatch.setattr("app.web.router.get_mcp_connector_ui_enabled", lambda: False)
+        body = c.get("/how-it-works", headers=_auth(token)).text
+        assert "MCP endpoint not found" not in body
+        assert "Can't add a custom connector on Claude.ai?" not in body
+        # Transport-agnostic entries are not connector-specific and stay.
+        assert "First question errors right after sign-in?" in body
+        assert "VS Code sign-in stuck?" in body
