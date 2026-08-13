@@ -383,6 +383,53 @@ class TestLocalDeliveryCheck:
         c = mod._local_delivery_check()
         assert c["status"] == "info", c
 
+    def test_non_2xx_manifest_is_not_a_false_green(self, monkeypatch, tmp_path):
+        """A 401/403/500 manifest comes back as an ordinary response with an
+        error body — no `tables` key — which used to read as "the server
+        offers nothing": empty offered set, empty shortfall, `[ok]
+        local-data` straight through an auth outage. Non-2xx must land in
+        the could-not-compare branch, like `cli/lib/pull.py`'s own manifest
+        fetch treats it."""
+        from unittest.mock import MagicMock
+
+        import httpx
+
+        import cli.commands.diagnose as mod
+
+        (tmp_path / "server" / "parquet").mkdir(parents=True)
+        monkeypatch.setattr(mod, "get_workspace_root", lambda: str(tmp_path))
+
+        resp = MagicMock()
+        resp.json.return_value = {"detail": "Not authenticated"}
+        resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "403 Forbidden", request=MagicMock(), response=MagicMock()
+        )
+        monkeypatch.setattr(mod, "api_get", lambda *a, **k: resp)
+
+        c = mod._local_delivery_check()
+        assert c["status"] == "info", c
+        assert "could not read the manifest" in c["detail"]
+
+    def test_a_moved_server_does_not_crash_the_command(self, monkeypatch, tmp_path):
+        """`RedirectHardStop` derives from BaseException, so the generic
+        `except Exception` cannot take it — unhandled, it aborted the whole
+        command (exit 2, empty output) on exactly the relocated deployment
+        `diagnose` exists to describe. The redirect verdict itself belongs
+        to the `api` check; this row just declines the comparison."""
+        import cli.commands.diagnose as mod
+        from cli.client import RedirectHardStop
+
+        (tmp_path / "server" / "parquet").mkdir(parents=True)
+        monkeypatch.setattr(mod, "get_workspace_root", lambda: str(tmp_path))
+
+        def _redirect(*a, **k):
+            raise RedirectHardStop("server moved to https://example.com")
+
+        monkeypatch.setattr(mod, "api_get", _redirect)
+        c = mod._local_delivery_check()
+        assert c["status"] == "info", c
+        assert "server redirected" in c["detail"]
+
     def test_headline_reflects_the_shortfall(self, monkeypatch, tmp_path):
         """The whole point of the check: a workspace with none of the offered
         tables local must move `Overall:` off `healthy`. `warn` (the setup

@@ -126,8 +126,27 @@ def _local_delivery_check() -> dict:
         local = _local_table_names(Path(root) / "server" / "parquet")
 
         try:
-            manifest = api_get("/api/sync/manifest").json() or {}
+            resp = api_get("/api/sync/manifest")
+            # A 401/403/500 comes back as an ordinary response with a JSON
+            # error body — no `tables` key — which would read as "the server
+            # offers nothing" and report a false green. Same pattern as
+            # `cli/lib/pull.py`'s manifest fetch: non-2xx belongs in the
+            # except branch below, not in the comparison.
+            resp.raise_for_status()
+            manifest = resp.json() or {}
             offered = _offered_table_names(manifest)
+        except RedirectHardStop:
+            # Derives from BaseException, so the clause below cannot take it —
+            # and unhandled it would abort the whole command (exit 2, empty
+            # output) on exactly the relocated deployment this command exists
+            # to diagnose. The redirect verdict itself is the `api` check's
+            # business; this row just declines the comparison.
+            check.update(
+                status="info",
+                detail=f"{len(local)} table(s) local; could not read the manifest to compare (server redirected).",
+                tables_local=len(local),
+            )
+            return check
         except Exception as e:
             check.update(
                 status="info",
