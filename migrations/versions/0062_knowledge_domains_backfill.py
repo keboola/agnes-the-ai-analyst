@@ -28,6 +28,13 @@ existing ``memory_domains.slug``. Missing domains are created here (slug
 normalized the same way: lowercase, non-alnum runs collapsed to ``-``)
 rather than silently dropping the item's domain membership.
 
+``lower()`` is applied INSIDE ``regexp_replace``, not around it: Postgres'
+``regexp_replace`` is case-sensitive, so ``[^a-z0-9]`` matches uppercase
+letters too. Normalizing the raw value would turn a perfectly ordinary
+legacy ``'Finance'`` into ``'-inance'`` — a junk ``memory_domains`` row
+with every such item filed under it instead of the real domain, and
+``downgrade()`` below cannot take it back.
+
 Revision ID: 0062_knowledge_domains_backfill
 Revises: 0061_agent_status_backfill_v115
 Create Date: 2026-08-13
@@ -49,21 +56,34 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     # 1) Create a memory_domains row for any legacy scalar value that has no
     #    matching slug yet (defensive — same reasoning as _v51_to_v52 step 5).
+    #
+    #    The grouping key is the NORMALIZED slug, not the raw value:
+    #    normalization is many-to-one ('Finance' / 'finance' / 'FINANCE', and
+    #    'q team' / 'q-team', all collapse to one slug), and the generated
+    #    `id` collapses with it, so a raw-value DISTINCT would feed several
+    #    rows carrying the same slug AND the same primary key into one
+    #    INSERT. `ON CONFLICT (slug)` names only the slug arbiter and in any
+    #    case does not deduplicate rows within a single statement, so that
+    #    shape aborts the migration on the `memory_domains_pkey` violation.
+    #    min(domain) picks one raw spelling to keep as the display name,
+    #    deterministically.
     op.execute(
         r"""
         INSERT INTO memory_domains (id, slug, name, created_at, updated_at)
         SELECT
-            'md_' || lower(regexp_replace(d.domain, '[^a-z0-9]+', '_', 'g')),
-            lower(regexp_replace(d.domain, '[^a-z0-9]+', '-', 'g')),
-            d.domain,
+            'md_' || replace(d.slug, '-', '_'),
+            d.slug,
+            d.name,
             now(), now()
           FROM (
-              SELECT DISTINCT domain FROM knowledge_items
+              SELECT regexp_replace(lower(domain), '[^a-z0-9]+', '-', 'g') AS slug,
+                     min(domain) AS name
+                FROM knowledge_items
                WHERE domain IS NOT NULL AND domain <> ''
+               GROUP BY regexp_replace(lower(domain), '[^a-z0-9]+', '-', 'g')
           ) d
          WHERE NOT EXISTS (
-             SELECT 1 FROM memory_domains md
-              WHERE md.slug = lower(regexp_replace(d.domain, '[^a-z0-9]+', '-', 'g'))
+             SELECT 1 FROM memory_domains md WHERE md.slug = d.slug
          )
         ON CONFLICT (slug) DO NOTHING
         """
@@ -77,7 +97,7 @@ def upgrade() -> None:
         SELECT ki.id, md.id, 'system', now()
           FROM knowledge_items ki
           JOIN memory_domains md
-            ON md.slug = lower(regexp_replace(ki.domain, '[^a-z0-9]+', '-', 'g'))
+            ON md.slug = regexp_replace(lower(ki.domain), '[^a-z0-9]+', '-', 'g')
          WHERE ki.domain IS NOT NULL AND ki.domain <> ''
         ON CONFLICT (item_id, domain_id) DO NOTHING
         """

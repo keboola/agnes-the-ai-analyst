@@ -87,13 +87,6 @@ def test_0062_creates_a_missing_memory_domain_from_a_free_text_legacy_value(pg_e
     command.upgrade(cfg, "0061_agent_status_backfill_v115")
 
     with pg_engine.begin() as conn:
-        # Lowercase-with-space, not mixed-case: the normalization formula
-        # (mirrors ``src/db.py::_v51_to_v52`` step 5) applies
-        # ``regexp_replace`` BEFORE ``lower()``, so an already-shipped quirk
-        # there treats uppercase runs as non-alnum too — out of scope for
-        # this migration (it would apply identically to the DuckDB step).
-        # A lowercase legacy value keeps this test's assertion about slug
-        # creation independent of that pre-existing quirk.
         _insert_legacy_item(conn, id="ki_legacy_freeform", domain="q-team notes")
 
     command.upgrade(cfg, "0062_knowledge_domains_backfill")
@@ -105,6 +98,107 @@ def test_0062_creates_a_missing_memory_domain_from_a_free_text_legacy_value(pg_e
             sa.text("SELECT domain_id FROM knowledge_item_domains WHERE item_id = 'ki_legacy_freeform'")
         ).fetchone()
         assert junction_row is not None and junction_row[0] == domain_row[0]
+
+
+def test_0062_normalizes_a_capitalised_legacy_domain_to_the_canonical_slug(pg_engine):
+    """A mixed-case legacy value must resolve to the existing lowercase slug.
+
+    Pre-#1263 ``create()`` did no slug normalization, so ``'Finance'`` is a
+    perfectly ordinary scalar value in the wild. Postgres' ``regexp_replace``
+    is case-sensitive, so ``[^a-z0-9]`` matches uppercase letters too: applied
+    to the RAW value it turns ``'Finance'`` into ``'-inance'`` and only the
+    trailing ``lower()`` runs afterwards, minting a junk ``memory_domains``
+    row and filing the item under it instead of the real domain — with a
+    no-op ``downgrade()``, unrollable. Lower-casing BEFORE the regexp is what
+    makes the formula produce the slug shape the seed uses.
+    """
+    from alembic import command
+
+    cfg = _alembic_config(str(pg_engine.url))
+    command.upgrade(cfg, "0061_agent_status_backfill_v115")
+
+    with pg_engine.begin() as conn:
+        finance_id = str(uuid.uuid4())
+        conn.execute(
+            sa.text(
+                "INSERT INTO memory_domains (id, slug, name, created_at, updated_at) "
+                "VALUES (:id, 'finance', 'Finance', now(), now())"
+            ),
+            {"id": finance_id},
+        )
+        _insert_legacy_item(conn, id="ki_legacy_caps", domain="Finance")
+        # Mixed case *and* a separator run, so the two halves of the formula
+        # are exercised together rather than one masking the other.
+        _insert_legacy_item(conn, id="ki_legacy_caps_multiword", domain="Q-Team Notes")
+
+    command.upgrade(cfg, "0062_knowledge_domains_backfill")
+
+    with pg_engine.connect() as conn:
+        rows = conn.execute(
+            sa.text("SELECT domain_id FROM knowledge_item_domains WHERE item_id = 'ki_legacy_caps'")
+        ).fetchall()
+        assert [r[0] for r in rows] == [finance_id], (
+            "a capitalised legacy domain must land on the existing 'finance' domain, not a new one"
+        )
+
+        junk = conn.execute(
+            sa.text("SELECT slug FROM memory_domains WHERE slug LIKE '-%' OR slug <> lower(slug)")
+        ).fetchall()
+        assert junk == [], f"backfill minted junk domain slugs: {[r[0] for r in junk]}"
+
+        multiword = conn.execute(
+            sa.text(
+                "SELECT md.slug FROM knowledge_item_domains kid "
+                "JOIN memory_domains md ON md.id = kid.domain_id "
+                "WHERE kid.item_id = 'ki_legacy_caps_multiword'"
+            )
+        ).fetchall()
+        assert [r[0] for r in multiword] == ["q-team-notes"]
+
+
+def test_0062_collapses_legacy_spellings_that_normalize_to_one_slug(pg_engine):
+    """Several raw values normalizing to one slug must yield ONE domain.
+
+    Normalization is many-to-one, and the generated ``md_<slug>`` id collapses
+    with the slug — so a per-raw-value INSERT would push rows sharing a
+    primary key through a single statement, which ``ON CONFLICT (slug)``
+    neither arbitrates nor deduplicates within one statement, aborting the
+    whole migration on the pkey violation. Both axes are covered here: case
+    (``Finance``/``finance``) and separator runs (``q team``/``q-team``).
+    """
+    from alembic import command
+
+    cfg = _alembic_config(str(pg_engine.url))
+    command.upgrade(cfg, "0061_agent_status_backfill_v115")
+
+    with pg_engine.begin() as conn:
+        for i, value in enumerate(["Finance", "finance", "FINANCE", "q team", "q-team", "Q  Team"]):
+            _insert_legacy_item(conn, id=f"ki_variant_{i}", domain=value)
+
+    command.upgrade(cfg, "0062_knowledge_domains_backfill")
+
+    with pg_engine.connect() as conn:
+        slugs = sorted(
+            r[0] for r in conn.execute(sa.text("SELECT slug FROM memory_domains WHERE slug IN ('finance', 'q-team')"))
+        )
+        assert slugs == ["finance", "q-team"]
+
+        # Every one of the six items resolves to one of those two domains.
+        pairs = conn.execute(
+            sa.text(
+                "SELECT kid.item_id, md.slug FROM knowledge_item_domains kid "
+                "JOIN memory_domains md ON md.id = kid.domain_id "
+                "WHERE kid.item_id LIKE 'ki_variant_%'"
+            )
+        ).fetchall()
+        assert sorted(pairs) == [
+            ("ki_variant_0", "finance"),
+            ("ki_variant_1", "finance"),
+            ("ki_variant_2", "finance"),
+            ("ki_variant_3", "q-team"),
+            ("ki_variant_4", "q-team"),
+            ("ki_variant_5", "q-team"),
+        ]
 
 
 def test_0062_does_not_touch_rows_already_carrying_a_junction_entry(pg_engine):
