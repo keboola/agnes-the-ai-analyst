@@ -3016,7 +3016,7 @@ function _sourceMenuItems(row) {
   const chatOn = row.has_chat_tools === true;
   return `
     <button type="button" class="apg-menu__item" role="menuitem" onclick="closeSourceMenu(); toggleBrowse('${id}')">Add tables…</button>
-    <button type="button" class="apg-menu__item" role="menuitem" onclick="closeSourceMenu(); testConn('${id}')">Test connection</button>
+    <button type="button" class="apg-menu__item" role="menuitem" data-role="test" onclick="closeSourceMenu(); testConn('${id}')">Test connection</button>
     <div class="apg-menu__sep"></div>
     <button type="button" class="apg-menu__item" role="menuitem" onclick="closeSourceMenu(); toggleRotate('${id}')">Rotate storage token</button>
     <button type="button" class="apg-menu__item" role="menuitem" onclick="closeSourceMenu(); toggleMasterToken('${id}')">Semantic-layer token <span class="note">${hasMaster ? "set" : "not set"}</span></button>
