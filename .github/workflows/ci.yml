@@ -37,10 +37,17 @@ jobs:
         # within each shard across the runner's cores. tests/db_pg/ is
         # excluded here and runs in the dedicated test-pg job below so that
         # the pgserver session fixture doesn't inflate shard 1's wall-clock.
-        # Regenerate durations with `pytest tests/ --ignore=tests/db_pg
-        # --store-durations -n auto -q --tb=no` when shards drift
-        # (target: ~3 min/shard).
-        run: pytest tests/ --ignore=tests/db_pg -v --tb=short -n auto --splits 8 --group ${{ matrix.group }}
+        # Regenerate durations with `pytest tests/ connectors/
+        # --ignore=tests/db_pg --store-durations -n auto -q --tb=no` when shards
+        # drift (target: ~3 min/shard).
+        #
+        # `connectors/` is included because the connector packages keep their tests
+        # beside the code (`connectors/jira/tests/`, ...) rather than under `tests/`,
+        # so none of them gated CI — 138 tests that ran only on developer machines,
+        # including the entire failure-semantics surface of the jira connector.
+        # Their measured `.test_durations` entries are committed alongside, so
+        # they shard like any other test.
+        run: pytest tests/ connectors/ --ignore=tests/db_pg -v --tb=short -n auto --splits 8 --group ${{ matrix.group }}
         env:
           TESTING: "1"
 

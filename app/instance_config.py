@@ -1310,6 +1310,33 @@ def get_mcp_source_url_strict() -> bool:
     return feature_enabled("mcp", "source_url_strict", env_var="AGNES_MCP_SOURCE_URL_STRICT", default=False)
 
 
+def get_mcp_connector_ui_enabled() -> bool:
+    """Whether the user-facing MCP connector surface is exposed: the
+    ``/me/ai-connector`` and ``/mcp-connect`` install-instruction pages, the
+    MCP tab of ``/how-it-works#connect``, and their nav / command-palette
+    entries.
+
+    On by default — upstream behavior is unchanged. An instance opts out
+    with ``AGNES_MCP_CONNECTOR_UI_ENABLED=0`` (or ``mcp.connector_ui_enabled:
+    false`` in instance.yaml) when it is reachable only on a private network
+    (VPN, intranet hostname/address): in-network MCP clients keep working
+    either way, but a cloud-side connector client resolved from outside the
+    network can never reach the endpoint, so showing its install
+    instructions would show a setup path that cannot work. See
+    docs/DEPLOYMENT.md for the VPN/intranet-only posture this backs.
+
+    Gates UI ONLY — never the MCP protocol itself. ``/api/mcp/http`` and
+    ``/api/mcp/sse`` keep serving any client that can reach them regardless
+    of this switch.
+
+    Resolution: env var > ``mcp.connector_ui_enabled`` YAML > True —
+    delegates to :func:`feature_enabled` (the canonical resolver, #1022);
+    see :data:`FEATURE_FLAGS` for the registry entry backing the
+    ``/admin/server-config`` inventory panel.
+    """
+    return feature_enabled("mcp", "connector_ui_enabled", env_var="AGNES_MCP_CONNECTOR_UI_ENABLED", default=True)
+
+
 def get_guardrails_blocked_quota_per_day() -> int:
     """Per-submitter cap on `blocked_llm` + `review_error` rows in the
     trailing 24h.
