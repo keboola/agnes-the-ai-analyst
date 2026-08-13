@@ -429,7 +429,14 @@ def _send_turn(session_id: str, text: str, *, live_render: bool) -> TurnResult:
             elif etype == "RUN_ERROR":
                 terminal_seen = True
                 error_message = event.get("message") or "run error"
-                break
+                # Do NOT break: the runner's idle-watchdog partial-save
+                # emits `error` FIRST and only then the partial
+                # `assistant_message` + `done` (RUN_ERROR →
+                # TEXT_MESSAGE_END → RUN_FINISHED on the wire). Draining
+                # the rest of the stream lets that trailing END populate
+                # the answer, so the user gets the partial text next to
+                # the error instead of losing it. Streams that close
+                # right after the error just exhaust the generator.
     except ApiSseError as exc:
         return TurnResult(events=events, answer=_answer(), http_error=(exc.status_code, exc.body))
     except AgnesTransportError as exc:
