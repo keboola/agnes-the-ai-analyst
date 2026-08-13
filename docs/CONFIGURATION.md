@@ -197,15 +197,6 @@ server:
   hostname: "data.acme.com"     # Server DNS name
 ```
 
-### Desktop App
-
-```yaml
-desktop:
-  jwt_issuer: "acme-analyst"
-  jwt_secret: "${DESKTOP_JWT_SECRET}"
-  url_scheme: "acme-analyst"
-```
-
 ### Data Source
 
 ```yaml
@@ -299,7 +290,7 @@ values. Never commit `.env`.
 | `LLM_API_KEY` | API key for LLM proxy (LiteLLM, OpenRouter, etc.) |
 | `JIRA_WEBHOOK_SECRET` | For Jira webhook integration |
 | `JIRA_API_TOKEN` | For Jira REST API access |
-| `DESKTOP_JWT_SECRET` | Separate secret for desktop app tokens |
+| `DESKTOP_JWT_SECRET` | HS256 secret the notifications WebSocket (`/api/notifications/ws`) validates client tokens against. Unset = every connection fails auth (fail-closed). No in-repo flow mints these tokens yet — see issue #412. |
 | `CONFIG_DIR` | Override config directory path |
 | `LOG_LEVEL` | Logging level: `debug`, `info`, `warning`, `error` |
 | `DOMAIN` | Public hostname for Caddy TLS (production profile) |

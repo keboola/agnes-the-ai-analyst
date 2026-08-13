@@ -18,6 +18,8 @@ from unittest.mock import patch
 import httpx
 import pytest
 
+from cli.client import RedirectHardStop
+
 
 def _redirect_response(status: int, location: str, requested: str) -> httpx.Response:
     return httpx.Response(
@@ -29,7 +31,7 @@ def _redirect_response(status: int, location: str, requested: str) -> httpx.Resp
 
 class TestMovedServerHook:
     @pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
-    def test_cross_origin_redirect_exits_2_and_names_the_new_address(self, status, capsys):
+    def test_cross_origin_redirect_exits_2_and_names_the_new_address(self, status):
         from cli.client import _check_moved_server
 
         resp = _redirect_response(
@@ -38,10 +40,10 @@ class TestMovedServerHook:
             "https://agnes.old.example/api/v1/agents",
         )
         with patch("cli.client.get_server_url", return_value="https://agnes.old.example"):
-            with pytest.raises(SystemExit) as exc:
+            with pytest.raises(RedirectHardStop) as exc:
                 _check_moved_server(resp)
-        assert exc.value.code == 2
-        err = capsys.readouterr().err
+        assert exc.value.exit_code == 2
+        err = exc.value.user_message
         # The destination is the one thing the old message lacked.
         assert "https://agnes.new.example" in err
         assert str(status) in err
@@ -60,7 +62,7 @@ class TestMovedServerHook:
         resp = httpx.Response(status_code=403, request=httpx.Request("GET", "https://x/api"))
         _check_moved_server(resp)  # must not raise
 
-    def test_same_origin_redirect_does_not_claim_the_server_moved(self, capsys):
+    def test_same_origin_redirect_does_not_claim_the_server_moved(self):
         """A relative/in-app redirect is not a hostname change.
 
         Still a hard stop (the helper cannot transparently retry), but the
@@ -71,13 +73,13 @@ class TestMovedServerHook:
 
         resp = _redirect_response(307, "/api/v1/agents/", "https://agnes.example/api/v1/agents")
         with patch("cli.client.get_server_url", return_value="https://agnes.example"):
-            with pytest.raises(SystemExit) as exc:
+            with pytest.raises(RedirectHardStop) as exc:
                 _check_moved_server(resp)
-        assert exc.value.code == 2
-        err = capsys.readouterr().err
+        assert exc.value.exit_code == 2
+        err = exc.value.user_message
         assert "AGNES_SERVER" not in err
 
-    def test_path_relative_location_does_not_claim_the_server_moved(self, capsys):
+    def test_path_relative_location_does_not_claim_the_server_moved(self):
         """`Location: v2/agents` carries no host, so it is not a move.
 
         `Location` may be any URI-reference. Classifying by spelling — anything
@@ -89,14 +91,14 @@ class TestMovedServerHook:
 
         resp = _redirect_response(308, "v2/agents", "https://agnes.example/api/v1/agents")
         with patch("cli.client.get_server_url", return_value="https://agnes.example"):
-            with pytest.raises(SystemExit) as exc:
+            with pytest.raises(RedirectHardStop) as exc:
                 _check_moved_server(resp)
-        assert exc.value.code == 2
-        err = capsys.readouterr().err
+        assert exc.value.exit_code == 2
+        err = exc.value.user_message
         assert "AGNES_SERVER" not in err, "a hostless target must fall through to the generic message"
         assert "has moved" not in err
 
-    def test_protocol_relative_location_is_treated_as_a_move(self, capsys):
+    def test_protocol_relative_location_is_treated_as_a_move(self):
         """`Location: //host/path` is absolute, despite the leading slash.
 
         Classifying it by `startswith("/")` files a cross-host move under
@@ -106,35 +108,35 @@ class TestMovedServerHook:
 
         resp = _redirect_response(308, "//new.example/api/v1/agents", "https://old.example/api/v1/agents")
         with patch("cli.client.get_server_url", return_value="https://old.example"):
-            with pytest.raises(SystemExit):
+            with pytest.raises(RedirectHardStop) as exc:
                 _check_moved_server(resp)
-        err = capsys.readouterr().err
+        err = exc.value.user_message
         assert "AGNES_SERVER" in err
         # A scheme-less base would be pasted into the config as `//new.example`.
         assert "AGNES_SERVER=https://new.example" in err
 
-    def test_hint_keeps_a_non_default_port(self, capsys):
+    def test_hint_keeps_a_non_default_port(self):
         from cli.client import _check_moved_server
 
         resp = _redirect_response(
             308, "https://new.example:8443/api/v1/agents?x=1", "https://old.example/api/v1/agents"
         )
         with patch("cli.client.get_server_url", return_value="https://old.example"):
-            with pytest.raises(SystemExit):
+            with pytest.raises(RedirectHardStop) as exc:
                 _check_moved_server(resp)
-        err = capsys.readouterr().err
+        err = exc.value.user_message
         assert "AGNES_SERVER=https://new.example:8443" in err
         assert "x=1" not in err.split("AGNES_SERVER=")[1].split()[0]
 
-    def test_redirect_without_location_still_reports_the_status(self, capsys):
+    def test_redirect_without_location_still_reports_the_status(self):
         from cli.client import _check_moved_server
 
         resp = _redirect_response(308, "", "https://agnes.example/api/v1/agents")
         with patch("cli.client.get_server_url", return_value="https://agnes.example"):
-            with pytest.raises(SystemExit) as exc:
+            with pytest.raises(RedirectHardStop) as exc:
                 _check_moved_server(resp)
-        assert exc.value.code == 2
-        assert "308" in capsys.readouterr().err
+        assert exc.value.exit_code == 2
+        assert "308" in exc.value.user_message
 
 
 class TestHookIsWired:
