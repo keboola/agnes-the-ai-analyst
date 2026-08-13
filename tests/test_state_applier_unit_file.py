@@ -97,6 +97,34 @@ def test_bootstrap_unit_creates_user_and_state_dir():
     )
 
 
+def test_bootstrap_unit_pins_the_applier_uid():
+    """#1217 — the bootstrap unit is the ONLY user-creation path for infras
+    that don't run the OSS customer-instance module's own startup-script
+    (e.g. a fork with its own provisioning). Before this fix, only the
+    startup-script pinned `agnes-applier` to uid 999 (`test_the_applier_uid_
+    is_pinned_not_allocated` in test_startup_instance_yaml_perms.py); this
+    unit's own `useradd` had no `--uid`, so on such an infra `agnes-applier`
+    could still land on a different uid than the app container's — the
+    exact silent-desync bug class #1217 exists to close, just reached
+    through a different provisioning path.
+
+    Falls back to an unpinned form if 999 is taken (same posture as the
+    startup-script: a hard failure here would brick provisioning), and a
+    separate ExecStart= reads the uid back and warns loudly — but does not
+    fail the unit — on a mismatch.
+    """
+    from pathlib import Path
+
+    unit = Path("scripts/ops/agnes-state-applier-bootstrap.service").read_text()
+    assert "--uid 999" in unit, (
+        "the bootstrap unit's useradd must pin uid 999 — this is the only user-creation "
+        "path on infras that don't run the module's own startup-script"
+    )
+    assert "id -u agnes-applier" in unit and "999" in unit.split("id -u agnes-applier", 1)[1], (
+        "the bootstrap unit must read the uid back and report a mismatch — otherwise a fallen-through pin is silent"
+    )
+
+
 def test_startup_script_provisions_agnes_applier_user():
     """Phase 8.1 — startup script creates the agnes-applier user
     idempotently and adds it to the docker group."""

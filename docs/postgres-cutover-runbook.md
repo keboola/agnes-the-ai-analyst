@@ -19,12 +19,31 @@ automatically via the startup-script. To migrate an existing VM:
 ```bash
 # As root on the customer VM:
 useradd --system --no-create-home --shell /usr/sbin/nologin \
-        --user-group agnes-applier
+        --uid 999 --user-group agnes-applier
 usermod -aG docker agnes-applier
 chown -R agnes-applier:agnes-applier /data/state
 systemctl daemon-reload
 systemctl restart agnes-state-applier.timer
 ```
+
+`--uid 999` pins agnes-applier to the same uid as the app container
+(Dockerfile `USER agnes`). `/data/state/instance.yaml` is written `0600`,
+and agnes-applier is what ends up owning it — so the app can only read its
+own config while the two uids agree (#1217). Confirm the pin took:
+
+```bash
+id -u agnes-applier   # must print 999
+```
+
+If `useradd` above fails with "UID '999' is not unique", uid 999 already
+belongs to a different account on this VM (`getent passwd 999` shows which
+one). Either free it and re-run the command above, or accept that
+`instance.yaml` stays at whatever mode it already has — the applier and the
+app keep working either way, just without the 0600 tightening until the
+uids agree. Do **not** `usermod -u 999` an *existing* agnes-applier account
+without also re-chowning the files it already owns (`/data/state`,
+`/opt/agnes/.env`) — a bare uid change leaves them pointing at the old
+number.
 
 Then confirm the next tick succeeds:
 
