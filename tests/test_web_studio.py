@@ -253,18 +253,26 @@ def test_markdown_body_can_be_written_or_uploaded(seeded_app):
     assert "'.zip,application/zip'" in body
 
 
-def test_builder_separates_shareable_agents_from_personal_ones(seeded_app):
-    """A shareable agent (a Library resource anyone can install) and a personal
-    agent (configured on /agents, carrying its owner's scopes) are one word
-    apart. The builder must say which one it is making, and point at the other
-    — getting this wrong costs an author a whole draft."""
+def test_builder_separates_agent_templates_from_agents(seeded_app):
+    """A Library agent template and a personal agent were one word apart, and
+    the builder used to spend a sentence disowning the one it was NOT making.
+
+    AGT-4 gave the Library concept its own name, so the separation is carried
+    by the noun rather than by a disclaimer: the builder says "Agent Template",
+    still points at /agents for the other thing, and still refuses to imply the
+    author's own authority travels with what they publish. That last part is
+    the load-bearing claim — an author who believes their access ships with the
+    template will write one that assumes data it will never see.
+    """
     c = seeded_app["client"]
     body = c.get("/skills", headers=_auth(seeded_app["analyst_token"])).text
-    assert "shareable agent" in body
+    assert "Agent Template" in body
     assert 'href="/agents"' in body
-    assert "personal agents" in body
-    # It must not claim the author's own authority travels with the resource.
-    assert "Nothing you write here inherits your access." in body
+    # The old name is gone, and so is the sentence that existed to compensate.
+    assert "shareable agent" not in body.lower()
+    assert "not one of your" not in body.lower()
+    # Authority still does not travel with the published resource.
+    assert "inherits yours" in body
 
 
 def test_builder_splits_receipts_from_problems(seeded_app):
