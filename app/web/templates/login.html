@@ -167,6 +167,7 @@
                     'keboola_not_configured': "Keboola sign-in is not configured on this server.",
                     'keboola_not_permitted': "Your Keboola token or project role is not permitted to sign in here. Contact your " ~ (instance_brand or "Agnes") ~ " administrator.",
                     'keboola_project_mismatch': "Your Keboola session belongs to a different project than this instance. Retry and pick project " ~ (keboola_expected_project or "configured for this instance") ~ " on the Keboola sign-in screen.",
+                    'email_not_configured': "Email link sign-in is not available on this server (no mail delivery configured).",
                 } %}
                 {% if _err and _err_messages.get(_err) %}
                 {# Inline error banner — canonical `.flash flash-error`

@@ -4,6 +4,8 @@ import ipaddress
 import socket
 from unittest.mock import patch
 
+import pytest
+
 
 def _auth(token):
     return {"Authorization": f"Bearer {token}"}
@@ -449,6 +451,48 @@ class TestServerConfigAuthProvidersValidation:
         assert resp.status_code == 200, resp.text
         overlay = yaml.safe_load((seeded_app["env"]["data_dir"] / "state" / "instance.yaml").read_text())
         assert overlay["auth"]["providers"] == ["password"]
+
+    def test_non_dict_keboola_block_rejected_with_422(self, seeded_app):
+        """A malformed auth.keboola (not an object) must 422 with a clear
+        message, not crash the availability merge with a 500."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"auth": {"keboola": "oops-a-string"}}, "confirm_danger": True},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 422, resp.text
+        assert "auth.keboola must be an object" in resp.json()["detail"]
+
+    def test_clearing_sole_providers_config_without_touching_providers_rejected(self, monkeypatch):
+        """The lockout guard fires even when the patch does NOT touch
+        auth.providers: an instance already restricted to [keboola] must not be
+        able to clear keboola's config in a separate save and self-lock-out."""
+        from fastapi import HTTPException
+        import app.api.admin as admin
+
+        # Existing effective allowlist = [keboola]; nothing configured for it.
+        def fake_get_value(*keys, default=None):
+            if keys == ("auth", "providers"):
+                return ["keboola"]
+            return default
+
+        monkeypatch.setattr("app.instance_config.get_value", fake_get_value)
+        # A save that touches auth.keboola but not auth.providers.
+        with pytest.raises(HTTPException) as exc:
+            admin._validate_auth_providers_in_patch({"auth": {"keboola": {"client_id": ""}}})
+        assert exc.value.status_code == 422
+        assert "no usable sign-in method" in exc.value.detail
+
+    def test_unrelated_auth_save_not_blocked_when_providers_unset(self, monkeypatch):
+        """When no allowlist is configured, an unrelated auth save must pass —
+        the runtime offers all providers, so there is no lockout to guard."""
+        import app.api.admin as admin
+
+        monkeypatch.setattr("app.instance_config.get_value", lambda *k, default=None: default)
+        # Must not raise.
+        admin._validate_auth_providers_in_patch({"auth": {"allowed_domain": "example.com"}})
 
     def test_null_providers_accepted_as_clear_override(self, seeded_app):
         """``providers: null`` is NOT rejected — the validator early-returns

@@ -1071,6 +1071,13 @@ async def login_email_page(request: Request):
 
     if not provider_allowed("email"):
         raise HTTPException(status_code=404, detail="Not Found")
+    # Don't render a "send me a link" form when no mail transport is configured
+    # — it would take the email and claim a link was sent that can never arrive.
+    # is_available() is True in local-dev (the link is logged), so dev still works.
+    from app.auth.providers.email import is_available as email_available
+
+    if not email_available():
+        return RedirectResponse(url="/login?error=email_not_configured", status_code=302)
     from app.auth._common import safe_next_path
 
     next_path = safe_next_path(request.query_params.get("next", ""), default="")

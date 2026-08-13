@@ -249,55 +249,82 @@ def _validate_urls_in_patch(sections: Dict[str, Dict[str, Any]]) -> None:
                 _validate_url_not_private(value, field_name=".".join(path))
 
 
-def _validate_auth_providers_in_patch(sections: Dict[str, Dict[str, Any]]) -> None:
-    """Validate an auth.providers overlay write. Rejects both an explicitly
-    empty list (one write must never lock every user out — spec: empty is a
-    config error) and a list naming *only* unknown providers: the runtime
-    fails that open to "all providers" as a last-resort safety net, but at the
-    admin-API boundary a typo like ``[gogle]`` should surface as an error, not
-    silently re-enable every sign-in method (Devin review on #1288)."""
-    auth = sections.get("auth")
-    if not isinstance(auth, dict) or "providers" not in auth:
-        return
-    value = auth["providers"]
+def _normalize_provider_names(value: Any) -> "list[str] | None":
+    """Provider names from the list or the comma-separated string form (matching
+    the runtime resolver `configured_allowlist`). ``None`` when the value is
+    null/unset. Raises 422 for a scalar the runtime couldn't parse either."""
     if value is None:
-        return
-    # Accept both the list form and the comma-separated string form, matching
-    # what the runtime resolver (`provider_registry.configured_allowlist`)
-    # honors from yaml/env — rejecting the string here would lock an operator
-    # whose config spells providers as text out of saving the auth section.
+        return None
     if isinstance(value, str):
-        names = [v.strip() for v in value.split(",") if v.strip()]
-    elif isinstance(value, list):
-        names = [str(v).strip() for v in value if str(v).strip()]
-    else:
-        raise HTTPException(
-            status_code=422,
-            detail="auth.providers must be a list or comma-separated string of provider names (or omitted entirely)",
-        )
-    if not names:
-        raise HTTPException(
-            status_code=422,
-            detail="auth.providers must not be empty — omit it entirely to keep all sign-in methods",
-        )
+        return [v.strip() for v in value.split(",") if v.strip()]
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    raise HTTPException(
+        status_code=422,
+        detail="auth.providers must be a list or comma-separated string of provider names (or omitted entirely)",
+    )
+
+
+def _validate_auth_providers_in_patch(sections: Dict[str, Dict[str, Any]]) -> None:
+    """Validate an auth-section overlay write so it can never leave the instance
+    with no usable sign-in method (Devin review on #1288). Rejects an empty or
+    all-unknown ``auth.providers``, and — whenever the auth section is patched
+    at all — an effective allowlist whose named providers are none of them
+    actually available (e.g. ``[keboola]`` after its stack config was cleared in
+    a separate save), which would render zero login buttons with no runtime
+    fail-open."""
+    auth = sections.get("auth")
+    if not isinstance(auth, dict):
+        return
+
+    # A non-dict keboola block would crash the availability merge below; reject
+    # it with a clear message rather than a 500.
+    kb = auth.get("keboola")
+    if kb is not None and not isinstance(kb, dict):
+        raise HTTPException(status_code=422, detail="auth.keboola must be an object (a map of settings)")
+
     from app.auth.provider_registry import KNOWN_PROVIDERS
 
-    known = [n for n in names if n in KNOWN_PROVIDERS]
-    if not known:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"auth.providers names no known provider (valid: {sorted(KNOWN_PROVIDERS)}); "
-                "only unknown names would silently re-enable all sign-in methods"
-            ),
-        )
+    if "providers" in auth:
+        names = _normalize_provider_names(auth["providers"])
+        if names is None:
+            return  # explicit null clears the override → no allowlist, can't lock out
+        if not names:
+            raise HTTPException(
+                status_code=422,
+                detail="auth.providers must not be empty — omit it entirely to keep all sign-in methods",
+            )
+        if not any(n in KNOWN_PROVIDERS for n in names):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"auth.providers names no known provider (valid: {sorted(KNOWN_PROVIDERS)}); "
+                    "only unknown names would silently re-enable all sign-in methods"
+                ),
+            )
+        effective = names
+    else:
+        # providers isn't in THIS patch — re-check the EXISTING effective
+        # allowlist so a save that clears a sole provider's config (e.g.
+        # auth.keboola) can't produce the same lockout. A malformed or unset
+        # existing value must not block an unrelated auth save.
+        from app.instance_config import get_value
+
+        current_raw = get_value("auth", "providers")
+        if not isinstance(current_raw, (str, list)):
+            return
+        effective = _normalize_provider_names(current_raw) or []
+        if not effective:
+            return
 
     # The login page offers a provider only when it is BOTH allowlisted and
-    # actually available (configured). A list naming only known-but-unconfigured
-    # providers (e.g. [google] with no Google OAuth, or [keboola] with no stack)
-    # would render zero sign-in buttons — an unrecoverable lockout the runtime
-    # has no fail-open for (unlike the all-unknown case). Reject it here.
-    # `password` is always available, so any list including it passes.
+    # actually available (configured). `password` is always available, so any
+    # list including it passes.
+    known = [n for n in effective if n in KNOWN_PROVIDERS]
+    if not known:
+        # An all-unknown EXISTING value (not being edited here) fails open to
+        # all providers at runtime — not a lockout — so don't block this save.
+        return
     if not any(_provider_available_after_save(n, auth) for n in known):
         raise HTTPException(
             status_code=422,
