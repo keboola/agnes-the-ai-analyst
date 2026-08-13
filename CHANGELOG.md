@@ -10,6 +10,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.9] - 2026-08-13
+
+### Added
+
+- **The admin MCP source list flags rows the current url policy would now refuse.** `check_source_url` (#1154/#1204) gates a source's `url` only when it is configured — a row registered before the guard existed, or before `mcp.source_url_strict` was turned on, keeps forwarding credentials on an unrelated edit even when its url is now in the refused set (a literal link-local/reserved address, or cleartext http to a public one). `GET /api/admin/mcp-sources` and the detail endpoint now carry a `url_policy_verdict` (`ok` / `would_refuse` + reasons) per row, computed with the same DNS-free checks the policy applies with no resolver call — cheap enough to run on every row in a list. `agnes admin mcp source list` shows the same verdict in a new column. Runtime enforcement at the two forward seams is a separate, follow-up change (#1216).
+
 ## [0.83.8] - 2026-08-13
 
 ### Internal
