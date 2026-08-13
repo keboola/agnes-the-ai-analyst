@@ -96,6 +96,12 @@ class CreateSessionBody(BaseModel):
     # Optional authoring-agent profile (see app/chat/profiles.py). Spawn-time
     # only — shapes the session persona + knowledge skill; not persisted.
     profile: Optional[str] = None
+    #: Run one of the caller's OWN named agents in this session instead of
+    #: their default. The runtime for this already existed and is surface-
+    #: agnostic (``ChatManager.create_session(agent_id=...)``, the same seam
+    #: ``POST /api/v1/agents/{slug}/sessions`` uses); web chat was simply never
+    #: wired to it, which is why agents could be configured but not used.
+    agent_slug: Optional[str] = None
 
 
 def _get_manager(request: Request) -> ChatManager:
@@ -128,6 +134,31 @@ def _default_agent_id(owner_user_id: str) -> str:
         return agents_repo().get_or_create_default(owner_user_id)["id"]
 
 
+def _resolve_agent_id(agent_slug: Optional[str], user: dict) -> str:
+    """Which agent this session runs as — a named one, else the default.
+
+    Ownership is checked here rather than left to the broker: an agent is a
+    private, scoped identity, so being able to name someone else's slug would
+    hand the caller a persona built on grants that are not theirs. 404 for both
+    "no such slug" and "not yours", so the endpoint does not confirm the
+    existence of another user's agent.
+
+    Scope enforcement itself is NOT re-implemented — the returned id goes
+    through the same ``_load_agent_row``/broker seam as the agent-as-API route,
+    so a ``'selected'``-scoped agent is restricted identically whichever door
+    the session came in through. ``tests/test_agent_scope_e2e.py`` pins that.
+    """
+    if not agent_slug:
+        return _default_agent_id(user["id"])
+    # The lookup is owner-scoped, so another user's slug simply does not
+    # resolve — there is no window where a foreign row is fetched and then
+    # rejected.
+    row = agents_repo().get_by_slug(user["id"], agent_slug)
+    if not row:
+        raise HTTPException(status_code=404, detail={"kind": "agent_not_found", "hint": agent_slug})
+    return str(row["id"])
+
+
 @router.post("/sessions", status_code=201)
 async def create_session(
     body: CreateSessionBody,
@@ -140,7 +171,7 @@ async def create_session(
             status_code=400,
             detail={"kind": "unknown_profile", "hint": body.profile},
         )
-    agent_id = _default_agent_id(user["id"])
+    agent_id = _resolve_agent_id(body.agent_slug, user)
     try:
         s = await mgr.create_session(
             user_email=user["email"],
