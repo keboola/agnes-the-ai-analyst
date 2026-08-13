@@ -464,13 +464,19 @@ def test_library_offers_grid_view_toggle(seeded_app):
 
 def test_library_add_actions_live_behind_one_menu(seeded_app):
     """A single "+ Add" chevron button fronts every add path; there is no
-    separate per-kind button in the header, and no agent entry."""
+    separate per-kind button in the header, and no PERSONAL-agent entry.
+
+    An agent template is a Library kind and does have an entry (renamed from
+    "shareable agent" in AGT-4); a personal agent still does not, and lives on
+    /agents. The two labels share a prefix, so the negative match is on the
+    closing tag.
+    """
     text = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"])).text
     assert 'id="lib-new-btn"' in text
     assert 'id="lib-new-menu"' in text
-    for label in ("Build a skill", "Build a plugin", "Upload a file"):
+    for label in ("Build a skill", "Build a plugin", "Build an agent template", "Upload a file"):
         assert f"<span>{label}</span>" in text
-    assert "Build an agent" not in text
+    assert ">Build an agent<" not in text
     # Every row goes to the one builder at /skills, so no row is marked WIP.
     assert "lib-wip" not in text
     # The connect banner is a page-level note under the header, never inside
