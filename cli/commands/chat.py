@@ -331,9 +331,23 @@ def _send_turn(session_id: str, text: str, *, live_render: bool) -> TurnResult:
     which only needs the raw event list): `TEXT_MESSAGE_CONTENT` deltas
     stream straight to stdout, `TOOL_CALL_START` prints a dim `⚙ <name>`
     line, `RUN_FINISHED` ends the turn cleanly, `RUN_ERROR` ends it with
-    `.error` set. Every other AG-UI event type (`RUN_STARTED`,
-    `TEXT_MESSAGE_END`, `TOOL_CALL_END`) is collected into `.events` for
-    `--json` but not rendered — the brief only calls out the four above.
+    `.error` set. `TOOL_CALL_END` is collected into `.events` for `--json`
+    but not rendered.
+
+    `TEXT_MESSAGE_END` carries the turn's full, authoritative answer
+    (`app/api/agent_sse.py` maps it off the runner's trailing
+    `assistant_message` frame's `content` field) but is normally redundant
+    with the `TEXT_MESSAGE_CONTENT` deltas already streamed and printed —
+    UNLESS no non-blank deltas ever arrived this turn. That happens whenever the
+    backend answers without incremental streaming: the
+    `AGNES_RUNNER_FAKE_AGENT=1` test/dev runner's `echo:` reply, and the
+    real runner's idle-watchdog partial-save (`app/chat/runner.py`,
+    `_run_turn`'s `if partial: _emit({"type": "assistant_message", ...})`)
+    both emit a single `assistant_message` with no preceding `token` frame.
+    On that shape, `TEXT_MESSAGE_CONTENT`-only accumulation stays empty and
+    the turn reports "(no answer)" despite the answer having arrived intact
+    — so `TEXT_MESSAGE_END.content` is kept as a fallback and, when nothing
+    streamed live, printed here as the one chance to show it.
 
     C7 (Ctrl-C mid-stream): Python's default SIGINT disposition already
     raises `KeyboardInterrupt` at whatever blocking read is in flight
@@ -364,8 +378,22 @@ def _send_turn(session_id: str, text: str, *, live_render: bool) -> TurnResult:
     """
     events: list[dict] = []
     answer_parts: list[str] = []
+    final_content: Optional[str] = None
     error_message: Optional[str] = None
     terminal_seen = False
+
+    def _answer() -> str:
+        # Deltas are the normal case; the trailing full-content event only
+        # wins when nothing VISIBLE streamed incrementally (see the
+        # docstring above). Blank/whitespace-only deltas (an empty `token`
+        # frame maps to `delta: ""`) count as nothing streamed — the same
+        # predicate gates the live fallback print below, so the two can
+        # never disagree and swallow the answer silently.
+        streamed = "".join(answer_parts)
+        if streamed.strip():
+            return streamed
+        return final_content or streamed
+
     gen = api_post_sse(f"/api/v1/sessions/{session_id}/messages", json={"input": text})
     try:
         for event in gen:
@@ -377,6 +405,19 @@ def _send_turn(session_id: str, text: str, *, live_render: bool) -> TurnResult:
                 if live_render:
                     sys.stdout.write(delta)
                     sys.stdout.flush()
+            elif etype == "TEXT_MESSAGE_END":
+                content = event.get("content")
+                if content:
+                    final_content = content
+                    # Same predicate as `_answer()`: all-blank deltas mean
+                    # nothing visible was rendered, so this is still the
+                    # one chance to show the answer. Checking the list
+                    # (`not answer_parts`) instead would skip the print
+                    # after a single empty delta while `_answer()` still
+                    # returned this content — success with silent output.
+                    if live_render and not "".join(answer_parts).strip():
+                        sys.stdout.write(content)
+                        sys.stdout.flush()
             elif etype == "TOOL_CALL_START":
                 if live_render:
                     name = event.get("name") or "tool"
@@ -388,21 +429,28 @@ def _send_turn(session_id: str, text: str, *, live_render: bool) -> TurnResult:
             elif etype == "RUN_ERROR":
                 terminal_seen = True
                 error_message = event.get("message") or "run error"
-                break
+                # Do NOT break: the runner's idle-watchdog partial-save
+                # emits `error` FIRST and only then the partial
+                # `assistant_message` + `done` (RUN_ERROR →
+                # TEXT_MESSAGE_END → RUN_FINISHED on the wire). Draining
+                # the rest of the stream lets that trailing END populate
+                # the answer, so the user gets the partial text next to
+                # the error instead of losing it. Streams that close
+                # right after the error just exhaust the generator.
     except ApiSseError as exc:
-        return TurnResult(events=events, answer="".join(answer_parts), http_error=(exc.status_code, exc.body))
+        return TurnResult(events=events, answer=_answer(), http_error=(exc.status_code, exc.body))
     except AgnesTransportError as exc:
-        return TurnResult(events=events, answer="".join(answer_parts), transport_error=exc)
+        return TurnResult(events=events, answer=_answer(), transport_error=exc)
     except KeyboardInterrupt:
         _best_effort_cancel(session_id)
-        return TurnResult(events=events, answer="".join(answer_parts), cancelled=True)
+        return TurnResult(events=events, answer=_answer(), cancelled=True)
     finally:
         close = getattr(gen, "close", None)
         if callable(close):
             close()
     if not terminal_seen:
         error_message = TRUNCATED_STREAM_MESSAGE
-    return TurnResult(events=events, answer="".join(answer_parts), error=error_message)
+    return TurnResult(events=events, answer=_answer(), error=error_message)
 
 
 def _render_turn_error(result: TurnResult) -> None:
