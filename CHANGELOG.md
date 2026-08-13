@@ -10,6 +10,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.11] - 2026-08-13
+
+### Fixed
+
+- **A scoped sync for an already-deleted table id no longer re-registers the whole source project.** The auto-discovery gate on a `tables=[...]`-scoped sync trigger derived "is the registry empty?" from the requested subset (`repo.get(id)` returning `None` for a deleted id looked like an empty registry), instead of the whole registry like the scheduled-sync branch already did — so triggering a sync for a table id that was deleted while queued or running could re-discover and re-register every table on the source. Both branches now check the whole registry.
+
 ## [0.83.10] - 2026-08-13
 
 ### Fixed
