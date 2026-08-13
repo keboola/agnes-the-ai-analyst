@@ -40,10 +40,23 @@ belongs to a different account on this VM (`getent passwd 999` shows which
 one). Either free it and re-run the command above, or accept that
 `instance.yaml` stays at whatever mode it already has — the applier and the
 app keep working either way, just without the 0600 tightening until the
-uids agree. Do **not** `usermod -u 999` an *existing* agnes-applier account
-without also re-chowning the files it already owns (`/data/state`,
-`/opt/agnes/.env`) — a bare uid change leaves them pointing at the old
-number.
+uids agree. That is enforced, not merely intended: both writers of the file
+skip the tightening when the uids disagree (provisioning's `chmod 600` and
+the applier's own `write_instance_yaml`), so an ordinary backend flip,
+cancel or stuck-job recovery cannot leave the overlay owner-only under a uid
+the app container is not.
+
+**Treat this as a state to leave, not to live in.** `instance.yaml` holds
+the database url with its password inline plus any connector credentials an
+operator set, on a data volume several non-root containers mount — the
+degradation costs you exactly that hardening. The applier logs a warning
+naming the uid it found at every rewrite (`journalctl -t
+agnes-state-applier`), and the bootstrap unit logs one at every boot
+(`journalctl -t agnes-state-applier-bootstrap`).
+
+Do **not** `usermod -u 999` an *existing* agnes-applier account without also
+re-chowning the files it already owns (`/data/state`, `/opt/agnes/.env`) —
+a bare uid change leaves them pointing at the old number.
 
 Then confirm the next tick succeeds:
 

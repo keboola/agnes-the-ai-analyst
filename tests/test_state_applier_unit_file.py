@@ -66,7 +66,8 @@ def test_bootstrap_unit_creates_user_and_state_dir():
     root (no User=) and creates the agnes-applier user + chowns
     /data/state. Customer infras that don't ship matching
     provisioning logic (e.g. forks of the OSS customer-instance
-    module, the Groupon FoundryAI infra repo) get the bootstrap for
+    module, or an infra repo that provisions its VMs on its own)
+    get the bootstrap for
     free via the systemd unit ordering."""
     from pathlib import Path
 
@@ -318,6 +319,5 @@ def test_bootstrap_readback_dollars_are_escaped_from_systemd():
             continue
         stripped = line.replace("$$", "")
         assert "$" not in stripped, (
-            f"unescaped $ reaches systemd expansion in: {line!r} — "
-            "write it as $$ so bash receives a literal dollar"
+            f"unescaped $ reaches systemd expansion in: {line!r} — write it as $$ so bash receives a literal dollar"
         )

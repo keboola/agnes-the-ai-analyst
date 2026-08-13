@@ -43,7 +43,13 @@ ExecStart=/bin/bash -c 'id -u agnes-applier >/dev/null 2>&1 || useradd --system 
 # Deliberately does not fail the unit: instance.yaml simply keeps its
 # current, looser mode until an operator frees uid 999 or realigns
 # agnes-applier — see docs/postgres-cutover-runbook.md for the remediation
-# commands.
+# commands. Warn-only is only defensible because that claim is enforced on
+# BOTH writers of the file: the startup-script gates its `chmod 600` on the
+# same readback, and the applier's write_instance_yaml computes the mode
+# from the uid the file will come to rest on
+# (scripts/ops/agnes-state-applier.sh::_instance_yaml_target_mode). Until
+# the latter existed, this comment was false — the applier tightened to 0600
+# regardless and the app then refused to start.
 ExecStart=/bin/bash -c 'APPLIER_UID=$$(id -u agnes-applier 2>/dev/null || echo ""); if [ "$$APPLIER_UID" != "999" ]; then logger -t agnes-state-applier-bootstrap -p user.warning "agnes-applier is uid $$APPLIER_UID, not 999 -- /data/state/instance.yaml (0600) is unreadable by the app container (uid 999) whenever agnes-applier owns it. Free uid 999 (check what holds it: getent passwd 999) or realign agnes-applier onto it, then re-run this unit; see docs/postgres-cutover-runbook.md."; fi'
 ExecStart=/usr/sbin/usermod -aG docker agnes-applier
 ExecStart=/bin/mkdir -p /data/state /data/postgres
