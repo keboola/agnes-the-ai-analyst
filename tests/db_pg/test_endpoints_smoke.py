@@ -1978,6 +1978,9 @@ KNOWN_UNTESTED = {
     # Admin audit view over all Data Packages / Memory Domains (catalog
     # reshape) — rendering covered by tests/test_web_catalog_reshape.py.
     "GET /admin/data-packages",
+    # A data package's own page (tables · sharing · at a glance) — rendering
+    # covered by tests/test_web_admin_package_detail.py.
+    "GET /admin/data-packages/{package_id}",
     # Agent builder (rail-layout WIP surface) — rendering covered by
     # tests/test_ui_layout_theme.py::TestRailOptIn.
     "GET /agents",

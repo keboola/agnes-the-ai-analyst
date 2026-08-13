@@ -10515,7 +10515,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.83.4"
+    "version": "0.83.11"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -10640,7 +10640,7 @@
     },
     "/admin/access": {
       "get": {
-        "description": "The Access surface \u2014 the third leg of People \u2192 Data \u2192 Access.\n\nThis URL has had three lives, and the middle one is why the current\nshape is what it is. It was a standalone grant matrix; it was retired\ninto the group detail page's **Access tab**, correctly, because\n``resource_grants`` keys on ``group_id`` and the old page was the same\neditor behind a second group picker; and it returns here as the thing\nthat tab cannot be \u2014 a workspace over the whole graph, with two jobs no\nsurface in the product had:\n\n  * move between groups without a page load each time (left column is\n    the group list, right pane is the editor), and\n  * answer \"why can/can't this person see X?\" \u2014 the **Simulate** tab\n    walks membership \u2192 grant \u2192 tier and names what is NOT shared, which\n    previously meant joining four pages by hand.\n\nIt is deliberately NOT a fork: the page renders the same\n``resource_grants`` rows through the same ``/api/admin/grants``\nendpoints as the group tab and the package-side Share editor, reading\nits snapshot from ``/api/admin/access-overview`` in one round trip. The\ngroup detail tab stays \u2014 it is where you land from a group, and it\ncarries Members beside Access.\n\n``?group=<id>`` selects that group (the shape the retired redirect\naccepted, so old links keep working).",
+        "description": "The Access surface \u2014 the third leg of People \u2192 Data \u2192 Access, and\nthe ONE place a group is edited.\n\nThis URL has had four lives. It was a standalone grant matrix; it was\nretired into the group detail page's Access tab (``resource_grants``\nkeys on ``group_id``, so the group's own page looked like where the\neditor belonged); it came back as a two-pane workspace beside that tab;\nand it is now the only one of the three left standing.\n\nThe consolidation is the point. A group is one object with two sides \u2014\nan audience, and a bundle of what that audience can use \u2014 and the\nproduct had grown FOUR editors over that one object: this page, the\ngroup list, the group detail page, and the create drawer's own copies\nof both panes. Four surfaces, one pair of tables\n(``user_group_members``, ``resource_grants``), and every one of them\nfree to drift from the others.\n\nSo this page absorbed what the other three uniquely had, rather than\ndropping it:\n\n  * the list's origin pill and member/grant counts \u2192 the selector rows;\n    its description, created date, rename and delete \u2192 the pane header\n  * the detail page's full roster, with each member's origin and the\n    rule that only admin-added membership can be removed here \u2192 the\n    audience block's \"Show all N\"; its resource filter and its\n    ``#table:`` deep link \u2192 the pane's filter and ``?resource=``\n  * the drawer keeps the one job nothing else does (naming a group)\n    and lost its duplicate people/access steps\n\nWhat stays elsewhere is only the TRANSPOSE \u2014 a resource's Share panel\n(which groups get this package) and a person's memberships on their own\npage. Those answer different questions; they are not second copies of\nthis one.\n\n``?group=<id>`` selects that group \u2014 the shape ``/admin/groups/{id}``\nnow redirects to. ``?resource=<type>:<id>`` pre-filters the grant tree,\nwhich is how /admin/tables' \"Manage access\" arrives.",
         "operationId": "admin_access_page_admin_access_get",
         "parameters": [
           {
@@ -11520,6 +11520,65 @@
         ]
       }
     },
+    "/admin/data-packages/{package_id}": {
+      "get": {
+        "description": "ONE package, end to end \u2014 what is in it, who can use it, who has it.\n\nThe package is the unit an analyst actually receives, and until this page\nexisted it was the one object in the Data section with no home: its\ncomposition was edited inside the package-grouped layout on /admin/tables,\nits sharing on /admin/data-packages, and the card's own drilldown left the\nadmin area entirely for the analyst-facing /catalog/p/<slug>. Three places,\nnone of them about the package.\n\nEverything here rides EXISTING repositories and endpoints \u2014 the page adds\nno repo method, so there is no DuckDB\u2194Postgres parity sibling to write\n(CLAUDE.md). Composition writes through ``/api/admin/data-packages/{id}\n/tables``; sharing writes the same ``/api/admin/grants`` rows a group's\nAccess tab does, so the two ends of one relationship can never disagree.\n\nThe delivery read-out is the part the product could not draw anywhere:\na grant is a PERMISSION, and the data only lands once `agnes pull` runs.\n``users.last_pull_at`` (stamped by app/api/sync.py on every human pull) is\nwhat turns \"shared with 14 people\" into \"11 of them actually have it\".",
+        "operationId": "admin_package_detail_admin_data_packages__package_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Package Detail",
+        "tags": [
+          "web"
+        ]
+      }
+    },
     "/admin/data-sources": {
       "get": {
         "description": "\"Add data source\" wizard (#755): paste a Keboola project's connection\nURL + storage token, validate, then browse buckets/tables and register\nthe ones you want \u2014 no SSH, no config-file edits. Also the home for\nper-project \"Set as default\" and \"Rotate token\" controls \u2014 the single\nplace to manage a Keboola connection end to end.\n\nDistinct from /admin/mcp-sources (MCP tool servers Agnes calls at\nruntime) and from /admin/datasource-credentials (GWS/BQ instance\nsecrets) \u2014 this page owns Keboola project connect/browse/register/\ndefault/rotate. Passes ``vault_key_configured`` so the template can\nrender the same blocking banner as /admin/datasource-credentials when\n``AGNES_VAULT_KEY`` is absent (the wizard can't store a secret without\nit).",
@@ -11722,8 +11781,8 @@
     },
     "/admin/groups": {
       "get": {
-        "description": "Group list view \u2014 full-width table of user_groups with origin chips,\nmember/grant counts, and edit/delete affordances for non-system rows.",
-        "operationId": "admin_groups_page_admin_groups_get",
+        "description": "The group LIST is the Access workspace's left column.\n\nThis URL was a full-width table of ``user_groups`` \u2014 name, description,\norigin, member and grant counts, created, edit/delete. Every one of\nthose is on ``/admin/access`` now: the counts and the origin ride the\nselector rows, the description and the created date are the pane's\nheader, and edit/delete are the header's two buttons. What the table\ncould not do is the thing the page is for \u2014 change what a group can\nuse \u2014 so the section had two tabs that were both a list of groups.\n\n``#table:<id>`` (the /admin/tables deep link) is a fragment, so it never\nreaches the server; the workspace rewrites it to its own ``?resource=``\nspelling client-side. Kept as a 308 rather than deleted: this URL is\nlinked from a dozen places, is in the admin keyboard shortcuts, and is\nwhat an operator's muscle memory types.",
+        "operationId": "admin_groups_redirect_admin_groups_get",
         "parameters": [
           {
             "in": "header",
@@ -11764,7 +11823,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Admin Groups Page",
+        "summary": "Admin Groups Redirect",
         "tags": [
           "web"
         ]
@@ -11772,8 +11831,8 @@
     },
     "/admin/groups/{group_id}": {
       "get": {
-        "description": "Single-group detail page \u2014 header + Members/Access tabs.\n\nThe Access tab carries the resource-grant matrix that used to live on a\nstandalone /admin/access page. Grants key on ``group_id``, so the group's\nown page is where the editor belongs; the old page was the same editor\nbehind a second group picker. ``#access`` / ``#table:<id>`` deep-links\nopen that tab directly.",
-        "operationId": "admin_group_detail_page_admin_groups__group_id__get",
+        "description": "A single group is the Access workspace with that group selected.\n\nThe detail page carried a header plus Members and Access tabs. Those\ntwo tabs are the workspace's two panes, side by side rather than behind\na switch, and the header is the pane's header \u2014 so this page was the\nsame three editors reached by a second route, over one pair of tables\n(``user_group_members``, ``resource_grants``). The full roster it owned,\nincluding each member's origin, is the pane's \"Show all N\" disclosure.\n\n``?group=`` is the shape the workspace already accepted, so the\nselection survives the hop. The 404 on an unknown id stays here: it is\ncheaper and more honest than redirecting to a page that would silently\nopen on a different group.",
+        "operationId": "admin_group_detail_redirect_admin_groups__group_id__get",
         "parameters": [
           {
             "in": "path",
@@ -11823,7 +11882,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Admin Group Detail Page",
+        "summary": "Admin Group Detail Redirect",
         "tags": [
           "web"
         ]
@@ -17092,7 +17151,7 @@
         ]
       },
       "get": {
-        "description": "Single-group payload for the /admin/groups/{id} detail page header.",
+        "description": "Single-group payload for one group.\n\nFed the retired ``/admin/groups/{id}`` header; still the endpoint the\ngroup drawer reads back after a create or rename.",
         "operationId": "get_group_api_admin_groups__group_id__get",
         "parameters": [
           {
@@ -28139,7 +28198,7 @@
     },
     "/api/agents": {
       "get": {
-        "description": "The caller's agents plus any shared into a group they belong to.\n\nDeliberately NOT admin god-mode: an admin sees their own agent list here,\nnot every agent in the instance (that audit view is /admin/groups).",
+        "description": "The caller's agents plus any shared into a group they belong to.\n\nDeliberately NOT admin god-mode: an admin sees their own agent list here,\nnot every agent in the instance (that audit view is /admin/access).",
         "operationId": "list_agents_api_agents_get",
         "parameters": [
           {
@@ -28255,7 +28314,7 @@
     },
     "/api/agents/{agent_id}": {
       "delete": {
-        "description": "Soft-delete an agent the caller owns, and drop its grants.\n\nGrants are removed too, so a later agent can never inherit a dangling\ngrant through id reuse and /admin/groups shows no orphan rows.\n\nThe seeded default agent is exempt: it is infrastructure every web chat\nsession is attributed to (``app/api/chat.py::_default_agent_id``), not a\nuser artifact, so deleting it would make the agent vanish from the Library\nand silently reappear on the next chat. `/api/v1/agents` refuses this for\nthe same reason (``agents_admin.py::delete_agent``).",
+        "description": "Soft-delete an agent the caller owns, and drop its grants.\n\nGrants are removed too, so a later agent can never inherit a dangling\ngrant through id reuse and /admin/access shows no orphan rows.\n\nThe seeded default agent is exempt: it is infrastructure every web chat\nsession is attributed to (``app/api/chat.py::_default_agent_id``), not a\nuser artifact, so deleting it would make the agent vanish from the Library\nand silently reappear on the next chat. `/api/v1/agents` refuses this for\nthe same reason (``agents_admin.py::delete_agent``).",
         "operationId": "delete_agent_api_agents__agent_id__delete",
         "parameters": [
           {
@@ -34909,7 +34968,7 @@
     },
     "/api/marketplaces/{marketplace_id}/plugins/{plugin_name}/system": {
       "delete": {
-        "description": "Flip ``is_system`` to FALSE. Materialized grants/subscriptions\nsurvive \u2014 admin curates cleanup via the standard /admin/groups UI\n(which immediately unlocks the checkboxes for this plugin) and\nusers can unsubscribe normally on /marketplace?tab=my.",
+        "description": "Flip ``is_system`` to FALSE. Materialized grants/subscriptions\nsurvive \u2014 admin curates cleanup via the standard /admin/access UI\n(which immediately unlocks the checkboxes for this plugin) and\nusers can unsubscribe normally on /marketplace?tab=my.",
         "operationId": "unmark_plugin_system_api_marketplaces__marketplace_id__plugins__plugin_name__system_delete",
         "parameters": [
           {
