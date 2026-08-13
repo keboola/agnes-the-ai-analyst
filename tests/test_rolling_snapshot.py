@@ -20,6 +20,7 @@ docstring in ``src/db.py`` for the full rationale.
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
@@ -45,6 +46,27 @@ def _snapshot_dir(tmp_path: Path) -> Path:
 
 def _tmp_scratch_dir(tmp_path: Path) -> Path:
     return tmp_path / "state" / "system.duckdb.rolling-snapshot.tmp"
+
+
+def _prev_dir(tmp_path: Path) -> Path:
+    return tmp_path / "state" / "system.duckdb.rolling-snapshot.prev"
+
+
+def _seed(conn, row_id: str, action: str) -> None:
+    conn.execute(
+        "INSERT INTO audit_log (id, timestamp, user_id, action) VALUES (?, now(), 'test', ?)",
+        [row_id, action],
+    )
+
+
+def _assert_loadable(snap_dir: Path, row_id: str, action: str) -> None:
+    fresh = duckdb.connect(":memory:")
+    try:
+        fresh.execute(f"IMPORT DATABASE '{snap_dir}'")
+        row = fresh.execute("SELECT action FROM audit_log WHERE id = ?", [row_id]).fetchone()
+        assert row == (action,)
+    finally:
+        fresh.close()
 
 
 def test_refresh_produces_loadable_snapshot(system_db):
@@ -100,6 +122,153 @@ def test_failed_export_leaves_previous_snapshot_untouched(system_db, monkeypatch
     after = sorted(p.name for p in snap_dir.iterdir())
     assert before == after, "a failed export must never touch the previous snapshot"
     assert not _tmp_scratch_dir(tmp_path).exists(), "failed tmp export dir must be cleaned up"
+
+
+def test_failed_restore_must_not_destroy_the_last_snapshot(system_db, monkeypatch):
+    """Devin on #1294 — the swap moves the live snapshot aside to ``.prev``
+    and renames the fresh export into its place. If the second rename fails
+    AND the restore that puts the old one back fails too, the copy sitting at
+    ``.prev`` is the only recovery artifact left on disk. Deleting it — or
+    letting the restore's ``OSError`` escape past the documented ``False``
+    return — leaves the instance with no recovery snapshot at all, which is
+    the single outcome this mechanism exists to prevent.
+    """
+    conn, tmp_path = system_db
+    import src.db as db_mod
+
+    _seed(conn, "snap-keep", "must-survive")
+    assert db_mod.refresh_rolling_snapshot(force=True) is True
+    final_dir = _snapshot_dir(tmp_path)
+    _assert_loadable(final_dir, "snap-keep", "must-survive")
+
+    real_rename = os.rename
+
+    def _rename(src, dst, *a, **kw):
+        # Fail every move INTO the final name: first the swap (tmp -> final),
+        # then the restore of the previous snapshot (prev -> final). Moving
+        # the live snapshot aside (final -> prev) still succeeds, so the last
+        # good copy really is stranded under `.prev`.
+        if str(dst) == str(final_dir):
+            raise OSError(5, "Input/output error")
+        return real_rename(src, dst, *a, **kw)
+
+    monkeypatch.setattr(os, "rename", _rename)
+
+    # Documented contract: report failure, never raise.
+    assert db_mod.refresh_rolling_snapshot(force=True) is False
+
+    survivors = [d for d in (final_dir, _prev_dir(tmp_path)) if d.is_dir() and any(d.glob("*.parquet"))]
+    assert survivors, "a double failure during the swap destroyed the last good recovery snapshot"
+    _assert_loadable(survivors[0], "snap-keep", "must-survive")
+
+
+def test_stranded_previous_snapshot_is_reclaimed(system_db, monkeypatch):
+    """Aftermath of the double failure above: the only snapshot lives under
+    ``.prev``, a name neither the runbook nor an operator knows. The next run
+    must put it back under the documented name — including when that run's own
+    export fails, since otherwise the artifact stays invisible indefinitely
+    and the following swap would delete it as swap scratch.
+    """
+    conn, tmp_path = system_db
+    import src.db as db_mod
+
+    _seed(conn, "snap-stranded", "stranded-but-good")
+    assert db_mod.refresh_rolling_snapshot(force=True) is True
+
+    final_dir = _snapshot_dir(tmp_path)
+    prev_dir = _prev_dir(tmp_path)
+    os.rename(final_dir, prev_dir)  # the state a failed restore leaves behind
+
+    class _FailingExportConn:
+        def cursor(self):
+            return self
+
+        def close(self):
+            pass
+
+        def execute(self, sql, *a, **k):
+            if "EXPORT DATABASE" in sql:
+                raise RuntimeError("disk full")
+            return conn.execute(sql, *a, **k)
+
+    monkeypatch.setattr(db_mod, "_system_db_conn", _FailingExportConn())
+    assert db_mod.refresh_rolling_snapshot(force=True) is False
+
+    assert final_dir.is_dir(), "the stranded snapshot was not reclaimed under the documented name"
+    assert not prev_dir.exists()
+    _assert_loadable(final_dir, "snap-stranded", "stranded-but-good")
+
+
+def test_snapshot_is_not_world_readable(system_db):
+    """``system.duckdb`` holds argon2 password hashes, PAT rows, the audit log
+    and vault rows, and ``EXPORT DATABASE`` writes all of it out as parquet
+    under the process umask (dir ``0o755`` / files ``0o644``). Every other
+    derivative of that file in ``src/db.py`` is explicitly tightened to
+    ``0o600`` (``_move_to_broken``, the discarded WAL); this one is no
+    different.
+    """
+    conn, tmp_path = system_db
+    from src.db import refresh_rolling_snapshot
+
+    assert refresh_rolling_snapshot(force=True) is True
+    snap_dir = _snapshot_dir(tmp_path)
+
+    assert snap_dir.stat().st_mode & 0o777 == 0o700, "snapshot directory is group/world-accessible"
+    contents = list(snap_dir.rglob("*"))
+    assert contents, "export produced no files"
+    for path in contents:
+        mode = path.stat().st_mode & 0o777
+        expected = 0o700 if path.is_dir() else 0o600
+        assert mode == expected, f"{path.name} is {oct(mode)}, expected {oct(expected)}"
+
+
+def test_export_scratch_dir_is_not_world_readable_during_export(system_db):
+    """Tightening the modes only after the export leaves a window in which the
+    freshly written parquet — full password hashes and PAT rows — is
+    world-readable. The scratch directory must already be ``0o700`` when
+    ``EXPORT DATABASE`` starts writing into it.
+    """
+    import src.db as db
+
+    real = db._system_db_conn
+    seen: dict[str, int] = {}
+
+    class _Cursor:
+        def __init__(self, c):
+            self._c = c
+
+        def execute(self, sql, *a, **kw):
+            if str(sql).lstrip().upper().startswith("EXPORT"):
+                target = Path(str(sql).split("'")[1])
+                if target.exists():
+                    seen["mode"] = target.stat().st_mode & 0o777
+                else:
+                    seen["mode"] = -1  # created by DuckDB itself, under umask
+            return self._c.execute(sql, *a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(self._c, name)
+
+    class _Conn:
+        def __init__(self, c):
+            self._c = c
+
+        def cursor(self):
+            return _Cursor(self._c.cursor())
+
+        def __getattr__(self, name):
+            return getattr(self._c, name)
+
+    db._system_db_conn = _Conn(real)
+    try:
+        assert db.refresh_rolling_snapshot(force=True) is True
+    finally:
+        db._system_db_conn = real
+
+    assert seen.get("mode") == 0o700, (
+        f"export scratch dir was {oct(seen.get('mode', 0))} when EXPORT DATABASE started "
+        "— credential material is world-readable for the duration of the export"
+    )
 
 
 def test_cadence_gate_skips_when_fresh(system_db):
@@ -236,6 +405,5 @@ def test_export_runs_outside_the_system_db_lock(system_db):
         db._system_db_conn = real
 
     assert seen.get("lock_free_during_export") is True, (
-        "EXPORT DATABASE executed while _system_db_lock was held — it must "
-        "run on a dedicated cursor outside the lock"
+        "EXPORT DATABASE executed while _system_db_lock was held — it must run on a dedicated cursor outside the lock"
     )

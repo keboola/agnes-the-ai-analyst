@@ -8750,6 +8750,28 @@ def _rolling_snapshot_interval_hours() -> float:
         return _ROLLING_SNAPSHOT_DEFAULT_INTERVAL_HOURS
 
 
+def _tighten_snapshot_modes(root: Path) -> None:
+    """chmod a rolling-snapshot export to ``0o700`` dirs / ``0o600`` files.
+
+    The export is a full logical copy of ``system.duckdb`` — argon2 password
+    hashes, personal-access-token rows, the audit log, vault rows — so it gets
+    the same treatment as every other derivative of that file in this module
+    (:func:`_move_to_broken`, the discarded WAL). ``EXPORT DATABASE`` writes
+    its parquet under the process umask (typically ``0o644``), which would
+    make this the one world-readable copy.
+
+    Best-effort, like the chmods it mirrors: a snapshot that exists with loose
+    modes beats no snapshot. The containing ``state/`` directory is usually
+    ``0o700`` already — this is defense in depth for backups, container
+    volumes, and bind mounts.
+    """
+    for path in (root, *root.rglob("*")):
+        try:
+            os.chmod(path, 0o700 if path.is_dir() else 0o600)
+        except OSError as exc:
+            logger.debug("refresh_rolling_snapshot: chmod %s failed (%s)", path, exc)
+
+
 def refresh_rolling_snapshot(*, force: bool = False) -> bool:
     """Refresh ``system.duckdb.rolling-snapshot/`` on a rolling cadence (#380).
 
@@ -8790,7 +8812,16 @@ def refresh_rolling_snapshot(*, force: bool = False) -> bool:
     previous snapshot get swapped out — a failed/partial export never
     touches the existing snapshot, and any tmp scratch dir left behind by a
     crashed prior attempt is cleaned up unconditionally at the top of this
-    function.
+    function. The swap itself never destroys the last good copy: it is only
+    deleted once a snapshot is confirmed present under the final name, so a
+    swap that fails *and* whose restore fails too leaves it stranded at
+    ``.prev``, which the next run reclaims (Devin on #1294).
+
+    **Permissions:** the export is a full logical copy of ``system.duckdb``
+    (argon2 password hashes, PAT rows, the audit log, vault rows), so the
+    scratch dir is created ``0o700`` *before* the export and every exported
+    file is chmod'd ``0o600`` after — matching :func:`_move_to_broken` and
+    the discarded-WAL path rather than landing under the process umask.
 
     Args:
         force: skip both the Postgres-backend guard's cadence check and the
@@ -8811,6 +8842,31 @@ def refresh_rolling_snapshot(*, force: bool = False) -> bool:
 
     state_dir = _get_state_dir()
     final_dir = state_dir / _ROLLING_SNAPSHOT_DIRNAME
+    prev_dir = state_dir / f"{_ROLLING_SNAPSHOT_DIRNAME}.prev"
+
+    # A prior run whose swap AND restore both failed leaves the last good
+    # snapshot stranded at `.prev` with no final_dir (see the swap block
+    # below). It is still the only recovery artifact on disk, and neither the
+    # operator nor `docs/runbooks/wal-recovery.md` knows that name — so put it
+    # back under the documented one before anything else, including before the
+    # freshness gate (its mtime IS the current recovery point) and before an
+    # export that may itself fail.
+    if prev_dir.is_dir() and not final_dir.exists():
+        try:
+            os.rename(prev_dir, final_dir)
+            logger.warning(
+                "refresh_rolling_snapshot: reclaimed stranded snapshot %s -> %s",
+                prev_dir,
+                final_dir,
+            )
+        except OSError as exc:
+            logger.error(
+                "refresh_rolling_snapshot: could not reclaim stranded snapshot %s (%s); "
+                "it stays there and is NOT deleted",
+                prev_dir,
+                exc,
+            )
+
     if not force and final_dir.is_dir():
         age_s = time.time() - final_dir.stat().st_mtime
         if age_s < interval_hours * 3600:
@@ -8848,6 +8904,23 @@ def refresh_rolling_snapshot(*, force: bool = False) -> bool:
         if tmp_dir.exists():
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
+        # Pre-create the scratch dir 0o700 instead of chmod'ing after the
+        # export: tightening afterwards would leave the parquet — password
+        # hashes, PAT rows, the audit log — world-readable for the export's
+        # entire duration. DuckDB accepts an existing EMPTY directory; only a
+        # non-empty one is refused. chmod rather than makedirs(mode=...),
+        # which is masked by the process umask.
+        try:
+            os.makedirs(tmp_dir, exist_ok=True)
+            os.chmod(tmp_dir, 0o700)
+        except OSError as exc:
+            logger.warning(
+                "refresh_rolling_snapshot: could not create export scratch dir %s (%s); previous snapshot kept",
+                tmp_dir,
+                exc,
+            )
+            return False
+
         try:
             cur.execute("CHECKPOINT")
         except Exception as exc:
@@ -8866,14 +8939,22 @@ def refresh_rolling_snapshot(*, force: bool = False) -> bool:
             )
             shutil.rmtree(tmp_dir, ignore_errors=True)
             return False
+
+        # EXPORT DATABASE writes its files under the process umask (0o644)
+        # regardless of the directory's mode — tighten them before the swap so
+        # the artifact is never exposed under its final name.
+        _tighten_snapshot_modes(tmp_dir)
     finally:
         try:
             cur.close()
         except Exception:
             pass
 
-    prev_dir = state_dir / f"{_ROLLING_SNAPSHOT_DIRNAME}.prev"
-    shutil.rmtree(prev_dir, ignore_errors=True)
+    # `.prev` is swap scratch ONLY while a snapshot exists under the final
+    # name; otherwise it is a stranded last-good copy the reclaim above could
+    # not move, and deleting it here would destroy the only artifact there is.
+    if final_dir.exists():
+        shutil.rmtree(prev_dir, ignore_errors=True)
     try:
         if final_dir.exists():
             os.rename(final_dir, prev_dir)
@@ -8882,13 +8963,28 @@ def refresh_rolling_snapshot(*, force: bool = False) -> bool:
         logger.warning("refresh_rolling_snapshot: swap failed (%s); previous snapshot kept", exc)
         # Best-effort restore of the previous snapshot if the swap
         # partially landed (final_dir moved aside but tmp_dir didn't
-        # take its place).
+        # take its place). Guarded: if this rename fails too, the last good
+        # snapshot is the copy at prev_dir, and an escaping OSError would both
+        # break the documented `False` return and — via the `finally` below —
+        # delete it. Keep it instead; the next run reclaims it.
         if prev_dir.exists() and not final_dir.exists():
-            os.rename(prev_dir, final_dir)
+            try:
+                os.rename(prev_dir, final_dir)
+            except OSError as restore_exc:
+                logger.error(
+                    "refresh_rolling_snapshot: could not restore the previous snapshot to %s "
+                    "(%s); it is PRESERVED at %s and reclaimed on the next refresh",
+                    final_dir,
+                    restore_exc,
+                    prev_dir,
+                )
         shutil.rmtree(tmp_dir, ignore_errors=True)
         return False
     finally:
-        shutil.rmtree(prev_dir, ignore_errors=True)
+        # Only once a snapshot is confirmed present under the final name is
+        # the copy at prev_dir redundant.
+        if final_dir.exists():
+            shutil.rmtree(prev_dir, ignore_errors=True)
 
     logger.info("Rolling snapshot refreshed: %s", final_dir)
     return True

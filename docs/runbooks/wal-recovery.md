@@ -233,6 +233,18 @@ print('users:', fresh.execute('SELECT count(*) FROM users').fetchone()[0])
 cp "${STATE_DIR}/system.duckdb.recovered" "${STATE_DIR}/system.duckdb"
 ```
 
+**If `system.duckdb.rolling-snapshot/` is missing, also look for
+`system.duckdb.rolling-snapshot.prev/`.** `.prev` is normally swap scratch that
+exists for milliseconds, but if a refresh's swap failed *and* its restore
+failed too, the last good snapshot is preserved there under that name until the
+next refresh moves it back. It is a complete, importable export — use it
+exactly as above.
+
+The snapshot directory is `0o700` and its files `0o600`, owned by the app's
+user: it is a full logical copy of `system.duckdb`, password hashes and
+personal-access-token rows included. Read it as that user (or root) — the
+`docker run` recipe above already does.
+
 **This is a manual step only** — `refresh_rolling_snapshot` (`src/db.py`) does
 not participate in `_try_open_system_db`'s auto-recovery; the WAL-replay
 auto-restore in §2 still only ever considers `system.duckdb.pre-migrate`.
