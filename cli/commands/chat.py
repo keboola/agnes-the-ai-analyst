@@ -338,7 +338,7 @@ def _send_turn(session_id: str, text: str, *, live_render: bool) -> TurnResult:
     (`app/api/agent_sse.py` maps it off the runner's trailing
     `assistant_message` frame's `content` field) but is normally redundant
     with the `TEXT_MESSAGE_CONTENT` deltas already streamed and printed —
-    UNLESS no deltas ever arrived this turn. That happens whenever the
+    UNLESS no non-blank deltas ever arrived this turn. That happens whenever the
     backend answers without incremental streaming: the
     `AGNES_RUNNER_FAKE_AGENT=1` test/dev runner's `echo:` reply, and the
     real runner's idle-watchdog partial-save (`app/chat/runner.py`,
@@ -384,8 +384,15 @@ def _send_turn(session_id: str, text: str, *, live_render: bool) -> TurnResult:
 
     def _answer() -> str:
         # Deltas are the normal case; the trailing full-content event only
-        # wins when nothing streamed incrementally (see the docstring above).
-        return "".join(answer_parts) or final_content or ""
+        # wins when nothing VISIBLE streamed incrementally (see the
+        # docstring above). Blank/whitespace-only deltas (an empty `token`
+        # frame maps to `delta: ""`) count as nothing streamed — the same
+        # predicate gates the live fallback print below, so the two can
+        # never disagree and swallow the answer silently.
+        streamed = "".join(answer_parts)
+        if streamed.strip():
+            return streamed
+        return final_content or streamed
 
     gen = api_post_sse(f"/api/v1/sessions/{session_id}/messages", json={"input": text})
     try:
@@ -402,7 +409,13 @@ def _send_turn(session_id: str, text: str, *, live_render: bool) -> TurnResult:
                 content = event.get("content")
                 if content:
                     final_content = content
-                    if live_render and not answer_parts:
+                    # Same predicate as `_answer()`: all-blank deltas mean
+                    # nothing visible was rendered, so this is still the
+                    # one chance to show the answer. Checking the list
+                    # (`not answer_parts`) instead would skip the print
+                    # after a single empty delta while `_answer()` still
+                    # returned this content — success with silent output.
+                    if live_render and not "".join(answer_parts).strip():
                         sys.stdout.write(content)
                         sys.stdout.flush()
             elif etype == "TOOL_CALL_START":

@@ -80,6 +80,20 @@ EVENTS_NO_DELTA = [
     {"type": "RUN_FINISHED"},
 ]
 
+#: Like `EVENTS_NO_DELTA`, but the stream emits `TEXT_MESSAGE_CONTENT`
+#: deltas that are all blank/whitespace (`app/api/agent_sse.py` maps a
+#: `token` frame's `text` straight to `delta`, empty string included)
+#: before the trailing `TEXT_MESSAGE_END` with the real answer. Nothing
+#: visible ever streamed, so the fallback print must still fire — the
+#: non-empty `answer_parts` list alone must not suppress it.
+EVENTS_BLANK_DELTAS_ONLY = [
+    {"type": "RUN_STARTED"},
+    {"type": "TEXT_MESSAGE_CONTENT", "delta": ""},
+    {"type": "TEXT_MESSAGE_CONTENT", "delta": " \n"},
+    {"type": "TEXT_MESSAGE_END", "content": "echo: hi"},
+    {"type": "RUN_FINISHED"},
+]
+
 
 class TestOnce:
     def test_once_prints_assembled_answer_and_exits_zero(self):
@@ -109,6 +123,22 @@ class TestOnce:
         with (
             patch("cli.commands.chat.api_post", return_value=_resp(201, {"session_id": "sess-1"})),
             patch("cli.commands.chat.api_post_sse", return_value=iter(EVENTS_NO_DELTA)),
+            patch("cli.commands.chat.api_delete", return_value=_resp(204)),
+        ):
+            result = runner.invoke(app, ["chat", "myagent", "--once", "hi"])
+
+        assert result.exit_code == 0
+        assert "echo: hi" in result.output
+        assert "(no answer)" not in result.output
+
+    def test_once_prints_the_answer_when_only_blank_deltas_streamed(self):
+        """Devin regression: blank/whitespace-only `TEXT_MESSAGE_CONTENT`
+        deltas before the `TEXT_MESSAGE_END` must not suppress the
+        fallback print — otherwise the turn exits 0 with the answer
+        swallowed silently (neither the answer nor "(no answer)")."""
+        with (
+            patch("cli.commands.chat.api_post", return_value=_resp(201, {"session_id": "sess-1"})),
+            patch("cli.commands.chat.api_post_sse", return_value=iter(EVENTS_BLANK_DELTAS_ONLY)),
             patch("cli.commands.chat.api_delete", return_value=_resp(204)),
         ):
             result = runner.invoke(app, ["chat", "myagent", "--once", "hi"])
@@ -180,6 +210,18 @@ class TestInteractive:
         with (
             patch("cli.commands.chat.api_post", return_value=_resp(201, {"session_id": "sess-1"})),
             patch("cli.commands.chat.api_post_sse", return_value=iter(EVENTS_NO_DELTA)),
+            patch("cli.commands.chat.api_delete", return_value=_resp(204)),
+        ):
+            result = runner.invoke(app, ["chat", "myagent"], input="hi\n/exit\n")
+
+        assert result.exit_code == 0
+        assert "echo: hi" in result.output
+        assert "(no answer)" not in result.output
+
+    def test_interactive_prints_the_answer_when_only_blank_deltas_streamed(self):
+        with (
+            patch("cli.commands.chat.api_post", return_value=_resp(201, {"session_id": "sess-1"})),
+            patch("cli.commands.chat.api_post_sse", return_value=iter(EVENTS_BLANK_DELTAS_ONLY)),
             patch("cli.commands.chat.api_delete", return_value=_resp(204)),
         ):
             result = runner.invoke(app, ["chat", "myagent"], input="hi\n/exit\n")
