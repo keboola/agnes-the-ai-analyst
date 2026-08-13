@@ -354,7 +354,6 @@ _STATIC_EDITABLE_SECTIONS: tuple[str, ...] = (
     "auth",
     "ai",
     "openmetadata",
-    "desktop",
     "corporate_memory",
     "materialize",
     "marketplace",
@@ -750,22 +749,6 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                 "TLS verification. Default true. Set false ONLY for internal CAs / "
                 "self-signed certs — sends the JWT over an unverified channel."
             ),
-        },
-    },
-    "desktop": {
-        "jwt_issuer": {
-            "kind": "string",
-            "default": "data-analyst",
-            "hint": "JWT iss claim. Match what the desktop app verifies.",
-        },
-        "jwt_secret": {
-            "kind": "secret",
-            "hint": "JWT signing secret. Use ${DESKTOP_JWT_SECRET} env-var reference.",
-        },
-        "url_scheme": {
-            "kind": "string",
-            "default": "data-analyst",
-            "hint": "Custom URL scheme registered by the desktop app (data-analyst://...).",
         },
     },
     # corporate_memory governance — optional. When the section is missing
