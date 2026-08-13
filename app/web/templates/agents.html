@@ -444,6 +444,12 @@
   }
 
   var KIND_LABEL = { data: 'Data', memory: 'Memory', file: 'File' };
+  /* Store `type` is a wire value ('plugin' | 'skill' | 'agent'); the tag beside
+     a capability's name is read by a person. Rendering the raw value put the
+     bare word "agent" on a row in THIS page's picker — the one place it is
+     most likely to be mistaken for one of the agents being built here, when it
+     is a template someone published to the Library. */
+  var TYPE_LABEL = { plugin: 'Plugin', skill: 'Skill', agent: 'Agent Template' };
 
   function knowledgeRows(a) {
     var q = query.knowledge;
@@ -488,7 +494,7 @@
       return '<div class="ag-row">' +
         '<div class="ag-row-body">' +
           '<div class="ag-row-name">' + esc(p.name) +
-            '<span class="ag-kind ag-kind--' + esc(type) + '">' + esc(type) + '</span>' +
+            '<span class="ag-kind ag-kind--' + esc(type) + '">' + esc(TYPE_LABEL[type] || type) + '</span>' +
             (p.installed ? '<span class="ag-instack">In your stack</span>' : '') +
             (p.category ? '<span class="ag-row-meta">' + esc(p.category) + '</span>' : '') + '</div>' +
           '<div class="ag-row-desc">' + esc(p.description || '') + '</div>' +
