@@ -63,15 +63,22 @@ def _has_email_transport() -> bool:
     return bool(os.environ.get("SMTP_HOST") or os.environ.get("SENDGRID_API_KEY"))
 
 
-def _build_magic_link(email: str, token: str) -> str:
+def _build_magic_link(email: str, token: str, next_path: str = "") -> str:
     # URL-encode email: a literal '+' in a query string decodes to space per
     # application/x-www-form-urlencoded, which would break addresses like
     # "user+tag@gmail.com" on the GET /verify side.
     server_url = os.environ.get("SERVER_URL", "http://localhost:8000")
-    return f"{server_url}/auth/email/verify?email={quote(email, safe='')}&token={token}"
+    link = f"{server_url}/auth/email/verify?email={quote(email, safe='')}&token={token}"
+    # Carry the post-login destination through the emailed link so the click-
+    # through verify can land the user where they originally asked. next_path
+    # is already same-origin-sanitized by the caller and re-sanitized on the
+    # verify side (defense in depth against a tampered link).
+    if next_path:
+        link += f"&next={quote(next_path, safe='')}"
+    return link
 
 
-def _generate_and_deliver_magic_link(email: str) -> tuple[dict | None, str | None, str | None]:
+def _generate_and_deliver_magic_link(email: str, next_path: str = "") -> tuple[dict | None, str | None, str | None]:
     """Look up the user, mint + persist a magic-link token, and attempt
     delivery via SMTP/SendGrid. Shared by the JSON (``/send-link``) and web
     form (``/send-link/web``) variants so the token/email plumbing lives in
@@ -95,11 +102,11 @@ def _generate_and_deliver_magic_link(email: str) -> tuple[dict | None, str | Non
         reset_token_created=datetime.now(timezone.utc),
     )
 
-    link = _build_magic_link(email, token)
+    link = _build_magic_link(email, token, next_path)
     send_error: str | None = None
     if _has_email_transport():
         try:
-            _send_email(email, token)
+            _send_email(email, token, next_path)
         except Exception as e:
             send_error = str(e)
             logger.error("Failed to send magic link email to %s: %s", email, e)
@@ -178,7 +185,7 @@ async def send_magic_link_web(
 
     # Offload the blocking SMTP/SendGrid send off the event loop — same Tier-1
     # rationale as the JSON /send-link variant.
-    user, link, _send_error = await run_in_threadpool(_generate_and_deliver_magic_link, email)
+    user, link, _send_error = await run_in_threadpool(_generate_and_deliver_magic_link, email, next_path)
 
     console_mode = bool(user) and is_local_dev_mode()
     if console_mode:
@@ -254,9 +261,11 @@ async def verify_magic_link_get(
     request: Request,
     email: str,
     token: str,
+    next: str = "",
 ):
     """Click-through variant — verifies token, sets cookie, redirects to the
-    operator-configured home route.
+    page the user originally asked for (``?next``) or the operator-configured
+    home route.
 
     This is the URL we embed in outgoing emails (and the dev-fallback link), so
     clicking it in a mail client logs the user in without a separate API call.
@@ -272,9 +281,13 @@ async def verify_magic_link_get(
     from app.auth.public_url import cookie_secure
 
     use_secure = cookie_secure(request)
-    from app.instance_config import get_home_route
+    # Re-sanitize the destination even though it was sanitized when the link
+    # was minted — the link is user-visible and could be tampered with.
+    # safe_next_path falls back to the home route for empty/hostile values.
+    from app.auth._common import safe_next_path
 
-    response = RedirectResponse(url=get_home_route(), status_code=302)
+    target = safe_next_path(next)
+    response = RedirectResponse(url=target, status_code=302)
     from app.instance_config import session_cookie_domain
 
     response.set_cookie(
@@ -289,9 +302,9 @@ async def verify_magic_link_get(
     return response
 
 
-def _send_email(email: str, token: str):
+def _send_email(email: str, token: str, next_path: str = ""):
     """Send magic link email via SMTP or SendGrid."""
-    link = _build_magic_link(email, token)
+    link = _build_magic_link(email, token, next_path)
     sendgrid_key = os.environ.get("SENDGRID_API_KEY")
     if sendgrid_key:
         import sendgrid
