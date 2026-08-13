@@ -22,6 +22,11 @@ logger = logging.getLogger(__name__)
 
 VERIFY_CACHE_TTL_SECONDS = 60.0
 _CACHE_MAX_ENTRIES = 1024
+# Cap on the per-IP flood-guard bookkeeping dicts before a stale-entry sweep
+# runs (see _prune_state). Generous — a legitimate deployment sees far fewer
+# distinct client IPs than this; the sweep only matters under rotating-source
+# abuse.
+_STATE_MAX_ENTRIES = 4096
 
 _FAILURE_WINDOW_SECONDS = 60.0
 _MAX_FAILURES_PER_IP = 10  # FAILED cache-miss verify calls per IP per window
@@ -127,6 +132,25 @@ def _record_failure(ip: str, now: float) -> None:
     _, failures = _failure_state.get(ip, (0.0, 0))
     failures += 1
     _failure_state[ip] = (now + _FAILURE_BACKOFF_SECONDS, failures)
+    _prune_state(now)
+
+
+def _prune_state(now: float) -> None:
+    """Drop stale per-IP flood-guard bookkeeping so a long-running process
+    under rotating-source abuse can't accumulate entries indefinitely (Devin
+    review on #1288). An elapsed failure window already reads as 0 and an
+    elapsed backoff would be decayed on the IP's next touch, so removing them
+    changes no admission decision — it only reclaims memory. Bounded work:
+    only sweeps once a dict crosses the cap. Callers must hold ``_lock``.
+    """
+    if len(_failure_windows) > _STATE_MAX_ENTRIES:
+        for k, (start, _c) in list(_failure_windows.items()):
+            if k != _GLOBAL_KEY and now - start >= _FAILURE_WINDOW_SECONDS:
+                _failure_windows.pop(k, None)
+    if len(_failure_state) > _STATE_MAX_ENTRIES:
+        for k, (backoff_until, _f) in list(_failure_state.items()):
+            if now >= backoff_until:
+                _failure_state.pop(k, None)
 
 
 def _prune_cache(now: float) -> None:

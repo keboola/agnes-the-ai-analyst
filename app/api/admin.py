@@ -250,8 +250,12 @@ def _validate_urls_in_patch(sections: Dict[str, Dict[str, Any]]) -> None:
 
 
 def _validate_auth_providers_in_patch(sections: Dict[str, Dict[str, Any]]) -> None:
-    """Reject an explicitly empty auth.providers — one overlay write must
-    never be able to lock every user out (spec: empty list is a config error)."""
+    """Validate an auth.providers overlay write. Rejects both an explicitly
+    empty list (one write must never lock every user out — spec: empty is a
+    config error) and a list naming *only* unknown providers: the runtime
+    fails that open to "all providers" as a last-resort safety net, but at the
+    admin-API boundary a typo like ``[gogle]`` should surface as an error, not
+    silently re-enable every sign-in method (Devin review on #1288)."""
     auth = sections.get("auth")
     if not isinstance(auth, dict) or "providers" not in auth:
         return
@@ -262,6 +266,16 @@ def _validate_auth_providers_in_patch(sections: Dict[str, Dict[str, Any]]) -> No
         raise HTTPException(
             status_code=422,
             detail="auth.providers must be a non-empty list of provider names (or omitted entirely)",
+        )
+    from app.auth.provider_registry import KNOWN_PROVIDERS
+
+    if not any(isinstance(v, str) and v.strip() in KNOWN_PROVIDERS for v in value):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"auth.providers names no known provider (valid: {sorted(KNOWN_PROVIDERS)}); "
+                "a list of only unknown names would silently re-enable all sign-in methods"
+            ),
         )
 
 

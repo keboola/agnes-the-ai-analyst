@@ -284,3 +284,29 @@ class TestBackoffDecay:
         t_after = t0 + kh._FAILURES_BEFORE_BACKOFF + kh._FAILURE_BACKOFF_SECONDS + 1
         assert kh._admit_miss(ip, t_after) is None
         assert ip not in kh._failure_state
+
+
+class TestStatePruning:
+    """The per-IP flood-guard dicts must not grow without bound under
+    rotating-source abuse — _record_failure sweeps stale entries once a dict
+    crosses _STATE_MAX_ENTRIES."""
+
+    def test_stale_entries_are_pruned_live_ones_kept(self):
+        from app.auth import keboola_header as kh
+
+        kh.reset_state_for_tests()
+        now = 2_000_000.0
+        # Seed more than the cap of long-elapsed entries (window + backoff far
+        # in the past), plus one still-live armed IP that must survive.
+        for i in range(kh._STATE_MAX_ENTRIES + 50):
+            kh._failure_windows[f"ip:stale{i}"] = (now - 10 * kh._FAILURE_WINDOW_SECONDS, 3)
+            kh._failure_state[f"ip:stale{i}"] = (now - 10 * kh._FAILURE_BACKOFF_SECONDS, 5)
+        kh._failure_state["ip:live"] = (now + kh._FAILURE_BACKOFF_SECONDS, 5)  # backoff still active
+
+        kh._record_failure("198.51.100.7", now)  # crosses the cap → sweeps
+
+        # Stale entries gone; the live armed IP and the GLOBAL counter remain.
+        assert not any(k.startswith("ip:stale") for k in kh._failure_state)
+        assert not any(k.startswith("ip:stale") for k in kh._failure_windows)
+        assert "ip:live" in kh._failure_state
+        assert kh._GLOBAL_KEY in kh._failure_windows

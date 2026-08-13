@@ -2020,6 +2020,7 @@ KNOWN_UNTESTED = {
     "GET /auth/password/reset",
     "GET /auth/password/setup",
     "POST /auth/email/send-link",
+    "POST /auth/email/send-link/web",
     "POST /auth/email/verify",
     "POST /auth/password/login/web",
     "POST /auth/password/reset",

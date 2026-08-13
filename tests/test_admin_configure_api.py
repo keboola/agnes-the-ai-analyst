@@ -343,6 +343,32 @@ class TestServerConfigAuthProvidersValidation:
         assert resp.status_code == 422, resp.text
         assert "non-empty" in resp.json()["detail"]
 
+    def test_all_unknown_providers_list_rejected_with_422(self, seeded_app):
+        """A list of only misspelled names would fail open to all providers at
+        runtime; the admin API surfaces the typo as a 422 instead of silently
+        re-enabling every sign-in method."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"auth": {"providers": ["gogle", "keybola"]}}, "confirm_danger": True},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 422, resp.text
+        assert "no known provider" in resp.json()["detail"]
+
+    def test_partially_known_providers_list_accepted(self, seeded_app):
+        """A list with at least one known name is accepted (the runtime uses
+        the known subset and warns about the rest) — only all-unknown is a 422."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"auth": {"providers": ["google", "gogle"]}}, "confirm_danger": True},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+
     def test_empty_providers_without_confirm_danger_hits_danger_gate_first(self, seeded_app):
         """auth is a danger section: without confirm_danger the request 400s
         at the danger gate before the providers validator ever runs."""
