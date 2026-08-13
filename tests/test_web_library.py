@@ -53,11 +53,18 @@ def test_library_page_renders_with_collections(seeded_app):
 def test_library_has_no_agent_affordance(seeded_app):
     """Agents are NOT a Library kind — they have their own home at /agents, so
     the Library header offers no "Build an agent" entry and lists no agent rows.
-    (Supersedes an earlier deep-link-into-the-builder assertion.)"""
+    (Supersedes an earlier deep-link-into-the-builder assertion.)
+
+    An agent TEMPLATE is a Library kind (store ``type='agent'``, renamed in
+    AGT-4) and its menu entry reads "Build an agent template" — which shares a
+    prefix with the thing this guards against, so the match is on the closing
+    tag rather than the prefix.
+    """
     c = seeded_app["client"]
     r = c.get("/library", headers=_auth(seeded_app["admin_token"]))
     assert r.status_code == 200
-    assert "Build an agent" not in r.text
+    assert ">Build an agent<" not in r.text
+    assert ">Build an agent template<" in r.text
     assert 'data-kind="agent"' not in r.text
 
 
