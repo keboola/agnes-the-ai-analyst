@@ -10,6 +10,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **Every MCP tool now declares what it does to state.** `tools/list` on both surfaces — the HTTP foundation transports and the CLI stdio server — carries `title`, `readOnlyHint`, `destructiveHint` and `openWorldHint` per tool, so a client can tell a reader (`catalog`, `schema`, `query`) from a writer (`stack_subscribe`) from something that removes what you had (`stack_unsubscribe`, `store_delete`, `pull`, which prunes tables you have lost access to). A client that auto-approves read-only calls previously had nothing to go on, and both the Anthropic and OpenAI connector directories check for the annotations. Registering a tool without deciding is no longer possible: `read_only` is a required argument of the shared registration decorator, and a read-only tool can never be flagged destructive.
+- **Tool titles name the action.** Eighteen tools were bare nouns — a picker showed "Catalog", "Schema", "Skills", "Server Info" with no clue what calling them does. Their titles now say ("List Available Tables", "Get Table Schema", "Check Server Connection"); the tool names are unchanged, so nothing a client has configured breaks. A guard fails the build if a new tool arrives whose title names no action.
+
+### Fixed
+
+- **The Builder no longer shows raw error codes.** Publishing a skill, agent or plugin under a name you already used reported the bare token `conflict_owner_name`; the two sibling authoring screens had mapped store rejections to sentences for some time, and `/skills` was the one that had not. It now maps the same set of codes, with the same wording, so one rejection does not read three different ways.
+- **Installing a marketplace plugin ticks "Put knowledge in your stack".** Curated plugins keep their own resolver and never pass through `/api/stack/subscribe`, which was the only place the onboarding milestone was recorded — so the step stayed unticked no matter how many plugins were installed, `agnes-analyst` among them. The step is now marked on every successful install, which also ticks it for readers who installed before this change.
+
 ## [0.83.11] - 2026-08-13
 
 ### Fixed
