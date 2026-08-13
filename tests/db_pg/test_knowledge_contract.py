@@ -567,3 +567,61 @@ def test_list_by_domain_filters_by_status_on_both_engines(k_repo):
 
     found = {r["id"] for r in k_repo.list_by_domain("q-team", statuses=["approved", "pending"])}
     assert found == {"ki_approved", "ki_pending"}
+
+
+# ---------------------------------------------------------------------------
+# find_duplicate_candidates_by_entities — junction parity (Devin Review on
+# #1290, the other half of #1017)
+#
+# Same divergence class as `list_by_domain` above: PG filtered on the scalar
+# `knowledge_items.domain` column instead of resolving the slug and
+# EXISTS-joining `knowledge_item_domains`. An item moved between domains via
+# `replace_domains_for_item` (the admin multi-domain editor, junction-only
+# write) was still matched under its OLD domain on PG and never under its
+# new one — the entity-overlap duplicate finder disagreeing with the lexical
+# fallback finder for the exact same item.
+# ---------------------------------------------------------------------------
+
+
+def test_duplicate_candidates_follow_the_junction_not_a_stale_scalar_column(k_repo):
+    domains = _domain_repo_for(k_repo)
+    domains.create(name="Q-Team", slug="q-team", description=None, icon=None, color=None, created_by="u")
+    domains.create(name="Ops", slug="ops", description=None, icon=None, color=None, created_by="u")
+
+    k_repo.create(
+        id="seed",
+        title="Seed item",
+        content="content for seed",
+        category="general",
+        status="approved",
+        domain="ops",
+        entities=["alpha", "beta"],
+    )
+    k_repo.create(
+        id="ki_moved",
+        title="Moved item",
+        content="content for ki_moved",
+        category="general",
+        status="approved",
+        domain="q-team",
+        entities=["alpha", "beta"],
+    )
+    # Re-point ki_moved onto "ops" through the junction-only write path —
+    # the scalar `domain` column (where PG used to read from) is untouched.
+    domains.replace_domains_for_item("ki_moved", ["ops"], added_by="admin@example.com")
+
+    found_ops = {
+        r["id"]
+        for r in k_repo.find_duplicate_candidates_by_entities(
+            new_item_id="seed", entities=["alpha", "beta"], domain="ops", min_overlap=1
+        )
+    }
+    found_q_team = {
+        r["id"]
+        for r in k_repo.find_duplicate_candidates_by_entities(
+            new_item_id="seed", entities=["alpha", "beta"], domain="q-team", min_overlap=1
+        )
+    }
+
+    assert "ki_moved" in found_ops, "duplicate candidates must follow the junction, not a stale scalar column"
+    assert "ki_moved" not in found_q_team, "the item moved off q-team — it must not still show up there"

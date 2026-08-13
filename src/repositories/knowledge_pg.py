@@ -933,7 +933,19 @@ class KnowledgePgRepository:
         min_overlap: int,
         limit: int = 100,
     ) -> List[Dict[str, Any]]:
+        """Mirrors the DuckDB repo (Devin Review on #1290, other half of
+        #1017): resolves the slug through ``memory_domains`` and EXISTS-joins
+        ``knowledge_item_domains`` instead of reading the ``knowledge_items.domain``
+        scalar column. Same reasoning as ``list_by_domain`` — a multi-domain
+        write via ``MemoryDomainsRepositoryPg.replace_domains_for_item`` touches
+        only the junction, so the scalar-based read missed items moved between
+        domains that way. Unknown slug → no candidates (matches the old
+        ``WHERE domain = ?`` semantic).
+        """
         if not entities or not domain:
+            return []
+        domain_id = self._resolve_domain_slug(domain)
+        if domain_id is None:
             return []
         new_set = set(entities)
         with self._engine.connect() as conn:
@@ -943,13 +955,16 @@ class KnowledgePgRepository:
                         """SELECT * FROM knowledge_items
                        WHERE status IN ('approved', 'pending')
                          AND (is_personal = FALSE OR is_personal IS NULL)
-                         AND domain = :d
+                         AND EXISTS (
+                             SELECT 1 FROM knowledge_item_domains kid
+                              WHERE kid.item_id = knowledge_items.id AND kid.domain_id = :domain_id
+                         )
                          AND id != :id
                          AND entities IS NOT NULL
                        ORDER BY updated_at DESC
                        LIMIT :limit"""
                     ),
-                    {"d": domain, "id": new_item_id, "limit": limit},
+                    {"domain_id": domain_id, "id": new_item_id, "limit": limit},
                 )
                 .mappings()
                 .all()
