@@ -2046,6 +2046,26 @@ class TestWorkspaceSchemaReachesTheSource(TestChatToolsEndpoint):
         env = mcp_sources_repo().get(derived_source_id(conn_id))["env"]
         assert env["KBC_WORKSPACE_SCHEMA"] == "WS_9"
 
+    def test_a_non_string_workspace_schema_is_treated_as_unset(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-ws-schema-junk")
+        assert (
+            c.put(
+                f"{BASE}/{conn_id}",
+                json={"config": {"stack_url": "https://connection.example.com", "workspace_schema": 12345}},
+                headers=_auth(token),
+            ).status_code
+            == 200
+        )
+        # config is free-form admin JSON — a wrong-typed value must not be
+        # able to crash enable, and a schema is never invented from it.
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.repositories import mcp_sources_repo
+
+        env = mcp_sources_repo().get(derived_source_id(conn_id))["env"]
+        assert "KBC_WORKSPACE_SCHEMA" not in env
+
 
 class TestBulkGrantReportsWhatAGrantCannotReach(TestChatToolsEndpoint):
     """A grant does not make a mutating tool reachable.

@@ -185,6 +185,19 @@ def _with_secret_status(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any
     return row
 
 
+def _workspace_schema_of(config: Optional[Dict[str, Any]]) -> Optional[str]:
+    """The connection's ``workspace_schema``, or None when unset.
+
+    ``config`` is admin-supplied free-form JSON, so the value can be any
+    type; only a non-empty string counts. Anything else is treated as unset
+    rather than letting enable/re-sync crash on it. (Devin Review on this PR.)
+    """
+    raw = (config or {}).get("workspace_schema")
+    if not isinstance(raw, str):
+        return None
+    return raw.strip() or None
+
+
 def _resolve_token(connection_id: str, row: Dict[str, Any]) -> Optional[str]:
     """Resolve the storage token for a connection: vault secret first, then
     the ``token_env`` environment-variable fallback. Shared by ``/test`` and
@@ -556,7 +569,7 @@ def _resync_derived_chat_tools(connection_id: str) -> None:
             # to arrive, removed it has to go. Without it here, setting a
             # workspace schema on an already-enabled connection did nothing
             # until the admin toggled chat tools off and on.
-            workspace_schema=((row.get("config") or {}).get("workspace_schema") or "").strip() or None,
+            workspace_schema=_workspace_schema_of(row.get("config")),
         )
         # Only what the CONNECTION determines is re-derived — its name and its
         # stack URL, the two things that actually go stale when it is edited.
@@ -1121,7 +1134,7 @@ async def enable_chat_tools(
         # Present only on connections whose token is not a master one; see
         # `build_stdio_spec`. Read from the connection so the admin sets it in
         # one place rather than editing the derived MCP source by hand.
-        workspace_schema=(config.get("workspace_schema") or "").strip() or None,
+        workspace_schema=_workspace_schema_of(config),
     )
     # What the vault held before this call decides how a failed write is undone.
     # This endpoint is idempotent by design — re-running is how a rotated token
