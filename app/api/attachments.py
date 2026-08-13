@@ -120,15 +120,19 @@ def _open_contained(root: Path, stored: str | None) -> tuple[BinaryIO | None, os
     if not resolved.is_relative_to(base):
         logger.warning("attachment catalogue path escapes the permitted root and was not served: %r", stored)
         return None, None, "path_rejected"
+    # O_NONBLOCK so a FIFO planted under the root cannot block this
+    # threadpool worker until a writer appears — open returns immediately,
+    # fstat identifies it, and it is refused before any read. On a regular
+    # file (confirmed below) the flag has no effect on reads.
     try:
-        fh = resolved.open("rb")
+        fd = os.open(resolved, os.O_RDONLY | os.O_NONBLOCK)
     except OSError:
         return None, None, "file_missing"
-    st = os.fstat(fh.fileno())
+    st = os.fstat(fd)
     if not stat_module.S_ISREG(st.st_mode):
-        fh.close()
+        os.close(fd)
         return None, None, "file_missing"
-    return fh, st, ""
+    return os.fdopen(fd, "rb"), st, ""
 
 
 # Deliberately sync (`def`, not `async def`): everything here blocks —
@@ -249,7 +253,9 @@ def download_attachment(
     # stores files as "<id>_<filename>", so the path basename is id-prefixed).
     # The catalogue value is data, not a trusted constant — basename-only,
     # after the same unsafe-byte rejects the path guard applies.
-    download_name = Path(fh.name).name
+    # fdopen-wrapped descriptors carry no path; the basename of the
+    # catalogue value (already past the unsafe-byte rejects) is the same name.
+    download_name = Path(stored).name
     if original_name and "\x00" not in original_name and "\\" not in original_name:
         download_name = Path(original_name).name or download_name
 

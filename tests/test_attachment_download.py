@@ -324,6 +324,19 @@ class TestOpenContained:
         assert fh.read() == b"old-bytes"  # complete old file, matching st
         fh.close()
 
+    def test_fifo_is_refused_without_blocking(self, tmp_path):
+        """open() on a FIFO with no writer blocks forever — the guard must
+        identify and refuse it via a non-blocking open, not by reading."""
+        import os
+
+        from app.api.attachments import _open_contained
+
+        root = self._root(tmp_path)
+        fifo = root / "1_pipe"
+        os.mkfifo(fifo)
+        assert _open_contained(root, str(fifo)) == (None, None, "file_missing")
+
+
 
 class TestDeclarationMatchesConnector:
     """Pin the declaration to what the connector actually emits — the
@@ -355,3 +368,4 @@ class TestDeclarationMatchesConnector:
         cols = set(records[0])
         declared = {decl.id_column, decl.path_column, decl.filename_column}
         assert declared <= cols, f"declared columns {declared - cols} missing from {sorted(cols)}"
+
