@@ -127,7 +127,10 @@ def test_denied_without_table_access_and_audited(jira_attachment_env, analyst_us
     row = _last_audit_row()
     assert row is not None
     assert row[0] == "analyst1"
-    assert row[3] == "error.403"
+    # `denied`, not an error spelling: the audit read layer
+    # (src/audit_helpers.py) buckets `error%` as malfunctions, and an RBAC
+    # refusal is correct policy — it must not inflate the error rate.
+    assert row[3] == "denied"
 
 
 def test_granted_fetch_streams_the_same_bytes(jira_attachment_env, analyst_user):
@@ -150,6 +153,32 @@ def test_admin_god_mode_passes_the_table_gate(jira_attachment_env, admin_user):
     resp = jira_attachment_env["client"].get("/api/attachments/jira/101/download", headers=admin_user)
     assert resp.status_code == 200
     assert resp.content == jira_attachment_env["payload"]
+
+
+def test_server_only_catalogue_table_keeps_its_binaries(jira_attachment_env, analyst_user, admin_user):
+    """`server_only` is the admin's "these bytes do not leave the server"
+    lever; the parquet download honours it (`_distribution_refusal`,
+    app/api/data.py) and this route must not be the way around it. Asserted
+    WITH table access granted — the gate is a property of the table, not an
+    authorization check — and for admin god-mode too, exactly like the
+    parquet route. Audited as `denied` (policy refusal, not malfunction)."""
+    _grant_table("analyst1", "attachments", "att-so")
+    c = jira_attachment_env["client"]
+    conn = get_system_db()
+    try:
+        conn.execute("UPDATE table_registry SET server_only = TRUE WHERE id = 'attachments'")
+    finally:
+        conn.close()
+
+    resp = c.get("/api/attachments/jira/101/download", headers=analyst_user)
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "attachment_table_server_only"
+    row = _last_audit_row()
+    assert row is not None
+    assert row[3] == "denied"
+
+    resp = c.get("/api/attachments/jira/101/download", headers=admin_user)
+    assert resp.status_code == 403, "server_only is a table property — god-mode does not bypass it"
 
 
 def test_unknown_id_is_not_found(jira_attachment_env, analyst_user):

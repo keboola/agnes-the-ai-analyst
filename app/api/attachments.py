@@ -8,8 +8,13 @@ the ``attachments`` catalogue's ``local_path`` records where
 
 RBAC is table-level and deliberately so: "can this caller read attachment
 X" reduces to "can this caller read the table that catalogues X"
-(``can_access_table``), exactly like the parquet download route. Agnes has
-no row-level entitlement model — do not invent one here.
+(``can_access_table``), the same gate as the parquet download route. Agnes
+has no row-level entitlement model — do not invent one here. A catalogue
+table marked ``server_only`` keeps its attachment binaries on the server
+just as it keeps its parquet; the query-mode allowlist half of that
+route's distribution gate is parquet-distribution business and
+deliberately does not transfer (attachments are lazy per-id fetches, not
+manifest sync).
 
 Misses must stay distinguishable from denials: a catalogued attachment can
 have no bytes on the server (over-50MB skip, transform-time miss, file
@@ -69,8 +74,7 @@ def _lookup_stored_path(
     if decl.filename_column:
         cols += f", {quote_ident(decl.filename_column)}"
     sql = (
-        f"SELECT {cols} FROM {quote_ident(view_name)} "
-        f"WHERE CAST({quote_ident(decl.id_column)} AS VARCHAR) = ? LIMIT 1"
+        f"SELECT {cols} FROM {quote_ident(view_name)} WHERE CAST({quote_ident(decl.id_column)} AS VARCHAR) = ? LIMIT 1"
     )
     analytics = get_analytics_db_readonly()
     try:
@@ -166,6 +170,7 @@ def download_attachment(
     # an unregistered (or unreadable-registry) table falls back to the
     # declared name for both, which then fails closed in `can_access_table`.
     rbac_key = view_name = decl.table
+    reg_row = None
     try:
         from src.repositories import table_registry_repo
 
@@ -177,10 +182,36 @@ def download_attachment(
         logger.exception("attachment.download: registry resolution failed for %s; using declared name", decl.table)
 
     # RBAC first, before any lookup or filesystem work — an unauthorized
-    # caller learns nothing beyond the refusal.
+    # caller learns nothing beyond the refusal. Written as `denied`, not an
+    # error: that is the audit read layer's class for correct policy
+    # refusals (src/audit_helpers.py), and a 403 here is never a
+    # malfunction, so it must not inflate the Activity Center error bucket.
     if not can_access_table(user, rbac_key, conn):
-        _audit(user, source, attachment_id, "error.403", table=rbac_key)
+        _audit(user, source, attachment_id, "denied", table=rbac_key)
         raise HTTPException(status_code=403, detail=table_not_in_stack_message(rbac_key))
+
+    # `server_only` is the admin's "these bytes do not leave the server"
+    # lever; the parquet download honours it (`_distribution_refusal`,
+    # app/api/data.py) and the route releasing the SAME table's attachment
+    # binaries must not be the way around it. Like there, this is not an
+    # authorization check — it is a property of the table, true for every
+    # caller, admin god-mode included — which is why it runs after RBAC, so
+    # an unauthorized caller still learns nothing beyond its own 403. The
+    # query-mode allowlist half of that gate is parquet-distribution
+    # business and deliberately does not transfer: attachments are lazy
+    # per-id fetches, not manifest sync.
+    if reg_row is not None and bool(reg_row.get("server_only")):
+        _audit(user, source, attachment_id, "denied", error="attachment_table_server_only", table=rbac_key)
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "attachment_table_server_only",
+                "hint": (
+                    "the catalogue table is marked server_only — its attachments "
+                    "stay on the server just as its parquet does"
+                ),
+            },
+        )
 
     row_exists, stored, original_name = _lookup_stored_path(decl, view_name, attachment_id)
     if not row_exists:
