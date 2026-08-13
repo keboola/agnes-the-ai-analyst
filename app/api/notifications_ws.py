@@ -84,12 +84,18 @@ _connections: dict[str, list[WebSocket]] = defaultdict(list)
 def _desktop_jwt_secret() -> Optional[str]:
     """Resolve the desktop-app JWT signing secret.
 
-    Read directly from the environment (not through instance.yaml's
-    ``desktop.jwt_secret`` — which is itself just ``${DESKTOP_JWT_SECRET}``)
-    so this route never depends on instance.yaml having a `desktop:`
-    section configured. Returns ``None`` (not raise) when unset — desktop
-    notifications are an optional feature; a missing secret means every
-    connection attempt fails auth, not that the app fails to boot.
+    Read directly from the environment. Returns ``None`` (not raise) when
+    unset — desktop notifications are an optional feature; a missing secret
+    means every connection attempt fails auth, not that the app fails to
+    boot.
+
+    NOTE: nothing in this repo currently *mints* tokens signed with this
+    secret — the browser pairing flow that used to (``/desktop/link`` →
+    deep link → ``/api/desktop/refresh``) was deleted with the legacy
+    webapp and never ported. Until issue #412 settles how clients obtain a
+    token (accept PAT-chain credentials here, a PAT→token exchange, or a
+    revived pairing flow), the only issuer is an operator hand-signing one
+    with the shared secret.
     """
     return os.environ.get("DESKTOP_JWT_SECRET") or None
 
