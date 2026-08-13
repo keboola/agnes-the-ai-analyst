@@ -10517,7 +10517,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.83.7"
+    "version": "0.83.11"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -47037,7 +47037,7 @@
     },
     "/auth/email/verify": {
       "get": {
-        "description": "Click-through variant \u2014 verifies token, sets cookie, redirects to the\noperator-configured home route.\n\nThis is the URL we embed in outgoing emails (and the dev-fallback link), so\nclicking it in a mail client logs the user in without a separate API call.\n\nRate limited 10/min per IP for the same reason as the POST variant \u2014\ndon't let the click-through path bypass the brute-force throttle.",
+        "description": "Click-through variant \u2014 verifies token, sets cookie, redirects to the\npage the user originally asked for (``?next``) or the operator-configured\nhome route.\n\nThis is the URL we embed in outgoing emails (and the dev-fallback link), so\nclicking it in a mail client logs the user in without a separate API call.\n\nRate limited 10/min per IP for the same reason as the POST variant \u2014\ndon't let the click-through path bypass the brute-force throttle.",
         "operationId": "verify_magic_link_get_auth_email_verify_get",
         "parameters": [
           {
@@ -47055,6 +47055,16 @@
             "required": true,
             "schema": {
               "title": "Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "next",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Next",
               "type": "string"
             }
           }
