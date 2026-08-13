@@ -7,7 +7,7 @@ Row filtering and column masking for registered tables, enforced server-side on 
 An admin attaches **one SQL `SELECT`** to a registered table. From that point on, every server-side read of the table — `agnes query`, the catalog's "Preview data" sample, `agnes snapshot create`, `agnes schema`, an MCP tool call, a chat agent's query — substitutes the policy body for the table, with the caller's identity available as bound variables:
 
 ```sql
-SELECT * EXCLUDE (national_id), md5(email) AS email
+SELECT * EXCLUDE (national_id, email), md5(email) AS email
 FROM invoices
 WHERE list_contains($user_groups, cost_center)
 ```
@@ -86,7 +86,7 @@ For **redaction** (hide the value, keep the column), replace it with a literal o
 
 ```sql
 SELECT
-    * EXCLUDE (national_id),
+    * EXCLUDE (national_id, email),
     CASE WHEN list_contains($user_groups, 'finance_admin')
          THEN email ELSE NULL END AS email
 FROM invoices
@@ -96,6 +96,8 @@ WHERE list_contains($user_groups, cost_center)
 For **pseudonymization** (keep a stable, joinable value without exposing the original), `md5(col) AS col` is available — this is the only hash function in v1's function allowlist. Be clear-eyed about what it buys you: `md5` is a **pseudonym, not a mask**. An unsalted hash over a low-entropy domain (an email, a short id) is reversible by dictionary in minutes, and the whole point of using it instead of `NULL` is that the hashed value still joins across tables — so treat it as "not shown in plaintext", not as "protected". There is no keyed-hash (HMAC) function in v1's allowlist; for genuine masking, redact with `CASE`/`NULL`/a literal instead of reaching for `md5()`.
 
 The function and construct allowlist is intentionally narrow and closed (logical connectors, `CASE`/`IF`/`COALESCE`/`NULLIF`, `CAST`, `LOWER`, `UPPER`, `TRIM`, `LENGTH`, `CONCAT`, `SUBSTRING`, the regex family for literal patterns, `md5`, and the group-membership functions below) — anything else is rejected at save time, not silently ignored. A policy body is arbitrary SQL that runs on the server's analytics connection on every analyst request; the allowlist is what keeps that a bounded escalation instead of an open one.
+
+**Don't re-derive a column `*` still emits.** `* EXCLUDE (national_id), md5(email) AS email` looks right but leaves `email` out of the `EXCLUDE` list, so the star still emits the original *and* the re-derived expression appends a second column with the same name — DuckDB accepts the duplicate silently, and every serializer either keeps the first (plaintext) occurrence under the plain name or renames the second one, putting the unmasked value exactly where a caller expects the masked one. Always exclude a column before re-deriving it under the same name (`EXCLUDE (national_id, email)`, as above) — Agnes rejects a policy whose output has a duplicate column name at save time (`policy_duplicate_output_column`).
 
 ### The group-membership idiom
 

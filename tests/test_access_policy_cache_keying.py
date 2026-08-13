@@ -295,7 +295,12 @@ class TestSaveTimeProbeRejectsAMissingColumn:
         """The design doc's own canonical policy shape (EXCLUDE + md5 +
         list_contains($user_groups, ...)) must attach cleanly through the
         real admin PUT path once the table has real, synced data -- not
-        just the trivial `SELECT * FROM t` the interlock tests use."""
+        just the trivial `SELECT * FROM t` the interlock tests use. Uses the
+        CORRECTED form of the example (excluding `email` before re-deriving
+        it) -- see docs/table-access-policies.md's note on
+        policy_duplicate_output_column: the uncorrected form (EXCLUDE only
+        national_id) is rejected at save, by design, because DuckDB would
+        otherwise return two columns both named `email`."""
         from src.db import get_system_db
         from src.orchestrator import SyncOrchestrator
         from src.repositories.table_registry import TableRegistryRepository
@@ -328,7 +333,7 @@ class TestSaveTimeProbeRejectsAMissingColumn:
             "/api/admin/registry/invoices2",
             json={
                 "access_policy_sql": (
-                    "SELECT * EXCLUDE (national_id), md5(email) AS email FROM invoices2 "
+                    "SELECT * EXCLUDE (national_id, email), md5(email) AS email FROM invoices2 "
                     "WHERE list_contains($user_groups, cost_center)"
                 ),
                 "access_policy_note": "cost-centre filter",

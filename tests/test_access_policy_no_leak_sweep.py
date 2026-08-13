@@ -51,18 +51,26 @@ md5(email) AS email FROM invoices WHERE ...`` — EXCLUDEs only
 columns literally named ``email``: the star's own plaintext copy first,
 the masked one second. None of ``/api/query``, ``/api/v2/sample``, or
 ``/api/mcp/query-table/{id}`` deduplicate columns before serializing a
-response, so an admin who copies the design doc's own wording verbatim
-ships the exact plaintext value the policy exists to hide — on
-``/api/v2/sample``/``/api/mcp/query-table`` the leak is even sharper than
-on ``/api/query``: pandas' ``fetchdf()`` renames the SECOND (masked)
-occurrence to ``email_1``, so a caller reading ``row["email"]`` gets the
-PLAINTEXT value under the exact key they expect, with no visible sign
-anything is wrong. This sweep's own fixture below uses the CORRECTED form
-(``EXCLUDE (national_id, email)``) so the rest of this file tests real,
-working enforcement rather than being derailed by this unrelated
-authoring pitfall — the pitfall itself is pinned, verbatim, in
-``TestDesignDocCanonicalExampleLeaksPlaintextEmail`` at the bottom, against
-a second table carrying the design doc's exact, uncorrected wording.
+response, so an admin who copied the design doc's own wording verbatim
+would have shipped the exact plaintext value the policy exists to hide —
+on ``/api/v2/sample``/``/api/mcp/query-table`` the leak would have been
+even sharper than on ``/api/query``: pandas' ``fetchdf()`` renames the
+SECOND (masked) occurrence to ``email_1``, so a caller reading
+``row["email"]`` would get the PLAINTEXT value under the exact key they
+expect, with no visible sign anything is wrong.
+
+FIXED: ``probe_policy`` (``src/access_policy_validate.py``) now rejects any
+policy whose ``DESCRIBE``-resolved output carries a case-insensitive
+duplicate column name — ``policy_duplicate_output_column`` — at the two
+places that run it, ``PUT /api/admin/registry/{id}`` (save) and
+``POST .../policy/preview`` (candidate preview), so the design doc's
+uncorrected wording is rejected before it can ever be attached. This
+sweep's own fixture below uses the CORRECTED form (``EXCLUDE (national_id,
+email)``) so the rest of this file tests real, working enforcement rather
+than being derailed by this unrelated authoring pitfall — the pitfall
+itself, and the fix, are pinned in ``TestDesignDocCanonicalExampleRejectedAtSave``
+at the bottom, which attempts to attach/preview the design doc's exact,
+uncorrected wording and asserts both are now rejected.
 """
 
 from __future__ import annotations
@@ -82,9 +90,25 @@ POLICY_SQL = (
 )
 
 # The design doc's literal, UNCORRECTED wording (§1) — see the module
-# docstring and TestDesignDocCanonicalExampleLeaksPlaintextEmail below.
+# docstring and TestDesignDocCanonicalExampleRejectedAtSave below (adapted
+# to reference ``invoices_canonical_demo``, that class's own table, in
+# place of the design doc's own example table name -- the STRUCTURAL
+# shape that leaks, EXCLUDE-ing only the PII column and re-deriving the
+# email column without also excluding it, is unchanged). Never attached to
+# a table via the repository directly (that would bypass the very
+# save-time validation under test) — only ever submitted through the admin
+# API's PUT/preview endpoints, which must reject it.
 CANONICAL_BUT_LEAKY_POLICY_SQL = (
-    "SELECT * EXCLUDE (national_id), md5(email) AS email FROM invoices WHERE list_contains($user_groups, cost_center)"
+    "SELECT * EXCLUDE (national_id), md5(email) AS email FROM invoices_canonical_demo "
+    "WHERE list_contains($user_groups, cost_center)"
+)
+
+# The CORRECTED form of the same policy, for the same table — used only to
+# show the loop closes: the rejection's own suggested fix is accepted and
+# does not leak.
+CORRECTED_CANONICAL_DEMO_POLICY_SQL = (
+    "SELECT * EXCLUDE (national_id, email), md5(email) AS email FROM invoices_canonical_demo "
+    "WHERE list_contains($user_groups, cost_center)"
 )
 
 ROWS = [
@@ -116,11 +140,13 @@ def _register(c, token, **kwargs):
 @pytest.fixture
 def sweep(seeded_app, mock_extract_factory, monkeypatch):
     """One ``server_only`` ``invoices`` table (Keboola local), carrying
-    ``POLICY_SQL``, plus a sibling ``invoices_canonical_demo`` table
-    carrying the design doc's literal, uncorrected wording — same data,
-    for the leak-demo section only. Both point at the same physical
-    Keboola source (``bucket``/``source_table``) as ``invoices`` so the
-    physical-source-twin bypass test has a real conflict to reject.
+    ``POLICY_SQL``, plus a sibling ``invoices_canonical_demo`` table —
+    same data, registered but deliberately left WITHOUT any access policy
+    attached here: ``TestDesignDocCanonicalExampleRejectedAtSave`` below
+    attaches/previews ``CANONICAL_BUT_LEAKY_POLICY_SQL`` on it itself,
+    through the admin API, to prove that submission is rejected — pre-
+    attaching it via the repository directly (bypassing the validated
+    write path) would prove nothing about that path.
 
     Three principals: ``u_cca`` (group ``CCA``), ``u_ccb`` (group
     ``CCB``), and ``seeded_app``'s own admin.
@@ -168,12 +194,8 @@ def sweep(seeded_app, mock_extract_factory, monkeypatch):
             query_mode="local",
             server_only=True,
         )
-        registry.set_access_policy(
-            "invoices_canonical_demo",
-            sql=CANONICAL_BUT_LEAKY_POLICY_SQL,
-            note="design-doc canonical wording, verbatim — for the leak-demo section",
-            updated_by="admin",
-        )
+        # No access policy attached here on purpose — see the docstring
+        # above and TestDesignDocCanonicalExampleRejectedAtSave below.
 
         registry.register(id="products", name="products", source_type="keboola", query_mode="local")
 
@@ -734,28 +756,71 @@ def test_the_sweep_would_catch_a_leak(sweep, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# REAL FINDING (see module docstring): the design doc's own canonical
-# policy wording, copied verbatim, leaks the plaintext value it exists to
-# mask — via a duplicate output column DuckDB accepts silently and none of
-# these three surfaces deduplicate before serializing. Written as
-# xfail(strict=True): the assertions below encode the CORRECT, intended
-# behaviour ("the plaintext email never appears") and are expected to FAIL
-# against today's code. `strict=True` means the day someone fixes this,
-# these tests start passing — an UNEXPECTED pass under `strict` is itself a
-# hard failure, forcing the marker to be removed rather than letting a
-# fixed bug quietly stay flagged as "still broken" forever.
+# REAL FINDING, FIXED (see module docstring): the design doc's own canonical
+# policy wording, submitted verbatim, used to produce a duplicate 'email'
+# output column that DuckDB accepts silently and none of the read surfaces
+# deduplicate before serializing — so the plaintext email would leak past a
+# masked one under the exact key a caller expects. ``probe_policy`` now
+# rejects any policy whose resolved output carries a case-insensitive
+# duplicate column name (``policy_duplicate_output_column``), at both places
+# it runs: save (``PUT /api/admin/registry/{id}``) and preview
+# (``POST .../policy/preview``). These were previously three
+# ``xfail(strict=True)`` tests pinning the leak on three different read
+# surfaces; now that the fix rejects the policy before it can ever be
+# attached, the meaningful assertion is that the submission itself is
+# rejected — not that some particular read surface happens not to leak a
+# policy that was never allowed to exist.
 # ---------------------------------------------------------------------------
 
 
-class TestDesignDocCanonicalExampleLeaksPlaintextEmail:
-    @pytest.mark.xfail(
-        strict=True,
-        reason="design-doc canonical policy (EXCLUDE only national_id, re-derive md5(email) AS email "
-        "without also excluding email) produces a duplicate 'email' output column; /api/query does not "
-        "deduplicate before serializing, so the plaintext email is returned verbatim.",
-    )
-    def test_api_query_does_not_leak_plaintext_email(self, sweep):
+class TestDesignDocCanonicalExampleRejectedAtSave:
+    def test_put_save_rejects_the_uncorrected_canonical_policy(self, sweep):
         c = sweep["client"]
+        r = c.put(
+            "/api/admin/registry/invoices_canonical_demo",
+            json={
+                "access_policy_sql": CANONICAL_BUT_LEAKY_POLICY_SQL,
+                "access_policy_note": "design-doc canonical wording, verbatim",
+            },
+            headers=_auth(sweep["admin_token"]),
+        )
+        assert r.status_code == 422, r.text
+        detail = r.json()["detail"]
+        assert "policy_duplicate_output_column" in detail
+        assert "email" in detail
+
+        from src.repositories import table_registry_repo
+
+        assert table_registry_repo().get("invoices_canonical_demo")["access_policy_sql"] is None
+
+    def test_preview_candidate_rejects_the_uncorrected_canonical_policy(self, sweep):
+        c = sweep["client"]
+        r = c.post(
+            "/api/admin/registry/invoices_canonical_demo/policy/preview",
+            json={"sql": CANONICAL_BUT_LEAKY_POLICY_SQL, "as_groups": ["CCA"]},
+            headers=_auth(sweep["admin_token"]),
+        )
+        assert r.status_code == 422, r.text
+        detail = r.json()["detail"]
+        assert "policy_duplicate_output_column" in detail
+        assert "email" in detail
+
+    def test_correcting_the_policy_as_the_rejection_suggests_is_accepted_and_no_longer_leaks(self, sweep):
+        """Closes the loop end to end: the CORRECTED form of the exact same
+        policy — excluding ``email`` before re-deriving it, exactly as the
+        rejection's own detail message suggests — is accepted, and a real
+        read through it never returns the plaintext value."""
+        c = sweep["client"]
+        put = c.put(
+            "/api/admin/registry/invoices_canonical_demo",
+            json={
+                "access_policy_sql": CORRECTED_CANONICAL_DEMO_POLICY_SQL,
+                "access_policy_note": "corrected design-doc canonical wording",
+            },
+            headers=_auth(sweep["admin_token"]),
+        )
+        assert put.status_code == 200, put.text
+
         r = c.post(
             "/api/query",
             json={"sql": "SELECT * FROM invoices_canonical_demo"},
@@ -764,28 +829,3 @@ class TestDesignDocCanonicalExampleLeaksPlaintextEmail:
         assert r.status_code == 200, r.text
         assert "alice@example.com" not in r.text
         assert "bob@example.com" not in r.text
-
-    @pytest.mark.xfail(
-        strict=True,
-        reason="same duplicate-'email'-column defect; pandas' fetchdf() renames the SECOND (masked) "
-        "occurrence to 'email_1', so row['email'] returns the PLAINTEXT value under the expected key.",
-    )
-    def test_v2_sample_does_not_leak_plaintext_email(self, sweep):
-        c = sweep["client"]
-        r = c.get("/api/v2/sample/invoices_canonical_demo?n=10", headers=_auth(sweep["cca_token"]))
-        assert r.status_code == 200, r.text
-        assert "alice@example.com" not in r.text
-
-    @pytest.mark.xfail(
-        strict=True,
-        reason="same duplicate-'email'-column defect, same fetchdf()-renames-the-masked-copy failure mode.",
-    )
-    def test_mcp_query_table_does_not_leak_plaintext_email(self, sweep):
-        c = sweep["client"]
-        r = c.post(
-            "/api/mcp/query-table/invoices_canonical_demo",
-            json={"filter": {}, "limit": 10},
-            headers=_auth(sweep["cca_token"]),
-        )
-        assert r.status_code == 200, r.text
-        assert "alice@example.com" not in r.text

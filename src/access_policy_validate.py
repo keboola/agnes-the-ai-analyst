@@ -487,6 +487,13 @@ def probe_policy(sql: str, table_id: str, conn) -> list[dict]:
     text to tell them apart. Every subsequent save re-probes, so a
     genuinely bad reference is still caught the moment real data (and
     therefore a real schema) lands.
+
+    The "nothing to check yet" early return below also means the
+    duplicate-output-column check further down (``_reject_duplicate_output_columns``)
+    cannot run on this save either -- there is no resolved column list to
+    check for duplicates against. Acceptable: with no columns there is
+    nothing for a re-derived column to collide with, and the very next sync
+    makes this function re-probe (and therefore re-check) for real.
     """
     from src.repositories import table_registry_repo
     from src.sql_ident import quote_ident
@@ -516,6 +523,28 @@ def probe_policy(sql: str, table_id: str, conn) -> list[dict]:
     if "user_groups" in referenced:
         params["user_groups"] = []
 
+    # The duplicate-column check runs against a PLAIN `DESCRIBE (sql)` --
+    # deliberately NOT the wrapped `probe_sql` computed below. DuckDB's
+    # binder silently disambiguates a colliding output name (`email` ->
+    # `email_1`) the moment it re-projects through an OUTER `SELECT *`, so
+    # describing the wrapped form would never see the collision that is
+    # exactly the leak this exists to catch -- confirmed directly: `DESCRIBE
+    # SELECT *, md5(email) AS email FROM t` reports two columns literally
+    # named `email`, but `DESCRIBE SELECT * FROM (SELECT *, md5(email) AS
+    # email FROM t) AS x` reports `email` and `email_1`. A bare parenthesized
+    # `DESCRIBE (sql)` never executes the query (DESCRIBE only ever resolves
+    # the output schema, regardless of wrapping), so this needs no LIMIT of
+    # its own and works whether or not the policy body has one already.
+    try:
+        raw_described = conn.execute(f"DESCRIBE ({sql})", params).fetchall()
+    except Exception as exc:
+        raise PolicyValidationError(
+            "policy_probe_failed",
+            f"policy failed to execute against {table_name!r}: {exc}",
+        ) from exc
+
+    _reject_duplicate_output_columns([r[0] for r in raw_described])
+
     # Wrapped in an outer SELECT rather than appending `LIMIT 0` to `sql`
     # directly -- a policy body is allowed its own LIMIT/OFFSET (Rule 3's
     # permitted node types), and `... LIMIT 5 LIMIT 0` is a syntax error.
@@ -529,3 +558,38 @@ def probe_policy(sql: str, table_id: str, conn) -> list[dict]:
         ) from exc
 
     return [{"name": r[0], "type": r[1]} for r in described]
+
+
+def _reject_duplicate_output_columns(column_names: list[str]) -> None:
+    """The confirmed leak this guards against: ``SELECT * EXCLUDE (x), md5(y)
+    AS y FROM t`` -- the design doc's own canonical example (§1) before it was
+    corrected -- re-derives a column under a name the star is STILL emitting,
+    and DuckDB happily returns two columns both named ``y``: the star's own
+    plaintext copy first, the masked one second. Every serializer downstream
+    (``/api/query``'s positional row lists, pandas' ``fetchdf()`` behind
+    ``/api/v2/sample`` and ``/api/mcp/query-table``) either keeps the first
+    occurrence under the plain name or renames the second to ``y_1``, so
+    ``row["y"]`` silently resolves to the UNMASKED value -- the exact one the
+    policy exists to hide, with no visible sign anything is wrong.
+
+    This can only run here, against ``DESCRIBE``'s resolved, post-``*``-
+    expansion output column list -- ``validate_policy_sql`` is pure static
+    analysis over the parsed SQL text and has no way to know what ``*``
+    expands to (that requires knowing the underlying table's actual
+    columns), so it cannot catch this shape on its own.
+
+    Case-insensitive: DuckDB folds unquoted identifiers, so ``Email`` and
+    ``email`` collide exactly the same way two lowercase ``email``s do.
+    """
+    seen: dict[str, str] = {}
+    for name in column_names:
+        key = name.lower()
+        if key in seen:
+            original = seen[key]
+            raise PolicyValidationError(
+                "policy_duplicate_output_column",
+                f"policy produces two columns named {original!r}; exclude the "
+                f"original before re-deriving it -- e.g. "
+                f"`SELECT * EXCLUDE ({original}), <expr> AS {original}`",
+            )
+        seen[key] = name

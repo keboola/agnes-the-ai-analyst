@@ -26,10 +26,17 @@ identity available as bound variables. One primitive covers both directions the
 two open issues asked for separately:
 
 ```sql
-SELECT * EXCLUDE (national_id), md5(email) AS email
+SELECT * EXCLUDE (national_id, email), md5(email) AS email
 FROM invoices
 WHERE list_contains($user_groups, cost_center)
 ```
+
+(Note the `EXCLUDE` list carries `email` too, not just `national_id` — a
+column re-derived under its own name must also be excluded from the star, or
+the output carries two columns named `email` and every serializer downstream
+picks the plaintext one under the plain name. Agnes rejects a policy whose
+resolved output has a duplicate column name at save time,
+`policy_duplicate_output_column` — see §14.6.)
 
 The policy is *data* — authored, versioned and audited — not a code change and
 not a separate registered table per audience.
@@ -418,10 +425,10 @@ The policy is authored once, in DuckDB dialect, and sqlglot transpiles it for
 the BQ path. Verified end to end on sqlglot 30.6.0:
 
 ```
-SELECT * EXCLUDE (national_id), md5(email) AS email FROM invoices
+SELECT * EXCLUDE (national_id, email), md5(email) AS email FROM invoices
 WHERE list_contains($user_groups, cost_center)
 
-→ SELECT * EXCEPT (national_id), TO_HEX(MD5(email)) AS email FROM invoices
+→ SELECT * EXCEPT (national_id, email), TO_HEX(MD5(email)) AS email FROM invoices
   WHERE EXISTS(SELECT 1 FROM UNNEST(@user_groups) AS _col WHERE _col = cost_center)
 ```
 
@@ -718,7 +725,18 @@ already made:
    the transpiled form is shown to the admin.
 6. The policy executes against the real table with a throwaway persona and
    `LIMIT 0`. This both rejects a policy referencing a dropped column and
-   produces the effective schema (§11).
+   produces the effective schema (§11). The same probe also rejects a policy
+   whose resolved output has a case-insensitive duplicate column name
+   (`policy_duplicate_output_column`) — the shape this doc's own §1 example
+   had before it was corrected: `SELECT * EXCLUDE (national_id), md5(email)
+   AS email` re-derives `email` without excluding it from the star first, so
+   DuckDB returns two columns both named `email`, and every read surface
+   (`/api/query`'s positional row lists, pandas' `fetchdf()` behind
+   `/api/v2/sample` and `/api/mcp/query-table`) either keeps the first
+   (plaintext) occurrence under the plain name or renames the second one —
+   putting the unmasked value exactly where a caller expects the masked one.
+   Static analysis alone cannot catch this: it needs the actual `*`
+   expansion, which only the live probe has.
 
 It is worth stating plainly what this feature is: **a policy body is arbitrary
 DuckDB SQL executed on the server's analytics connection on every analyst

@@ -149,7 +149,7 @@ def test_rejects_identity_var_in_like_position():
 
 def test_accepts_row_and_column_policy():
     validate_policy_sql(
-        "SELECT * EXCLUDE (national_id), md5(email) AS email FROM invoices "
+        "SELECT * EXCLUDE (national_id, email), md5(email) AS email FROM invoices "
         "WHERE list_contains($user_groups, cost_center)",
         table_id="invoices", table_name="invoices",
         mapping_table_names=set(), for_remote=True,
