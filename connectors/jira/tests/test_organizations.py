@@ -139,9 +139,8 @@ class TestResolveCloudId:
 
     def test_raises_when_tenant_info_fails(self, svc: JiraService) -> None:
         client = _mock_client(500, {})
-        with patch.object(jira_service.httpx, "Client", return_value=client):
-            with pytest.raises(JiraFetchError):
-                svc.resolve_cloud_id()
+        with patch.object(jira_service.httpx, "Client", return_value=client), pytest.raises(JiraFetchError):
+            svc.resolve_cloud_id()
 
 
 # ---------------------------------------------------------------------------
@@ -174,9 +173,8 @@ class TestFetchOrganization:
         # like "this org has no details", or the refresh would blank real values.
         monkeypatch.setattr(jira_service.Config, "JIRA_CLOUD_ID", "cloud-xyz", raising=False)
         client = _mock_client(status, {})
-        with patch.object(jira_service.httpx, "Client", return_value=client):
-            with pytest.raises(JiraFetchError):
-                svc.fetch_organization("325")
+        with patch.object(jira_service.httpx, "Client", return_value=client), pytest.raises(JiraFetchError):
+            svc.fetch_organization("325")
 
     def test_raises_when_unconfigured(self, monkeypatch: pytest.MonkeyPatch, clear_org_env: None) -> None:
         monkeypatch.setattr(jira_service.Config, "JIRA_CLOUD_ID", "cloud-xyz", raising=False)
@@ -184,9 +182,8 @@ class TestFetchOrganization:
         s.domain = ""
         s.email = ""
         s.api_token = ""
-        with patch.object(jira_service.httpx, "Client") as mock_cls:
-            with pytest.raises(JiraFetchError):
-                s.fetch_organization("325")
+        with patch.object(jira_service.httpx, "Client") as mock_cls, pytest.raises(JiraFetchError):
+            s.fetch_organization("325")
         mock_cls.assert_not_called()
 
 
@@ -213,9 +210,8 @@ class TestFetchOrganizationIds:
 
     def test_raises_on_error_status(self, svc: JiraService) -> None:
         client = _mock_client(500, {})
-        with patch.object(jira_service.httpx, "Client", return_value=client):
-            with pytest.raises(JiraFetchError):
-                svc.fetch_organization_ids()
+        with patch.object(jira_service.httpx, "Client", return_value=client), pytest.raises(JiraFetchError):
+            svc.fetch_organization_ids()
 
 
 # ---------------------------------------------------------------------------
@@ -405,9 +401,8 @@ class TestRefreshOrganizations:
         svc = MagicMock()
         svc.is_configured.return_value = True
         svc.fetch_organization_ids.side_effect = JiraFetchError("boom")
-        with patch.object(orgs, "get_jira_service", return_value=svc):
-            with pytest.raises(JiraFetchError):
-                orgs.refresh_organizations(extract_dir=tmp_path)
+        with patch.object(orgs, "get_jira_service", return_value=svc), pytest.raises(JiraFetchError):
+            orgs.refresh_organizations(extract_dir=tmp_path)
         assert not (tmp_path / "data" / "organizations" / "data.parquet").exists()
 
     def test_fetch_failure_preserves_the_previous_row(self, tmp_path: Path, org_env: None) -> None:
@@ -458,6 +453,36 @@ class TestRefreshOrganizations:
 
         assert stats["removed"] == 1
         assert _read_table(tmp_path)["org_id"].tolist() == ["1"]
+
+    def test_omission_drop_is_counted_as_removed(self, tmp_path: Path, org_env: None) -> None:
+        # A row can leave the table without a 404: enumeration simply no longer
+        # returns its id. Under the mass-removal threshold that drop is published,
+        # so it must be reported — "0 removed" on a run that deleted a row is the
+        # summary an operator acts on (Devin Review on #1274).
+        from connectors.jira import organizations as orgs
+
+        svc = _fake_service(
+            ["1", "2", "3"],
+            [_org("1", "Acme", "ACC-1"), _org("2", "Globex", "ACC-2"), _org("3", "Initech", "ACC-3")],
+        )
+        with (
+            patch.object(orgs, "get_jira_service", return_value=svc),
+            patch.object(orgs, "update_meta"),
+            patch.object(orgs.time, "sleep"),
+        ):
+            orgs.refresh_organizations(extract_dir=tmp_path)
+
+        svc2 = _fake_service(["1", "2"], [_org("1", "Acme", "ACC-1"), _org("2", "Globex", "ACC-2")])
+        with (
+            patch.object(orgs, "get_jira_service", return_value=svc2),
+            patch.object(orgs, "update_meta"),
+            patch.object(orgs.time, "sleep"),
+        ):
+            stats = orgs.refresh_organizations(extract_dir=tmp_path)
+
+        assert "skipped_reason" not in stats
+        assert stats["removed"] == 1
+        assert sorted(_read_table(tmp_path)["org_id"].tolist()) == ["1", "2"]
 
     def test_all_fetches_failing_leaves_the_table_untouched(self, tmp_path: Path, org_env: None) -> None:
         from connectors.jira import organizations as orgs

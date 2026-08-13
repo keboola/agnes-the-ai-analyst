@@ -336,28 +336,38 @@ def refresh_organizations(
     # out ones that disappeared, so on any growing site the guard could not fire at all:
     # 10 existing, 10 new, 6 of the old ones unreadable gives a net of -4 while 60% of
     # the table is being deleted (Devin Review on #1274).
-    if existing and not force:
-        resolved_ids = {str(r.get("org_id")) for r in records if r.get("org_id") is not None}
-        dropped = sum(1 for org_id in existing if org_id not in resolved_ids)
-        if dropped / len(existing) > MAX_REMOVED_FRACTION:
-            logger.error(
-                "Refusing to publish %s: %d of %d existing organizations would be removed "
-                "(%.0f%%, over the %.0f%% limit) — the sweep resolved %d rows from %d "
-                "enumerated ids, %d of which 404'd. Check JIRA_CLOUD_ID and that the "
-                "account has Customer Service Management access. Re-run with --force if "
-                "the removals are real.",
-                TABLE_NAME,
-                dropped,
-                len(existing),
-                100 * dropped / len(existing),
-                100 * MAX_REMOVED_FRACTION,
-                len(records),
-                len(org_ids),
-                stats["removed"],
-            )
-            stats["skipped_reason"] = "mass_removal_guard"
-            stats["elapsed_sec"] = round(time.time() - start, 1)
-            return stats
+    # Computed unconditionally, not only when the guard below runs: this is also the
+    # removal count the run reports. A row dropped because enumeration omitted it is
+    # exactly as deleted as one that 404'd, and under --force the guard is skipped but
+    # rows still leave the table (Devin Review on #1274).
+    resolved_ids = {str(r.get("org_id")) for r in records if r.get("org_id") is not None}
+    dropped = sum(1 for org_id in existing if org_id not in resolved_ids)
+
+    if existing and not force and dropped / len(existing) > MAX_REMOVED_FRACTION:
+        logger.error(
+            "Refusing to publish %s: %d of %d existing organizations would be removed "
+            "(%.0f%%, over the %.0f%% limit) — the sweep resolved %d rows from %d "
+            "enumerated ids, %d of which 404'd. Check JIRA_CLOUD_ID and that the "
+            "account has Customer Service Management access. Re-run with --force if "
+            "the removals are real.",
+            TABLE_NAME,
+            dropped,
+            len(existing),
+            100 * dropped / len(existing),
+            100 * MAX_REMOVED_FRACTION,
+            len(records),
+            len(org_ids),
+            stats["removed"],
+        )
+        stats["skipped_reason"] = "mass_removal_guard"
+        stats["elapsed_sec"] = round(time.time() - start, 1)
+        return stats
+
+    # Up to here `removed` counted explicit 404s — the meaning the "nothing resolved"
+    # check and the guard's log line need. What the run reports is what actually left
+    # the table: every existing row the published records no longer carry, whether it
+    # 404'd or was simply omitted from the enumeration.
+    stats["removed"] = dropped
 
     table_dir.mkdir(parents=True, exist_ok=True)
     table = apply_schema(pd.DataFrame(records), organizations_schema())
