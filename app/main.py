@@ -1939,6 +1939,7 @@ def create_app() -> FastAPI:
         # REDUCES privilege — see the module docstring.
         from app.auth.elevation import (
             ELEVATION_COOKIE,
+            request_is_noninteractive,
             reset_for_request,
             resolve_from_cookie,
             set_paused_for_request,
@@ -1947,12 +1948,16 @@ def create_app() -> FastAPI:
         token = set_paused_for_request(
             resolve_from_cookie(
                 request.cookies.get(ELEVATION_COOKIE),
-                # Bearer callers (CLI/PAT/service tokens) have no cookie jar
-                # to re-elevate with — the instance-wide default must not
-                # apply to them (an explicit paused cookie still would).
-                bearer_auth=(
-                    request.headers.get("authorization", "").lower().startswith("bearer ")
-                    or bool(request.headers.get("x-storageapi-token"))
+                # Non-interactive callers (Bearer CLI/PAT/service tokens, or a
+                # sole X-StorageApi-Token header) have no cookie jar to
+                # re-elevate with, so the instance-wide default must not apply
+                # (an explicit paused cookie still would). A request carrying a
+                # session cookie stays interactive even if it also sends the
+                # header — see request_is_noninteractive (Devin review #1288).
+                bearer_auth=request_is_noninteractive(
+                    authorization=request.headers.get("authorization", ""),
+                    has_session_cookie=bool(request.cookies.get("access_token")),
+                    has_sapi_header=bool(request.headers.get("x-storageapi-token")),
                 ),
             )
         )
