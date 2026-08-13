@@ -815,6 +815,14 @@ class TestDevinReviewFindings:
         monkeypatch.setattr(jira_service.Config, "JIRA_DOMAIN", "", raising=False)
         monkeypatch.setattr(jira_service.Config, "JIRA_EMAIL", "", raising=False)
         monkeypatch.setattr(jira_service.Config, "JIRA_API_TOKEN", "", raising=False)
+        # reload_config_from_env() also assigns these three from the ambient
+        # os.environ. Register their current values with monkeypatch so teardown
+        # restores them — otherwise the reload below leaks a reset JIRA_DATA_DIR
+        # and a blanked webhook secret into every later test in the same worker,
+        # ordering-dependent now that connectors/ runs in the shared CI shards
+        # (Devin Review on #1274).
+        for attr in ("JIRA_CLOUD_ID", "JIRA_WEBHOOK_SECRET", "JIRA_DATA_DIR"):
+            monkeypatch.setattr(jira_service.Config, attr, getattr(jira_service.Config, attr, ""), raising=False)
         monkeypatch.setattr(jira_service, "_jira_service", jira_service.JiraService(), raising=False)
         assert jira_service.get_jira_service().is_configured() is False
 
@@ -1344,7 +1352,10 @@ class TestConcurrentPublishSafety:
             os.umask(old_umask)
 
         mode = (tmp_path / "data" / "organizations" / "data.parquet").stat().st_mode & 0o777
-        assert mode == 0o660, f"published parquet must be 0660 like the sibling writers, got {oct(mode)}"
+        assert mode == 0o644, (
+            f"published parquet must be 0644 — deterministic, sibling-consistent, and readable "
+            f"when the manual run and the server process are different users — got {oct(mode)}"
+        )
 
     def test_a_stray_temp_is_never_read_as_data(self, tmp_path: Path) -> None:
         """A crashed run leaves a temp behind; the view glob must not pick it up."""

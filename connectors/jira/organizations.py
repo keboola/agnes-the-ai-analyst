@@ -427,8 +427,13 @@ def refresh_organizations(
         # 0666 & umask, so under a restrictive umask (0077 in some container/
         # systemd units) the replace would publish 0600 — the same #203 outcome
         # the mkstemp avoidance above defends against, arriving from the other
-        # side. 0o660 matches the raw-JSON writers' fchmod (group rw for ACL).
-        os.chmod(tmp_dest, 0o660)
+        # side. 0o644 rather than the raw-JSON writers' 0o660: their fchmod
+        # serves a directory carrying POSIX ACLs, while every parquet in this
+        # extract tree effectively lands world-readable (0666 & umask), and the
+        # documented manual run may execute as a different user than the server
+        # process — group-only read would need a shared group where 0644 does
+        # not (Devin Review on #1274).
+        os.chmod(tmp_dest, 0o644)
         os.replace(tmp_dest, dest)
     finally:
         # A failed write would otherwise leave the temp behind. The extract view globs
