@@ -398,9 +398,9 @@ class TestSyncOrganizations:
         assert list(df["org_id"]) == ["1", "2"]
         assert list(df["region"]) == ["EU", "EU"]
 
-        import duckdb
+        from src.duckdb_conn import _open_duckdb
 
-        conn = duckdb.connect(str(tmp_path / "extract.duckdb"), read_only=True)
+        conn = _open_duckdb(str(tmp_path / "extract.duckdb"), read_only=True)
         try:
             meta_row = conn.execute("SELECT rows, query_mode FROM _meta WHERE table_name = 'organizations'").fetchone()
             assert meta_row == (2, "local")
