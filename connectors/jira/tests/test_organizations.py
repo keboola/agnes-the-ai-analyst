@@ -1136,6 +1136,25 @@ class TestDevinReviewRoundTwo:
         orgs.main()  # must not raise SystemExit or ValueError
         assert called == {"dry_run": True, "force": False}
 
+    def test_cli_reports_enumeration_failure_without_a_traceback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Enumeration failure is the one refusal that raises (so the worker job
+        retries). On the documented manual command it must exit 1 with a logged
+        message, not an unhandled JiraFetchError traceback — it is the first
+        network call, so it is the most common transient of the set."""
+        from connectors.jira import organizations as orgs
+
+        for var in ("JIRA_DOMAIN", "JIRA_EMAIL", "JIRA_API_TOKEN"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(sys, "argv", ["organizations"])
+
+        def _boom(**kwargs):
+            raise JiraFetchError("Organization enumeration failed: status 503")
+
+        monkeypatch.setattr(orgs, "refresh_organizations", _boom)
+        with pytest.raises(SystemExit) as exc:
+            orgs.main()
+        assert exc.value.code == 1
+
 
 class TestUnreadableBaselineRefuses:
     """An unreadable existing table must not be treated as an empty one.

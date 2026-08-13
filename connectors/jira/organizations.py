@@ -517,7 +517,16 @@ def main() -> None:
         logger.debug("Jira env validation failed while loading .env: %s", e)
     reload_config_from_env()
 
-    stats = refresh_organizations(dry_run=args.dry_run, force=args.force)
+    try:
+        stats = refresh_organizations(dry_run=args.dry_run, force=args.force)
+    except JiraFetchError as e:
+        # Enumeration failure is the one refusal that raises rather than returning a
+        # `skipped_reason` — deliberately, so the worker job fails and retries. On the
+        # documented manual command it must still read as a clean non-zero failure,
+        # not an unhandled traceback; it is the first network call of the run, so it
+        # is the most common transient of the set (Devin Review on #1274).
+        logger.error("Jira organization refresh failed: %s", e)
+        sys.exit(1)
     # Non-zero on the outcomes FAILURE_REASONS names, so a cron/CI caller notices. A
     # *partial* failure is success: those rows resolved and the rest kept their previous
     # values, which is the contract this module exists to honour.
