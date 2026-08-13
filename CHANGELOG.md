@@ -10,6 +10,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+<<<<<<< HEAD
 ### Added
 
 - **Connector-catalogued attachments are now fetchable over the authenticated API.** The Jira connector downloads attachment binaries to the server and records where they landed (`jira_attachments.local_path`), but no client surface could fetch them — the only reader was a human with a shell on the host, neither RBAC-gated nor audited. `GET /api/attachments/{source}/{attachment_id}/download` + `agnes attachment get <source> <id> [-o <path>]` close that: a source declares which table catalogues its files, which columns carry the id and the path, and which directory is the permitted root (`src/attachment_sources.py`; `jira` is the first registered source), so a later connector that stores attachments registers a declaration and gets the route and the CLI command for free. RBAC is read access to the catalogue table (`can_access_table`, same gate as the parquet download); the catalogue's path value is contained under the source's permitted root before serving; misses stay distinguishable from denials (404 `attachment_not_found` / `attachment_not_stored` vs the RBAC 403) so a client can fall back to the upstream system's own API for exactly the rows the server never stored; and every fetch, granted or denied, lands in the audit log as `attachment.download`. Deliberately a lazy per-id fetch, not manifest sync — nothing lands on an analyst's machine until someone asks for it.
@@ -17,6 +18,13 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Fixed
 
 - `agnes admin sessions download` raised `TypeError` before the request ever left: it passed `stream=True` through `api_get` into `httpx.Client.get()`, which has no such argument. The flag is dropped (`api_get` buffers the response body regardless); the new `agnes attachment get` never carried it.
+=======
+## [0.83.11] - 2026-08-13
+
+### Fixed
+
+- **A scoped sync for an already-deleted table id no longer re-registers the whole source project.** The auto-discovery gate on a `tables=[...]`-scoped sync trigger derived "is the registry empty?" from the requested subset (`repo.get(id)` returning `None` for a deleted id looked like an empty registry), instead of the whole registry like the scheduled-sync branch already did — so triggering a sync for a table id that was deleted while queued or running could re-discover and re-register every table on the source. Both branches now check the whole registry.
+>>>>>>> origin/main
 
 ## [0.83.10] - 2026-08-13
 
