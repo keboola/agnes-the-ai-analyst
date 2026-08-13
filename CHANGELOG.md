@@ -13,6 +13,22 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Fixed
 
 - **A scoped sync for an already-deleted table id no longer re-registers the whole source project.** The auto-discovery gate on a `tables=[...]`-scoped sync trigger derived "is the registry empty?" from the requested subset (`repo.get(id)` returning `None` for a deleted id looked like an empty registry), instead of the whole registry like the scheduled-sync branch already did — so triggering a sync for a table id that was deleted while queued or running could re-discover and re-register every table on the source. Both branches now check the whole registry.
+## [0.83.10] - 2026-08-13
+
+### Fixed
+- **Setting `chat.docker_egress_allow_hosts` without `chat.docker_egress_mode: allowlist` now warns at startup.** The allow-hosts knob reads like it turns the allowlist on, but only the mode does — set alone (the mode defaults to `open`), the hosts were silently ignored and sandbox egress stayed unrestricted. The startup egress-config check now reports the ignored allowlist and the consequence for the configured mode.
+
+## [0.83.9] - 2026-08-13
+
+### Added
+
+- **The admin MCP source list flags rows the current url policy would now refuse.** `check_source_url` (#1154/#1204) gates a source's `url` only when it is configured — a row registered before the guard existed, or before `mcp.source_url_strict` was turned on, keeps forwarding credentials on an unrelated edit even when its url is now in the refused set (a literal link-local/reserved address, or cleartext http to a public one). `GET /api/admin/mcp-sources` and the detail endpoint now carry a `url_policy_verdict` (`ok` / `would_refuse` + reasons) per row, computed with the same DNS-free checks the policy applies with no resolver call — cheap enough to run on every row in a list. `agnes admin mcp source list` shows the same verdict in a new column. Runtime enforcement at the two forward seams is a separate, follow-up change (#1216).
+
+## [0.83.8] - 2026-08-13
+
+### Internal
+
+- Deflaked `test_concurrent_deploy_calls_never_overlap_inside_runner_up` (CI-only `[200, 200] != [200, 409]`): the runner stub now holds `up()` open on a latch the test releases only after the second deploy request completes, so the op lease is provably held for that request's whole lifetime. The old fixed 0.5s sleep left ~0.3s of real-time margin for the second request's retry-then-409 window; a loaded CI runner could stretch past it, the first deploy released the lease early, and both requests legitimately succeeded. The lease itself serialized correctly all along (the concurrency assertion never fired).
 
 ## [0.83.7] - 2026-08-12
 
@@ -1240,6 +1256,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - Install-prompt guidance fixes: the expired-credential recovery now names the working command (`agnes init --force --token-file …` — plain `agnes init` refuses once `.claude/init-complete` exists, and `agnes update` reuses the expired saved credential); the "token file consumed" check applies only to the `agnes init` branch (on the `agnes update` reconcile path the file legitimately survives, and the check no longer reads as a shell failure); and the missing-token preflight treats a machine as reconciled only with a saved credential present — a globally installed CLI alone no longer skips the stop. `agnes init --token-file` with a missing file now falls back to `AGNES_TOKEN` / the saved credential instead of aborting (a file that exists but cannot be read stays a hard error — see the `agnes update` bullet above). Dashboard and advanced-setup copy no longer promise a token-bearing setup script; stale docstrings about clipboard/DOM isolation now state the actual boundary.
 - The generated install prompt no longer embeds the analyst's raw access token: the `Personal access token: {token}` preamble line and the `~/.agnes/token` heredoc in the `agnes init` step are gone, replaced by a guard (`test -s ~/.agnes/token`, fresh-install vs. reconcile aware) that assumes the token was already saved to `~/.agnes/token` by an earlier step of the web onboarding flow, before the prompt was generated. `agnes init --token-file` still reads it and removes it once the credential is saved to `~/.config/agnes/token.json`. The token value now never has to appear in the prompt text, a browser clipboard, or a pasted chat transcript. `docs/seed-repo-contract.md` and the banned-phrase regression guard were updated accordingly (`{token}` / a literal JWT fragment are now banned from the rendered body).
 - The web half of the same change: `/home`'s install guide now hands the token to the machine via a copied shell command (Step 4, "Launch Claude — we'll hand it your login first" / "Save your login token") instead of embedding it in the setup script — the command saves the token to `~/.agnes/token` and, when auto-mode is on, launches Claude in the same line. The visible command always shows a masked placeholder; the real token is minted only in memory at copy time and never written into the page. Step 5's "Copy install script to clipboard" no longer mints or carries any token at all. `/setup`'s single-page flow got the matching treatment.
+
 ## [0.79.1] - 2026-08-06
 
 ### Added
