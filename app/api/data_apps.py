@@ -738,13 +738,25 @@ def _mint_preview_token(row: dict, requester: dict, *, ttl_s: int = _PREVIEW_TOK
         prefix=token_id.replace("-", "")[:8],
         expires_at=expires_at,
     )
-    # `Path=/apps/<slug>/` assumes path-prefix ingress (the verified default;
-    # `data_apps.subdomain_base` unset). In subdomain mode the app is served at
-    # `<slug>.<subdomain_base>/` — a different origin whose paths start at `/` —
-    # so the preview loop (same-origin fetch + this cookie) is path-prefix-only
-    # for now; subdomain-mode preview is a follow-up (needs a cross-origin
-    # cookie set on the subdomain, which the same-origin fetch can't do).
-    cookie = f"{_PREVIEW_COOKIE_NAME}={jwt_token}; Max-Age={max(ttl_s, 0)}; Path=/apps/{slug}/; SameSite=Lax; HttpOnly"
+    # `Path=/` rather than `/apps/<slug>/`, and the reason is load-bearing: the
+    # holding page polls `/api/data-apps/<slug>/readiness`, which is NOT under
+    # `/apps/<slug>/`. A browser only attaches a cookie whose `Path` is a prefix
+    # of the request path, so the narrower scoping meant the poll went out
+    # unauthenticated, 401'd, was swallowed by the template's `catch`, and the
+    # preview spun forever while the app was up — the very failure this loop
+    # exists to fix (Devin Review on this PR).
+    #
+    # Widening the path does NOT widen authority: the slug pin lives in the
+    # token's own scope (`data-app-preview:<slug>`, checked by
+    # `_resolve_proxy_caller`), never in the cookie path, so a cookie sent on
+    # more routes still authorizes exactly one app's preview. It stays HttpOnly
+    # + SameSite=Lax.
+    #
+    # Still path-prefix ingress only (the verified default; `subdomain_base`
+    # unset). In subdomain mode the app is served on a different origin whose
+    # paths start at `/`, so subdomain-mode preview remains a follow-up — it
+    # needs a cross-origin cookie the same-origin fetch cannot set.
+    cookie = f"{_PREVIEW_COOKIE_NAME}={jwt_token}; Max-Age={max(ttl_s, 0)}; Path=/; SameSite=Lax; HttpOnly"
     return jwt_token, cookie
 
 

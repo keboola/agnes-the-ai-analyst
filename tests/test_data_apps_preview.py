@@ -111,7 +111,14 @@ class TestPreviewGrantEndpoint:
         body = r.json()
         assert "preview_cookie" in body and "expires_at" in body
         cookie = body["preview_cookie"]
-        assert "Path=/apps/dash/" in cookie
+        # `Path=/`, NOT `/apps/dash/`. The holding page polls
+        # `/api/data-apps/dash/readiness`, which the narrower path does not
+        # cover — a browser would never attach the credential, so the poll
+        # 401'd forever and the preview spun while the app was up. The
+        # per-app pin lives in the token scope (`data-app-preview:dash`),
+        # never in the cookie path, so the wider path grants nothing extra.
+        assert "Path=/;" in cookie
+        assert "Path=/apps/" not in cookie
         assert "SameSite=Lax" in cookie
         assert "HttpOnly" in cookie
         # The cookie must ALSO ride a real Set-Cookie response header — an

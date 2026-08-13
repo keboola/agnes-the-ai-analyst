@@ -2141,10 +2141,17 @@ def create_app() -> FastAPI:
     try:
         from app.instance_config import get_data_apps_config
 
-        data_app_base = (get_data_apps_config().get("subdomain_base") or "").strip()
+        # `.strip(".")` matches DataAppSubdomainMiddleware's own normalisation:
+        # a value written `.apps.example.com` would otherwise escape to a
+        # doubled dot and match NOTHING, so the middleware would serve the
+        # subdomain while the readiness poll was CORS-blocked.
+        data_app_base = (get_data_apps_config().get("subdomain_base") or "").strip().strip(".")
         if data_app_base:
             escaped = re.escape(data_app_base)
-            cors_origin_regex = rf"^https?://[^:\s/]+\.{escaped}(:\d+)?$"
+            # A SINGLE label, not `[^:\s/]+` — the middleware only routes
+            # single-label slugs, so accepting `a.b.<base>` would widen the
+            # credentialed-CORS surface past anything that can be served.
+            cors_origin_regex = rf"^https?://[^.:\s/]+\.{escaped}(:\d+)?$"
     except Exception:
         logger.exception("Failed to compute data-app CORS origin regex")
     if "*" in cors_origins:

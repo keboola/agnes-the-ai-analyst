@@ -902,6 +902,43 @@ def test_a_preview_token_can_poll_readiness(proxy_client, fake_runner, running_a
     assert "ready" in r.json()
 
 
+def test_the_preview_cookie_is_scoped_to_a_path_the_poll_actually_uses(mint_preview, running_app):
+    """The sibling test above sets `cookie:` by hand, so it passes under ANY
+    `Path=` — including one a browser would never send.
+
+    That is not a nitpick: the cookie was minted `Path=/apps/<slug>/` while the
+    holding page polls `/api/data-apps/<slug>/readiness`. A browser only
+    attaches a cookie whose `Path` is a prefix of the request path, so the real
+    poll went out with no credential, 401'd, and the template's `catch`
+    swallowed it — the preview spun forever while the app was up, which is the
+    exact failure the preview scope was added to fix (Devin Review on this PR).
+
+    So assert the scoping itself, against the URL the page really polls.
+    """
+    from http.cookies import SimpleCookie
+
+    from app.api.data_apps_proxy import _readiness_poll_url
+
+    cookie = SimpleCookie()
+    cookie.load(mint_preview("s", ttl_s=1800).cookie)
+    path = cookie["adp_preview"]["path"]
+
+    poll_url = _readiness_poll_url(_FakeRequest(subdomain=False), "s")
+    assert poll_url.startswith(path), (
+        f"cookie Path={path!r} does not cover the readiness poll {poll_url!r} — "
+        "a browser will not attach the credential"
+    )
+    # The pin that makes the wide path safe lives in the token scope, not here.
+    assert "HttpOnly" in mint_preview("s").cookie
+
+
+class _FakeRequest:
+    """Minimal stand-in for `_readiness_poll_url`'s only input."""
+
+    def __init__(self, *, subdomain: bool) -> None:
+        self.scope = {"agnes_data_app_subdomain": subdomain}
+
+
 def test_a_preview_token_for_another_app_cannot_poll_readiness(proxy_client, fake_runner, running_app, mint_preview):
     """The scope pin is what makes skipping the grant check safe."""
     _create_app_row(slug="other2", state="running")
