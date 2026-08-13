@@ -392,13 +392,6 @@ email:
   smtp_user: "${SMTP_USER}"
   smtp_password: "${SMTP_PASSWORD}"
 
-# --- Desktop app (optional) ---
-# All desktop.* fields configurable via /admin/server-config UI (rarely changed once set).
-desktop:
-  jwt_issuer: "data-analyst"
-  jwt_secret: "${DESKTOP_JWT_SECRET}"
-  url_scheme: "data-analyst"
-
 # --- Telegram notifications (optional) ---
 telegram:
   bot_token: "${TELEGRAM_BOT_TOKEN}"

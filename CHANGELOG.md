@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Removed
+
+- **The phantom desktop-pairing surface is gone.** `dev_docs/desktop-app.md` documented a browser pairing flow (`/desktop/link` → `data-analyst://` deep link → `POST /api/desktop/refresh`) whose routes were deleted with the legacy webapp and never ported to the FastAPI app; `desktop_link.html` was a template no route ever rendered; and the `desktop:` config section (instance.yaml + `/admin/server-config`) configured nothing — the notifications WebSocket reads `DESKTOP_JWT_SECRET` straight from the environment. All three are removed rather than left pointing at endpoints that don't exist. A leftover `desktop:` block in an existing instance.yaml is harmless (it was already unread); the section is simply no longer served or writable via the server-config editor. Note the WS endpoint itself stays and still validates `DESKTOP_JWT_SECRET`-signed tokens — but nothing in-repo mints them; how clients obtain one is the open design question tracked in #412.
+
 ## [0.83.7] - 2026-08-12
 
 ### Fixed
