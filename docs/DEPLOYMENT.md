@@ -275,6 +275,92 @@ Two ways to handle it, in order of preference:
    on the path, so treat any PAT used this way as exposed and rotate it if the
    log retention worries you.
 
+### Private-network-only deployments: exposing agents (or the full connector) via tunnel
+
+**The problem.** An Agnes instance reachable only over a VPN or corporate
+intranet — no public `DOMAIN`, Caddy TLS pointed nowhere, `SERVER_URL`
+unset or internal-only — cannot be reached by a cloud-based AI client.
+Claude.ai, ChatGPT, and any other hosted connector run outside your network,
+so the generic OAuth MCP connector documented at `/how-it-works#connect`
+(and `AGNES_AI_CONNECTOR_ENABLED`/`ai_connector.enabled` below, which shows
+that page) simply cannot complete a handshake against an address those
+services can't route to.
+
+This is **not** an Agnes feature gap to build around — it's an
+operator-side networking decision. Agnes itself never owns or creates a
+Cloudflare or Tailscale account; the fix is for *you*, the operator, to run
+your own outbound tunnel that exposes only the paths you choose while the
+rest of the instance stays on the VPN. Two options, same underlying idea —
+one outbound tunnel, a path allowlist deciding what it forwards:
+
+- **Option A — agent-only tunnel (recommended for VPN-only instances).**
+  Expose only the agent-as-API runtime surface: `POST
+  /api/v1/agents/{slug}/responses` and its session/job companions
+  (`app/api/agent_runtime.py`, `app/api/agent_sessions.py`, both mounted at
+  `/api/v1`). That surface is Bearer-**PAT**-authenticated (not a browser
+  session) and scoped to exactly one `'selected'`-mode agent — its effective
+  authority is the intersection of the agent's declared scope and its
+  owner's own grants, enforced live on every brokered request
+  (`src/agent_scope_intersection.py`), so it can never exceed what the owner
+  who minted the PAT could already do. Nothing under this surface needs
+  `SERVER_URL`/`PUBLIC_URL`/`AGNES_BASE_URL` set — the tunnel's own public
+  hostname is simply where the external caller points its `POST`; the agent
+  runtime and session routers derive nothing from the request's public
+  origin (contrast the MCP-OAuth issuer machinery in
+  `app/auth/public_url.py`, which is unrelated to this path and does need
+  the instance's public origin pinned).
+
+  Deliberately **excluded** from the tunnel's allowlist, even though they
+  live under the same `/api/v1/agents/*` prefix: bare agent create/list/get/
+  put/delete, `/scope`, `/tokens`, `/memories*`, and `/webhooks` — every one
+  of those is management-only and gated by `require_session_token`
+  (`app/api/agents_admin.py`, `app/api/agent_webhooks.py`), which already
+  rejects a bare PAT. The allowlist excludes them anyway, at the network
+  edge, as defense-in-depth — a PAT that somehow reached one of these routes
+  should find no route there at all, not merely a 403.
+
+  Templates for both tunnel tools: [`infra/examples/vpn-agent-tunnel/`](../infra/examples/vpn-agent-tunnel/)
+  (`cloudflared-ingress.yml` and `tailscale-serve.sh`, with the full path
+  allowlist and the reasoning behind each exclusion in the README there).
+
+  **Recipe:**
+  1. **Inside the VPN**, the agent's owner creates a `'selected'`-mode agent
+     (`/agents` builder, or `agnes agent create`) and mints a PAT scoped to
+     it: `agnes agent token <slug> --name external-integration`. Nothing
+     about this step touches the tunnel — the PAT is a normal bearer
+     credential, just like any other.
+  2. The **operator** sets up the outbound tunnel per the template that
+     matches their tool, pointing its ingress/serve rules at this Agnes
+     instance's local address (e.g. `http://127.0.0.1:8000`) and publishing
+     a tunnel-only hostname — not the instance's internal one.
+  3. The external automation calls `POST
+     https://<tunnel-hostname>/api/v1/agents/<slug>/responses` with
+     `Authorization: Bearer <PAT>` (plus whatever session/usage/artifact
+     calls it needs from the same allowlist). Hand the automation the PAT
+     only — never a management endpoint, and never a session cookie.
+
+- **Option B — full-connector tunnel.** For operators who want the complete
+  "Claude as my assistant" experience despite being VPN-only, expose
+  `/api/mcp/http*` and `/.well-known/*` instead — the same general,
+  OAuth-authenticated MCP connector already documented as the normal
+  manual-connector flow at `/how-it-works#connect` (any signed-in user,
+  full RBAC access as that user). This is the existing connector,
+  unchanged; a tunnel in front of it is the only new part, and it is a
+  materially bigger exposure than Option A — every RBAC-visible resource
+  for every user who authenticates through it, not one agent's scoped
+  authority.
+
+If you don't want to run a tunnel at all, you can instead hide the
+"connect your AI client" instructions outright — they would only mislead
+on a VPN-only instance nobody can tunnel into. Set
+`AGNES_AI_CONNECTOR_ENABLED=0` (or `ai_connector.enabled: false` in
+`instance.yaml`; on by default). This redirects `/me/ai-connector` and
+`/mcp-connect` home and drops the `#connect` section from `/how-it-works`,
+without touching `/api/mcp/http` itself or any other nav link — an
+in-network client can still connect either way. See
+[`docs/feature-flags.md`](feature-flags.md) for the flag's full resolution
+order.
+
 ### Upgrades (manual)
 
 ```bash

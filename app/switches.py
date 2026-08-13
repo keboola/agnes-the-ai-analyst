@@ -278,6 +278,23 @@ SWITCHES: tuple[Switch, ...] = (
             "an instance opts out via AGNES_AGENT_PROFILES_ENABLED=0."
         ),
     ),
+    Switch(
+        name="ai_connector",
+        config_keys=("ai_connector", "enabled"),
+        env_var="AGNES_AI_CONNECTOR_ENABLED",
+        kind="bool",
+        default=True,
+        effect="live",
+        category="product",
+        editable=True,
+        description=(
+            '"Connect your AI client" UI/instructions — /me/ai-connector, the '
+            "#connect section on /how-it-works, and /mcp-connect. On by default; "
+            "turn off on a VPN/intranet-only instance where the generic OAuth MCP "
+            "connector can never be reached by a cloud-based AI client, so the "
+            "instructions would only mislead. Does not gate /api/mcp/http itself."
+        ),
+    ),
 )
 
 _BY_NAME: dict[str, Switch] = {s.name: s for s in SWITCHES}

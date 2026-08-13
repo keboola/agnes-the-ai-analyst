@@ -402,6 +402,19 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
             ),
         },
     },
+    "ai_connector": {
+        "enabled": {
+            "kind": "bool",
+            "default": _flag_default("ai_connector", "enabled", True),
+            "hint": (
+                'Show the "connect your AI client" UI/instructions '
+                "(/me/ai-connector, the #connect section on /how-it-works, "
+                "/mcp-connect). Turn off on a VPN/intranet-only instance where "
+                "the generic OAuth MCP connector can never be reached by a "
+                "cloud-based AI client — does not gate /api/mcp/http itself."
+            ),
+        },
+    },
     "features": {
         "stack_auto_membership": {
             "kind": "bool",

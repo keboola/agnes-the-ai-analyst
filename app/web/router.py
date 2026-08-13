@@ -44,6 +44,7 @@ from app.instance_config import (
     get_data_apps_config,
     get_studio_enabled,
     get_agent_profiles_enabled,
+    get_ai_connector_enabled,
     feature_enabled,
 )
 from src.repositories import (
@@ -1310,6 +1311,11 @@ async def how_it_works_page(
         passthrough_tools=passthrough_tools,
         skills=skills,
         server_url=server_url,
+        # ai_connector.enabled (#1024): the template drops the #connect
+        # section (and its two TOC rows, #connect + #cli) when off — the
+        # rest of the page (overview, knowledge, surfaces, first-run,
+        # privacy, reference) is unaffected.
+        ai_connector_enabled=get_ai_connector_enabled(),
     )
     return templates.TemplateResponse(request, "how_it_works.html", ctx)
 
@@ -1331,8 +1337,16 @@ async def me_ai_connector_page(
     instance's menu says "Learn how it works", so a bookmark or alias hop
     must not resurrect the standalone page there (Devin Review on #1200).
     302, not 301: a permanent redirect is cached by the browser forever, so
-    it would be very hard to walk back if the consolidation is revisited."""
+    it would be very hard to walk back if the consolidation is revisited.
+
+    ``ai_connector.enabled`` (#1024) gates this page ahead of the chrome
+    branch above: a VPN/intranet-only instance that turned the connector UI
+    off wants every entry point redirected home, not consolidated onto a
+    page section that is itself hidden."""
     from fastapi.responses import RedirectResponse
+
+    if not get_ai_connector_enabled():
+        return RedirectResponse("/", status_code=302)
 
     if get_ui_layout() == "rail" or _is_paper_theme():
         return RedirectResponse("/how-it-works#connect", status_code=302)
@@ -1417,6 +1431,12 @@ async def mcp_connect_page(
     # `/me/ai-connector` owns it. Both links are guarded by
     # `tests/test_web_nav_agents.py`; don't drop them. (Comment, not docstring:
     # FastAPI copies docstrings into the OpenAPI description.)
+    #
+    # ``ai_connector.enabled`` (#1024) gates this page the same way as
+    # `/me/ai-connector` — see that route's docstring.
+    if not get_ai_connector_enabled():
+        return RedirectResponse("/", status_code=302)
+
     ctx = _build_context(
         request,
         user=user,
@@ -6442,8 +6462,7 @@ async def admin_semantic_layer_page(
     # here. So the page says a subset is shown, without a number it cannot
     # compute honestly. (Devin Review on this PR.)
     ctx["unresolved_tables_truncated"] = any(
-        int(e.get("unresolved_tables_total") or 0) > len(e.get("unresolved_tables") or [])
-        for e in last_by_ref.values()
+        int(e.get("unresolved_tables_total") or 0) > len(e.get("unresolved_tables") or []) for e in last_by_ref.values()
     )
     ctx["skipped_unresolved_total"] = sum(int(e.get("skipped_unresolved_table") or 0) for e in last_by_ref.values())
     ctx["default_connection_id"] = default_id

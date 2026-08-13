@@ -559,9 +559,17 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
         {# Two entries, one section: #connect is the section, #cli its second
            tab. Kept as separate ticks because both anchors are inbound-link
            contracts and because a tab nobody can see from the TOC is a tab
-           half the readers never find. #}
+           half the readers never find.
+
+           Both rows are gated on `ai_connector_enabled` (#1024) together with
+           the section itself below: #cli is a tab INSIDE #connect (the anchor
+           lives on the tab panel, not on its own <section>), so when the
+           section doesn't render, a #cli row here would be a TOC entry with
+           nothing to scroll to. #}
+        {% if ai_connector_enabled %}
         <li><a href="#connect" title="Set up your tools"><span class="hiw-toc-label">Set up your tools</span><span class="hiw-toc-tick" aria-hidden="true"></span></a></li>
         <li><a href="#cli" title="Terminal &amp; data"><span class="hiw-toc-label">Terminal &amp; data</span><span class="hiw-toc-tick" aria-hidden="true"></span></a></li>
+        {% endif %}
         <li><a href="#first-run" title="Your first session"><span class="hiw-toc-label">Your first session</span><span class="hiw-toc-tick" aria-hidden="true"></span></a></li>
         <li><a href="#privacy" title="Where your data goes"><span class="hiw-toc-label">Where your data goes</span><span class="hiw-toc-tick" aria-hidden="true"></span></a></li>
         <li><a href="#reference" title="Reference &amp; help"><span class="hiw-toc-label">Reference &amp; help</span><span class="hiw-toc-tick" aria-hidden="true"></span></a></li>
@@ -741,7 +749,16 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
        read both — so they are two tabs of one section rather than two
        stacked sections, which read as "connector, then the CLI you also
        owe us". `#cli` remains a real anchor on the CLI panel and the
-       script opens that tab for any deep link into it. #}
+       script opens that tab for any deep link into it.
+
+       `ai_connector_enabled` (#1024): a VPN/intranet-only instance that
+       turned this off cannot reach the MCP connector from a cloud-based AI
+       client, so the whole section — CLI tab included, since it is nested
+       here rather than its own <section> — drops out rather than showing a
+       route the operator has decided is misleading. The #surfaces card
+       linking to #connect and the /api/mcp/http endpoint itself are
+       deliberately untouched (see get_ai_connector_enabled docstring). #}
+    {% if ai_connector_enabled %}
     <section class="hiw-sec" id="connect">
       {# The one fold every inbound CTA points at (#connect / #cli), so the
          script opens it on arrival — see `syncFoldToHash`. #}
@@ -1192,6 +1209,7 @@ a.cowork-plugin-row:hover { border-color: var(--ds-primary); background: var(--d
         </div>{# /.hiw-fold-body #}
       </details>
     </section>{# /#connect #}
+    {% endif %}{# /ai_connector_enabled #}
 
     {# ── #first-run — what actually happens the first time ────────────
        The web answer, in three beats. /home's five-beat TERMINAL

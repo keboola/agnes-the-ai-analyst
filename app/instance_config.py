@@ -774,6 +774,34 @@ def get_agent_profiles_enabled() -> bool:
     return feature_enabled("agent_profiles", "enabled", env_var="AGNES_AGENT_PROFILES_ENABLED", default=True)
 
 
+def get_ai_connector_enabled() -> bool:
+    """Whether the "connect your AI client" UI/instructions are shown:
+    the ``/me/ai-connector`` page, the ``#connect`` section on
+    ``/how-it-works``, and the ``/mcp-connect`` page.
+
+    On by default — upstream behavior is unchanged; an instance opts out
+    per-deployment with ``AGNES_AI_CONNECTOR_ENABLED=0`` (the
+    infra/Terraform ``.env`` override) or ``ai_connector.enabled: false``
+    in instance.yaml. Meant for VPN/intranet-only deployments where the
+    generic OAuth MCP connector can never be reached by a cloud-based AI
+    client (Claude.ai, ChatGPT run outside the corporate network), so the
+    instructions for it are actively misleading rather than merely unused.
+
+    Hides the UI/instructions only — it does **not** gate the underlying
+    ``/api/mcp/http`` connector endpoint itself, nor any nav link pointing
+    at the three surfaces above: an in-network client can still connect,
+    and an operator who *does* want cloud-client access despite being
+    VPN-only can run their own outbound tunnel scoped to the agent-as-API
+    surface instead (see `docs/DEPLOYMENT.md`).
+
+    Resolution: env var > ``ai_connector.enabled`` YAML > True — delegates
+    to :func:`feature_enabled` (the canonical resolver, #1022); see
+    :data:`FEATURE_FLAGS` for the registry entry backing the
+    ``/admin/server-config`` inventory panel.
+    """
+    return feature_enabled("ai_connector", "enabled", env_var="AGNES_AI_CONNECTOR_ENABLED", default=True)
+
+
 def get_instance_name() -> str:
     return get_value("instance", "name", default="AI Harness")
 

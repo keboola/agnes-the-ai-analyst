@@ -840,6 +840,18 @@ studio:
   enabled: true
 
 
+# "Connect your AI client" UI/instructions (/me/ai-connector, the #connect
+# section on /how-it-works, /mcp-connect). On by default. Set to false — or
+# export AGNES_AI_CONNECTOR_ENABLED=0 (the infra/Terraform .env override) —
+# on a VPN/intranet-only instance, where the generic OAuth MCP connector can
+# never be reached by a cloud-based AI client (Claude.ai, ChatGPT), so the
+# instructions would only mislead. Does not gate /api/mcp/http itself — an
+# in-network client can still connect; see docs/DEPLOYMENT.md for the
+# tunnel-based alternative that scopes access to the agent-as-API surface.
+ai_connector:
+  enabled: true
+
+
 # --- Initial Workspace Template (optional) ---
 #
 # When configured, Agnes serves the contents of <repo>/workspace/ to analysts
