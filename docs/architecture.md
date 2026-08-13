@@ -274,7 +274,10 @@ Jira Cloud webhook (issue created/updated/deleted)
   → SyncOrchestrator().rebuild_source('jira')
 ```
 
-Output tables (6): `issues`, `comments`, `attachments`, `changelog`, `issuelinks`, `remote_links`.
+Output tables (7): `issues`, `comments`, `attachments`, `changelog`, `issuelinks`,
+`remote_links` (all month-partitioned), plus `organizations` — a current-state
+dimension, unpartitioned, refreshed from the organization API rather than derived
+from issue JSON.
 
 Background supplements:
 - `jira-sla-poll` — refreshes SLA fields for open tickets every 45 min.

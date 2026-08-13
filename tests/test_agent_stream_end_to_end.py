@@ -42,6 +42,22 @@ RUNNER_FRAMES = [
     {"type": "done"},
 ]
 
+#: What a turn with NO incremental streaming puts on the bus — verified
+#: against `app/chat/runner.py::_fake_agent_loop` (the `AGNES_RUNNER_FAKE_AGENT=1`
+#: path every non-`real_llm` chat/e2e test runs against, per
+#: `tests/e2e/test_agnes_cli_via_chat.py`'s own module docstring: "Fake-agent's
+#: `echo:` reply doesn't exercise that decision"). It answers by emitting a
+#: single `assistant_message` frame straight away — no `token` frame ever
+#: precedes it, so no `TEXT_MESSAGE_CONTENT` delta ever reaches the CLI. The
+#: real runner's own idle-watchdog partial-save path
+#: (`_run_turn`, `if partial: _emit({"type": "assistant_message", ...})`)
+#: can hit the same shape when a turn times out before its first delta.
+NO_DELTA_RUNNER_FRAMES = [
+    {"type": "ready"},
+    {"type": "assistant_message", "content": "echo: hi", "tokens_in": 1, "tokens_out": 1, "model": "fake"},
+    {"type": "done"},
+]
+
 
 def _wire_bytes(frames) -> bytes:
     """Serialize frames the way `app/api/agent_sessions.py::_event_stream` does."""
@@ -84,6 +100,25 @@ def test_the_once_path_would_not_print_no_answer(monkeypatch):
 
     _install_wire(monkeypatch, _wire_bytes(RUNNER_FRAMES))
     assert _send_turn("sess-e2e", "What is MRR?", live_render=False).answer
+
+
+def test_a_turn_with_no_streamed_deltas_still_reaches_the_user_as_text(monkeypatch, capsys):
+    """HIGH: a turn that never streams a `token`/`TEXT_MESSAGE_CONTENT` delta
+    — the fake-agent `echo:` path, and the real runner's idle-watchdog
+    partial-save — still carries the answer on the trailing
+    `assistant_message`/`TEXT_MESSAGE_END` frame. `_send_turn` must read it
+    from there instead of reporting "(no answer)" on a turn that answered.
+    """
+    from cli.commands.chat import _send_turn
+
+    _install_wire(monkeypatch, _wire_bytes(NO_DELTA_RUNNER_FRAMES))
+    result = _send_turn("sess-e2e", "hi", live_render=True)
+
+    assert result.answer == "echo: hi"
+    assert result.error is None
+    # The whole point of --once: the answer must actually appear on screen,
+    # not just live on `.answer` for an internal check to swallow.
+    assert "echo: hi" in capsys.readouterr().out
 
 
 def test_a_tool_using_turn_still_yields_its_text(monkeypatch):
