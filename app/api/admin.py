@@ -282,7 +282,8 @@ def _validate_auth_providers_in_patch(sections: Dict[str, Dict[str, Any]]) -> No
         )
     from app.auth.provider_registry import KNOWN_PROVIDERS
 
-    if not any(n in KNOWN_PROVIDERS for n in names):
+    known = [n for n in names if n in KNOWN_PROVIDERS]
+    if not known:
         raise HTTPException(
             status_code=422,
             detail=(
@@ -290,6 +291,49 @@ def _validate_auth_providers_in_patch(sections: Dict[str, Dict[str, Any]]) -> No
                 "only unknown names would silently re-enable all sign-in methods"
             ),
         )
+
+    # The login page offers a provider only when it is BOTH allowlisted and
+    # actually available (configured). A list naming only known-but-unconfigured
+    # providers (e.g. [google] with no Google OAuth, or [keboola] with no stack)
+    # would render zero sign-in buttons — an unrecoverable lockout the runtime
+    # has no fail-open for (unlike the all-unknown case). Reject it here.
+    # `password` is always available, so any list including it passes.
+    if not any(_provider_available_after_save(n, auth) for n in known):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "auth.providers would leave no usable sign-in method: none of the named "
+                "providers is configured/available on this instance. Configure one (e.g. add "
+                "the Google or Keboola OAuth credentials), or include a method that is."
+            ),
+        )
+
+
+def _provider_available_after_save(name: str, auth_patch: Dict[str, Any]) -> bool:
+    """Whether ``name`` would be an offerable login method once this
+    server-config save lands. ``password`` is always available; ``google`` /
+    ``email`` are env-configured (untouched by an auth.providers patch), so
+    their live ``is_available()`` is authoritative; ``keboola`` is configured
+    under ``auth.keboola``, which can be set in the SAME patch — so it is
+    evaluated against the current config merged with the patch, or an admin
+    enabling + configuring Keboola in one save would be wrongly rejected."""
+    if name == "password":
+        return True
+    if name == "google":
+        from app.auth.providers.google import is_available as google_available
+
+        return google_available()
+    if name == "email":
+        from app.auth.providers.email import is_available as email_available
+
+        return email_available()
+    if name == "keboola":
+        from app.instance_config import get_value
+
+        merged = {**(get_value("auth", "keboola") or {}), **(auth_patch.get("keboola") or {})}
+        stack = merged.get("stack_url") or get_value("data_source", "keboola", "stack_url")
+        return bool(merged.get("client_id") and merged.get("client_secret") and merged.get("project_id") and stack)
+    return False
 
 
 _LOCK_TTL_MIN = 60

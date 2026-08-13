@@ -334,12 +334,13 @@ class TestServerConfigAuthProvidersValidation:
         """The admin API accepts the comma-separated string form too — it is a
         value the runtime resolver honors from yaml/env, so rejecting it here
         would lock an operator whose config spells providers as text out of
-        saving the auth section (Devin review on #1288)."""
+        saving the auth section (Devin review on #1288). `password` is always
+        available, so the list has a usable method."""
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
         resp = c.post(
             "/api/admin/server-config",
-            json={"sections": {"auth": {"providers": "google,keboola"}}, "confirm_danger": True},
+            json={"sections": {"auth": {"providers": "password,google"}}, "confirm_danger": True},
             headers=_auth(token),
         )
         assert resp.status_code == 200, resp.text
@@ -371,13 +372,53 @@ class TestServerConfigAuthProvidersValidation:
         assert "no known provider" in resp.json()["detail"]
 
     def test_partially_known_providers_list_accepted(self, seeded_app):
-        """A list with at least one known name is accepted (the runtime uses
-        the known subset and warns about the rest) — only all-unknown is a 422."""
+        """A list with at least one known AND available name is accepted (the
+        runtime uses the known subset and warns about the rest)."""
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
         resp = c.post(
             "/api/admin/server-config",
-            json={"sections": {"auth": {"providers": ["google", "gogle"]}}, "confirm_danger": True},
+            json={"sections": {"auth": {"providers": ["password", "gogle"]}}, "confirm_danger": True},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+
+    def test_all_unavailable_providers_rejected_with_422(self, seeded_app):
+        """Known but unconfigured providers (no Google OAuth, no Keboola stack
+        in the test env) would render zero sign-in buttons — an unrecoverable
+        lockout the runtime has no fail-open for. The admin API rejects it."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"auth": {"providers": ["google", "keboola"]}}, "confirm_danger": True},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 422, resp.text
+        assert "no usable sign-in method" in resp.json()["detail"]
+
+    def test_keboola_enabled_and_configured_in_same_save_accepted(self, seeded_app):
+        """Enabling keboola AND supplying its config in one save must pass —
+        availability is evaluated against the current config merged with the
+        patch, not the pre-save config alone."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={
+                "sections": {
+                    "auth": {
+                        "providers": ["keboola"],
+                        "keboola": {
+                            "client_id": "cid",
+                            "client_secret": "csecret",
+                            "project_id": "5947",
+                            "stack_url": "https://example.com",
+                        },
+                    }
+                },
+                "confirm_danger": True,
+            },
             headers=_auth(token),
         )
         assert resp.status_code == 200, resp.text
@@ -402,12 +443,12 @@ class TestServerConfigAuthProvidersValidation:
         token = seeded_app["admin_token"]
         resp = c.post(
             "/api/admin/server-config",
-            json={"sections": {"auth": {"providers": ["google"]}}, "confirm_danger": True},
+            json={"sections": {"auth": {"providers": ["password"]}}, "confirm_danger": True},
             headers=_auth(token),
         )
         assert resp.status_code == 200, resp.text
         overlay = yaml.safe_load((seeded_app["env"]["data_dir"] / "state" / "instance.yaml").read_text())
-        assert overlay["auth"]["providers"] == ["google"]
+        assert overlay["auth"]["providers"] == ["password"]
 
     def test_null_providers_accepted_as_clear_override(self, seeded_app):
         """``providers: null`` is NOT rejected — the validator early-returns
