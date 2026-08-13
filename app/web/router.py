@@ -3613,7 +3613,7 @@ async def library_page(
         "files": "Files",
         "skill": "Skills",
         "plugin": "Plugins",
-        "agent": "Agents",
+        "agent": "Agent templates",
         "recipe": "Recipes",
         "data_package": "Data packages",
         "memory_domain": "Memory",
@@ -3904,7 +3904,7 @@ async def skills_page(
     request: Request,
     user: dict = Depends(get_current_user),
 ):
-    """Builder — one authoring surface for skills, plugins and shareable agents.
+    """Builder — one authoring surface for skills, plugins and agent templates.
 
     Formerly the single-type Skill Builder. Two in-page steps: a TYPE PICKER,
     then a type-adapted BUILDER that keeps one shell (identity, access,
@@ -6442,8 +6442,7 @@ async def admin_semantic_layer_page(
     # here. So the page says a subset is shown, without a number it cannot
     # compute honestly. (Devin Review on this PR.)
     ctx["unresolved_tables_truncated"] = any(
-        int(e.get("unresolved_tables_total") or 0) > len(e.get("unresolved_tables") or [])
-        for e in last_by_ref.values()
+        int(e.get("unresolved_tables_total") or 0) > len(e.get("unresolved_tables") or []) for e in last_by_ref.values()
     )
     ctx["skipped_unresolved_total"] = sum(int(e.get("skipped_unresolved_table") or 0) for e in last_by_ref.values())
     ctx["default_connection_id"] = default_id
