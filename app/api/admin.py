@@ -430,6 +430,18 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                 "client you use sends the header."
             ),
         },
+        "session_pool": {
+            "kind": "bool",
+            "default": _flag_default("mcp", "session_pool", True),
+            "hint": (
+                "Keep a stdio MCP server's process warm between tool calls "
+                "instead of starting one per call — the upstream's own imports "
+                "cost about six seconds every time. Read per call, so a change "
+                "applies to the next one. Turn it off for a process per call: "
+                "the debugging shape, and the answer for an upstream that "
+                "cannot survive being reused. http/sse sources are unaffected."
+            ),
+        },
         "source_url_strict": {
             "kind": "bool",
             "default": _flag_default("mcp", "source_url_strict", False),
