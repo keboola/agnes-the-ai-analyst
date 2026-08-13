@@ -580,11 +580,23 @@ issue_key     | filename        | local_path                                    
 SUPPORT-1234  | screenshot.png  | /data/src_data/raw/jira/attachments/SUPPORT-1234/... | 45678
 ```
 
-To pull the actual file to a workstation, operators with SSH access to the
-host can `scp` / `rsync` from the path above. Public OSS does not ship a
-client-side attachment-fetch primitive — wire one up per deployment if
-attachment access is required (e.g. a thin admin endpoint that streams the
-file with the same RBAC gate as the parquet table).
+To pull the actual file to a workstation, fetch it by id over the
+authenticated API — no SSH to the host required:
+
+```bash
+agnes attachment get jira 56340            # writes the original filename
+agnes attachment get jira 56340 -o img.png
+```
+
+(`GET /api/attachments/jira/{attachment_id}/download` underneath.) The gate
+is read access to the `jira_attachments` table — the same RBAC as the
+parquet download — and every fetch is audited. A 404 with code
+`attachment_not_stored` means the catalogue row exists but the server holds
+no bytes (over-50MB skip or transform-time miss): fall back to the Jira REST
+API for exactly those. The catalogue declaration (table, id/path columns,
+permitted root) lives in `src/attachment_sources.py`; any connector that
+stores attachments adds its own declaration there and reuses the same
+route and CLI command.
 
 ## Future Improvements
 
@@ -594,4 +606,6 @@ file with the same RBAC gate as the parquet table).
 - [x] ~~SLA polling for open tickets~~ (Implemented: jira_poll_sla.py, 15min timer)
 - [ ] Comment attachment extraction (inline images in ADF)
 - [ ] Custom field name resolution from Jira metadata API
-- [ ] Attachment binary sync to analysts (currently metadata only)
+- [x] ~~Attachment binary access for analysts~~ (Implemented: lazy per-id fetch via
+  `agnes attachment get jira <id>` / `GET /api/attachments/jira/{id}/download` —
+  deliberately not manifest sync, so no analyst carries a multi-GB mirror)
