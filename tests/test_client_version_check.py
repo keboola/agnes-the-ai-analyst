@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 
+
 def _fake_response(headers: dict) -> httpx.Response:
     return httpx.Response(status_code=200, headers=headers, content=b"{}", request=httpx.Request("GET", "http://x/"))
 
