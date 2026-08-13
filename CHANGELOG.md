@@ -12,6 +12,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 
+- **One failed group load no longer blanks the "Grant all to group" picker for the rest of the visit.** `/admin/data-sources` cached the empty fallback it assigns when the groups request fails, and an empty array is truthy in JavaScript — so the cache short-circuit handed that failure back as a valid group list on every later call, the picker rendered zero options, and each grant attempt answered "Pick a group first" until the page was fully reloaded. Only a successful load is cached now; a failure returns an empty list without remembering it, so the next render retries.
+
 - **A derived chat-tools source now follows its connection's `workspace_schema` in both directions.** Set on an already-enabled connection it used to arrive only after the admin toggled chat tools off and on; removed, it never went away at all — the env merge was `existing | derived`, which cannot delete, so the agent kept running SQL against a workspace the admin had taken away and nothing said so. The keys this module derives are now authoritative (absent means absent) while any key an admin added to the derived source survives untouched, and both the enable path and the unrelated-edit resync go through one shared merge rather than two copies of it.
 
 ### Added

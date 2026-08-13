@@ -874,9 +874,14 @@ async function _loadGroups() {
   if (_groupsCache) return _groupsCache;
   try {
     const r = await fetch(`/api/admin/groups`, { credentials: "include" });
-    _groupsCache = r.ok ? await r.json() : [];
+    // Only a successful load is cached. `[]` is truthy, so caching the
+    // fallback would make `if (_groupsCache) return _groupsCache` treat one
+    // transient failure as a valid hit for the rest of the page visit —
+    // leaving the grant picker permanently blank until a full reload.
+    if (r.ok) _groupsCache = await r.json();
+    else return [];
   } catch (_) {
-    _groupsCache = [];
+    return [];
   }
   return _groupsCache;
 }
