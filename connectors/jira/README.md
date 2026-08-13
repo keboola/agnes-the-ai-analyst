@@ -706,7 +706,14 @@ agnes attachment get jira 56340 -o img.png
 
 (`GET /api/attachments/jira/{attachment_id}/download` underneath.) The gate
 is read access to the `attachments` catalogue table — the same RBAC as the
-parquet download — and every fetch is audited. A 404 with code
+parquet download — and every fetch is audited.
+
+Setup note: the parquet pipeline itself never requires the metadata-only
+`attachments` table to be *registered*, so on many deployments it is not —
+and an unregistered table fails closed, meaning analysts get the
+table-not-in-your-stack 403 until an admin registers `attachments`
+(`POST /api/admin/register-table` or `/admin/tables`) and adds it to a data
+package granted to their group. Admins pass via god-mode either way. A 404 with code
 `attachment_not_stored` means the catalogue row exists but the server holds
 no bytes (over-50MB skip or transform-time miss): fall back to the Jira REST
 API for exactly those. The catalogue declaration (table, id/path columns,

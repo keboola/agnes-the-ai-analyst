@@ -138,6 +138,9 @@ def test_granted_fetch_streams_the_same_bytes(jira_attachment_env, analyst_user)
     resp = jira_attachment_env["client"].get("/api/attachments/jira/101/download", headers=analyst_user)
     assert resp.status_code == 200
     assert resp.content == jira_attachment_env["payload"]
+    # The advertised length must equal the body actually delivered (it comes
+    # from fstat of the descriptor being streamed).
+    assert resp.headers["content-length"] == str(len(jira_attachment_env["payload"]))
     cd = resp.headers.get("content-disposition", "")
     # The catalogue's `filename` (what Jira shows), not the on-disk
     # "<id>_<name>" — RFC 5987-encoded because of the space.
@@ -252,7 +255,7 @@ def test_second_source_needs_no_route_change(seeded_app, analyst_user, monkeypat
     assert resp.content == b"a,b\n1,2\n"
 
 
-class TestResolveContained:
+class TestOpenContained:
     """Unit coverage of the containment guard, per the security playbook."""
 
     def _root(self, tmp_path: Path) -> Path:
@@ -261,7 +264,7 @@ class TestResolveContained:
         return root
 
     def test_rejects_traversal_and_unsafe_values(self, tmp_path):
-        from app.api.attachments import _resolve_contained
+        from app.api.attachments import _open_contained
 
         root = self._root(tmp_path)
         (tmp_path / "secret.txt").write_bytes(b"x")
@@ -272,33 +275,54 @@ class TestResolveContained:
             "a\\b.txt",  # backslash
             "a\x00b",  # NUL
         ]:
-            path, st, reason = _resolve_contained(root, stored)
-            assert path is None, stored
+            fh, st, reason = _open_contained(root, stored)
+            assert fh is None, stored
             assert st is None, stored
             assert reason == "path_rejected", stored
 
     def test_null_and_missing_are_distinct_reasons(self, tmp_path):
-        from app.api.attachments import _resolve_contained
+        from app.api.attachments import _open_contained
 
         root = self._root(tmp_path)
-        assert _resolve_contained(root, None) == (None, None, "no_path_recorded")
-        assert _resolve_contained(root, "") == (None, None, "no_path_recorded")
-        assert _resolve_contained(root, str(root / "nope.png")) == (None, None, "file_missing")
+        assert _open_contained(root, None) == (None, None, "no_path_recorded")
+        assert _open_contained(root, "") == (None, None, "no_path_recorded")
+        assert _open_contained(root, str(root / "nope.png")) == (None, None, "file_missing")
         # A directory is not servable bytes either.
-        assert _resolve_contained(root, str(root)) == (None, None, "file_missing")
+        assert _open_contained(root, str(root)) == (None, None, "file_missing")
 
     def test_accepts_absolute_and_relative_inside_root(self, tmp_path):
-        from app.api.attachments import _resolve_contained
+        from app.api.attachments import _open_contained
 
         root = self._root(tmp_path)
         (root / "SUP-1").mkdir()
         f = root / "SUP-1" / "1_a.png"
         f.write_bytes(b"ok")
         for stored in (str(f), "SUP-1/1_a.png"):
-            path, st, reason = _resolve_contained(root, stored)
-            assert path == f.resolve()
+            fh, st, reason = _open_contained(root, stored)
+            assert fh is not None and fh.read() == b"ok"
+            fh.close()
             assert st is not None and st.st_size == 2
             assert reason == ""
+
+    def test_fstat_is_of_the_opened_descriptor(self, tmp_path):
+        """The advertised size must describe the inode being streamed: an
+        atomic re-publish (os.replace) after open must not change what this
+        descriptor reads or the size already fstat'd."""
+        import os
+
+        from app.api.attachments import _open_contained
+
+        root = self._root(tmp_path)
+        f = root / "1_a.bin"
+        f.write_bytes(b"old-bytes")
+        fh, st, reason = _open_contained(root, str(f))
+        assert reason == "" and st.st_size == 9
+        # connector-style atomic rewrite while the response is in flight
+        tmp = root / "1_a.bin.tmp-1"
+        tmp.write_bytes(b"NEW")
+        os.replace(tmp, f)
+        assert fh.read() == b"old-bytes"  # complete old file, matching st
+        fh.close()
 
 
 class TestDeclarationMatchesConnector:

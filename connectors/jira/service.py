@@ -864,8 +864,19 @@ class JiraService:
                 )
 
             if response.status_code == 200:
-                with open(file_path, "wb") as f:
-                    f.write(response.content)
+                # Publish atomically (per-process temp + os.replace, like the
+                # organizations publish): a reader streaming this exact path —
+                # the attachment download endpoint — must never observe a
+                # truncated in-place rewrite when a webhook re-downloads the
+                # same issue's attachments.
+                tmp_path = file_path.with_name(f"{file_path.name}.tmp-{os.getpid()}")
+                try:
+                    with open(tmp_path, "wb") as f:
+                        f.write(response.content)
+                    os.replace(tmp_path, file_path)
+                except BaseException:
+                    tmp_path.unlink(missing_ok=True)
+                    raise
                 logger.info(f"Downloaded attachment {filename} to {file_path}")
                 return file_path
             else:

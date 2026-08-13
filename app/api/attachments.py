@@ -26,10 +26,12 @@ import logging
 import os
 import stat as stat_module
 from pathlib import Path
+from typing import BinaryIO
+from urllib.parse import quote
 
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import StreamingResponse
 
 from app.auth.dependencies import _get_db, get_current_user
 from src.attachment_sources import AttachmentSource, get_attachment_source, list_attachment_sources
@@ -88,18 +90,20 @@ def _lookup_stored_path(
     return True, row[0], (row[1] if decl.filename_column else None)
 
 
-def _resolve_contained(root: Path, stored: str | None) -> tuple[Path | None, os.stat_result | None, str]:
-    """Map the catalogue's path value to a safe regular file under ``root``.
+def _open_contained(root: Path, stored: str | None) -> tuple[BinaryIO | None, os.stat_result | None, str]:
+    """Open the catalogue's path value as a safe regular file under ``root``.
 
     The value is data read from a table, not a trusted constant — so it is
     contained even though the connector wrote it: reject backslashes, NUL
     and ``..`` segments up front, then require the resolved path to stay
     under the resolved root (the guard pattern of ``_resolve_part_path`` in
-    ``app/api/data.py``). Returns ``(path, stat_result, "")`` on success —
-    the single ``stat()`` this endpoint performs, reused for the audit byte
-    count and the FileResponse — or ``(None, None, reason)`` with reason
-    ``no_path_recorded`` / ``path_rejected`` / ``file_missing`` for the
-    audit trail.
+    ``app/api/data.py``). Returns ``(open file, fstat of that descriptor,
+    "")`` on success — fstat of the OPEN descriptor, so the size the
+    response advertises is of exactly the inode being streamed; a concurrent
+    re-publish of the same path cannot make Content-Length disagree with the
+    body — or ``(None, None, reason)`` with reason ``no_path_recorded`` /
+    ``path_rejected`` / ``file_missing`` for the audit trail. The caller
+    owns closing the file.
     """
     if not stored:
         return None, None, "no_path_recorded"
@@ -117,12 +121,14 @@ def _resolve_contained(root: Path, stored: str | None) -> tuple[Path | None, os.
         logger.warning("attachment catalogue path escapes the permitted root and was not served: %r", stored)
         return None, None, "path_rejected"
     try:
-        st = resolved.stat()
+        fh = resolved.open("rb")
     except OSError:
         return None, None, "file_missing"
+    st = os.fstat(fh.fileno())
     if not stat_module.S_ISREG(st.st_mode):
+        fh.close()
         return None, None, "file_missing"
-    return resolved, st, ""
+    return fh, st, ""
 
 
 # Deliberately sync (`def`, not `async def`): everything here blocks —
@@ -224,8 +230,8 @@ def download_attachment(
             },
         )
 
-    file_path, st, miss_reason = _resolve_contained(decl.root(), stored)
-    if file_path is None or st is None:
+    fh, st, miss_reason = _open_contained(decl.root(), stored)
+    if fh is None or st is None:
         _audit(user, source, attachment_id, "error.404", error="attachment_not_stored", reason=miss_reason)
         raise HTTPException(
             status_code=404,
@@ -243,18 +249,38 @@ def download_attachment(
     # stores files as "<id>_<filename>", so the path basename is id-prefixed).
     # The catalogue value is data, not a trusted constant — basename-only,
     # after the same unsafe-byte rejects the path guard applies.
-    download_name = file_path.name
+    download_name = Path(fh.name).name
     if original_name and "\x00" not in original_name and "\\" not in original_name:
         download_name = Path(original_name).name or download_name
 
     _audit(user, source, attachment_id, "success", bytes=st.st_size, filename=download_name)
-    # stat-then-open window: FileResponse opens the path after this stat, so
-    # a swap in between would serve different bytes than were audited.
-    # Exploiting it requires write access to the attachments directory —
-    # this comment is the proportionate mitigation, not a lock.
-    return FileResponse(
-        path=file_path,
-        stat_result=st,
-        filename=download_name,
+
+    # Same Content-Disposition shapes FileResponse would emit (the CLI
+    # parses both): plain when the name survives percent-quoting unchanged,
+    # RFC 5987 extended otherwise.
+    quoted = quote(download_name)
+    disposition = (
+        f'attachment; filename="{download_name}"'
+        if quoted == download_name
+        else f"attachment; filename*=utf-8''{quoted}"
+    )
+
+    def _stream(f: BinaryIO = fh):
+        # Streamed from the descriptor opened above: Content-Length comes
+        # from fstat of that same descriptor, and the connector publishes
+        # rewrites atomically (os.replace), so an overlapping refresh keeps
+        # serving the complete old file rather than a torn one.
+        try:
+            while chunk := f.read(1 << 20):
+                yield chunk
+        finally:
+            f.close()
+
+    return StreamingResponse(
+        _stream(),
         media_type="application/octet-stream",
+        headers={
+            "Content-Length": str(st.st_size),
+            "Content-Disposition": disposition,
+        },
     )
