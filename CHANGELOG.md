@@ -10,8 +10,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
-## [0.83.9] - 2026-08-13
-
 ### Fixed
 
 - **A derived chat-tools source now follows its connection's `workspace_schema` in both directions.** Set on an already-enabled connection it used to arrive only after the admin toggled chat tools off and on; removed, it never went away at all — the env merge was `existing | derived`, which cannot delete, so the agent kept running SQL against a workspace the admin had taken away and nothing said so. The keys this module derives are now authoritative (absent means absent) while any key an admin added to the derived source survives untouched, and both the enable path and the unrelated-edit resync go through one shared merge rather than two copies of it.
@@ -21,6 +19,28 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **A whole MCP source can be granted to a group in one action** — only its **enabled** tools, and it says how many it skipped. — `POST /api/admin/mcp-sources/{id}/grants` (`agnes admin mcp source grant <src> --group <id>`, plus a group picker on the Chat tools row of `/admin/data-sources`), with `DELETE …/grants/{group_id}` to take it back. The per-tool grant is the right granularity for an upstream curated a few tools at a time; it is the wrong one for a source that arrives with its whole toolset at once. A connected Keboola project registers around forty tools, so granting them one page at a time reintroduced by hand exactly the friction the chat-tools switch removes — registration was automated and the admin was left forty clicks later. The revoke half matters more than the convenience: an admin who granted a whole project in one action must be able to withdraw it in one, rather than clicking through forty tools while access stays live. Idempotent per tool. It refuses (409 `no_tools_registered`) rather than reporting success over a source with no registered tools, and returns `granted` / `already_granted` / `total` separately, because "granted 0 of 37" and "granted 37 of 37" are different news and look identical otherwise. Deliberately **not** MCP-exposed: a tool an agent can call that widens which tools a group may call is a privilege-escalation seam, and this one widens by a whole source at a time.
 - **A connection can carry `config.workspace_schema`**, passed to its derived chat-tools source as `KBC_WORKSPACE_SCHEMA`. This is what makes a **non-master, read-only** token usable: only a master token gets a workspace created for it behind the scenes, so an admin who narrowed the token to read-only — the obvious thing to do when lending a project to an agent — got a source where every tool worked except `query_data`, the one they most wanted. Absent unless the connection sets it, because with a master token inventing one would be wrong.
 
+## [0.83.11] - 2026-08-13
+
+### Fixed
+
+- **A scoped sync for an already-deleted table id no longer re-registers the whole source project.** The auto-discovery gate on a `tables=[...]`-scoped sync trigger derived "is the registry empty?" from the requested subset (`repo.get(id)` returning `None` for a deleted id looked like an empty registry), instead of the whole registry like the scheduled-sync branch already did — so triggering a sync for a table id that was deleted while queued or running could re-discover and re-register every table on the source. Both branches now check the whole registry.
+
+## [0.83.10] - 2026-08-13
+
+### Fixed
+- **Setting `chat.docker_egress_allow_hosts` without `chat.docker_egress_mode: allowlist` now warns at startup.** The allow-hosts knob reads like it turns the allowlist on, but only the mode does — set alone (the mode defaults to `open`), the hosts were silently ignored and sandbox egress stayed unrestricted. The startup egress-config check now reports the ignored allowlist and the consequence for the configured mode.
+
+## [0.83.9] - 2026-08-13
+
+### Added
+
+- **The admin MCP source list flags rows the current url policy would now refuse.** `check_source_url` (#1154/#1204) gates a source's `url` only when it is configured — a row registered before the guard existed, or before `mcp.source_url_strict` was turned on, keeps forwarding credentials on an unrelated edit even when its url is now in the refused set (a literal link-local/reserved address, or cleartext http to a public one). `GET /api/admin/mcp-sources` and the detail endpoint now carry a `url_policy_verdict` (`ok` / `would_refuse` + reasons) per row, computed with the same DNS-free checks the policy applies with no resolver call — cheap enough to run on every row in a list. `agnes admin mcp source list` shows the same verdict in a new column. Runtime enforcement at the two forward seams is a separate, follow-up change (#1216).
+
+## [0.83.8] - 2026-08-13
+
+### Internal
+
+- Deflaked `test_concurrent_deploy_calls_never_overlap_inside_runner_up` (CI-only `[200, 200] != [200, 409]`): the runner stub now holds `up()` open on a latch the test releases only after the second deploy request completes, so the op lease is provably held for that request's whole lifetime. The old fixed 0.5s sleep left ~0.3s of real-time margin for the second request's retry-then-409 window; a loaded CI runner could stretch past it, the first deploy released the lease early, and both requests legitimately succeeded. The lease itself serialized correctly all along (the concurrency assertion never fired).
 
 ## [0.83.7] - 2026-08-12
 
@@ -1248,6 +1268,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - Install-prompt guidance fixes: the expired-credential recovery now names the working command (`agnes init --force --token-file …` — plain `agnes init` refuses once `.claude/init-complete` exists, and `agnes update` reuses the expired saved credential); the "token file consumed" check applies only to the `agnes init` branch (on the `agnes update` reconcile path the file legitimately survives, and the check no longer reads as a shell failure); and the missing-token preflight treats a machine as reconciled only with a saved credential present — a globally installed CLI alone no longer skips the stop. `agnes init --token-file` with a missing file now falls back to `AGNES_TOKEN` / the saved credential instead of aborting (a file that exists but cannot be read stays a hard error — see the `agnes update` bullet above). Dashboard and advanced-setup copy no longer promise a token-bearing setup script; stale docstrings about clipboard/DOM isolation now state the actual boundary.
 - The generated install prompt no longer embeds the analyst's raw access token: the `Personal access token: {token}` preamble line and the `~/.agnes/token` heredoc in the `agnes init` step are gone, replaced by a guard (`test -s ~/.agnes/token`, fresh-install vs. reconcile aware) that assumes the token was already saved to `~/.agnes/token` by an earlier step of the web onboarding flow, before the prompt was generated. `agnes init --token-file` still reads it and removes it once the credential is saved to `~/.config/agnes/token.json`. The token value now never has to appear in the prompt text, a browser clipboard, or a pasted chat transcript. `docs/seed-repo-contract.md` and the banned-phrase regression guard were updated accordingly (`{token}` / a literal JWT fragment are now banned from the rendered body).
 - The web half of the same change: `/home`'s install guide now hands the token to the machine via a copied shell command (Step 4, "Launch Claude — we'll hand it your login first" / "Save your login token") instead of embedding it in the setup script — the command saves the token to `~/.agnes/token` and, when auto-mode is on, launches Claude in the same line. The visible command always shows a masked placeholder; the real token is minted only in memory at copy time and never written into the page. Step 5's "Copy install script to clipboard" no longer mints or carries any token at all. `/setup`'s single-page flow got the matching treatment.
+
 ## [0.79.1] - 2026-08-06
 
 ### Added

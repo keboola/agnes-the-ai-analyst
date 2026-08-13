@@ -687,9 +687,7 @@ class TestDeploy:
             new_rows = [AccessTokenRepository(conn).get_by_id(tid) for tid in new_token_ids]
         finally:
             conn.close()
-        assert all(r["revoked_at"] is not None for r in new_rows), [
-            (r["name"], r["revoked_at"]) for r in new_rows
-        ]
+        assert all(r["revoked_at"] is not None for r in new_rows), [(r["name"], r["revoked_at"]) for r in new_rows]
         assert any("data-app-git:" in r["name"] for r in new_rows), [r["name"] for r in new_rows]
 
     def test_deploy_redeploy_revokes_old_stores_new(self, client_as_user, fake_runner, seeded_repo_with_commit):
@@ -888,18 +886,22 @@ class TestOpLeaseSerialization:
         same slug running at once (`services/apps_runner/api.py::up()` does
         an unlocked check-then-act — get old container, remove, run new).
         Runs two real concurrent `deploy` requests through a runner stub
-        that blocks inside `up()` long enough for a second call to exhaust
-        `require_op_lease`'s retries — proving the lease actually serializes
-        the two HTTP requests rather than just rejecting a pre-set-up lease
-        in isolation (see the two tests above)."""
+        whose `up()` blocks on a latch the test only releases AFTER the
+        second request has completed — the lease is provably held for the
+        second request's entire lifetime, so it must exhaust
+        `require_op_lease`'s retries and 409, however slowly a loaded CI
+        box schedules it. (An earlier version held `up()` open with a
+        fixed 0.5s sleep and relied on the second request's ~0.2s
+        retry window elapsing inside it; CI stretch let the first deploy
+        release the lease early and both returned 200.)"""
         import threading
-        import time
 
         import app.api.data_apps as data_apps_api
 
         inside = {"current": 0, "peak": 0}
         lock = threading.Lock()
         first_call_entered = threading.Event()
+        release_first_call = threading.Event()
 
         class _BlockingRunner:
             def up(self, slug, spec, config_json):
@@ -908,10 +910,7 @@ class TestOpLeaseSerialization:
                     inside["peak"] = max(inside["peak"], inside["current"])
                 first_call_entered.set()
                 try:
-                    # Long enough that the second call's retry-then-409
-                    # window (`_OP_LEASE_RETRIES` * `_OP_LEASE_RETRY_DELAY_S`
-                    # ~= 0.2s) fully elapses while this call is still inside.
-                    time.sleep(0.5)
+                    assert release_first_call.wait(timeout=30), "test never released the first up() call"
                     return {"container": "running", "ready": True}
                 finally:
                     with lock:
@@ -926,24 +925,25 @@ class TestOpLeaseSerialization:
 
         t1 = threading.Thread(target=_deploy)
         t1.start()
-        assert first_call_entered.wait(timeout=5), "first deploy never reached runner.up()"
-        r2 = client_as_user.post("/api/data-apps/sapp/deploy", json={})
-        t1.join(timeout=5)
+        try:
+            assert first_call_entered.wait(timeout=5), "first deploy never reached runner.up()"
+            r2 = client_as_user.post("/api/data-apps/sapp/deploy", json={})
+        finally:
+            release_first_call.set()
+        t1.join(timeout=10)
+        assert not t1.is_alive(), "first deploy request never finished"
 
         assert inside["peak"] == 1, (
             f"two deploys called runner.up() concurrently for the same slug (peak={inside['peak']})"
         )
         assert len(results) == 1
         r1 = results[0]
-        # Whichever request actually held the lease first succeeds; the
-        # other is rejected outright — never both "in progress" at once,
-        # never both succeeding.
-        statuses = sorted([r1.status_code, r2.status_code])
-        assert statuses == [200, 409], (r1.status_code, r2.status_code)
-        if r2.status_code == 409:
-            assert r2.json()["detail"] == "operation_in_progress"
-        else:
-            assert r1.json()["detail"] == "operation_in_progress"
+        # The first request is inside runner.up() (lease held) for the whole
+        # of the second request, so the outcome is fully deterministic: the
+        # holder succeeds, the latecomer is rejected — never both.
+        assert r1.status_code == 200, (r1.status_code, r1.text)
+        assert r2.status_code == 409, (r2.status_code, r2.text)
+        assert r2.json()["detail"] == "operation_in_progress"
 
 
 class TestDelete:

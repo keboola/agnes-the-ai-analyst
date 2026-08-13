@@ -383,6 +383,47 @@ def _audit(
         logger.warning("audit log failed for %s/%s", action, resource)
 
 
+def _url_policy_report(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """A per-row url-policy verdict, DNS-free (#1216 part 1: the sweep/report).
+
+    ``check_source_url`` gates a source's ``url`` at CONFIGURATION time only
+    — a row registered before the guard existed, or before
+    ``mcp.source_url_strict`` was turned on, can stay enabled and forward
+    credentials to an address the CURRENT policy would refuse
+    (``test_an_unrelated_edit_does_not_revalidate_an_already_live_url``).
+    This surfaces that gap on the existing list/detail response so an admin
+    can find and fix those rows without dialing anything.
+
+    Judged with :func:`check_source_url_dns_free` — NOT the full,
+    resolver-backed check :func:`_source_url_verdict` uses for the
+    connectivity-test probe. A list endpoint iterating every registered
+    source must stay cheap and deterministic, not fire a blocking
+    ``getaddrinfo`` per row; the trade-off is that an ordinary hostname whose
+    resolved address the full policy WOULD refuse reports ``ok`` here rather
+    than ``would_refuse`` (see the module docstring in
+    ``src/net/mcp_source_url.py`` on why an unresolved host is never treated
+    as refused).
+
+    ``None`` for ``stdio``, the same exemption every other caller of this
+    policy applies: the secret rides the subprocess environment and ``url``
+    is inert documentation nothing ever dials.
+    """
+    if (row.get("transport") or "") not in ("http", "sse"):
+        return None
+    from app.instance_config import get_mcp_source_url_strict, get_ssrf_allowed_hosts
+    from src.net.mcp_source_url import check_source_url_dns_free
+
+    verdict = check_source_url_dns_free(
+        row.get("url") or "",
+        strict=get_mcp_source_url_strict(),
+        allowed_hosts=get_ssrf_allowed_hosts(),
+    )
+    return {
+        "verdict": "ok" if verdict.ok else "would_refuse",
+        "reasons": [verdict.reason] if verdict.reason else [],
+    }
+
+
 def _serialize_source(row: Dict[str, Any], *, has_vault_secret: bool = False) -> Dict[str, Any]:
     """Project a ``mcp_sources`` row to the API shape (timestamps as ISO).
 
@@ -404,6 +445,7 @@ def _serialize_source(row: Dict[str, Any], *, has_vault_secret: bool = False) ->
         "scope": row.get("scope") or "shared",
         "connect_hint": row.get("connect_hint"),
         "has_vault_secret": has_vault_secret,
+        "url_policy_verdict": _url_policy_report(row),
         "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
         "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
     }

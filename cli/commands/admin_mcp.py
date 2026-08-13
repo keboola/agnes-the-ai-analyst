@@ -106,6 +106,14 @@ def _print_source_table(rows: list[dict]) -> None:
     table.add_column("TRANSPORT")
     table.add_column("ENDPOINT")
     table.add_column("AUTH")
+    # DNS-free url-policy sweep/report (#1216 part 1) — `would_refuse` means
+    # the CURRENT policy would reject this row's url if it were saved today;
+    # it stays live because `check_source_url` only gates configuration-time
+    # writes. Blank only for stdio (the API returns `null`: the url is inert
+    # there); an ordinary hostname the DNS-free check cannot judge shows
+    # "ok". `no_wrap` so a narrow render squeezes ENDPOINT, never folds the
+    # verdict mid-word.
+    table.add_column("URL POLICY", no_wrap=True)
     for row in rows:
         endpoint = row.get("url") or row.get("command") or ""
         args = row.get("args") or []
@@ -114,12 +122,15 @@ def _print_source_table(rows: list[dict]) -> None:
         auth = row.get("auth_method") or ""
         if row.get("auth_secret_env"):
             auth = f"{auth}:{row['auth_secret_env']}" if auth else row["auth_secret_env"]
+        verdict = row.get("url_policy_verdict") or {}
+        url_policy = str(verdict.get("verdict") or "")
         table.add_row(
             str(row.get("id") or ""),
             str(row.get("name") or ""),
             str(row.get("transport") or ""),
             str(endpoint),
             str(auth),
+            url_policy,
         )
     _console.print(table)
 
