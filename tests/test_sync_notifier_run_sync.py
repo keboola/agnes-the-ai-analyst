@@ -375,14 +375,55 @@ def test_run_sync_success_notifies_completed(tmp_path, monkeypatch):
 
     captured = {}
 
-    def _spy_notify(views):
+    def _spy_notify(views, *, error_count):
         captured["views"] = views
+        captured["error_count"] = error_count
 
     monkeypatch.setattr("app.services.sync_notifier.notify_sync_completed", _spy_notify)
 
     sync_mod._run_sync()
 
     assert captured.get("views") == {"bigquery": ["m1"]}
+    assert captured.get("error_count") == 0
+
+
+def test_run_sync_partial_errors_notify_completed_with_error_count(tmp_path, monkeypatch):
+    """Per-table errors + a rebuild that still landed views → the completed
+    event fires AFTER the error accounting, carrying the run's error count
+    (so the client sees 'partial', not an unqualified success) — while the
+    job path still reports the run as failed."""
+    _seed_bq_only_registry(tmp_path)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    _patch_bq_only(monkeypatch)
+
+    from app.api import sync as sync_mod
+
+    monkeypatch.setattr(
+        "app.api.sync._run_materialized_pass",
+        lambda _c, _b, *, tables=None, source_type=None: {
+            "materialized": [],
+            "skipped": [],
+            "errors": [{"table": "m1", "error": "budget exceeded"}],
+        },
+    )
+
+    class _OrchStub:
+        def rebuild(self):
+            return {"bigquery": ["other_table"]}
+
+    monkeypatch.setattr("src.orchestrator.SyncOrchestrator", lambda *a, **kw: _OrchStub())
+
+    captured = {}
+
+    def _spy_notify(views, *, error_count):
+        captured["views"] = views
+        captured["error_count"] = error_count
+
+    monkeypatch.setattr("app.services.sync_notifier.notify_sync_completed", _spy_notify)
+
+    assert sync_mod._run_sync() is False
+    assert captured.get("views") == {"bigquery": ["other_table"]}
+    assert captured.get("error_count") == 1
 
 
 def test_run_sync_notify_completed_raising_does_not_break_sync(tmp_path, monkeypatch):
@@ -408,7 +449,7 @@ def test_run_sync_notify_completed_raising_does_not_break_sync(tmp_path, monkeyp
 
     monkeypatch.setattr("src.orchestrator.SyncOrchestrator", lambda *a, **kw: _OrchStub())
 
-    def _boom(views):
+    def _boom(views, **kw):
         raise RuntimeError("notifier blew up")
 
     monkeypatch.setattr("app.services.sync_notifier.notify_sync_completed", _boom)

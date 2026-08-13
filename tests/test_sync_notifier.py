@@ -203,11 +203,47 @@ def test_notify_sync_completed_publishes_per_source_per_active_user(monkeypatch)
         ("bob", "bigquery"),
     }
     for _user, payload in calls:
-        assert payload["type"] == "sync_completed"
+        # "type" is RESERVED by the delivery envelope — notifications_ws
+        # sends {"type": "notification", **payload}, splatting the payload
+        # AFTER the envelope key, so a payload "type" would overwrite the
+        # marker and clients dispatching on frame type would drop the event.
+        assert "type" not in payload
+        assert payload["kind"] == "sync_completed"
+        # Renderable like every other producer (telegram dispatch shape).
+        assert payload["title"]
+        assert payload["message"].startswith(payload["source"])
+        assert payload["status"] == "ok"
+        assert payload["error_count"] == 0
         if payload["source"] == "keboola":
             assert payload["table_count"] == 2
         else:
             assert payload["table_count"] == 1
+
+
+def test_notify_sync_completed_partial_run_carries_error_count(monkeypatch):
+    """A run with per-table failures still landed fresh views — the event
+    fires, but announces status='partial' + the error count instead of an
+    unqualified success."""
+    from app.services import sync_notifier
+
+    monkeypatch.setattr(
+        sync_notifier,
+        "users_repo",
+        lambda: type("R", (), {"list_all": staticmethod(lambda: [_active_user("alice")])})(),
+    )
+
+    calls = []
+    monkeypatch.setattr(sync_notifier, "publish_notification", lambda user, payload: calls.append((user, payload)))
+
+    sync_notifier.notify_sync_completed({"keboola": ["orders"]}, error_count=2)
+
+    assert len(calls) == 1
+    payload = calls[0][1]
+    assert "type" not in payload
+    assert payload["kind"] == "sync_completed"
+    assert payload["status"] == "partial"
+    assert payload["error_count"] == 2
+    assert payload["table_count"] == 1
 
 
 def test_notify_sync_completed_skips_inactive_users(monkeypatch):

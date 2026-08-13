@@ -1049,16 +1049,6 @@ sys.exit(compute_exit_code(result, len(configs)))
             flush=True,
         )
 
-        # Analyst desktop notification (#412: `agnes watch`). Best-effort:
-        # notify_sync_completed never raises on its own, but wrap anyway —
-        # same "second line of defence" pattern as notify_sync_failure below.
-        try:
-            from app.services.sync_notifier import notify_sync_completed
-
-            notify_sync_completed(views)
-        except Exception:
-            logger.exception("sync-completed notifier raised")
-
         # Auto-profile synced tables (best-effort, don't fail sync on profile error).
         #
         # Each profile runs in a fresh Python subprocess (``src._profiler_worker``)
@@ -1127,6 +1117,22 @@ sys.exit(compute_exit_code(result, len(configs)))
                 notify_sync_failure(failed_tables=collected_errors, fatal=None)
             except Exception:
                 logger.exception("sync-failure notifier raised on per-table path")
+
+        # Analyst desktop notification (#412: `agnes watch`) — fired here,
+        # AFTER the error accounting above, not right after the rebuild: the
+        # payload carries the run's outcome, so a run with per-table
+        # failures that still rebuilt views announces status="partial" +
+        # the error count instead of an unqualified success. (If the
+        # rebuild itself raises, control jumps to the fatal handler and no
+        # completed event fires at all.) Best-effort: notify_sync_completed
+        # never raises on its own, but wrap anyway — same "second line of
+        # defence" pattern as notify_sync_failure above.
+        try:
+            from app.services.sync_notifier import notify_sync_completed
+
+            notify_sync_completed(views, error_count=len(collected_errors))
+        except Exception:
+            logger.exception("sync-completed notifier raised")
 
         # Honest outcome for the `data-refresh` job path (see docstring):
         # only *transient* per-table failures flip the run to False (job

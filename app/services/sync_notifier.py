@@ -18,9 +18,14 @@ tests can monkeypatch ``sync_notifier.httpx.post`` — the same module object th
 shared sender references — to assert on the outbound payload without a network.
 
 ``notify_sync_completed`` (#412: ``agnes watch``) rides the same best-effort
-contract for the SUCCESS path, but a different transport: the desktop
-notification channel (``app.notifications.publish_notification`` →
-``notify:{user}`` pub/sub → ``app/api/notifications_ws.py``), not the webhook.
+contract for the COMPLETION path (full or partial — a run whose rebuild
+landed views fires it either way, with the outcome in the payload), but a
+different transport: the desktop notification channel
+(``app.notifications.publish_notification`` → ``notify:{user}`` pub/sub →
+``app/api/notifications_ws.py``), not the webhook. The delivery layer wraps
+every frame as ``{"type": "notification", **payload}`` with the payload
+splatted AFTER the envelope key, so the payload must never carry a ``type``
+of its own; the event kind rides in ``kind``.
 That channel only ever addresses one user at a time — there is no
 instance-wide broadcast primitive — and the only two existing producers
 (the Telegram bot's script-run result, ``app.api.store._notify_author``)
@@ -114,18 +119,21 @@ def notify_sync_failure(
         logger.exception("sync-failure webhook notification failed")
 
 
-def notify_sync_completed(views: dict[str, list[str]]) -> None:
-    """Best-effort desktop notification when a sync completes successfully.
+def notify_sync_completed(views: dict[str, list[str]], *, error_count: int = 0) -> None:
+    """Best-effort desktop notification when a sync run lands fresh views.
 
     ``views`` is the orchestrator's own rebuild result — ``{source_name:
     [table_names]}`` (see ``src.orchestrator.SyncOrchestrator.rebuild``).
-    No-op on an empty rebuild (nothing to report). Otherwise publishes one
-    ``sync_completed`` event per source to every active user's desktop
-    notification channel (see the module docstring for why "every active
-    user" rather than a narrower RBAC-scoped audience: today's
-    ``publish_notification`` has no reverse "who can see this table" lookup,
-    and the payload itself carries only a source name + table count, never
-    table names or data).
+    ``error_count`` is the run's per-table failure total: a run with
+    failures that still rebuilt views DID land fresh data, so the event
+    fires anyway but announces ``status="partial"`` + the count instead of
+    an unqualified success. No-op on an empty rebuild (nothing to report).
+    Otherwise publishes one ``sync_completed`` event per source to every
+    active user's desktop notification channel (see the module docstring
+    for why "every active user" rather than a narrower RBAC-scoped
+    audience: today's ``publish_notification`` has no reverse "who can see
+    this table" lookup, and the payload itself carries only a source name +
+    table count, never table names or data).
 
     Never raises — a dropped desktop notification is an acceptable
     degradation (the analyst still gets fresh data on their next ``agnes
@@ -135,17 +143,34 @@ def notify_sync_completed(views: dict[str, list[str]]) -> None:
     try:
         if not views:
             return
+        status = "ok" if error_count == 0 else "partial"
         for user in users_repo().list_all():
             if not user.get("active", True):
                 continue
             for source_name, table_names in views.items():
+                message = f"{source_name}: {len(table_names)} table(s) refreshed"
+                if error_count:
+                    message += f" ({error_count} table(s) failed this run)"
                 try:
                     publish_notification(
                         user["id"],
                         {
-                            "type": "sync_completed",
+                            # "type" is RESERVED by the delivery envelope:
+                            # notifications_ws sends
+                            # {"type": "notification", **payload}, splatting
+                            # the payload AFTER the envelope key, so setting
+                            # it here would overwrite the marker and clients
+                            # dispatching on frame type would drop the event.
+                            # The event kind rides in "kind" instead — the
+                            # same field app.api.store's verification
+                            # notifications use.
+                            "kind": "sync_completed",
+                            "title": "Sync completed" if status == "ok" else "Sync completed with errors",
+                            "message": message,
                             "source": source_name,
                             "table_count": len(table_names),
+                            "status": status,
+                            "error_count": error_count,
                         },
                     )
                 except Exception:
