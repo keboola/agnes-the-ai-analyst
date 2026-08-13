@@ -566,22 +566,19 @@ class TestRailOptIn:
         # ones already in the stack are marked (not filtered out).
         assert "In your stack" in text
         assert "any plugin or skill available to you" in text.lower()
-        # Persistence note reflects the v103 server-side registry: agents are
-        # saved to the workspace and listed on THIS page (they are not Library
-        # entries and there is no sharing affordance yet), and the remaining
-        # WIP is actually RUNNING them on the surfaces the builder offers.
-        assert "saved to your workspace" in text
-        assert "live on this page" in text
+        # The "work in progress" notice is GONE (AGT-6). It said agents were
+        # saved but that running them was still to come — and running them is
+        # what the Chat button on each card now does, so the notice was
+        # apologising for the one thing that had just been fixed. Its two
+        # copies (server-rendered head + the builder's JS twin) went with it.
+        assert "saved to your workspace" not in text
+        assert "Work in progress" not in text
+        assert "ag-localnote" not in text
+        # Nothing regressed into the older, wronger phrasings either.
         assert "saved in this browser" not in text
         assert "where you can share them" not in text
-        # It reads as the same quiet product notice the Library uses, and it
-        # sits in the page head under the description rather than trailing the
-        # grid. The builder keeps its own copy (the head is hidden there), so
-        # the markup appears twice — once server-rendered, once in the JS.
-        assert 'class="pnote"' in text
-        assert "ag-localnote" not in text
-        assert text.index('class="lede"') < text.index('class="pnote"')
-        assert text.index('class="pnote"') < text.index('id="ag-list-view"')
+        # ...and the card carries the action that replaced the apology.
+        assert "/chat?agent=" in text
 
     def test_agents_page_opens_builder_from_query(self, web_client, admin_cookie, monkeypatch):
         """The builder is an in-page view, so the Library reaches it through
