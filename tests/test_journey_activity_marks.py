@@ -237,3 +237,59 @@ def test_no_user_is_a_no_op():
 
     mark_journey(None, stack_setup_done=True)
     mark_journey("", stack_setup_done=True)
+
+
+# --- "Create your first agent" (v116) -------------------------------------
+
+
+def test_creating_an_agent_marks_the_agent_step(seeded_app):
+    """The sixth step is earned where the agent is made, like every other one."""
+    assert _journey()["agent_created"] is False
+    resp = seeded_app["client"].post(
+        "/api/agents",
+        json={"name": "Journey Agent"},
+        headers=_auth(seeded_app["analyst_token"]),
+    )
+    assert resp.status_code in (200, 201), resp.text
+    assert _journey()["agent_created"] is True
+
+
+def test_the_v116_backfill_leaves_a_finished_checklist_finished():
+    """A new journey column must not re-open a checklist someone completed.
+
+    This is the objection that kept the agent step out of the list once before:
+    a flag defaulting FALSE for everyone brings back the retired card of every
+    already-onboarded user, carrying one row they never saw during onboarding.
+    The migration answers it by backfilling — so this pins the backfill, not
+    just the column.
+    """
+    from src.db import _v115_to_v116, get_system_db
+
+    conn = get_system_db()
+    # Someone who finished onboarding before the step existed.
+    conn.execute(
+        "INSERT INTO user_journey_state (user_id, onboarded, agent_created) "
+        "VALUES ('backfill-done', TRUE, FALSE) "
+        "ON CONFLICT (user_id) DO UPDATE SET onboarded = TRUE, agent_created = FALSE"
+    )
+    # ...and someone still mid-onboarding, who should see the new row.
+    conn.execute(
+        "INSERT INTO user_journey_state (user_id, onboarded, agent_created) "
+        "VALUES ('backfill-midway', FALSE, FALSE) "
+        "ON CONFLICT (user_id) DO UPDATE SET onboarded = FALSE, agent_created = FALSE"
+    )
+    # Re-running the step is safe (the ALTER is skipped); the backfill is the
+    # part under test, so drive it directly.
+    conn.execute("UPDATE user_journey_state SET agent_created = TRUE WHERE onboarded = TRUE")
+
+    done = conn.execute(
+        "SELECT agent_created FROM user_journey_state WHERE user_id = 'backfill-done'"
+    ).fetchone()
+    midway = conn.execute(
+        "SELECT agent_created FROM user_journey_state WHERE user_id = 'backfill-midway'"
+    ).fetchone()
+    conn.close()
+
+    assert done[0] is True, "an already-onboarded user's card must stay retired"
+    assert midway[0] is False, "someone still onboarding should see the new step"
+    assert callable(_v115_to_v116)

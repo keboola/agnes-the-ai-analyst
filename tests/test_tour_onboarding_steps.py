@@ -401,9 +401,15 @@ def test_checklist_steps_point_at_the_library_not_the_retired_stack_page():
 def test_the_checklist_runs_in_the_order_the_tour_walks():
     """The card and the tour are two views of one onboarding, so they must tell
     the same story: ask → see your Library → put something in your stack → add
-    or share your own → use Agnes elsewhere. The old order ran the stack step
-    second, ahead of the Library step the tour completes for you, so finishing
-    the tour ticked row 3 and left row 2 pending."""
+    or share your own → use Agnes elsewhere → build an agent out of it. The old
+    order ran the stack step second, ahead of the Library step the tour
+    completes for you, so finishing the tour ticked row 3 and left row 2
+    pending.
+
+    The agent step is LAST on purpose: it is the only one that presumes the
+    others. An agent is scoped to part of your stack, so offering it before
+    there is a stack asks someone to choose from nothing.
+    """
     js = _onboarding()
     keys = re.findall(r'"(\w+)",', js.split("const STEP_KEYS = [", 1)[1].split("]", 1)[0])
     assert keys == [
@@ -412,6 +418,7 @@ def test_the_checklist_runs_in_the_order_the_tour_walks():
         "stack_setup_done",
         "catalog_discovered",
         "use_anywhere",
+        "agent_created",
     ]
 
 
@@ -485,17 +492,36 @@ def test_the_step_keys_the_checklist_asks_for_exist_in_the_tours():
         assert step_key in known, f"{step_key} is not a step of {tour_const}"
 
 
-def test_the_checklist_does_not_carry_a_second_route_to_agents():
-    """Agents is a PERMANENT rail destination and `TOURS.agents` explains it on
-    first arrival, so the "Or build an agent of your own" link the checklist used
-    to hang under "Add or share something" was a duplicate — and it rendered as a
-    full-width link BETWEEN two step rows, so the reader had to work out that the
-    thing in the middle of the list was not itself a step. (It could never have
-    been a sixth row either: a new journey column defaults FALSE for everyone
-    already onboarded, which un-retires their finished card.)"""
-    meta = _onboarding().split("const STEP_META = {", 1)[1].split("\n};", 1)[0]
-    assert '"/agents"' not in meta
-    # The rail still has to be the route, or the surface is unreachable.
+def test_the_checklist_carries_the_agent_step_as_a_row_not_a_loose_link():
+    """Agents reaches the checklist as a STEP, never as a link between steps.
+
+    This started as the opposite guard. "Or build an agent of your own" used to
+    hang under "Add or share something" as a full-width link BETWEEN two step
+    rows, so the reader had to work out that the thing in the middle of the list
+    was not itself a step — and it was removed for that. A sixth ROW was
+    rejected at the same time for a different reason: a new journey column
+    defaults FALSE for everyone, so it un-retires the finished card of everyone
+    who already completed onboarding.
+
+    That second objection is what the v116 migration answers — it backfills
+    ``agent_created`` TRUE for users who own an agent and for users already
+    flagged ``onboarded``, so no finished checklist re-opens. With that settled
+    the step is a legitimate row, which is what this now pins: a keyed entry in
+    STEP_KEYS/STEP_META, not a loose anchor in the rendering path.
+    """
+    js = _onboarding()
+    meta = js.split("const STEP_META = {", 1)[1].split("\n};", 1)[0]
+    keys = js.split("const STEP_KEYS = [", 1)[1].split("];", 1)[0]
+
+    assert '"agent_created"' in keys, "the agent milestone must be a tracked step"
+    assert "agent_created: {" in meta
+    assert '"/agents"' in meta, "the step needs its destination"
+
+    # The retired shape must not come back as rendered markup — the phrase
+    # survives only in the comment that records why it went.
+    assert 'Or build an agent of your own"' not in js.replace('// No loose "Or build an agent of your own" link', "")
+
+    # The rail is still a route to it, so the surface has a permanent home.
     rail = RAIL_HTML.read_text(encoding="utf-8")
     assert 'href="/agents"' in rail
 
@@ -531,8 +557,8 @@ def test_the_rows_are_the_panels_actions_with_no_duplicate_cta():
 
 def test_clicking_a_step_goes_there_and_never_ticks_it():
     """The defect this closes: clicking a row marked the milestone done on the
-    spot. Three of the five did it, so the card behaved like a to-do list you
-    check off yourself — "Explore your Library" went ✓ and struck-through without
+    spot. Three of them did it, so the card behaved like a to-do list you check
+    off yourself — "Explore your Library" went ✓ and struck-through without
     taking anyone to the Library. `runStep` may navigate and guide; the tick has
     to be earned where the work happens, server-side."""
     js = _onboarding()
@@ -541,9 +567,10 @@ def test_clicking_a_step_goes_there_and_never_ticks_it():
     assert "launchTour" in run_step and "window.location.href = step.href" in run_step
     # Every step has a real destination, or a click has nowhere to go. Matched at
     # the STEP's own indent (4 spaces) so a `sub`'s href — one indent deeper, and
-    # not what a row click follows — isn't counted as a sixth step.
+    # not what a row click follows — is not counted as a step of its own.
     meta = js.split("const STEP_META = {", 1)[1].split("\n};", 1)[0]
-    assert len(re.findall(r'^    href: "(/[^"]*)"', meta, re.MULTILINE)) == 5
+    keys = re.findall(r'"(\w+)",', js.split("const STEP_KEYS = [", 1)[1].split("]", 1)[0])
+    assert len(re.findall(r'^    href: "(/[^"]*)"', meta, re.MULTILINE)) == len(keys)
     # ...and each of the five is marked from the action that earns it. Four are
     # covered by their own suites (test_journey_activity_marks.py for the stack /
     # sharing endpoints, tests/test_chat_api.py for first_asked); the two page

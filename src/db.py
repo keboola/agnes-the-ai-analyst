@@ -55,8 +55,9 @@ _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 # data_packages.publisher_kind (the stored trust axis that retired the
 # render-time-derived `curated` badge), 115 one-time reclassification of
 # pre-existing governance-created agents from `draft` to `ready` (see
-# `_v114_to_v115`).
-SCHEMA_VERSION = 115
+# `_v114_to_v115`), 116 adds user_journey_state.agent_created (see
+# `_v115_to_v116`).
+SCHEMA_VERSION = 116
 
 # v96: data_apps registry (hosted user web apps). Extracted as a shared
 # module-level constant so the fresh-install DDL (appended to
@@ -1669,6 +1670,7 @@ CREATE TABLE IF NOT EXISTS user_journey_state (
     explored_stack      BOOLEAN NOT NULL DEFAULT FALSE,
     catalog_discovered  BOOLEAN NOT NULL DEFAULT FALSE,
     use_anywhere        BOOLEAN NOT NULL DEFAULT FALSE,
+    agent_created       BOOLEAN NOT NULL DEFAULT FALSE,
     onboarded           BOOLEAN NOT NULL DEFAULT FALSE,
     successful_answers  INTEGER NOT NULL DEFAULT 0,
     updated_at          TIMESTAMP NOT NULL DEFAULT current_timestamp
@@ -7229,6 +7231,49 @@ def _v114_to_v115(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute("UPDATE schema_version SET version = 115")
 
 
+def _v115_to_v116(conn: duckdb.DuckDBPyConnection) -> None:
+    """v115→v116: add ``user_journey_state.agent_created`` boolean.
+
+    The onboarding checklist gained a sixth step — "Create your first agent" —
+    which had no backing column, so it could not be tracked at all.
+
+    The BACKFILL is the point of this step, not the column. A journey flag that
+    lands FALSE for everyone re-opens a checklist people had finished: their
+    retired card comes back carrying one unticked row, which reads as the
+    product losing their progress. (That objection is why the sixth row was
+    turned down once already — see
+    ``tests/test_tour_onboarding_steps.py::test_the_checklist_carries_the_agent_step``.)
+    So the step is marked done for anyone it is already true of, or moot for:
+
+      * users who own an agent — they did the thing, and
+      * users already flagged ``onboarded`` — their journey is closed, and a
+        step invented afterwards is not theirs to complete.
+
+    Only a genuinely mid-onboarding user sees the new row, which is who it is
+    for. DuckDB rejects NOT NULL in ADD COLUMN, so the column is nullable with
+    a DEFAULT and existing rows are normalised in the same step.
+
+    Idempotent: uses ``PRAGMA table_info`` to skip the ALTER when the column
+    already exists (the same pattern used by all neighbouring steps).
+    """
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info('user_journey_state')").fetchall()}
+    if "agent_created" not in existing_cols:
+        conn.execute("ALTER TABLE user_journey_state ADD COLUMN agent_created BOOLEAN DEFAULT FALSE")
+        conn.execute("UPDATE user_journey_state SET agent_created = FALSE WHERE agent_created IS NULL")
+        conn.execute("UPDATE user_journey_state SET agent_created = TRUE WHERE onboarded = TRUE")
+        # Owning an agent is the milestone itself, whatever the journey says.
+        try:
+            conn.execute(
+                "UPDATE user_journey_state SET agent_created = TRUE "
+                "WHERE user_id IN (SELECT DISTINCT owner_user_id FROM agents)"
+            )
+        except duckdb.Error:
+            # `agents` predates this step on every supported path, but a
+            # backfill must never be the reason a migration cannot finish.
+            logger.warning("v116: could not backfill agent_created from agents", exc_info=True)
+    conn.execute("UPDATE schema_version SET version = 116")
+
+
 def _add_store_entity_trust_columns(conn: duckdb.DuckDBPyConnection) -> None:
     """The v111 column DDL on its own, with no version stamp.
 
@@ -8254,6 +8299,10 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
             # from draft to ready. No-op on fresh installs — no agents exist
             # yet to reclassify.
             _v114_to_v115(conn)
+            # v115→v116: add user_journey_state.agent_created for the sixth
+            # onboarding step ("Create your first agent"). No-op on fresh
+            # installs — _SYSTEM_SCHEMA already declares the column.
+            _v115_to_v116(conn)
             # Fresh-install seed is handled by the unconditional
             # _seed_core_roles call at the bottom of _ensure_schema —
             # left as a no-op branch here so the migration ladder still
@@ -8537,6 +8586,8 @@ def _ensure_schema(conn: duckdb.DuckDBPyConnection) -> None:
                 _v113_to_v114(conn)
             if current < 115:
                 _v114_to_v115(conn)
+            if current < 116:
+                _v115_to_v116(conn)
             conn.execute(
                 "UPDATE schema_version SET version = ?, applied_at = current_timestamp",
                 [SCHEMA_VERSION],
