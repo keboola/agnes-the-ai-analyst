@@ -191,12 +191,25 @@ def _run_step(name: str, fn: Callable[[], None], report: list[dict]) -> None:
     code. ``typer.Exit`` raised by reused command internals is treated as a
     recorded outcome, not a fatal error.
     """
+    from cli.client import RedirectHardStop
+
     try:
         fn()
     except typer.Exit as exc:  # reused internals signal via exit codes
         code = getattr(exc, "exit_code", 0)
         if code not in (0, None):
             report.append({"stage": name, "status": "error", "detail": f"exit_code={code}"})
+    except RedirectHardStop as exc:
+        # Opting in by name: this does not derive from `Exception`, so the
+        # clause below never sees it. Before, it was a `sys.exit(2)` that
+        # walked through every handler here and ended the run mid-way —
+        # taking the report with it, since that is written after the last
+        # step. The step isolation this function exists for now covers it.
+        #
+        # The version floor next door is deliberately NOT opted into: a
+        # server that refuses this CLI version must stop the run, not become
+        # one row while the remaining steps keep talking to it.
+        report.append({"stage": name, "status": "error", "detail": exc.user_message})
     except Exception as exc:  # noqa: BLE001 — best-effort by design
         report.append({"stage": name, "status": "error", "detail": f"{type(exc).__name__}: {exc}"})
 
