@@ -442,6 +442,19 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                 "use is third-party — it makes an internal source unconfigurable."
             ),
         },
+        "source_url_runtime_enforce": {
+            "kind": "bool",
+            "default": _flag_default("mcp", "source_url_runtime_enforce", False),
+            "hint": (
+                "Enforce the scheme/literal-IP half of the url policy at the two "
+                "runtime forward seams too, not only when a source is configured "
+                "(#1216). Off by default: an already-enabled legacy source keeps "
+                "forwarding exactly as it does today. Before turning this on, check "
+                "the url_policy_verdict column on the MCP source list for any "
+                "would_refuse row and fix its url first — this switch turns each one "
+                "into a refused call with no other warning."
+            ),
+        },
     },
     "instance": {
         # Experience preset — registry-backed (app/switches.py `experience`,

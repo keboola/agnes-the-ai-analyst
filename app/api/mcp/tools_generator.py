@@ -75,8 +75,10 @@ async def _forward_with_gates(
             MutatingNotAllowed,
             PerUserCredentialMissing,
             RateLimited,
+            SourceUrlRefused,
             enforce_passthrough_access,
             enforce_per_user_credential,
+            enforce_source_url_runtime_policy,
         )
         from src.repositories import mcp_sources_repo, tool_registry_repo
         from src.repositories.tool_registry import PASSTHROUGH
@@ -97,6 +99,17 @@ async def _forward_with_gates(
         if live_source is None or not live_source.get("enabled", True):
             raise RuntimeError(f"upstream MCP source for tool {tool_id!r} missing or disabled")
         source = live_source
+        # Runtime twin of the admin-time url policy (#1216), behind
+        # mcp.source_url_runtime_enforce (default off — see that switch's
+        # description before turning it on). Refuses a credentialed dial to a
+        # url the CURRENT policy would refuse, even on a row enabled before the
+        # policy — or this switch — existed. Shared with the REST endpoint
+        # (app/api/mcp_passthrough.py) via one helper so the two seams cannot
+        # drift apart.
+        try:
+            enforce_source_url_runtime_policy(source)
+        except SourceUrlRefused as exc:
+            raise RuntimeError(str(exc)) from exc
         # Same pre-forward per-user credential guard the REST endpoint runs, so a
         # per_user source without the caller's own credential fails closed with
         # an actionable message rather than an opaque upstream auth error.

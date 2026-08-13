@@ -260,6 +260,28 @@ SWITCHES: tuple[Switch, ...] = (
         ),
     ),
     Switch(
+        name="mcp_source_url_runtime_enforce",
+        config_keys=("mcp", "source_url_runtime_enforce"),
+        env_var="AGNES_MCP_SOURCE_URL_RUNTIME_ENFORCE",
+        kind="bool",
+        default=False,
+        effect="live",
+        category="operations",
+        editable=True,
+        description=(
+            "Enforce the DNS-free half of the MCP source url policy (scheme + "
+            "literal-IP checks) at the two runtime forward seams too, not only when a "
+            "source is configured (#1216). Off by default: a source that is enabled "
+            "and was registered before this policy existed, or before "
+            "`mcp.source_url_strict` was turned on, keeps forwarding exactly as it "
+            "does today. BEFORE turning this on, review the `url_policy_verdict` "
+            "column on the admin MCP source list (GET /api/admin/mcp-sources or "
+            "`agnes admin mcp source list`) for any `would_refuse` row and fix its "
+            "url first — this switch converts each one from a silent warning into a "
+            "refused call the next time that tool is invoked, with no other notice."
+        ),
+    ),
+    Switch(
         name="agent_profiles",
         config_keys=("agent_profiles", "enabled"),
         env_var="AGNES_AGENT_PROFILES_ENABLED",

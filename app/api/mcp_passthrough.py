@@ -35,10 +35,12 @@ from app.api.mcp_policy import (
     MutatingNotAllowed,
     PerUserCredentialMissing,
     RateLimited,
+    SourceUrlRefused,
     caller_authority,
     connection_scope_ids,
     enforce_passthrough_access,
     enforce_per_user_credential,
+    enforce_source_url_runtime_policy,
     redact_response,
 )
 from app.auth.access import _user_group_ids
@@ -201,6 +203,26 @@ async def invoke_passthrough_tool(
     source = sources_repo.get(tool["source_id"])
     if source is None or not source.get("enabled", True):
         raise HTTPException(status_code=409, detail="upstream MCP source missing or disabled")
+
+    # Runtime twin of the admin-time url policy (#1216), behind
+    # mcp.source_url_runtime_enforce (default off). Refuses a credentialed
+    # dial to a url the CURRENT policy would refuse, even on a row enabled
+    # before the policy — or this switch — existed. Shared with the SSE /
+    # Streamable-HTTP transport closures (app/api/mcp/tools_generator) via one
+    # helper so the two seams cannot drift apart.
+    try:
+        enforce_source_url_runtime_policy(source)
+    except SourceUrlRefused as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "mcp_source_url_refused",
+                "message": str(exc),
+                "reason": exc.reason,
+                "admin_report": exc.admin_report_hint,
+                "switch": exc.switch,
+            },
+        ) from exc
 
     # Fail-closed guard for per-user sources — shared with the SSE / Streamable
     # transport closures (app/api/mcp/tools_generator) so the pre-forward guard
