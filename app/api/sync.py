@@ -933,15 +933,36 @@ sys.exit(compute_exit_code(result, len(configs)))
                         )
 
                 # Record which of THIS run's attempted tables actually landed
-                # data, for notify_sync_completed below — every attempted
-                # table_config except the ones with a recorded per-table
-                # error (exit 0/2 only; a full failure, exit 1 or anything
-                # else, means none of this batch is known-good).
-                if result.returncode in (0, 2):
+                # data, for notify_sync_completed below. "Attempted minus
+                # recovered errors" over-claims in two ways, so both are
+                # excluded here — an analyst-facing "N table(s) refreshed"
+                # must never count a table this run did not write:
+                #
+                #  - Only `local` rows land parquet through this extractor.
+                #    A `tables=[…]` operator trigger reads registry rows
+                #    directly (`repo.get`), so table_configs can also carry
+                #    `materialized` rows — which the extractor `continue`s
+                #    over without recording anything, because
+                #    `_run_materialized_pass` owns them and contributes its
+                #    own positively-accounted names below (and may itself
+                #    have skipped the row on its due/in_flight check) — and
+                #    `remote` rows, which only get a view over the source:
+                #    no data is downloaded, and `agnes pull` skips them.
+                #  - Exit 2 means SOME table failed. When the stats line
+                #    couldn't be parsed there is no per-table error list to
+                #    subtract (that's the fallback branch above), so we know
+                #    a failure happened but not whose — claim none rather
+                #    than announce the failures as refreshes. Exit 0 carries
+                #    no failures by construction (`compute_exit_code`), so
+                #    it needs no such evidence.
+                _stats_recovered = result.returncode == 0 or bool(extractor_table_errors)
+                if result.returncode in (0, 2) and _stats_recovered:
                     _failed_names = {e.get("table") for e in extractor_table_errors}
                     for _tc in table_configs:
                         _name = _tc.get("name")
-                        if _name and _name not in _failed_names:
+                        if not _name or (_tc.get("query_mode") or "local") != "local":
+                            continue
+                        if _name not in _failed_names:
                             synced_table_names.add(_name)
 
             # Run custom connectors (Tier A: local mount) — only when there

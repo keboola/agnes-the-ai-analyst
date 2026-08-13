@@ -530,6 +530,179 @@ def test_run_sync_two_synced_tables_fire_one_event_with_count(tmp_path, monkeypa
     assert "old_table" not in payload["message"]
 
 
+def _stub_extractor_subprocess(monkeypatch, *, stdout: str, returncode: int):
+    """Replace the Keboola extractor subprocess with a canned stdout/exit code.
+
+    `_run_sync` reads the extractor's per-table stats back out of its stdout
+    line and its overall verdict out of the exit code, so those two values are
+    the whole contract this stub needs to reproduce.
+    """
+    import subprocess
+
+    class _Popen:
+        def __init__(self, cmd, **kwargs):
+            self.pid = 4242
+            self.returncode = returncode
+
+        def communicate(self, input=None, timeout=None):
+            return (stdout, "")
+
+    monkeypatch.setattr(subprocess, "Popen", _Popen)
+
+
+def _keboola_env(tmp_path, monkeypatch, views):
+    """Keboola instance with a stubbed orchestrator rebuild + materialized pass.
+
+    Returns the `captured` dict a `notify_sync_completed` spy writes into.
+    """
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("KEBOOLA_STORAGE_TOKEN", "test-token")
+    monkeypatch.setenv("KEBOOLA_STACK_URL", "https://test.example")
+
+    from app import instance_config as ic_mod
+
+    monkeypatch.setattr(ic_mod, "get_data_source_type", lambda: "keboola")
+    monkeypatch.setattr(ic_mod, "get_value", lambda *a, **kw: kw.get("default", ""))
+
+    monkeypatch.setattr(
+        "app.api.sync._run_materialized_pass",
+        lambda _c, _b, *, tables=None, source_type=None: {
+            "materialized": [],
+            "skipped": [{"table": "mat1", "reason": "due_check"}],
+            "errors": [],
+        },
+    )
+
+    class _OrchStub:
+        def rebuild(self):
+            return dict(views)
+
+    monkeypatch.setattr("src.orchestrator.SyncOrchestrator", lambda *a, **kw: _OrchStub())
+
+    captured = {}
+
+    def _spy_notify(synced, *, error_count):
+        captured["synced"] = synced
+        captured["error_count"] = error_count
+
+    monkeypatch.setattr("app.services.sync_notifier.notify_sync_completed", _spy_notify)
+    return captured
+
+
+def test_scoped_trigger_does_not_claim_rows_the_extractor_never_wrote(tmp_path, monkeypatch):
+    """A `tables=[...]` operator trigger reads registry rows directly, so
+    `table_configs` can carry materialized and remote rows. The Keboola
+    extractor silently `continue`s over materialized rows (the materialized
+    pass owns them — and here it skipped this one on its due check) and only
+    creates a view for remote rows (no data is downloaded; `agnes pull` skips
+    them entirely). Neither was refreshed, so neither may be announced as such.
+    """
+    captured = _keboola_env(tmp_path, monkeypatch, {"keboola": ["mat1", "rem1"]})
+
+    from src.repositories import table_registry_repo
+
+    repo = table_registry_repo()
+    repo.register(
+        id="mat1",
+        name="mat1",
+        source_type="keboola",
+        query_mode="materialized",
+        source_query="SELECT 1",
+    )
+    repo.register(
+        id="rem1",
+        name="rem1",
+        source_type="keboola",
+        query_mode="remote",
+        bucket="in.c-x",
+        source_table="rem1",
+    )
+
+    # Extractor exit 0: it skipped mat1 outright and counted rem1's view as
+    # "extracted" — no per-table error for either.
+    _stub_extractor_subprocess(
+        monkeypatch,
+        stdout='{"tables_extracted": 1, "tables_failed": 0, "errors": []}',
+        returncode=0,
+    )
+
+    from app.api import sync as sync_mod
+
+    sync_mod._run_sync(tables=["mat1", "rem1"])
+
+    assert captured.get("synced") == {}, "neither the skipped materialized row nor the remote view landed data this run"
+
+
+def test_partial_extractor_without_recovered_stats_claims_nothing(tmp_path, monkeypatch):
+    """Exit 2 means SOME table failed. When the stats line can't be parsed
+    (the code already anticipates that — it falls back to a placeholder error),
+    there is no per-table error list to subtract, so the pre-fix code announced
+    every attempted table as refreshed, failures included. Without evidence of
+    which tables survived, the run must claim none.
+    """
+    captured = _keboola_env(tmp_path, monkeypatch, {"keboola": ["t1", "t2"]})
+
+    from src.repositories import table_registry_repo
+
+    repo = table_registry_repo()
+    for tid in ("t1", "t2"):
+        repo.register(
+            id=tid,
+            name=tid,
+            source_type="keboola",
+            query_mode="local",
+            bucket="in.c-x",
+            source_table=tid,
+        )
+
+    _stub_extractor_subprocess(
+        monkeypatch,
+        stdout="Traceback (most recent call last): boom",
+        returncode=2,
+    )
+
+    from app.api import sync as sync_mod
+
+    sync_mod._run_sync(tables=["t1", "t2"])
+
+    assert captured.get("synced") == {}, "a partial run with unrecoverable stats knows nothing about survivors"
+    assert captured.get("error_count") == 1
+
+
+def test_partial_extractor_with_recovered_stats_reports_the_survivor(tmp_path, monkeypatch):
+    """The narrowing above must not swing the other way: when the per-table
+    errors WERE recovered, the tables that did not fail are genuine refreshes
+    and must still reach the notification.
+    """
+    captured = _keboola_env(tmp_path, monkeypatch, {"keboola": ["t1", "t2"]})
+
+    from src.repositories import table_registry_repo
+
+    repo = table_registry_repo()
+    for tid in ("t1", "t2"):
+        repo.register(
+            id=tid,
+            name=tid,
+            source_type="keboola",
+            query_mode="local",
+            bucket="in.c-x",
+            source_table=tid,
+        )
+
+    _stub_extractor_subprocess(
+        monkeypatch,
+        stdout='{"tables_extracted": 1, "tables_failed": 1, "errors": [{"table": "t2", "error": "export failed"}]}',
+        returncode=2,
+    )
+
+    from app.api import sync as sync_mod
+
+    sync_mod._run_sync(tables=["t1", "t2"])
+
+    assert captured.get("synced") == {"keboola": ["t1"]}
+    assert captured.get("error_count") == 1
+
+
 def test_run_sync_notify_completed_raising_does_not_break_sync(tmp_path, monkeypatch):
     """notify_sync_completed is best-effort — a raise must not fail the sync."""
     _seed_bq_only_registry(tmp_path)
