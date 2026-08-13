@@ -351,3 +351,267 @@ class TestBackfillFetchIssuePaginates:
         assert result is not None
         assert len(result["fields"]["comment"]["comments"]) == 3
         client.get.assert_called_once()
+
+
+class TestFullRebuildEmitsPartialComments:
+    """A ``_comments_incomplete`` issue must still contribute its partial
+    comment list to the batch/full rebuild.
+
+    The preserve-existing-rows contract only makes sense where the write is
+    an issue-scoped delete-then-insert onto rows that are already there — the
+    incremental path. ``transform_all`` rebuilds the monthly parquets from
+    scratch, so returning ``None`` there means the issue contributes ZERO
+    comment rows: strictly worse than writing the partially-fetched list the
+    JSON already carries.
+    """
+
+    def test_transform_comments_emits_partial_list_for_full_rebuild(self):
+        issue = _issue_with_comments(total=190, embedded=124)
+        issue["_comments_incomplete"] = True
+
+        records = transform_comments(issue, preserve_on_incomplete=False)
+
+        assert records is not None
+        assert len(records) == 124
+
+    def test_transform_comments_default_preserves_for_incremental(self):
+        """Default (incremental) behaviour is unchanged: None = skip the upsert."""
+        issue = _issue_with_comments(total=190, embedded=124)
+        issue["_comments_incomplete"] = True
+
+        assert transform_comments(issue) is None
+
+    def test_transform_all_writes_partial_comments_of_marked_issue(self, tmp_path):
+        import json as _json
+
+        from connectors.jira.transform import transform_all
+
+        raw_dir = tmp_path / "raw"
+        issues_dir = raw_dir / "issues"
+        issues_dir.mkdir(parents=True)
+        output_dir = tmp_path / "parquet"
+
+        issue = _issue_with_comments(total=190, embedded=124, issue_key="PROJ-500")
+        issue["_comments_incomplete"] = True
+        issue["fields"]["summary"] = "marked incomplete"
+        issue["fields"]["status"] = {"name": "Open"}
+        issue["fields"]["issuetype"] = {"name": "Bug"}
+        issue["fields"]["attachment"] = []
+        issue["fields"]["created"] = "2026-05-15T00:00:00.000+0000"
+        issue["fields"]["updated"] = "2026-05-15T00:00:00.000+0000"
+        (issues_dir / "PROJ-500.json").write_text(_json.dumps(issue))
+
+        counts = transform_all(raw_dir=raw_dir, output_dir=output_dir)
+
+        assert counts["issues"] == 1
+        assert counts["comments"] == 124, (
+            "A full rebuild dropped every comment of an issue marked "
+            "_comments_incomplete — the partial list in the JSON is strictly "
+            "better than nothing when nothing is being preserved"
+        )
+
+
+class TestBackfillRefetchesIncompleteJson:
+    """``--skip-existing`` must not make the marker permanent.
+
+    ``process_issue`` skips any issue whose JSON already exists, so an issue
+    marked ``_comments_incomplete`` by a failed pagination would never be
+    re-fetched and never heal.
+    """
+
+    def _make_backfill(self, tmp_path):
+        from connectors.jira.scripts.backfill import Config as BackfillConfig
+        from connectors.jira.scripts.backfill import JiraBackfill
+
+        config = BackfillConfig(
+            jira_domain="mycompany.atlassian.net",
+            jira_email="bot@mycompany.com",
+            jira_api_token="test-token-xyz",
+            data_dir=tmp_path,
+        )
+        return JiraBackfill(config)
+
+    def _write_existing(self, backfill, issue_key: str, payload: dict) -> None:
+        import json as _json
+
+        backfill.issues_dir.mkdir(parents=True, exist_ok=True)
+        (backfill.issues_dir / f"{issue_key}.json").write_text(_json.dumps(payload))
+
+    def test_marked_json_is_refetched_under_skip_existing(self, tmp_path):
+        backfill = self._make_backfill(tmp_path)
+        marked = _issue_with_comments(total=190, embedded=124, issue_key="PROJ-600")
+        marked["_comments_incomplete"] = True
+        self._write_existing(backfill, "PROJ-600", marked)
+
+        healed = _issue_with_comments(total=190, embedded=190, issue_key="PROJ-600")
+        with (
+            patch.object(backfill, "fetch_issue", return_value=healed) as fetch,
+            patch.object(backfill, "fetch_remote_links", return_value=[]),
+            patch.object(backfill, "download_issue_attachments", return_value=0),
+        ):
+            ok = backfill.process_issue("PROJ-600", skip_existing=True)
+
+        assert ok is True
+        fetch.assert_called_once_with("PROJ-600")
+        assert backfill.stats["skipped"] == 0
+
+    def test_unmarked_json_is_still_skipped(self, tmp_path):
+        backfill = self._make_backfill(tmp_path)
+        self._write_existing(backfill, "PROJ-601", _issue_with_comments(total=3, embedded=3, issue_key="PROJ-601"))
+
+        with patch.object(backfill, "fetch_issue") as fetch:
+            ok = backfill.process_issue("PROJ-601", skip_existing=True)
+
+        assert ok is True
+        fetch.assert_not_called()
+        assert backfill.stats["skipped"] == 1
+
+    def test_unreadable_json_is_refetched(self, tmp_path):
+        """A JSON we cannot parse is not evidence the issue was downloaded."""
+        backfill = self._make_backfill(tmp_path)
+        backfill.issues_dir.mkdir(parents=True, exist_ok=True)
+        (backfill.issues_dir / "PROJ-602.json").write_text("{ truncated")
+
+        healed = _issue_with_comments(total=2, embedded=2, issue_key="PROJ-602")
+        with (
+            patch.object(backfill, "fetch_issue", return_value=healed) as fetch,
+            patch.object(backfill, "fetch_remote_links", return_value=[]),
+            patch.object(backfill, "download_issue_attachments", return_value=0),
+        ):
+            ok = backfill.process_issue("PROJ-602", skip_existing=True)
+
+        assert ok is True
+        fetch.assert_called_once_with("PROJ-602")
+
+
+class TestCommentPaginationHonoursRetryAfter:
+    """429 on a comment page is the likeliest failure in the batch path
+    (parallel workers, an extra request per >100-comment issue). Without a
+    retry, rate limiting routinely leaves issues marked incomplete. Mirror
+    the surrounding fetchers: honour ``Retry-After``, bounded."""
+
+    def _rate_limited(self, retry_after: str = "3") -> MagicMock:
+        resp = MagicMock()
+        resp.status_code = 429
+        resp.headers = {"Retry-After": retry_after}
+        return resp
+
+    def _page(self, comments: list[dict]) -> MagicMock:
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.headers = {}
+        resp.json.return_value = {"comments": comments}
+        return resp
+
+    def test_retries_after_429_and_completes(self):
+        issue_data = _issue_with_comments(total=124, embedded=100)
+        client = MagicMock()
+        client.get.side_effect = [
+            self._rate_limited("3"),
+            self._page([_comment(f"extra{i}") for i in range(24)]),
+        ]
+
+        with patch("connectors.jira.service.time.sleep") as sleep:
+            complete_issue_comments(issue_data, BASE_URL, AUTH, client)
+
+        assert len(issue_data["fields"]["comment"]["comments"]) == 124
+        assert "_comments_incomplete" not in issue_data
+        sleep.assert_called_once_with(3)
+
+    def test_retry_is_bounded_and_marks_incomplete(self):
+        issue_data = _issue_with_comments(total=124, embedded=100)
+        client = MagicMock()
+        client.get.side_effect = [self._rate_limited("1") for _ in range(20)]
+
+        with patch("connectors.jira.service.time.sleep"):
+            complete_issue_comments(issue_data, BASE_URL, AUTH, client)
+
+        assert issue_data.get("_comments_incomplete") is True
+        assert client.get.call_count <= 5, "429 retry is unbounded"
+
+    def test_unparseable_retry_after_falls_back_to_a_default_wait(self):
+        issue_data = _issue_with_comments(total=124, embedded=100)
+        client = MagicMock()
+        client.get.side_effect = [
+            self._rate_limited("Wed, 21 Oct 2026 07:28:00 GMT"),
+            self._page([_comment(f"extra{i}") for i in range(24)]),
+        ]
+
+        with patch("connectors.jira.service.time.sleep") as sleep:
+            complete_issue_comments(issue_data, BASE_URL, AUTH, client)
+
+        assert len(issue_data["fields"]["comment"]["comments"]) == 124
+        sleep.assert_called_once()
+        assert sleep.call_args.args[0] > 0
+
+    def test_retry_after_wait_is_capped(self):
+        issue_data = _issue_with_comments(total=124, embedded=100)
+        client = MagicMock()
+        client.get.side_effect = [
+            self._rate_limited("86400"),
+            self._page([_comment(f"extra{i}") for i in range(24)]),
+        ]
+
+        with patch("connectors.jira.service.time.sleep") as sleep:
+            complete_issue_comments(issue_data, BASE_URL, AUTH, client)
+
+        assert sleep.call_args.args[0] <= 300, "an hours-long Retry-After stalls the whole worker"
+
+
+class TestWebhookFallbackPayloadIsNotAuthoritative:
+    """When ``fetch_issue`` returns None the webhook's embedded issue payload
+    is used as-is. It never passes through ``complete_issue_comments``, so its
+    ``fields.comment.comments`` is whatever Jira chose to embed — and the
+    incremental delete-then-insert would replace a complete stored thread with
+    that shorter list. Mark it incomplete unless it demonstrably carries the
+    whole thread."""
+
+    def _make_service(self, tmp_path):
+        from connectors.jira import service as svc
+
+        svc.Config.JIRA_DOMAIN = "mycompany.atlassian.net"
+        svc.Config.JIRA_EMAIL = "bot@mycompany.com"
+        svc.Config.JIRA_API_TOKEN = "test-token-xyz"
+        svc.Config.JIRA_DATA_DIR = tmp_path
+        svc._jira_service = None
+        return svc.JiraService()
+
+    def _run_fallback(self, tmp_path, embedded_issue):
+        service = self._make_service(tmp_path)
+        saved: dict = {}
+
+        def _capture(issue_data):
+            saved["payload"] = issue_data
+            return tmp_path / "issues" / "x.json"
+
+        with (
+            patch.object(service, "fetch_issue", return_value=None),
+            patch.object(service, "save_issue", side_effect=_capture),
+        ):
+            ok = service.process_webhook_event({"webhookEvent": "jira:issue_updated", "issue": embedded_issue})
+        assert ok is True
+        return saved["payload"]
+
+    def test_short_embedded_thread_is_marked_incomplete(self, tmp_path):
+        embedded = _issue_with_comments(total=190, embedded=3, issue_key="PROJ-700")
+
+        payload = self._run_fallback(tmp_path, embedded)
+
+        assert payload.get("_comments_incomplete") is True
+
+    def test_complete_embedded_thread_is_not_marked(self, tmp_path):
+        embedded = _issue_with_comments(total=3, embedded=3, issue_key="PROJ-701")
+
+        payload = self._run_fallback(tmp_path, embedded)
+
+        assert "_comments_incomplete" not in payload
+
+    def test_payload_without_comment_field_is_marked_incomplete(self, tmp_path):
+        embedded = {"key": "PROJ-702", "id": "10002", "fields": {"summary": "no comment field"}}
+
+        payload = self._run_fallback(tmp_path, embedded)
+
+        assert payload.get("_comments_incomplete") is True, (
+            "A payload carrying no comment field at all is not evidence the issue "
+            "has no comments — the transform would delete the stored thread"
+        )

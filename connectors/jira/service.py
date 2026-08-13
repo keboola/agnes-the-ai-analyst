@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,32 @@ class JiraFetchError(Exception):
 
 # Jira's issue-embed API caps `fields.comment.comments` at this many rows.
 JIRA_COMMENT_PAGE_SIZE = 100
+
+# 429 handling for the comment-pagination loop. The batch path runs several
+# workers in parallel and adds a request per >100-comment issue, so rate
+# limiting is its likeliest failure — without a retry it would routinely leave
+# issues marked `_comments_incomplete`. Bounded, because the alternative is a
+# worker parked on an endpoint that keeps refusing.
+JIRA_COMMENT_RATE_LIMIT_RETRIES = 3
+JIRA_COMMENT_RETRY_AFTER_DEFAULT = 60
+# A `Retry-After` may legitimately be hours; a batch worker must not sit on one.
+JIRA_COMMENT_RETRY_AFTER_MAX = 300
+
+
+def _retry_after_seconds(response: Any) -> int:
+    """`Retry-After` in seconds — defaulted when absent/unparseable, capped.
+
+    The header may also carry an HTTP-date; `int()` on that raises, so parse
+    defensively and fall back rather than turning a rate limit into a crash.
+    """
+    raw = (response.headers or {}).get("Retry-After") if hasattr(response, "headers") else None
+    try:
+        seconds = int(str(raw).strip())
+    except (TypeError, ValueError):
+        seconds = JIRA_COMMENT_RETRY_AFTER_DEFAULT
+    if seconds <= 0:
+        seconds = JIRA_COMMENT_RETRY_AFTER_DEFAULT
+    return min(seconds, JIRA_COMMENT_RETRY_AFTER_MAX)
 
 
 class _JiraConfig:
@@ -192,6 +219,29 @@ def _dedupe_comments_by_id(comments: list[dict[str, Any]]) -> list[dict[str, Any
     return deduped
 
 
+def _embedded_comments_are_complete(issue_data: dict[str, Any]) -> bool:
+    """Does this payload demonstrably carry the issue's whole comment thread?
+
+    Only true when a ``fields.comment`` object is present AND the embedded
+    list is at least as long as the ``total`` it reports. A payload with no
+    comment field at all is NOT evidence that the issue has no comments —
+    treating it as such would let an issue-scoped delete-then-insert erase a
+    stored thread — so it answers False as well.
+    """
+    fields = issue_data.get("fields") or {}
+    comment_field = fields.get("comment")
+    if not isinstance(comment_field, dict):
+        return False
+    comments = comment_field.get("comments")
+    if not isinstance(comments, list):
+        return False
+    total = comment_field.get("total")
+    if not isinstance(total, int):
+        # No count to check against: a list of unknown completeness.
+        return False
+    return len(comments) >= total
+
+
 def complete_issue_comments(
     issue_data: dict[str, Any],
     base_url: str,
@@ -223,16 +273,26 @@ def complete_issue_comments(
     residual shortfall after completion is only logged (WARNING), never
     raised — this is a best-effort enrichment step, not a hard requirement.
 
-    If a page request itself fails (RequestError, or a non-200 status —
-    legitimate rate limiting/outages, not "no more comments"), the loop stops
-    and ``issue_data["_comments_incomplete"]`` is set to ``True``. This is a
+    A ``429`` is retried up to ``JIRA_COMMENT_RATE_LIMIT_RETRIES`` times,
+    honouring ``Retry-After`` (defaulted when absent or an HTTP-date, capped
+    at ``JIRA_COMMENT_RETRY_AFTER_MAX`` so one worker cannot park on an
+    hours-long value) — the same treatment the issue and remote-link fetchers
+    give it. Rate limiting is the batch path's likeliest failure, and without
+    the retry it would routinely mark issues incomplete.
+
+    If a page request itself fails (RequestError, a non-200 status other than
+    a retryable 429, or a 429 that outlives its retries — legitimate
+    outages, not "no more comments"), the loop stops and
+    ``issue_data["_comments_incomplete"]`` is set to ``True``. This is a
     sibling of the ``_remote_links`` overlay-absent contract
     (``transform_remote_links``): the incremental transform performs an
     issue-scoped delete-then-insert on the comments parquet, so overlaying a
     known-truncated list here would let a transient fetch error wipe a
     previously-complete stored thread down to whatever this attempt managed
     to fetch. ``transform_comments`` reads this marker and returns ``None``
-    instead of a truncated list so the caller preserves the existing rows.
+    instead of a truncated list so the incremental caller preserves the
+    existing rows (the batch/full rebuild, which preserves nothing, opts out
+    with ``preserve_on_incomplete=False`` and keeps the partial list).
     An empty page (200, ``comments: []``) is NOT a failure — it means the
     paged endpoint has no more comments, so the fetched set is complete
     relative to the endpoint even if ``total`` was stale (e.g. comments
@@ -248,6 +308,7 @@ def complete_issue_comments(
     if issue_key and total > len(embedded):
         extra: list[dict[str, Any]] = []
         start_at = len(embedded)
+        rate_limit_retries = 0
         while len(embedded) + len(extra) < total:
             try:
                 response = client.get(
@@ -265,6 +326,29 @@ def complete_issue_comments(
                 )
                 incomplete = True
                 break
+            if response.status_code == 429:
+                if rate_limit_retries >= JIRA_COMMENT_RATE_LIMIT_RETRIES:
+                    logger.warning(
+                        "Jira issue %s: comment pagination still rate limited at startAt=%d "
+                        "after %d retries — giving up",
+                        issue_key,
+                        start_at,
+                        rate_limit_retries,
+                    )
+                    incomplete = True
+                    break
+                wait = _retry_after_seconds(response)
+                rate_limit_retries += 1
+                logger.warning(
+                    "Jira issue %s: comment pagination rate limited at startAt=%d, waiting %ds (retry %d/%d)",
+                    issue_key,
+                    start_at,
+                    wait,
+                    rate_limit_retries,
+                    JIRA_COMMENT_RATE_LIMIT_RETRIES,
+                )
+                time.sleep(wait)
+                continue
             if response.status_code != 200:
                 logger.warning(
                     "Jira issue %s: comment pagination page failed at startAt=%d (status %s)",
@@ -824,6 +908,19 @@ class JiraService:
             if issue and issue.get("fields"):
                 logger.info(f"Using embedded issue data for {issue_key}")
                 issue_data = issue
+                # The fallback payload never went through complete_issue_comments:
+                # its `fields.comment.comments` is whatever Jira chose to embed,
+                # and the comments upsert is an issue-scoped delete-then-insert.
+                # Treat it as authoritative for comments ONLY when it demonstrably
+                # carries the whole thread; otherwise mark it incomplete so the
+                # incremental transform preserves the stored rows.
+                if not _embedded_comments_are_complete(issue_data):
+                    logger.info(
+                        "Webhook fallback payload for %s does not carry a complete comment "
+                        "thread — marking _comments_incomplete so stored comments are preserved",
+                        issue_key,
+                    )
+                    issue_data["_comments_incomplete"] = True
             else:
                 return False
 

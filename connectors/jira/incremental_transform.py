@@ -268,6 +268,12 @@ def transform_single_issue(
 
         # Transform related data
         comments_records = transform_comments(raw_issue)
+        # The partially-fetched list behind a `_comments_incomplete` marker. It is
+        # only written when there are no stored rows for this issue to preserve
+        # (see below) — otherwise the marker wins and the stored thread stands.
+        partial_comments_records = (
+            transform_comments(raw_issue, preserve_on_incomplete=False) if comments_records is None else None
+        )
         attachments_records = transform_attachments(raw_issue, attachments_dir)
         changelog_records = transform_changelog(raw_issue)
 
@@ -300,10 +306,35 @@ def transform_single_issue(
                 # the known-truncated list would overwrite a previously-complete
                 # stored comment thread with a shorter one. Preserve existing
                 # rows instead — the same contract as the remote_links skip below.
-                logger.warning(
-                    f"Skipping comments upsert for {issue_key}: pagination incomplete "
-                    f"(fetch failure). Existing rows preserved."
+                #
+                # Unless there is nothing to preserve: on an issue's FIRST fetch
+                # the marker would otherwise mean no comment row is ever written
+                # (the JSON keeps the marker, so every later re-transform reads it
+                # again). With no stored rows for this issue, the partial list
+                # cannot regress anything and is strictly better than none.
+                existing_comments = load_parquet_month(output_dir / "comments", month_key)
+                has_stored_comments = (
+                    existing_comments is not None
+                    and not existing_comments.empty
+                    and "issue_key" in existing_comments.columns
+                    and bool((existing_comments["issue_key"] == issue_key).any())
                 )
+                if has_stored_comments or not partial_comments_records:
+                    logger.warning(
+                        f"Skipping comments upsert for {issue_key}: pagination incomplete "
+                        f"(fetch failure). Existing rows preserved."
+                    )
+                else:
+                    logger.warning(
+                        f"Writing {len(partial_comments_records)} partially-fetched comments for "
+                        f"{issue_key}: pagination incomplete (fetch failure), but no stored rows "
+                        f"to preserve."
+                    )
+                    updated_comments = upsert_dataframe(
+                        existing_comments, partial_comments_records, "issue_key", issue_key
+                    )
+                    path = save_parquet_month(updated_comments, COMMENTS_SCHEMA, output_dir / "comments", month_key)
+                    updated_paths.append(path)
 
             # Attachments
             existing_attachments = load_parquet_month(output_dir / "attachments", month_key)

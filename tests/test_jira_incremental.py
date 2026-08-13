@@ -412,3 +412,51 @@ def test_incremental_preserves_comments_when_pagination_incomplete(tmp_path):
         "Stored comment thread was overwritten by a known-truncated pagination "
         "retry — _comments_incomplete was not honored"
     )
+
+
+def test_incremental_writes_partial_comments_when_nothing_stored(tmp_path):
+    """The marker is persisted in the raw JSON, so every later re-transform
+    reads it again. On an issue's FIRST fetch there are no stored rows to
+    preserve, and skipping would mean the issue never gets a comment row at
+    all — the partial list cannot regress anything, so it is written."""
+    raw_dir = tmp_path / "raw"
+    output_dir = tmp_path / "parquet"
+    attachments_dir = tmp_path / "attachments"
+    output_dir.mkdir()
+    attachments_dir.mkdir()
+
+    _write_raw_issue(
+        raw_dir,
+        "PROJ-4",
+        {
+            "key": "PROJ-4",
+            "id": "10004",
+            "fields": {
+                "summary": "test",
+                "status": {"name": "Open"},
+                "issuetype": {"name": "Bug"},
+                "attachment": [],
+                "comment": {
+                    "total": 190,
+                    "comments": [{"id": f"c{i}", "author": {}, "updateAuthor": {}, "body": {}} for i in range(124)],
+                },
+                "created": "2026-05-15T00:00:00.000+0000",
+                "updated": "2026-05-15T00:00:00.000+0000",
+            },
+            "_comments_incomplete": True,
+        },
+    )
+
+    ok = transform_single_issue(
+        issue_key="PROJ-4",
+        raw_dir=raw_dir,
+        output_dir=output_dir,
+        attachments_dir=attachments_dir,
+    )
+    assert ok is True
+
+    df = load_parquet_month(output_dir / "comments", "2026-05")
+    assert df is not None and len(df) == 124, (
+        "A first fetch that hit a pagination failure wrote no comments at all — "
+        "preserve semantics fired with nothing to preserve"
+    )

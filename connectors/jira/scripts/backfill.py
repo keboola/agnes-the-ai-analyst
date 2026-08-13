@@ -88,6 +88,27 @@ class Config:
         )
 
 
+def _needs_refetch(json_path: Path) -> bool:
+    """Is an already-downloaded issue JSON one that ``--skip-existing`` must NOT skip?
+
+    True when the stored JSON is marked ``_comments_incomplete`` — comment
+    pagination failed mid-fetch, so the file holds a known-truncated thread and
+    only a re-fetch can heal it. Also true when the file cannot be read or
+    parsed: a JSON we cannot read is not evidence that the issue was
+    downloaded, and skipping it forever is worse than one extra request.
+    """
+    try:
+        with open(json_path) as f:
+            stored = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        logger.warning(f"Re-fetching {json_path.name}: existing JSON is unreadable ({e})")
+        return True
+    if isinstance(stored, dict) and stored.get("_comments_incomplete") is True:
+        logger.info(f"Re-fetching {json_path.name}: stored comments are incomplete")
+        return True
+    return False
+
+
 class JiraBackfill:
     """Backfill handler for downloading all Jira issues."""
 
@@ -390,14 +411,17 @@ class JiraBackfill:
 
         Args:
             issue_key: Issue key to process
-            skip_existing: Skip if JSON already exists
+            skip_existing: Skip if a COMPLETE JSON already exists (see below)
 
         Returns:
             True if successful, False otherwise
         """
-        # Check if already downloaded
+        # Check if already downloaded. A JSON marked `_comments_incomplete`
+        # (comment pagination failed mid-fetch) is exactly the issue that needs
+        # re-fetching: without this, `--skip-existing` — the default — makes the
+        # marker permanent, so the issue is never re-fetched and never heals.
         json_path = self.issues_dir / f"{issue_key}.json"
-        if skip_existing and json_path.exists():
+        if skip_existing and json_path.exists() and not _needs_refetch(json_path):
             self.stats["skipped"] += 1
             return True
 
