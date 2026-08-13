@@ -13,7 +13,7 @@ import logging
 import os
 import re
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -126,19 +126,30 @@ def refresh_fields() -> list[tuple[str, str]]:
 ORGANIZATION_DETAIL_PREFIX = "detail_"
 
 
-def _organization_json(response: httpx.Response, what: str) -> Any:
-    """Decode a 200 body, converting a malformed one into ``JiraFetchError``.
+def _organization_json(response: httpx.Response, what: str) -> dict:
+    """Decode a 200 body into the JSON object it must be, or ``JiraFetchError``.
 
     ``response.json()`` raises a plain ``ValueError`` on a body that is not JSON —
     an HTML error page from an intermediary answering 200, say. That escapes the
     per-organization ``except JiraFetchError`` in the refresh sweep, so one bad
     response would abort the whole run before anything was written instead of
     preserving that organization's previous row.
+
+    A body that decodes to something other than an object is rejected the same
+    way: every caller reads keys off the payload, so ``null`` would surface as
+    ``fetch_organization``'s 404 ``None`` — read by the sweep as "deleted, drop
+    the row" — and a list or string would raise ``AttributeError`` outside the
+    same boundary (Devin Review on #1274).
     """
     try:
-        return response.json()
+        payload = response.json()
     except ValueError as e:
         raise JiraFetchError(f"{what} failed: malformed JSON in a {response.status_code} response — {e}") from e
+    if not isinstance(payload, dict):
+        raise JiraFetchError(
+            f"{what} failed: a {response.status_code} response decoded to {type(payload).__name__}, not a JSON object"
+        )
+    return payload
 
 
 def _organization_reserved_columns() -> frozenset[str]:
@@ -544,7 +555,7 @@ class JiraService:
                 f"tenant_info lookup for {self.domain} failed: status {response.status_code}. "
                 "Set JIRA_CLOUD_ID explicitly to skip this lookup."
             )
-        cloud_id = (_organization_json(response, f"tenant_info lookup for {self.domain}") or {}).get("cloudId")
+        cloud_id = _organization_json(response, f"tenant_info lookup for {self.domain}").get("cloudId")
         if not cloud_id:
             raise JiraFetchError(f"tenant_info for {self.domain} returned no cloudId")
         self._cloud_id = cloud_id
@@ -604,7 +615,7 @@ class JiraService:
                         f"Organization enumeration failed at start={start}: status {response.status_code}"
                     )
 
-                payload = _organization_json(response, f"Organization enumeration at start={start}") or {}
+                payload = _organization_json(response, f"Organization enumeration at start={start}")
                 values = payload.get("values") or []
                 for org in values:
                     org_id = org.get("id")
@@ -704,7 +715,7 @@ class JiraService:
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
         # Add metadata
-        issue_data["_synced_at"] = datetime.now(timezone.utc).isoformat()
+        issue_data["_synced_at"] = datetime.now(UTC).isoformat()
 
         # Overlay-skip guard: if fetch_remote_links raises (auth/server failure),
         # leave the _remote_links key ABSENT. transform_remote_links treats absent key
@@ -1018,7 +1029,7 @@ class JiraService:
                 with issue_json_lock(issues_dir, issue_key):
                     with open(file_path) as f:
                         data = json.load(f)
-                    data["_deleted_at"] = datetime.now(timezone.utc).isoformat()
+                    data["_deleted_at"] = datetime.now(UTC).isoformat()
 
                     # Atomic write: temp file + replace
                     fd, tmp_path = tempfile.mkstemp(dir=str(file_path.parent), suffix=".tmp")

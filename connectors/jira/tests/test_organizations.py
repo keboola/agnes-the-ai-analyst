@@ -647,6 +647,51 @@ class TestMalformedJsonStaysInsideTheErrorBoundary:
             with pytest.raises(JiraFetchError):
                 svc.resolve_cloud_id()
 
+    @staticmethod
+    def _client_with_body(payload) -> MagicMock:
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = payload
+        client = MagicMock()
+        client.get.return_value = response
+        client.__enter__ = MagicMock(return_value=client)
+        client.__exit__ = MagicMock(return_value=False)
+        return client
+
+    def test_null_body_is_not_a_deletion(self, svc: JiraService, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A 200 whose body decodes to `null` must not be confused with the 404
+        # None that means "the organization was deleted, drop its row".
+        monkeypatch.setattr(jira_service.Config, "JIRA_CLOUD_ID", "cloud-xyz", raising=False)
+        with (
+            patch.object(jira_service.httpx, "Client", return_value=self._client_with_body(None)),
+            pytest.raises(JiraFetchError),
+        ):
+            svc.fetch_organization("325")
+
+    @pytest.mark.parametrize("payload", [["not"], "an object", 7])
+    def test_non_object_body_stays_inside_the_boundary(
+        self, svc: JiraService, monkeypatch: pytest.MonkeyPatch, payload
+    ) -> None:
+        # A list/string/number body used to flow into `.get()` calls and raise
+        # AttributeError outside the JiraFetchError boundary the sweep relies on.
+        monkeypatch.setattr(jira_service.Config, "JIRA_CLOUD_ID", "cloud-xyz", raising=False)
+        client = self._client_with_body(payload)
+        with patch.object(jira_service.httpx, "Client", return_value=client):
+            with pytest.raises(JiraFetchError):
+                svc.fetch_organization("325")
+            with pytest.raises(JiraFetchError):
+                svc.fetch_organization_ids()
+
+    @pytest.mark.parametrize("payload", [["not"], "an object", 7])
+    def test_non_object_tenant_info_stays_inside_the_boundary(self, svc: JiraService, payload) -> None:
+        # Separate from the test above: resolve_cloud_id short-circuits when
+        # JIRA_CLOUD_ID is configured, so it must be probed without it.
+        with (
+            patch.object(jira_service.httpx, "Client", return_value=self._client_with_body(payload)),
+            pytest.raises(JiraFetchError),
+        ):
+            svc.resolve_cloud_id()
+
     def test_sweep_preserves_the_row_instead_of_aborting(self, tmp_path: Path, org_env: None) -> None:
         """End to end: the malformed response is absorbed per organization."""
         from connectors.jira import organizations as orgs
