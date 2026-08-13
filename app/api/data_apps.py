@@ -682,10 +682,41 @@ def _clone_url_with_credential(base: str, jwt_token: str, slug: str) -> str:
 
 
 # Cookie carrying a `data-app-preview:<slug>` token — see `_mint_preview_token`.
-# One name reused across every app: `Path=/apps/<slug>/` (set per-mint) keeps
-# two different apps' cookies from ever colliding in the browser jar, since
-# their paths never overlap.
+# Name PREFIX only: the real name is per-app (`preview_cookie_name`), which is
+# what keeps two apps' credentials from colliding in the browser jar now that
+# the cookie is `Path=/`. Kept as a module constant because the proxy also
+# accepts the bare legacy name during a rollout.
 _PREVIEW_COOKIE_NAME = "adp_preview"
+
+
+def preview_cookie_name(slug: str) -> str:
+    """Browser cookie name carrying ``slug``'s preview credential.
+
+    Per-app, and that is load-bearing: a browser keys a cookie on
+    ``(name, domain, path)``, and the cookie must be ``Path=/`` to reach the
+    readiness poll (see `_mint_preview_token`). One shared name at that path
+    is therefore ONE jar slot for the whole instance — minting a preview for a
+    second app evicts the first app's credential, and because the slug pin
+    lives in the token scope the survivor resolves to nothing for the other
+    app: its poll 401s forever while the app is healthy. Two chat tabs
+    previewing two apps is the ordinary case, not a corner (Devin Review on
+    this PR).
+
+    Read-side helper too (`_resolve_proxy_caller`), so it is deliberately
+    total — an unknown/malformed slug just yields a name no cookie carries.
+    Header-safety is enforced where the header is actually built, at mint.
+    """
+    return f"{_PREVIEW_COOKIE_NAME}_{slug}"
+
+
+# What a slug may contain before it is interpolated into a `Set-Cookie` NAME.
+# Deliberately a character class and not `SLUG_RE`: the only question at that
+# point is header safety (no CR/LF, `;`, `=`, space, quote), and `SLUG_RE` also
+# imposes a length/shape that legitimately-created rows need not satisfy —
+# `keboola_adapter._sanitize` can yield a single character, and refusing to
+# serve those apps' previews would be a bug of this fix's own making.
+_COOKIE_NAME_SAFE_RE = _re.compile(r"^[A-Za-z0-9_-]+$")
+
 
 # Q4 (spec §7/§11): 30-minute default TTL, renewed on every
 # `agnes_data_app_preview` call, hard-capped by SessionEnd's best-effort
@@ -712,11 +743,11 @@ def _mint_preview_token(row: dict, requester: dict, *, ttl_s: int = _PREVIEW_TOK
     `app.auth.pat_resolver.resolve_token_to_user`).
 
     The cookie is delivered to the browser, never a URL query parameter (an
-    iframe `src`'s history/referrer would leak it) — `Path=/apps/<slug>/`
-    scopes it to exactly the app it authorizes; `HttpOnly` keeps it out of
-    the hosted app's own (less-trusted) JS; `SameSite=Lax` is enough since
-    the iframe navigation that sends it is a plain top-level-adjacent GET,
-    not a cross-site POST.
+    iframe `src`'s history/referrer would leak it) — a per-app NAME
+    (`preview_cookie_name`) scopes it to exactly the app it authorizes;
+    `HttpOnly` keeps it out of the hosted app's own (less-trusted) JS;
+    `SameSite=Lax` is enough since the iframe navigation that sends it is a
+    plain top-level-adjacent GET, not a cross-site POST.
     """
     slug = row["slug"]
     token_id = str(uuid.uuid4())
@@ -752,11 +783,20 @@ def _mint_preview_token(row: dict, requester: dict, *, ttl_s: int = _PREVIEW_TOK
     # more routes still authorizes exactly one app's preview. It stays HttpOnly
     # + SameSite=Lax.
     #
+    # What the path WAS silently doing is keeping two apps' cookies apart, so
+    # the per-app scoping moves to the cookie NAME instead — see
+    # `preview_cookie_name`. The name is interpolated into a response header,
+    # so the slug is re-checked here rather than trusted: every row reaches
+    # this through a validated create, and a header built from an unvalidated
+    # name is exactly the shape a CRLF injection needs.
+    #
     # Still path-prefix ingress only (the verified default; `subdomain_base`
     # unset). In subdomain mode the app is served on a different origin whose
     # paths start at `/`, so subdomain-mode preview remains a follow-up — it
     # needs a cross-origin cookie the same-origin fetch cannot set.
-    cookie = f"{_PREVIEW_COOKIE_NAME}={jwt_token}; Max-Age={max(ttl_s, 0)}; Path=/; SameSite=Lax; HttpOnly"
+    if not _COOKIE_NAME_SAFE_RE.match(slug or ""):
+        raise ValueError(f"data app slug is not safe in a cookie name: {slug!r}")
+    cookie = f"{preview_cookie_name(slug)}={jwt_token}; Max-Age={max(ttl_s, 0)}; Path=/; SameSite=Lax; HttpOnly"
     return jwt_token, cookie
 
 

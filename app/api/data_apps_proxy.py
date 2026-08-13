@@ -61,6 +61,7 @@ from app.api.data_apps import (
     OwnerNotFoundError,
     _can_view,
     _feature_gate,
+    preview_cookie_name,
     redeploy_current,
     try_acquire_op_lease,
 )
@@ -155,8 +156,8 @@ def _resolve_proxy_caller(request: Request, slug: str, conn: Optional[object]) -
     preview-token fallback below instead of short-circuiting the route).
 
     If normal auth fails, falls back to a ``data-app-preview:<slug>``
-    scoped token (cookie named ``_PREVIEW_COOKIE_NAME``, or ``Authorization:
-    Bearer``) — mirroring the ``data-app-git`` scope-pin precedent in
+    scoped token (cookie named ``preview_cookie_name(slug)``, or
+    ``Authorization: Bearer``) — mirroring the ``data-app-git`` scope-pin precedent in
     ``app/api/data_apps_git.py``: the resolved identity is trusted to VIEW
     THIS SLUG ONLY when the token's scope claim is exactly
     ``data-app-preview:<slug>``. A token minted for a different app, or one
@@ -182,7 +183,11 @@ def _resolve_proxy_caller(request: Request, slug: str, conn: Optional[object]) -
     if auth_header and auth_header.startswith("Bearer "):
         token = auth_header.removeprefix("Bearer ")
     if not token:
-        token = request.cookies.get(_PREVIEW_COOKIE_NAME)
+        # Per-app cookie name first (`preview_cookie_name`); the bare legacy
+        # name is still accepted so a preview already open across an upgrade
+        # keeps working for the rest of its 30-minute TTL. Either way the scope
+        # check below is what decides — reading a cookie grants nothing.
+        token = request.cookies.get(preview_cookie_name(slug)) or request.cookies.get(_PREVIEW_COOKIE_NAME)
     if not token:
         return None, False
 

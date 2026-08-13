@@ -757,6 +757,9 @@ def test_preview_token_authorizes_iframe(proxy_client, fake_runner, respx_upstre
     tok = mint_preview("s", ttl_s=1800)
     r = proxy_client.get("/apps/s/hello", headers={"cookie": tok.cookie})
     assert r.status_code == 200, r.text
+    # Body, not just status: a 401 here is redirected to `/login`, which also
+    # answers 200, so status alone passes whether or not the token was read.
+    assert r.text == "hello from app"
 
 
 def test_expired_preview_token_403(proxy_client, running_app, mint_preview):
@@ -917,11 +920,12 @@ def test_the_preview_cookie_is_scoped_to_a_path_the_poll_actually_uses(mint_prev
     """
     from http.cookies import SimpleCookie
 
+    from app.api.data_apps import preview_cookie_name
     from app.api.data_apps_proxy import _readiness_poll_url
 
     cookie = SimpleCookie()
     cookie.load(mint_preview("s", ttl_s=1800).cookie)
-    path = cookie["adp_preview"]["path"]
+    path = cookie[preview_cookie_name("s")]["path"]
 
     poll_url = _readiness_poll_url(_FakeRequest(subdomain=False), "s")
     assert poll_url.startswith(path), (
@@ -945,6 +949,54 @@ def test_a_preview_token_for_another_app_cannot_poll_readiness(proxy_client, fak
     tok = mint_preview("other2", ttl_s=1800)
     r = proxy_client.get("/api/data-apps/s/readiness", headers={"cookie": tok.cookie}, follow_redirects=False)
     assert r.status_code in (401, 403), r.text
+
+
+def test_a_legacy_named_preview_cookie_still_authorizes(
+    proxy_client, fake_runner, respx_upstream, running_app, mint_preview
+):
+    """A preview open across the upgrade that introduced the per-app cookie
+    name must not break: its browser holds the credential under the old bare
+    `adp_preview` name, and the token behind it is still valid for the rest of
+    its TTL. The reader accepts either name; the scope check is what decides.
+
+    Asserted on the upstream's own body, not just a 200: a 401 on this path is
+    turned into a redirect to `/login` by the app-wide browser-friendly error
+    handler, and that page answers 200 too — so status alone would pass
+    whether or not the cookie was ever read.
+    """
+    tok = mint_preview("s", ttl_s=1800)
+    r = proxy_client.get("/apps/s/hello", headers={"cookie": f"adp_preview={tok.jwt}"})
+    assert r.status_code == 200, r.text
+    assert r.text == "hello from app", "served the login page, not the app — the cookie was not accepted"
+
+
+def test_a_legacy_named_cookie_is_still_pinned_to_its_own_slug(proxy_client, fake_runner, running_app, mint_preview):
+    """The rollout fallback must not become a way around the slug pin."""
+    _create_app_row(slug="other3", state="running")
+    tok = mint_preview("other3", ttl_s=1800)
+    r = proxy_client.get(
+        "/api/data-apps/s/readiness", headers={"cookie": f"adp_preview={tok.jwt}"}, follow_redirects=False
+    )
+    assert r.status_code in (401, 403), r.text
+
+
+def test_a_slug_that_would_break_the_cookie_header_is_refused(mint_preview, running_app):
+    """The slug is interpolated into a `Set-Cookie` NAME, so it is re-checked
+    at mint rather than trusted to have come from a validated create — a
+    header assembled from an unvalidated name is the shape CRLF injection
+    needs. Refusing is right here: there is no safe cookie to emit, and
+    silently mangling the name would hand back a credential no request can
+    ever carry.
+    """
+    from app.api.data_apps import _mint_preview_token
+    from src.repositories import data_apps_repo, users_repo
+
+    row = dict(data_apps_repo().get_by_slug("s"))
+    requester = users_repo().get_by_id(row["owner_user_id"])
+    for bad in ("s\r\nSet-Cookie: admin=1", "s; Domain=evil.example.com", "s=x", "s app"):
+        row["slug"] = bad
+        with pytest.raises(ValueError):
+            _mint_preview_token(row, requester)
 
 
 def test_the_waking_page_polls_a_relative_url_on_the_path_form(client_granted, fake_runner, sleeping_app):
