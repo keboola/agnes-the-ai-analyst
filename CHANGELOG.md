@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+- **`system.duckdb.rolling-snapshot/` — a rolling-refreshed recovery snapshot, refreshed independently of migration transitions.** `system.duckdb.pre-migrate` is captured once per migration and never touched again, so as a recovery aid it goes stale within hours of normal operation — every row written since the last migration is lost on a WAL-recovery restore (#379). `refresh_rolling_snapshot` (`src/db.py`) now maintains a second, rolling-refreshed artifact on a configurable cadence (`backups.rolling_snapshot_interval_hours`, default 6h, `0` disables — see `config/instance.yaml.example`): a `CHECKPOINT` followed by a logical `EXPORT DATABASE (FORMAT PARQUET, COMPRESSION ZSTD)` into a tmp directory, atomically swapped into place only once the export fully succeeds. It runs over the app's own long-lived `system.duckdb` connection on the existing periodic-checkpoint tick (#710) — never a second connection to the file — and is a no-op on a Postgres-state instance. `system.duckdb.pre-migrate` itself is unchanged: it stays the single-file artifact the WAL-recovery auto-restore path (`_try_open_system_db`) reads directly. The rolling snapshot is a manual-recovery aid (`IMPORT DATABASE`) documented as a new "Option A2" in `docs/runbooks/wal-recovery.md` (#380).
+
+
 ### Fixed
 
 - **`agnes self-upgrade` went silent against a moved server — the one command run to repair a stale install.** Measured against the real relocated hostname: the plain form printed nothing and exited 0, so the caller could not tell the upgrade had not happened, and `--force` reported `cannot reach <old>/cli/latest` for a server that answers `308` with a `Location` header. `cli/update_check.py::_fetch_latest` calls `raise_for_status()`, which does not treat 3xx as an error, then `.json()` on a redirect's empty body; the exception is swallowed into `None`, and `_resolve_info` maps that to "probe failed". #1266 taught both HTTP clients and the setup-token exchange to name the new address, but this path reaches the server through neither. A redirect is now its own verdict, diagnosed by a re-probe that runs **only** after the normal probe already came back empty — so the happy path pays nothing — and worded by the same `cli/server_moved.py` the other callers use, so the three cannot drift. Every redirect counts, not only a cross-host move: a same-origin bounce (an SSO proxy answering `302 /login`) is equally a check that did not happen, and `cannot reach` is equally untrue of it — what differs is the remedy, which the shared classifier already picks. `--check-only` reports it too and exits 1, where it swallows every other transport verdict into exit 0; its help text now names that second case rather than promising exit 1 means `outdated` alone.
@@ -28,6 +32,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Fixed
 - **Setting `chat.docker_egress_allow_hosts` without `chat.docker_egress_mode: allowlist` now warns at startup.** The allow-hosts knob reads like it turns the allowlist on, but only the mode does — set alone (the mode defaults to `open`), the hosts were silently ignored and sandbox egress stayed unrestricted. The startup egress-config check now reports the ignored allowlist and the consequence for the configured mode.
+### Added
 
 ## [0.83.9] - 2026-08-13
 
