@@ -10,6 +10,8 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.12] - 2026-08-13
+
 ### Fixed
 
 - **One badly-timed request permanently bricked a healthy hosted app.** The proxy latched `state = "error" / "container unreachable"` on a single refused connection, and nothing ever cleared it: the `error` branch only replays the stored detail and never re-checks, so the only recovery was a redeploy. The window that triggers it is not narrow — a first deploy clones the repo, runs `npm install` and builds before anything listens on 8888 (~90s for a real dashboard), while the row is marked `running` the moment the runner *accepts* the container, not when it serves. Watched end to end on a running instance: the app finished building and answered 200 inside its own container while Agnes returned `app_error` to every caller, and the chat agent that had just built it was told its app was unreachable. The proxy now asks the runner what is actually true before latching. A container that is up but not yet listening is *starting*, and gets the same holding page a sleeping app gets; only a container that is genuinely stopped or gone latches an error, and the detail now names the state the container was actually in. When the runner itself is unreachable the row is left alone — guessing `error` there blames the app for the sidecar's outage, and the guess would stick.
@@ -14002,4 +14004,3 @@ First tagged semver release. The `version = "2.x"` strings that appeared in earl
 [0.11.2]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.11.2
 [0.11.1]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.11.1
 [0.11.0]: https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.11.0
-
