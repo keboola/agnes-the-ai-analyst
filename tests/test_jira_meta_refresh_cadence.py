@@ -56,9 +56,9 @@ def test_meta_runs_before_the_rebuild(traced: list) -> None:
     kinds._run_jira_refresh({})
 
     kinds_only = [kind for kind, _ in traced]
-    assert kinds_only.index("rebuild_source") > max(
-        i for i, kind in enumerate(kinds_only) if kind == "update_meta"
-    ), "rebuild_source ran before update_meta finished creating/refreshing extract.duckdb"
+    assert kinds_only.index("rebuild_source") > max(i for i, kind in enumerate(kinds_only) if kind == "update_meta"), (
+        "rebuild_source ran before update_meta finished creating/refreshing extract.duckdb"
+    )
 
 
 def test_a_failing_meta_pass_still_rebuilds(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -99,6 +99,43 @@ def test_the_per_event_transform_no_longer_touches_meta() -> None:
         "per-event path, and it races the rebuild for extract.duckdb. It belongs in "
         "app.worker.kinds._run_jira_refresh."
     )
+
+
+class TestOrganizationsRefreshPiggybacksOnThisJob:
+    """The `organizations` dimension table (issue #1273) rides the SAME job as
+    `_meta`, cadence-gated inside `refresh_organizations_if_stale` rather than a
+    new scheduler — see `connectors/jira/organizations.py`."""
+
+    def test_it_is_called_before_the_rebuild(self, traced: list, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "connectors.jira.organizations.refresh_organizations_if_stale",
+            lambda _d: traced.append(("org_refresh", None)),
+        )
+
+        kinds._run_jira_refresh({})
+
+        kinds_only = [kind for kind, _ in traced]
+        assert "org_refresh" in kinds_only
+        assert kinds_only.index("rebuild_source") > kinds_only.index("org_refresh")
+
+    def test_a_failing_org_refresh_still_rebuilds(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A Jira API outage here must not cost us the rebuild that publishes everything else."""
+        rebuilt: list = []
+
+        def _boom(output_dir):
+            raise RuntimeError("Jira organization API is down")
+
+        class _FakeOrchestrator:
+            def rebuild_source(self, name):
+                rebuilt.append(name)
+
+        monkeypatch.setattr("connectors.jira.extract_init.update_meta", lambda _d, table_name: None)
+        monkeypatch.setattr("connectors.jira.organizations.refresh_organizations_if_stale", _boom)
+        monkeypatch.setattr("src.orchestrator.SyncOrchestrator", _FakeOrchestrator)
+
+        kinds._run_jira_refresh({})
+
+        assert rebuilt == ["jira"]
 
 
 class TestSlaPollEnqueuesTheRefresh:
@@ -310,11 +347,7 @@ class TestConsistencyCheckAnnouncesItsWrites:
             Path(__file__).resolve().parent.parent / "connectors" / "jira" / "scripts" / "consistency_check.py"
         ).read_text()
         tree = ast.parse(source)
-        run_check = next(
-            n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "run_check"
-        )
-        called = {
-            getattr(n.func, "attr", None) for n in ast.walk(run_check) if isinstance(n, ast.Call)
-        }
+        run_check = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "run_check")
+        called = {getattr(n.func, "attr", None) for n in ast.walk(run_check) if isinstance(n, ast.Call)}
 
         assert "_enqueue_jira_refresh" in called
