@@ -537,3 +537,44 @@ def test_issue_key_at_top_level_accepted(webhook_client):
             },
         )
     assert resp.status_code == 200
+
+
+def test_webhook_processing_does_not_run_on_the_event_loop(webhook_client):
+    """The whole `process_webhook_event` chain is synchronous and slow — sync
+    httpx calls, JSON file writes, the parquet read-modify-write transform,
+    attachment downloads, and (since comment pagination) a bounded
+    `time.sleep` on a 429. Called straight from an `async def` handler it runs
+    ON the asyncio event loop, so a single slow Jira notification freezes every
+    other request the process is serving. It must be offloaded to the
+    threadpool."""
+    import asyncio
+    from unittest.mock import patch
+
+    observed = {}
+
+    def fake_process(event_data):
+        try:
+            asyncio.get_running_loop()
+            observed["on_event_loop"] = True
+        except RuntimeError:
+            observed["on_event_loop"] = False
+        return True
+
+    payload = json.dumps({"webhookEvent": "jira:issue_updated", "issue": {"key": "PROJ-1"}}).encode()
+    sig = _sign(payload, "test-webhook-secret")
+
+    with patch("app.api.jira_webhooks.get_jira_service") as mock_svc:
+        mock_svc.return_value.is_configured.return_value = True
+        mock_svc.return_value.process_webhook_event.side_effect = fake_process
+
+        resp = webhook_client["client"].post(
+            "/webhooks/jira",
+            content=payload,
+            headers={"Content-Type": "application/json", "X-Hub-Signature-256": sig},
+        )
+
+    assert resp.status_code == 200
+    assert observed.get("on_event_loop") is False, (
+        "process_webhook_event ran on the asyncio event loop — a rate-limited or "
+        "slow Jira webhook blocks every other request in the process"
+    )

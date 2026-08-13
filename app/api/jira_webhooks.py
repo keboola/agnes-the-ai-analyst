@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 import re
 
@@ -171,7 +172,13 @@ async def receive_jira_webhook(request: Request) -> Response:
             status_code=503,
         )
 
-    success = jira_service.process_webhook_event(event_data)
+    # `process_webhook_event` is synchronous end to end — sync httpx calls to
+    # Jira, JSON file writes, the parquet read-modify-write transform, and
+    # attachment downloads of up to 50 MB. Called directly it would run on the
+    # asyncio event loop and freeze every other request in the process for its
+    # whole duration; comment pagination's bounded `time.sleep` on a 429 made
+    # that duration explicit rather than introducing it.
+    success = await run_in_threadpool(jira_service.process_webhook_event, event_data)
 
     if success:
         return JSONResponse({"status": "ok", "event": webhook_event, "issue": issue_key})

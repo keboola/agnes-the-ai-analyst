@@ -47,9 +47,15 @@ JIRA_COMMENT_RATE_LIMIT_RETRIES = 3
 JIRA_COMMENT_RETRY_AFTER_DEFAULT = 60
 # A `Retry-After` may legitimately be hours; a batch worker must not sit on one.
 JIRA_COMMENT_RETRY_AFTER_MAX = 300
+# The retry cap bounds ATTEMPTS, not wall time: three retries each honouring the
+# 300s per-wait cap add up to 900s inside a single pagination loop. This is the
+# total sleep budget one call may spend, so the ceiling is a number you can read
+# off rather than a product of two other constants. Callers that cannot afford
+# to sleep at all pass 0 (see `JiraService.fetch_issue`).
+JIRA_COMMENT_RATE_LIMIT_WAIT_BUDGET = 300
 
 
-def _retry_after_seconds(response: Any) -> int:
+def retry_after_seconds(response: Any) -> int:
     """`Retry-After` in seconds — defaulted when absent/unparseable, capped.
 
     The header may also carry an HTTP-date; `int()` on that raises, so parse
@@ -247,6 +253,8 @@ def complete_issue_comments(
     base_url: str,
     auth: tuple[str, str],
     client: httpx.Client,
+    *,
+    max_rate_limit_wait: int = JIRA_COMMENT_RATE_LIMIT_WAIT_BUDGET,
 ) -> None:
     """Fill in comments Jira's issue payload truncated at its embed page size.
 
@@ -280,6 +288,17 @@ def complete_issue_comments(
     give it. Rate limiting is the batch path's likeliest failure, and without
     the retry it would routinely mark issues incomplete.
 
+    ``max_rate_limit_wait`` caps the TOTAL seconds this call may sleep across
+    the whole pagination loop, because the retry count alone does not: three
+    retries at the 300s per-wait cap is 900s in one call. It exists so the
+    caller decides, since ``time.sleep`` means something different per caller —
+    the batch/CLI path runs in its own worker thread and sleeping is the point,
+    while ``JiraService.fetch_issue`` is reached synchronously from
+    ``process_webhook_event`` while a request is being served and passes ``0``:
+    there the ``_comments_incomplete`` marker preserves the stored thread and
+    the next webhook for the issue re-paginates from scratch, which is strictly
+    better than holding the request open for minutes.
+
     If a page request itself fails (RequestError, a non-200 status other than
     a retryable 429, or a 429 that outlives its retries — legitimate
     outages, not "no more comments"), the loop stops and
@@ -309,6 +328,7 @@ def complete_issue_comments(
         extra: list[dict[str, Any]] = []
         start_at = len(embedded)
         rate_limit_retries = 0
+        wait_budget_left = max(0, max_rate_limit_wait)
         while len(embedded) + len(extra) < total:
             try:
                 response = client.get(
@@ -327,18 +347,20 @@ def complete_issue_comments(
                 incomplete = True
                 break
             if response.status_code == 429:
-                if rate_limit_retries >= JIRA_COMMENT_RATE_LIMIT_RETRIES:
+                wait = min(retry_after_seconds(response), wait_budget_left)
+                if rate_limit_retries >= JIRA_COMMENT_RATE_LIMIT_RETRIES or wait <= 0:
                     logger.warning(
                         "Jira issue %s: comment pagination still rate limited at startAt=%d "
-                        "after %d retries — giving up",
+                        "after %d retries (%ds of wait budget left) — giving up",
                         issue_key,
                         start_at,
                         rate_limit_retries,
+                        wait_budget_left,
                     )
                     incomplete = True
                     break
-                wait = _retry_after_seconds(response)
                 rate_limit_retries += 1
+                wait_budget_left -= wait
                 logger.warning(
                     "Jira issue %s: comment pagination rate limited at startAt=%d, waiting %ds (retry %d/%d)",
                     issue_key,
@@ -477,7 +499,13 @@ class JiraService:
 
                 if response.status_code == 200:
                     issue_data = response.json()
-                    complete_issue_comments(issue_data, self.base_url, self.auth, client)
+                    # No wait budget: this runs while a webhook request is being
+                    # served (`process_webhook_event`). Sleeping out a rate limit
+                    # here holds the request open for minutes and buys nothing a
+                    # later refetch does not — the `_comments_incomplete` marker
+                    # keeps the stored thread intact meanwhile, and any new
+                    # comment fires another webhook that re-paginates.
+                    complete_issue_comments(issue_data, self.base_url, self.auth, client, max_rate_limit_wait=0)
                     return issue_data
                 elif response.status_code == 404:
                     logger.warning(f"Issue {issue_key} not found")

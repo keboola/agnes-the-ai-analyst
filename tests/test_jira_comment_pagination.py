@@ -466,11 +466,11 @@ class TestBackfillRefetchesIncompleteJson:
         fetch.assert_not_called()
         assert backfill.stats["skipped"] == 1
 
-    def test_unreadable_json_is_refetched(self, tmp_path):
-        """A JSON we cannot parse is not evidence the issue was downloaded."""
+    def test_empty_json_is_refetched(self, tmp_path):
+        """A zero-byte JSON is not evidence the issue was downloaded."""
         backfill = self._make_backfill(tmp_path)
         backfill.issues_dir.mkdir(parents=True, exist_ok=True)
-        (backfill.issues_dir / "PROJ-602.json").write_text("{ truncated")
+        (backfill.issues_dir / "PROJ-602.json").write_text("")
 
         healed = _issue_with_comments(total=2, embedded=2, issue_key="PROJ-602")
         with (
@@ -482,6 +482,39 @@ class TestBackfillRefetchesIncompleteJson:
 
         assert ok is True
         fetch.assert_called_once_with("PROJ-602")
+
+    def test_truncated_marked_json_is_refetched(self, tmp_path):
+        """A payload that carries the marker but does not parse is re-fetched —
+        the byte pre-filter admits it, and the confirming parse then fails."""
+        backfill = self._make_backfill(tmp_path)
+        backfill.issues_dir.mkdir(parents=True, exist_ok=True)
+        (backfill.issues_dir / "PROJ-607.json").write_text('{"_comments_incomplete": true, "fields": { trunc')
+
+        healed = _issue_with_comments(total=2, embedded=2, issue_key="PROJ-607")
+        with (
+            patch.object(backfill, "fetch_issue", return_value=healed) as fetch,
+            patch.object(backfill, "fetch_remote_links", return_value=[]),
+            patch.object(backfill, "download_issue_attachments", return_value=0),
+        ):
+            ok = backfill.process_issue("PROJ-607", skip_existing=True)
+
+        assert ok is True
+        fetch.assert_called_once_with("PROJ-607")
+
+    def test_a_comment_quoting_the_marker_key_does_not_force_a_refetch(self, tmp_path):
+        """The byte scan is a pre-filter, not the verdict: a comment body quoting
+        the marker key must not turn every resume into a re-download of that issue."""
+        backfill = self._make_backfill(tmp_path)
+        payload = _issue_with_comments(total=1, embedded=1, issue_key="PROJ-608")
+        payload["fields"]["comment"]["comments"][0]["body"] = 'we set "_comments_incomplete" on that one'
+        self._write_existing(backfill, "PROJ-608", payload)
+
+        with patch.object(backfill, "fetch_issue") as fetch:
+            ok = backfill.process_issue("PROJ-608", skip_existing=True)
+
+        assert ok is True
+        fetch.assert_not_called()
+        assert backfill.stats["skipped"] == 1
 
 
 class TestCommentPaginationHonoursRetryAfter:
@@ -615,3 +648,238 @@ class TestWebhookFallbackPayloadIsNotAuthoritative:
             "A payload carrying no comment field at all is not evidence the issue "
             "has no comments — the transform would delete the stored thread"
         )
+
+
+class TestRateLimitWaitIsBudgeted:
+    """``JIRA_COMMENT_RATE_LIMIT_RETRIES`` bounds the number of retries, not the
+    wall-clock time they consume: three retries each honouring a 300s cap add up
+    to 900s of ``time.sleep`` inside one pagination loop. The budget has to be
+    total, not per-retry."""
+
+    def _rate_limited(self, retry_after: str = "300") -> MagicMock:
+        resp = MagicMock()
+        resp.status_code = 429
+        resp.headers = {"Retry-After": retry_after}
+        return resp
+
+    def test_total_wait_is_bounded_across_the_whole_loop(self):
+        issue_data = _issue_with_comments(total=1000, embedded=100)
+        client = MagicMock()
+        client.get.side_effect = [self._rate_limited("300") for _ in range(20)]
+
+        with patch("connectors.jira.service.time.sleep") as sleep:
+            complete_issue_comments(issue_data, BASE_URL, AUTH, client)
+
+        slept = sum(call.args[0] for call in sleep.call_args_list)
+        assert slept <= 300, (
+            f"one pagination loop slept {slept}s in total — the retry cap bounds attempts, not wall time"
+        )
+        assert issue_data.get("_comments_incomplete") is True
+
+    def test_caller_can_forbid_sleeping_entirely(self):
+        """A request-serving caller has no budget to sleep at all: the marker
+        plus a later heal is strictly better than parking the request."""
+        issue_data = _issue_with_comments(total=124, embedded=100)
+        client = MagicMock()
+        client.get.side_effect = [self._rate_limited("60") for _ in range(5)]
+
+        with patch("connectors.jira.service.time.sleep") as sleep:
+            complete_issue_comments(issue_data, BASE_URL, AUTH, client, max_rate_limit_wait=0)
+
+        sleep.assert_not_called()
+        assert issue_data.get("_comments_incomplete") is True
+
+
+class TestWebhookRefetchNeverSleeps:
+    """``JiraService.fetch_issue`` is reached synchronously from
+    ``process_webhook_event``, i.e. from a request the server is serving. It must
+    not sleep out a rate limit there — the ``_comments_incomplete`` marker
+    preserves the stored thread and the next webhook re-paginates."""
+
+    def _make_service(self, jira_env):
+        from connectors.jira import service as svc
+
+        svc.Config.JIRA_DOMAIN = "mycompany.atlassian.net"
+        svc.Config.JIRA_EMAIL = "bot@mycompany.com"
+        svc.Config.JIRA_API_TOKEN = "test-token-xyz"
+        svc.Config.JIRA_DATA_DIR = jira_env
+        svc._jira_service = None
+        return svc.JiraService()
+
+    def test_rate_limited_comment_page_does_not_sleep_the_request(self, tmp_path):
+        service = self._make_service(tmp_path)
+
+        issue_response = MagicMock()
+        issue_response.status_code = 200
+        issue_response.json.return_value = _issue_with_comments(total=124, embedded=100, issue_key="PROJ-779")
+
+        rate_limited = MagicMock()
+        rate_limited.status_code = 429
+        rate_limited.headers = {"Retry-After": "300"}
+
+        client = MagicMock()
+        client.get.side_effect = [issue_response] + [rate_limited] * 10
+        client.__enter__ = lambda s: client
+        client.__exit__ = MagicMock(return_value=False)
+
+        with (
+            patch("connectors.jira.service.httpx.Client", return_value=client),
+            patch("connectors.jira.service.time.sleep") as sleep,
+        ):
+            result = service.fetch_issue("PROJ-779")
+
+        assert result is not None
+        sleep.assert_not_called(), "the webhook path slept out a Jira rate limit while serving a request"
+        assert result.get("_comments_incomplete") is True
+
+
+class _TrackedClient:
+    """httpx.Client stand-in that records how many are open simultaneously."""
+
+    def __init__(self, tracker: dict, responder):
+        self._tracker = tracker
+        self._responder = responder
+
+    def __enter__(self):
+        self._tracker["open"] += 1
+        self._tracker["max_open"] = max(self._tracker["max_open"], self._tracker["open"])
+        return self
+
+    def __exit__(self, *exc):
+        self._tracker["open"] -= 1
+        return False
+
+    def get(self, *args, **kwargs):
+        return self._responder()
+
+
+class TestBackfillRateLimitRetryReleasesItsClient:
+    """The 429 branch of ``JiraBackfill.fetch_issue`` retries from inside the
+    enclosing ``with httpx.Client(...)``, so N consecutive rate limits hold N
+    open clients (each with its own connection pool) and N stack frames — and
+    the retry itself has no cap."""
+
+    def _make_backfill(self, tmp_path):
+        from connectors.jira.scripts.backfill import Config as BackfillConfig
+        from connectors.jira.scripts.backfill import JiraBackfill
+
+        config = BackfillConfig(
+            jira_domain="mycompany.atlassian.net",
+            jira_email="bot@mycompany.com",
+            jira_api_token="test-token-xyz",
+            data_dir=tmp_path,
+        )
+        return JiraBackfill(config)
+
+    def _rate_limited(self) -> MagicMock:
+        resp = MagicMock()
+        resp.status_code = 429
+        resp.headers = {"Retry-After": "1"}
+        return resp
+
+    def test_retry_never_holds_two_clients_at_once(self, tmp_path):
+        backfill = self._make_backfill(tmp_path)
+        tracker = {"open": 0, "max_open": 0}
+
+        ok = MagicMock()
+        ok.status_code = 200
+        ok.headers = {}
+        ok.json.return_value = _issue_with_comments(total=3, embedded=3, issue_key="PROJ-700")
+        queue = [self._rate_limited(), self._rate_limited(), ok]
+
+        def factory(*args, **kwargs):
+            response = queue.pop(0)
+            return _TrackedClient(tracker, lambda: response)
+
+        with (
+            patch("connectors.jira.scripts.backfill.httpx.Client", side_effect=factory),
+            patch("connectors.jira.scripts.backfill.time.sleep"),
+        ):
+            result = backfill.fetch_issue("PROJ-700")
+
+        assert result is not None
+        assert tracker["max_open"] == 1, (
+            f"{tracker['max_open']} httpx clients were open at once — the rate-limit "
+            f"retry runs inside the previous client's context manager"
+        )
+        assert tracker["open"] == 0
+
+    def test_retry_is_bounded(self, tmp_path):
+        backfill = self._make_backfill(tmp_path)
+        tracker = {"open": 0, "max_open": 0}
+        created = []
+
+        def factory(*args, **kwargs):
+            client = _TrackedClient(tracker, self._rate_limited)
+            created.append(client)
+            return client
+
+        with (
+            patch("connectors.jira.scripts.backfill.httpx.Client", side_effect=factory),
+            patch("connectors.jira.scripts.backfill.time.sleep"),
+        ):
+            result = backfill.fetch_issue("PROJ-701")
+
+        assert result is None
+        assert len(created) <= 5, f"a permanently rate-limited issue retried {len(created)} times — unbounded"
+
+
+class TestSkipExistingStaysCheap:
+    """``--skip-existing`` defaults to True and exists for resuming a run that
+    already holds most of the corpus. Deciding to skip must not fully parse each
+    stored payload: these are ``fields=*all`` + ``expand=renderedFields,changelog``
+    documents with every comment, so a resumed six-figure run would parse tens of
+    GB purely to decide to skip."""
+
+    def _make_backfill(self, tmp_path):
+        from connectors.jira.scripts.backfill import Config as BackfillConfig
+        from connectors.jira.scripts.backfill import JiraBackfill
+
+        config = BackfillConfig(
+            jira_domain="mycompany.atlassian.net",
+            jira_email="bot@mycompany.com",
+            jira_api_token="test-token-xyz",
+            data_dir=tmp_path,
+        )
+        return JiraBackfill(config)
+
+    def _write_existing(self, backfill, issue_key: str, payload: dict) -> None:
+        import json as _json
+
+        backfill.issues_dir.mkdir(parents=True, exist_ok=True)
+        (backfill.issues_dir / f"{issue_key}.json").write_text(_json.dumps(payload))
+
+    def test_skipping_a_complete_issue_does_not_parse_its_payload(self, tmp_path):
+        import connectors.jira.scripts.backfill as backfill_mod
+
+        backfill = self._make_backfill(tmp_path)
+        self._write_existing(backfill, "PROJ-603", _issue_with_comments(total=3, embedded=3, issue_key="PROJ-603"))
+
+        boom = AssertionError("the skip decision parsed the whole stored issue payload")
+        with (
+            patch.object(backfill_mod.json, "load", side_effect=boom),
+            patch.object(backfill_mod.json, "loads", side_effect=boom),
+            patch.object(backfill, "fetch_issue") as fetch,
+        ):
+            ok = backfill.process_issue("PROJ-603", skip_existing=True)
+
+        assert ok is True
+        fetch.assert_not_called()
+        assert backfill.stats["skipped"] == 1
+
+    def test_dry_run_counts_the_same_issues_a_real_run_would_skip(self, tmp_path):
+        """``--dry-run`` counted `existing` with a bare ``.exists()`` while a real
+        run re-fetches anything marked incomplete, so dry-run under-reported what
+        the download would actually do. Both must ask the same predicate."""
+        from connectors.jira.scripts.backfill import would_skip_issue
+
+        backfill = self._make_backfill(tmp_path)
+
+        marked = _issue_with_comments(total=190, embedded=124, issue_key="PROJ-604")
+        marked["_comments_incomplete"] = True
+        self._write_existing(backfill, "PROJ-604", marked)
+        self._write_existing(backfill, "PROJ-605", _issue_with_comments(total=3, embedded=3, issue_key="PROJ-605"))
+
+        assert would_skip_issue(backfill.issues_dir, "PROJ-604") is False
+        assert would_skip_issue(backfill.issues_dir, "PROJ-605") is True
+        assert would_skip_issue(backfill.issues_dir, "PROJ-606") is False

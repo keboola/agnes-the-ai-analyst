@@ -460,3 +460,74 @@ def test_incremental_writes_partial_comments_when_nothing_stored(tmp_path):
         "A first fetch that hit a pagination failure wrote no comments at all — "
         "preserve semantics fired with nothing to preserve"
     )
+
+
+def test_incremental_preserves_comments_stored_under_another_month(tmp_path):
+    """The preserve-vs-write probe asks "does this issue already have stored
+    comment rows I would destroy?" — a question that is not scoped to one month.
+
+    It looked only in the partition derived from the issue's ``created_at``, and
+    ``get_month_key(None)`` falls back to the CURRENT month. A payload whose
+    ``created`` is missing — the webhook fallback path is the realistic source,
+    since a webhook ``issue`` payload is not guaranteed to carry every field —
+    therefore probes an empty partition, concludes there is nothing to preserve,
+    and writes its known-truncated list there while the genuine thread stays in
+    the issue's real creation month. The analytics views glob ``month=*``
+    recursively, so both sets are visible and the comments are double-counted.
+    """
+    from datetime import datetime, timezone
+
+    raw_dir = tmp_path / "raw"
+    output_dir = tmp_path / "parquet"
+    attachments_dir = tmp_path / "attachments"
+    output_dir.mkdir()
+    attachments_dir.mkdir()
+
+    # The genuine, complete thread, stored under the issue's real creation month.
+    _seed_comments_parquet(
+        output_dir,
+        "2024-01",
+        [{"comment_id": f"c{i}", "issue_key": "PROJ-9", "body": f"comment {i}"} for i in range(190)],
+    )
+
+    # A marked payload with no parseable `created` — month_key falls back to now.
+    _write_raw_issue(
+        raw_dir,
+        "PROJ-9",
+        {
+            "key": "PROJ-9",
+            "id": "10009",
+            "fields": {
+                "summary": "test",
+                "status": {"name": "Open"},
+                "issuetype": {"name": "Bug"},
+                "attachment": [],
+                "comment": {
+                    "total": 190,
+                    "comments": [{"id": f"c{i}", "author": {}, "updateAuthor": {}, "body": {}} for i in range(124)],
+                },
+            },
+            "_comments_incomplete": True,
+        },
+    )
+
+    ok = transform_single_issue(
+        issue_key="PROJ-9",
+        raw_dir=raw_dir,
+        output_dir=output_dir,
+        attachments_dir=attachments_dir,
+    )
+    assert ok is True
+
+    current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+    assert current_month != "2024-01"
+
+    drifted = load_parquet_month(output_dir / "comments", current_month)
+    drifted_rows = 0 if drifted is None else int((drifted["issue_key"] == "PROJ-9").sum())
+    assert drifted_rows == 0, (
+        f"{drifted_rows} truncated comment rows were written to month={current_month} while the "
+        f"complete thread sits in month=2024-01 — the same issue's comments now exist twice"
+    )
+
+    original = load_parquet_month(output_dir / "comments", "2024-01")
+    assert original is not None and len(original) == 190, "the genuine stored thread was disturbed"

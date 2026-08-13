@@ -112,6 +112,55 @@ def load_parquet_month(parquet_dir: Path, month_key: str) -> pd.DataFrame | None
     return None
 
 
+def issue_has_stored_rows(table_dir: Path, issue_key: str) -> bool:
+    """Does *issue_key* have rows in ANY month partition of *table_dir*?
+
+    "Are there stored rows for this issue that I would destroy?" is not a
+    month-scoped question, and asking it of one partition gets it wrong whenever
+    the derived month key drifts. ``transform_single_issue`` derives that key
+    from the issue's ``created_at``, and ``get_month_key(None)`` falls back to
+    the CURRENT month — so a payload that arrives without a parseable ``created``
+    (the webhook fallback path is not guaranteed to carry every field) probes a
+    partition the issue was never written to, sees nothing, and concludes there
+    is nothing to preserve.
+
+    Reads only the ``issue_key`` column, so the cost is the column chunk rather
+    than the payload, and only the incomplete-marker path pays it. Deliberately
+    does NOT take the other months' ``parquet_month_lock``s: the caller already
+    holds one, and acquiring a second in an order that varies by issue is a
+    deadlock. A concurrent writer in another month can therefore make this
+    answer stale — which at worst means preserving when a write would also have
+    been fine, never the reverse, because the row this looks for is only ever
+    removed by an explicit deletion.
+    """
+    if not table_dir.exists():
+        return False
+
+    month_keys: set[str] = set()
+    for hive_subdir in table_dir.glob(f"{HIVE_PARTITION_PREFIX}=*"):
+        if hive_subdir.is_dir():
+            month_keys.add(hive_subdir.name.split("=", 1)[1])
+    for flat_file in table_dir.glob("*.parquet"):
+        month_keys.add(flat_file.stem)
+
+    for month_key in sorted(month_keys):
+        parquet_file = _hive_dir(table_dir, month_key) / "data.parquet"
+        if not parquet_file.exists():
+            parquet_file = _flat_path(table_dir, month_key)
+        if not parquet_file.exists():
+            continue
+        try:
+            df = pd.read_parquet(parquet_file, columns=["issue_key"])
+        except Exception as e:
+            # A partition we cannot read is not evidence the issue is absent.
+            # Answer "stored" so the caller preserves rather than overwrites.
+            logger.warning(f"Could not probe {parquet_file} for {issue_key}: {e}")
+            return True
+        if bool((df["issue_key"] == issue_key).any()):
+            return True
+    return False
+
+
 def save_parquet_month(
     df: pd.DataFrame,
     schema: dict,
@@ -312,13 +361,16 @@ def transform_single_issue(
                 # (the JSON keeps the marker, so every later re-transform reads it
                 # again). With no stored rows for this issue, the partial list
                 # cannot regress anything and is strictly better than none.
+                #
+                # "No stored rows" is asked of every month, not just this one:
+                # `month_key` comes from the payload's `created_at` and falls back
+                # to the current month when that is missing, so a month-scoped
+                # probe would answer "nothing to preserve" for an issue whose
+                # thread is sitting in its real creation month — and then write
+                # the truncated list here, leaving the issue's comments in two
+                # partitions at once (the views glob `month=*` recursively).
                 existing_comments = load_parquet_month(output_dir / "comments", month_key)
-                has_stored_comments = (
-                    existing_comments is not None
-                    and not existing_comments.empty
-                    and "issue_key" in existing_comments.columns
-                    and bool((existing_comments["issue_key"] == issue_key).any())
-                )
+                has_stored_comments = issue_has_stored_rows(output_dir / "comments", issue_key)
                 if has_stored_comments or not partial_comments_records:
                     logger.warning(
                         f"Skipping comments upsert for {issue_key}: pagination incomplete "
