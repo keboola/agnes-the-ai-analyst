@@ -423,6 +423,20 @@ def egress_compose_mismatches(cfg: "ChatConfig") -> list[str]:
     sidecar, when compose holds the enforcing copy (Devin Review on #1148).
     """
     if cfg.docker_egress_mode != "allowlist":
+        # The allow-hosts knob reads like it turns the allowlist on, but only
+        # the mode does — set alone (mode defaults to "open") the hosts are
+        # silently ignored, and in "open" that misconfiguration fails open.
+        if cfg.docker_egress_allow_hosts:
+            consequence = (
+                "sandbox egress stays unrestricted"
+                if cfg.docker_egress_mode == "open"
+                else "sandboxes have no egress at all"
+            )
+            return [
+                f"chat.docker_egress_allow_hosts is set, but chat.docker_egress_mode is "
+                f"{cfg.docker_egress_mode!r}, so the allowlist is not enforced and "
+                f"{consequence} — set chat.docker_egress_mode: allowlist to enforce it"
+            ]
         return []
     out = []
     if cfg.docker_egress_allow_hosts:

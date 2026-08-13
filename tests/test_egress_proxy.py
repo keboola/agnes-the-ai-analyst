@@ -423,6 +423,20 @@ def test_compose_mismatches_are_silent_outside_allowlist_mode():
     assert egress_compose_mismatches(_cfg(docker_egress_mode="none", docker_network="custom")) == []
 
 
+def test_allow_hosts_without_allowlist_mode_is_reported():
+    """`docker_egress_allow_hosts` reads like it turns the allowlist on, but
+    only `docker_egress_mode: allowlist` does. Set alone — the mode defaults
+    to `open` — the hosts are silently ignored and egress stays unrestricted,
+    which is the one shape of this misconfiguration that fails open."""
+    from app.chat.config import egress_compose_mismatches
+
+    for mode in ("open", "none"):
+        msgs = egress_compose_mismatches(_cfg(docker_egress_mode=mode, docker_egress_allow_hosts=["api.example.com"]))
+        assert len(msgs) == 1, f"mode={mode!r} should report exactly the ignored allowlist"
+        assert "docker_egress_mode: allowlist" in msgs[0]
+        assert mode in msgs[0]
+
+
 def test_a_renamed_docker_network_is_reported_as_total_egress_failure():
     """The knob reads as ordinary, but compose pins the proxy to
     agnes-apps-internal — sandboxes elsewhere have no route out at all."""
