@@ -64,6 +64,19 @@ and must still resolve. That is what the allowlist means everywhere else — it
 is an address-class declaration, not a statement about transport or existence
 — and a wider reading would let one listed name opt out of most of the posture
 the operator just turned on.
+
+**Configuration-time-only is a real gap (#1216).** A row registered before
+this module existed, or before ``mcp.source_url_strict`` was turned on, keeps
+its url through an unrelated edit — the update handler validates only when a
+write puts a (new) address in front of the credentials, not on every save (see
+``test_an_unrelated_edit_does_not_revalidate_an_already_live_url``). Closing
+that at the two runtime forwards needs its own change: it turns a working
+integration into a refused one with no prior warning, which wants operator
+coordination, not a silent tightening. :func:`check_source_url_dns_free` is
+the first half of the answer — the scheme/literal-IP checks factored out so a
+hot forward path, or a sweep/report over every registered row, can run them
+with no resolver at all, at the cost of answering "unknown" (not "safe") for
+an ordinary hostname it never resolves.
 """
 
 from __future__ import annotations
@@ -143,6 +156,89 @@ def _classify(ip_str: str) -> Tuple[bool, Reach, str]:
     return True, "public", ""
 
 
+def _prevalidate(
+    url: str,
+    *,
+    strict: bool,
+    allowed_hosts: frozenset[str] | None,
+):
+    """The scheme/host/strict-transport checks shared by both entry points.
+
+    Returns ``(verdict, parts, host, strict_public)``. ``verdict`` is set
+    (and the other three are throwaway) the moment the input can be refused
+    with no resolver at all — malformed url, bad scheme, missing host, or
+    strict mode's https demand. Otherwise ``verdict`` is ``None`` and the
+    caller continues with a validated ``parts``/``host``.
+    """
+    if not (url or "").strip():
+        return UrlVerdict(False, "missing_url"), None, "", False
+    try:
+        parts = urlparse(url)
+    except ValueError as exc:
+        return UrlVerdict(False, f"bad_url: {exc}"), None, "", False
+
+    if parts.scheme not in ("http", "https"):
+        return UrlVerdict(False, f"unsupported_scheme: {parts.scheme or '(none)'}"), None, "", False
+    host = parts.hostname or ""
+    if not host:
+        return UrlVerdict(False, "missing_host"), None, "", False
+
+    # An operator-declared internal host is exempt from strict mode's
+    # public-address demand — but NOT from anything else. It still may not be a
+    # metadata endpoint, it still must be https, and it still must resolve; the
+    # allowlist says "this internal host is trusted", not "skip the checks".
+    #
+    # `security.ssrf_allowed_hosts` is an ADDRESS-CLASS allowlist everywhere
+    # else it is consulted (`_validate_url_not_private`) — it exempts a host
+    # from the private-address refusal and says nothing about transport or
+    # existence. Carrying it into the https and resolvability demands would
+    # widen its established meaning, and would make one listed host quietly
+    # opt out of most of strict mode (/agnes-review + Devin on #1204).
+    strict_public = strict and host.lower() not in (allowed_hosts or frozenset())
+
+    if strict and parts.scheme != "https":
+        return UrlVerdict(False, "strict_mode_requires_https"), None, "", False
+
+    return None, parts, host, strict_public
+
+
+def check_source_url_dns_free(
+    url: str,
+    *,
+    strict: bool = False,
+    allowed_hosts: frozenset[str] | None = None,
+) -> UrlVerdict:
+    """The subset of :func:`check_source_url` that needs no resolver at all.
+
+    Scheme, and a literal IP in the url, are judged exactly as the full check
+    judges them — that is what stops ``http://169.254.169.254/mcp`` (#1154)
+    regardless of whether a resolver is even reachable from the calling seam.
+    An ordinary HOSTNAME url cannot be judged without DNS, so it comes back
+    ``ok=True, reach="unknown"`` — an "I could not tell" answer, not "I
+    checked and it's fine".
+
+    Exists for two callers that must not pay for (or wait on) a blocking
+    ``getaddrinfo``: a hot forward path re-checking an already-configured row
+    on every dial, and an admin-facing sweep/report over every registered row
+    (#1216) — a list endpoint iterating N sources cannot fire N resolver calls
+    and stay a list endpoint.
+    """
+    verdict, parts, host, strict_public = _prevalidate(url, strict=strict, allowed_hosts=allowed_hosts)
+    if verdict is not None or parts is None:
+        # `parts is None` only when `verdict` already is (see `_prevalidate`);
+        # spelled out so a type checker does not have to trust the pairing.
+        return verdict or UrlVerdict(False, "bad_url")
+
+    literal = _as_literal_ip(host)
+    if literal is not None:
+        routable, reach, reason = _classify(literal)
+        if not routable:
+            return UrlVerdict(False, reason)
+        return _finish(parts.scheme, host, reach, strict_public=strict_public)
+
+    return UrlVerdict(True, reach="unknown")
+
+
 def check_source_url(
     url: str,
     *,
@@ -162,46 +258,24 @@ def check_source_url(
     resolves through ``socket.getaddrinfo``, which BLOCKS — an async caller
     must run this in a thread (same hazard, same remedy, as
     ``set_oauth_client_config``).
+
+    Delegates its scheme/literal-IP judgment to
+    :func:`check_source_url_dns_free` so the two cannot drift; this function
+    adds only the resolver-dependent tail for an ordinary hostname.
     """
-    if not (url or "").strip():
-        return UrlVerdict(False, "missing_url")
-    try:
-        parts = urlparse(url)
-    except ValueError as exc:
-        return UrlVerdict(False, f"bad_url: {exc}")
+    dns_free = check_source_url_dns_free(url, strict=strict, allowed_hosts=allowed_hosts)
+    if not dns_free.ok or dns_free.reach != "unknown":
+        # Either refused already, or a literal IP fully judged without a
+        # resolver — in both cases the DNS-free half is the final answer.
+        return dns_free
 
-    if parts.scheme not in ("http", "https"):
-        return UrlVerdict(False, f"unsupported_scheme: {parts.scheme or '(none)'}")
+    # `dns_free` re-did the cheap parsing internally; re-parsing here is not a
+    # second source of truth for the *rules* (those all live in
+    # `_prevalidate`/`_finish`), only for the `parts`/`host`/`strict_public`
+    # values this tail needs — and `dns_free.ok` already proved the url parses.
+    parts = urlparse(url)
     host = parts.hostname or ""
-    if not host:
-        return UrlVerdict(False, "missing_host")
-
-    # An operator-declared internal host is exempt from strict mode's
-    # public-address demand — but NOT from anything else. It still may not be a
-    # metadata endpoint, it still must be https, and it still must resolve; the
-    # allowlist says "this internal host is trusted", not "skip the checks".
-    #
-    # `security.ssrf_allowed_hosts` is an ADDRESS-CLASS allowlist everywhere
-    # else it is consulted (`_validate_url_not_private`) — it exempts a host
-    # from the private-address refusal and says nothing about transport or
-    # existence. Carrying it into the https and resolvability demands would
-    # widen its established meaning, and would make one listed host quietly
-    # opt out of most of strict mode (/agnes-review + Devin on #1204).
     strict_public = strict and host.lower() not in (allowed_hosts or frozenset())
-
-    if strict and parts.scheme != "https":
-        return UrlVerdict(False, "strict_mode_requires_https")
-
-    # A literal IP needs no resolver, and MUST be judged even when one is
-    # unavailable — `http://169.254.169.254/mcp`, the url the issue is about,
-    # is exactly this shape. Doing it before the lookup also means the most
-    # dangerous input is the one case that can never fail open.
-    literal = _as_literal_ip(host)
-    if literal is not None:
-        routable, reach, reason = _classify(literal)
-        if not routable:
-            return UrlVerdict(False, reason)
-        return _finish(parts.scheme, host, reach, strict_public=strict_public)
 
     resolver = _resolver or _default_resolver
     try:

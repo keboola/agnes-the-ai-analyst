@@ -191,12 +191,25 @@ def _run_step(name: str, fn: Callable[[], None], report: list[dict]) -> None:
     code. ``typer.Exit`` raised by reused command internals is treated as a
     recorded outcome, not a fatal error.
     """
+    from cli.client import RedirectHardStop
+
     try:
         fn()
     except typer.Exit as exc:  # reused internals signal via exit codes
         code = getattr(exc, "exit_code", 0)
         if code not in (0, None):
             report.append({"stage": name, "status": "error", "detail": f"exit_code={code}"})
+    except RedirectHardStop as exc:
+        # Opting in by name: this does not derive from `Exception`, so the
+        # clause below never sees it. Before, it was a `sys.exit(2)` that
+        # walked through every handler here and ended the run mid-way —
+        # taking the report with it, since that is written after the last
+        # step. The step isolation this function exists for now covers it.
+        #
+        # The version floor next door is deliberately NOT opted into: a
+        # server that refuses this CLI version must stop the run, not become
+        # one row while the remaining steps keep talking to it.
+        report.append({"stage": name, "status": "error", "detail": exc.user_message})
     except Exception as exc:  # noqa: BLE001 — best-effort by design
         report.append({"stage": name, "status": "error", "detail": f"{type(exc).__name__}: {exc}"})
 
@@ -207,11 +220,39 @@ def _run_step(name: str, fn: Callable[[], None], report: list[dict]) -> None:
 def _step_cli(*, quiet: bool, report: list[dict]) -> None:
     from cli.commands import self_upgrade as su
     from cli.update_check import UpdateInfo
+    from cli.upgrade_status import record_outcome
 
     info = su._resolve_info(force=False)
+    if isinstance(info, su._Redirected):
+        # THIS is the unattended path: `agnes init` installs one detached
+        # `agnes update --quiet` as the SessionStart hook, not
+        # `agnes self-upgrade`. Folding a redirect into "already current /
+        # offline" below would keep the falsely reassuring no-op alive on the
+        # only path that runs by itself — and skip `record_outcome`, so the
+        # #478 counter (the sole channel a silent path has) would never move.
+        # (Devin Review on #1275.)
+        record_outcome(success=False, reason=info.reason)
+        report.append(
+            {
+                "stage": "cli",
+                "status": "error",
+                "detail": f"{info.reason}; run `agnes self-upgrade` for the remedy",
+            }
+        )
+        return
+    if info is None:
+        # Genuinely current — a probe that completed and concluded "nothing to
+        # do" is a healthy pipeline, so reset the #478 counter the same way
+        # the interactive command does. Without this, a redirect counted here
+        # while the CLI happened to be current kept warning "server moved"
+        # after the server was fixed. (Devin Review on #1275.)
+        record_outcome(success=True)
+        report.append({"stage": "cli", "status": "ok", "detail": "already current"})
+        return
     if not isinstance(info, UpdateInfo):
-        # CLI already current, offline, or unreachable — nothing to swap.
-        report.append({"stage": "cli", "status": "ok", "detail": "already current / offline"})
+        # Offline / unreachable — a transient blip must neither count as a
+        # failure nor clear an accumulated one; the counter stays untouched.
+        report.append({"stage": "cli", "status": "ok", "detail": "offline"})
         return
     # `_do_install_with_smoke_and_rollback` records the upgrade outcome itself
     # (with a reason) — we only translate the return code into a report line.

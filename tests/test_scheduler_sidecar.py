@@ -482,7 +482,14 @@ class TestEnqueueMigratedJobs:
 
     @pytest.mark.parametrize(
         "name",
-        ["data-refresh", "marketplaces", "session-collector", "corporate-memory", "ducklake-maintenance"],
+        [
+            "data-refresh",
+            "marketplaces",
+            "session-collector",
+            "corporate-memory",
+            "ducklake-maintenance",
+            "jira-org-refresh",
+        ],
     )
     def test_migrated_row_uses_short_enqueue_timeout(self, name):
         """Enqueueing just inserts a row and returns 202 — the work no
@@ -504,6 +511,7 @@ class TestEnqueueMigratedJobs:
             "session-collector",
             "corporate-memory",
             "ducklake-maintenance",
+            "jira-org-refresh",
         }
         for j in build_jobs():
             if j[0] in migrated:

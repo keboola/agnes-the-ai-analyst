@@ -214,6 +214,10 @@ def test_force_offline_exits_1_with_stderr():
     with (
         patch("cli.commands.self_upgrade.check", return_value=None),
         patch("cli.commands.self_upgrade.get_server_url", return_value="http://server.test"),
+        # The redirect probe runs on every check()->None path now; unpatched it
+        # would GET the real configured server and can write the real
+        # upgrade_status.json. (Devin Review on #1275, third round.)
+        patch("cli.commands.self_upgrade._probe_redirect", return_value=None),
         patch("cli.commands.self_upgrade._invalidate_update_cache"),
     ):
         result = runner.invoke(app, ["self-upgrade", "--force"])
@@ -229,6 +233,7 @@ def test_offline_without_force_is_silent():
     pins that self-upgrade does not add a `cannot reach …` error.)"""
     with (
         patch("cli.commands.self_upgrade.check", return_value=None),
+        patch("cli.commands.self_upgrade._probe_redirect", return_value=None),
         patch("cli.commands.self_upgrade._invalidate_update_cache"),
     ):
         result = runner.invoke(app, ["self-upgrade"])
@@ -248,6 +253,7 @@ def test_offline_without_force_does_not_touch_failure_counter():
     `record_outcome(False)` — we have no opinion."""
     with (
         patch("cli.commands.self_upgrade.check", return_value=None),
+        patch("cli.commands.self_upgrade._probe_redirect", return_value=None),
         patch("cli.commands.self_upgrade._invalidate_update_cache"),
         patch("cli.commands.self_upgrade.record_outcome") as mock_record,
     ):

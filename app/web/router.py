@@ -44,6 +44,7 @@ from app.instance_config import (
     get_data_apps_config,
     get_studio_enabled,
     get_agent_profiles_enabled,
+    get_mcp_connector_ui_enabled,
     feature_enabled,
 )
 from src.repositories import (
@@ -898,6 +899,10 @@ def _build_context(
     # "My agents" nav entry visibility — instance-level toggle, mirrors
     # can_studio. The hard gate lives on the /agents route + the API routers.
     ctx["can_agent_profiles"] = get_agent_profiles_enabled()
+    # MCP connector surface visibility (#1024) — instance-level toggle, same
+    # pattern. The hard gate lives on /me/ai-connector, /mcp-connect and the
+    # MCP tab of /how-it-works#connect; this only hides the entry points.
+    ctx["can_mcp_connector_ui"] = get_mcp_connector_ui_enabled()
     # Flex all extra context values for template compatibility
     # (but skip ones we just populated — extras with the same key win)
     for k, v in extra.items():
@@ -1335,8 +1340,17 @@ async def me_ai_connector_page(
     instance's menu says "Learn how it works", so a bookmark or alias hop
     must not resurrect the standalone page there (Devin Review on #1200).
     302, not 301: a permanent redirect is cached by the browser forever, so
-    it would be very hard to walk back if the consolidation is revisited."""
+    it would be very hard to walk back if the consolidation is revisited.
+
+    Checked before either chrome branch (#1024): with the MCP connector UI
+    hidden (``mcp.connector_ui_enabled: false`` — a VPN/intranet-only instance
+    whose cloud-side MCP clients can never reach the endpoint), this whole
+    page IS the surface being hidden, so both branches bounce home rather
+    than one of them rendering it anyway."""
     from fastapi.responses import RedirectResponse
+
+    if not get_mcp_connector_ui_enabled():
+        return RedirectResponse("/", status_code=302)
 
     if get_ui_layout() == "rail" or _is_paper_theme():
         return RedirectResponse("/how-it-works#connect", status_code=302)
@@ -1421,6 +1435,14 @@ async def mcp_connect_page(
     # `/me/ai-connector` owns it. Both links are guarded by
     # `tests/test_web_nav_agents.py`; don't drop them. (Comment, not docstring:
     # FastAPI copies docstrings into the OpenAPI description.)
+    #
+    # Same #1024 gate as /me/ai-connector — this page IS install instructions
+    # for the surface being hidden.
+    if not get_mcp_connector_ui_enabled():
+        from fastapi.responses import RedirectResponse
+
+        return RedirectResponse("/", status_code=302)
+
     ctx = _build_context(
         request,
         user=user,
@@ -4793,6 +4815,10 @@ def _chrome_ctx(request: Request, user: Optional[dict]) -> dict:
         # can_studio (the hard gate lives on the /agents route + the API
         # routers, this only hides the entry point).
         "can_agent_profiles": get_agent_profiles_enabled(),
+        # MCP connector surface visibility (#1024), same reason as
+        # can_agent_profiles above — set independently here so it survives on
+        # every _chrome_ctx page too.
+        "can_mcp_connector_ui": get_mcp_connector_ui_enabled(),
         # Same `config` object as _build_context — templates read
         # config.INSTANCE_NAME in <title> blocks and the header logo, which
         # rendered empty on _chrome_ctx pages ("Studio — " title).
