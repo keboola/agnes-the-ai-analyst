@@ -142,8 +142,11 @@ def refresh_organizations(
       baseline to reason about.
     * ``cloud_id_unresolved`` — the site's cloud id cannot be resolved, so no
       organization can be read at all.
+    * ``all_fetches_failed`` — nothing fresh resolved: every fetch failed, every
+      preserved row was a copy of what is on disk, or every enumerated id 404'd
+      (enumerable via the Service Desk API but unreadable via CSM). Not cleared
+      by ``force`` — unreadable data is not a truncate anyone asked for.
     * ``enumeration_empty`` — enumeration returned nothing while the table holds rows.
-    * ``all_fetches_failed`` — nothing fresh resolved.
     * ``mass_removal_guard`` — the sweep would drop more than
       ``MAX_REMOVED_FRACTION`` of the existing rows.
 
@@ -196,6 +199,7 @@ def refresh_organizations(
     # organization the failed page would have contained.
     org_ids = service.fetch_organization_ids()
     stats["organizations"] = len(org_ids)
+    forced_truncate = False
 
     if not org_ids:
         # An empty list against an existing table is the one "nothing resolved" shape
@@ -249,7 +253,10 @@ def refresh_organizations(
             TABLE_NAME,
             len(existing),
         )
-        stats["removed"] = len(existing)
+        # Carries the intentional truncate past the "nothing resolved" check below —
+        # the one zero-written sweep that is allowed to publish. The removal count
+        # itself is derived later from what actually left the table.
+        forced_truncate = True
 
     if dry_run:
         configured = [column for _, column in organization_detail_fields()]
@@ -290,6 +297,7 @@ def refresh_organizations(
             return stats
 
     records: list[dict] = []
+    not_found = 0
     # One client for the whole sweep. Per-request clients cost a fresh TLS handshake
     # (and an SSL context rebuild) per organization — measured at ~100ms each, i.e.
     # a third of the wall clock on a few-hundred-organization site, entirely
@@ -316,25 +324,37 @@ def refresh_organizations(
                 continue
 
             if raw_org is None:
-                # 404: the organization no longer exists, so it should leave the table.
-                logger.info("Organization %s no longer exists — dropping from %s", org_id, TABLE_NAME)
-                stats["removed"] += 1
+                # 404: the organization is enumerable but not readable, so it leaves
+                # the table. Counted locally, NOT as a resolution: a 404 on an
+                # enumerated id means unreadable (wrong cloud id, or a token that can
+                # list via the Service Desk API but not read via CSM), never a
+                # confirmed deletion — a deleted organization is simply absent from
+                # enumeration. Treating it as fresh data let an all-404 first run
+                # publish an empty table as a healthy nightly (Devin Review on #1274).
+                logger.info("Organization %s not readable via CSM — dropping from %s", org_id, TABLE_NAME)
+                not_found += 1
                 continue
 
             records.append(transform_organization(raw_org))
             stats["written"] += 1
 
-    # Nothing fresh resolved. Two shapes: a first run where everything failed (no
-    # records at all) and an outage on an existing table, where every row in `records`
-    # is a preserved copy of what is already on disk. Both are total failures, and the
-    # second one used to fall through and republish a byte-identical parquet, refresh
-    # `_meta` and enqueue a rebuild — work that publishes nothing, on the one code path
-    # where the API is known to be down (Devin Review on #1274).
-    if not stats["written"] and not stats["removed"]:
+    # Nothing fresh resolved. Three shapes: a first run where everything failed (no
+    # records at all), an outage on an existing table, where every row in `records`
+    # is a preserved copy of what is already on disk, and a sweep where every
+    # enumerated id 404'd. All are total failures: the second used to fall through
+    # and republish a byte-identical parquet, and the third used to pass on its 404
+    # count and publish an *empty* table as a healthy nightly — which also left the
+    # baseline empty, disabling the mass-removal guard on every later run (both
+    # Devin Review on #1274). `forced_truncate` is the one legitimate zero-written
+    # publish: an operator pushing an intentional empty-enumeration truncate through.
+    # Not cleared by force otherwise — an all-404 sweep is unreadable data, not a
+    # truncate anyone asked for.
+    if not stats["written"] and not forced_truncate:
         logger.error(
-            "No organization rows resolved (%d failed, %d preserved) — leaving %s untouched",
+            "No organization rows resolved (%d failed, %d preserved, %d 404'd) — leaving %s untouched",
             stats["failed"],
             stats["preserved"],
+            not_found,
             TABLE_NAME,
         )
         stats["skipped_reason"] = "all_fetches_failed"
@@ -370,16 +390,15 @@ def refresh_organizations(
             100 * MAX_REMOVED_FRACTION,
             len(records),
             len(org_ids),
-            stats["removed"],
+            not_found,
         )
         stats["skipped_reason"] = "mass_removal_guard"
         stats["elapsed_sec"] = round(time.time() - start, 1)
         return stats
 
-    # Up to here `removed` counted explicit 404s — the meaning the "nothing resolved"
-    # check and the guard's log line need. What the run reports is what actually left
-    # the table: every existing row the published records no longer carry, whether it
-    # 404'd or was simply omitted from the enumeration.
+    # The run reports as removed exactly what left the table: every existing row the
+    # published records no longer carry, whether it 404'd or was simply omitted from
+    # the enumeration.
     stats["removed"] = dropped
 
     table_dir.mkdir(parents=True, exist_ok=True)

@@ -878,6 +878,52 @@ class TestDevinReviewFindings:
         ours = next(s for s, names in daily.items() if "jira-org-refresh" in names)
         assert daily[ours] == ["jira-org-refresh"], f"{ours} is shared with {daily[ours]}"
 
+    def test_all_404_first_run_refuses_instead_of_publishing_empty(self, tmp_path: Path, org_env: None) -> None:
+        # A token that can enumerate via the Service Desk API but not read via CSM
+        # 404s every id. With no existing table the mass-removal guard is skipped,
+        # so this used to publish an empty parquet and finalize the nightly job
+        # `done` — and because the baseline then stays empty, the guard stayed
+        # disabled and the empty publish repeated silently forever
+        # (Devin Review on #1274).
+        from connectors.jira import organizations as orgs
+
+        svc = _fake_service(["1", "2"], [None, None])
+        with (
+            patch.object(orgs, "get_jira_service", return_value=svc),
+            patch.object(orgs, "update_meta"),
+            patch.object(orgs.time, "sleep"),
+        ):
+            stats = orgs.refresh_organizations(extract_dir=tmp_path)
+
+        assert stats["skipped_reason"] == "all_fetches_failed"
+        assert not (tmp_path / "data" / "organizations" / "data.parquet").exists()
+
+    def test_all_404_refuses_even_with_force(self, tmp_path: Path, org_env: None) -> None:
+        # --force exists to push an *intentional* truncate through the two refusals
+        # that never self-clear. An all-404 sweep is enumerated-but-unreadable, not
+        # a truncate anyone asked for, so force must not publish it either.
+        from connectors.jira import organizations as orgs
+
+        four = [_org(str(i), f"Org {i}", f"ACC-{i}") for i in range(1, 5)]
+        svc = _fake_service(["1", "2", "3", "4"], four)
+        with (
+            patch.object(orgs, "get_jira_service", return_value=svc),
+            patch.object(orgs, "update_meta"),
+            patch.object(orgs.time, "sleep"),
+        ):
+            orgs.refresh_organizations(extract_dir=tmp_path)
+
+        svc2 = _fake_service(["1", "2", "3", "4"], [None, None, None, None])
+        with (
+            patch.object(orgs, "get_jira_service", return_value=svc2),
+            patch.object(orgs, "update_meta"),
+            patch.object(orgs.time, "sleep"),
+        ):
+            stats = orgs.refresh_organizations(extract_dir=tmp_path, force=True)
+
+        assert stats["skipped_reason"] == "all_fetches_failed"
+        assert len(_read_table(tmp_path)) == 4, "the existing table must survive untouched"
+
     def test_mass_removal_guard_refuses_to_publish(self, tmp_path: Path, org_env: None) -> None:
         """A partial-visibility failure 404s some organizations without touching
         `failed`, which would silently delete the invisible half."""
