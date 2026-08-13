@@ -109,9 +109,11 @@ def _print_source_table(rows: list[dict]) -> None:
     # DNS-free url-policy sweep/report (#1216 part 1) — `would_refuse` means
     # the CURRENT policy would reject this row's url if it were saved today;
     # it stays live because `check_source_url` only gates configuration-time
-    # writes. Blank for stdio (the API returns `null`: the url is inert
-    # there) and for an ordinary hostname the DNS-free check cannot judge.
-    table.add_column("URL POLICY")
+    # writes. Blank only for stdio (the API returns `null`: the url is inert
+    # there); an ordinary hostname the DNS-free check cannot judge shows
+    # "ok". `no_wrap` so a narrow render squeezes ENDPOINT, never folds the
+    # verdict mid-word.
+    table.add_column("URL POLICY", no_wrap=True)
     for row in rows:
         endpoint = row.get("url") or row.get("command") or ""
         args = row.get("args") or []
