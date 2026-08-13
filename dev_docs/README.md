@@ -12,7 +12,6 @@ This folder contains documentation for **developers and server administrators** 
 - `security.md` — security audit report and hardening guidelines
 
 ### Application Development
-- `desktop-app.md` — macOS desktop app architecture and development
 - `telegram_bot.md` — Telegram notification bot technical docs
 - `design-system.md` — UI/UX design system for web applications
 - `insights.md` — Activity Center dashboard feature documentation
