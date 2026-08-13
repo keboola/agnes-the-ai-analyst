@@ -94,6 +94,18 @@ EVENTS_BLANK_DELTAS_ONLY = [
     {"type": "RUN_FINISHED"},
 ]
 
+#: The real runner's idle-watchdog partial-save emits the `error` frame
+#: FIRST (`app/chat/runner.py` — `turn_idle_timeout`) and only THEN the
+#: partial `assistant_message` + `done`, which the SSE mapper turns into
+#: RUN_ERROR → TEXT_MESSAGE_END → RUN_FINISHED. A client that treats
+#: RUN_ERROR as end-of-stream never sees the partial text.
+EVENTS_ERROR_THEN_PARTIAL = [
+    {"type": "RUN_STARTED"},
+    {"type": "RUN_ERROR", "message": "no agent activity for 300s; interrupting the turn"},
+    {"type": "TEXT_MESSAGE_END", "content": "partial answer so far"},
+    {"type": "RUN_FINISHED"},
+]
+
 
 class TestOnce:
     def test_once_prints_assembled_answer_and_exits_zero(self):
@@ -146,6 +158,23 @@ class TestOnce:
         assert result.exit_code == 0
         assert "echo: hi" in result.output
         assert "(no answer)" not in result.output
+
+    def test_watchdog_partial_after_run_error_is_still_shown(self):
+        """The idle-watchdog partial-save arrives AFTER the error frame
+        (runner emits `error` → partial `assistant_message` → `done`, i.e.
+        RUN_ERROR → TEXT_MESSAGE_END → RUN_FINISHED on the wire). The
+        client must drain the stream past RUN_ERROR so the partial text
+        the user already earned is shown next to the error, not dropped."""
+        with (
+            patch("cli.commands.chat.api_post", return_value=_resp(201, {"session_id": "sess-1"})),
+            patch("cli.commands.chat.api_post_sse", return_value=iter(EVENTS_ERROR_THEN_PARTIAL)),
+            patch("cli.commands.chat.api_delete", return_value=_resp(204)),
+        ):
+            result = runner.invoke(app, ["chat", "myagent", "--once", "hi"])
+
+        assert "partial answer so far" in result.output
+        assert "no agent activity" in result.output
+        assert result.exit_code != 0
 
     def test_run_error_event_exits_nonzero_with_rendered_message(self):
         with (
