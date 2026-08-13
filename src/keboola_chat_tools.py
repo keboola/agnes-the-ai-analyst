@@ -30,6 +30,7 @@ by running the thing (2026-08-10):
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import re
 from pathlib import Path
@@ -38,6 +39,8 @@ from typing import Any, Dict, List
 # Upstream package. Bump deliberately — the tool surface the agent sees is a
 # function of this pin, so a bump is a user-visible change and wants a
 # CHANGELOG bullet.
+logger = logging.getLogger(__name__)
+
 KEBOOLA_MCP_PACKAGE = "keboola-mcp-server"
 KEBOOLA_MCP_VERSION = "1.74.6"
 
@@ -173,8 +176,23 @@ def merge_env(existing: Dict[str, str] | None, derived: Dict[str, str]) -> Dict[
     One definition because there are two callers (enable and the
     unrelated-edit resync); the same merge written twice is the shape that
     gets fixed on one path and not the other.
+
+    The cost of that rule is real and is logged rather than hidden: an admin
+    who typed one of these keys directly onto the MCP source entry loses it
+    here, on a save they made about something else. Keeping it is not an
+    option — it is the same value the connection is authoritative for, so
+    preserving it would resurrect exactly the stale workspace this rule
+    exists to clear. Saying so in the log is, and the connection is where
+    that key is edited. (Devin Review on this PR.)
     """
     kept = {k: v for k, v in (existing or {}).items() if k not in DERIVED_ENV_KEYS}
+    dropped = sorted(k for k in (existing or {}) if k in DERIVED_ENV_KEYS and k not in derived)
+    if dropped:
+        logger.info(
+            "derived MCP source: dropping connection-owned env %s — the connection no longer sets it; "
+            "edit it on the connection, not on the source entry",
+            ", ".join(dropped),
+        )
     kept.update(derived)
     return kept
 

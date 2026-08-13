@@ -1932,7 +1932,16 @@ async def add_mcp_source_grant(
         raise HTTPException(status_code=404, detail="user_group_not_found")
 
     repo = tool_registry_repo()
-    tools = repo.list_for_source(source_id)
+    # Only ENABLED tools. A disabled row is invisible to the agent today
+    # (`list_by_mode(..., enabled_only=True)` builds the passthrough surface),
+    # so granting it writes an access decision nobody can see the effect of —
+    # and re-enabling the tool later makes it reachable for the granted group
+    # without anyone granting again. Grant narrow. Revoking, below, stays wide
+    # on purpose: taking access away must not skip a row because it happens to
+    # be switched off. (Devin Review on this PR.)
+    all_tools = repo.list_for_source(source_id)
+    tools = [t for t in all_tools if t.get("enabled", True)]
+    skipped_disabled = len(all_tools) - len(tools)
     if not tools:
         # Saying "granted" over an empty set would report success for a source
         # whose tools were never registered — the failure this whole feature
@@ -1942,8 +1951,9 @@ async def add_mcp_source_grant(
             detail={
                 "error": "no_tools_registered",
                 "message": (
-                    f"Source {source_id!r} has no registered tools to grant. "
-                    "Register them first (for a connected project, turn chat "
+                    f"Source {source_id!r} has no enabled tools to grant"
+                    + (f" ({skipped_disabled} are disabled)" if skipped_disabled else "")
+                    + ". Register them first (for a connected project, turn chat "
                     "tools on), then grant."
                 ),
             },
@@ -1963,7 +1973,12 @@ async def add_mcp_source_grant(
         user["id"],
         "mcp_source.grant.add",
         f"mcp_source:{source_id}",
-        {"group_id": group_id, "granted": len(granted), "already_granted": len(already)},
+        {
+            "group_id": group_id,
+            "granted": len(granted),
+            "already_granted": len(already),
+            "skipped_disabled": skipped_disabled,
+        },
     )
     return {
         "granted": len(granted),
@@ -1975,6 +1990,9 @@ async def add_mcp_source_grant(
         # reporting only "granted 37 of 37" would promise the group an access
         # they do not have. Same reasoning as `tools_admin_only` on enable.
         "admin_only": sum(1 for t in tools if t.get("mutating")),
+        # Said out loud rather than silently omitted: "granted 5 of 5" over a
+        # source with three switched-off tools reads as complete coverage.
+        "skipped_disabled": skipped_disabled,
     }
 
 

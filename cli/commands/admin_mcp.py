@@ -398,6 +398,11 @@ def source_grant(
     )
     # A grant does not reach a mutating tool: the passthrough gate refuses
     # those for every non-admin anyway. Saying so beats the group finding out.
+    if body.get("skipped_disabled"):
+        typer.echo(
+            f"{body['skipped_disabled']} disabled tools were skipped — a grant on a "
+            "switched-off tool would take effect the moment someone re-enables it."
+        )
     if body.get("admin_only"):
         typer.echo(
             f"{body['admin_only']} of them are mutating and stay admin-only — a grant "

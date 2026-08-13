@@ -910,7 +910,8 @@ async function grantChatTools(id, sourceId) {
       // those for every non-admin regardless, so promising reach here would
       // be false for exactly the tools an analyst would notice missing.
       const gated = body.admin_only ? ` ${body.admin_only} are mutating and stay admin-only.` : "";
-      showToast(`Granted ${body.granted} of ${body.total} tools${extra}.${gated}`, true);
+      const off = body.skipped_disabled ? ` ${body.skipped_disabled} disabled tools were skipped.` : "";
+      showToast(`Granted ${body.granted} of ${body.total} tools${extra}.${gated}${off}`, true);
     } else {
       showToast("Failed: " + detailMessage(body, `HTTP ${r.status}`), false);
     }

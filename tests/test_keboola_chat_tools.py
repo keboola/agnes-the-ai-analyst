@@ -2169,3 +2169,90 @@ class TestWorkspaceSchemaFollowsTheConnection(TestChatToolsEndpoint):
 
         self._set_config(c, token, conn_id, {"stack_url": "https://connection.example.com/"})
         assert self._env(conn_id)["HTTPS_PROXY"] == "http://proxy.internal:3128"
+
+
+class TestBulkGrantSkipsDisabledTools(TestChatToolsEndpoint):
+    """A grant must not reach a switched-off tool.
+
+    A disabled row is invisible to the agent today — the passthrough surface is
+    `list_by_mode(..., enabled_only=True)` — so granting it records an access
+    decision with no visible effect, and re-enabling the tool later makes it
+    reachable for that group without anyone granting again. (Devin Review.)
+    """
+
+    GRANTS = "/api/admin/mcp-sources"
+
+    def _enabled_source_with_one_disabled(self, c, token, name):
+        conn_id = self._create_keboola(c, token, name=name)
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+        source_id = derived_source_id(conn_id)
+
+        from src.repositories import tool_registry_repo
+
+        repo = tool_registry_repo()
+        rows = repo.list_for_source(source_id)
+        off = rows[0]
+        repo.upsert(
+            tool_id=off["tool_id"],
+            source_id=source_id,
+            original_name=off["original_name"],
+            exposed_name=off["exposed_name"],
+            mode=off["mode"],
+            enabled=False,
+        )
+        return conn_id, source_id, off["tool_id"]
+
+    def _group(self):
+        from src.repositories import user_groups_repo
+
+        return user_groups_repo().get_by_name("Everyone")["id"]
+
+    def test_a_disabled_tool_is_not_granted(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        _, source_id, off_id = self._enabled_source_with_one_disabled(c, token, "kbc-grant-off")
+        gid = self._group()
+
+        body = c.post(f"{self.GRANTS}/{source_id}/grants", json={"group_id": gid}, headers=_auth(token)).json()
+
+        from src.repositories import tool_registry_repo
+
+        assert gid not in tool_registry_repo().grants_for_tool(off_id)
+        assert body["granted"] == len(FAKE_TOOLS) - 1
+        assert body["skipped_disabled"] == 1
+
+    def test_re_enabling_does_not_hand_it_over_silently(self, seeded_app):
+        """The whole point: the grant must not be waiting for the switch."""
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        _, source_id, off_id = self._enabled_source_with_one_disabled(c, token, "kbc-grant-off-then-on")
+        gid = self._group()
+        c.post(f"{self.GRANTS}/{source_id}/grants", json={"group_id": gid}, headers=_auth(token))
+
+        from src.repositories import tool_registry_repo
+
+        repo = tool_registry_repo()
+        row = repo.get(off_id)
+        repo.upsert(
+            tool_id=row["tool_id"],
+            source_id=row["source_id"],
+            original_name=row["original_name"],
+            exposed_name=row["exposed_name"],
+            mode=row["mode"],
+            enabled=True,
+        )
+        assert gid not in repo.grants_for_tool(off_id), "re-enabling handed the group a tool nobody granted"
+
+    def test_revoke_still_reaches_a_disabled_tool(self, seeded_app):
+        """Grant narrow, revoke wide — taking access away must not skip a row
+        because it happens to be switched off."""
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        _, source_id, off_id = self._enabled_source_with_one_disabled(c, token, "kbc-revoke-off")
+        gid = self._group()
+
+        from src.repositories import tool_registry_repo
+
+        repo = tool_registry_repo()
+        repo.add_grant(off_id, gid)  # however it got there — a prior release, a hand edit
+        assert repo.grants_for_tool(off_id) == [gid]
+
+        assert c.delete(f"{self.GRANTS}/{source_id}/grants/{gid}", headers=_auth(token)).status_code == 204
+        assert repo.grants_for_tool(off_id) == []
