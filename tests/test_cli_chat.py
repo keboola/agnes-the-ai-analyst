@@ -94,16 +94,19 @@ EVENTS_BLANK_DELTAS_ONLY = [
     {"type": "RUN_FINISHED"},
 ]
 
-#: The real runner's idle-watchdog partial-save emits the `error` frame
-#: FIRST (`app/chat/runner.py` — `turn_idle_timeout`) and only THEN the
-#: partial `assistant_message` + `done`, which the SSE mapper turns into
-#: RUN_ERROR → TEXT_MESSAGE_END → RUN_FINISHED. A client that treats
-#: RUN_ERROR as end-of-stream never sees the partial text.
-EVENTS_ERROR_THEN_PARTIAL = [
+#: A turn the idle watchdog interrupted after it had produced text
+#: (`app/chat/runner.py` — `turn_idle_timeout`): the partial-save
+#: `assistant_message` goes out first and the `error` frame after it, which
+#: the SSE mapper turns into TEXT_MESSAGE_END → RUN_ERROR. That order is
+#: the only one the server can deliver — RUN_ERROR is terminal, so
+#: `_event_stream` closes the response right after it and anything queued
+#: behind it never leaves the server (see
+#: `tests/test_agent_stream_end_to_end.py::test_a_wedged_turns_partial_answer_survives_the_error`
+#: for the same shape driven through the real mapper + wire).
+EVENTS_PARTIAL_THEN_ERROR = [
     {"type": "RUN_STARTED"},
-    {"type": "RUN_ERROR", "message": "no agent activity for 300s; interrupting the turn"},
     {"type": "TEXT_MESSAGE_END", "content": "partial answer so far"},
-    {"type": "RUN_FINISHED"},
+    {"type": "RUN_ERROR", "message": "no agent activity for 300s; interrupting the turn"},
 ]
 
 
@@ -159,15 +162,17 @@ class TestOnce:
         assert "echo: hi" in result.output
         assert "(no answer)" not in result.output
 
-    def test_watchdog_partial_after_run_error_is_still_shown(self):
-        """The idle-watchdog partial-save arrives AFTER the error frame
-        (runner emits `error` → partial `assistant_message` → `done`, i.e.
-        RUN_ERROR → TEXT_MESSAGE_END → RUN_FINISHED on the wire). The
-        client must drain the stream past RUN_ERROR so the partial text
-        the user already earned is shown next to the error, not dropped."""
+    def test_watchdog_partial_before_run_error_is_shown_with_the_error(self):
+        """A turn the idle watchdog interrupted still shows the text it
+        produced: the partial-save rides out as the TEXT_MESSAGE_END ahead
+        of the terminal RUN_ERROR (see `EVENTS_PARTIAL_THEN_ERROR`), and
+        nothing streamed incrementally, so the fallback print is the
+        analyst's one chance to see it. The error is still reported and
+        the exit code still non-zero — the partial is an addition to the
+        failure, not a replacement for it."""
         with (
             patch("cli.commands.chat.api_post", return_value=_resp(201, {"session_id": "sess-1"})),
-            patch("cli.commands.chat.api_post_sse", return_value=iter(EVENTS_ERROR_THEN_PARTIAL)),
+            patch("cli.commands.chat.api_post_sse", return_value=iter(EVENTS_PARTIAL_THEN_ERROR)),
             patch("cli.commands.chat.api_delete", return_value=_resp(204)),
         ):
             result = runner.invoke(app, ["chat", "myagent", "--once", "hi"])

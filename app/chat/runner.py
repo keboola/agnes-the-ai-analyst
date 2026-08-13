@@ -1138,6 +1138,41 @@ async def _consume_turn(client, *, tool_calls_per_turn: int = 50, gate: "Approva
                 continue
             if time.monotonic() < deadline:
                 continue
+            # Persist whatever the turn already produced: the `done` frame
+            # the outer loop emits next clears the manager's turn buffer,
+            # so without this the partial text the user already saw would
+            # vanish from history (parity with the crash path's
+            # partial-save).
+            #
+            # Emitted BEFORE the error frame, and that order is
+            # load-bearing: `error` maps to RUN_ERROR, which is terminal on
+            # the SSE seam (`app/api/agent_sse.py::SSE_TERMINAL_TYPES`;
+            # `app/api/agent_sessions.py::_event_stream` closes the response
+            # generator the moment it yields one). Emitted after the error,
+            # this frame was still persisted but never reached an API client
+            # — `agnes chat` showed the timeout and dropped the very text
+            # the analyst waited for. Chronologically it is also the truer
+            # order: the text was produced first, the turn failed after
+            # (Devin Review on this PR).
+            partial = "\n\n".join(t for t in collected_text if t.strip()) or "".join(streamed_pieces)
+            if partial:
+                _emit(
+                    {
+                        "type": "assistant_message",
+                        # Marked so a one-shot sink that renders only the
+                        # FIRST frame of a turn (services/slack_bot/sink.py's
+                        # EphemeralCommandSink) knows this one is not the
+                        # turn's last word and lets the `error` behind it
+                        # through too. Without the marker, moving this frame
+                        # ahead of the error would hand that surface a
+                        # truncated answer with no sign the turn timed out.
+                        "interrupted": True,
+                        "content": partial,
+                        "tokens_in": tokens_in,
+                        "tokens_out": tokens_out,
+                        "model": model,
+                    }
+                )
             _emit(
                 {
                     "type": "error",
@@ -1148,22 +1183,6 @@ async def _consume_turn(client, *, tool_calls_per_turn: int = 50, gate: "Approva
                     ),
                 }
             )
-            # Persist whatever the turn already produced: the `done` frame
-            # the outer loop emits next clears the manager's turn buffer,
-            # so without this the partial text the user already saw would
-            # vanish from history (parity with the crash path's
-            # partial-save).
-            partial = "\n\n".join(t for t in collected_text if t.strip()) or "".join(streamed_pieces)
-            if partial:
-                _emit(
-                    {
-                        "type": "assistant_message",
-                        "content": partial,
-                        "tokens_in": tokens_in,
-                        "tokens_out": tokens_out,
-                        "model": model,
-                    }
-                )
             try:
                 await client.interrupt()
             except Exception as exc:  # noqa: BLE001 — watchdog must not crash the runner

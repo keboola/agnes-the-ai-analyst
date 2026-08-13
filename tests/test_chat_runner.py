@@ -977,6 +977,17 @@ def test_idle_watchdog_interrupts_a_wedged_turn(monkeypatch):
     assert finals == ["querying…", "recovered"]
     assert len([f for f in emitted if f == {"type": "done"}]) == 2
 
+    # ...and the partial-save frame goes out BEFORE the error frame, not
+    # after it. `error` maps to RUN_ERROR, which is terminal on the SSE
+    # seam (`app/api/agent_sse.py::SSE_TERMINAL_TYPES` — `app/api/
+    # agent_sessions.py::_event_stream` closes the generator the moment it
+    # yields one), so anything emitted after the error never reaches an API
+    # client at all. Emitted first, the partial rides out as the
+    # TEXT_MESSAGE_END that precedes the terminal RUN_ERROR and the analyst
+    # keeps the text their timed-out turn already earned.
+    order = [f["type"] for f in emitted]
+    assert order.index("assistant_message") < order.index("error")
+
 
 def test_restore_context_appended_to_system_prompt(monkeypatch, tmp_path):
     """When the manager staged a restored-conversation transcript, the runner
@@ -989,9 +1000,16 @@ def test_restore_context_appended_to_system_prompt(monkeypatch, tmp_path):
     # accepted and observable.
     import dataclasses
 
-    fields = [(f, object, dataclasses.field(default=None)) for f in (
-        "permission_mode", "cwd", "setting_sources", "mcp_servers", "system_prompt",
-    )]
+    fields = [
+        (f, object, dataclasses.field(default=None))
+        for f in (
+            "permission_mode",
+            "cwd",
+            "setting_sources",
+            "mcp_servers",
+            "system_prompt",
+        )
+    ]
     fields.append(("include_partial_messages", bool, dataclasses.field(default=False)))
     mod.ClaudeAgentOptions = dataclasses.make_dataclass("ClaudeAgentOptions", fields)
 

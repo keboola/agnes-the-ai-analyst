@@ -19,7 +19,7 @@ import httpx
 import pytest
 
 import cli.client as client_mod
-from app.api.agent_sse import frame_to_agui, sse_bytes
+from app.api.agent_sse import SSE_TERMINAL_TYPES, frame_to_agui, sse_bytes
 
 
 @pytest.fixture(autouse=True)
@@ -59,14 +59,43 @@ NO_DELTA_RUNNER_FRAMES = [
 ]
 
 
+#: What the real runner's idle-watchdog puts on the bus when a turn wedges
+#: (`app/chat/runner.py` — the `turn_idle_timeout` branch): the partial-save
+#: `assistant_message` first, then the `error` frame, then the outer loop's
+#: `done`. The order is load-bearing, not incidental — `error` maps to
+#: RUN_ERROR, which `_event_stream` treats as terminal, so a partial emitted
+#: AFTER it would be dropped server-side and never reach any client.
+#: `tests/test_chat_runner.py::test_idle_watchdog_interrupts_a_wedged_turn`
+#: pins the emission order at the source.
+WATCHDOG_RUNNER_FRAMES = [
+    {"type": "ready"},
+    {"type": "assistant_message", "content": "Counting tables so far: 12", "model": "fake"},
+    {
+        "type": "error",
+        "kind": "turn_idle_timeout",
+        "message": "no agent activity for 300s; interrupting the turn (a tool call is likely stuck)",
+    },
+    {"type": "done"},
+]
+
+
 def _wire_bytes(frames) -> bytes:
-    """Serialize frames the way `app/api/agent_sessions.py::_event_stream` does."""
+    """Serialize frames the way `app/api/agent_sessions.py::_event_stream` does.
+
+    Including its stop rule: the generator breaks out of the drain loop the
+    moment it yields a terminal event (`SSE_TERMINAL_TYPES` — RUN_FINISHED
+    or RUN_ERROR), so frames queued behind one never make it onto the wire.
+    Serializing them anyway would let this file "prove" a delivery the real
+    server cannot perform.
+    """
     out = b""
     for seq, frame in enumerate(frames, start=1):
         event = frame_to_agui(frame)
         if event is None:
             continue
         out += sse_bytes(event, f"sess-e2e:{seq}")
+        if event["type"] in SSE_TERMINAL_TYPES:
+            break
     return out
 
 
@@ -150,6 +179,27 @@ def test_the_chain_carries_the_tool_name_the_runner_named(monkeypatch):
     result = _send_turn("sess-e2e", "run it", live_render=False)
     starts = [e for e in result.events if e.get("type") == "TOOL_CALL_START"]
     assert [e["name"] for e in starts] == ["bash"]
+
+
+def test_a_wedged_turns_partial_answer_survives_the_error(monkeypatch, capsys):
+    """HIGH: the idle watchdog's partial-save must reach the analyst.
+
+    A turn the watchdog interrupts still produced text, and that text is
+    the only thing the analyst gets out of the minutes they waited. It
+    rides the wire only if the runner emits it BEFORE the `error` frame:
+    RUN_ERROR is terminal, so `_event_stream` closes the response right
+    after it (`_wire_bytes` above mirrors that stop rule). Emitted after,
+    the partial is dropped server-side and no client-side drain can
+    recover it.
+    """
+    from cli.commands.chat import _send_turn
+
+    _install_wire(monkeypatch, _wire_bytes(WATCHDOG_RUNNER_FRAMES))
+    result = _send_turn("sess-e2e", "count tables", live_render=True)
+
+    assert result.answer == "Counting tables so far: 12"
+    assert result.error is not None and "no agent activity" in result.error
+    assert "Counting tables so far: 12" in capsys.readouterr().out
 
 
 def test_an_error_frame_surfaces_as_a_turn_error(monkeypatch):

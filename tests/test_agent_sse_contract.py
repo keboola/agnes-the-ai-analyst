@@ -221,6 +221,49 @@ def test_error_terminates_stream_with_balanced_lifecycle_and_no_run_finished():
 
 
 # ---------------------------------------------------------------------------
+# A failing turn that still produced text: the partial rides out AHEAD of
+# the terminal error, which is the only way it can be delivered at all.
+# ---------------------------------------------------------------------------
+
+
+def test_a_partial_answer_emitted_before_the_error_still_reaches_the_wire():
+    """The idle watchdog's partial-save (`app/chat/runner.py`, the
+    `turn_idle_timeout` branch) emits its `assistant_message` BEFORE the
+    `error` frame precisely because of the stop rule asserted above: the
+    drain loop closes on the first terminal event, so a partial queued
+    behind the error would be serialized never. This pins the delivered
+    shape — TEXT_MESSAGE_END, then RUN_ERROR — that
+    `cli/commands/chat.py::_send_turn` relies on to show a timed-out
+    turn's text next to its error.
+    """
+    chat_id = "sess-golden-wedged"
+    frames = [
+        {"type": "ready"},
+        {"type": "assistant_message", "content": "Counting tables so far: 12"},
+        {"type": "error", "kind": "turn_idle_timeout", "message": "no agent activity for 300s"},
+        # Never reached — the drain loop stops at the terminal RUN_ERROR.
+        {"type": "done"},
+    ]
+
+    async def _run():
+        sink = StreamingSink()
+        for seq, frame in enumerate(frames, start=1):
+            await sink.send_json(_stamp(chat_id, seq, frame))
+        await sink.close()
+        return await _drain_sse(sink)
+
+    records = asyncio.run(_run())
+
+    assert _event_types(records) == ["RUN_STARTED", "TEXT_MESSAGE_END", "RUN_ERROR"]
+    end_record = records[1].decode()
+    data_line = [ln for ln in end_record.splitlines() if ln.startswith("data: ")][0]
+    assert json.loads(data_line[len("data: ") :]) == {
+        "type": "TEXT_MESSAGE_END",
+        "content": "Counting tables so far: 12",
+    }
+
+
+# ---------------------------------------------------------------------------
 # Dropped internal frame types don't appear on the wire, don't break the
 # lifecycle contract, and the surrounding ids stay monotonic (a real,
 # expected skip from the DROPPED frame's own id — not a lost frame; the

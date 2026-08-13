@@ -341,13 +341,18 @@ def _send_turn(session_id: str, text: str, *, live_render: bool) -> TurnResult:
     UNLESS no non-blank deltas ever arrived this turn. That happens whenever the
     backend answers without incremental streaming: the
     `AGNES_RUNNER_FAKE_AGENT=1` test/dev runner's `echo:` reply, and the
-    real runner's idle-watchdog partial-save (`app/chat/runner.py`,
-    `_run_turn`'s `if partial: _emit({"type": "assistant_message", ...})`)
-    both emit a single `assistant_message` with no preceding `token` frame.
-    On that shape, `TEXT_MESSAGE_CONTENT`-only accumulation stays empty and
-    the turn reports "(no answer)" despite the answer having arrived intact
-    — so `TEXT_MESSAGE_END.content` is kept as a fallback and, when nothing
-    streamed live, printed here as the one chance to show it.
+    real runner's idle-watchdog partial-save (`app/chat/runner.py`, the
+    `turn_idle_timeout` branch's `if partial: _emit({"type":
+    "assistant_message", ...})`) both emit a single `assistant_message`
+    with no preceding `token` frame. On that shape,
+    `TEXT_MESSAGE_CONTENT`-only accumulation stays empty and the turn
+    reports "(no answer)" despite the answer having arrived intact — so
+    `TEXT_MESSAGE_END.content` is kept as a fallback and, when nothing
+    streamed live, printed here as the one chance to show it. The watchdog
+    case reaches us only because that partial-save frame is emitted ahead
+    of the `error` frame; RUN_ERROR is terminal on the SSE seam, so
+    anything behind it is dropped server-side and no amount of client-side
+    draining would recover it.
 
     C7 (Ctrl-C mid-stream): Python's default SIGINT disposition already
     raises `KeyboardInterrupt` at whatever blocking read is in flight
@@ -429,14 +434,16 @@ def _send_turn(session_id: str, text: str, *, live_render: bool) -> TurnResult:
             elif etype == "RUN_ERROR":
                 terminal_seen = True
                 error_message = event.get("message") or "run error"
-                # Do NOT break: the runner's idle-watchdog partial-save
-                # emits `error` FIRST and only then the partial
-                # `assistant_message` + `done` (RUN_ERROR →
-                # TEXT_MESSAGE_END → RUN_FINISHED on the wire). Draining
-                # the rest of the stream lets that trailing END populate
-                # the answer, so the user gets the partial text next to
-                # the error instead of losing it. Streams that close
-                # right after the error just exhaust the generator.
+                # Terminal, so stop reading — matching the server, which
+                # closes the response generator the moment it yields a
+                # RUN_ERROR (`app/api/agent_sse.py::SSE_TERMINAL_TYPES`).
+                # Reading past it can only block on a stream that is
+                # already over. A failing turn that still produced text
+                # (the idle watchdog's partial-save) sends that text as
+                # the TEXT_MESSAGE_END *before* the error — see
+                # `app/chat/runner.py`'s `turn_idle_timeout` branch — so
+                # `final_content` is already set by the time we get here.
+                break
     except ApiSseError as exc:
         return TurnResult(events=events, answer=_answer(), http_error=(exc.status_code, exc.body))
     except AgnesTransportError as exc:

@@ -233,6 +233,13 @@ class EphemeralCommandSink:
     response_url, then ignores further frames. error/cancelled are also
     surfaced once so a budget/rate failure is visible. Never stays
     attached — the session's permanent sink (web/DM) keeps streaming.
+
+    One exception to "first frame wins": an assistant_message marked
+    ``interrupted`` is the idle watchdog's partial-save
+    (``app/chat/runner.py``), which the runner emits ahead of the ``error``
+    frame that explains why the turn stopped. Latching on it would show a
+    truncated answer as if it were the whole one, so it is delivered
+    WITHOUT closing the sink and the error lands right behind it.
     """
 
     def __init__(self, *, response_url: str) -> None:
@@ -247,7 +254,9 @@ class EphemeralCommandSink:
         if t == "assistant_message":
             content = strip_block(data.get("content", ""))
             if content:
-                self._delivered = True
+                # See the class docstring: a watchdog partial-save doesn't
+                # end the turn's reporting, the `error` frame behind it does.
+                self._delivered = not data.get("interrupted", False)
                 await send_ephemeral(self._response_url, content)
         elif t == "error":
             kind = data.get("kind", "")
