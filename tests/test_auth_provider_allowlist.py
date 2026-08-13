@@ -60,6 +60,15 @@ class TestEndpointGating:
         # Login sub-page is gated too.
         assert client.get("/login/password").status_code == 404
 
+    def test_email_endpoints_404_when_excluded(self, make_client):
+        # Symmetric to the password case: excluding `email` must 404 both the
+        # magic-link sub-page and its form/JSON send-link endpoints, so an
+        # instance can't be narrowed to a provider whose door still answers.
+        client = make_client("password")
+        assert client.get("/login/email").status_code == 404
+        assert client.post("/auth/email/send-link/web", data={"email": "a@b.c"}).status_code == 404
+        assert client.post("/auth/email/send-link", json={"email": "a@b.c"}).status_code == 404
+
     def test_password_endpoints_live_when_unset(self, make_client):
         client = make_client(None)
         resp = client.post("/auth/token", data={"email": "nobody@example.com", "password": "x"})
