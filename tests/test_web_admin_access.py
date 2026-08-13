@@ -284,10 +284,47 @@ class TestTheGroupItself:
 
     def test_rename_and_delete_are_here(self, seeded_app):
         """Without them the workspace could edit a group's people and its
-        grants but not the group — which is why a second page had to exist."""
+        grants but not the group — which is why a second page had to exist.
+
+        They live on the ROW, not in the pane header. A control in the header
+        can only ever act on the selected group, so renaming any other one
+        meant selecting it first — a navigation performed to reach an edit
+        that has nothing to do with what the pane is showing."""
         body = self._body(seeded_app)
-        assert 'id="ax-rename"' in body
-        assert 'id="ax-delete"' in body
+        assert "data-grename=" in body
+        assert "data-gdelete=" in body
+        assert "data-gmenu=" in body
+        # ...and NOT in the pane header, where they used to be.
+        assert 'id="ax-rename"' not in body
+        assert 'id="ax-gmenu-btn"' not in body
+
+    def test_the_row_menu_is_a_sibling_of_the_row_button(self, seeded_app):
+        """A <button> inside a <button> is invalid, and browsers resolve it by
+        breaking one of the two. The kebab is positioned over the row's right
+        edge as a sibling instead, with the wrapper as its menu's anchor."""
+        body = self._body(seeded_app)
+        assert "ax-grow" in body
+        assert "ax-gkebab" in body
+
+    def test_only_editable_groups_get_a_row_menu(self, seeded_app):
+        """`Admin` and `Everyone` are renamed and deleted where they are
+        owned — in the seed, or in Workspace — so offering the menu on them
+        would be offering two actions the API refuses."""
+        body = self._body(seeded_app)
+        assert "isEditable(g) ?" in body
+
+    def test_the_row_menu_reveals_on_hover_without_trapping_clicks(self, seeded_app):
+        """Same three-part reveal as the package page's remove control, and
+        for the same reasons — dropping any one of them breaks a real input."""
+        body = self._body(seeded_app)
+        block = body.split(".ax-gkebab {", 1)[1].split(".ax-menu {", 1)[0]
+        assert "@media (hover: hover)" in block
+        assert "pointer-events: none" in block
+        assert "focus-within" in block
+        assert "opacity: 0" in block
+        # An open menu keeps its trigger visible, or the menu floats with
+        # nothing to have come from the moment the pointer moves away.
+        assert 'aria-expanded="true"' in block
 
     def test_the_full_roster_is_the_people_section(self, seeded_app):
         """Search answers "is Maria in Finance?"; only a roster answers "who

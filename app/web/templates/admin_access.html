@@ -210,20 +210,54 @@
   .ax-gh__facts .none { color: var(--ds-text-muted); font-style: italic; }
   .ax-gh__facts .warn { color: var(--ds-accent-warn-ink); font-weight: 600; }
 
-  /* Rename and Delete behind one control: two buttons at the head of a page
-     compete with the name they sit beside, and Delete is not a thing to put
-     one pixel from an edit. Uses the app's menu vocabulary. */
-  .ax-gh__acts { position: relative; flex: 0 0 auto; }
-  .ax-kebab {
-    width: 32px; height: 32px; border-radius: var(--ds-radius-btn);
-    border: 1px solid var(--ds-border); background: var(--ds-surface);
+  /* ── Acting on a group, from the group ────────────────────────────────
+     Rename and Delete live on the ROW, not in the header of the pane. Two
+     reasons, and the second is the one that matters. A control in the pane
+     header can only ever act on the selected group, so renaming any other
+     one meant selecting it first — a navigation to perform an edit that has
+     nothing to do with what the pane is showing. And a `⋯` pinned beside the
+     group's name in the header competed with the name for the same corner.
+
+     On the row it acts on whatever you are pointing at, and it appears only
+     there: the same three-part reveal the package page's remove control
+     uses. `opacity` (not `display`) so the row does not reflow under the
+     cursor; `pointer-events: none` while transparent, because an invisible
+     control that still takes clicks is a trap and this one opens Delete;
+     `@media (hover: hover)` so touch input — which has no hover — keeps it
+     permanently visible rather than losing it. Keyboard is unaffected:
+     `:focus-within` on the row and `:focus-visible` on the button reveal it,
+     and `pointer-events` never gates focus. */
+  .ax-grow { position: relative; }
+  .ax-gkebab {
+    position: absolute; top: 50%; right: 6px; transform: translateY(-50%);
+    width: 26px; height: 26px; border-radius: var(--ds-radius-btn);
+    border: 1px solid transparent; background: var(--ds-surface);
     color: var(--ds-text-secondary); cursor: pointer;
-    display: grid; place-items: center; font-size: 15px; line-height: 1;
+    display: grid; place-items: center; font-size: 14px; line-height: 1;
   }
-  .ax-kebab:hover { background: var(--ds-surface-sunken); color: var(--ds-text-primary); }
-  .ax-kebab:focus-visible { outline: var(--ds-focus-outline); outline-offset: var(--ds-focus-outline-offset); }
+  .ax-gkebab:hover { background: var(--ds-surface-sunken); color: var(--ds-text-primary); border-color: var(--ds-border); }
+  .ax-gkebab:focus-visible { outline: var(--ds-focus-outline); outline-offset: var(--ds-focus-outline-offset); }
+  /* An open menu keeps its trigger visible — otherwise the menu floats with
+     nothing to have come from the moment the pointer moves into it. */
+  .ax-gkebab[aria-expanded="true"] {
+    background: var(--ds-surface-sunken); color: var(--ds-text-primary); border-color: var(--ds-border);
+  }
+  @media (hover: hover) {
+    .ax-gkebab {
+      opacity: 0; pointer-events: none;
+      transition: opacity var(--ds-motion-fast) var(--ds-ease-standard);
+    }
+    .ax-grow:hover .ax-gkebab,
+    .ax-grow:focus-within .ax-gkebab,
+    .ax-gkebab[aria-expanded="true"] { opacity: 1; pointer-events: auto; }
+    @media (prefers-reduced-motion: reduce) { .ax-gkebab { transition: none; } }
+  }
+  /* Room for the control so a long group name never runs under it. Only the
+     rows that HAVE one pay for it. */
+  .ax-grow:has(> .ax-gkebab) > .ax-g { padding-right: 36px; }
+
   .ax-menu {
-    position: absolute; top: calc(100% + 6px); right: 0; z-index: 30;
+    position: absolute; top: calc(100% - 4px); right: 6px; z-index: 40;
     min-width: 170px; padding: 6px; margin: 0; list-style: none;
     background: var(--ds-surface); border: 1px solid var(--ds-border);
     border-radius: var(--ds-radius-lg, 12px); box-shadow: var(--ds-shadow-md);
@@ -658,17 +692,6 @@
           <span class="ax-idsub" id="ax-what-idsub" hidden></span>
           <div class="ax-gh__facts" id="ax-what-meta"></div>
         </div>
-        {# Rename and Delete behind one control: two buttons at the head of a
-           page compete with the name they sit beside, and Delete is not a
-           thing to put one pixel from an edit. #}
-        <div class="ax-gh__acts" id="ax-what-acts" hidden>
-          <button type="button" class="ax-kebab" id="ax-gmenu-btn"
-                  aria-haspopup="true" aria-expanded="false" aria-label="Group actions">⋯</button>
-          <ul class="ax-menu" id="ax-gmenu" role="menu" hidden>
-            <li role="none"><button type="button" role="menuitem" id="ax-rename">Rename group</button></li>
-            <li role="none"><button type="button" role="menuitem" class="danger" id="ax-delete">Delete group</button></li>
-          </ul>
-        </div>
       </div>
       <div class="ax-managed" id="ax-what-managed"></div>
 
@@ -942,19 +965,35 @@
       // page reads: who it reaches, then how much it carries. "0 granted" is
       // said rather than omitted — an empty group is the thing worth seeing.
       const meta = `${members} ${members === 1 ? "person" : "people"} · ${grants} granted`;
+      /* The kebab is a SIBLING of the row button, positioned over its right
+         edge — not a child. A <button> inside a <button> is invalid markup
+         and the browser resolves it by breaking one of them; the wrapper
+         gives the menu its positioning context and keeps both controls real.
+         Only editable rows get one: `Admin` and `Everyone` are renamed and
+         deleted where they are owned, in the seed or in Workspace. */
       return `
-      <button type="button" class="ax-g ${everyone ? "is-everyone" : ""} ${selectedGroup === g.id ? "is-on" : ""}"
-              data-group="${esc(g.id)}" aria-pressed="${selectedGroup === g.id ? "true" : "false"}"
-              title="${esc(g.description || label)}">
-        <span class="ax-g__ava">${esc(String(label || "?").charAt(0).toUpperCase())}</span>
-        <span class="ax-g__body">
-          <span class="ax-g__name">${esc(label)}</span>
-          <span class="ax-g__meta">
-            <span>${esc(meta)}</span>
-            ${origin !== "custom" ? `<span class="ax-orig ax-orig--${esc(origin)}">${esc(origin.replace("_", " "))}</span>` : ""}
+      <div class="ax-grow" data-grow="${esc(g.id)}">
+        <button type="button" class="ax-g ${everyone ? "is-everyone" : ""} ${selectedGroup === g.id ? "is-on" : ""}"
+                data-group="${esc(g.id)}" aria-pressed="${selectedGroup === g.id ? "true" : "false"}"
+                title="${esc(g.description || label)}">
+          <span class="ax-g__ava">${esc(String(label || "?").charAt(0).toUpperCase())}</span>
+          <span class="ax-g__body">
+            <span class="ax-g__name">${esc(label)}</span>
+            <span class="ax-g__meta">
+              <span>${esc(meta)}</span>
+              ${origin !== "custom" ? `<span class="ax-orig ax-orig--${esc(origin)}">${esc(origin.replace("_", " "))}</span>` : ""}
+            </span>
           </span>
-        </span>
-      </button>`;
+        </button>
+        ${isEditable(g) ? `
+        <button type="button" class="ax-gkebab" data-gmenu="${esc(g.id)}"
+                aria-haspopup="true" aria-expanded="false"
+                aria-label="Actions for ${esc(label)}">⋯</button>
+        <ul class="ax-menu" data-gmenu-for="${esc(g.id)}" role="menu" hidden>
+          <li role="none"><button type="button" role="menuitem" data-grename="${esc(g.id)}">Rename group</button></li>
+          <li role="none"><button type="button" role="menuitem" class="danger" data-gdelete="${esc(g.id)}">Delete group</button></li>
+        </ul>` : ""}
+      </div>`;
     };
 
     // Only label the halves when BOTH exist. On a fresh instance every group
@@ -1035,25 +1074,28 @@
          </aside>`
       : "";
 
-    el("ax-what-acts").hidden = !isEditable(group);
-    closeGroupMenu();
   }
 
-  /* The kebab menu. Rename and Delete used to be two buttons in the header,
-     competing with the name beside them and putting a destructive action one
-     pixel from an edit. */
+  /* The per-row action menu. It lives on the group it acts on, so renaming
+     `finance` no longer means selecting `finance` first — a navigation to
+     perform an edit the pane's contents have nothing to do with. Rows are
+     re-rendered on every repaint, so the menu is addressed by group id
+     rather than held as an element reference. */
   function closeGroupMenu() {
-    const m = el("ax-gmenu");
-    if (!m || m.hidden) return;
-    m.hidden = true;
-    el("ax-gmenu-btn").setAttribute("aria-expanded", "false");
+    document.querySelectorAll("[data-gmenu-for]").forEach((m) => { m.hidden = true; });
+    document.querySelectorAll("[data-gmenu]").forEach((b) => b.setAttribute("aria-expanded", "false"));
   }
-  function toggleGroupMenu() {
-    const m = el("ax-gmenu");
-    const open = m.hidden;
-    m.hidden = !open;
-    el("ax-gmenu-btn").setAttribute("aria-expanded", open ? "true" : "false");
-    if (open) m.querySelector("button").focus();
+  function toggleGroupMenu(groupId) {
+    const menu = document.querySelector(`[data-gmenu-for="${CSS.escape(groupId)}"]`);
+    const btn = document.querySelector(`[data-gmenu="${CSS.escape(groupId)}"]`);
+    if (!menu || !btn) return;
+    const opening = menu.hidden;
+    closeGroupMenu();   // one at a time
+    if (!opening) return;
+    menu.hidden = false;
+    btn.setAttribute("aria-expanded", "true");
+    const first = menu.querySelector("button");
+    if (first) first.focus();
   }
 
   function setAccessHead(text) {
@@ -1657,8 +1699,8 @@
      do that this pane could not. The confirmation names the CONSEQUENCE
      (whose access disappears, and how much of it) rather than asking "are you
      sure", because those two numbers are the decision. */
-  async function deleteSelectedGroup() {
-    const group = (overview.groups || []).find((g) => g.id === selectedGroup);
+  async function deleteGroup(groupId) {
+    const group = (overview.groups || []).find((g) => g.id === groupId);
     if (!isEditable(group)) return;
     const people = group.member_count ?? 0;
     const grants = group.grant_count ?? 0;
@@ -1683,11 +1725,14 @@
       const fresh = await fetch(OVERVIEW_API, { credentials: "include" });
       if (fresh.ok) overview = await fresh.json();
     } catch (e) { /* fall through — the list re-renders from what we have */ }
-    // The selection has to land somewhere real: the deleted group is gone,
-    // so fall to the head of the list (Everyone) rather than an empty pane.
-    const rest = sortedGroups();
-    selectedGroup = rest.length ? rest[0].id : null;
-    rememberSelection(selectedGroup);
+    // The selection only has to move if it was the deleted group: deleting
+    // `finance` from its own row while `sales` is open must leave `sales`
+    // open, or the menu would quietly navigate the pane as a side effect.
+    if (selectedGroup === group.id) {
+      const rest = sortedGroups();
+      selectedGroup = rest.length ? rest[0].id : null;
+      rememberSelection(selectedGroup);
+    }
     await repaint();
     toast(`${titleOf(group)} deleted.`, true);
   }
@@ -1704,16 +1749,33 @@
 
   el("ax-new-group").addEventListener("click", () => openGroupDrawer(null));
 
-  /* The group menu. Both items close it first: leaving an open menu behind a
-     drawer or a confirm dialog is how you come back to a floating popover
-     over a group that may no longer exist. */
-  el("ax-gmenu-btn").addEventListener("click", (e) => { e.stopPropagation(); toggleGroupMenu(); });
-  el("ax-rename").addEventListener("click", () => {
-    closeGroupMenu();
-    const group = (overview.groups || []).find((g) => g.id === selectedGroup);
-    if (group) openGroupDrawer(group);
-  });
-  el("ax-delete").addEventListener("click", () => { closeGroupMenu(); deleteSelectedGroup(); });
+  /* The group menu, delegated: every repaint replaces the rows, so binding
+     to the buttons themselves would leave the listeners on detached nodes.
+     Each handler stops the event reaching the row button underneath — using
+     the menu must not also change which group the pane is showing — and
+     closes the menu first, since leaving one open behind a drawer or a
+     confirm returns you to a popover floating over a row that may be gone. */
+  document.addEventListener("click", (e) => {
+    const kebab = e.target.closest("[data-gmenu]");
+    if (kebab) { e.stopPropagation(); e.preventDefault(); toggleGroupMenu(kebab.dataset.gmenu); return; }
+
+    const rename = e.target.closest("[data-grename]");
+    if (rename) {
+      e.stopPropagation();
+      closeGroupMenu();
+      const group = (overview.groups || []).find((g) => g.id === rename.dataset.grename);
+      if (group) openGroupDrawer(group);
+      return;
+    }
+
+    const del = e.target.closest("[data-gdelete]");
+    if (del) {
+      e.stopPropagation();
+      const id = del.dataset.gdelete;
+      closeGroupMenu();
+      deleteGroup(id);
+    }
+  }, true);   // capture: beat the row-selection handler to the event
 
   /* ── Narrowing the grant tree ─────────────────────────────────────────
      The filter the retired detail page had. Both controls re-render rather
@@ -1754,7 +1816,7 @@
   });
   document.addEventListener("click", (e) => {
     if (!e.target.closest(".ax-find-wrap")) closeFind();
-    if (!e.target.closest(".ax-gh__acts")) closeGroupMenu();
+    if (!e.target.closest(".ax-grow")) closeGroupMenu();
   });
 
   /* ── Arriving with a resource in mind ─────────────────────────────────
