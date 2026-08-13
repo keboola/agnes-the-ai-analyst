@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **Jira tickets can now be joined to organization data on a stable key, not a drifting name.** `issues.organization_ids` captures the (rename-proof) organization ids from `customfield_10002` alongside the existing `organizations` names array. A new current-state `organizations` dimension table (`org_id`, `name`, plus one column per operator-configured detail field via `JIRA_ORG_DETAIL_FIELDS=<detail-id>:<column_name>,...`) is enumerated via the Jira Service Management API and refreshed on a low-frequency, cadence-gated cycle piggybacked onto the existing Jira refresh job — organization membership and detail values change on a scale of weeks, not per ticket event. Detail-field matching is id-first with a name fallback, and a single organization's failed detail lookup keeps its previously-resolved value rather than blanking it.
+
 ## [0.83.9] - 2026-08-13
 
 ### Added

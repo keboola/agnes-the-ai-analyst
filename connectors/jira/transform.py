@@ -94,6 +94,7 @@ ISSUES_SCHEMA = {
     "configuration_item": "string",
     "participants": "string",
     "organizations": "string",
+    "organization_ids": "string",
     "spam": "string",
     "context": "string",
     "custom_url": "string",
@@ -323,6 +324,26 @@ def extract_option_list(field: Any) -> list[str]:
     return [extract_option_value(item) for item in field if item]
 
 
+def extract_option_id_list(field: Any) -> list[str]:
+    """Extract stable ``id``s from a Jira multi-select field whose entries carry
+    one — e.g. the Organizations field (``customfield_10002``), whose entries are
+    ``{"id": ..., "uuid": ..., "name": ...}``.
+
+    ``extract_option_list`` reads the (rename-fragile) ``name``/``value`` from the
+    SAME entries; this is its id-based counterpart (issue #1273 — a ticket needs a
+    stable key to join organization data on, since a Jira org rename does not
+    propagate to tickets already ingested). An entry without an ``id`` is skipped
+    rather than raising.
+    """
+    if not field or not isinstance(field, list):
+        return []
+    ids: list[str] = []
+    for item in field:
+        if isinstance(item, dict) and item.get("id") is not None:
+            ids.append(str(item["id"]))
+    return ids
+
+
 def parse_datetime(dt_str: str | None) -> datetime | None:
     """Parse Jira datetime string to datetime object."""
     if not dt_str:
@@ -402,6 +423,7 @@ def transform_issue(raw_issue: dict) -> dict:
             [extract_user_info(u).get("email") for u in (fields.get("customfield_10156") or [])]
         ),
         "organizations": json.dumps(extract_option_list(fields.get("customfield_10002"))),
+        "organization_ids": json.dumps(extract_option_id_list(fields.get("customfield_10002"))),
         "spam": extract_option_value(fields.get("customfield_10365")),
         "context": extract_text_from_adf(fields.get("customfield_10330")) or None,
         "custom_url": fields.get("customfield_10325"),

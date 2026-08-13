@@ -352,12 +352,23 @@ def _run_jira_refresh(payload: dict) -> None:
     Data freshness does not depend on any of this — the views inside
     ``extract.duckdb`` glob the parquet per query, so a written partition is
     served immediately. ``_meta`` holds the catalog's row/size numbers only.
+
+    Also piggybacks the ``organizations`` dimension table's refresh onto this
+    same job (issue #1273) — cadence-gated
+    (``connectors.jira.organizations.refresh_organizations_if_stale``) so the
+    network-heavy Jira Organization API sync runs on a low-frequency schedule
+    (organization membership and detail values change on a scale of weeks) even
+    though this job itself fires per webhook burst / SLA poll cycle /
+    consistency check. No new scheduler: the gate is a plain staleness check
+    against ``organizations``'s own ``_meta.extracted_at``, checked every time
+    this already-frequent job runs.
     """
     from connectors.jira.extract_init import get_default_output_dir, update_meta
     from src.orchestrator import SyncOrchestrator, rebuild_mutex
 
+    extract_dir = get_default_output_dir()
+
     try:
-        extract_dir = get_default_output_dir()
         # Under the same mutex `rebuild()`/`rebuild_source()` take — the pattern
         # `_run_ducklake_maintenance` below already follows. Running in the HEAVY
         # lane (concurrency 1) serialises this against the rebuild on the next
@@ -375,6 +386,16 @@ def _run_jira_refresh(payload: dict) -> None:
         # Non-fatal, exactly as it was on the per-event path: stale catalog
         # numbers must not cost us the rebuild that publishes the data.
         logger.warning(f"Could not update Jira extract.duckdb _meta: {meta_err}")
+
+    try:
+        from connectors.jira.organizations import refresh_organizations_if_stale
+
+        refresh_organizations_if_stale(extract_dir)
+    except Exception as org_err:
+        # Non-fatal for the same reason as the _meta pass above: a Jira API
+        # outage or misconfiguration here must not cost us the rebuild that
+        # publishes everything else.
+        logger.warning(f"Could not refresh Jira organizations: {org_err}")
 
     SyncOrchestrator().rebuild_source("jira")
 

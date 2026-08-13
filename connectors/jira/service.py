@@ -52,19 +52,16 @@ Config = _JiraConfig
 _VALID_COLUMN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-def refresh_fields() -> list[tuple[str, str]]:
-    """``[(field_id, column_name), ...]`` parsed from ``JIRA_REFRESH_FIELDS``.
-
-    Format: comma-separated ``field_id`` or ``field_id:column_name``. There are no
-    defaults — field ids are assigned per Jira instance, so a hard-coded value would
-    be wrong for any other deployment. A ``column_name`` that is not a valid
-    SQL/parquet identifier falls back to the field id; entries without an id are
-    skipped. Lazy (read at call time, not import) so CLI scripts that load ``.env``
-    via ``load_dotenv()`` at runtime see the value. Discover field ids with
-    ``verify_sla_access --list-fields``.
+def _parse_field_pairs(raw: str) -> list[tuple[str, str]]:
+    """``[(field_id, column_name), ...]`` parsed from a comma-separated
+    ``field_id`` / ``field_id:column_name`` list — the format shared by
+    ``JIRA_REFRESH_FIELDS`` (:func:`refresh_fields`) and ``JIRA_ORG_DETAIL_FIELDS``
+    (:func:`connectors.jira.organizations.org_detail_fields`). A ``column_name``
+    that is not a valid SQL/parquet identifier falls back to the field id;
+    entries without an id are skipped.
     """
     out: list[tuple[str, str]] = []
-    for entry in os.environ.get("JIRA_REFRESH_FIELDS", "").split(","):
+    for entry in raw.split(","):
         entry = entry.strip()
         if not entry:
             continue
@@ -76,6 +73,18 @@ def refresh_fields() -> list[tuple[str, str]]:
         column = alias if alias and _VALID_COLUMN.match(alias) else field_id
         out.append((field_id, column))
     return out
+
+
+def refresh_fields() -> list[tuple[str, str]]:
+    """``[(field_id, column_name), ...]`` parsed from ``JIRA_REFRESH_FIELDS``.
+
+    Format: comma-separated ``field_id`` or ``field_id:column_name``. There are no
+    defaults — field ids are assigned per Jira instance, so a hard-coded value would
+    be wrong for any other deployment. Lazy (read at call time, not import) so CLI
+    scripts that load ``.env`` via ``load_dotenv()`` at runtime see the value.
+    Discover field ids with ``verify_sla_access --list-fields``.
+    """
+    return _parse_field_pairs(os.environ.get("JIRA_REFRESH_FIELDS", ""))
 
 
 def trigger_incremental_transform(issue_key: str, deleted: bool = False) -> bool:

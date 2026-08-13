@@ -274,9 +274,20 @@ JIRA_API_TOKEN=<API token from Atlassian; the account needs a JSM Agent licence 
 # prefixed with `cf_` so the built-in is never overwritten.
 JIRA_REFRESH_FIELDS=customfield_10328:first_response,customfield_10161:time_to_resolution
 
-# Optional: set ONLY for a scoped API token (forces the api.atlassian.com
-# gateway). Classic tokens use the site domain URL and need nothing here.
+# Optional: set for a scoped API token (forces the api.atlassian.com gateway)
+# AND required whenever JIRA_ORG_DETAIL_FIELDS below is set — the per-
+# organization detail lookup only exists on the cloud-scoped gateway. Classic
+# tokens otherwise use the site domain URL and need nothing here.
 JIRA_CLOUD_ID=
+
+# Organization detail fields — generic, no defaults (per instance).
+# detail-field-id or detail-field-id:column, comma-separated. Resolved onto a
+# current-state `organizations` table (org_id, name, + these columns),
+# refreshed on a low-frequency cadence (see "Organizations" below).
+JIRA_ORG_DETAIL_FIELDS=321:crm_account_id,654:region
+
+# Optional: days between `organizations` table refreshes (default 7).
+JIRA_ORG_REFRESH_INTERVAL_DAYS=7
 ```
 
 ### GitHub Secrets
@@ -288,7 +299,9 @@ JIRA_CLOUD_ID=
 | `JIRA_EMAIL` | Email for API authentication |
 | `JIRA_API_TOKEN` | Primary API token (account needs a JSM Agent licence for SLA) |
 | `JIRA_REFRESH_FIELDS` | Custom fields to refresh onto tickets (field_id or field_id:column) |
-| `JIRA_CLOUD_ID` | Optional; set only for a scoped API token |
+| `JIRA_CLOUD_ID` | Optional; set for a scoped API token, required for `JIRA_ORG_DETAIL_FIELDS` |
+| `JIRA_ORG_DETAIL_FIELDS` | Optional; organization detail fields to resolve onto `organizations` (detail-id or detail-id:column) |
+| `JIRA_ORG_REFRESH_INTERVAL_DAYS` | Optional; days between `organizations` table refreshes (default 7) |
 
 ### Getting Jira API Token
 
@@ -541,6 +554,38 @@ FROM 'server/parquet/jira/issues/*.parquet'
 WHERE first_response IS NOT NULL
 ```
 
+## Organizations (Current-State Dimension Table)
+
+`issues.organization_ids` is a JSON array of stable organization ids captured
+from `customfield_10002` alongside the existing (rename-fragile)
+`issues.organizations` names array — a ticket's organization membership no
+longer drifts when an organization is renamed in Jira.
+
+The `organizations` table (`org_id`, `name`, plus one column per
+`JIRA_ORG_DETAIL_FIELDS` entry) resolves the other end of that join: a
+current-state row per organization, **not** month-partitioned like the event
+tables (an organization has one current state, not a history). It is
+enumerated via the classic JSM API (`GET /rest/servicedeskapi/organization`,
+paginated — there is no Customer Service Management list endpoint), with
+detail fields resolved per-organization via the CSM API
+(`GET /organization/{id}`, id-first match with a name fallback, since the
+detail id is an observed rather than documented property of that response).
+Both need `JIRA_CLOUD_ID` set when `JIRA_ORG_DETAIL_FIELDS` is configured.
+
+The refresh piggybacks on the existing `jira-refresh` job (the one this
+document's Field Refresh Polling and webhook sections already trigger) rather
+than a new scheduler — gated by `JIRA_ORG_REFRESH_INTERVAL_DAYS` (default 7)
+since organization membership and detail values change on a scale of weeks,
+not per ticket event. A single organization's failed detail lookup (e.g. a
+transient 429) keeps its previously-resolved value rather than blanking it; a
+failed enumeration leaves the whole table untouched for that run.
+
+```sql
+SELECT i.issue_key, o.name, o.crm_account_id
+FROM issues i, UNNEST(from_json(i.organization_ids, '["VARCHAR"]')) AS t(org_id)
+LEFT JOIN organizations o ON o.org_id = t.org_id;
+```
+
 ## Analyst Sync Configuration
 
 Whether an analyst sees Jira tables locally is decided server-side: an admin
@@ -556,6 +601,7 @@ DuckDB views for Jira tables are created automatically if data exists:
 - `jira_changelog` — field change history
 - `jira_issuelinks` — links between issues (blocks, duplicates, relates to)
 - `jira_remote_links` — external links (Confluence, Slack, etc.)
+- `jira_organizations` — current-state organizations dimension table (org_id, name, configured detail fields)
 
 ## Attachment Access
 
