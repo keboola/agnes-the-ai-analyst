@@ -276,6 +276,14 @@ PY
             logger -t agnes-state-applier "write_instance_yaml: refused to rewrite $path (rc=$rc) — see stderr"
             return "$rc"
         fi
+        # Belt-and-braces: the atomic rename above already carries the temp
+        # file's ownership (this process's own uid, since this whole script
+        # runs as User=agnes-applier) onto $path, so this chown is normally a
+        # no-op. By NAME rather than a hardcoded uid on purpose — it
+        # self-corrects to whatever agnes-applier resolves to on this host
+        # instead of baking in a number that could drift from the
+        # provisioning pin (#1217, see
+        # infra/modules/customer-instance/startup-script.sh.tpl).
         chown agnes-applier:agnes-applier "$path" 2>/dev/null || true
         return 0
     fi

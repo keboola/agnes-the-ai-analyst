@@ -510,29 +510,71 @@ def test_the_applier_uid_is_pinned_not_allocated():
     two numbers match. `useradd --system` without `--uid` produces that match
     by allocating the top free id in the system range, which is not the same
     thing as intending it.
+
+    #1217: the target uid is a single named variable (`AGNES_APPLIER_UID`),
+    not a literal repeated at every call site — declared once near the top,
+    with a comment tying it to the app container's uid, so the two useradd
+    attempts and the readback check below can't drift apart from each other.
     """
     body = TPL.read_text()
-    assert "--uid 999" in body, (
-        "the state-applier user must pin uid 999 — allocation happens to land there on "
-        "today's image, and 0600 turns that coincidence load-bearing"
+    assert re.search(r"^AGNES_APPLIER_UID=999\s*$", body, re.MULTILINE), (
+        "the applier's target uid must be a single declared variable "
+        "(AGNES_APPLIER_UID=999), not a literal scattered across the file"
+    )
+    assert '--uid "$AGNES_APPLIER_UID"' in body, (
+        "the state-applier user must pin its uid from $AGNES_APPLIER_UID — allocation happens "
+        "to land on the app's uid on today's image, and 0600 turns that coincidence load-bearing"
     )
 
 
 def test_the_chmod_is_conditional_on_the_pin_having_taken():
     """The mode must not outrun its own precondition.
 
-    If uid 999 was already taken at provisioning time the pin falls through to
-    an allocated id, and a 0600 file the app does not own is one it cannot
-    read — which, with the fail-closed read this change also introduces, is a
-    refusal to start. A full outage in place of the silent degradation 0644
-    gave. Where the pin did not take, the mode stays as it was and the reason
-    goes to the console.
+    If the pinned uid was already taken at provisioning time the pin falls
+    through to an allocated id, and a 0600 file the app does not own is one it
+    cannot read — which, with the fail-closed read this change also
+    introduces, is a refusal to start. A full outage in place of the silent
+    degradation 0644 gave. Where the pin did not take, the mode stays as it
+    was and the reason goes to the console.
     """
     body = TPL.read_text()
     assert "APPLIER_UID=$(id -u agnes-applier" in body, "provisioning must read back the uid it pinned"
-    gate = body.index('if [ "$APPLIER_UID" = "999" ]')
+    gate = body.index('if [ "$APPLIER_UID" = "$AGNES_APPLIER_UID" ]')
     chmod_at = body.index('chmod 600 "$INSTANCE_YAML"')
     assert gate < chmod_at, "the chmod must sit inside the uid gate, not before it"
+
+
+def test_every_applier_useradd_attempt_shares_the_pinned_uid_variable():
+    """#1217 was exactly this bug: the pin was added to ONE of two useradd
+    call sites in this file and the second — the belt-and-braces block right
+    before the `.env` chown — kept allocating an uid by chance. In the normal
+    boot order the second block's `if` is always false (the first already
+    created the user), so nothing observable caught the drift; it only bites
+    on a reordering or a partial run. Every `useradd … agnes-applier` line in
+    the template must pin the same variable so they cannot disagree.
+    """
+    body = TPL.read_text()
+    # useradd invocations wrap across lines via `\` continuation — join
+    # continued lines, then split into one logical string per invocation
+    # (non-greedy up to the first `agnes-applier`, so a pinned attempt
+    # immediately followed by `|| useradd …` is still two separate matches).
+    logical_body = re.sub(r"\\\n\s*", " ", body)
+    useradd_attempts = re.findall(r"useradd --system.*?agnes-applier(?: 2>/dev/null)?", logical_body)
+    assert len(useradd_attempts) >= 4, (
+        f"expected 2 pinned + 2 unpinned-fallback useradd attempts (primary block + B3-NEW "
+        f"belt-and-braces block), got {len(useradd_attempts)}: {useradd_attempts}"
+    )
+    pinned = [a for a in useradd_attempts if '--uid "$AGNES_APPLIER_UID"' in a]
+    unpinned_fallbacks = [a for a in useradd_attempts if "--uid" not in a]
+    # Every pinned attempt must be followed by exactly one unpinned fallback
+    # form (the `|| useradd …` without `--uid`, taken only when the pin fails)
+    # — so counting them 1:1 catches a pinned attempt with no fallback
+    # (bricks on any collision) as well as a fallback with no pinned attempt
+    # first (silently never pins).
+    assert len(pinned) == len(unpinned_fallbacks) and len(pinned) >= 2, (
+        f"expected each pinned useradd attempt to have exactly one unpinned fallback; "
+        f"pinned={pinned}, unpinned_fallbacks={unpinned_fallbacks}"
+    )
 
 
 def test_the_chmod_still_runs_outside_the_create_branch():

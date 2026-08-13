@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **`customer-instance`: the state-applier's uid is now pinned everywhere it is created, not just in the startup-script's primary block.** `/data/state/instance.yaml` is written `0600` (#1214), which makes its owner load-bearing — the app container can read its own config only while `agnes-applier` resolves to the same uid as the app (999). #1214 pinned that in the startup-script's main `useradd`, but left two other call sites allocating an uid by chance: a belt-and-braces `useradd` further down the same script (before the `.env` chown) and, more significantly, `scripts/ops/agnes-state-applier-bootstrap.service` — the systemd unit that is the *only* user-creation path on any infra that doesn't run the OSS module's own startup-script. All three now pin the same uid (a single `AGNES_APPLIER_UID` variable in the template, referenced by both `useradd` attempts and the readback check, so they can't drift apart again), with the same fallback and posture as before: if the uid is already taken by a different account, provisioning falls back to an allocated one and logs a loud, non-fatal warning with remediation steps rather than bricking the boot — a 0600 file the app cannot read is no worse than the pre-#1214 world, and a hard failure over a file mode is a worse trade than a warning. `docs/postgres-cutover-runbook.md`'s manual migration command is updated to match. (#1217)
+
 ## [0.83.9] - 2026-08-13
 
 ### Added

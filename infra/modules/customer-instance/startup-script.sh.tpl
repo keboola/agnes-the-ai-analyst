@@ -21,6 +21,15 @@ SEED_ADMIN_PASSWORD="${seed_admin_password}"
 ROLE="${role}"
 COMPOSE_REF="${compose_ref}"
 
+# uid the agnes-applier system user must be pinned to. MUST equal the app
+# container's uid (Dockerfile `useradd --system --uid 999 ... agnes`, `USER
+# agnes`) — instance.yaml is written 0600, and agnes-applier is what ends up
+# owning it (see the recursive /data/state chown + the applier's own
+# rewrites below), so the app container can read its own config only while
+# the two numbers agree. Declared once here so the two useradd attempts and
+# the readback check below can't drift apart from each other (#1217).
+AGNES_APPLIER_UID=999
+
 echo "=== [Agnes $CUSTOMER_NAME $ROLE] Startup at $(date) ==="
 
 # --- 1. Docker (install if missing) ---
@@ -143,20 +152,31 @@ chmod +x /usr/local/bin/agnes-auto-upgrade.sh
 # root via /var/run/docker.sock, but no other system surface).
 # Idempotent on re-runs.
 #
-# The uid is PINNED to 999, not allocated. `chown -R agnes-applier /data/state`
-# below is what finally owns instance.yaml, and the applier re-creates that
-# file under its own uid on every rewrite — so at 0600 the app container
-# (Dockerfile `USER agnes`, uid 999) can read its own config only while these
-# two uids are the same number. `useradd --system` picks the top free id in
-# the system range, which lands on 999 on today's image by allocation rather
-# than by intent — so pin it, and let the chmod below check the pin took.
+# The uid is PINNED to $AGNES_APPLIER_UID, not allocated. `chown -R
+# agnes-applier /data/state` below is what finally owns instance.yaml, and
+# the applier re-creates that file under its own uid on every rewrite — so
+# at 0600 the app container (Dockerfile `USER agnes`, same pinned uid) can
+# read its own config only while these two uids are the same number.
+# `useradd --system` picks the top free id in the system range, which lands
+# there on today's image by allocation rather than by intent — so pin it,
+# and let the chmod below check the pin took.
+#
+# This `if` only guards user CREATION, not the uid check — an
+# agnes-applier that already exists (e.g. a VM provisioned before this pin
+# existed, or one where uid $AGNES_APPLIER_UID was taken by something else at
+# the time) is deliberately left alone here rather than remediated
+# automatically: `usermod -u` on a live system user can leave files it
+# already owns pointing at the old uid, which is a worse surprise than a
+# loud warning. The readback below fires for BOTH the freshly-created and
+# the pre-existing case, since it re-reads whatever uid the name resolves to
+# right now instead of trusting this block succeeded.
 if ! id -u agnes-applier >/dev/null 2>&1; then
     # Only the UID is pinned. `--gid` and `--user-group` are mutually
     # exclusive, so a form passing both always fails — and the gid does not
     # matter here anyway: instance.yaml is 0600, so the group bits grant
     # nothing and only the owner's uid decides who can read it.
     useradd --system --no-create-home --shell /usr/sbin/nologin \
-            --uid 999 --user-group agnes-applier 2>/dev/null \
+            --uid "$AGNES_APPLIER_UID" --user-group agnes-applier 2>/dev/null \
     || useradd --system --no-create-home --shell /usr/sbin/nologin \
             --user-group agnes-applier
 fi
@@ -172,18 +192,24 @@ chown -R agnes-applier:agnes-applier /data/state
 # also repairs a file written before this existed.
 #
 # Conditional because the failure it would otherwise cause is worse than the
-# leak it closes: if uid 999 was already taken at provisioning time, the pin
-# above fell through to an allocated id, the app cannot read a 0600 file it
-# does not own, and — with the fail-closed read this change also introduces —
-# the instance refuses to start. A full outage in place of a silent
-# degradation. Where the pin did not take, the mode stays as it was and the
-# reason is on the console; the hardening applies exactly where its
-# precondition is met.
+# leak it closes: if uid $AGNES_APPLIER_UID was already taken at provisioning
+# time, the pin above fell through to an allocated id, the app cannot read a
+# 0600 file it does not own, and — with the fail-closed read this change
+# also introduces — the instance refuses to start. A full outage in place
+# of a silent degradation. Where the pin did not take, the mode stays as it
+# was and the reason is on the console; the hardening applies exactly where
+# its precondition is met.
+#
+# Covers both non-happy paths from #1217: (a) the uid was taken at THIS
+# boot's provisioning (the `if` above fell through to the unpinned form) and
+# (b) agnes-applier already existed from before the pin with some other uid
+# (an in-place upgrade) — the `if` above skipped creation entirely, so this
+# readback is the only place either shape is caught.
 APPLIER_UID=$(id -u agnes-applier 2>/dev/null || echo "")
-if [ "$APPLIER_UID" = "999" ]; then
+if [ "$APPLIER_UID" = "$AGNES_APPLIER_UID" ]; then
     chmod 600 "$INSTANCE_YAML" 2>/dev/null || true
 else
-    echo "WARN: agnes-applier is uid $APPLIER_UID, not 999 — leaving $INSTANCE_YAML at its current mode. 0600 would make it unreadable by the app container (uid 999), which owns neither the file nor this user. Free uid 999 or align the app uid, then re-run." >&2
+    echo "WARN: agnes-applier is uid $APPLIER_UID, not $AGNES_APPLIER_UID — leaving $INSTANCE_YAML at its current mode. 0600 would make it unreadable by the app container (uid $AGNES_APPLIER_UID), which owns neither the file nor this user. Remediation: free uid $AGNES_APPLIER_UID (check what holds it with 'getent passwd $AGNES_APPLIER_UID') and either 'userdel'+re-run this script to recreate agnes-applier pinned, or 'usermod -u $AGNES_APPLIER_UID agnes-applier' followed by 'chown -R agnes-applier:agnes-applier /data/state /opt/agnes/.env' to re-home its existing files onto the new uid. Until then this VM runs in the pre-#1217 degraded mode: instance.yaml stays at its current, looser permissions." >&2
 fi
 # /data/postgres must stay 70:70 (postgres image uid) — applier just
 # runs docker exec against the container, doesn't touch the volume.
@@ -729,8 +755,15 @@ chmod 600 "$APP_DIR/.env"
 # already source the file. The bootstrap unit's ExecStart re-asserts
 # this every boot in case an operator (or agnes-auto-upgrade) rewrites
 # .env later.
+# In the normal boot order this `if` is always false — section 3 above
+# already created agnes-applier, pinned to $AGNES_APPLIER_UID. Kept pinned
+# here too (same fallback shape) so a reordering of the two blocks can't
+# quietly reintroduce an unpinned user via this path — #1217 was exactly
+# this kind of duplicate that only one of two copies got fixed.
 if ! id -u agnes-applier >/dev/null 2>&1; then
     useradd --system --no-create-home --shell /usr/sbin/nologin \
+            --uid "$AGNES_APPLIER_UID" --user-group agnes-applier 2>/dev/null \
+    || useradd --system --no-create-home --shell /usr/sbin/nologin \
             --user-group agnes-applier
 fi
 chown agnes-applier:agnes-applier /opt/agnes/.env
