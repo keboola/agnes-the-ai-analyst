@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Internal
+
+- **`_build_context` now composes `_chrome_ctx` instead of hand-copying its keys.** The two web-template-context builders in `app/web/router.py` each maintained their own list of chrome-level keys (nav, branding, theme, feature toggles) by hand, so every new chrome key gave its author a chance to forget one — the failure was silent because Jinja renders undefined as empty. This bug class had already fired three times (`can_chat`, `can_studio`, and `config`/`can_chat` again in #993/#995). `_chrome_ctx` is now the single owner of every chrome-level key; `_build_context` starts from it and layers only its own heavier, page-specific payloads (the setup-prompt clipboard script, `server_url`). A new chrome key now only needs to be added once. No behavior change: a drift-guard test (`test_build_context_is_a_superset_of_chrome_ctx`) pins that the two stay in lockstep going forward. Closes #996.
+
 ## [0.83.9] - 2026-08-13
 
 ### Added
