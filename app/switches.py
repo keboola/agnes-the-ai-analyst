@@ -274,7 +274,11 @@ SWITCHES: tuple[Switch, ...] = (
             "(60s cache), must be a master token for the bound project, and maps only to an "
             "EXISTING user — it never provisions accounts. Off by default: a plain Storage "
             "token carries no interactive factor, so enabling this bypasses any MFA/SSO the "
-            "organization enforces on web logins."
+            "organization enforces on web logins. It also grants that user's full Agnes "
+            "authority (PAT-equivalent): if the mapped user is an admin, admin mutation "
+            "endpoints are reachable with the token — the narrowing is on the data-read "
+            "surface (credential_surface='stack'), not the admin gate. Credential-minting "
+            "endpoints (PAT/MCP/agent/data-app) are blocked regardless."
         ),
     ),
     Switch(
