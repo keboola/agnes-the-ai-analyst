@@ -282,10 +282,112 @@ def test_0062_makes_a_legacy_item_visible_via_list_by_domain(pg_engine, monkeypa
     assert "ki_legacy_ops" in found, "a pre-#1263 scalar-only row must be visible via list_by_domain after the backfill"
 
 
-def test_0062_downgrade_is_a_documented_noop(pg_engine):
-    """Like 0061's agent backfill, this cannot be safely inverted — there is
-    no marker distinguishing a junction row this migration wrote from one a
-    normal `create()`/`update()` call wrote afterward."""
+def test_0062_leaves_an_admin_moved_item_where_the_admin_put_it(pg_engine):
+    """The stale scalar must NOT win over a deliberate admin re-point.
+
+    ``MemoryDomainsPgRepository.replace_domains_for_item`` (the admin
+    item-edit modal's ``domain_ids`` chip-input) rewrites the junction and
+    never touches ``knowledge_items.domain``, so an item created under
+    ``q-team`` and later moved to ``ops`` keeps a stale scalar ``q-team``
+    forever. A backfill keyed on the scalar alone re-files it under
+    ``q-team`` — silently undoing the move on upgrade.
+    """
+    from alembic import command
+
+    cfg = _alembic_config(str(pg_engine.url))
+    command.upgrade(cfg, "0061_agent_status_backfill_v115")
+
+    with pg_engine.begin() as conn:
+        old_id, new_id = str(uuid.uuid4()), str(uuid.uuid4())
+        conn.execute(
+            sa.text(
+                "INSERT INTO memory_domains (id, slug, name, created_at, updated_at) "
+                "VALUES (:old, 'q-team', 'Q Team', now(), now()), "
+                "       (:new, 'ops', 'Ops', now(), now())"
+            ),
+            {"old": old_id, "new": new_id},
+        )
+        # Created under q-team (scalar), then moved to ops through the admin
+        # editor — junction says ops, scalar still says q-team.
+        _insert_legacy_item(conn, id="ki_moved", domain="q-team")
+        conn.execute(
+            sa.text(
+                "INSERT INTO knowledge_item_domains (item_id, domain_id, added_by, added_at) "
+                "VALUES ('ki_moved', :new, 'admin@example.com', now())"
+            ),
+            {"new": new_id},
+        )
+
+    command.upgrade(cfg, "0062_knowledge_domains_backfill")
+
+    with pg_engine.connect() as conn:
+        slugs = sorted(
+            r[0]
+            for r in conn.execute(
+                sa.text(
+                    "SELECT md.slug FROM knowledge_item_domains kid "
+                    "JOIN memory_domains md ON md.id = kid.domain_id "
+                    "WHERE kid.item_id = 'ki_moved'"
+                )
+            )
+        )
+    assert slugs == ["ops"], "the backfill must not resurrect the membership the admin moved the item off"
+
+
+def test_0062_does_not_mint_a_domain_for_a_moved_items_stale_scalar(pg_engine):
+    """Step 1 must scan the same cohort step 2 backfills.
+
+    An item moved off a domain that was later deleted keeps a scalar naming
+    a slug no ``memory_domains`` row has. Minting from the raw scalar column
+    would create that domain again — a grantable, browsable entity nobody
+    asked for — and file the item under it.
+    """
+    from alembic import command
+
+    cfg = _alembic_config(str(pg_engine.url))
+    command.upgrade(cfg, "0061_agent_status_backfill_v115")
+
+    with pg_engine.begin() as conn:
+        live_id = str(uuid.uuid4())
+        conn.execute(
+            sa.text(
+                "INSERT INTO memory_domains (id, slug, name, created_at, updated_at) "
+                "VALUES (:id, 'ops', 'Ops', now(), now())"
+            ),
+            {"id": live_id},
+        )
+        _insert_legacy_item(conn, id="ki_moved_off_retired", domain="retired-team")
+        conn.execute(
+            sa.text(
+                "INSERT INTO knowledge_item_domains (item_id, domain_id, added_by, added_at) "
+                "VALUES ('ki_moved_off_retired', :id, 'admin@example.com', now())"
+            ),
+            {"id": live_id},
+        )
+
+    command.upgrade(cfg, "0062_knowledge_domains_backfill")
+
+    with pg_engine.connect() as conn:
+        minted = conn.execute(sa.text("SELECT id FROM memory_domains WHERE slug = 'retired-team'")).fetchone()
+        slugs = sorted(
+            r[0]
+            for r in conn.execute(
+                sa.text(
+                    "SELECT md.slug FROM knowledge_item_domains kid "
+                    "JOIN memory_domains md ON md.id = kid.domain_id "
+                    "WHERE kid.item_id = 'ki_moved_off_retired'"
+                )
+            )
+        )
+    assert minted is None, "no domain may be minted for a scalar belonging to an item the backfill does not touch"
+    assert slugs == ["ops"]
+
+
+def test_0062_marks_its_writes_and_downgrade_takes_back_only_those(pg_engine):
+    """The residual ambiguity (see the migration docstring) is made
+    reversible by marking every row this migration writes, so an operator
+    can undo exactly the backfill without touching organic junction rows.
+    """
     from alembic import command
 
     cfg = _alembic_config(str(pg_engine.url))
@@ -295,17 +397,43 @@ def test_0062_downgrade_is_a_documented_noop(pg_engine):
         domain_id = str(uuid.uuid4())
         conn.execute(
             sa.text(
-                "INSERT INTO memory_domains (id, slug, name, created_at, updated_at) VALUES (:id, 'ops', 'Ops', now(), now())"
+                "INSERT INTO memory_domains (id, slug, name, created_at, updated_at) "
+                "VALUES (:id, 'ops', 'Ops', now(), now())"
             ),
             {"id": domain_id},
         )
         _insert_legacy_item(conn, id="ki_legacy_ops", domain="ops")
+        _insert_legacy_item(conn, id="ki_organic", domain="ops")
+        conn.execute(
+            sa.text(
+                "INSERT INTO knowledge_item_domains (item_id, domain_id, added_by, added_at) "
+                "VALUES ('ki_organic', :id, 'alice@example.com', now())"
+            ),
+            {"id": domain_id},
+        )
 
     command.upgrade(cfg, "0062_knowledge_domains_backfill")
+
+    with pg_engine.connect() as conn:
+        marks = dict(
+            conn.execute(
+                sa.text(
+                    "SELECT item_id, added_by FROM knowledge_item_domains "
+                    "WHERE item_id IN ('ki_legacy_ops', 'ki_organic')"
+                )
+            ).fetchall()
+        )
+    assert marks == {"ki_legacy_ops": "migration_0062", "ki_organic": "alice@example.com"}
+
     command.downgrade(cfg, "0061_agent_status_backfill_v115")
 
     with pg_engine.connect() as conn:
-        rows = conn.execute(
-            sa.text("SELECT domain_id FROM knowledge_item_domains WHERE item_id = 'ki_legacy_ops'")
-        ).fetchall()
-    assert [r[0] for r in rows] == [domain_id], "downgrade must not revert the backfill it cannot safely undo"
+        left = dict(
+            conn.execute(
+                sa.text(
+                    "SELECT item_id, added_by FROM knowledge_item_domains "
+                    "WHERE item_id IN ('ki_legacy_ops', 'ki_organic')"
+                )
+            ).fetchall()
+        )
+    assert left == {"ki_organic": "alice@example.com"}, "downgrade must remove only the rows the backfill wrote"

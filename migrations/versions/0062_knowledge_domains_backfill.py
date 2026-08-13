@@ -28,6 +28,35 @@ existing ``memory_domains.slug``. Missing domains are created here (slug
 normalized the same way: lowercase, non-alnum runs collapsed to ``-``)
 rather than silently dropping the item's domain membership.
 
+**The scalar is not authoritative — the junction is.** Both steps below
+touch ONLY items that have no ``knowledge_item_domains`` row at all.
+``MemoryDomainsPgRepository.replace_domains_for_item`` — the admin
+item-edit modal's ``domain_ids`` chip-input, and since #1263 the only
+UI path to an item's domains — rewrites the junction and deliberately
+never touches ``knowledge_items.domain``. An item created under
+``q-team`` and later moved to ``ops`` therefore carries a stale scalar
+``q-team`` forever, and a backfill keyed on the scalar alone would file
+it back under ``q-team`` on upgrade: the admin's move, silently undone,
+and by construction the very stale-scalar membership #1290 stopped
+honouring. An item with any junction row has been spoken for; leave it.
+
+Residual ambiguity, stated plainly: for an item with a non-empty scalar
+and ZERO junction rows the data cannot tell "never migrated" (the cohort
+this migration exists for) from "an admin deliberately emptied it" —
+``replace_domains_for_item(item, [])`` deletes the rows and writes
+nothing back, and ``hard_delete`` of a domain cascades its rows away, so
+all three end in byte-identical state. There is no timestamp, flag or
+tombstone that separates them: the clear path leaves nothing behind, and
+``knowledge_items.updated_at`` moves for unrelated edits too. Skipping
+the whole ambiguous set is not the conservative option — it is deleting
+the migration, since the target cohort lives entirely inside it. So the
+backfill runs, but every row it writes is stamped ``added_by =
+'migration_0062'`` (and every domain it mints ``created_by =
+'migration_0062'``), which makes the write attributable in the admin UI
+and lets ``downgrade()`` take back exactly it and nothing else. An
+operator who lands on the wrong side of the ambiguity has a one-command
+undo instead of a silent, permanent clobber.
+
 ``lower()`` is applied INSIDE ``regexp_replace``, not around it: Postgres'
 ``regexp_replace`` is case-sensitive, so ``[^a-z0-9]`` matches uppercase
 letters too. Normalizing the raw value would turn a perfectly ordinary
@@ -53,9 +82,30 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+#: Stamped on every row this migration writes so ``downgrade()`` can take
+#: back exactly its own writes, and so an operator auditing a surprise
+#: membership can see where it came from. Ordinary create()/update() and
+#: replace_domains_for_item traffic overwrite it naturally.
+MARKER = "migration_0062"
+
+#: Items this backfill is allowed to touch: a non-empty legacy scalar AND no
+#: junction row of any kind. Anything with a junction row has already been
+#: spoken for by the post-#1263 write path or by an admin's explicit
+#: multi-domain edit, and the scalar on it may be stale by design.
+_UNMIGRATED = """
+    ki.domain IS NOT NULL AND ki.domain <> ''
+    AND NOT EXISTS (
+        SELECT 1 FROM knowledge_item_domains kid WHERE kid.item_id = ki.id
+    )
+"""
+
+
 def upgrade() -> None:
     # 1) Create a memory_domains row for any legacy scalar value that has no
     #    matching slug yet (defensive — same reasoning as _v51_to_v52 step 5).
+    #    Scanned over the SAME cohort step 2 backfills: minting from the raw
+    #    column would invent a grantable, browsable domain out of the stale
+    #    scalar of an item this migration is not going to touch anyway.
     #
     #    The grouping key is the NORMALIZED slug, not the raw value:
     #    normalization is many-to-one ('Finance' / 'finance' / 'FINANCE', and
@@ -68,19 +118,20 @@ def upgrade() -> None:
     #    min(domain) picks one raw spelling to keep as the display name,
     #    deterministically.
     op.execute(
-        r"""
-        INSERT INTO memory_domains (id, slug, name, created_at, updated_at)
+        rf"""
+        INSERT INTO memory_domains (id, slug, name, created_by, created_at, updated_at)
         SELECT
             'md_' || replace(d.slug, '-', '_'),
             d.slug,
             d.name,
+            '{MARKER}',
             now(), now()
           FROM (
-              SELECT regexp_replace(lower(domain), '[^a-z0-9]+', '-', 'g') AS slug,
-                     min(domain) AS name
-                FROM knowledge_items
-               WHERE domain IS NOT NULL AND domain <> ''
-               GROUP BY regexp_replace(lower(domain), '[^a-z0-9]+', '-', 'g')
+              SELECT regexp_replace(lower(ki.domain), '[^a-z0-9]+', '-', 'g') AS slug,
+                     min(ki.domain) AS name
+                FROM knowledge_items ki
+               WHERE {_UNMIGRATED}
+               GROUP BY regexp_replace(lower(ki.domain), '[^a-z0-9]+', '-', 'g')
           ) d
          WHERE NOT EXISTS (
              SELECT 1 FROM memory_domains md WHERE md.slug = d.slug
@@ -89,23 +140,28 @@ def upgrade() -> None:
         """
     )
 
-    # 2) Backfill the junction row for every item whose scalar domain has no
-    #    matching knowledge_item_domains entry yet.
+    # 2) Backfill the junction row for every unmigrated item — and ONLY those.
+    #    An item that already carries a junction row is left exactly as it is,
+    #    however stale its scalar column reads.
     op.execute(
-        r"""
+        rf"""
         INSERT INTO knowledge_item_domains (item_id, domain_id, added_by, added_at)
-        SELECT ki.id, md.id, 'system', now()
+        SELECT ki.id, md.id, '{MARKER}', now()
           FROM knowledge_items ki
           JOIN memory_domains md
             ON md.slug = regexp_replace(lower(ki.domain), '[^a-z0-9]+', '-', 'g')
-         WHERE ki.domain IS NOT NULL AND ki.domain <> ''
+         WHERE {_UNMIGRATED}
         ON CONFLICT (item_id, domain_id) DO NOTHING
         """
     )
 
 
 def downgrade() -> None:
-    # Not safely invertible: nothing distinguishes a junction row this
-    # backfill wrote from one written by ordinary create()/update() traffic
-    # afterward (same reasoning as 0061_agent_status_backfill_v115).
-    pass
+    # Invertible for exactly the rows this migration wrote, and no others:
+    # the marker is overwritten the moment ordinary create()/update() or
+    # replace_domains_for_item traffic rewrites an item's membership, so a
+    # surviving marked row is one nothing has touched since the upgrade.
+    op.execute(f"DELETE FROM knowledge_item_domains WHERE added_by = '{MARKER}'")
+    # Domains minted in step 1 are deliberately NOT dropped: an admin may
+    # have granted, renamed or filled one in the meantime, and a domain with
+    # no items is inert. They stay identifiable by created_by = MARKER.
