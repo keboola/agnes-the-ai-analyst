@@ -89,10 +89,64 @@ def test_app_rows_trail_the_files_inside_artefacts(seeded_app, monkeypatch):
     monkeypatch.setenv("AGNES_DATA_APPS_ENABLED", "1")
     _seed_app(slug="order-app", name="Ordering app")
     c = seeded_app["client"]
-    r = c.post(
-        "/api/collections", json={"name": "Order probe"}, headers=_auth(seeded_app["admin_token"])
-    )
+    r = c.post("/api/collections", json={"name": "Order probe"}, headers=_auth(seeded_app["admin_token"]))
     assert r.status_code == 201, r.text
     body = c.get("/library", headers=_auth(seeded_app["admin_token"])).text
     sec_at = body.index('data-lib-sec="files"')
     assert body.index("Order probe", sec_at) < body.index('href="/apps/detail/order-app"', sec_at)
+
+
+def test_admin_sees_only_own_and_granted_apps(seeded_app, monkeypatch):
+    """The Library's contract is no admin god-mode: an admin's Library lists
+    what THEY have. The API's ``_can_view`` short-circuits on Admin — reusing
+    it here listed every user's private app in the admin's Library (Devin
+    review on PR #1278). The instance-wide inventory stays on the API/CLI
+    list and the admin surfaces."""
+    monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+    monkeypatch.setenv("AGNES_DATA_APPS_ENABLED", "1")
+    _seed_app(slug="analyst-private", name="Analyst private app", owner_id="analyst1")
+    c = seeded_app["client"]
+    body = c.get("/library", headers=_auth(seeded_app["admin_token"])).text
+    assert "Analyst private app" not in body
+    # The analyst (owner) still sees it.
+    body = c.get("/library", headers=_auth(seeded_app["analyst_token"])).text
+    assert "Analyst private app" in body
+
+
+def test_app_row_sharing_badge_is_not_the_store_explainer(seeded_app, monkeypatch):
+    """An owner's app row must not wear the store-entity sharing explainer
+    (its dialog describes Store approval, which does not govern apps). The
+    badge is a plain read-out pointing at admin grants (Devin review on
+    PR #1278)."""
+    monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+    monkeypatch.setenv("AGNES_DATA_APPS_ENABLED", "1")
+    _seed_app(slug="badge-probe", name="Badge probe app")
+    c = seeded_app["client"]
+    body = c.get("/library", headers=_auth(seeded_app["admin_token"])).text
+    row_at = body.index("Badge probe app")
+    row = body[row_at - 2000 : row_at + 3000]
+    assert 'data-share-info="badge-probe"' not in row
+    assert "granted by an admin" in row
+
+
+def test_memory_rows_survive_a_count_failure(seeded_app, monkeypatch):
+    """Counts unknown must not read as counts zero: when the grouped count
+    query fails, granted memory domains still render (without counts) instead
+    of being hidden by the empty-domain rule (Devin review on PR #1278)."""
+    import tests.test_web_library_memory_band as band
+
+    monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+    dom = band._make_domain("lib-cnt-fail", "Lib CountFail")
+    band._make_item("lib_cntfail_1", "Note", dom)
+    band._grant_domain("Everyone", dom, users=["analyst1"])
+
+    from src.repositories.memory_domains import MemoryDomainsRepository
+
+    def _boom(self):
+        raise RuntimeError("simulated count failure")
+
+    monkeypatch.setattr(MemoryDomainsRepository, "count_items_by_domain", _boom)
+    c = seeded_app["client"]
+    resp = c.get("/library", headers=_auth(seeded_app["analyst_token"]))
+    assert resp.status_code == 200
+    assert "Lib CountFail" in resp.text

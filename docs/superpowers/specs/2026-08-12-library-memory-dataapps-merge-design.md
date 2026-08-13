@@ -69,6 +69,11 @@ include_drafts=False)`, exclude `state == "linked_hidden"`):
   `type_label="Data app"`, meta text = app state (running/stopped/linked),
   owner label = owner email; origin "yours" for the owner, "Shared with you"
   otherwise.
+- Visibility is grant-scoped via `has_explicit_grant` (owner or explicit
+  group grant), NOT the API's `_can_view` — that helper short-circuits on
+  Admin, and the Library's contract is no admin god-mode (Devin review).
+  The sharing badge is a plain read-out pointing at admin grants, not the
+  store-entity explainer.
 - No stack membership: rows are not addable/removable (`stack_state` stays
   empty), matching the fact that data-app access is grant-driven, not
   stack-driven.
@@ -84,9 +89,12 @@ include_drafts=False)`, exclude `state == "linked_hidden"`):
 The Library's memory-domain rows gain what only `/corporate-memory` cards
 had:
 
-- **Counts in meta:** "N items · M required" (from
-  `memory_domains_repo().list_items_of_domain`), computed once per domain
-  the way the standalone route does.
+- **Counts in meta:** "N items · M required" from the new
+  `count_items_by_domain()` repo method (one grouped COUNT query on both
+  backends + contract test) — NOT a per-domain `list_items_of_domain` load,
+  which pulls every item's full body (Devin review). A failed count renders
+  rows without counts and disables the empty-domain hiding — unknown must
+  not read as empty.
 - **Empty domains hidden** unless `requirement == "required"` — the same
   `_has_content` rule the standalone page applies (admins manage empty
   placeholders at `/admin/corporate-memory#domains`).
@@ -103,10 +111,11 @@ Deliberately **not** carried over:
 ### 3. Redirects under rail
 
 - `GET /corporate-memory` → `302 /library?section=memory_domain`
-- `GET /apps` → `302 /library?section=data_app` — only when
-  `data_apps_enabled()`; with the feature off the page keeps its current
-  explanatory empty state (a redirect would land a bookmark on a Library
-  with no Data apps section and no explanation).
+- `GET /apps` → `302 /library?section=files` — only when
+  `data_apps_enabled()` AND the caller can see at least one app under the
+  same grant-scoped rule the band applies; otherwise the page keeps its
+  explanatory empty state (a redirect would land the visitor on a Library
+  whose Artefacts band never rendered, with no explanation — Devin review).
 
 Both only when `get_ui_layout() == "rail"`; topnav serves today's pages.
 302 (not 308) so a later layout flip is not cached permanently — the same

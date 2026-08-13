@@ -15,6 +15,7 @@ have an ``is_required`` column yet; the PG repo's
 parity. DuckDB seeds default ``is_required = FALSE`` too, so both sides
 naturally return False here — no special-casing needed.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -30,6 +31,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # repo construction helpers — one per backend
 # ---------------------------------------------------------------------------
 
+
 def _seed_knowledge_items_duckdb(conn) -> None:
     for kid, title in (("ki_1", "First fact"), ("ki_2", "Second fact")):
         conn.execute(
@@ -42,10 +44,7 @@ def _seed_knowledge_items_pg(engine) -> None:
     with engine.begin() as conn:
         for kid, title in (("ki_1", "First fact"), ("ki_2", "Second fact")):
             conn.execute(
-                sa.text(
-                    "INSERT INTO knowledge_items (id, title) "
-                    "VALUES (:id, :title)"
-                ),
+                sa.text("INSERT INTO knowledge_items (id, title) VALUES (:id, :title)"),
                 {"id": kid, "title": title},
             )
 
@@ -74,10 +73,12 @@ def _make_pg_repo(pg_engine, monkeypatch):
 
     monkeypatch.setenv("AGNES_DB_URL", str(pg_engine.url))
     import src.db_pg as db_pg
+
     db_pg.dispose()
     db_pg.get_engine()
 
     from src.repositories.memory_domains_pg import MemoryDomainsPgRepository
+
     return MemoryDomainsPgRepository(db_pg.get_engine()), None
 
 
@@ -99,10 +100,15 @@ def repo(request, tmp_path, pg_engine, monkeypatch):
 # contract tests — same calls, same answers from both engines
 # ---------------------------------------------------------------------------
 
+
 def test_create_then_get_consistent(repo):
     did = repo.create(
-        name="Sales", slug="sales", description="d",
-        icon=None, color=None, created_by="u",
+        name="Sales",
+        slug="sales",
+        description="d",
+        icon=None,
+        color=None,
+        created_by="u",
     )
     row = repo.get(did)
     assert row is not None
@@ -116,8 +122,12 @@ def test_create_then_get_consistent(repo):
 
 def test_get_by_slug_consistent(repo):
     did = repo.create(
-        name="A", slug="a", description=None,
-        icon=None, color=None, created_by="u",
+        name="A",
+        slug="a",
+        description=None,
+        icon=None,
+        color=None,
+        created_by="u",
     )
     found = repo.get_by_slug("a")
     assert found is not None
@@ -127,8 +137,12 @@ def test_get_by_slug_consistent(repo):
 
 def test_exists_by_slug_consistent(repo):
     repo.create(
-        name="X", slug="x", description=None,
-        icon=None, color=None, created_by="u",
+        name="X",
+        slug="x",
+        description=None,
+        icon=None,
+        color=None,
+        created_by="u",
     )
     assert repo.exists_by_slug("x") is True
     assert repo.exists_by_slug("nope") is False
@@ -138,9 +152,7 @@ def test_ensure_seed_inserts_deterministic_id_then_noops(repo):
     """``ensure_seed`` (the lifespan canonical-domain seed) inserts under the
     caller-supplied deterministic id — unlike ``create``, which generates
     ``md_<uuid12>`` — and a second call is a no-op on both engines."""
-    inserted = repo.ensure_seed(
-        domain_id="md_probe", slug="probe", name="Probe", icon="🧪", color="#eeeeee"
-    )
+    inserted = repo.ensure_seed(domain_id="md_probe", slug="probe", name="Probe", icon="🧪", color="#eeeeee")
     assert inserted is True
     row = repo.get_by_slug("probe")
     assert row is not None
@@ -151,9 +163,7 @@ def test_ensure_seed_inserts_deterministic_id_then_noops(repo):
     assert row["status"] == "prod"
     assert row["created_by"] == "system:seed"
 
-    again = repo.ensure_seed(
-        domain_id="md_probe", slug="probe", name="Probe", icon="🧪", color="#eeeeee"
-    )
+    again = repo.ensure_seed(domain_id="md_probe", slug="probe", name="Probe", icon="🧪", color="#eeeeee")
     assert again is False
 
 
@@ -180,8 +190,12 @@ def test_ensure_seed_does_not_resurrect_soft_deleted(repo):
 def test_delete_round_trip(repo):
     """Soft delete hides the row; include_deleted reveals it; restore brings it back."""
     did = repo.create(
-        name="X", slug="ghost", description=None,
-        icon=None, color=None, created_by="u",
+        name="X",
+        slug="ghost",
+        description=None,
+        icon=None,
+        color=None,
+        created_by="u",
     )
     repo.delete(did)
     assert repo.get(did) is None
@@ -193,21 +207,67 @@ def test_delete_round_trip(repo):
 
 def test_add_item_idempotent(repo):
     did = repo.create(
-        name="Sales", slug="sales", description=None,
-        icon=None, color=None, created_by="u",
+        name="Sales",
+        slug="sales",
+        description=None,
+        icon=None,
+        color=None,
+        created_by="u",
     )
     assert repo.add_item(did, "ki_1", added_by="u") is True
     assert repo.add_item(did, "ki_1", added_by="u") is False
 
 
-def test_list_domains_of_item_joins_correctly(repo):
+def test_count_items_by_domain_consistent(repo):
+    """One grouped query, {domain_id: (items, required)} on both backends.
+
+    Exists so /library can show the per-domain counts without loading every
+    knowledge item's full body (Devin review on PR #1278). PG has no
+    ``is_required`` column yet, so required comes back 0 there — same
+    parity posture as ``list_items_of_domain``'s ``FALSE AS is_required``;
+    DuckDB seeds default ``is_required = FALSE`` too, so both sides agree.
+    """
     a = repo.create(
-        name="A", slug="a", description=None,
-        icon=None, color=None, created_by="u",
+        name="A",
+        slug="cnt-a",
+        description=None,
+        icon=None,
+        color=None,
+        created_by="u",
     )
     b = repo.create(
-        name="B", slug="b", description=None,
-        icon=None, color=None, created_by="u",
+        name="B",
+        slug="cnt-b",
+        description=None,
+        icon=None,
+        color=None,
+        created_by="u",
+    )
+    repo.add_item(a, "ki_1", added_by="u")
+    repo.add_item(a, "ki_2", added_by="u")
+    counts = repo.count_items_by_domain()
+    assert counts[a] == (2, 0)
+    # A domain with no items has no row at all — callers .get() with a
+    # known-zero default rather than expecting an entry.
+    assert b not in counts
+
+
+def test_list_domains_of_item_joins_correctly(repo):
+    a = repo.create(
+        name="A",
+        slug="a",
+        description=None,
+        icon=None,
+        color=None,
+        created_by="u",
+    )
+    b = repo.create(
+        name="B",
+        slug="b",
+        description=None,
+        icon=None,
+        color=None,
+        created_by="u",
     )
     repo.add_item(a, "ki_1", added_by="u")
     repo.add_item(b, "ki_1", added_by="u")
@@ -221,12 +281,20 @@ def test_resolve_ids_to_slugs_consistent(repo):
     assert repo.resolve_ids_to_slugs([]) == {}
 
     live = repo.create(
-        name="Live", slug="live", description=None,
-        icon=None, color=None, created_by="u",
+        name="Live",
+        slug="live",
+        description=None,
+        icon=None,
+        color=None,
+        created_by="u",
     )
     gone = repo.create(
-        name="Gone", slug="gone", description=None,
-        icon=None, color=None, created_by="u",
+        name="Gone",
+        slug="gone",
+        description=None,
+        icon=None,
+        color=None,
+        created_by="u",
     )
     repo.delete(gone)  # soft delete — must be omitted
 

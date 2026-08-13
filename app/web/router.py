@@ -3298,16 +3298,19 @@ async def library_page(
         dom_slugs = {}
     # Per-domain item/required counts — the same numbers the standalone
     # /corporate-memory cards carry (that page 302s here under rail, so the
-    # band inherits its duties). Read by the memory rows' meta and by the
-    # empty-domain rule below.
-    dom_counts: dict[str, tuple[int, int]] = {}
+    # band inherits its duties). One grouped COUNT query, not a per-domain
+    # item load: pulling every knowledge item's full body to display two
+    # numbers made the Library's render cost scale with the knowledge base
+    # (Devin review on this PR). ``None`` means the counts are UNKNOWN (the
+    # read failed) — the rows below then render without counts and, crucially,
+    # without the empty-domain hiding rule, because "we could not count" must
+    # not read as "there is nothing here" and silently drop granted knowledge.
+    dom_counts: dict[str, tuple[int, int]] | None
     try:
-        _dom_repo = memory_domains_repo()
-        for _did in dom_slugs:
-            _sums = _dom_repo.list_items_of_domain(_did, limit=10000)
-            dom_counts[_did] = (len(_sums), sum(1 for s in _sums if s.get("is_required")))
+        dom_counts = memory_domains_repo().count_items_by_domain()
     except Exception as e:
         logger.warning("/library: could not count memory-domain items: %s", e)
+        dom_counts = None
     # Membership mode decides droppability below: classic optional members
     # are the caller's own subscriptions (removable here, as on /catalog);
     # under auto-membership the grant IS the membership, nothing to drop.
@@ -3330,16 +3333,23 @@ async def library_page(
                     # HERE instead of to the memory listing the caller never
                     # visited (also feeds the memory_domain.view event).
                     href = f"/memory/d/{slug}?source=library" if slug else f"/corporate-memory#{e.id}"
-                    n_items, n_required = dom_counts.get(e.id, (0, 0))
-                    # A domain with nothing in it has nothing to opt into —
-                    # same rule as the standalone page (_has_content): hidden
-                    # unless the mandate itself is required. Admins manage
-                    # empty placeholders at /admin/corporate-memory#domains.
-                    if n_items == 0 and e.requirement != "required":
-                        continue
-                    row_meta = f"{n_items} item{'s' if n_items != 1 else ''}"
-                    if n_required:
-                        row_meta += f" · {n_required} required"
+                    if dom_counts is None:
+                        # Counts unknown — render the row WITHOUT them rather
+                        # than treating the failure as emptiness and hiding
+                        # knowledge the caller is granted.
+                        row_meta = e.category or ""
+                    else:
+                        n_items, n_required = dom_counts.get(e.id, (0, 0))
+                        # A domain with KNOWN-zero content has nothing to opt
+                        # into — same rule as the standalone page
+                        # (_has_content): hidden unless the mandate itself is
+                        # required. Admins manage empty placeholders at
+                        # /admin/corporate-memory#domains.
+                        if n_items == 0 and e.requirement != "required":
+                            continue
+                        row_meta = f"{n_items} item{'s' if n_items != 1 else ''}"
+                        if n_required:
+                            row_meta += f" · {n_required} required"
                 _add_shared_row(
                     item_id=e.id,
                     title=e.name,
@@ -3538,18 +3548,27 @@ async def library_page(
     # to that section — see data_apps_list_page), so removing them strands
     # the surface.
     if _data_apps_nav_enabled():
-        from app.api.data_apps import _can_view as _da_can_view
         from app.api.data_apps import _serialize as _da_serialize
+        from app.auth.access import has_explicit_grant
         from src.repositories import data_apps_repo
 
         try:
             _da_cfg = get_data_apps_config()
             _da_users = users_repo()
             for da in data_apps_repo().list(include_drafts=False):
-                if da.get("state") == "linked_hidden" or not _da_can_view(user, da):
+                # Grant-scoped via ``has_explicit_grant``, deliberately NOT
+                # the API's ``_can_view`` (and not ``can_access`` either —
+                # both short-circuit on Admin): this page's contract
+                # (docstring above) is no admin god-mode, an admin's Library
+                # lists what THEY have, not every user's private app. The
+                # instance-wide inventory stays on the API/CLI list and the
+                # admin surfaces (Devin review on this PR).
+                _da_mine = da["owner_user_id"] == uid
+                if da.get("state") == "linked_hidden" or not (
+                    _da_mine or has_explicit_grant(uid, ResourceType.DATA_APP.value, da["slug"])
+                ):
                     continue
                 _da = _da_serialize(da, _da_cfg)
-                _da_mine = da["owner_user_id"] == uid
                 _da_owner = _da_users.get_by_id(da["owner_user_id"]) or {}
                 _da_meta = " · ".join(
                     b for b in (_da.get("state") or "", "linked" if _da.get("kind") == "linked" else "") if b
@@ -4991,14 +5010,35 @@ async def data_apps_list_page(
     from src.repositories import data_apps_repo, users_repo
 
     enabled = feature_enabled("data_apps", "enabled", env_var="AGNES_DATA_APPS_ENABLED", default=False)
-    # Rail: the apps inventory lives in the Library's Files band now — data
-    # apps sit among the caller's artifacts (spec 2026-08-12, revised: rows
-    # keep type_key=data_app for the Type facet, but Files is their home).
-    # Only when the feature is on — with it off, this page's explanatory
-    # empty state below is the better answer for a bookmark than a Library
-    # with no app rows. 302, not 308 (layout flips must not be cached).
+    # Rail: the apps inventory lives in the Library's Artefacts band now —
+    # data apps sit among the caller's artifacts (spec 2026-08-12, revised:
+    # rows keep type_key=data_app for the Type facet, but Files is their
+    # home). Redirect ONLY when the Library will actually show the caller an
+    # app row (the same grant-scoped visibility the Library band applies —
+    # owner or granted, no admin god-mode): a caller with nothing visible
+    # would land on a Library whose band never rendered, with nothing
+    # explaining where the inventory went, so they keep this page's
+    # explicit empty state instead (Devin review on this PR). Feature off →
+    # same reasoning, page renders its explanatory note. 302, not 308
+    # (layout/visibility flips must not be cached).
     if enabled and get_ui_layout() == "rail":
-        return RedirectResponse(url="/library?section=files", status_code=302)
+        from app.auth.access import has_explicit_grant
+        from app.resource_types import ResourceType
+
+        # Same grant-scoped visibility as the Library band (owner or explicit
+        # grant, no admin god-mode) — the redirect must predict exactly what
+        # the band will render, or an admin with nothing of their own would
+        # bounce onto a Library with no app rows.
+        _visible_any = any(
+            r.get("state") != "linked_hidden"
+            and (
+                r["owner_user_id"] == user["id"]
+                or has_explicit_grant(user["id"], ResourceType.DATA_APP.value, r["slug"])
+            )
+            for r in data_apps_repo().list(include_drafts=False)
+        )
+        if _visible_any:
+            return RedirectResponse(url="/library?section=files", status_code=302)
 
     cfg = get_data_apps_config()
     apps: list[dict] = []

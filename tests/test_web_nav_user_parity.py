@@ -94,6 +94,16 @@ def test_redirected_entries_really_redirect(seeded_app, monkeypatch):
     actually 302 into its Library section under rail."""
     monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
     monkeypatch.setenv("AGNES_DATA_APPS_ENABLED", "1")
+    # /apps only redirects when the Library will actually show the caller an
+    # app row — seed one owned by the analyst so the claim is testable.
+    from src.db import get_system_db
+    from src.repositories.data_apps import DataAppsRepository
+
+    conn = get_system_db()
+    try:
+        DataAppsRepository(conn).create(slug="parity-app", name="parity-app", owner_user_id="analyst1", description="")
+    finally:
+        conn.close()
     c = seeded_app["client"]
     headers = {"Authorization": f"Bearer {seeded_app['analyst_token']}"}
     for src, target in REDIRECTED_UNDER_RAIL.items():
