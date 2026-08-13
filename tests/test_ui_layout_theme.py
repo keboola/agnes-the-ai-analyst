@@ -521,9 +521,13 @@ class TestRailOptIn:
         # header (it moved here from the My Stack header).
         assert 'class="cbn cbn--bar"' in text
         assert "Connect your AI tools to give them access to the same knowledge." in text
-        # Agents are NOT a Library kind — they live on /agents.
+        # Agents are NOT a Library kind — they live on /agents. An agent
+        # TEMPLATE is, though (store `type='agent'`, renamed in AGT-4), and its
+        # menu item legitimately reads "Build an agent template" — so the guard
+        # matches the closing tag rather than a prefix both strings share.
         assert 'data-kind="agent"' not in text
-        assert "Build an agent" not in text
+        assert ">Build an agent<" not in text
+        assert ">Build an agent template<" in text
 
     def test_artefacts_redirects_to_library(self, web_client, admin_cookie, monkeypatch):
         """/artefacts was renamed to /library and redirects there, so old links,

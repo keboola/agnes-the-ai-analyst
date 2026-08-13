@@ -628,7 +628,8 @@ def _store_entity_blocks() -> List[Block]:
 
     rows, _ = store_entities_repo().list(limit=_GRANT_PROJECTION_LIMIT)
     blocks: dict[str, Block] = {}
-    labels = {"skill": "Skills", "agent": "Agents", "plugin": "Plugins"}
+    # Display names only — `type` stays 'agent' on the wire and in the DB.
+    labels = {"skill": "Skills", "agent": "Agent Templates", "plugin": "Plugins"}
     for r in rows:
         if r.get("visibility_status") == "archived":
             continue

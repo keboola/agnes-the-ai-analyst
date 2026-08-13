@@ -127,7 +127,7 @@ export const TOURS = {
       page: '/library',
       selector: '#lib-new-btn',
       title: 'Bring your own knowledge in',
-      desc: 'Click + Add to upload a file only you have — a pricing deck, a spec, meeting notes — and I\'ll search it and cite it in my answers. No admin needed. The same menu is where you build a skill, a plugin or a shareable agent.',
+      desc: 'Click + Add to upload a file only you have — a pricing deck, a spec, meeting notes — and I\'ll search it and cite it in my answers. No admin needed. The same menu is where you build a skill, a plugin or an agent template.',
       points: [
         'PDF, Markdown, CSV, Excel, and more.',
         'It lands in your Library, and you decide whether it goes in your stack.',
@@ -244,7 +244,7 @@ export const TOURS = {
       // ?type= deep link where step 1 lands collapsed.
       selector: '[data-sk-type], [data-sk-change]',
       title: 'Start here',
-      desc: 'Pick what you are building — a skill, a plugin, or a shareable agent. The rest of the form follows from that choice.',
+      desc: 'Pick what you are building — a skill, a plugin, or an agent template. The rest of the form follows from that choice.',
       points: [
         'Choose who can use it: just you, or everyone in the organization.',
         'Save to Library and it appears in your Library, ready to share.',

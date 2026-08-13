@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+
+- **The Library's shareable "Agent" is now an "Agent Template".** Two different things were both called an Agent: the personal, runnable agent you configure on `/agents`, and the Library resource that is a system prompt other people install. Issue #865 saw the collision coming and asked the newer concept to take its own name; it did not, so the copy spent three separate places insisting the two were different — a callout on the Builder whose middle sentence existed only to say what the thing is *not*. The name now does that work, and the callout explains the template instead. Renamed in the Builder's type picker, the Library "new" menu, the `/agents` capability picker (which rendered the bare word `agent` on a row, inside the very page where the reader is building an agent), the `/admin/access` grant headings, the installed-bundle description and the tour copy. **Display only** — `type='agent'` is unchanged on the wire, in the DB, in the API and in the CLI, so nothing a client stores or filters on moves.
+
 ## [0.83.32] - 2026-08-17
 
 ### Added
