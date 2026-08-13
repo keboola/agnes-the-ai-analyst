@@ -197,6 +197,9 @@ class AgentCreate(BaseModel):
     plugins: List[str] = Field(default_factory=list)
     surfaces: Optional[Dict[str, bool]] = None
     status: str = Field(default="draft", max_length=30)
+    #: Start from a Library Agent Template (store entity, ``type='agent'``).
+    #: Prefills BEHAVIOUR only — see ``_template_prefill``.
+    template_entity_id: Optional[str] = Field(default=None, max_length=200)
 
 
 class AgentUpdate(BaseModel):
@@ -330,16 +333,92 @@ async def list_agents(user: dict = Depends(get_current_user)):
     return {"agents": out}
 
 
+def _template_prefill(entity_id: str, user: dict) -> Dict[str, str]:
+    """Read an Agent Template's markdown into builder fields.
+
+    BEHAVIOUR ONLY, and that is the design rather than an omission. A template
+    is portable between users and instances, so it cannot name a data package
+    or memory domain — the id would mean something else, or nothing, wherever
+    it lands. The template brings the role; the person brings their own data.
+    ``knowledge``/``tables_mode``/``connections_mode`` are therefore never
+    prefilled from one.
+
+    Visibility is enforced with the store's own gate, so a template the caller
+    cannot read 404s here exactly as it would on the store detail route.
+    """
+    from app.api.store import (
+        _FRONTMATTER_RE,
+        _enforce_visibility,
+        _entity_dir,
+        _parse_frontmatter,
+    )
+    from app.auth.dependencies import _get_db
+    from src.repositories import store_entities_repo
+
+    entity = store_entities_repo().get(entity_id)
+    if not entity or entity.get("type") != "agent":
+        raise HTTPException(status_code=404, detail="template_not_found")
+
+    conn = next(_get_db())
+    try:
+        _enforce_visibility(entity, user, conn)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    agents_dir = _entity_dir(entity_id) / "plugin" / "agents"
+    docs = sorted(agents_dir.glob("*.md")) if agents_dir.is_dir() else []
+    if not docs:
+        # The row exists but its content does not — a template with no body
+        # would silently create a blank agent, which looks like the feature
+        # failing rather than the template being empty.
+        raise HTTPException(status_code=422, detail="template_has_no_content")
+
+    text = docs[0].read_text(encoding="utf-8", errors="replace")
+    fm = _parse_frontmatter(text) or {}
+    body = _FRONTMATTER_RE.sub("", text, count=1).strip() if _FRONTMATTER_RE.match(text) else text.strip()
+
+    out: Dict[str, str] = {"instructions": body}
+    # `description` is the closest thing a template carries to a role. The
+    # remaining fields are only prefilled when a template actually declares
+    # them — most do not, and inventing a tone would be putting words in the
+    # author's mouth.
+    for field, key in (("role", "role"), ("tone", "tone"), ("greeting", "greeting")):
+        val = (fm.get(key) or "").strip()
+        if val:
+            out[field] = val
+    if "role" not in out:
+        out["role"] = (entity.get("description") or "").strip()[:500]
+    return out
+
+
 @router.post("", status_code=201)
 async def create_agent(payload: AgentCreate, user: dict = Depends(get_current_user)):
     """Create an agent owned by (and private to) the caller.
 
     An unnamed agent is legal — the builder creates the row first and the user
     names it as they go, so a blank name must not 422 the whole flow.
+
+    ``template_entity_id`` starts the agent from a Library Agent Template. It
+    only ever fills fields the caller left blank, so an explicit value in the
+    payload still wins — the template is a starting point, not an override.
     """
     uid = user["id"]
     name = (payload.name or "").strip()
     slug = _unique_slug(_auto_slug(name or "agent"), uid)
+
+    prefill: Dict[str, str] = {}
+    if payload.template_entity_id:
+        prefill = _template_prefill(payload.template_entity_id, user)
+
+    def _field(key: str, given: str, fallback: str = "") -> str:
+        """Caller's value, else the template's, else the existing default."""
+        if (given or "").strip():
+            return given
+        return prefill.get(key) or fallback
+
     # Builder ids carry the ``agt_`` prefix (the redesign's convention, asserted
     # by the Library sharing tests) so a builder-authored agent is
     # distinguishable at a glance from the agent-as-API rows that main's
@@ -350,10 +429,11 @@ async def create_agent(payload: AgentCreate, user: dict = Depends(get_current_us
         owner_user_id=uid,
         name=name,
         slug=slug,
-        system_prompt=payload.instructions or "",
-        role=payload.role or "",
-        tone=payload.tone or "concise",
-        greeting=payload.greeting or "",
+        system_prompt=_field("instructions", payload.instructions),
+        role=_field("role", payload.role),
+        tone=_field("tone", payload.tone, "concise"),
+        greeting=_field("greeting", payload.greeting),
+        # NOT prefilled from a template, ever — see _template_prefill.
         knowledge=json.dumps(payload.knowledge or []),
         plugins=json.dumps(payload.plugins or []),
         # A new agent is web-enabled by default (the builder's convention); an
