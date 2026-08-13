@@ -98,11 +98,11 @@ class TestGetCommand:
         assert "fetch it upstream" in err
 
     def test_403_shows_server_detail_not_login_hint(self, fake_api):
-        fake_api["resp"] = _resp(403, json_detail="Table 'jira_attachments' is not in your stack.")
+        fake_api["resp"] = _resp(403, json_detail="Table 'attachments' is not in your stack.")
         result = runner.invoke(attachment_app, ["jira", "101"])
         assert result.exit_code == 1
         err = result.output + (result.stderr or "")
-        assert "jira_attachments" in err
+        assert "attachments" in err
         assert "authentication required" not in err
 
     def test_401_shows_login_hint(self, fake_api):

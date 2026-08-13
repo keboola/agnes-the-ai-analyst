@@ -3,7 +3,7 @@
 A connector that stores attachment files on the server declares its
 catalogue in ``src/attachment_sources.py`` (table, id column, path column,
 permitted root); this route serves any declared source. Jira is the first:
-``jira_attachments.local_path`` records where
+the ``attachments`` catalogue's ``local_path`` records where
 ``JiraService.download_all_attachments()`` put each file.
 
 RBAC is table-level and deliberately so: "can this caller read attachment
@@ -52,28 +52,36 @@ def _audit(user: dict, source: str, attachment_id: str, result: str, **params) -
     )
 
 
-def _lookup_stored_path(decl: AttachmentSource, attachment_id: str) -> tuple[bool, str | None]:
+def _lookup_stored_path(
+    decl: AttachmentSource, view_name: str, attachment_id: str
+) -> tuple[bool, str | None, str | None]:
     """Look ``attachment_id`` up in the source's catalogue view.
 
-    Returns ``(row_exists, stored_path)``. The id column is compared as
-    VARCHAR so a BIGINT-typed catalogue column never throws on a
-    non-numeric path parameter. A missing view (source declared but never
-    synced) reads as "no row".
+    Returns ``(row_exists, stored_path, original_name)`` —
+    ``original_name`` comes from the declaration's ``filename_column`` (the
+    name the upstream system shows, e.g. Jira's ``filename``) and is ``None``
+    when the source declares none. The id column is compared as VARCHAR so a
+    BIGINT-typed catalogue column never throws on a non-numeric path
+    parameter. A missing view (source declared but never synced) reads as
+    "no row".
     """
+    cols = quote_ident(decl.path_column)
+    if decl.filename_column:
+        cols += f", {quote_ident(decl.filename_column)}"
     sql = (
-        f"SELECT {quote_ident(decl.path_column)} FROM {quote_ident(decl.table)} "
+        f"SELECT {cols} FROM {quote_ident(view_name)} "
         f"WHERE CAST({quote_ident(decl.id_column)} AS VARCHAR) = ? LIMIT 1"
     )
     analytics = get_analytics_db_readonly()
     try:
         row = analytics.execute(sql, [attachment_id]).fetchone()
     except duckdb.CatalogException:
-        return False, None
+        return False, None, None
     finally:
         analytics.close()
     if row is None:
-        return False, None
-    return True, row[0]
+        return False, None, None
+    return True, row[0], (row[1] if decl.filename_column else None)
 
 
 def _resolve_contained(root: Path, stored: str | None) -> tuple[Path | None, os.stat_result | None, str]:
@@ -151,20 +159,37 @@ def download_attachment(
             },
         )
 
+    # The declaration names the catalogue table; grants key on the registry
+    # `id` while master views are named by `name`, and the two are not
+    # guaranteed to coincide (see app/api/data.py — it resolves the same
+    # way). Resolve the registry row once and use each half for its own job;
+    # an unregistered (or unreadable-registry) table falls back to the
+    # declared name for both, which then fails closed in `can_access_table`.
+    rbac_key = view_name = decl.table
+    try:
+        from src.repositories import table_registry_repo
+
+        reg_row = table_registry_repo().get(decl.table) or table_registry_repo().get_by_name(decl.table)
+        if reg_row is not None:
+            rbac_key = reg_row["id"]
+            view_name = reg_row["name"]
+    except Exception:
+        logger.exception("attachment.download: registry resolution failed for %s; using declared name", decl.table)
+
     # RBAC first, before any lookup or filesystem work — an unauthorized
     # caller learns nothing beyond the refusal.
-    if not can_access_table(user, decl.table, conn):
-        _audit(user, source, attachment_id, "error.403", table=decl.table)
-        raise HTTPException(status_code=403, detail=table_not_in_stack_message(decl.table))
+    if not can_access_table(user, rbac_key, conn):
+        _audit(user, source, attachment_id, "error.403", table=rbac_key)
+        raise HTTPException(status_code=403, detail=table_not_in_stack_message(rbac_key))
 
-    row_exists, stored = _lookup_stored_path(decl, attachment_id)
+    row_exists, stored, original_name = _lookup_stored_path(decl, view_name, attachment_id)
     if not row_exists:
         _audit(user, source, attachment_id, "error.404", error="attachment_not_found")
         raise HTTPException(
             status_code=404,
             detail={
                 "code": "attachment_not_found",
-                "hint": f"no row with {decl.id_column}={attachment_id!r} in {decl.table}",
+                "hint": f"no row with {decl.id_column}={attachment_id!r} in {view_name}",
             },
         )
 
@@ -183,10 +208,22 @@ def download_attachment(
             },
         )
 
-    _audit(user, source, attachment_id, "success", bytes=st.st_size, filename=file_path.name)
+    # Label the download with the name the upstream system shows (Jira
+    # stores files as "<id>_<filename>", so the path basename is id-prefixed).
+    # The catalogue value is data, not a trusted constant — basename-only,
+    # after the same unsafe-byte rejects the path guard applies.
+    download_name = file_path.name
+    if original_name and "\x00" not in original_name and "\\" not in original_name:
+        download_name = Path(original_name).name or download_name
+
+    _audit(user, source, attachment_id, "success", bytes=st.st_size, filename=download_name)
+    # stat-then-open window: FileResponse opens the path after this stat, so
+    # a swap in between would serve different bytes than were audited.
+    # Exploiting it requires write access to the attachments directory —
+    # this comment is the proportionate mitigation, not a lock.
     return FileResponse(
         path=file_path,
         stat_result=st,
-        filename=file_path.name,
+        filename=download_name,
         media_type="application/octet-stream",
     )

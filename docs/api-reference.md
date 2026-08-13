@@ -1206,7 +1206,7 @@ analogue) drive the in-chat split-pane preview iframe on top of this grant.
 - /api/attachments/{source}/{attachment_id}/download — streams one attachment
   file a connector stored on the server, looked up by id in the source's
   declared catalogue table (`src/attachment_sources.py`; `jira` is the first
-  source: `jira_attachments.local_path`). RBAC is table-level — read access to
+  source: the `attachments` catalogue's `local_path`). RBAC is table-level — read access to
   the catalogue table via `can_access_table`, exactly like the parquet
   download. Misses stay distinguishable from denials: 404
   `attachment_not_found` (no such row) / `attachment_not_stored` (row exists,

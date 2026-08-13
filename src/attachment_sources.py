@@ -38,6 +38,11 @@ class AttachmentSource:
     id_column: str
     path_column: str
     root: Callable[[], Path]
+    # Column carrying the file's ORIGINAL name (as the upstream system shows
+    # it), when the on-disk name differs — Jira stores files as
+    # "<id>_<filename>", so serving the path basename would hand the user an
+    # id-prefixed name. None = fall back to the path basename.
+    filename_column: str | None = None
 
 
 def _jira_attachments_root() -> Path:
@@ -52,12 +57,20 @@ def _jira_attachments_root() -> Path:
 
 
 _SOURCES: dict[str, AttachmentSource] = {
+    # The catalogue is the connector's "attachments" table VERBATIM: the
+    # orchestrator names master views straight off _meta.table_name, and the
+    # Jira connector emits its tables UNPREFIXED (JIRA_TABLES in
+    # connectors/jira/extract_init.py) — "jira_attachments" exists only in
+    # the legacy Data Broker path and resolves nowhere on an Agnes server.
+    # tests/test_attachment_download.py pins this declaration against
+    # JIRA_TABLES and the transform's real output columns.
     "jira": AttachmentSource(
         source="jira",
-        table="jira_attachments",
+        table="attachments",
         id_column="attachment_id",
         path_column="local_path",
         root=_jira_attachments_root,
+        filename_column="filename",
     ),
 }
 

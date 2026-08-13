@@ -40,7 +40,7 @@ def _last_audit_row():
 
 @pytest.fixture
 def jira_attachment_env(seeded_app, monkeypatch):
-    """A registered + extracted `jira_attachments` catalogue, a real file on
+    """A registered + extracted `attachments` catalogue, a real file on
     disk under the permitted root, and Config.JIRA_DATA_DIR repointed at it.
 
     Rows: id 101 → stored file, id 102 → empty local_path (transform-time
@@ -68,12 +68,12 @@ def jira_attachment_env(seeded_app, monkeypatch):
         "jira",
         [
             {
-                "name": "jira_attachments",
+                "name": "attachments",
                 "data": [
                     {
                         "attachment_id": "101",
                         "issue_key": "SUP-1",
-                        "filename": "report.pdf",
+                        "filename": "quarterly report.pdf",
                         "local_path": str(stored),
                     },
                     {
@@ -104,7 +104,7 @@ def jira_attachment_env(seeded_app, monkeypatch):
 
     resp = c.post(
         "/api/admin/register-table",
-        json={"name": "jira_attachments", "source_type": "jira", "query_mode": "local"},
+        json={"name": "attachments", "source_type": "jira", "query_mode": "local"},
         headers={"Authorization": f"Bearer {seeded_app['admin_token']}"},
     )
     assert resp.status_code == 201
@@ -123,7 +123,7 @@ def test_denied_without_table_access_and_audited(jira_attachment_env, analyst_us
     assert resp.status_code == 403
     # The refusal is the catalogue table's RBAC message — a client can tell
     # this apart from every 404 miss below.
-    assert "jira_attachments" in str(resp.json()["detail"])
+    assert "attachments" in str(resp.json()["detail"])
     row = _last_audit_row()
     assert row is not None
     assert row[0] == "analyst1"
@@ -131,11 +131,15 @@ def test_denied_without_table_access_and_audited(jira_attachment_env, analyst_us
 
 
 def test_granted_fetch_streams_the_same_bytes(jira_attachment_env, analyst_user):
-    _grant_table("analyst1", "jira_attachments", "att-ok")
+    _grant_table("analyst1", "attachments", "att-ok")
     resp = jira_attachment_env["client"].get("/api/attachments/jira/101/download", headers=analyst_user)
     assert resp.status_code == 200
     assert resp.content == jira_attachment_env["payload"]
-    assert "101_report.pdf" in resp.headers.get("content-disposition", "")
+    cd = resp.headers.get("content-disposition", "")
+    # The catalogue's `filename` (what Jira shows), not the on-disk
+    # "<id>_<name>" — RFC 5987-encoded because of the space.
+    assert "quarterly%20report.pdf" in cd
+    assert "101_" not in cd
     row = _last_audit_row()
     assert row[0] == "analyst1"
     assert row[3] == "success"
@@ -149,7 +153,7 @@ def test_admin_god_mode_passes_the_table_gate(jira_attachment_env, admin_user):
 
 
 def test_unknown_id_is_not_found(jira_attachment_env, analyst_user):
-    _grant_table("analyst1", "jira_attachments", "att-noid")
+    _grant_table("analyst1", "attachments", "att-noid")
     resp = jira_attachment_env["client"].get("/api/attachments/jira/99999/download", headers=analyst_user)
     assert resp.status_code == 404
     assert resp.json()["detail"]["code"] == "attachment_not_found"
@@ -164,7 +168,7 @@ def test_no_stored_bytes_is_distinguishable(jira_attachment_env, analyst_user, a
     """Empty path, vanished file, and a tampered path that escapes the
     permitted root all answer `attachment_not_stored` — a client falls back
     to the upstream API for these, and the escape is never served."""
-    _grant_table("analyst1", "jira_attachments", f"att-miss-{attachment_id}")
+    _grant_table("analyst1", "attachments", f"att-miss-{attachment_id}")
     resp = jira_attachment_env["client"].get(f"/api/attachments/jira/{attachment_id}/download", headers=analyst_user)
     assert resp.status_code == 404
     assert resp.json()["detail"]["code"] == "attachment_not_stored"
@@ -266,3 +270,35 @@ class TestResolveContained:
             assert path == f.resolve()
             assert st is not None and st.st_size == 2
             assert reason == ""
+
+
+class TestDeclarationMatchesConnector:
+    """Pin the declaration to what the connector actually emits — the
+    blocker class this guards against is a declaration naming a table that
+    resolves nowhere: master views are named verbatim from _meta.table_name,
+    and the Jira connector's table names are UNPREFIXED."""
+
+    def test_jira_table_is_a_real_connector_table(self):
+        from connectors.jira.extract_init import JIRA_TABLES
+        from src.attachment_sources import get_attachment_source
+
+        decl = get_attachment_source("jira")
+        assert decl.table in JIRA_TABLES, (
+            f"declared catalogue table {decl.table!r} is not one the Jira "
+            f"connector emits ({JIRA_TABLES}) — it would resolve to no view"
+        )
+
+    def test_jira_columns_exist_in_the_transform_output(self, tmp_path):
+        from connectors.jira.transform import transform_attachments
+        from src.attachment_sources import get_attachment_source
+
+        decl = get_attachment_source("jira")
+        raw = {
+            "key": "SUP-1",
+            "fields": {"attachment": [{"id": "1", "filename": "a.png", "author": None}]},
+        }
+        records = transform_attachments(raw, attachments_dir=tmp_path)
+        assert records, "synthetic payload produced no attachment record"
+        cols = set(records[0])
+        declared = {decl.id_column, decl.path_column, decl.filename_column}
+        assert declared <= cols, f"declared columns {declared - cols} missing from {sorted(cols)}"

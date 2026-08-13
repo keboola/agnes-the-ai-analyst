@@ -5,7 +5,7 @@
 
 One-shot fetch by id over the authenticated API (Tier-2 download, same
 shape as `agnes admin sessions download`). RBAC is read access to the
-source's catalogue table (e.g. `jira_attachments`) — the same gate as the
+source's catalogue table (e.g. Jira's `attachments`) — the same gate as the
 parquet download. No SSH to the server anywhere in the flow.
 """
 
@@ -89,7 +89,7 @@ def get(
     but the server holds no bytes (over-50MB skip or transform-time miss) —
     fetch those from the upstream system directly. Find ids in the source's
     catalogue table, e.g.
-    `agnes query "SELECT attachment_id, filename FROM jira_attachments WHERE issue_key = '...'"`.
+    `agnes query "SELECT attachment_id, filename FROM attachments WHERE issue_key = '...'"`.
     """
     # `api_get` buffers the whole response — the Tier-2 one-shot-fetch shape
     # (`agnes admin sessions download` does the same). A future source that

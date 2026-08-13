@@ -561,7 +561,8 @@ DuckDB views for Jira tables are created automatically if data exists:
 
 Attachments (images, logs, PDFs) are stored on the server alongside parquet
 data and are **not** distributed via `agnes pull` (the manifest only
-advertises parquet tables). The `jira_attachments` table has a `local_path`
+advertises parquet tables). The `attachments` catalogue table (the
+connector's table names are unprefixed) has a `local_path`
 column with the server-side filesystem path:
 
 ```sql
@@ -570,7 +571,7 @@ SELECT
     filename,
     local_path,
     size_bytes
-FROM jira_attachments
+FROM attachments
 WHERE issue_key = 'SUPPORT-1234';
 ```
 
@@ -589,7 +590,7 @@ agnes attachment get jira 56340 -o img.png
 ```
 
 (`GET /api/attachments/jira/{attachment_id}/download` underneath.) The gate
-is read access to the `jira_attachments` table — the same RBAC as the
+is read access to the `attachments` catalogue table — the same RBAC as the
 parquet download — and every fetch is audited. A 404 with code
 `attachment_not_stored` means the catalogue row exists but the server holds
 no bytes (over-50MB skip or transform-time miss): fall back to the Jira REST
