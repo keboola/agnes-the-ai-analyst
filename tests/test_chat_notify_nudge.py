@@ -171,13 +171,39 @@ def test_nudge_card_styles_use_tokens_only():
 # --- 2. The checklist sub-action -------------------------------------------
 
 
-def test_journey_keeps_exactly_five_steps():
-    """The guard behind the design call: no sixth step. A new journey column
-    defaults FALSE, so every already-onboarded user would drop from Complete ✓
-    back to 5/6 and see the retired rail card return."""
+def test_journey_has_six_steps():
+    """v116 added the sixth step, "Create your first agent".
+
+    This guard used to say the opposite — no sixth step — for a specific
+    reason: a new journey column defaults FALSE, so shipping one would drop
+    every already-onboarded user from Complete ✓ back to 5/6 and bring the
+    retired rail card back. That objection is answered rather than overruled,
+    by the v116 backfill (see the next test), so the count moved instead.
+    """
     js = _onboarding_js()
     keys = js.split("const STEP_KEYS = [", 1)[1].split("]", 1)[0]
-    assert keys.count('"') == 10, "STEP_KEYS must stay at five entries"
+    assert keys.count('"') == 12, "STEP_KEYS must hold six entries"
+    assert "agent_created" in keys
+
+
+def test_the_sixth_step_is_backfilled_so_nobody_regresses():
+    """The reason the step count was allowed to move.
+
+    Both ladders must mark the new flag TRUE for anyone whose journey is
+    already closed, and for anyone who already owns an agent — otherwise the
+    step is retroactively unearned and the checklist reopens for people who
+    finished it. Guarded on both engines because a backfill present on one
+    and missing on the other is the worse failure: the same user sees a
+    different checklist depending on which backend their instance runs.
+    """
+    duck = Path("src/db.py").read_text(encoding="utf-8")
+    step = duck.split("def _v115_to_v116", 1)[1].split("\ndef ", 1)[0]
+    assert "SET agent_created = TRUE WHERE onboarded = TRUE" in step
+    assert "owner_user_id FROM agents" in step
+
+    alembic = Path("migrations/versions/0063_journey_agent_created_v116.py").read_text(encoding="utf-8")
+    assert "SET agent_created = TRUE WHERE onboarded = TRUE" in alembic
+    assert "owner_user_id FROM agents" in alembic
 
 
 def test_use_anywhere_carries_the_notifications_sub_action():

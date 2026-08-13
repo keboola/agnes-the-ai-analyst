@@ -44,6 +44,7 @@ from pydantic import BaseModel, Field
 from app.auth.access import is_user_admin, require_agent_profiles_enabled
 from app.auth.dependencies import get_current_user
 from app.resource_types import ResourceType
+from app.services.journey import mark_journey
 from src.repositories import agents_repo, resource_grants_repo
 
 logger = logging.getLogger(__name__)
@@ -361,6 +362,7 @@ async def create_agent(payload: AgentCreate, user: dict = Depends(get_current_us
         status=payload.status or "draft",
     )
     logger.info("agent created id=%s slug=%s by=%s", agent_id, slug, user.get("email"))
+    mark_journey(uid, agent_created=True)
     row = _live(agent_id)
     return _agent_out(row or {}, uid=uid)
 
