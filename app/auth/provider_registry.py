@@ -60,8 +60,18 @@ def _parse_allowlist(source: Optional[object]) -> Optional[list[str]]:
         return None
     if isinstance(source, str):
         values = [v.strip() for v in source.split(",") if v.strip()]
+    elif isinstance(source, (list, tuple, set)):
+        values = [str(v).strip() for v in source if str(v).strip()]
     else:
-        values = [str(v).strip() for v in source if str(v).strip()]  # type: ignore[union-attr]
+        # A YAML scalar (auth.providers: true / 5) is not iterable. Treat it as
+        # unset (all providers) with a loud error rather than letting a TypeError
+        # propagate out of the per-request router dependency and 500 every login
+        # page — the same fail-open contract as an all-unknown list.
+        logger.error(
+            "auth.providers must be a list or comma-separated string, got %s — treating as unset",
+            type(source).__name__,
+        )
+        return None
     unknown = [v for v in values if v not in KNOWN_PROVIDERS]
     for name in unknown:
         logger.warning("auth.providers: unknown provider %r ignored", name)
