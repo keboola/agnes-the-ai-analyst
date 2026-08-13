@@ -626,32 +626,25 @@ def _run_sync(
             )
 
         # Read table configs in main process (has shared DuckDB connection)
-        # Track whether the REGISTRY (not the post-filter list) was empty.
-        # Auto-discovery must only fire on a truly empty registry; if the
-        # filter returned [] because nothing was due, re-discovering would
-        # bypass the schedule entirely on Keboola instances. (Devin BUG_0001
-        # on ebb8cc9.)
-        registry_has_tables = False
+        # Track whether the REGISTRY (not the post-filter/post-lookup list)
+        # was empty. Auto-discovery must only fire on a truly empty
+        # registry — computed from the WHOLE registry (`list_all()`) in
+        # BOTH branches below, never from the caller-supplied subset.
+        # If the schedule filter returned [] because nothing was due, or a
+        # scoped `tables=[...]` id no longer exists in the registry (e.g. it
+        # was deleted between queuing and running), re-discovering would
+        # bypass the schedule / re-register the entire source project even
+        # though the registry is populated. (Devin BUG_0001 on ebb8cc9;
+        # #1253 hardened the `tables` branch the same way.)
         repo = table_registry_repo()
+        registry_has_tables = bool(repo.list_all())
         if tables:
             # Manual operator override — bypass schedule filter entirely
             # so an admin saying "sync these specific tables now" wins.
             all_configs = [repo.get(t) for t in tables]
             table_configs = [c for c in all_configs if c is not None]
-            registry_has_tables = bool(table_configs)
         else:
             table_configs = repo.list_local(effective_source_type) if effective_source_type else repo.list_local()
-            # Auto-discover gate must consider the WHOLE registry, not
-            # just `local` rows. After the Keboola migration to
-            # materialized (v25→v26), an instance can have 30
-            # materialized Keboola rows and zero local rows — but
-            # `bool(table_configs)` here would be False, and
-            # `not registry_has_tables` would re-trigger
-            # `_discover_and_register_tables` on every scheduler tick,
-            # creating duplicate "auto-discovered" rows with the wrong
-            # bucket prefix every time.
-            # Use list_all (any source, any mode) for the gate.
-            registry_has_tables = bool(repo.list_all())
             # Without this filter, every scheduler tick would re-sync
             # every table regardless of its sync_schedule cadence,
             # making the field a no-op at trigger time. Tables with
