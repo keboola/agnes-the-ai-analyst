@@ -16,7 +16,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Internal
 
-- **CI now runs the connector test suites.** `pytest tests/` never reached `connectors/`, where every connector keeps its tests beside the code (`connectors/jira/tests/`, ...) — 138 tests that ran only on developer machines, including the whole failure-semantics surface of the Jira connector, so no regression in them could ever fail a build. The shard job now runs `tests/ connectors/`. They carry no `.test_durations` entries yet, so pytest-split puts them all in the last shard on its default estimate until durations are regenerated; they take a couple of seconds, so the skew is immaterial. Regeneration command in the workflow comment is updated to match.
+- **CI now runs the connector test suites.** `pytest tests/` never reached `connectors/`, where every connector keeps its tests beside the code (`connectors/jira/tests/`, ...) — 138 tests that ran only on developer machines, including the whole failure-semantics surface of the Jira connector, so no regression in them could ever fail a build. The shard job now runs `tests/ connectors/`, and the connector tests' measured `.test_durations` entries ship with the change so they shard like any other test. Regeneration command in the workflow comment is updated to match.
 
 ## [0.83.12] - 2026-08-13
 
