@@ -47,6 +47,7 @@ from src.repositories import (
 )
 from app.auth.dependencies import _get_db, get_current_user
 from app.resource_types import ResourceType
+from app.services.journey import mark_journey
 from app.utils import get_marketplace_cache_dir, get_marketplaces_dir
 from src.marketplace import is_safe_plugin_name
 from src.marketplace_filter import (
@@ -2033,6 +2034,12 @@ async def curated_install(
             f"plugin:{marketplace_id}/{plugin_name}",
         )
         _invalidate_etag()
+    # The onboarding step is "Put knowledge in your stack" — a curated plugin
+    # joining the stack is that, even though plugins keep their own resolver
+    # and never pass through /api/stack/subscribe (design D1). Marked on every
+    # successful call, not just the first insert, so readers who installed
+    # before this existed tick the step on their next install.
+    mark_journey(user.get("id"), stack_setup_done=True)
     return InstallActionResponse(installed=True)
 
 
