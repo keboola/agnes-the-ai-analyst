@@ -350,8 +350,10 @@ def test_run_sync_per_table_then_fatal_notifies_once(tmp_path, monkeypatch):
 
 
 def test_run_sync_success_notifies_completed(tmp_path, monkeypatch):
-    """A successful orchestrator rebuild fires notify_sync_completed with the
-    rebuild's {source: [tables]} result (#412: agnes watch)."""
+    """A successful run fires notify_sync_completed with THIS run's synced
+    tables only — narrowed from the orchestrator's full rebuild result,
+    which can carry tables from prior, unrelated runs (#412 review: passing
+    the raw rebuild result spams a notification on every tick)."""
     _seed_bq_only_registry(tmp_path)
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
     _patch_bq_only(monkeypatch)
@@ -369,29 +371,33 @@ def test_run_sync_success_notifies_completed(tmp_path, monkeypatch):
 
     class _OrchStub:
         def rebuild(self):
-            return {"bigquery": ["m1"]}
+            # "stale_table" was synced in a PRIOR run and is still
+            # re-attached by every rebuild — it must not show up as
+            # "refreshed" in THIS run's notification.
+            return {"bigquery": ["m1", "stale_table"]}
 
     monkeypatch.setattr("src.orchestrator.SyncOrchestrator", lambda *a, **kw: _OrchStub())
 
     captured = {}
 
-    def _spy_notify(views, *, error_count):
-        captured["views"] = views
+    def _spy_notify(synced, *, error_count):
+        captured["synced"] = synced
         captured["error_count"] = error_count
 
     monkeypatch.setattr("app.services.sync_notifier.notify_sync_completed", _spy_notify)
 
     sync_mod._run_sync()
 
-    assert captured.get("views") == {"bigquery": ["m1"]}
+    assert captured.get("synced") == {"bigquery": ["m1"]}
     assert captured.get("error_count") == 0
 
 
 def test_run_sync_partial_errors_notify_completed_with_error_count(tmp_path, monkeypatch):
-    """Per-table errors + a rebuild that still landed views → the completed
-    event fires AFTER the error accounting, carrying the run's error count
-    (so the client sees 'partial', not an unqualified success) — while the
-    job path still reports the run as failed."""
+    """A run with one per-table failure that still synced another table →
+    the completed event fires AFTER the error accounting, carrying the
+    run's error count (so the client sees 'partial', not an unqualified
+    success) and ONLY the table(s) that actually succeeded this run — while
+    the job path still reports the run as failed."""
     _seed_bq_only_registry(tmp_path)
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
     _patch_bq_only(monkeypatch)
@@ -401,29 +407,127 @@ def test_run_sync_partial_errors_notify_completed_with_error_count(tmp_path, mon
     monkeypatch.setattr(
         "app.api.sync._run_materialized_pass",
         lambda _c, _b, *, tables=None, source_type=None: {
-            "materialized": [],
+            "materialized": ["m1"],
             "skipped": [],
-            "errors": [{"table": "m1", "error": "budget exceeded"}],
+            "errors": [{"table": "m2", "error": "budget exceeded"}],
         },
     )
 
     class _OrchStub:
         def rebuild(self):
-            return {"bigquery": ["other_table"]}
+            return {"bigquery": ["m1", "m2", "other_table"]}
 
     monkeypatch.setattr("src.orchestrator.SyncOrchestrator", lambda *a, **kw: _OrchStub())
 
     captured = {}
 
-    def _spy_notify(views, *, error_count):
-        captured["views"] = views
+    def _spy_notify(synced, *, error_count):
+        captured["synced"] = synced
         captured["error_count"] = error_count
 
     monkeypatch.setattr("app.services.sync_notifier.notify_sync_completed", _spy_notify)
 
     assert sync_mod._run_sync() is False
-    assert captured.get("views") == {"bigquery": ["other_table"]}
+    assert captured.get("synced") == {"bigquery": ["m1"]}
     assert captured.get("error_count") == 1
+
+
+def test_run_sync_nothing_due_no_completed_notification(tmp_path, monkeypatch):
+    """A scheduled tick where nothing was due to sync must NOT fire a desktop
+    notification, even though the orchestrator's rebuild still re-attaches
+    every table from prior runs (#412 review: the rebuild result is not
+    "what changed this tick" — the earlier bug fired a "tables refreshed"
+    alert on every tick regardless of whether anything actually synced)."""
+    _seed_bq_only_registry(tmp_path)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    _patch_bq_only(monkeypatch)
+
+    from app.api import sync as sync_mod
+
+    # Nothing due this tick — the materialized pass skips its only row.
+    monkeypatch.setattr(
+        "app.api.sync._run_materialized_pass",
+        lambda _c, _b, *, tables=None, source_type=None: {
+            "materialized": [],
+            "skipped": [{"table": "m1", "reason": "due_check"}],
+            "errors": [],
+        },
+    )
+
+    class _OrchStub:
+        def rebuild(self):
+            # Full rebuild still reports the table from a PRIOR run —
+            # exactly what must not reach the notifier as "refreshed".
+            return {"bigquery": ["m1"]}
+
+    monkeypatch.setattr("src.orchestrator.SyncOrchestrator", lambda *a, **kw: _OrchStub())
+
+    calls = []
+    monkeypatch.setattr(
+        "app.services.sync_notifier.users_repo",
+        lambda: type("R", (), {"list_all": staticmethod(lambda: [{"id": "alice", "active": True}])})(),
+    )
+    monkeypatch.setattr(
+        "app.services.sync_notifier.publish_notification",
+        lambda user, payload: calls.append((user, payload)),
+    )
+
+    sync_mod._run_sync()
+
+    assert calls == [], "nothing was due this tick — no desktop notification should fire"
+
+
+def test_run_sync_two_synced_tables_fire_one_event_with_count(tmp_path, monkeypatch):
+    """A run that syncs 2 tables of the same source fires exactly one
+    sync_completed event for that source with table_count=2 — the
+    orchestrator's full rebuild result (which can carry an unrelated,
+    previously-synced table) must not inflate that count."""
+    _seed_bq_only_registry(tmp_path)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    _patch_bq_only(monkeypatch)
+
+    from app.api import sync as sync_mod
+
+    monkeypatch.setattr(
+        "app.api.sync._run_materialized_pass",
+        lambda _c, _b, *, tables=None, source_type=None: {
+            "materialized": ["m1", "m2"],
+            "skipped": [],
+            "errors": [],
+        },
+    )
+
+    class _OrchStub:
+        def rebuild(self):
+            return {"bigquery": ["m1", "m2", "old_table"]}
+
+    monkeypatch.setattr("src.orchestrator.SyncOrchestrator", lambda *a, **kw: _OrchStub())
+
+    calls = []
+    monkeypatch.setattr(
+        "app.services.sync_notifier.users_repo",
+        lambda: type("R", (), {"list_all": staticmethod(lambda: [{"id": "alice", "active": True}])})(),
+    )
+    monkeypatch.setattr(
+        "app.services.sync_notifier.publish_notification",
+        lambda user, payload: calls.append((user, payload)),
+    )
+
+    sync_mod._run_sync()
+
+    assert len(calls) == 1, f"expected exactly one sync_completed event, got {len(calls)}"
+    user_id, payload = calls[0]
+    assert user_id == "alice"
+    # The envelope/outcome contract (kind/title/message/status/error_count)
+    # stays intact — only the scoping (source + table_count) is this fix's
+    # concern.
+    assert payload["kind"] == "sync_completed"
+    assert payload["title"] == "Sync completed"
+    assert payload["status"] == "ok"
+    assert payload["error_count"] == 0
+    assert payload["source"] == "bigquery"
+    assert payload["table_count"] == 2
+    assert "old_table" not in payload["message"]
 
 
 def test_run_sync_notify_completed_raising_does_not_break_sync(tmp_path, monkeypatch):

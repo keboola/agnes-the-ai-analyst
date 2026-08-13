@@ -18,8 +18,9 @@ tests can monkeypatch ``sync_notifier.httpx.post`` — the same module object th
 shared sender references — to assert on the outbound payload without a network.
 
 ``notify_sync_completed`` (#412: ``agnes watch``) rides the same best-effort
-contract for the COMPLETION path (full or partial — a run whose rebuild
-landed views fires it either way, with the outcome in the payload), but a
+contract for the COMPLETION path (full or partial — a run that actually
+synced ≥1 table fires it either way, with the outcome in the payload; a run
+that synced nothing this tick — e.g. nothing was due — is a no-op), but a
 different transport: the desktop notification channel
 (``app.notifications.publish_notification`` → ``notify:{user}`` pub/sub →
 ``app/api/notifications_ws.py``), not the webhook. The delivery layer wraps
@@ -119,21 +120,28 @@ def notify_sync_failure(
         logger.exception("sync-failure webhook notification failed")
 
 
-def notify_sync_completed(views: dict[str, list[str]], *, error_count: int = 0) -> None:
-    """Best-effort desktop notification when a sync run lands fresh views.
+def notify_sync_completed(synced_tables: dict[str, list[str]], *, error_count: int = 0) -> None:
+    """Best-effort desktop notification when a sync run lands fresh data.
 
-    ``views`` is the orchestrator's own rebuild result — ``{source_name:
-    [table_names]}`` (see ``src.orchestrator.SyncOrchestrator.rebuild``).
+    ``synced_tables`` is ``{source_name: [table_names]}`` restricted to the
+    tables THIS run actually attempted and synced — NOT the orchestrator's
+    full rebuild result (``src.orchestrator.SyncOrchestrator.rebuild``
+    re-attaches every extract on disk, covering every table from every prior
+    sync too). The caller (``app.api.sync._run_sync``) narrows the rebuild
+    result down to this run's own extractor/materialized-pass output before
+    calling here — passing the raw rebuild result fired a "tables refreshed"
+    notification on every scheduler tick, even ticks where nothing was due
+    (review finding: notification spam).
     ``error_count`` is the run's per-table failure total: a run with
-    failures that still rebuilt views DID land fresh data, so the event
+    failures that still synced some tables DID land fresh data, so the event
     fires anyway but announces ``status="partial"`` + the count instead of
-    an unqualified success. No-op on an empty rebuild (nothing to report).
-    Otherwise publishes one ``sync_completed`` event per source to every
-    active user's desktop notification channel (see the module docstring
-    for why "every active user" rather than a narrower RBAC-scoped
-    audience: today's ``publish_notification`` has no reverse "who can see
-    this table" lookup, and the payload itself carries only a source name +
-    table count, never table names or data).
+    an unqualified success. No-op when nothing was synced this run (nothing
+    to report). Otherwise publishes one ``sync_completed`` event per source
+    to every active user's desktop notification channel (see the module
+    docstring for why "every active user" rather than a narrower
+    RBAC-scoped audience: today's ``publish_notification`` has no reverse
+    "who can see this table" lookup, and the payload itself carries only a
+    source name + table count, never table names or data).
 
     Never raises — a dropped desktop notification is an acceptable
     degradation (the analyst still gets fresh data on their next ``agnes
@@ -141,17 +149,34 @@ def notify_sync_completed(views: dict[str, list[str]], *, error_count: int = 0) 
     fail the sync that triggered it.
     """
     try:
-        if not views:
+        if not synced_tables:
             return
         status = "ok" if error_count == 0 else "partial"
         for user in users_repo().list_all():
             if not user.get("active", True):
                 continue
-            for source_name, table_names in views.items():
+            for source_name, table_names in synced_tables.items():
                 message = f"{source_name}: {len(table_names)} table(s) refreshed"
                 if error_count:
                     message += f" ({error_count} table(s) failed this run)"
                 try:
+                    # Channel key: `user["id"]` — the `users` table UUID.
+                    # This is the SAME key `app.api.store._notify_author`
+                    # publishes on (`entity["owner_user_id"]`, itself set
+                    # from `user["id"]` at creation — see app/api/store.py),
+                    # and the key the desktop WS consumer will need to
+                    # `sub`-claim in its JWT to receive this (see
+                    # `notifications_ws.notifications_ws`: it subscribes
+                    # `notify:{payload["sub"]}`). We can't confirm that
+                    # against the minting side today — the interactive
+                    # desktop-app pairing flow that would issue a
+                    # DESKTOP_JWT_SECRET-signed token doesn't exist in this
+                    # repo yet (CHANGELOG: #412 is a partial step, CLI/pairing
+                    # not shipped) — so `users.id` is the best-aligned choice
+                    # available, not a verified one. The Telegram producer
+                    # (`services/telegram_bot/dispatch.py`) diverges — it
+                    # keys by Telegram `username`, not `users.id` — a known,
+                    # pre-existing inconsistency left untouched here.
                     publish_notification(
                         user["id"],
                         {

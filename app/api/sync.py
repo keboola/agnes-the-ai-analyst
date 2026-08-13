@@ -594,6 +594,16 @@ def _run_sync(
     # alert in the outer `except` can report the same context.
     collected_errors: List[dict] = []
 
+    # Names of tables THIS run actually attempted-and-succeeded syncing
+    # (extractor-driven local tables minus any per-table failure, plus
+    # materialized rows the pass reports as `materialized`). Used to narrow
+    # the orchestrator's full rebuild result down to "what changed this
+    # tick" for `notify_sync_completed` (#412 review: the rebuild result
+    # covers every table from every prior sync too, not just this run's —
+    # passing it straight through spammed a "tables refreshed" notification
+    # on every scheduler tick even when nothing was due).
+    synced_table_names: set = set()
+
     try:
         from app.instance_config import get_data_source_type
         from src.db import get_system_db
@@ -929,6 +939,18 @@ sys.exit(compute_exit_code(result, len(configs)))
                             }
                         )
 
+                # Record which of THIS run's attempted tables actually landed
+                # data, for notify_sync_completed below — every attempted
+                # table_config except the ones with a recorded per-table
+                # error (exit 0/2 only; a full failure, exit 1 or anything
+                # else, means none of this batch is known-good).
+                if result.returncode in (0, 2):
+                    _failed_names = {e.get("table") for e in extractor_table_errors}
+                    for _tc in table_configs:
+                        _name = _tc.get("name")
+                        if _name and _name not in _failed_names:
+                            synced_table_names.add(_name)
+
             # Run custom connectors (Tier A: local mount) — only when there
             # were local-mode tables to drive the extractor. Custom connectors
             # currently piggyback on the same env as the Keboola extractor.
@@ -1026,6 +1048,10 @@ sys.exit(compute_exit_code(result, len(configs)))
             # (fired after this block, and also surfaced if a later fatal
             # error hits the outer except).
             collected_errors.extend(mat_summary["errors"])
+            # `materialized` already lists only the rows this pass wrote
+            # successfully this tick — feed straight into the "what did THIS
+            # run actually sync" set for notify_sync_completed below.
+            synced_table_names.update(mat_summary["materialized"])
         except Exception as e:
             print(
                 f"[SYNC] Materialized SQL pass FAILED: {e}",
@@ -1127,10 +1153,24 @@ sys.exit(compute_exit_code(result, len(configs)))
         # completed event fires at all.) Best-effort: notify_sync_completed
         # never raises on its own, but wrap anyway — same "second line of
         # defence" pattern as notify_sync_failure above.
+        #
+        # `views` is the orchestrator's FULL rebuild result — every table of
+        # every source that has ever synced, not just this run's. Passing it
+        # straight through fired a "tables refreshed" notification on every
+        # scheduler tick, even ones where `filter_due_tables` selected
+        # nothing and the rebuild just re-attached the same unchanged
+        # extracts (review finding: notification spam). Narrow it down to
+        # `synced_table_names` — the tables THIS run actually attempted and
+        # landed — so a tick that synced nothing sends nothing.
+        synced_views = {
+            source_name: [t for t in table_names if t in synced_table_names]
+            for source_name, table_names in views.items()
+        }
+        synced_views = {k: v for k, v in synced_views.items() if v}
         try:
             from app.services.sync_notifier import notify_sync_completed
 
-            notify_sync_completed(views, error_count=len(collected_errors))
+            notify_sync_completed(synced_views, error_count=len(collected_errors))
         except Exception:
             logger.exception("sync-completed notifier raised")
 
