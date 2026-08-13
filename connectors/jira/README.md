@@ -555,12 +555,13 @@ python -m connectors.jira.organizations --force
 
 The `organizations` table needs no backfill — it is current-state, so the first refresh populates it completely. `issues.organization_ids` is different: it is written by the transform, so partitions produced before this shipped read NULL and those tickets will not join. Nothing errors; the join just silently covers recent tickets only.
 
-The ids are already in the stored raw issue JSON, so no re-fetch from Jira is needed. Re-running the batch transform over the existing raw files is enough:
+The ids are already in the stored raw issue JSON, so no re-fetch from Jira is needed. Re-running the batch transform over the existing raw files is enough. Note this is a **full re-transform of all six partitioned tables**, not an `issues`-only operation — omitting `--attachments-dir` would rewrite all of `attachments` history with `local_path = NULL`:
 
 ```bash
 python -m connectors.jira.transform \
-  --raw-dir /data/extracts/jira/raw \
-  --output-dir /data/extracts/jira/data
+  --raw-dir /data/src_data/raw/jira \
+  --output-dir /data/extracts/jira/data \
+  --attachments-dir /data/src_data/raw/jira/attachments
 ```
 
 Then check the history reaches as far back as `issues` itself does — this is what catches an incomplete backfill:
@@ -631,10 +632,14 @@ WHERE first_response IS NOT NULL
 ## Analyst Sync Configuration
 
 Whether an analyst sees Jira tables locally is decided server-side: an admin
-must register the Jira tables and grant the analyst's group access via
-`resource_grants(resource_type='table')`. Once granted, the manifest
-advertises the tables and `agnes pull` downloads the parquets to the
-analyst's workspace on the next session.
+must register the Jira tables, add them to a data package, and grant the
+package to one of the analyst's groups (per-table
+`resource_grants(resource_type='table')` rows are no longer consulted for
+analyst visibility — see `src/rbac.py`). Once the package is in the analyst's
+stack — automatically when the grant is marked required, otherwise after the
+analyst subscribes via `agnes stack add data_package <id>` — the manifest advertises the tables
+and `agnes pull` downloads the parquets to the analyst's workspace on the
+next session.
 
 Views are created automatically for whichever tables have data. **They are named
 after the table, with no `jira_` prefix** — the master view is claimed on the bare

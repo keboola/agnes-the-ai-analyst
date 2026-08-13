@@ -359,7 +359,7 @@ def _run_jira_refresh(payload: dict) -> None:
     ``extract.duckdb`` glob the parquet per query, so a written partition is
     served immediately. ``_meta`` holds the catalog's row/size numbers only.
     """
-    from connectors.jira.extract_init import get_default_output_dir, update_meta
+    from connectors.jira.extract_init import JIRA_TABLES, get_default_output_dir, update_meta
     from src.orchestrator import SyncOrchestrator, rebuild_mutex
 
     try:
@@ -375,7 +375,7 @@ def _run_jira_refresh(payload: dict) -> None:
         # Held around the loop ONLY. `rebuild_source` acquires the same mutex
         # itself, so keeping it across that call would deadlock.
         with rebuild_mutex():
-            for table_name in ("issues", "comments", "attachments", "changelog", "issuelinks", "remote_links"):
+            for table_name in JIRA_TABLES:
                 update_meta(extract_dir, table_name)
     except Exception as meta_err:
         # Non-fatal, exactly as it was on the per-event path: stale catalog
