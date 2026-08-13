@@ -107,7 +107,11 @@ tables = {
     'jira_issuelinks': 'server/parquet/jira/issuelinks/*.parquet',
     'jira_remote_links': 'server/parquet/jira/remote_links/*.parquet',
     # Unpartitioned dimension — a single data.parquet, so the same top-level glob
-    # matches it. The rsync above already brings it down with the other six.
+    # matches it. NOTE: the batch transform does not produce this table (the daily
+    # refresh writes it to the extract tree), so it reaches the legacy root only if
+    # the server-side distribution step copies it there (see the connector README's
+    # "Copy to distribution directory" step). Until then the glob is empty and the
+    # view is skipped, which is harmless.
     'jira_organizations': 'server/parquet/jira/organizations/*.parquet',
 }
 created = 0

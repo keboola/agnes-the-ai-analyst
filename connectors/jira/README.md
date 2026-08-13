@@ -493,6 +493,11 @@ python -m connectors.jira.transform \
 
 # Copy to distribution directory
 cp -r /data/src_data/parquet/jira/* ~/server/parquet/jira/
+
+# The organizations dimension is not produced by the batch transform — the daily
+# refresh writes it to the extract tree. Copy it too, or analysts on the legacy
+# path get no jira_organizations view (sync_jira.sh skips an empty glob):
+cp -r /data/extracts/jira/data/organizations ~/server/parquet/jira/
 ```
 
 ## Organizations Table (Daily Refresh)
