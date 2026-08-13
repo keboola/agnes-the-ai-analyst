@@ -805,7 +805,7 @@ def test_stranger_with_no_token_at_all_gets_401(proxy_client, running_app):
 def test_a_live_but_silent_container_latches_once_the_grace_window_passes(
     client_granted, fake_runner, monkeypatch, running_app
 ):
-    """"Starting" has to be time-bounded.
+    """ "Starting" has to be time-bounded.
 
     The runner reports `running | paused | stopped | absent`, so a container
     whose app process died or wedged WITHOUT the container exiting still
@@ -906,9 +906,7 @@ def test_a_preview_token_for_another_app_cannot_poll_readiness(proxy_client, fak
     """The scope pin is what makes skipping the grant check safe."""
     _create_app_row(slug="other2", state="running")
     tok = mint_preview("other2", ttl_s=1800)
-    r = proxy_client.get(
-        "/api/data-apps/s/readiness", headers={"cookie": tok.cookie}, follow_redirects=False
-    )
+    r = proxy_client.get("/api/data-apps/s/readiness", headers={"cookie": tok.cookie}, follow_redirects=False)
     assert r.status_code in (401, 403), r.text
 
 
@@ -916,7 +914,7 @@ def test_the_waking_page_polls_a_relative_url_on_the_path_form(client_granted, f
     """No host pinned into the page when it is not needed."""
     r = client_granted.get("/apps/s/", headers={"accept": "text/html"})
     assert r.status_code == 503
-    assert 'fetch("/api/data-apps/s/readiness")' in r.text
+    assert 'fetch("/api/data-apps/s/readiness", { credentials: "include" })' in r.text
 
 
 def test_the_waking_page_polls_an_absolute_url_on_a_subdomain(monkeypatch):
