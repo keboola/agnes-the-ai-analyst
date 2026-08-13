@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from urllib.parse import unquote
 
 import typer
 
@@ -21,7 +22,29 @@ from cli.error_render import render_error
 
 attachment_app = typer.Typer(help="Fetch connector-catalogued attachment files (e.g. Jira)")
 
-_FILENAME_RE = re.compile(r'filename="?([^";]+)"?')
+# Starlette's FileResponse emits the RFC 5987 extended form
+# (`filename*=utf-8''bug%20report.pdf`) — and ONLY that form — whenever the
+# name is not identical to its percent-quoted self, i.e. for any space, `%`
+# or non-ASCII character. Jira attachment names hit that constantly, so the
+# extended form is tried first; the plain form excludes `*` after `filename`
+# so it can never half-match the extended one.
+_FILENAME_EXT_RE = re.compile(r"filename\*=[Uu][Tt][Ff]-8''([^;]+)")
+_FILENAME_RE = re.compile(r'filename="?([^";*][^";]*)"?')
+
+
+def _server_filename(content_disposition: str) -> str:
+    """Extract the server-reported filename, or "" when absent.
+
+    The value is untrusted — only its basename survives, so a crafted header
+    can never write outside the target directory.
+    """
+    m = _FILENAME_EXT_RE.search(content_disposition)
+    if m:
+        return Path(unquote(m.group(1))).name
+    m = _FILENAME_RE.search(content_disposition)
+    if m:
+        return Path(m.group(1)).name
+    return ""
 
 
 def _fail(resp) -> None:
@@ -77,10 +100,7 @@ def get(
 
     target = output
     if target is None:
-        m = _FILENAME_RE.search(resp.headers.get("content-disposition", ""))
-        # The server-reported name is untrusted — keep only its basename so a
-        # crafted header can never write outside the current directory.
-        name = Path(m.group(1)).name if m else ""
+        name = _server_filename(resp.headers.get("content-disposition", ""))
         target = Path(name or f"{source}_{attachment_id}")
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(resp.content)
