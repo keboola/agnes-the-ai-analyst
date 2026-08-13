@@ -5,7 +5,7 @@ from pathlib import Path
 
 import typer
 
-from cli.client import api_get
+from cli.client import RedirectHardStop, api_get
 from cli.config import get_sync_state, get_workspace_root
 from cli.lib.jira_partition_check import detect_jira_partition_layout
 from cli.lib.session_health import session_upload_health
@@ -211,7 +211,7 @@ def diagnose(
     # 1. API reachability
     try:
         resp = api_get("/api/health")
-        health = resp.json()
+        resp.json()  # a 200 carrying a non-JSON body is not a healthy api
         checks.append(
             {"name": "api", "status": "ok", "audience": "analyst", "latency_ms": resp.elapsed.total_seconds() * 1000}
         )
@@ -227,9 +227,32 @@ def diagnose(
                 check = {"name": svc_name, "status": svc_data.get("status", "unknown")}
                 check.update({k: v for k, v in svc_data.items() if k != "status"})
                 checks.append(check)
+        except RedirectHardStop:
+            # Scoped opt-in: the OUTER handler answers "can we reach the
+            # server at all", and that question is already answered — the
+            # reachability probe above succeeded and filed its `ok` row. A
+            # redirect on this best-effort extra (a proxy that rewrites only
+            # some paths) must not unwind into it and append a second,
+            # contradicting `api` row saying `error` beside the `ok` one:
+            # the reader is then told both, and anything selecting the first
+            # match by name gets whichever landed first.
+            #
+            # `RedirectHardStop` derives from `BaseException`, so the clause
+            # below cannot do this for us — being named here is the point.
+            # Treated exactly like every other failure of this probe, whose
+            # contract is that a missing detail is not worth a row.
+            # (Devin Review on #1277.)
+            pass
         except Exception:
             # Auth may not be configured — minimal reachability is sufficient
             pass
+    except RedirectHardStop as e:
+        # The opt-in. Everything else in the CLI keeps the old behaviour —
+        # the message on stderr and exit 2 — because it does not write this
+        # clause. This command does, because reporting a failed check IS the
+        # command: dying here was exit 2, empty stdout and not one check,
+        # from the thing whose job is to say what is wrong.
+        checks.append({"name": "api", "status": "error", "audience": "analyst", "detail": e.user_message})
     except Exception as e:
         checks.append({"name": "api", "status": "error", "audience": "analyst", "detail": str(e)})
 
