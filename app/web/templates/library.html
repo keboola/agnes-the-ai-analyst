@@ -2759,7 +2759,14 @@
       // and can't tell whether it is pressable, and a screen-reader user never has
       // that ambiguity: there is no control in the accessibility tree to promise an
       // action in the first place. The absence IS the message.
-      access.title = label + ' — only the owner can change who can see this';
+      // The row's own sentence when it has one, so a kind with a bespoke
+      // read-only badge (data apps: access comes from an admin grant, not
+      // from the owner) reads the SAME in both views. Deriving a second
+      // sentence here is exactly the drift this file's own comments forbid —
+      // it made an owner's app card say "Yours — only the owner can change
+      // who can see this", which is both off-message and untrue.
+      const fixedTip = visEl && visEl.getAttribute('data-tip');
+      access.title = fixedTip || label + ' — only the owner can change who can see this';
     }
     foot.appendChild(access);
 

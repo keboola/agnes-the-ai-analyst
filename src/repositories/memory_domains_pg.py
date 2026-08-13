@@ -355,10 +355,23 @@ class MemoryDomainsPgRepository:
     def count_items_by_domain(self) -> Dict[str, tuple]:
         """Per-domain ``(items, required)`` counts in ONE grouped query.
 
-        Parity sibling of the DuckDB method. ``knowledge_items.is_required``
-        does not exist in the PG schema yet (see module docstring), so the
-        required half is a literal 0 — the same posture as
-        ``list_items_of_domain``'s ``FALSE AS is_required``.
+        Parity sibling of the DuckDB method — for the ITEM count. The
+        required half is a literal 0 because ``knowledge_items.is_required``
+        does not exist in the PG schema at all (see module docstring), the
+        same posture as ``list_items_of_domain``'s ``FALSE AS is_required``.
+
+        Stated in product terms, because "missing column" understates it: on
+        a Postgres-backed instance the Library renders "3 items" where DuckDB
+        renders "3 items · 1 required", so a required MANDATE is invisible on
+        this backend. The cross-engine contract test pins ``(2, 0)``, which
+        certifies the gap rather than catching it — it is documented there too.
+
+        Bounded, though: `requirement == "required"` on the GRANT lives in
+        ``resource_grants``, not here, so the Library's empty-domain rule and
+        the "required" chip are unaffected. What is lost is the `· N required`
+        suffix. Closing it is a schema change — an Alembic step plus the
+        matching ``_vN_to_v(N+1)`` rung in ``src/db.py``, a backfill, and
+        reworking every PG read that hardcodes the column away.
         """
         with self._engine.connect() as conn:
             rows = conn.execute(

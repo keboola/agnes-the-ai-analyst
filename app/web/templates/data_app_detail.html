@@ -146,6 +146,13 @@
     <code>data_app:{{ app.slug }}</code> on <a href="/admin/access">/admin/access</a>.
   </p>
 </div>
+{# Closes the `.detail` wrapper `detail.hero()` opens — the macro only closes
+   `.detail-hero` itself, so every migrated detail template emits this (see
+   memory_domain_detail.html, library_detail.html). Without it the browser
+   implicitly closed it at the end of the block, leaving the trailing scripts
+   and anything base_ds renders inside `content` scoped under `.detail`'s
+   `--kind` / `detail--panels` rules. #}
+</div>
 
 {% if can_manage and app.kind == 'linked' %}
 <script>

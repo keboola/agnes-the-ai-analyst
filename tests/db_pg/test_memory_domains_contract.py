@@ -222,10 +222,19 @@ def test_count_items_by_domain_consistent(repo):
     """One grouped query, {domain_id: (items, required)} on both backends.
 
     Exists so /library can show the per-domain counts without loading every
-    knowledge item's full body (Devin review on PR #1278). PG has no
-    ``is_required`` column yet, so required comes back 0 there — same
-    parity posture as ``list_items_of_domain``'s ``FALSE AS is_required``;
-    DuckDB seeds default ``is_required = FALSE`` too, so both sides agree.
+    knowledge item's full body (Devin review on PR #1278).
+
+    SCOPE OF WHAT THIS ASSERTS — read before trusting it as parity. Only the
+    ITEM count is verified across engines. The required half agrees here at
+    ``0`` because both sides happen to produce 0 for these fixtures, NOT
+    because the two backends compute it the same way: DuckDB reads a real
+    ``knowledge_items.is_required`` column that these items leave at its
+    ``FALSE`` default, while PG hardcodes the literal ``0`` since the column
+    does not exist in that schema at all. Seed a REQUIRED item and the two
+    diverge — DuckDB counts it, PG cannot. So this test pins the shape and
+    the item count; it does not, and today cannot, catch required-count
+    drift. Closing that needs a schema migration on both ladders (see
+    ``count_items_by_domain`` in ``memory_domains_pg.py``).
     """
     a = repo.create(
         name="A",

@@ -4710,7 +4710,28 @@ async def corporate_memory(
     # so a later layout flip is not cached permanently. Topnav serves the
     # frozen pre-redesign page below, untouched.
     if get_ui_layout() == "rail":
-        return RedirectResponse(url="/library?section=memory_domain", status_code=302)
+        # ...but ONLY when that band will actually contain a row for this
+        # caller. The band drops a granted domain whose known item count is
+        # zero unless the mandate is `required`, so a caller with no grants —
+        # or only empty optional ones — would land on a Library with no Memory
+        # band and nothing saying where the page went. `/apps` already guards
+        # its twin redirect this way; asymmetry there was the finding.
+        # Anything unreadable counts as "redirect" rather than stranding the
+        # caller here: the band renders rows without counts when the count
+        # read fails, so it is the surface with more to say, not less.
+        try:
+            _c = memory_domains_repo().count_items_by_domain()
+        except Exception:
+            _c = None
+        try:
+            _band_has_row = any(
+                _c is None or _c.get(e.id, (0, 0))[0] > 0 or e.requirement == "required"
+                for e in StackResolver(conn).browse(user["id"], ResourceType.MEMORY_DOMAIN)
+            )
+        except Exception:
+            _band_has_row = True
+        if _band_has_row:
+            return RedirectResponse(url="/library?section=memory_domain", status_code=302)
 
     resolver = StackResolver(conn)
     domains_repo = memory_domains_repo()
@@ -5040,7 +5061,12 @@ async def data_apps_list_page(
                 r["owner_user_id"] == user["id"]
                 or has_explicit_grant(user["id"], ResourceType.DATA_APP.value, r["slug"])
             )
-            for r in data_apps_repo().list(include_drafts=False)
+            # `limit=100000`, matching the Library band. The repo's default
+            # cap is 1000 and it is applied in SQL BEFORE the ownership/grant
+            # filter, so on a large instance an owner's older app drops out of
+            # this predicate while the band would still list it — the redirect
+            # would strand exactly the person it exists to forward.
+            for r in data_apps_repo().list(include_drafts=False, limit=100000)
         )
         if _visible_any:
             return RedirectResponse(url="/library?section=files", status_code=302)
