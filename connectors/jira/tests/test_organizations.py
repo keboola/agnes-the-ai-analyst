@@ -1505,3 +1505,184 @@ class TestForcedEmptyEnumeration:
 
         assert stats["skipped_reason"] == "enumeration_empty"
         assert len(_read_table(tmp_path)) == 2
+
+
+class _StubJobs:
+    """Records the idempotency keys enqueued.
+
+    Only the FIRST enqueue reports the caller's status; the follow-up carries a
+    distinct key and so never dedups onto anything.
+    """
+
+    def __init__(self, status: str = "queued") -> None:
+        self.status = status
+        self.keys: list[str | None] = []
+
+    def enqueue(self, kind: str, payload: dict, idempotency_key: str | None = None) -> dict:
+        self.keys.append(idempotency_key)
+        return {"status": self.status if len(self.keys) == 1 else "queued"}
+
+
+class TestMetaWriteIsSerialisedAgainstRebuilds:
+    """The `_meta` write must sit inside `rebuild_mutex()` — and only that write.
+
+    `update_meta` opens `extract.duckdb` for writing while a rebuild elsewhere holds the
+    same file ATTACHed, and DuckDB is single-writer. A lost ATTACH is only logged, and
+    the rebuild then swaps in a freshly built analytics database with no Jira views at
+    all — so every Jira table disappears until a later rebuild wins. That is the live
+    incident `app.worker.kinds._run_jira_refresh` documents, and this module is a second
+    writer of the same file. Nothing pinned its placement here, so the lock could be
+    moved or dropped without a single test going red.
+
+    The other half is just as load-bearing: the mutex must NOT be held across the fetch
+    sweep, which is one HTTP request per organization and runs for minutes on a large
+    site. Holding it there would block every rebuild in the process for that whole time.
+    """
+
+    @staticmethod
+    def _drive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        import contextlib
+
+        from connectors.jira import organizations as orgs
+
+        events: list[str] = []
+
+        @contextlib.contextmanager
+        def _tracking_mutex():
+            events.append("mutex:enter")
+            try:
+                yield
+            finally:
+                events.append("mutex:exit")
+
+        def _fetch(org_id: str, client=None) -> dict:
+            events.append(f"fetch:{org_id}")
+            return _org(org_id, f"Org {org_id}", f"ACC-{org_id}")
+
+        svc = MagicMock()
+        svc.is_configured.return_value = True
+        svc.fetch_organization_ids.return_value = ["1", "2"]
+        svc.fetch_organization.side_effect = _fetch
+
+        monkeypatch.setattr("src.orchestrator.rebuild_mutex", _tracking_mutex)
+        monkeypatch.setattr(orgs, "update_meta", lambda _d, table: events.append(f"update_meta:{table}"))
+        monkeypatch.setattr(orgs, "get_jira_service", lambda: svc)
+        monkeypatch.setattr(orgs.time, "sleep", lambda _s: None)
+        monkeypatch.setattr("src.repositories.jobs_repo", _StubJobs)
+
+        stats = orgs.refresh_organizations(extract_dir=tmp_path)
+
+        assert stats["written"] == 2, f"the run under test must have published something: {stats}"
+        return events
+
+    def test_update_meta_runs_inside_the_mutex(
+        self, tmp_path: Path, org_env: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        events = self._drive(tmp_path, monkeypatch)
+
+        meta = [i for i, e in enumerate(events) if e.startswith("update_meta:")]
+        assert meta, "guard would assert nothing if the _meta pass never ran"
+        assert events.count("mutex:enter") == 1, f"one critical section, not {events.count('mutex:enter')}: {events}"
+        enter, left = events.index("mutex:enter"), events.index("mutex:exit")
+        assert enter < min(meta) and max(meta) < left, f"the extract.duckdb write escaped the mutex: {events}"
+
+    def test_the_fetch_sweep_stays_outside_the_mutex(
+        self, tmp_path: Path, org_env: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        events = self._drive(tmp_path, monkeypatch)
+
+        fetches = [i for i, e in enumerate(events) if e.startswith("fetch:")]
+        assert fetches, "guard would assert nothing if nothing was fetched"
+        assert max(fetches) < events.index("mutex:enter"), (
+            f"the mutex is held across the per-organization sweep, blocking every rebuild: {events}"
+        )
+
+
+class TestTheRefreshAnnouncesItsWrite:
+    """A published parquet owes a rebuild, and that enqueue is not housekeeping.
+
+    `_attach_and_create_views` skips any `_meta` row whose inner object did not exist
+    when it ran, so after the first refresh the master analytics database carries no
+    `jira_organizations` view until a rebuild runs *after* the write. Nothing else
+    recovers it — the next scheduled refresh only enqueues if it publishes again, so the
+    table would stay invisible for a day, or until an unrelated rebuild happened to fire.
+
+    The sibling writers (the webhook path in `connectors/jira/service.py`, the SLA
+    poller, the consistency checker) carry the identical contract and are guarded in
+    `tests/test_jira_meta_refresh_cadence.py`; this path had no guard at all.
+    """
+
+    @staticmethod
+    def _publish(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, jobs: _StubJobs) -> dict:
+        from connectors.jira import organizations as orgs
+
+        svc = _fake_service(["1"], [_org("1", "Acme", "ACC-1")])
+        monkeypatch.setattr(orgs, "get_jira_service", lambda: svc)
+        monkeypatch.setattr(orgs, "update_meta", lambda _d, _t: None)
+        monkeypatch.setattr(orgs.time, "sleep", lambda _s: None)
+        monkeypatch.setattr("src.repositories.jobs_repo", lambda: jobs)
+        return orgs.refresh_organizations(extract_dir=tmp_path)
+
+    def test_a_published_refresh_enqueues_one_coalesced_rebuild(
+        self, tmp_path: Path, org_env: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        jobs = _StubJobs()
+
+        stats = self._publish(tmp_path, monkeypatch, jobs)
+
+        assert stats["written"] == 1
+        assert jobs.keys == ["jira-refresh"], "one coalesced rebuild per publish"
+
+    def test_dedup_onto_a_running_rebuild_gets_a_follow_up(
+        self, tmp_path: Path, org_env: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A RUNNING rebuild may have read the extract before this write landed.
+
+        The dedup matches `status IN ('queued', 'running')`, so collapsing onto a running
+        job is not enough — the same invariant the webhook path states.
+        """
+        jobs = _StubJobs(status="running")
+
+        self._publish(tmp_path, monkeypatch, jobs)
+
+        assert jobs.keys == ["jira-refresh", "jira-refresh-followup"]
+
+    def test_a_refusal_to_publish_enqueues_nothing(
+        self, tmp_path: Path, org_env: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The refusals leave the table exactly as it was; there is nothing to publish."""
+        from connectors.jira import organizations as orgs
+
+        self._publish(tmp_path, monkeypatch, _StubJobs())
+
+        jobs = _StubJobs()
+        svc = _fake_service([], [])
+        monkeypatch.setattr(orgs, "get_jira_service", lambda: svc)
+        monkeypatch.setattr("src.repositories.jobs_repo", lambda: jobs)
+
+        stats = orgs.refresh_organizations(extract_dir=tmp_path)
+
+        assert stats["skipped_reason"] == "enumeration_empty"
+        assert jobs.keys == [], "a run that published nothing must not ask for a rebuild"
+
+    def test_an_unreachable_job_queue_does_not_fail_the_refresh(
+        self, tmp_path: Path, org_env: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The module also runs as a standalone script, and the parquet is already durable."""
+        from connectors.jira import organizations as orgs
+
+        svc = _fake_service(["1"], [_org("1", "Acme", "ACC-1")])
+        monkeypatch.setattr(orgs, "get_jira_service", lambda: svc)
+        monkeypatch.setattr(orgs, "update_meta", lambda _d, _t: None)
+        monkeypatch.setattr(orgs.time, "sleep", lambda _s: None)
+
+        def _boom() -> None:
+            raise RuntimeError("no job queue in this process")
+
+        monkeypatch.setattr("src.repositories.jobs_repo", _boom)
+
+        stats = orgs.refresh_organizations(extract_dir=tmp_path)
+
+        assert stats["written"] == 1
+        assert "skipped_reason" not in stats
+        assert len(_read_table(tmp_path)) == 1
