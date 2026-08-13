@@ -10499,7 +10499,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.83.5"
+    "version": "0.83.7"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -50162,7 +50162,7 @@
     },
     "/me/ai-connector": {
       "get": {
-        "description": "AI Connector \u2014 chrome-dependent (spec 2026-08-07 wave 2).\n\nDefault chrome keeps the pre-redesign standalone page (frozen\n``me_cowork_legacy.html``: OAuth connector URL, plugin packages,\navailable tools \u2014 including the /mcp-connect token fallback link).\nUnder ANY redesign opt-in \u2014 rail layout or paper theme, the same\nexpression the user-menu row keys on \u2014 the page stays consolidated into\n/how-it-works#connect via the 302 the redesign shipped: a paper-on-topnav\ninstance's menu says \"Learn how it works\", so a bookmark or alias hop\nmust not resurrect the standalone page there (Devin Review on #1200).\n302, not 301: a permanent redirect is cached by the browser forever, so\nit would be very hard to walk back if the consolidation is revisited.",
+        "description": "AI Connector \u2014 chrome-dependent (spec 2026-08-07 wave 2).\n\nDefault chrome keeps the pre-redesign standalone page (frozen\n``me_cowork_legacy.html``: OAuth connector URL, plugin packages,\navailable tools \u2014 including the /mcp-connect token fallback link).\nUnder ANY redesign opt-in \u2014 rail layout or paper theme, the same\nexpression the user-menu row keys on \u2014 the page stays consolidated into\n/how-it-works#connect via the 302 the redesign shipped: a paper-on-topnav\ninstance's menu says \"Learn how it works\", so a bookmark or alias hop\nmust not resurrect the standalone page there (Devin Review on #1200).\n302, not 301: a permanent redirect is cached by the browser forever, so\nit would be very hard to walk back if the consolidation is revisited.\n\nChecked before either chrome branch (#1024): with the MCP connector UI\nhidden (``mcp.connector_ui_enabled: false`` \u2014 a VPN/intranet-only instance\nwhose cloud-side MCP clients can never reach the endpoint), this whole\npage IS the surface being hidden, so both branches bounce home rather\nthan one of them rendering it anyway.",
         "operationId": "me_ai_connector_page_me_ai_connector_get",
         "parameters": [
           {
