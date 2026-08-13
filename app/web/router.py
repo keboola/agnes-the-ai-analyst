@@ -3549,24 +3549,29 @@ async def library_page(
     # the surface.
     if _data_apps_nav_enabled():
         from app.api.data_apps import _serialize as _da_serialize
-        from app.auth.access import has_explicit_grant
         from src.repositories import data_apps_repo
 
         try:
             _da_cfg = get_data_apps_config()
             _da_users = users_repo()
-            for da in data_apps_repo().list(include_drafts=False):
-                # Grant-scoped via ``has_explicit_grant``, deliberately NOT
-                # the API's ``_can_view`` (and not ``can_access`` either —
-                # both short-circuit on Admin): this page's contract
-                # (docstring above) is no admin god-mode, an admin's Library
-                # lists what THEY have, not every user's private app. The
-                # instance-wide inventory stays on the API/CLI list and the
-                # admin surfaces (Devin review on this PR).
+            # Grant-scoped (OWNERSHIP ∪ explicit grant), deliberately NOT the
+            # API's ``_can_view`` (and not ``can_access`` either — both
+            # short-circuit on Admin): this page's contract (docstring above)
+            # is no admin god-mode, an admin's Library lists what THEY have,
+            # not every user's private app. The instance-wide inventory stays
+            # on the API/CLI list and the admin surfaces (Devin review on
+            # this PR). Grants on this type are keyed by SLUG (see
+            # ``_can_view``), fetched ONCE like the recipe/plugin siblings —
+            # same shape PR #1272 lands on main, so the two branches keep one
+            # definition of "what an admin sees in the Library".
+            _app_grants = _granted_ids(ResourceType.DATA_APP.value)
+            # ``limit=100000`` like every sibling listing in this function:
+            # the repo defaults to 1000 newest-first, and that cap applies
+            # BEFORE the ownership/grant filter — older apps would drop off
+            # their owner's Library silently.
+            for da in data_apps_repo().list(include_drafts=False, limit=100000):
                 _da_mine = da["owner_user_id"] == uid
-                if da.get("state") == "linked_hidden" or not (
-                    _da_mine or has_explicit_grant(uid, ResourceType.DATA_APP.value, da["slug"])
-                ):
+                if da.get("state") == "linked_hidden" or not (_da_mine or da["slug"] in _app_grants):
                     continue
                 _da = _da_serialize(da, _da_cfg)
                 _da_owner = _da_users.get_by_id(da["owner_user_id"]) or {}
