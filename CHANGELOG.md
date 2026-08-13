@@ -10,6 +10,16 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+## [0.83.13] - 2026-08-13
+
+### Added
+
+- **Jira tickets can be joined to organizations on ids rather than names.** `issues` gained `organization_ids` (a JSON array — the Jira field is multi-valued), and a new current-state `organizations` table maps each id to the organization's current name plus whichever detail fields the operator names in `JIRA_ORG_DETAIL_FIELDS` (e.g. `38:crm_account_id` — detail ids are per-instance, so there are no defaults). Previously only ingest-time name strings were available, so renaming an organization orphaned its old tickets from any exact-name join. The table refreshes daily via a new `jira-org-refresh` job kind (scheduler row at 05:00); a manual run is `python -m connectors.jira.organizations` (`--dry-run`, `--force`). The refresh refuses to publish on states indistinguishable from data loss — failed or empty enumeration over an existing table, an unreadable baseline, a sweep that would remove most existing rows — and a per-organization failure carries the previous row forward; the connector README tabulates the refusal reasons and `--force` clears the two that never self-clear. `extract_init` now supports flat (unpartitioned) tables and upserts `_meta` rows so tables added after an instance's `extract.duckdb` was created still reach the catalog; `migrate_flat_to_hive` only migrates real `YYYY-MM` month files. The profiler catalog gains `jira_organizations` and the `jira_issues.organization_ids` relationship, and the legacy Data Broker `sync_jira.sh` creates the view. On existing installs, partitions written before this change read NULL in `organization_ids` — re-running the batch transform backfills them from the stored raw JSON with no re-fetch (command in the connector README).
+
+### Internal
+
+- **CI now runs the connector test suites.** `pytest tests/` never reached `connectors/`, where every connector keeps its tests beside the code (`connectors/jira/tests/`, ...) — 138 tests that ran only on developer machines, including the whole failure-semantics surface of the Jira connector, so no regression in them could ever fail a build. The shard job now runs `tests/ connectors/`, and the connector tests' measured `.test_durations` entries ship with the change so they shard like any other test. Regeneration command in the workflow comment is updated to match.
+
 ## [0.83.12] - 2026-08-13
 
 ### Fixed
