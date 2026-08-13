@@ -8,6 +8,7 @@ Updates only the affected monthly Parquet file for efficient rsync.
 import json
 import logging
 import os
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -38,6 +39,10 @@ from .transform import (
 logger = logging.getLogger(__name__)
 
 # Default paths (can be overridden via environment)
+# A month partition key: exactly `YYYY-MM`. Used to tell a real month partition
+# from any other parquet sitting directly under a table directory.
+_MONTH_KEY_PATTERN = re.compile(r"^\d{4}-\d{2}$")
+
 DEFAULT_RAW_DIR = Path(os.environ.get("DATA_DIR", "/data")) / "extracts" / "jira" / "raw"
 DEFAULT_OUTPUT_DIR = Path(os.environ.get("DATA_DIR", "/data")) / "extracts" / "jira" / "data"
 
@@ -167,11 +172,26 @@ def migrate_flat_to_hive(table_dir: Path) -> list[str]:
     This is called during ``init_extract`` and after a batch transform run so
     that existing instances transparently transition to the new layout on the
     first webhook or scheduled sync after upgrade.
+
+    Only files whose name really is a month are touched. The glob would otherwise
+    treat any parquet directly under *table_dir* as a month and rename it to
+    ``month=<stem>/data.parquet`` — so an unpartitioned dimension table
+    (``organizations/data.parquet``) would become ``month=data/data.parquet`` and
+    disappear from its own view, silently reporting zero rows. Callers are
+    expected to skip such tables, but the contract stated above is enforced here
+    so that a future caller cannot destroy one by omission.
     """
     migrated: list[str] = []
 
     for flat_file in sorted(table_dir.glob("*.parquet")):
         month_key = flat_file.stem  # e.g. "2026-01"
+        if not _MONTH_KEY_PATTERN.match(month_key):
+            logger.debug(
+                "Skipping %s during flat->hive migration: %r is not a YYYY-MM month key",
+                flat_file,
+                month_key,
+            )
+            continue
         # Per-file fault isolation: a single file that can't be migrated must
         # not abort the whole pass (otherwise the months after it stay flat and
         # invisible to the hive-only view). Hold parquet_month_lock so a
