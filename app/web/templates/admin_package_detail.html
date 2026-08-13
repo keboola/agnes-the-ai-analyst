@@ -470,6 +470,14 @@
         How analysts find this package in their Library — its name, icon, category
         and description are what they read before adding it.
       </p>
+      {# The editor for exactly these fields — name, description, status,
+         category, icon, colour, and Delete package — already exists as the
+         Tables lens' `?edit_package=` drawer, and the create drawer's own copy
+         promises the package "stays editable on the package's own page
+         afterwards". Nothing linked to it: rename and delete were reachable
+         only by typing the URL. Until the drawer grows an edit mode that can
+         open in place, this page at least names the door. #}
+      <a class="btn btn-secondary btn-sm" href="/admin/tables?edit_package={{ pkg.id }}">Edit details…</a>
       {% if pkg.slug %}
       <a class="btn btn-secondary btn-sm" href="/catalog/p/{{ pkg.slug }}">View as analyst →</a>
       {% endif %}

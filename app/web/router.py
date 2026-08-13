@@ -6670,6 +6670,32 @@ def _source_connection_names() -> dict[str, str]:
         return {}
 
 
+def _connected_source_types() -> list[str]:
+    """Every source type with at least one registered connection.
+
+    The Tables lens decided "Keboola is not connected" from the legacy
+    ``data_source.type`` scalar alone, which says nothing about the
+    multi-connection registry. An instance whose default type is something else
+    but which has Keboola projects connected was told — on the tab next to the
+    one listing those projects — that Keboola is not connected and its tables
+    cannot sync, sending the admin off to re-enter credentials it already had.
+    Connectedness is a property of the registry, so it is read from there.
+    """
+    from src.repositories import source_connections_repo
+
+    try:
+        return sorted(
+            {
+                (c.get("source_type") or "").strip().lower()
+                for c in source_connections_repo().list()
+                if (c.get("source_type") or "").strip()
+            }
+        )
+    except Exception as e:  # noqa: BLE001 — unreadable means "cannot claim connected", not a 500
+        logger.warning("tables lens: could not list source connection types: %s", e)
+        return []
+
+
 @router.get("/admin/tables", response_class=HTMLResponse)
 async def admin_tables(
     request: Request,
@@ -6699,6 +6725,10 @@ async def admin_tables(
         # Project filter. The registry response carries the id but not the
         # name, and one lookup map is cheaper than widening that endpoint.
         source_connections=_source_connection_names(),
+        # Which source types actually have a connection — the instance-level
+        # "X is not connected" strip is resolved against this, not against the
+        # legacy single-source scalar above.
+        connected_source_types=_connected_source_types(),
     )
     return templates.TemplateResponse(request, "admin_tables.html", ctx)
 

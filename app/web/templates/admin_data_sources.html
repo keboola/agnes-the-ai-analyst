@@ -733,6 +733,11 @@
   .ds-wizard-error {
     display: none; font-size: 12px; color: var(--ds-accent-danger-ink); margin-top: 8px;
   }
+  /* The step-2 variant lives in the drawer's sticky foot, beside the button
+     that refused, so it drops the stacked margin and rides the button row. */
+  .ds-wizard-error--foot {
+    margin: 0 4px 0 0; align-self: center; text-align: right;
+  }
 
   /* Toast */
   .ds-toast {
@@ -1085,6 +1090,11 @@
     <div class="ds-drawer__foot">
       <button type="button" class="btn btn-secondary" id="ds-wizard-cancel">Cancel</button>
       <span class="ds-drawer__foot-gap"></span>
+      {# Step 2's refusal, stated where the refusing button is. It lived on the
+         step's own pane first, which put it under 576 rows of bucket list —
+         8500px below the fold, which is the same as nowhere. The foot is
+         sticky, so a message here is on screen whatever the list is doing. #}
+      <div id="ds-tables-error" class="ds-wizard-error ds-wizard-error--foot" role="alert"></div>
       <button type="button" class="btn btn-secondary" id="ds-wizard-skip-btn" style="display:none;">Skip sharing for now</button>
       <button type="button" class="btn btn-secondary" id="ds-wizard-finish-early-btn" style="display:none;" title="Register the selected tables and stop — bundle them later from Data packages.">Register only &amp; finish</button>
       <button type="button" class="btn btn-primary" id="ds-wizard-connect-btn">Connect &amp; validate</button>
@@ -2087,7 +2097,7 @@ document.addEventListener("input", (e) => {
   if (root) _filterPicker(root, e.target.value);
 });
 
-async function registerSelected(connId) {
+async function registerSelected(connId, errElId) {
   // Returns {ok: [{id, name, bucket}], failed: n} — the wizard's Bundle step
   // consumes the list; the standalone Browse&register path ignores it. The
   // id is derived the way the server derives it (see register_table in
@@ -2096,10 +2106,25 @@ async function registerSelected(connId) {
   const checked = document.querySelectorAll(
     `.ds-table-checkbox[data-conn="${connId}"]:checked`
   );
-  const errEl = document.getElementById(`ds-browse-error-${connId}`);
-  if (errEl) errEl.textContent = "";
+  // Two surfaces share this function — the wizard's step-2 list and the
+  // standalone Browse&register panel — and each has its own error line. It used
+  // to always write to the panel's `ds-browse-error-<conn>`, which in the
+  // wizard sits on the page BEHIND the open drawer: "select at least one table"
+  // was rendered somewhere the reader could not see, so the enabled primary
+  // button just did nothing. Only the caller knows which surface it is, so it
+  // names its own line; the id is still the panel's by default.
+  const errEl = document.getElementById(errElId || `ds-browse-error-${connId}`);
+  const showErr = (msg) => {
+    if (!errEl) return;
+    errEl.textContent = msg;
+    // "block", not "": `.ds-wizard-error` is display:none in CSS, so clearing
+    // the inline style would hand it straight back to that rule. Flex parents
+    // blockify their items, so this is a no-op for the browse panel's span.
+    errEl.style.display = msg ? "block" : "none";
+  };
+  showErr("");
   if (!checked.length) {
-    if (errEl) errEl.textContent = "Select at least one table.";
+    showErr("Select at least one table.");
     return { ok: [], failed: 0 };
   }
   // Per-row "registering…/✗ failed" is the only account of what happened, and
@@ -2115,7 +2140,7 @@ async function registerSelected(connId) {
     }
   }
   const registered = [];
-  let okCount = 0, failCount = 0;
+  let okCount = 0, failCount = 0, alreadyCount = 0;
   for (const cb of checked) {
     const statusId = cb.closest(".ds-table-row").querySelector(".ds-table-status").id;
     const statusEl = document.getElementById(statusId);
@@ -2150,7 +2175,10 @@ async function registerSelected(connId) {
       } else if (r.status === 409) {
         statusEl.textContent = "already registered";
         statusEl.className = "ds-table-status ok";
-        // Already in the registry — still bundleable, so it rides along.
+        // Already in the registry — still bundleable, so it rides along. Counted
+        // apart from okCount so the summary can say so: folded into neither, the
+        // toast read "0 table(s) registered." after a wholly successful step.
+        alreadyCount++;
         registered.push({
           id: (cb.dataset.tableName || "").trim().toLowerCase().replace(/ /g, "_"),
           name: cb.dataset.tableName,
@@ -2169,10 +2197,17 @@ async function registerSelected(connId) {
     }
   }
   if (root) _syncPicker(root);
+  // State each outcome that happened, and only those. A step where every table
+  // was already in the registry is a success, not a "0 registered" — the server
+  // says 409 and the rows say "already registered", so the summary must agree.
   if (failCount === 0) {
-    showToast(`${okCount} table(s) registered.`, true);
+    const parts = [];
+    if (okCount) parts.push(`${okCount} table(s) registered`);
+    if (alreadyCount) parts.push(`${alreadyCount} already registered`);
+    showToast(parts.length ? `${parts.join(" · ")}.` : "Nothing to register.", true);
   } else {
-    showToast(`${okCount} registered, ${failCount} failed. See per-row status.`, false);
+    const done = okCount + alreadyCount;
+    showToast(`${done} ready, ${failCount} failed. See per-row status.`, false);
   }
   return { ok: registered, failed: failCount };
 }
@@ -2641,7 +2676,9 @@ async function _registerBqRows() {
 async function _registerStepTwo() {
   if (_wizardSource === "bigquery") return _registerBqRows();
   if (!_wizardConnId) return { ok: [], failed: 0 };
-  return registerSelected(_wizardConnId);
+  // Step 2's own error line — the browse panel's sits on the page behind the
+  // drawer, and `#ds-wizard-error` belongs to the connect step's pane.
+  return registerSelected(_wizardConnId, "ds-tables-error");
 }
 
 /* ── Step 3: the bundle board ─────────────────────────────────────────────

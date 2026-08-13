@@ -3,7 +3,7 @@
 
 {% block title %}Table Management - {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block body_attrs %}data-source-type="{{ data_source_type }}"{% endblock %}
+{% block body_attrs %}data-source-type="{{ data_source_type }}" data-connected-source-types="{{ (connected_source_types or []) | join(',') }}"{% endblock %}
 
 {% block head_extra %}
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -3670,6 +3670,11 @@
     // type. Lives on <body> after C3 (previously on the now-removed
     // #registerModal).
     var DATA_SOURCE_TYPE = document.body.dataset.sourceType || 'keboola';
+    // Source types with at least one connection in the source-connection
+    // registry (see _connected_source_types in app/web/router.py). The legacy
+    // scalar above names ONE default type and cannot answer "is X connected?".
+    var CONNECTED_SOURCE_TYPES = (document.body.dataset.connectedSourceTypes || '')
+        .split(',').map(function (s) { return s.trim(); }).filter(Boolean);
 
     // The end of each table's chain: which package carries it and how many
     // people that reaches ({table_id: {packages: [{id, name}], people}}).
@@ -5975,8 +5980,15 @@
     function renderConnectorNotice(tables) {
         var host = document.getElementById('adminTablesConnectorNotice');
         if (!host) return;
+        // Connected is what the registry says. Keying this on DATA_SOURCE_TYPE
+        // alone claimed "Keboola is not connected" on instances with Keboola
+        // projects connected — listed, by name, on the adjacent Sources tab.
+        if (DATA_SOURCE_TYPE === 'keboola'
+            || CONNECTED_SOURCE_TYPES.indexOf('keboola') !== -1) {
+            host.hidden = true; host.innerHTML = ''; return;
+        }
         var n = tables.filter(function(t) {
-            return (t.source_type === 'keboola') && DATA_SOURCE_TYPE !== 'keboola';
+            return t.source_type === 'keboola';
         }).length;
         if (!n) { host.hidden = true; host.innerHTML = ''; return; }
         host.hidden = false;
