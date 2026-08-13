@@ -1,4 +1,5 @@
 {% extends "base_admin.html" %}
+{% import "macros/_icon.html" as ico %}
 
 {% block title %}Table Management - {{ config.INSTANCE_NAME }}{% endblock %}
 
@@ -1011,7 +1012,12 @@
            button was the wrong answer: a reader here is looking at tables, and
            a CTA out is not context. One quiet line, no exit. #}
         <div class="apg-strip">
-          <span class="apg-strip__mark" aria-hidden="true">📦</span>
+          {# The product's own package glyph, not the emoji this line shipped
+             with: an emoji is a font's picture of a parcel, it renders four
+             different ways across platforms, and it cannot take the strip's
+             ink. `macros/_icon.html` is where a meaningful glyph comes from —
+             tests/test_no_ui_emoji.py enforces it. #}
+          <span class="apg-strip__mark" aria-hidden="true">{{ ico.icon('package', 15) }}</span>
           <span>
             Sharing is managed per <strong>data package</strong> — a table reaches people
             through the packages that carry it, so grants are set on the package,
