@@ -869,7 +869,12 @@ class JiraService:
                 # the attachment download endpoint — must never observe a
                 # truncated in-place rewrite when a webhook re-downloads the
                 # same issue's attachments.
-                tmp_path = file_path.with_name(f"{file_path.name}.tmp-{os.getpid()}")
+                # Bounded temp name: appending to the full name could push a
+                # near-NAME_MAX (255-byte) filename over the limit and make a
+                # previously-storable attachment fail to save. 40 codepoints
+                # (<=160 UTF-8 bytes) keeps the total well under NAME_MAX and
+                # stays unique: the name starts with the attachment id.
+                tmp_path = file_path.with_name(f".tmp-{os.getpid()}-{file_path.name[:40]}")
                 try:
                     with open(tmp_path, "wb") as f:
                         f.write(response.content)
