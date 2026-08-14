@@ -150,7 +150,10 @@ def detect_used_objects(sql: str, document: dict[str, Any]) -> dict[str, list[st
         if isinstance(metric, dict) and metric.get("name") and _word_present(text, str(metric["name"])):
             used_metrics.append(str(metric["name"]))
 
-    used_dataset_set = set(used_datasets)
+    # Same case-insensitive join rationale as evaluate_constraints (Devin
+    # Review on PR #1319, round 4): from/to and dataset names are both
+    # imported text and may disagree on case.
+    used_dataset_set = {str(d).casefold() for d in used_datasets}
     matched_relationships: list[str] = []
     for relationship in document.get("relationships") or []:
         if not isinstance(relationship, dict):
@@ -158,7 +161,9 @@ def detect_used_objects(sql: str, document: dict[str, Any]) -> dict[str, list[st
         name = relationship.get("name")
         if not name:
             continue
-        if relationship.get("from") in used_dataset_set and relationship.get("to") in used_dataset_set:
+        from_dataset = str(relationship.get("from") or "").casefold()
+        to_dataset = str(relationship.get("to") or "").casefold()
+        if from_dataset in used_dataset_set and to_dataset in used_dataset_set:
             matched_relationships.append(str(name))
 
     return {
@@ -258,7 +263,11 @@ def evaluate_constraints(
     checkable rule that actually fails becomes a ``violations`` entry;
     ``severity == "error"`` there is what drives ``valid=False`` upstream.
     """
-    used = set(used_metrics or [])
+    # Case-insensitive join, like every other name comparison over imported
+    # text in this module: an exact-case match would silently drop an
+    # error-severity constraint whose metrics[] spelling differs from the
+    # metric declaration — fail-open (Devin Review on PR #1319, round 4).
+    used = {str(m).casefold() for m in (used_metrics or [])}
     text = sql or ""
     normalized_text = " ".join(text.split()).lower()
 
@@ -268,7 +277,7 @@ def evaluate_constraints(
     for constraint in constraints or []:
         if not isinstance(constraint, dict):
             continue
-        applicable_metrics = [m for m in (constraint.get("metrics") or []) if m in used]
+        applicable_metrics = [m for m in (constraint.get("metrics") or []) if str(m).casefold() in used]
         if not applicable_metrics:
             continue
 

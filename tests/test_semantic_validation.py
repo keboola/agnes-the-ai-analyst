@@ -660,3 +660,37 @@ class TestUniversalDialectDoesNotConstrain:
         assert result["mixed_dialect_warning"] is not None
         assert "BIGQUERY" in result["mixed_dialect_warning"]
         assert "SNOWFLAKE" in result["mixed_dialect_warning"]
+
+
+class TestCaseInsensitiveNameJoins:
+    """Devin Review on PR #1319 (round 4): document-internal name references
+    are untrusted imported text, so the constraint->metric and
+    relationship->dataset joins must match names case-insensitively, like
+    every other comparison in the module -- an exact-case join silently
+    drops an error-severity constraint (fail-open)."""
+
+    def test_constraint_fires_across_case_difference(self):
+        constraints = [
+            {
+                "name": "must_filter",
+                "type": "required_filter",
+                "rule": "region = 'EU'",
+                "severity": "error",
+                "metrics": ["Revenue"],
+            }
+        ]
+        violations, checks = evaluate_constraints(constraints, ["revenue"], "SELECT revenue FROM orders")
+        assert [v["name"] for v in violations] == ["must_filter"]
+        assert checks == []
+
+    def test_relationship_matches_across_case_difference(self):
+        document = {
+            "name": "m",
+            "datasets": [
+                {"name": "Orders", "source": "analytics.orders"},
+                {"name": "Customers", "source": "analytics.customers"},
+            ],
+            "relationships": [{"name": "orders_customers", "from": "orders", "to": "CUSTOMERS"}],
+        }
+        detected = detect_used_objects("SELECT * FROM orders JOIN customers USING (id)", document)
+        assert detected["matched_relationships"] == ["orders_customers"]
