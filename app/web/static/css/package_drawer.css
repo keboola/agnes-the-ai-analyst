@@ -1,0 +1,72 @@
+/* =====================================================================
+ * package_drawer.css — what js/components/package_drawer.js adds INSIDE
+ * the shared drawer chrome (css/drawer.css).
+ *
+ * Two objects, and nothing else: the cover-image picker (a preview beside
+ * its control, because "no image" and "this image" is the only thing that
+ * read-out has to say) and a group row in the optional share section.
+ * Every other control in that drawer is shared — the drawer's own fields,
+ * `.fbar-select` and `.fbar-seg` from filter_toolbar.css, `.cf-palette-row`
+ * from stack_card.css, `.btn` for the buttons.
+ * ===================================================================== */
+
+/* ── Colour ─────────────────────────────────────────────────────────────
+   The palette is the choice; the native picker (and the hex read-out that
+   _app_scripts.html injects after it) is the escape hatch, on the same line
+   when there is room for it. */
+
+.pdw-color { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pdw-color .cf-palette-row { margin-bottom: 0; }
+
+/* ── Cover image ────────────────────────────────────────────────────── */
+
+.pdw-cover { display: flex; align-items: flex-start; gap: 12px; }
+.pdw-cover__preview {
+  flex: 0 0 auto;
+  width: 108px;
+  height: 64px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-btn);
+  background: var(--ds-surface-dim);
+  font-size: 11.5px;
+  color: var(--ds-text-muted);
+}
+.pdw-cover__preview img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pdw-cover__pick { min-width: 0; flex: 1 1 auto; }
+
+/* ── A group, in the optional share section ─────────────────────────────
+   The same row the package's own Share drawer uses — a tick for "shares",
+   a segmented tier for "how" — so the create flow and the edit flow ask
+   the question in one shape. */
+
+.pdw-pick {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 4px;
+}
+.pdw-pick + .pdw-pick { border-top: 1px solid var(--ds-border-light); }
+.pdw-pick > input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  accent-color: var(--ds-primary);
+}
+.pdw-pick__txt { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; }
+.pdw-pick__name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ds-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pdw-pick__sub { font-size: 11.5px; color: var(--ds-text-muted); }
+
+/* The tier is a smaller instance of the toolbar's segmented control: it sits
+   in a 600px drawer beside a name, not on a full-width bar. */
+.pdw-pick .fbar-seg { flex: 0 0 auto; }
+.pdw-pick .fbar-seg__btn { height: 26px; padding: 0 9px; font-size: 12px; }

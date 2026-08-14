@@ -1,0 +1,199 @@
+{# Grouped left sidebar for the /admin section (issue #896 follow-up, then a
+   height/grab-bag follow-up, then a layout/hierarchy pass).
+
+   Included by base_admin.html / base_admin_page.html only — every /admin/*
+   HTML page is already gated server-side by `Depends(require_admin)`, so a
+   non-admin never reaches a route that renders this partial. The
+   `session.user.is_admin` check below is defence in depth (mirrors the same
+   guard on the rail's Admin row in _app_rail.html), not the primary gate.
+
+   Data comes from `app/web/admin_nav.py` (`ADMIN_NAV_HOME`,
+   `ADMIN_NAV_SECTIONS`, `resolve_active_href`, `resolve_active_section_key`,
+   `resolve_home_active`), registered as the Jinja globals `admin_nav_home` /
+   `admin_nav_sections` / `admin_nav_active_href` /
+   `admin_nav_active_section_key` / `admin_nav_home_active` — the single
+   source of truth `tests/test_web_admin_nav.py` also imports directly, so a
+   page added to the router without a nav entry fails that guard.
+
+   THIS COLUMN DOES NOT COLLAPSE. It is the primary navigation of every page
+   that renders it, and the primary rail beside it already owns the
+   collapse/expand behaviour for the window — two collapsible columns side by
+   side made "how do I get back?" a two-step puzzle. What was here before: a
+   toggle that shrank the column to a 56px icon strip whose seven glyphs
+   opened hover flyouts. All of it is gone, along with the localStorage key
+   that remembered it (`agnes.adminNav.collapsed`) and the inline
+   first-paint script that applied it.
+
+   What remains is per-SECTION disclosure, persisted per browser in
+   localStorage (owned by js/admin/admin_nav.js) and resolved server-side for
+   FIRST PAINT so nothing flashes fully expanded before JS runs:
+   `_active_section_key` (computed from the request path, not from any stored
+   state) is the one section that renders expanded by default; every other
+   section renders with its body `hidden` and its header's
+   `aria-expanded="false"`. A caller's own manually-opened/closed sections
+   persist across page loads, but the ACTIVE section is always forced open by
+   the JS on load too — it must never end up hidden just because a stale
+   stored value says so. #}
+{% if session.user.is_admin %}
+{% set _admin_path = request.url.path %}
+{% set _active_href = admin_nav_active_href(_admin_path) %}
+{% set _active_section_key = admin_nav_active_section_key(_admin_path) %}
+{% import "macros/_icon.html" as ico %}
+{# Flags addressable by an item's `when` key. `can_studio` is
+   `get_studio_enabled()`, put on every context by `_build_context`;
+   `default(false)` so a context that somehow lacks it hides the row rather
+   than raising. #}
+{% set _nav_flags = {'can_studio': can_studio | default(false)} %}
+{# The rail chrome and the topnav chrome give this column different jobs, and
+   the head is the one place that shows. Under `rail` the column is the primary
+   navigation of the page and the rail beside it is a glyph strip, so the head
+   is a page-level heading that also answers "which instance am I changing".
+   Under `topnav` — still the DEFAULT layout, and one whose look must not shift
+   under existing instances (tests/test_ui_layout_theme.py) — the head stays the
+   quiet uppercase label it has always been, and the "Back to the app" row stays
+   with it. One inventory, one component, one conditional. #}
+{% set _rail_chrome = (ui_layout | default('topnav')) == 'rail' %}
+<aside class="admin-nav" aria-label="Admin sections" data-admin-nav data-active-section="{{ _active_section_key or '' }}">
+    <div class="admin-nav__head{% if _rail_chrome %} admin-nav__head--mode{% endif %}">
+        {# A LABEL, not a link. It used to be the only way back to the hub,
+           which asked a small uppercase column heading to do a navigation job
+           nobody reads it as offering — the hub is the `admin_nav_home` row
+           directly below instead. #}
+        <span class="admin-nav__title">Admin</span>
+        {# WHICH instance every change on these pages lands on. It was already on
+           screen — as `version · updated` in the shared page footer
+           (`_footer.html`; a fixed bottom-right stamp before that), i.e. as build
+           metadata, three levels of hierarchy below the question an operator with more than
+           one deployment is actually asking before they touch a grant. Rail only:
+           under topnav this row is the quiet uppercase label described above, and
+           a chip beside it would be a visual change to the default chrome. #}
+        {% if _rail_chrome and instance_name %}
+        <span class="admin-nav__instance" title="{{ instance_name }}">{{ instance_name }}</span>
+        {% endif %}
+    </div>
+    {# "← Back to the app" is TOPNAV-ONLY now. It existed because the rail
+       collapses to its icon strip on /admin, which made leaving the area a hunt
+       for a 56px glyph — but the strip is a complete set of destinations now
+       (New chat · Chats · Library · Agents, each with an icon; see the contract
+       note at the top of `_app_rail.html`), so the row duplicated the wordmark
+       and three neighbours. Under topnav there is no rail at all and the header's
+       own links are above the fold, so it is equally redundant there — but
+       removing it would change the default chrome, which this pass does not do. #}
+    {% if not _rail_chrome %}
+    <a class="admin-nav__link admin-nav__link--back" href="/dashboard">← Back to the app</a>
+    {% endif %}
+    {# No Admin/Agnes mode switch here. It shipped as a two-segment control on
+       the theory that the pressed segment answers "which of the two products am
+       I in" — but the column already answers that three times over (the heading
+       says Admin, the instance chip says which deployment, and the rail's Admin
+       row is lit), and the way back to the app is four things away in the strip
+       beside it: the wordmark, New chat, Chats, Library. A control whose two
+       halves are both already stated is chrome, and it cost the head a third
+       stacked block above the first destination. #}
+    <p class="admin-nav__sub">Changes here apply to the whole instance.</p>
+    <div class="admin-nav__sections">
+        {# The hub, first and outside every section — see admin_nav.py's
+           ADMIN_NAV_HOME. Active on `/admin` EXACTLY, so it never competes
+           with the section row that owns an `/admin/*` page. #}
+        <a class="admin-nav__link admin-nav__link--home{% if admin_nav_home_active(_admin_path) %} is-active{% endif %}"
+           href="{{ admin_nav_home['href'] }}">{{ admin_nav_home['label'] }}</a>
+        {% for section in admin_nav_sections %}
+        {% if section.get('divider_before') %}
+        {# The manage/maintain split — part of the pinned IA (admin_nav.py),
+           not styling: People + Data + Access are the daily jobs, everything
+           below is maintenance of an instance that already does them. BOTH
+           halves carry their label; the text comes from the inventory, so the
+           template never names a half it doesn't own. #}
+        <div class="admin-nav__divider" aria-hidden="true"><span>{{ section['divider_before'] }}</span></div>
+        {% endif %}
+        {% set _sec_open = section['key'] == _active_section_key %}
+        {% if section.get('href') %}
+        {# A DESTINATION — one flat row. Its sub-navigation is the page's own tab
+           strip (`_admin_tabs.html`), so the column stays a list of PLACES
+           instead of a list of places-and-their-contents. Active on the whole
+           section, not on one href: standing on the Tables tab must still light
+           Data, or the sidebar would say you are nowhere.
+
+           No chevron and no disclosure: there is nothing to open. The row's
+           icon is the section's, the same glyph the collapsed rail one tier up
+           would use for it. #}
+        <a class="admin-nav__link admin-nav__link--dest{% if _sec_open %} is-active{% endif %}"
+           href="{{ section['href'] }}"{% if _sec_open %} aria-current="page"{% endif %}>
+            {{ ico.icon(section['icon'], 16, 'admin-nav__dest-ico') }}
+            <span>{{ section['label'] }}</span>
+        </a>
+        {% else %}
+        {# A legacy disclosure GROUP — the three MAINTAIN sections, which each
+           hold seven to ten pages. They keep the column-with-rows shape until
+           each has a landing page of its own: as a tab strip, "Marketplaces ·
+           Store · Submissions · Lint · Studio suggestions · Corporate memory ·
+           Digests · News · Contribute" is a worse answer than the disclosure
+           they have now. See admin_nav.py's two-tier note. #}
+        <div class="admin-nav__group{% if _sec_open %} is-open{% endif %}" data-admin-nav-group="{{ section['key'] }}">
+            {# SAME ROW ANATOMY as a destination — icon, then the label in the
+               same size and case. The column held two different treatments for
+               one job (icon rows in title case for three sections, uppercase
+               micro-labels for the other three), which read as a broken list
+               rather than as two tiers. What tells them apart now is the ONE
+               thing that differs in behaviour: the chevron at the far right,
+               which says this row opens instead of navigating. #}
+            <button type="button" class="admin-nav__group-hd" data-admin-nav-toggle
+                    aria-expanded="{{ 'true' if _sec_open else 'false' }}"
+                    aria-controls="admin-nav-body-{{ section['key'] }}">
+                {{ ico.icon(section['icon'], 16, 'admin-nav__dest-ico') }}
+                <span class="admin-nav__group-txt">{{ section['label'] }}</span>
+                {{ ico.icon('chevron', 13, 'admin-nav__group-chev') }}
+            </button>
+            <div class="admin-nav__group-body" id="admin-nav-body-{{ section['key'] }}"{% if not _sec_open %} hidden{% endif %}>
+                {# `when` (optional) names a flag in `_nav_flags` that must be
+                   truthy for the row to render — see admin_nav.py. Only Studio
+                   uses it. A row naming a flag that isn't in the map is
+                   DROPPED, not shown: `when` gates surfaces that can be
+                   disabled instance-wide, so failing closed is the safe
+                   direction. Add a supported flag by extending `_nav_flags`
+                   above — Jinja has no ambient `context` lookup, and an
+                   explicit map is what makes the supported set readable. #}
+                {% for item in section['items'] if not item.get('when') or _nav_flags.get(item['when']) %}
+                <a class="admin-nav__link{% if item['href'] == _active_href %} is-active{% endif %}"
+                   href="{{ item['href'] }}">{{ item['label'] }}</a>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+        {% endfor %}
+    </div>
+    {# API docs — a COLLAPSED DISCLOSURE, the same `.admin-nav__group` component
+       the MAINTAIN sections use (keyed `docs`, so `admin/admin_nav.js` gives it
+       persistence for free and never force-opens it — no `/documentation` path
+       resolves to a section key).
+
+       One row at rest, three when you want them. As a permanent three-row block
+       under an uppercase heading it was four elements in the column's densest
+       corner for links followed once a quarter; as a single row to the guide it
+       put Swagger and ReDoc two clicks and a page-scan away, which is wrong for
+       the moment you actually reach for them — testing a call while writing one.
+
+       Outside the section IA and below the divider, because these are not
+       `/admin/*` routes at all (see ADMIN_NAV_DOCS in admin_nav.py); the ↗ on
+       each row says the link leaves the admin area. #}
+    <div class="admin-nav__docs">
+        <div class="admin-nav__group" data-admin-nav-group="docs">
+            <button type="button" class="admin-nav__group-hd" data-admin-nav-toggle
+                    aria-expanded="false" aria-controls="admin-nav-body-docs">
+                {{ ico.icon('doc', 16, 'admin-nav__dest-ico') }}
+                <span class="admin-nav__group-txt">API docs</span>
+                {{ ico.icon('chevron', 13, 'admin-nav__group-chev') }}
+            </button>
+            <div class="admin-nav__group-body" id="admin-nav-body-docs" hidden>
+                {% for item in admin_nav_docs %}
+                <a class="admin-nav__link admin-nav__link--doc" href="{{ item['href'] }}">
+                    <span>{{ item['label'] }}</span>
+                    <span class="admin-nav__doc-out" aria-hidden="true">↗</span>
+                </a>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+</aside>
+<script src="{{ static_url('js/admin/admin_nav.js') }}" defer></script>
+{% endif %}

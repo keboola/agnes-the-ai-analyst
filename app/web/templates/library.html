@@ -325,19 +325,7 @@
                   {% endif %}
                 {% endset %}
                 {% set _chevron %}<svg class="lib-vis__caret" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m6 9 6 6 6-6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>{% endset %}
-                {% if c.type_key == 'data_app' %}
-                {# Data apps: access is grant-managed (an admin grants
-                   `data_app:{slug}` on /admin/access), not shared from this
-                   row — so the badge is a plain read-out. Without this branch
-                   an OWNER's app fell through to the store-entity explainer
-                   below, whose dialog describes Store approval — a rule that
-                   does not govern apps at all (Devin review on this PR). #}
-                <span class="lib-vis lib-vis--{{ c.visibility }} lib-vis--readonly" data-vis-chip="{{ c.id }}"
-                      data-tip="Access to a data app is granted by an admin — see the app's detail page"
-                      aria-label="Sharing: {{ c.visibility_label }}. Access to a data app is granted by an admin">
-                  {{ _vis_icon }}{{ c.visibility_label }}
-                </span>
-                {% elif c.ownership == 'shared_with_me' %}
+                {% if c.ownership == 'shared_with_me' %}
                 {# `--readonly` is the colour, not just a hook: this badge is the
                    one Sharing state the caller cannot act on, so it must not
                    wear the primary tint the clickable ones use. #}

@@ -2,16 +2,17 @@
 // every page EXCEPT /chat.
 //
 // The rail (html[data-ui-layout="rail"]) renders the chat list
-// (_app_rail.html → .rail-history) on every page, directly under New chat and
-// with no heading of its own. On /chat, chat.js owns that same
+// (_app_rail.html → .rail-history) on every page EXCEPT an /admin one, directly
+// under the New chat + Chats rows. On /chat, chat.js owns that same
 // <ul id="chat-list"> — it renders live, highlights the active row, and handles
 // open/delete in place — so this script MUST stay out of its way there. On every
 // other page chat.js isn't loaded, so we fetch the caller's sessions and render
 // the same rows, wiring each to a /chat?session=<id> navigation.
 //
-// The recent feed is CAPPED (RAIL_RECENT_LIMIT) and closes on a "View all chats"
-// link to /chats. Pins are never capped. See the note further down for why this
-// is not the five-row cap that was deliberately removed.
+// The recent feed is CAPPED (RAIL_RECENT_LIMIT); the Chats row ABOVE the lists
+// is the way to the rest of them (/chats). Pins are never capped. See the note
+// further down for why this is not the five-row cap that was deliberately
+// removed.
 //
 // Pinning is server-side state (`chat_sessions.pinned_at`, PUT
 // /api/chat/sessions/{id}/pin). Pinned rows go into their OWN section — the
@@ -47,7 +48,9 @@
   // the rail's job narrows to "put me back into what I was doing", which is a
   // handful of rows and the pins — and an uncapped scroll box full of a hundred
   // titles actively works against it, because it reads as the only list there
-  // is. So: this many recent rows, then the link.
+  // is. So: this many recent rows, under a Chats row that goes to all of them.
+  // (That row is why the cap needs no "View all chats" link at the foot of the
+  // list any more — see railSectionsSync below.)
   //
   // Pins are NOT capped. The shelf is hand-curated and small by construction,
   // and hiding a pin would break the one promise pinning makes.
@@ -227,13 +230,13 @@
       return el ? el.querySelectorAll("li[data-id]").length : 0;
     };
     const pinnedRows = rowsIn("pinned-chat-list");
-    // "View all chats" appears once there IS a conversation to view: with none,
-    // the empty state above it already says so and an offer to view all of
-    // nothing is noise. Owned here rather than in render() because chat.js
-    // (which renders the rows on /chat) reaches this file only through
-    // railChatSections.sync() — one owner for every piece of the section chrome.
-    const viewAll = document.getElementById("rail-view-all-chats");
-    if (viewAll) viewAll.hidden = pinnedRows + rowsIn("chat-list") === 0;
+    // No "View all chats" reveal here any more. That link was shown only once
+    // the caller had a conversation to view — sound for a footer link, fatal for
+    // a way to a page: it meant /chats had no entry point at all on a first run,
+    // and none on an admin page either (the link lived inside this region, which
+    // the collapsed rail hides). The Chats row above the lists is a plain
+    // destination and needs no state, so the only conditional chrome left here is
+    // which of the two SECTIONS renders.
     for (const s of SECTIONS) {
       const sec = document.getElementById(s.sec);
       const toggle = document.getElementById(s.toggle);

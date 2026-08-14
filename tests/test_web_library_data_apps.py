@@ -115,9 +115,10 @@ def test_admin_sees_only_own_and_granted_apps(seeded_app, monkeypatch):
 
 def test_app_row_sharing_badge_is_not_the_store_explainer(seeded_app, monkeypatch):
     """An owner's app row must not wear the store-entity sharing explainer
-    (its dialog describes Store approval, which does not govern apps). The
-    badge is a plain read-out pointing at admin grants (Devin review on
-    PR #1278)."""
+    (its dialog describes Store approval, which does not govern apps). Since
+    the Devin follow-ups on PR #1272, the badge is the owner-share control
+    wired to the slug-keyed grant — the same dialog every other owner-held
+    kind uses (`data-share`/`data-share-type`, backed by `_OWNER_RESOLVERS`)."""
     monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
     monkeypatch.setenv("AGNES_DATA_APPS_ENABLED", "1")
     _seed_app(slug="badge-probe", name="Badge probe app")
@@ -126,7 +127,8 @@ def test_app_row_sharing_badge_is_not_the_store_explainer(seeded_app, monkeypatc
     row_at = body.index("Badge probe app")
     row = body[row_at - 2000 : row_at + 3000]
     assert 'data-share-info="badge-probe"' not in row
-    assert "granted by an admin" in row
+    assert 'data-share-type="data_app"' in row
+    assert 'data-share="badge-probe"' in row
 
 
 def test_memory_rows_survive_a_count_failure(seeded_app, monkeypatch):

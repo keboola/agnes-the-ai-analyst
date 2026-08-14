@@ -19,12 +19,52 @@ automatically via the startup-script. To migrate an existing VM:
 ```bash
 # As root on the customer VM:
 useradd --system --no-create-home --shell /usr/sbin/nologin \
-        --user-group agnes-applier
+        --uid 999 --user-group agnes-applier
 usermod -aG docker agnes-applier
 chown -R agnes-applier:agnes-applier /data/state
 systemctl daemon-reload
 systemctl restart agnes-state-applier.timer
 ```
+
+`--uid 999` pins agnes-applier to the same uid as the app container
+(Dockerfile `USER agnes`). `/data/state/instance.yaml` is written `0600`,
+and agnes-applier is what ends up owning it — so the app can only read its
+own config while the two uids agree (#1217). Confirm the pin took:
+
+```bash
+id -u agnes-applier   # must print 999
+```
+
+If `useradd` above fails with "UID '999' is not unique", uid 999 already
+belongs to a different account on this VM (`getent passwd 999` shows which
+one). Either free it and re-run the command above, or accept the degraded
+mode policy for such hosts: provisioning skips its `chmod 600`, and the
+applier's own `write_instance_yaml` rewrites the overlay at `0640` with the
+app's gid (999) as the group wherever it can actually grant that — running
+as root, or agnes-applier holding gid-999 membership — falling back to
+`0644` otherwise, with a warning logged at every rewrite either way. The
+applier and the app keep working; what the mismatch costs is the owner-only
+tightening, until the uids agree. Preserving the file's existing mode is
+deliberately NOT what happens: the app's own writers (`write_backend_state`
+and the admin config editors) run as uid 999 inside the container — where
+owner-only is exactly right — and chmod the file `0600` unconditionally, so
+carrying that mode across the applier's rewrite (whose rename re-owns the
+file to agnes-applier) would strand it owner-only under a uid the app is
+not, and the fail-closed boot read would take the instance down. An
+ordinary backend flip, cancel or stuck-job recovery therefore can never
+leave the overlay unreadable to the app container.
+
+**Treat this as a state to leave, not to live in.** `instance.yaml` holds
+the database url with its password inline plus any connector credentials an
+operator set, on a data volume several non-root containers mount — the
+degradation costs you exactly that hardening. The applier logs a warning
+naming the uid it found at every rewrite (`journalctl -t
+agnes-state-applier`), and the bootstrap unit logs one at every boot
+(`journalctl -t agnes-state-applier-bootstrap`).
+
+Do **not** `usermod -u 999` an *existing* agnes-applier account without also
+re-chowning the files it already owns (`/data/state`, `/opt/agnes/.env`) —
+a bare uid change leaves them pointing at the old number.
 
 Then confirm the next tick succeeds:
 
@@ -188,9 +228,9 @@ deliberate (it stops the copy's bare `ON CONFLICT DO NOTHING` from keeping
 stale rows out of a prior attempt), **not** data loss. The docker-compose
 `data-migrate` one-shot is a separate path and is never reset this way.
 
-### Manual smoke (agnes-dev)
+### Manual smoke (dev instance)
 
-After deploying this release to agnes-dev, run the following on the VM
+After deploying this release to a dev instance, run the following on the VM
 to confirm the flow end-to-end:
 
 1. Baseline:
