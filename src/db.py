@@ -5,6 +5,7 @@ and get_analytics_db() for the analytics database with parquet views.
 """
 
 import logging
+import math
 import os
 import re
 import shutil
@@ -2673,6 +2674,18 @@ def close_singleton_connections() -> None:
     the host applier and these globals never need to re-open.
     """
     global _system_db_conn, _analytics_db_conn, _operational_db_conn
+
+    # Same handshake as close_system_db() (#1294): this path also closes
+    # _system_db_conn, so an in-flight rolling-snapshot EXPORT on a child
+    # cursor must be interrupted and drained first, not closed out from under.
+    if not interrupt_rolling_snapshot_export(
+        _ROLLING_SNAPSHOT_INTERRUPT_TIMEOUT_S, caller="close_singleton_connections"
+    ):
+        logger.warning(
+            "close_singleton_connections: rolling-snapshot export still running after "
+            "being interrupted; closing system.duckdb anyway"
+        )
+
     with _system_db_lock:
         if _system_db_conn is not None:
             try:
@@ -8686,28 +8699,12 @@ def close_system_db() -> None:
     """
     global _system_db_conn, _system_db_path
 
-    with _rolling_snapshot_export_lock:
-        export_cur = _rolling_snapshot_export_cursor
-    if export_cur is not None:
-        deadline = time.monotonic() + _ROLLING_SNAPSHOT_INTERRUPT_TIMEOUT_S
-        while not _rolling_snapshot_export_idle.is_set():
-            try:
-                export_cur.interrupt()
-            except Exception as exc:
-                logger.debug("close_system_db: interrupting in-flight rolling-snapshot export failed (%s)", exc)
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            # Short poll, not a single wait for the full remaining budget:
-            # interrupt() must be re-issued once the export moves from
-            # CHECKPOINT into EXPORT DATABASE (see docstring above).
-            _rolling_snapshot_export_idle.wait(timeout=min(remaining, 0.05))
-        if not _rolling_snapshot_export_idle.is_set():
-            logger.warning(
-                "close_system_db: rolling-snapshot export still running %.1fs after being "
-                "interrupted; closing system.duckdb anyway",
-                _ROLLING_SNAPSHOT_INTERRUPT_TIMEOUT_S,
-            )
+    if not interrupt_rolling_snapshot_export(_ROLLING_SNAPSHOT_INTERRUPT_TIMEOUT_S, caller="close_system_db"):
+        logger.warning(
+            "close_system_db: rolling-snapshot export still running %.1fs after being "
+            "interrupted; closing system.duckdb anyway",
+            _ROLLING_SNAPSHOT_INTERRUPT_TIMEOUT_S,
+        )
 
     if _system_db_conn:
         try:
@@ -8789,6 +8786,50 @@ _rolling_snapshot_export_cursor: duckdb.DuckDBPyConnection | None = None
 _rolling_snapshot_export_idle = threading.Event()
 _rolling_snapshot_export_idle.set()  # no export in flight by default
 
+# Serializes whole refresh_rolling_snapshot() runs. The machinery above is
+# single-slot (one published cursor, one fixed `.tmp` scratch path), so two
+# overlapping refreshes would clear each other's cursor/idle state — the very
+# state close_system_db() keys its close decision on — and rmtree each other's
+# in-progress export (Devin on #1294). Today the only production caller is the
+# checkpoint-loop tick, so overlap needs a second caller (a future CLI/force
+# surface); guard it structurally rather than by convention.
+_rolling_snapshot_refresh_lock = threading.Lock()
+
+
+def interrupt_rolling_snapshot_export(wait_s: float = 0.0, *, caller: str = "") -> bool:
+    """Interrupt an in-flight rolling-snapshot ``EXPORT DATABASE`` (#1294).
+
+    ``interrupt()`` only cancels the statement *currently* executing on the
+    cursor — landing in the gap between the refresh's ``CHECKPOINT`` and
+    ``EXPORT DATABASE`` is a no-op — so it is re-issued on a short poll until
+    the export thread reports itself idle or ``wait_s`` elapses. Callers that
+    must not block (``begin_shutdown``) pass ``wait_s=0``: one interrupt shot,
+    no wait; the refresh's own pre-EXPORT ``is_shutdown_started()`` gate
+    covers the between-statements window for that caller.
+
+    Returns True when no export is in flight (anymore), False when the bound
+    elapsed with the export still running.
+    """
+    with _rolling_snapshot_export_lock:
+        cur = _rolling_snapshot_export_cursor
+    if cur is None:
+        return True
+    deadline = time.monotonic() + wait_s
+    while not _rolling_snapshot_export_idle.is_set():
+        try:
+            cur.interrupt()
+        except Exception as exc:
+            logger.debug(
+                "%s: interrupting in-flight rolling-snapshot export failed (%s)",
+                caller or "interrupt_rolling_snapshot_export",
+                exc,
+            )
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        _rolling_snapshot_export_idle.wait(timeout=min(remaining, 0.05))
+    return _rolling_snapshot_export_idle.is_set()
+
 
 def _rolling_snapshot_interval_hours() -> float:
     """Read the configured rolling-snapshot cadence, in hours.
@@ -8800,7 +8841,11 @@ def _rolling_snapshot_interval_hours() -> float:
     ``EXPORT DATABASE`` overhead while still tightening the recovery point
     from "unbounded since the last migration" to "a few hours old" (#380).
     Any unreadable/unparsable config value falls back to the default rather
-    than silently disabling the safeguard.
+    than silently disabling the safeguard — including a parsable-but-non-
+    finite one: YAML `.nan` defeats both the disabled-check and the freshness
+    gate (a full export every tick), `.inf` silently disables the refresh
+    forever. Same reasoning as ``_state_checkpoint_interval_s`` in
+    ``app/main.py``, the sibling knob (Devin on #1294).
     """
     try:
         from app.instance_config import get_value
@@ -8810,7 +8855,17 @@ def _rolling_snapshot_interval_hours() -> float:
             "rolling_snapshot_interval_hours",
             default=_ROLLING_SNAPSHOT_DEFAULT_INTERVAL_HOURS,
         )
-        return float(v) if v is not None else _ROLLING_SNAPSHOT_DEFAULT_INTERVAL_HOURS
+        if v is None:
+            return _ROLLING_SNAPSHOT_DEFAULT_INTERVAL_HOURS
+        parsed = float(v)
+        if not math.isfinite(parsed):
+            logger.warning(
+                "backups.rolling_snapshot_interval_hours=%r is not finite; using default %sh",
+                v,
+                _ROLLING_SNAPSHOT_DEFAULT_INTERVAL_HOURS,
+            )
+            return _ROLLING_SNAPSHOT_DEFAULT_INTERVAL_HOURS
+        return parsed
     except Exception:
         return _ROLLING_SNAPSHOT_DEFAULT_INTERVAL_HOURS
 
@@ -8916,6 +8971,19 @@ def refresh_rolling_snapshot(*, force: bool = False) -> bool:
         disabled) or if the export/swap failed (previous snapshot preserved
         either way).
     """
+    if not _rolling_snapshot_refresh_lock.acquire(blocking=False):
+        # See the lock's definition: the export machinery is single-slot, so
+        # a second concurrent refresh must skip, never share state.
+        logger.debug("refresh_rolling_snapshot: a refresh is already running; skipping")
+        return False
+    try:
+        return _refresh_rolling_snapshot_locked(force=force)
+    finally:
+        _rolling_snapshot_refresh_lock.release()
+
+
+def _refresh_rolling_snapshot_locked(*, force: bool) -> bool:
+    """Body of :func:`refresh_rolling_snapshot`; caller holds the refresh lock."""
     global _rolling_snapshot_export_cursor
 
     from app.api.health_probes import is_shutdown_started

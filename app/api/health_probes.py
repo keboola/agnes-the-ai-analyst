@@ -134,9 +134,27 @@ def begin_shutdown() -> None:
     once would leave every application started after the first in the same
     process (every ``TestClient`` in a test run, any process that restarts
     the app) with a spent deadline and therefore no drain at all.
+
+    Also fires a non-blocking interrupt at any in-flight rolling-snapshot
+    ``EXPORT DATABASE`` (#1294): the checkpoint/rolling-snapshot loop is the
+    first task the lifespan cancels, and its drain would otherwise block on a
+    multi-second export — consuming the shared budget this function just
+    armed and leaving the canary/worker drains with none. The deadline is
+    armed FIRST so the refresh's own pre-EXPORT ``is_shutdown_started()``
+    gate closes the interrupt's one blind spot (landing between the export's
+    ``CHECKPOINT`` and ``EXPORT DATABASE`` statements). Local import, like
+    ``src.db``'s own function-local import of this module — the two modules
+    reference each other only at call time.
     """
     global _drain_deadline
     _drain_deadline = time.monotonic() + _drain_timeout_s()
+
+    try:
+        from src.db import interrupt_rolling_snapshot_export
+
+        interrupt_rolling_snapshot_export(caller="begin_shutdown")
+    except Exception as exc:  # pragma: no cover - defensive; never blocks shutdown
+        logger.debug("begin_shutdown: rolling-snapshot interrupt failed (%s)", exc)
 
 
 def end_shutdown() -> None:

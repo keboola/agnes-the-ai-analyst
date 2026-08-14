@@ -338,6 +338,13 @@ def test_disabled_by_zero_interval(system_db, monkeypatch):
         (2, 2.0),
         (0, 0.0),  # disabled
         ("not-a-number", 6.0),  # unparsable -> default
+        # Devin on #1294 — YAML `.nan` parses to float('nan'), which defeats
+        # BOTH gates (nan <= 0 and age < nan*3600 are each False): a full
+        # export every tick. `.inf` passes the disabled-check but makes the
+        # freshness gate always-True: the safeguard silently never runs again.
+        (float("nan"), 6.0),
+        (float("inf"), 6.0),
+        (float("-inf"), 6.0),
     ],
 )
 def test_interval_hours_reads_config(monkeypatch, configured, expected):
@@ -599,3 +606,151 @@ def test_export_import_round_trips_real_fts_index_schemas(system_db):
         ]
     finally:
         fresh.close()
+
+
+def test_second_concurrent_refresh_is_skipped(system_db):
+    """Devin on #1294 — the export machinery is single-slot (one published
+    cursor, one fixed `.tmp` scratch path), so a second overlapping refresh
+    must skip instead of clearing the first one's cursor/idle state and
+    rmtree'ing its in-progress export.
+    """
+    import src.db as db_mod
+
+    acquired = db_mod._rolling_snapshot_refresh_lock.acquire(blocking=False)
+    assert acquired, "test setup: refresh lock unexpectedly held"
+    try:
+        assert db_mod.refresh_rolling_snapshot(force=True) is False
+    finally:
+        db_mod._rolling_snapshot_refresh_lock.release()
+
+    # And with the lock free again, the same call refreshes normally.
+    conn, tmp_path = system_db
+    _seed(conn, "reentrancy", "after-lock-release")
+    assert db_mod.refresh_rolling_snapshot(force=True) is True
+    _assert_loadable(_snapshot_dir(tmp_path), "reentrancy", "after-lock-release")
+
+
+class _BlockedExportHarness:
+    """A fake singleton whose EXPORT blocks until interrupt() is called.
+
+    Shared shape of the shutdown/close tests below (and the close_system_db
+    test above): mirrors a real multi-second EXPORT DATABASE in flight at the
+    moment some lifecycle event must interrupt it rather than block on or
+    abandon it.
+    """
+
+    def __init__(self, real_conn):
+        self.export_started = threading.Event()
+        self.interrupted = threading.Event()
+        self._real = real_conn
+
+        harness = self
+
+        class _Cursor:
+            def __init__(self, inner):
+                self._c = inner
+
+            def execute(self, sql, *a, **kw):
+                if str(sql).lstrip().upper().startswith("EXPORT"):
+                    harness.export_started.set()
+                    harness.interrupted.wait(timeout=5.0)
+                    raise RuntimeError("interrupted")
+                return self._c.execute(sql, *a, **kw)
+
+            def interrupt(self):
+                harness.interrupted.set()
+
+            def close(self):
+                pass
+
+            def __getattr__(self, name):
+                return getattr(self._c, name)
+
+        class _Conn:
+            def cursor(self):
+                return _Cursor(harness._real.cursor())
+
+            def execute(self, sql, *a, **kw):
+                pass
+
+            def close(self):
+                pass
+
+        self.conn = _Conn()
+
+
+def test_begin_shutdown_interrupts_in_flight_export(system_db, monkeypatch):
+    """Devin on #1294 — the checkpoint loop is the FIRST task the lifespan
+    cancels, and its drain shares one budget with every later drain. An
+    export still executing at that moment must be interrupted by
+    begin_shutdown() itself — not left running until close_system_db() much
+    later — or it eats the whole shared budget and the canary/worker drains
+    get none.
+    """
+    import src.db as db_mod
+    from app.api.health_probes import begin_shutdown, end_shutdown
+
+    conn, tmp_path = system_db
+    _seed(conn, "pre-shutdown", "survives")
+    assert db_mod.refresh_rolling_snapshot(force=True) is True
+
+    harness = _BlockedExportHarness(db_mod._system_db_conn)
+    monkeypatch.setattr(db_mod, "_system_db_conn", harness.conn)
+
+    result: dict = {}
+
+    def _run():
+        result["refresh"] = db_mod.refresh_rolling_snapshot(force=True)
+
+    t = threading.Thread(target=_run)
+    t.start()
+    try:
+        assert harness.export_started.wait(timeout=5.0), "EXPORT DATABASE never started"
+        start = time.monotonic()
+        begin_shutdown()
+        elapsed = time.monotonic() - start
+        try:
+            assert harness.interrupted.is_set(), "begin_shutdown() must interrupt the in-flight rolling-snapshot export"
+            assert elapsed < 1.0, f"begin_shutdown() took {elapsed:.1f}s — it must not block"
+        finally:
+            end_shutdown()
+    finally:
+        t.join(timeout=5.0)
+
+    assert not t.is_alive(), "refresh thread must unwind after the interrupt"
+    assert result.get("refresh") is False
+    assert _snapshot_dir(tmp_path).is_dir(), "previous snapshot must survive"
+
+
+def test_close_singleton_connections_drains_in_flight_export(system_db, monkeypatch):
+    """Devin on #1294 — the migrator-subprocess handoff closes
+    _system_db_conn too, so it needs the same interrupt-and-wait handshake
+    close_system_db() has; closing the parent connection out from under the
+    export's child cursor is the wedge either way.
+    """
+    import src.db as db_mod
+
+    conn, tmp_path = system_db
+    _seed(conn, "pre-handoff", "survives")
+    assert db_mod.refresh_rolling_snapshot(force=True) is True
+
+    harness = _BlockedExportHarness(db_mod._system_db_conn)
+    monkeypatch.setattr(db_mod, "_system_db_conn", harness.conn)
+
+    result: dict = {}
+
+    def _run():
+        result["refresh"] = db_mod.refresh_rolling_snapshot(force=True)
+
+    t = threading.Thread(target=_run)
+    t.start()
+    try:
+        assert harness.export_started.wait(timeout=5.0), "EXPORT DATABASE never started"
+        db_mod.close_singleton_connections()
+    finally:
+        t.join(timeout=5.0)
+
+    assert harness.interrupted.is_set(), "close_singleton_connections() must interrupt the in-flight export"
+    assert not t.is_alive(), "refresh thread must unwind, not be abandoned"
+    assert result.get("refresh") is False
+    assert _snapshot_dir(tmp_path).is_dir(), "previous snapshot must survive"

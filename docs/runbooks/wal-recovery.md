@@ -193,6 +193,11 @@ for p in sorted(pathlib.Path(salvage).glob('*.parquet')):
     t = p.stem
     conn.execute(f\"CREATE TABLE {t} AS SELECT * FROM read_parquet('{p}')\")
     print('imported', t)
+# Flush the WAL into the .recovered file and close cleanly — the cp below
+# copies the single file only, so rows still sitting in a companion
+# .recovered.wal would be silently left behind.
+conn.execute('CHECKPOINT')
+conn.close()
 "
 
 # Move recovered DB into place (app still stopped)
@@ -227,6 +232,11 @@ fresh = duckdb.connect('/state/system.duckdb.recovered')
 fresh.execute(\"IMPORT DATABASE '/state/system.duckdb.rolling-snapshot'\")
 print('schema_version:', fresh.execute('SELECT MAX(version) FROM schema_version').fetchone()[0])
 print('users:', fresh.execute('SELECT count(*) FROM users').fetchone()[0])
+# Flush the WAL into the .recovered file and close cleanly — the cp below
+# copies the single file only, so imported rows still sitting in a companion
+# .recovered.wal would be silently left behind.
+fresh.execute('CHECKPOINT')
+fresh.close()
 "
 
 # Move recovered DB into place (app still stopped)
