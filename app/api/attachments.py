@@ -102,7 +102,14 @@ def _lookup_stored_path(
     sql = (
         f"SELECT {cols} FROM {quote_ident(view_name)} WHERE CAST({quote_ident(decl.id_column)} AS VARCHAR) = ? LIMIT 1"
     )
-    analytics = get_analytics_db_readonly()
+    try:
+        analytics = get_analytics_db_readonly()
+    except Exception as exc:
+        # The OPEN itself can fail (read-only open refused while a
+        # read-write handle is alive, corrupt/locked file, DuckLake catalog
+        # connectivity) — same malfunction class as a failed query: it must
+        # reach the audited 503, not escape as a bare 500 with no audit row.
+        raise _CatalogueUnavailable("catalog_open_failed") from exc
     try:
         try:
             row = analytics.execute(sql, [attachment_id]).fetchone()

@@ -526,3 +526,18 @@ def test_broken_catalogue_is_503_not_a_miss(jira_attachment_env, admin_user, mon
     resp = c.get("/api/attachments/jira/101/download", headers=admin_user)
     assert resp.status_code == 404
     assert resp.json()["detail"]["code"] == "attachment_not_found"
+
+    # The OPEN itself failing (read-only open refused while a RW handle is
+    # alive, corrupt/locked file, DuckLake catalog connectivity) is the same
+    # malfunction class — it must reach the audited 503, not escape as a
+    # bare 500 with no audit row (Devin on #1297).
+    def _open_boom():
+        raise RuntimeError("read-only open refused: RW handle alive")
+
+    monkeypatch.setattr(attachments_mod, "get_analytics_db_readonly", _open_boom)
+    resp = c.get("/api/attachments/jira/101/download", headers=admin_user)
+    assert resp.status_code == 503, resp.text
+    assert resp.json()["detail"]["code"] == "catalogue_unavailable"
+    row = _last_audit_row()
+    assert row[3] == "error.503"
+    assert "catalog_open_failed" in (row[4] or "")
