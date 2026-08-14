@@ -398,3 +398,83 @@ class TestValidateQuery:
         assert "matched_expected_objects" not in result
         assert "missing_expected_objects" not in result
         assert "unexpected_detected_objects" not in result
+
+
+class TestOffShapeDocuments:
+    """Devin Review on PR #1319: imported documents are untrusted — an
+    off-shape metric ``expression`` (a plain string instead of the dialect
+    object) must degrade to "no declared dialects", never raise."""
+
+    def _document_with_string_expression(self) -> dict:
+        return {
+            "name": "off_shape",
+            "metrics": [{"name": "revenue", "expression": 'SUM("amount")'}],
+            "datasets": [{"name": "orders", "table_id": "analytics.orders"}],
+        }
+
+    def test_check_dialects_tolerates_string_expression(self):
+        result = check_dialects(self._document_with_string_expression(), ["revenue"], target_engine="duckdb")
+        assert result["sql_dialects"] == []
+        assert result["locally_executable"] is True
+
+    def test_validate_query_tolerates_string_expression(self):
+        result = validate_query(
+            "SELECT SUM(amount) AS revenue FROM orders",
+            [self._document_with_string_expression()],
+        )
+        assert result["valid"] is True
+
+
+class TestCrossModelConstraintScoping:
+    """Devin Review on PR #1319: constraints must be evaluated against the
+    metrics detected in THEIR OWN model, not a name-keyed pool across all
+    models — a constraint in model A must not fire on a same-named metric
+    that only model B defines."""
+
+    def _model_b_with_revenue(self) -> dict:
+        return {
+            "name": "model_b",
+            "datasets": [{"name": "orders_b", "table_id": "analytics.orders_b"}],
+            "metrics": [{"name": "revenue", "expression": {"dialects": [{"dialect": "DUCKDB"}]}}],
+        }
+
+    def _model_a_constraint_only(self) -> dict:
+        # Model A carries a constraint naming "revenue" but defines no such
+        # metric itself (plausible in imported data after a partial edit).
+        return {
+            "name": "model_a",
+            "datasets": [{"name": "unrelated", "table_id": "analytics.unrelated"}],
+            "metrics": [],
+            "custom_extensions": [
+                {
+                    "vendor_name": AGNES_VENDOR_NAME,
+                    "data": json.dumps(
+                        {
+                            "constraints": [
+                                {
+                                    "name": "must_filter_region",
+                                    "type": "required_filter",
+                                    "rule": "region = 'EU'",
+                                    "severity": "error",
+                                    "metrics": ["revenue"],
+                                }
+                            ]
+                        }
+                    ),
+                }
+            ],
+        }
+
+    def test_constraint_from_other_model_does_not_fire(self):
+        sql = "SELECT SUM(amount) AS revenue FROM orders_b"
+        result = validate_query(sql, [self._model_a_constraint_only(), self._model_b_with_revenue()])
+        assert result["violations"] == []
+        assert result["valid"] is True
+
+    def test_constraint_still_fires_inside_its_own_model(self):
+        model_b = self._model_b_with_revenue()
+        model_b["custom_extensions"] = self._model_a_constraint_only()["custom_extensions"]
+        sql = "SELECT SUM(amount) AS revenue FROM orders_b"
+        result = validate_query(sql, [model_b])
+        assert [v["name"] for v in result["violations"]] == ["must_filter_region"]
+        assert result["valid"] is False

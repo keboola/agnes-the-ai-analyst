@@ -282,7 +282,14 @@ def evaluate_constraints(
 
 
 def _declared_dialects(metric: dict[str, Any]) -> list[str]:
-    dialects = ((metric.get("expression") or {}).get("dialects")) or []
+    # `expression` is imported, untrusted data: a plain-string expression (or
+    # any non-dict shape) means "no declared dialects", never an error.
+    expression = metric.get("expression")
+    if not isinstance(expression, dict):
+        return []
+    dialects = expression.get("dialects") or []
+    if not isinstance(dialects, list):
+        return []
     return [str(d["dialect"]) for d in dialects if isinstance(d, dict) and d.get("dialect")]
 
 
@@ -420,8 +427,17 @@ def validate_query(
     used_datasets: list[str] = []
     used_metrics: list[str] = []
     matched_relationships: list[str] = []
-    all_constraints: list[dict[str, Any]] = []
+    declared_dialects: list[str] = []
+    locally_executable = True
+    violations: list[dict[str, Any]] = []
+    post_execution_checks: list[dict[str, Any]] = []
 
+    # Constraints and dialects are scoped to the document that declares them:
+    # each document is evaluated against ITS OWN detected metrics, never a
+    # name-keyed pool across models — a constraint (or a dialect declaration)
+    # in model A must not fire on a same-named metric that only model B
+    # defines (Devin Review on PR #1319). The result lists are still unions
+    # across documents, de-duplicated in first-seen order.
     for document in documents:
         detected = detect_used_objects(sql, document)
         for name in detected["used_datasets"]:
@@ -433,19 +449,19 @@ def validate_query(
         for name in detected["matched_relationships"]:
             if name not in matched_relationships:
                 matched_relationships.append(name)
-        all_constraints.extend(extract_constraints(document))
 
-    declared_dialects: list[str] = []
-    locally_executable = True
-    for document in documents:
-        dialect_info = check_dialects(document, used_metrics, target_engine)
+        dialect_info = check_dialects(document, detected["used_metrics"], target_engine)
         for dialect in dialect_info["sql_dialects"]:
             if dialect not in declared_dialects:
                 declared_dialects.append(dialect)
         if not dialect_info["locally_executable"]:
             locally_executable = False
 
-    violations, post_execution_checks = evaluate_constraints(all_constraints, used_metrics, sql)
+        document_violations, document_checks = evaluate_constraints(
+            extract_constraints(document), detected["used_metrics"], sql
+        )
+        violations.extend(document_violations)
+        post_execution_checks.extend(document_checks)
     valid = not any(v.get("severity") == "error" for v in violations)
     mixed_dialect_warning = _mixed_dialect_warning(declared_dialects)
 
