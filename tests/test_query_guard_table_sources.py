@@ -144,10 +144,33 @@ def test_oracle_latches_off_when_duckdb_answers_wrongly(monkeypatch):
     assert query_module._sql_referenced_names("select * from t") is None
 
 
+def test_oracle_retries_when_the_probe_returns_no_answer(monkeypatch):
+    """The production transient. `_sql_referenced_names_unguarded` catches
+    everything and returns None, so a broken parse connection surfaces as
+    "no answer", never as an exception — and `None != {expected}` would latch
+    the oracle off for the process unless that case is handled on its own.
+
+    Simulated at the connection, not by monkeypatching the helper, so the
+    failure travels the same path a real one would.
+    """
+
+    def broken_connection():
+        raise RuntimeError("transient: parse connection unavailable")
+
+    monkeypatch.setattr(query_module, "_ORACLE_HEALTHY", None)
+    monkeypatch.setattr(query_module, "_parse_connection", broken_connection)
+    assert query_module._sql_referenced_names("select * from t") is None
+    assert query_module._ORACLE_HEALTHY is None, "a transient must not latch the oracle off"
+
+    monkeypatch.undo()
+    monkeypatch.setattr(query_module, "_ORACLE_HEALTHY", None)
+    assert query_module._sql_referenced_names("select * from t") == {"t"}, "must recover once the engine does"
+
+
 def test_oracle_retries_after_a_raised_probe(monkeypatch):
-    """A raised exception may be transient (an interrupted call, memory
-    pressure). Latching on one would degrade the process until restart, so it
-    falls back for that request and re-probes on the next."""
+    """Same contract for a helper that does raise. Unreachable in production
+    (the helper swallows its own exceptions) but the branch exists, so it is
+    pinned rather than left to rot."""
 
     def boom(sql):
         raise RuntimeError("transient")
@@ -156,9 +179,6 @@ def test_oracle_retries_after_a_raised_probe(monkeypatch):
     monkeypatch.setattr(query_module, "_sql_referenced_names_unguarded", boom)
     assert query_module._sql_referenced_names("select * from t") is None
     assert query_module._ORACLE_HEALTHY is None, "a transient failure must not latch"
-    monkeypatch.undo()
-    monkeypatch.setattr(query_module, "_ORACLE_HEALTHY", None)
-    assert query_module._sql_referenced_names("select * from t") == {"t"}
 
 
 def test_oracle_declines_oversized_sql(monkeypatch):

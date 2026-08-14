@@ -8,7 +8,6 @@ import os
 import re
 import threading
 import time
-from typing import Optional
 
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -169,7 +168,7 @@ def _looks_like_bq_rewrite_parse_error(exc: BaseException) -> bool:
 _SQL_LOG_PREVIEW_CHARS = 200
 
 
-def _bq_error_offset(message: str, sql: str) -> Optional[int]:
+def _bq_error_offset(message: str, sql: str) -> int | None:
     """Absolute offset into ``sql`` for a BigQuery ``at [line:col]`` suffix.
 
     BigQuery reports where it stopped parsing, and for the ROLLUP rejection this
@@ -205,7 +204,7 @@ def _bq_error_offset(message: str, sql: str) -> Optional[int]:
     return offset if offset <= len(raw) else None
 
 
-def _sql_log_preview(sql: str, *, around: Optional[int] = None) -> str:
+def _sql_log_preview(sql: str, *, around: int | None = None) -> str:
     """Truncate SQL for logging. Query literals can carry sensitive values,
     so the log must never become the one place a full query body lands
     unbounded.
@@ -471,11 +470,21 @@ def _oracle_answers_as_expected() -> bool:
     So the parse path asks this first, and a wrong answer turns the oracle off
     for good: callers get ``None`` and fall back to the conservative text scan.
 
-    A *wrong answer* latches; a *raised exception* does not. The first is
+    A *wrong answer* latches; *no answer* does not. A wrong answer is
     deterministic — this engine will keep answering wrongly, so re-probing
-    every request would cost a parse to learn nothing. The second may be a
-    transient (an interrupted call, memory pressure), and latching on one
-    would degrade the process until restart with no way back.
+    every request would buy nothing. No answer may be a transient (an
+    interrupted call, memory pressure, a parse connection that failed to
+    open), and latching on one would degrade the process until restart with
+    no way back.
+
+    "No answer" is ``None``, not an exception: the helper below catches
+    everything and returns ``None``, so in production no exception reaches
+    here at all. Checking only for a raised exception — as an earlier revision
+    did — therefore latched on every real transient. The ``except`` remains
+    for a caller-supplied helper that does raise, but ``None`` is the branch
+    that fires. Neither retry is rate-limited: a permanently broken engine
+    costs one failed parse (~90 us) per request, which is a better trade than
+    one blip disabling the precise matcher for the process lifetime.
     """
     global _ORACLE_HEALTHY
     # Its own lock, NOT _PARSE_CONN_LOCK: the probe opens the parse connection,
@@ -489,6 +498,12 @@ def _oracle_answers_as_expected() -> bool:
                     "DuckDB parse oracle self-check raised; retrying on the next query. "
                     "SQL name guards fall back to text scanning until it succeeds.",
                     exc_info=True,
+                )
+                return False
+            if probe is None:
+                logger.warning(
+                    "DuckDB parse oracle self-check returned no answer; retrying on the next "
+                    "query. SQL name guards fall back to text scanning until it succeeds."
                 )
                 return False
             _ORACLE_HEALTHY = probe == {"__agnes_oracle_probe__"}
@@ -738,7 +753,7 @@ class QueryResponse(BaseModel):
     truncated: bool = False
     # BigQuery dry-run scan estimate (bytes) for `query_mode='remote'`
     # queries; ``None`` for local DuckDB queries (no BQ tables involved).
-    bytes_scanned: Optional[int] = None
+    bytes_scanned: int | None = None
 
 
 def _run_internal_query(
@@ -927,7 +942,7 @@ def _next_nonspace(s: str, idx: int) -> str:
     return s[idx] if idx < n else ""
 
 
-def _normalize_table_path(raw: str) -> Optional[str]:
+def _normalize_table_path(raw: str) -> str | None:
     """Reduce a matched identifier path to the table id used for tagging.
 
     Quotes are stripped per segment and the segments are re-joined with dots,
@@ -958,7 +973,7 @@ def _normalize_table_path(raw: str) -> Optional[str]:
     return ".".join(parts)
 
 
-def _first_table_from_sql(sql: str) -> Optional[str]:
+def _first_table_from_sql(sql: str) -> str | None:
     """Extract the first table reference after FROM or JOIN, for audit tagging.
 
     Regex-based and still best-effort, but the result is the group-by key of
@@ -1576,7 +1591,7 @@ def _materialized_hint_for_query_error(
     conn: duckdb.DuckDBPyConnection,
     sql: str,
     error_msg: str,
-) -> Optional[str]:
+) -> str | None:
     """Return a materialize-aware error message if the failed query
     references a registry row whose `query_mode='materialized'` and which
     has no master view in analytics.duckdb yet, OR ``None`` to fall back
@@ -1652,7 +1667,7 @@ def _build_materialized_hint(row: dict) -> str:
     )
 
 
-def _bq_row_target(row: dict) -> tuple[str, str, Optional[str]]:
+def _bq_row_target(row: dict) -> tuple[str, str, str | None]:
     """Resolve a BQ registry row to ``(dataset, table, project_override)``.
 
     ``bq_fqn`` (v51, issue #343) pins a row's own ``project.dataset.table``
@@ -1692,7 +1707,7 @@ def _bq_guardrail_inputs(
     sql_lower: str,
     sys_conn: duckdb.DuckDBPyConnection,
     user: dict,
-    allowed: Optional[list],
+    allowed: list | None,
 ):
     """Two-pass scan over user SQL for the upcoming BQ guardrail + RBAC patch.
 
