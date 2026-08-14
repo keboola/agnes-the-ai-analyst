@@ -93,16 +93,24 @@ _UNIVERSAL_DIALECT = "ansi_sql"
 
 def _normalize_for_presence(text: str) -> str:
     """Normalize SQL-ish text for the required_filter presence check:
-    lowercase, unify double quotes to single, drop ALL whitespace.
+    lowercase, strip double quotes (SQL identifier quoting), drop ALL
+    whitespace.
 
     The check asks "does the rule's text appear in the query?", and spacing
-    (`region='EU'` vs `region = 'EU'`) or quote style must not turn a query
-    that genuinely applies the filter into an error-severity violation
-    (Devin Review on PR #1319, round 5). Dropping whitespace entirely is safe
-    here because both sides get the same treatment and the rule's characters
-    must still appear in order.
+    (`region='EU'` vs `region = 'EU'`) or identifier quoting (`"region"` vs
+    `region` -- the same name in SQL) must not turn a query that genuinely
+    applies the filter into an error-severity violation (Devin Review on PR
+    #1319, rounds 5-6). Double quotes are stripped rather than aliased to
+    single quotes: aliasing turned `WHERE "region" = 'EU'` into
+    `'region'='eu'`, which the rule `region='eu'` then failed to match. A
+    double-quoted *string literal* (nonstandard SQL) loses its quotes too --
+    acceptable under this check's best-effort contract. Single quotes are
+    kept: they delimit literals, and the trailing quote is exactly what stops
+    `region='eu'` from matching inside `region='europe'`. Dropping whitespace
+    entirely is safe here because both sides get the same treatment and the
+    rule's characters must still appear in order.
     """
-    return "".join(text.split()).lower().replace('"', "'")
+    return "".join(text.split()).lower().replace('"', "")
 
 
 def _word_present(text: str, ident: str) -> bool:
@@ -196,10 +204,13 @@ def extract_constraints(document: dict[str, Any]) -> list[dict[str, Any]]:
     non-JSON string ``data``, missing/wrong-typed ``constraints``).
 
     Each returned constraint is normalized to
-    ``{"name", "type", "rule", "severity", "metrics"}`` -- ``severity``
-    defaults to ``"warning"`` unless it is exactly ``"error"`` or
-    ``"warning"``, so a malformed/absent severity can never accidentally
-    drive ``valid=False`` downstream.
+    ``{"name", "type", "rule", "severity", "metrics"}`` -- ``severity`` and
+    ``type`` are imported document text and are stored casefolded
+    (``"ERROR"`` must drive ``valid=False`` exactly like ``"error"``, and
+    ``"Required_Filter"`` must reach the static check); ``severity`` defaults
+    to ``"warning"`` unless it reads as ``"error"``/``"warning"``, so a
+    malformed/absent severity can never accidentally drive ``valid=False``
+    downstream.
     """
     if not isinstance(document, dict):
         return []
@@ -243,13 +254,23 @@ def extract_constraints(document: dict[str, Any]) -> list[dict[str, Any]]:
                 metrics = [metrics]
             elif not isinstance(metrics, list):
                 metrics = []
+            # severity/type come from imported text and are compared (and
+            # stored) casefolded, like every other comparison over document
+            # text in this module: an exact-case test would silently downgrade
+            # an "ERROR" constraint to a warning -- it could then never set
+            # valid=False -- and hide a "Required_Filter" from the static
+            # check (Devin Review on PR #1319, round 6).
             severity = item.get("severity")
+            severity = severity.casefold() if isinstance(severity, str) else ""
             if severity not in ("error", "warning"):
                 severity = "warning"
+            constraint_type = item.get("type")
+            if isinstance(constraint_type, str):
+                constraint_type = constraint_type.casefold()
             constraints.append(
                 {
                     "name": str(item["name"]),
-                    "type": item.get("type"),
+                    "type": constraint_type,
                     "rule": item.get("rule"),
                     "severity": severity,
                     "metrics": [str(m) for m in metrics if m],
@@ -302,8 +323,13 @@ def evaluate_constraints(
             "metrics": applicable_metrics,
         }
 
-        rule = constraint.get("type")
-        if rule not in _STATICALLY_CHECKABLE_CONSTRAINT_TYPES or not constraint.get("rule"):
+        # extract_constraints already stores ``type`` casefolded, but this is
+        # public API and callers may hand-build constraints -- casefold again
+        # so "Required_Filter" reaches the static check either way.
+        constraint_type = constraint.get("type")
+        if isinstance(constraint_type, str):
+            constraint_type = constraint_type.casefold()
+        if constraint_type not in _STATICALLY_CHECKABLE_CONSTRAINT_TYPES or not constraint.get("rule"):
             post_execution_checks.append({**entry, "reason": "rule cannot be checked before executing the query"})
             continue
 
@@ -333,11 +359,21 @@ def _canonical_dialect(dialect: str) -> str:
 def _used_metric_dialects(document: dict[str, Any], used_metrics: list[str]) -> list[list[str]]:
     """Per *used* metric in ``document``, the dialect labels it declares
     (raw display form; an entry may be empty for a metric with no
-    expressions)."""
-    used = set(used_metrics or [])
+    expressions).
+
+    The name join is casefolded on both sides, like every other name
+    comparison in this module: ``check_dialects`` is public API and its
+    ``used_metrics`` may be caller-supplied, so an exact-case join would
+    yield "no declared dialects" for a case-variant name -- which reads as
+    ``locally_executable=True``, a fail-open (Devin Review on PR #1319,
+    round 6).
+    """
+    used = {str(m).casefold() for m in (used_metrics or [])}
     per_metric: list[list[str]] = []
     for metric in document.get("metrics") or []:
-        if not isinstance(metric, dict) or metric.get("name") not in used:
+        if not isinstance(metric, dict) or not metric.get("name"):
+            continue
+        if str(metric["name"]).casefold() not in used:
             continue
         per_metric.append(_declared_dialects(metric))
     return per_metric
@@ -458,6 +494,17 @@ def _diff_expected(
     used_metrics: list[str],
     matched_relationships: list[str],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Diff the caller's ``expected`` objects against the detected ones,
+    returning ``(matched, missing, unexpected)`` entries of ``{type, name}``.
+
+    ``unexpected`` is scoped to the object TYPES the caller actually
+    enumerated in ``expected``: a type with no ``expected`` entry means the
+    caller expressed no expectation for it, so its detections are not
+    reported as unexpected -- ``expected=[one dataset]`` must not flag every
+    detected metric and relationship. The vendor contract doesn't pin this
+    either way; scoping to the enumerated types is the least-surprise
+    reading (Devin Review on PR #1319, round 6).
+    """
     detected_lists: dict[str, list[str]] = {
         "dataset": used_datasets,
         "metric": used_metrics,
@@ -485,6 +532,8 @@ def _diff_expected(
 
     unexpected: list[dict[str, Any]] = []
     for etype, names in detected_lists.items():
+        if not expected_names[etype]:
+            continue  # caller expressed no expectation for this type -- see docstring
         for name in names:
             if str(name).casefold() not in expected_names[etype]:
                 unexpected.append({"type": etype, "name": name})

@@ -719,10 +719,13 @@ class TestExpectedObjectsCaseInsensitive:
 
 
 class TestRequiredFilterTolerantMatch:
-    """Devin Review on PR #1319 (round 5): the required_filter presence check
-    must tolerate spacing and quote-style differences -- a query that
-    genuinely applies the filter must not be flagged as an error-severity
-    violation over `region='EU'` vs `region = 'EU'`."""
+    """Devin Review on PR #1319 (rounds 5-6): the required_filter presence
+    check must tolerate spacing and identifier-quoting differences -- a query
+    that genuinely applies the filter must not be flagged as an error-severity
+    violation over `region='EU'` vs `region = 'EU'`, or over `"region"` vs
+    `region` (double quotes are SQL identifier quoting, so they are stripped;
+    a double-quoted *string literal* -- nonstandard SQL -- loses its quotes
+    too, accepted under the best-effort contract)."""
 
     def _constraints(self, rule: str) -> list[dict]:
         return [
@@ -743,11 +746,24 @@ class TestRequiredFilterTolerantMatch:
         )
         assert violations == []
 
-    def test_quote_style_difference_is_not_a_violation(self):
+    def test_quoted_identifier_in_query_is_not_a_violation(self):
+        # `"region"` and `region` are the same identifier in SQL -- quoting
+        # the column must not turn an applied filter into a violation.
+        violations, _ = evaluate_constraints(
+            self._constraints("region = 'EU'"),
+            ["revenue"],
+            "SELECT revenue FROM orders WHERE \"region\" = 'EU'",
+        )
+        assert violations == []
+
+    def test_double_quoted_rule_matches_double_quoted_query(self):
+        # A double-quoted "literal" in a rule is nonstandard SQL; both sides
+        # lose the quotes (identifier treatment), so the rule still matches
+        # its double-quoted twin.
         violations, _ = evaluate_constraints(
             self._constraints('region = "EU"'),
             ["revenue"],
-            "SELECT revenue FROM orders WHERE region = 'EU'",
+            'SELECT revenue FROM orders WHERE region = "EU"',
         )
         assert violations == []
 
@@ -758,3 +774,116 @@ class TestRequiredFilterTolerantMatch:
             "SELECT revenue FROM orders",
         )
         assert [v["name"] for v in violations] == ["eu_only"]
+
+
+class TestConstraintCaseNormalization:
+    """Devin Review on PR #1319 (round 6): ``severity`` and ``type`` on an
+    imported constraint are document text and must be compared casefolded like
+    every other comparison in this module -- an exact-case test silently
+    downgrades an ``"ERROR"`` constraint to a warning (it can then never set
+    ``valid=False``) and hides a ``"Required_Filter"`` from the static
+    presence check."""
+
+    def test_severity_case_variants_normalize_to_lowercase(self):
+        document = {
+            "custom_extensions": [
+                _agnes_extension(
+                    [
+                        {"name": "c1", "severity": "ERROR", "metrics": ["revenue"]},
+                        {"name": "c2", "severity": "Warning", "metrics": ["revenue"]},
+                    ]
+                )
+            ]
+        }
+        constraints = extract_constraints(document)
+        assert [c["severity"] for c in constraints] == ["error", "warning"]
+
+    def test_uppercase_error_severity_drives_valid_false(self):
+        document = _fixture_document()
+        document["custom_extensions"] = [
+            _agnes_extension(
+                [
+                    {
+                        "name": "revenue_requires_date_filter",
+                        "type": "required_filter",
+                        "rule": "order_date",
+                        "severity": "ERROR",
+                        "metrics": ["revenue"],
+                    }
+                ]
+            )
+        ]
+        result = validate_query("SELECT SUM(amount) AS revenue FROM orders", [document])
+        assert [v["severity"] for v in result["violations"]] == ["error"]
+        assert result["valid"] is False
+
+    def test_type_case_variant_stored_normalized(self):
+        document = {
+            "custom_extensions": [
+                _agnes_extension([{"name": "c1", "type": "Required_Filter", "rule": "x", "metrics": ["revenue"]}])
+            ]
+        }
+        constraints = extract_constraints(document)
+        assert constraints[0]["type"] == "required_filter"
+
+    def test_type_case_variant_is_statically_checked(self):
+        # Hand-built constraint (not via extract_constraints): the
+        # checkability comparison itself must casefold too.
+        constraints = [
+            {
+                "name": "eu_only",
+                "type": "Required_Filter",
+                "rule": "region = 'EU'",
+                "severity": "error",
+                "metrics": ["revenue"],
+            }
+        ]
+        violations, post_checks = evaluate_constraints(constraints, ["revenue"], "SELECT revenue FROM orders")
+        assert [v["name"] for v in violations] == ["eu_only"]
+        assert post_checks == []
+
+
+class TestDialectJoinCallerCase:
+    """Devin Review on PR #1319 (round 6): ``check_dialects`` is public API
+    and its ``used_metrics`` may be caller-supplied -- a case difference
+    against the document's metric declaration must not yield "no declared
+    dialects", which reads as ``locally_executable=True`` (fail-open)."""
+
+    def test_caller_cased_metric_name_finds_dialects(self):
+        result = check_dialects(_fixture_document(), ["REVENUE"], target_engine="duckdb")
+        assert result["sql_dialects"] == ["DUCKDB"]
+        assert result["locally_executable"] is True
+
+    def test_caller_cased_metric_name_does_not_fail_open_on_executability(self):
+        result = check_dialects(_fixture_document(), ["Customer_Lifetime_Value"], target_engine="duckdb")
+        assert result["sql_dialects"] == ["SNOWFLAKE"]
+        assert result["locally_executable"] is False
+
+
+class TestUnexpectedDetectedScope:
+    """Devin Review on PR #1319 (round 6): ``expected`` listing only one
+    object type (e.g. a single dataset) must not report every detected
+    metric/relationship as unexpected -- a type absent from ``expected``
+    means the caller expressed no expectation for it."""
+
+    def test_type_not_enumerated_in_expected_is_not_reported_unexpected(self):
+        result = validate_query(
+            "SELECT revenue FROM orders",
+            [_fixture_document()],
+            expected=[{"type": "dataset", "name": "orders"}],
+        )
+        assert result["matched_expected_objects"] == [{"type": "dataset", "name": "orders"}]
+        assert result["missing_expected_objects"] == []
+        assert result["unexpected_detected_objects"] == []
+
+    def test_wrong_metric_reported_when_expected_enumerates_metrics(self):
+        result = validate_query(
+            "SELECT revenue FROM orders",
+            [_fixture_document()],
+            expected=[
+                {"type": "dataset", "name": "orders"},
+                {"type": "metric", "name": "customer_lifetime_value"},
+            ],
+        )
+        assert {"type": "metric", "name": "revenue"} in result["unexpected_detected_objects"]
+        assert {"type": "metric", "name": "customer_lifetime_value"} in result["missing_expected_objects"]
