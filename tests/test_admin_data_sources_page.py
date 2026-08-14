@@ -217,3 +217,22 @@ class TestWizardRegisterPayloadContract:
         tpl = self._template_text()
         assert 'data.scope === "token_buckets"' in tpl
         assert "ds-scope-note" in tpl
+
+    def test_group_cache_holds_only_a_successful_load(self):
+        """A failed group fetch must not be remembered as the group list.
+
+        `_loadGroups()` short-circuits on `if (_groupsCache) return _groupsCache`
+        and `[]` is truthy, so caching the empty fallback turned one transient
+        failure into a permanently blank "Grant all to group" picker — every
+        later grant answered "Pick a group first" until a full page reload.
+        The failure paths must return `[]` without writing the cache.
+        """
+        tpl = self._template_text()
+        body = tpl.split("async function _loadGroups()", 1)[1].split("async function _fillGrantPickers", 1)[0]
+        # The regression: the fallback was cached on a non-OK response / throw.
+        assert "_groupsCache = []" not in body
+        # Exactly one write, and only on the success branch.
+        assert body.count("_groupsCache =") == 1
+        assert "if (r.ok) _groupsCache" in body
+        # Both failure paths hand back an uncached empty list.
+        assert body.count("return [];") == 2
