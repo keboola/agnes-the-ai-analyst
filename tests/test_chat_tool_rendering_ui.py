@@ -108,6 +108,20 @@ def test_next_action_click_reuses_the_suggestion_flow():
     )
 
 
+def test_history_reload_restores_chips_only_when_the_answer_is_the_tail():
+    """Live behavior: a new user message clears the chips ("they age out the
+    moment the conversation moves on"). A reload must agree — restoring them
+    under an answer that already has a user message after it (error-aborted
+    turn, mid-turn full_refresh) would resurrect suggestions the conversation
+    moved past."""
+    js = _read(CHAT_JS)
+    body = js[js.index("async function loadAndRenderHistory") : js.index("async function openSession")]
+    assert "renderNextActions(" in body, "a reload must restore the chips"
+    assert 'lastTurnMsg.role === "assistant"' in body, (
+        "chips are restored only while the newest turn message is the assistant's answer"
+    )
+
+
 def test_next_action_chip_styles_use_ds_tokens():
     css = _read(CHAT_CSS)
     assert ".cloud-chat-next-actions" in css
@@ -138,6 +152,37 @@ def test_the_template_carries_the_trailer_for_the_sandbox_only():
     body = tpl[guard_open:guard_close]
     assert "```next_actions" in body, "the section must sit inside an is_sandbox guard"
     assert "{% if" not in body[len("{% if is_sandbox %}") :], "no nested guard — the whole section is sandbox-only"
+
+
+# ── push sinks: the trailer must never reach Slack as raw wire format ────────
+
+
+def test_strip_next_actions_block_removes_the_fence_and_keeps_the_prose():
+    from app.chat.sources import strip_next_actions_block
+
+    content = "Done.\n\n```next_actions\n- Break it down by country\n```"
+    assert strip_next_actions_block(content) == "Done."
+    assert strip_next_actions_block("just prose") == "just prose"
+    assert strip_next_actions_block("") == ""
+    # An unterminated opener is not a block — same rule as the sources fence.
+    half = "Done.\n\n```next_actions\n- half"
+    assert strip_next_actions_block(half) == half
+    # An ordinary code block survives.
+    kept = "See:\n\n```sql\nSELECT 1\n```"
+    assert strip_next_actions_block(kept) == kept
+
+
+def test_the_slack_sink_strips_the_next_actions_trailer_on_both_post_paths():
+    """Slack sessions run in the SAME sandbox as web chat
+    (services/slack_bot/events.py creates them through the same ChatManager,
+    whose workdir prompt mandates the trailer on every answer). The web client
+    lifts the fence into buttons; Slack has no buttons wired to it, so without
+    this strip every Slack reply would end in a fenced block of wire format —
+    the exact failure mode the sources fence already solved there."""
+    src = Path("services/slack_bot/sink.py").read_text(encoding="utf-8")
+    assert src.count("strip_next_actions_block(strip_block(") == 2, (
+        "both the streaming reply and the ephemeral responder must strip both trailers"
+    )
 
 
 # ── tool labels: a reader-facing verb, never a raw tool id ───────────────────

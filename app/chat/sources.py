@@ -60,6 +60,14 @@ from typing import Any, Iterable, Optional
 _OPEN_RE = re.compile(r"```sources[ \t]*\r?\n", re.IGNORECASE)
 _CLOSE = "```"
 
+#: The prompt's SECOND wire-format trailer: ```next_actions, suggested
+#: follow-up prompts the web client lifts into one-click buttons
+#: (``extractNextActions`` in ``chat.js``). It lives here, next to the
+#: sources fence, because the push sinks strip both in one breath — a sink
+#: with no buttons must not end every answer in a fenced block of wire
+#: format. Same tolerant shape, same linear-scan rules as `_OPEN_RE`.
+_NEXT_ACTIONS_OPEN_RE = re.compile(r"```next_actions[ \t]*\r?\n", re.IGNORECASE)
+
 #: One claim per line: `kind: ref`. Anything else in the block is ignored
 #: rather than treated as an error — a stray blank line or a comment must not
 #: cost the reader the whole block.
@@ -97,14 +105,14 @@ class SourcesVerdict:
         }
 
 
-def _first_block_span(content: str):
+def _first_block_span(content: str, open_re: re.Pattern[str] = _OPEN_RE):
     """``(start, body_start, body_end, end)`` of the first complete block.
 
     ``None`` when there is no opening fence, or when an opening fence is never
     closed — an unterminated block is not a block, and treating it as one
     would let a truncated answer swallow everything after it.
     """
-    m = _OPEN_RE.search(content)
+    m = open_re.search(content)
     if not m:
         return None
     body_start = m.end()
@@ -140,9 +148,28 @@ def strip_block(content: str) -> str:
     """
     if not content:
         return content
+    return _strip_blocks(content, _OPEN_RE)
+
+
+def strip_next_actions_block(content: str) -> str:
+    """The answer without its ``next_actions`` trailer.
+
+    The web client lifts this trailer into one-click follow-up buttons
+    (``extractNextActions`` in ``chat.js``); a push sink has no buttons wired
+    to it, so the raw fence would sit under every answer as a code block of
+    wire format. Same persistence rule as ``strip_block``: never applied
+    before the database — the web client re-extracts the buttons from the
+    saved content on every history reload.
+    """
+    if not content:
+        return content
+    return _strip_blocks(content, _NEXT_ACTIONS_OPEN_RE)
+
+
+def _strip_blocks(content: str, open_re: re.Pattern[str]) -> str:
     out = content
     while True:
-        span = _first_block_span(out)
+        span = _first_block_span(out, open_re)
         if span is None:
             return out.rstrip()
         start, _body_start, _body_end, end = span

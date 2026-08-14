@@ -1163,13 +1163,16 @@ async function loadAndRenderHistory(chatId) {
       if (m.role === "user") lastUserText = m.content || "";
     }
     // A reload must end in the same state as the live turn: the follow-up
-    // chips belong under the newest assistant answer. renderMessage stripped
-    // the trailer from the DOM; re-extract it from the raw content here.
-    const lastAssistantMsg = [...history].reverse().find(m => m.role === "assistant");
-    if (lastAssistantMsg && lastAssistantArticle) {
+    // chips belong under the newest assistant answer — and only while it is
+    // still the conversation's tail. A user message after it means the
+    // conversation moved on (error-aborted turn, mid-turn full_refresh),
+    // where the live path clears the chips. renderMessage stripped the
+    // trailer from the DOM; re-extract it from the raw content here.
+    const lastTurnMsg = [...history].reverse().find(m => m.role === "assistant" || m.role === "user");
+    if (lastTurnMsg && lastTurnMsg.role === "assistant" && lastAssistantArticle) {
       renderNextActions(
         lastAssistantArticle.querySelector(".msg-bubble"),
-        extractNextActions(lastAssistantMsg.content || "").actions,
+        extractNextActions(lastTurnMsg.content || "").actions,
       );
     }
   }
@@ -1362,7 +1365,7 @@ function handleFrame(frame) {
     case "approval_resolved":
       resolveApprovalCard(frame);
       break;
-    // The three terminal frames all disarm the long-run notification nudge —
+    // The terminal frames below all disarm the long-run notification nudge —
     // a turn that has stopped is no longer worth offering to be pinged about.
     case "cancelled":
       renderSystemNote("Turn cancelled.", "warn");
@@ -1696,8 +1699,10 @@ function renderMessage(m) {
   // header over it.
   if (m.role === "assistant") renderSourcesChips(bubble, m.sources);
 
-  // Copy carries the ORIGINAL content, fence and all — see the note on
-  // stripSourcesFence. The fence is hidden from the eye, not from the record.
+  // Copy keeps the sources fence — provenance is record, hidden from the eye
+  // only (see the note on stripSourcesFence) — but drops the next_actions
+  // trailer: suggestions are chrome, and a copied transcript loses nothing
+  // without them.
   attachMessageActions(article, stripNextActionsFence(m.content || ""));
   $("chat-messages").appendChild(article);
   if (m.role === "assistant") _markLatestAssistant(article);
@@ -2059,6 +2064,15 @@ function finalizeAssistantMessage(frame) {
       sources: frame && frame.sources,
       created_at: new Date().toISOString(),
     });
+    // This fallback path (no streamed article — e.g. a tokenless turn) must
+    // end in the same state as the streamed one: chips under the answer.
+    // renderMessage marked it latest-assistant and stripped the trailer.
+    if (lastAssistantArticle) {
+      renderNextActions(
+        lastAssistantArticle.querySelector(".msg-bubble"),
+        extractNextActions(content).actions,
+      );
+    }
   }
 }
 
