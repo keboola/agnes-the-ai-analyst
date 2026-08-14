@@ -91,13 +91,31 @@ def import_documents(source: dict, documents: List[str]) -> ImportReport:
 
     keep_slugs: List[str] = []
     valid_documents: List[Dict[str, Any]] = []
+    seen_slugs: set[str] = set()
 
     for text in documents:
         result = validate_document(text)
         content_hash = _content_hash(text)
         slug = _model_name(result.parsed) if result.ok else None
 
+        if slug is not None and slug in seen_slugs:
+            # Two documents in one batch declaring the same model name collapse
+            # onto a single row — the row id is derived from the slug, so the
+            # later one overwrites the earlier one and the report counts both as
+            # written. That is silent loss: in a git-backed source it takes only
+            # a copied file. First occurrence wins; the duplicate is reported.
+            report.invalid.append(
+                {
+                    "content_hash": content_hash,
+                    "errors": [
+                        f"duplicate model name {slug!r} in this import; the first document declaring it was kept"
+                    ],
+                }
+            )
+            continue
+
         if slug is not None:
+            seen_slugs.add(slug)
             slug_key = slug
             name = slug
             status = "valid"

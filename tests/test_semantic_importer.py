@@ -87,3 +87,20 @@ def test_two_documents_in_one_import_keep_both_their_metrics(system_db):
 
     names = {m["name"] for m in metric_repo().list()}
     assert names >= {"revenue", "cost"}
+
+
+def test_duplicate_model_name_in_one_import_is_reported_not_silently_collapsed(system_db):
+    """Two documents declaring the same model name collapse onto one row.
+
+    The row id derives from the slug, so the later document overwrites the
+    earlier one. Before this was handled the report claimed two models written
+    while a single row existed — silent loss, and in a git-backed source it
+    takes only a copied file.
+    """
+    report = import_documents(SOURCE, [_doc("retail", "revenue"), _doc("retail", "other")])
+
+    rows = semantic_model_repo().list_all()
+    assert len(rows) == 1
+    assert report.models_written == len(rows)
+    assert len(report.invalid) == 1
+    assert "duplicate model name" in report.invalid[0]["errors"][0]
