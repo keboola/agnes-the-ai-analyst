@@ -96,3 +96,35 @@ versus admin-gated** — a picker entry promises "paste your URL and go", and
 only the first four keep that promise. Gemini Enterprise and Copilot Studio are
 real integration paths for an operator who wants them, which is why they are
 written down here rather than dropped.
+
+---
+
+## Forbidden-category audit for the OpenAI submission (CON-3)
+
+OpenAI's app-review rules disallow returning PCI DSS data, PHI, government
+ID/credentials, raw location fields, or raw chat transcripts without masking.
+Walked all 67 tools registered in `app/api/mcp/foundation_tools.py` against
+that list:
+
+- **`query` / `describe` / `schema` / `catalog`** are generic pass-through
+  onto whatever tables the operator has registered — Agnes has no semantic
+  knowledge of a column's contents, so it cannot mask a category it cannot
+  identify. Keeping any of the five categories out of these results is the
+  operator's own data-pipeline responsibility, the same governance boundary
+  the existing corporate policy already draws ("PII columns must be
+  SHA-256 hashed in the analytics/reporting layer" applies *before* data
+  reaches Agnes, not inside the MCP tool layer).
+- **No tool exposes raw chat/session transcripts.** `agent_ask`/`agent_list`/
+  `agent_usage` return only metadata (config, token usage) about the
+  caller's own agents, never another user's conversation content.
+- **`chat_upload_file`** reads only client-side (the server-hosted MCP
+  surface refuses a `file_path` outright, precisely to prevent it from
+  becoming an arbitrary-file-read primitive against the server).
+- **Credential-bearing tools** (`data_app_git_credential`,
+  `agnes_data_app_credentials`, `admin_analytics_migrate`, admin `*` tools)
+  are scoped to the resource's owner/admin and out of scope for *this*
+  check — that's the RBAC gate's job, not a data-category question.
+
+No forbidden category is returned as a first-class Agnes concept by any
+foundation tool. Nothing to fix in this codebase for this item; it is a
+statement to carry into the OpenAI submission, not an open finding.
