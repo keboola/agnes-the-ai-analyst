@@ -78,6 +78,21 @@ jobs:
           PYVER=$(awk -F'"' '/^version = /{print $2; exit}' /tmp/pyproject-at-sha.toml)
           [ "$PYVER" = "$VERSION" ] || { echo "::error::pyproject.toml at $SHA says $PYVER, tag wants $VERSION — tag the release-cut commit"; exit 1; }
           grep -q "^## \[$VERSION\]" /tmp/changelog-at-sha.md || { echo "::error::CHANGELOG.md at $SHA has no ## [$VERSION] section"; exit 1; }
+          # The two checks above pass for EVERY commit between this cut and
+          # the next one (pyproject's version stays at the just-released
+          # value until the next cut), so alone they let a blank target
+          # stamp vX.Y.Z onto later, unreleased work at main's HEAD. Pin
+          # the tag to the commit that INTRODUCED the section: the first
+          # parent must not know this version's heading yet. (First parent
+          # is main's previous tip for a squash or merge commit, which is
+          # exactly the history the cut landed on.)
+          PARENT=$(git rev-parse -q --verify "$SHA^" || true)
+          if [ -n "$PARENT" ] && git show "$PARENT:CHANGELOG.md" > /tmp/changelog-at-parent.md 2>/dev/null; then
+            if grep -q "^## \[$VERSION\]" /tmp/changelog-at-parent.md; then
+              echo "::error::$SHA is not the release-cut commit for $VERSION — its parent already carries ## [$VERSION]. Pass target=<the merge commit that introduced the cut>."
+              exit 1
+            fi
+          fi
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
       - name: Extract CHANGELOG section for the Release body
