@@ -718,6 +718,16 @@ def preview_cookie_name(slug: str) -> str:
 _COOKIE_NAME_SAFE_RE = _re.compile(r"^[A-Za-z0-9_-]+$")
 
 
+class SlugNotCookieSafeError(ValueError):
+    """The mint's deliberate header-safety refusal — and ONLY that.
+
+    A dedicated type so the preview-grant handler can map exactly this
+    refusal to 400 ``slug_not_cookie_safe``; a blanket ``except ValueError``
+    also swallowed unrelated ``ValueError``s from ``create_access_token`` or
+    the repo insert, presenting a 5xx-class backend fault as a bad app name
+    (Devin Review on #1321)."""
+
+
 # Q4 (spec §7/§11): 30-minute default TTL, renewed on every
 # `agnes_data_app_preview` call, hard-capped by SessionEnd's best-effort
 # revoke (`revoke_preview_tokens_for_user`, called from `app/chat/manager.py`).
@@ -760,7 +770,7 @@ def _mint_preview_token(row: dict, requester: dict, *, ttl_s: int = _PREVIEW_TOK
     # Review on this PR). Validate-first makes the refusal free of both the
     # JWT and the row.
     if not _COOKIE_NAME_SAFE_RE.match(slug or ""):
-        raise ValueError(f"data app slug is not safe in a cookie name: {slug!r}")
+        raise SlugNotCookieSafeError(f"data app slug is not safe in a cookie name: {slug!r}")
     token_id = str(uuid.uuid4())
     ttl = timedelta(seconds=ttl_s)
     expires_at = datetime.now(timezone.utc) + ttl
@@ -1322,10 +1332,13 @@ async def create_preview_grant(
     _reject_linked(row)
     try:
         _token, cookie = _mint_preview_token(row, user)
-    except ValueError:
+    except SlugNotCookieSafeError:
         # The mint's own header-safety refusal (slug unsafe in a cookie name)
         # is deliberate and side-effect-free — surface it as a clean 400, not
-        # an unhandled 500 (Devin Review on this PR).
+        # an unhandled 500. Caught by its dedicated type only: a blanket
+        # ValueError catch also relabelled unrelated backend faults
+        # (create_access_token claims, repo validation) as a bad app name;
+        # those must keep surfacing as 500s (Devin Review on this PR).
         raise HTTPException(status_code=400, detail="slug_not_cookie_safe")
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=_PREVIEW_TOKEN_TTL_S)
     _audit(conn, user["id"], "data_app.preview_grant", f"data_app:{slug}", {})
