@@ -79,9 +79,14 @@ def test_status_json(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Table counting — the counter reported 0 for populated workspaces because it
-# globbed `server/parquet/*.parquet` non-recursively and ignored the v49
-# `.claude/data/` tree entirely.
+# Table counting. Two numbers, deliberately not summed:
+#   queryable  -> tables the DuckDB view rebuild exposes (server/parquet/),
+#                 i.e. what `agnes query --local` can resolve
+#   no-view    -> parquets the v49 stack sync put in .claude/data/_shared/
+#                 that no view covers: real bytes on disk, unreachable locally
+# Verified against a live workspace: 6 partitioned legacy tables (331 part
+# files, which the old top-level glob counted as 0) alongside 37 `_shared`
+# parquets with zero corresponding views.
 # ---------------------------------------------------------------------------
 
 
@@ -90,16 +95,18 @@ def _init(workspace):
     (workspace / ".claude" / "init-complete").write_text("agnes_version: test\n")
 
 
-def _count(workspace, monkeypatch):
+def _counts(workspace, monkeypatch):
+    """(queryable, downloaded-without-view) as `agnes status --json` reports."""
     monkeypatch.setenv("AGNES_LOCAL_DIR", str(workspace))
     result = runner.invoke(status_app, ["--json"])
     assert result.exit_code == 0, result.output
-    return json.loads(result.output)["parquet_tables"]
+    body = json.loads(result.output)
+    return body["parquet_tables"], body["tables_downloaded_no_local_view"]
 
 
 def test_partitioned_table_counts_once_not_zero(tmp_path, monkeypatch):
-    """A partitioned table is a DIRECTORY of parts. The old non-recursive
-    glob returned 0 for it however many parts were on disk."""
+    """A partitioned table is a DIRECTORY of parts. The old non-recursive glob
+    returned 0 for it however many parts were on disk — the reported bug."""
     _init(tmp_path)
     parts = tmp_path / "server" / "parquet" / "jira_issues"
     (parts / "month=2026-01").mkdir(parents=True)
@@ -107,24 +114,25 @@ def test_partitioned_table_counts_once_not_zero(tmp_path, monkeypatch):
     (parts / "month=2026-01" / "data.parquet").touch()
     (parts / "month=2026-02" / "data.parquet").touch()
 
-    assert _count(tmp_path, monkeypatch) == 1
+    assert _counts(tmp_path, monkeypatch) == (1, 0)
 
 
-def test_shared_stack_sync_tree_is_counted(tmp_path, monkeypatch):
-    """Tables delivered by the v49 stack sync live under
-    `.claude/data/_shared/` and were previously invisible to the count."""
+def test_shared_only_table_is_not_counted_as_queryable(tmp_path, monkeypatch):
+    """Nothing registers DuckDB views over `.claude/data/_shared/`, so a table
+    present only there is on disk but NOT resolvable by `agnes query --local`.
+    It must not inflate the queryable count."""
     _init(tmp_path)
     shared = tmp_path / ".claude" / "data" / "_shared"
     shared.mkdir(parents=True)
     (shared / "orders.parquet").touch()
     (shared / "customers.parquet").touch()
 
-    assert _count(tmp_path, monkeypatch) == 2
+    assert _counts(tmp_path, monkeypatch) == (0, 2)
 
 
 def test_package_reference_links_do_not_double_count(tmp_path, monkeypatch):
-    """`_direct/` and `<package>/` entries are references INTO `_shared`, so a
-    table shipped by two packages must still count once."""
+    """`_direct/` and `<package>/` are reference links INTO `_shared`, so a
+    table shipped by two packages still counts once."""
     _init(tmp_path)
     data = tmp_path / ".claude" / "data"
     (data / "_shared").mkdir(parents=True)
@@ -133,11 +141,12 @@ def test_package_reference_links_do_not_double_count(tmp_path, monkeypatch):
         (data / ref_dir).mkdir(parents=True)
         (data / ref_dir / "orders.parquet").touch()
 
-    assert _count(tmp_path, monkeypatch) == 1
+    assert _counts(tmp_path, monkeypatch) == (0, 1)
 
 
-def test_same_table_in_both_trees_counts_once(tmp_path, monkeypatch):
-    """Both pull phases can land the same table id; it is one table."""
+def test_same_table_in_both_trees_counts_once_as_queryable(tmp_path, monkeypatch):
+    """Both pull phases can land the same table; it is one queryable table and
+    must not also be reported as lacking a view."""
     _init(tmp_path)
     legacy = tmp_path / "server" / "parquet"
     legacy.mkdir(parents=True)
@@ -146,30 +155,27 @@ def test_same_table_in_both_trees_counts_once(tmp_path, monkeypatch):
     shared.mkdir(parents=True)
     (shared / "orders.parquet").touch()
 
-    assert _count(tmp_path, monkeypatch) == 1
+    assert _counts(tmp_path, monkeypatch) == (1, 0)
 
 
-def test_non_slug_name_in_both_trees_counts_once(tmp_path, monkeypatch):
-    """The two trees are keyed differently: the legacy tree's stem is the
-    flat manifest key (`sync_state.table_id` == `table_registry.name`), while
-    `_shared/` uses `table_registry.id`, which registration derives by
-    slugifying the name. A table named `Agnes Audit Log` therefore lands as
-    two different stems and was counted twice, inflating the total for any
-    workspace whose names carry spaces or capitals."""
+def test_non_slug_name_matches_across_trees(tmp_path, monkeypatch):
+    """The trees are keyed differently: the legacy stem is the flat manifest
+    key (`sync_state.table_id` == `table_registry.name`), `_shared/` uses
+    `table_registry.id`, and registration derives the id by slugifying the
+    name. `Agnes Audit Log` must not count as both queryable and missing."""
     _init(tmp_path)
     legacy = tmp_path / "server" / "parquet"
     legacy.mkdir(parents=True)
-    (legacy / "Agnes Audit Log.parquet").touch()  # stem = registry name
+    (legacy / "Agnes Audit Log.parquet").touch()
     shared = tmp_path / ".claude" / "data" / "_shared"
     shared.mkdir(parents=True)
-    (shared / "agnes_audit_log.parquet").touch()  # stem = registry id
+    (shared / "agnes_audit_log.parquet").touch()
 
-    assert _count(tmp_path, monkeypatch) == 1
+    assert _counts(tmp_path, monkeypatch) == (1, 0)
 
 
 def test_non_slug_partitioned_dir_matches_shared_stem(tmp_path, monkeypatch):
-    """Same keying mismatch, partitioned layout: the legacy side is a
-    directory named after the registry name."""
+    """Same keying mismatch, partitioned layout."""
     _init(tmp_path)
     parts = tmp_path / "server" / "parquet" / "Jira Issues"
     (parts / "month=2026-01").mkdir(parents=True)
@@ -178,7 +184,7 @@ def test_non_slug_partitioned_dir_matches_shared_stem(tmp_path, monkeypatch):
     shared.mkdir(parents=True)
     (shared / "jira_issues.parquet").touch()
 
-    assert _count(tmp_path, monkeypatch) == 1
+    assert _counts(tmp_path, monkeypatch) == (1, 0)
 
 
 def test_staging_and_empty_dirs_are_not_counted(tmp_path, monkeypatch):
@@ -191,13 +197,45 @@ def test_staging_and_empty_dirs_are_not_counted(tmp_path, monkeypatch):
     (legacy / "abandoned").mkdir(parents=True)
     (legacy / "real.parquet").touch()
 
-    assert _count(tmp_path, monkeypatch) == 1
+    assert _counts(tmp_path, monkeypatch) == (1, 0)
+
+
+def test_live_shaped_workspace_reports_both_numbers(tmp_path, monkeypatch):
+    """The shape measured on a real workspace: partitioned legacy tables that
+    the old counter reported as 0, plus a `_shared` store with no views."""
+    _init(tmp_path)
+    legacy = tmp_path / "server" / "parquet"
+    for name in ("issues", "comments", "changelog", "attachments", "issuelinks", "remote_links"):
+        (legacy / name / "month=2026-08").mkdir(parents=True)
+        (legacy / name / "month=2026-08" / "data.parquet").touch()
+    shared = tmp_path / ".claude" / "data" / "_shared"
+    shared.mkdir(parents=True)
+    for i in range(37):
+        (shared / f"materialized_{i}.parquet").touch()
+
+    assert _counts(tmp_path, monkeypatch) == (6, 37)
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
+    out = _clean(runner.invoke(status_app).output)
+    assert "Tables    : 6 queryable, 37 downloaded (no local view)" in out
+
+
+def test_no_second_number_when_everything_is_queryable(tmp_path, monkeypatch):
+    """The extra clause only appears when there is something to report."""
+    _init(tmp_path)
+    legacy = tmp_path / "server" / "parquet"
+    legacy.mkdir(parents=True)
+    (legacy / "orders.parquet").touch()
+
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
+    out = _clean(runner.invoke(status_app).output)
+    assert "Tables    : 1" in out
+    assert "no local view" not in out
 
 
 def test_populated_but_uninitialized_workspace_explains_itself(tmp_path, monkeypatch):
     """`agnes pull` only needs a workspace-SHAPED dir, so data can be present
-    with no init sentinel. Reporting a bare 'no' beside a populated table
-    count reads as a contradiction — name the half that is missing."""
+    with no init sentinel. A bare 'no' beside a populated table count reads as
+    a contradiction — name the half that is missing."""
     monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
     legacy = tmp_path / "server" / "parquet"
     legacy.mkdir(parents=True)
