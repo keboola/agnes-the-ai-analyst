@@ -709,6 +709,21 @@ class TestUnauthenticatedHtmlRedirects:
         assert resp.status_code == 302
         assert resp.headers["location"] == "/login?error=email_not_configured"
 
+    def test_send_link_web_post_refuses_when_no_mail_transport(self, web_client, monkeypatch):
+        """The POST sibling must refuse on its own — it is reachable without a
+        freshly-rendered GET (stale form, bookmark, scripted client), and
+        without a transport the sent-page's "We sent a sign-in link" would be
+        a lie: delivery is silently skipped (Devin Review on PR #1288)."""
+        for var in ("SMTP_HOST", "SENDGRID_API_KEY", "LOCAL_DEV_MODE"):
+            monkeypatch.delenv(var, raising=False)
+        resp = web_client.post(
+            "/auth/email/send-link/web",
+            data={"email": "someone@example.com"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/login?error=email_not_configured"
+
     def test_google_login_stashes_safe_next_in_session(self, web_client, monkeypatch):
         """google_login() must stash the sanitized next_path in the session.
 

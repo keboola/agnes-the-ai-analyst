@@ -177,6 +177,14 @@ async def send_magic_link_web(
     from app.auth._common import safe_next_path
     from app.web.router import _build_context, templates
 
+    # Mirror the GET page's availability guard (login_email_page): without a
+    # mail transport the sent-page's "We sent a sign-in link" would be a lie —
+    # _generate_and_deliver_magic_link silently skips delivery. Reachable
+    # without a fresh GET (stale form, bookmark, scripted client), so the
+    # POST must refuse on its own (Devin Review on PR #1288).
+    if not is_available():
+        return RedirectResponse(url="/login?error=email_not_configured", status_code=303)
+
     # Match the rest of the codebase's case-sensitive lookup (password_login,
     # reset_request, setup_request). Lowercasing here would silently fail
     # for mixed-case emails the admin stored as-is.

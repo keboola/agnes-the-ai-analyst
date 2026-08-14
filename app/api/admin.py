@@ -246,7 +246,16 @@ def _validate_urls_in_patch(sections: Dict[str, Dict[str, Any]]) -> None:
         if isinstance(node, dict):
             value = node.get(path[-1])
             if isinstance(value, str) and value:
-                _validate_url_not_private(value, field_name=".".join(path))
+                field_name = ".".join(path)
+                # The auth-provider URLs carry credentials at use time (the
+                # Storage token on verify, the OAuth token exchange) and are
+                # held to the same bar as the source-connection sibling
+                # (_validate_stack_url: "Rejects non-https") — scheme checked
+                # at store time, host at store AND use time (Devin Review on
+                # PR #1288).
+                if path[:2] == ("auth", "keboola") and not value.lower().startswith("https://"):
+                    raise HTTPException(status_code=422, detail=f"{field_name} must be https")
+                _validate_url_not_private(value, field_name=field_name)
 
 
 def _normalize_provider_names(value: Any) -> "list[str] | None":

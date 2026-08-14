@@ -213,6 +213,44 @@ class TestResolveUnit:
         assert user["credential_surface"] == "stack"
         assert user["token_type"] == "keboola_token"
 
+    def test_unexpected_verify_failure_is_a_refusal_not_an_exception(self, client, monkeypatch):
+        # "Never raises" is the contract get_current_user builds on: an
+        # exception type outside kv's KeboolaVerifyError map (a misconfigured
+        # stack address, an httpx type the translator misses) must come back
+        # as a clean refusal AND count against the flood guard
+        # (Devin Review on PR #1288).
+        def _boom(tok):
+            raise RuntimeError("stack address misconfigured")
+
+        monkeypatch.setattr(kv, "verify_storage_token", _boom)
+        from app.auth import keboola_header
+        from app.auth.keboola_header import resolve_header_user
+
+        keboola_header._failure_state.clear()
+        user, reason = resolve_header_user("tok-unexpected", None)
+        assert user is None
+        assert reason == "keboola_verify_error"
+        assert keboola_header._failure_state, "unexpected failures must feed the flood guard"
+
+    def test_user_lookup_failure_is_a_refusal_not_an_exception(self, client, monkeypatch):
+        # Same never-raises contract past a SUCCESSFUL verify: a backend
+        # hiccup on the account lookup refuses cleanly (and deliberately does
+        # NOT count as a flood-guard failure -- the token was valid).
+        monkeypatch.setattr(kv, "verify_storage_token", lambda tok: _identity())
+
+        import src.repositories as repos
+
+        class _Boom:
+            def get_by_email(self, email):
+                raise RuntimeError("db down")
+
+        monkeypatch.setattr(repos, "users_repo", lambda: _Boom())
+        from app.auth.keboola_header import resolve_header_user
+
+        user, reason = resolve_header_user("tok-lookup-boom", None)
+        assert user is None
+        assert reason == "keboola_lookup_error"
+
 
 class TestRejectKeboolaHeaderCredential:
     """Unit coverage for app.auth.dependencies.reject_keboola_header_credential

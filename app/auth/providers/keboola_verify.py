@@ -103,6 +103,13 @@ def _fetch_verify(base_url: str, headers: Dict[str, str]) -> Dict[str, Any]:
     """
     from app.api.admin import _validate_url_not_private
 
+    # Same bar as the source-connection sibling (_validate_stack_url,
+    # "Rejects non-https"): the header path sends a master Storage token in
+    # this request, and http would put it on the wire in cleartext. The
+    # shared host validator checks only hostname/IP, so the scheme must be
+    # enforced here (Devin Review on PR #1288).
+    if not str(base_url or "").lower().startswith("https://"):
+        raise KeboolaVerifyError("verify_failed", "auth.keboola.stack_url must be https")
     try:
         _validate_url_not_private(base_url, "auth.keboola.stack_url")
     except HTTPException as exc:

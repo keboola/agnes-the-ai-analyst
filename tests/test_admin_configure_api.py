@@ -399,6 +399,24 @@ class TestServerConfigAuthProvidersValidation:
         assert resp.status_code == 422, resp.text
         assert "no usable sign-in method" in resp.json()["detail"]
 
+    def test_http_auth_keboola_stack_url_is_refused(self, seeded_app):
+        """auth.keboola URLs are held to the source-connection bar
+        (_validate_stack_url rejects non-https): they carry credentials at
+        use time, so a cleartext scheme is refused at store time
+        (Devin Review on PR #1288)."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={
+                "sections": {"auth": {"keboola": {"stack_url": "http://connection.example.com"}}},
+                "confirm_danger": True,
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 422, resp.text
+        assert "must be https" in resp.text
+
     def test_keboola_enabled_and_configured_in_same_save_accepted(self, seeded_app):
         """Enabling keboola AND supplying its config in one save must pass —
         availability is evaluated against the current config merged with the

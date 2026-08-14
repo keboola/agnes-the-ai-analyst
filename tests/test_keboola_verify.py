@@ -167,3 +167,15 @@ class TestErrorContract:
         with pytest.raises(kv.KeboolaVerifyError) as exc:
             getattr(kv, verify)("tok")
         assert exc.value.reason == "not_configured"
+
+
+class TestHttpsRequired:
+    def test_fetch_verify_refuses_http(self):
+        # Same bar as the source-connection sibling (_validate_stack_url,
+        # "Rejects non-https"): this request carries a Storage token, and the
+        # shared host validator never inspects the scheme
+        # (Devin Review on PR #1288).
+        with pytest.raises(kv.KeboolaVerifyError) as excinfo:
+            kv._fetch_verify("http://connection.example.com", {})
+        assert excinfo.value.reason == "verify_failed"
+        assert "https" in excinfo.value.detail

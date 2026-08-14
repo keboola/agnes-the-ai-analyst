@@ -198,6 +198,19 @@ def resolve_header_user(token: str, request) -> Tuple[Optional[dict], str]:
                 _record_failure(ip, now)
             logger.info("keboola header token rejected: %s (sha256=%s…)", exc.reason, key[:12])
             return None, exc.reason
+        except Exception:
+            # "Never raises" is the contract get_current_user builds on — it
+            # has no try/except around this call. kv translates the expected
+            # failure modes into KeboolaVerifyError, but anything else (an
+            # exception type outside its map, e.g. httpx.InvalidURL from a
+            # misconfigured stack address) must still come back as a clean
+            # refusal, not a 500 — and must still count against the flood
+            # guard, or repeated failures of this shape never throttle
+            # (Devin Review on PR #1288).
+            with _lock:
+                _record_failure(ip, now)
+            logger.warning("keboola header verify failed unexpectedly (sha256=%s…)", key[:12], exc_info=True)
+            return None, "keboola_verify_error"
         with _lock:
             _failure_state.pop(ip, None)
             _cache[key] = (now, identity)
@@ -205,7 +218,15 @@ def resolve_header_user(token: str, request) -> Tuple[Optional[dict], str]:
 
     from src.repositories import users_repo
 
-    user = users_repo().get_by_email(identity.email)
+    try:
+        user = users_repo().get_by_email(identity.email)
+    except Exception:
+        # Same never-raises contract. Deliberately NOT recorded as a failure:
+        # the token verified fine — this is a backend hiccup on a valid
+        # credential, and backing off the caller's IP for it would lock out
+        # legitimate users during a transient DB problem.
+        logger.warning("keboola header user lookup failed (sha256=%s…)", key[:12], exc_info=True)
+        return None, "keboola_lookup_error"
     if not user:
         return None, "keboola_user_unknown"
     if not bool(user.get("active", True)):
