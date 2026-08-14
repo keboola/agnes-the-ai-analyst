@@ -1,6 +1,7 @@
 """Query endpoint — execute SQL against server DuckDB."""
 
 import contextlib
+import functools
 import json
 import logging
 import os
@@ -435,6 +436,55 @@ def _parse_connection():
     return _PARSE_CONN
 
 
+_ORACLE_HEALTHY: bool | None = None
+_ORACLE_PROBE_LOCK = threading.Lock()
+
+# Above this, the SQL is handed to the text scan instead of the parser. The
+# serialized tree runs ~27x the size of the statement, so a 100 KB query
+# transiently allocates tens of MB — on the anyio threadpool, times however
+# many requests are in flight, against a `sql` field with no length limit.
+# Falling back is conservative (the text scan over-matches), and no analyst
+# query approaches this: the largest thing measured here was 1.6 KB.
+_MAX_ORACLE_SQL_BYTES = 64 * 1024
+
+
+def _oracle_answers_as_expected() -> bool:
+    """One-time probe that the installed DuckDB still answers the way the
+    guards read its output.
+
+    The tripwire test covers a changed *error* shape, but the dangerous
+    direction is a changed *success* shape: rename ``BASE_TABLE`` or
+    ``table_name`` and every statement suddenly references nothing, which
+    reads as "denies nothing" — a silent, total bypass. CI cannot be the only
+    net here, because ``duckdb`` is pinned open-ended (``>=1.5.2``) and a
+    built image can resolve a newer wheel than the one the suite ran against.
+
+    So the parse path asks this first, once per process, and a failed probe
+    turns the oracle off for good: callers get ``None`` and fall back to the
+    conservative text scan. Loudly over-denying beats silently under-denying.
+    """
+    global _ORACLE_HEALTHY
+    if _ORACLE_HEALTHY is None:
+        # Its own lock, NOT _PARSE_CONN_LOCK: the probe below opens the parse
+        # connection, which takes that one, and a plain Lock is not reentrant.
+        # Without any lock a cold-start burst runs the probe once per thread
+        # (measured: 32 threads, 32 probes) — harmless, being idempotent and
+        # one-time, but "once per process" should be true, not nearly true.
+        with _ORACLE_PROBE_LOCK:
+            if _ORACLE_HEALTHY is None:
+                try:
+                    probe = _extract_referenced_names("SELECT 1 FROM __agnes_oracle_probe__")
+                    _ORACLE_HEALTHY = probe == {"__agnes_oracle_probe__"}
+                except Exception:
+                    _ORACLE_HEALTHY = False
+        if not _ORACLE_HEALTHY:
+            logger.error(
+                "DuckDB parse oracle failed its self-check — SQL name guards fall back to "
+                "text scanning for the life of this process. Expect over-denial, not under-denial."
+            )
+    return _ORACLE_HEALTHY
+
+
 def _sql_referenced_names(sql: str) -> set[str] | None:
     """Lowercased names of every table ``sql`` references, according to DuckDB.
 
@@ -463,6 +513,15 @@ def _sql_referenced_names(sql: str) -> set[str] | None:
     (``query('…')``), and ``EXECUTE`` of a prepared statement. A table macro
     hides its body from this too, but equally from the text scan — neither
     can see a name the SQL does not contain.
+    """
+    if len(sql) > _MAX_ORACLE_SQL_BYTES or not _oracle_answers_as_expected():
+        return None
+    return _extract_referenced_names(sql)
+
+
+def _extract_referenced_names(sql: str) -> set[str] | None:
+    """The parse + walk itself, without the self-check — which has to call it
+    to run the probe. Everything else goes through ``_sql_referenced_names``.
     """
     try:
         cursor = _parse_connection().cursor()
@@ -512,6 +571,24 @@ def _sql_reference_test(sql: str):
     return lambda name: _sql_text_references_name(masked, name)
 
 
+@functools.lru_cache(maxsize=8192)
+def _name_reference_re(name: str) -> "re.Pattern":
+    """Compiled fallback pattern for one table/view name.
+
+    Memoized because this path is a fallback but NOT a rare one: a
+    backtick-quoted BigQuery path is first-class input that DuckDB's parser
+    rejects, so every non-admin query of that shape reaches the denylist and
+    asks for one pattern per non-granted view. `re`'s own cache holds 512 and
+    evicts FIFO, so past that many views — in the stable order this loop uses
+    — every pattern recompiles on every request: measured 17.5 ms at 1000
+    views against 0.5 ms here.
+
+    Keys are catalog names, bounded by the instance's view + registry count,
+    never free-form user input; the cap is a backstop.
+    """
+    return re.compile(rf"\b{re.escape(name)}\b(?!\s+by\b)")
+
+
 def _sql_text_references_name(sql_masked_lower: str, name: str) -> bool:
     """Conservative word-boundary fallback for when DuckDB won't parse the SQL.
 
@@ -526,7 +603,7 @@ def _sql_text_references_name(sql_masked_lower: str, name: str) -> bool:
     rejects a bare ``by`` as a table alias. Without it, an ungranted view
     named ``order`` would deny every sorted query reaching this path.
     """
-    return re.search(rf"\b{re.escape(name)}\b(?!\s+by\b)", sql_masked_lower) is not None
+    return _name_reference_re(name).search(sql_masked_lower) is not None
 
 
 def _enforce_non_admin_sql_rbac(analytics, sql_lower: str, allowed) -> None:
