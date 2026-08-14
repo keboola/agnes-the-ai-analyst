@@ -41,7 +41,11 @@ import httpx
 from dotenv import load_dotenv
 
 from app.logging_config import setup_logging
-from connectors.jira.service import JiraFetchError, complete_issue_comments
+from connectors.jira.service import (
+    JiraFetchError,
+    complete_issue_comments,
+    sweep_stale_attachment_staging,
+)
 
 setup_logging(__name__)
 logger = logging.getLogger(__name__)
@@ -451,6 +455,7 @@ class JiraBackfill:
         # Create issue-specific directory
         issue_attachments_dir = self.attachments_dir / issue_key
         issue_attachments_dir.mkdir(parents=True, exist_ok=True)
+        sweep_stale_attachment_staging(issue_attachments_dir)
 
         safe_filename = f"{attachment_id}_{filename}"
         file_path = issue_attachments_dir / safe_filename

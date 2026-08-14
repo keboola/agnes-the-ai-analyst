@@ -309,3 +309,26 @@ def test_backfill_truncated_existing_attachment_is_refetched(backfill):
         healed = backfill.download_attachment(_attachment("heal.bin"), "PROJ-2")
     assert healed is not None
     assert healed.read_bytes() == b"abc"
+
+
+def test_stale_staging_files_are_swept_fresh_ones_kept(svc):
+    """Devin on #1297 — a SIGKILLed worker leaves its `.tmp-*` staging file
+    behind, the retry mints a fresh random name, and nothing else touches
+    hidden names: each interrupted download would leak up to
+    MAX_ATTACHMENT_SIZE forever. The publisher sweeps stale staging files
+    (age-gated so a concurrent writer's live staging file survives)."""
+    import time as _time
+
+    issue_dir = svc.attachments_dir / "PROJ-1"
+    issue_dir.mkdir(parents=True, exist_ok=True)
+    stale = issue_dir / ".tmp-99999-deadbeef-old.bin"
+    stale.write_bytes(b"orphan")
+    os.utime(stale, times=(_time.time() - 7200, _time.time() - 7200))
+    fresh = issue_dir / ".tmp-88888-cafebabe-live.bin"
+    fresh.write_bytes(b"in-flight")
+
+    with patch("connectors.jira.service.httpx.Client", _fake_client(b"abc")):
+        out = svc.download_attachment(_attachment("sweep.bin"), "PROJ-1")
+    assert out is not None
+    assert not stale.exists(), "hour-old staging orphan must be swept"
+    assert fresh.exists(), "a concurrent writer's live staging file must survive"

@@ -334,6 +334,40 @@ def trigger_incremental_transform(issue_key: str, deleted: bool = False) -> bool
         return False
 
 
+#: Staging files older than this are definitively dead: the download client
+#: itself times out at 60s, so an hour-old ``.tmp-*`` can only be the leftover
+#: of a killed process.
+STALE_STAGING_MAX_AGE_S = 3600
+
+
+def sweep_stale_attachment_staging(directory: Path, max_age_s: int = STALE_STAGING_MAX_AGE_S) -> None:
+    """Remove dead ``.tmp-*`` staging files from an attachments directory.
+
+    The atomic publishers (webhook + backfill) stage each download under a
+    ``.tmp-<pid>-<rand>-<name>`` file and unlink it in their exception
+    handler — but a handler cannot run when the process is SIGKILLed
+    mid-write (the documented gunicorn worker-timeout case). The random
+    component means a retry never reuses the orphan, the transform never
+    probes hidden names, and nothing else sweeps them — so each interrupted
+    download would leak up to ``MAX_ATTACHMENT_SIZE`` forever (Devin on
+    #1297). Called by both publishers before staging; age-gated so a
+    CONCURRENT writer's live staging file is never yanked out from under it.
+    Best-effort: a sweep failure never blocks the download.
+    """
+    cutoff = time.time() - max_age_s
+    try:
+        entries = list(directory.glob(".tmp-*"))
+    except OSError:
+        return
+    for stale in entries:
+        try:
+            if stale.stat().st_mtime < cutoff:
+                stale.unlink(missing_ok=True)
+                logger.info(f"Removed stale attachment staging file {stale.name}")
+        except OSError:
+            continue
+
+
 def _dedupe_comments_by_id(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """De-duplicate ``comments`` by ``id``, first occurrence wins, order preserved.
 
@@ -1062,7 +1096,8 @@ class JiraService:
 
     def download_attachment(self, attachment: dict[str, Any], issue_key: str) -> Path | None:
         """
-        Download a single attachment from Jira.
+        Download a single attachment from Jira. Sweeps stale staging files
+        first — see :func:`sweep_stale_attachment_staging`.
 
         Args:
             attachment: Attachment metadata from Jira API
@@ -1114,6 +1149,7 @@ class JiraService:
             logger.error(f"Path traversal blocked for attachment {issue_key!r}: {e}")
             return None
         issue_attachments_dir.mkdir(parents=True, exist_ok=True)
+        sweep_stale_attachment_staging(issue_attachments_dir)
 
         # Use attachment ID in filename to avoid collisions
         safe_filename = f"{attachment_id}_{filename}"
