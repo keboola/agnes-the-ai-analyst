@@ -10,6 +10,11 @@ name: Tag release
 # main, the tag matches pyproject.toml's version at that commit, and the
 # CHANGELOG section for the version exists (it becomes the Release body).
 #
+# Re-dispatching is safe: an already-tagged-and-released version is a
+# no-op, a tag that exists without its Release gets the Release created
+# (repairing a half-finished run), and a tag pointing at a different
+# commit refuses — release tags never move.
+#
 # Semver tags deliberately do NOT trigger release.yml (its `on:` has no tag
 # events — the stable-* image build rides the main-branch push), so
 # creating the tag here queues no duplicate build. keboola-deploy.yml
@@ -52,49 +57,60 @@ jobs:
           git merge-base --is-ancestor "$SHA" origin/main || { echo "::error::$SHA is not reachable from main"; exit 1; }
           if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
             EXISTING=$(git rev-parse "refs/tags/$TAG^{commit}")
-            if [ "$EXISTING" = "$SHA" ]; then
-              echo "tag $TAG already points at $SHA — nothing to do"
-              echo "skip=true" >> "$GITHUB_OUTPUT"
-              echo "sha=$SHA" >> "$GITHUB_OUTPUT"
-              exit 0
+            if [ "$EXISTING" != "$SHA" ]; then
+              echo "::error::$TAG already exists at $EXISTING (wanted $SHA) — refusing to move a release tag"
+              exit 1
             fi
-            echo "::error::$TAG already exists at $EXISTING (wanted $SHA) — refusing to move a release tag"
-            exit 1
+            # Same tag, same commit: fall through — the create step still
+            # checks whether the RELEASE exists, so a half-finished prior
+            # run (tag created, Release missing) is repaired by re-running.
+            echo "tag $TAG already points at $SHA"
           fi
           VERSION="${TAG#v}"
-          PYVER=$(git show "$SHA:pyproject.toml" | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)
+          # Materialize the blobs before scanning them: piping `git show`
+          # into an early-exiting reader (grep -q, head -1, awk exit) dies
+          # on SIGPIPE under pipefail once the reader closes the pipe with
+          # megabytes still buffered — CHANGELOG.md is ~2 MB and the match
+          # sits near the top, so that is the COMMON case, not an edge.
+          git show "$SHA:pyproject.toml" > /tmp/pyproject-at-sha.toml
+          git show "$SHA:CHANGELOG.md" > /tmp/changelog-at-sha.md
+          PYVER=$(awk -F'"' '/^version = /{print $2; exit}' /tmp/pyproject-at-sha.toml)
           [ "$PYVER" = "$VERSION" ] || { echo "::error::pyproject.toml at $SHA says $PYVER, tag wants $VERSION — tag the release-cut commit"; exit 1; }
-          git show "$SHA:CHANGELOG.md" | grep -q "^## \[$VERSION\]" || { echo "::error::CHANGELOG.md at $SHA has no ## [$VERSION] section"; exit 1; }
-          echo "skip=false" >> "$GITHUB_OUTPUT"
+          grep -q "^## \[$VERSION\]" /tmp/changelog-at-sha.md || { echo "::error::CHANGELOG.md at $SHA has no ## [$VERSION] section"; exit 1; }
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
       - name: Extract CHANGELOG section for the Release body
-        if: steps.validate.outputs.skip != 'true'
         env:
           TAG: ${{ inputs.tag }}
-          SHA: ${{ steps.validate.outputs.sha }}
         run: |
           set -euo pipefail
           VERSION="${TAG#v}"
-          git show "$SHA:CHANGELOG.md" | awk -v v="$VERSION" '
+          # Reads the file materialized by the validate step; awk's early
+          # exit is harmless on a regular file (no upstream pipe to break).
+          awk -v v="$VERSION" '
             $0 ~ "^## \\[" v "\\]" {inside=1; next}
             inside && /^## \[/ {exit}
             inside {print}
-          ' > /tmp/release-body.md
+          ' /tmp/changelog-at-sha.md > /tmp/release-body.md
           # A release body over ~125k chars is rejected by the API; ours are
           # long-form but well under that. Guard anyway.
           [ "$(wc -c < /tmp/release-body.md)" -lt 120000 ] || { echo "::error::CHANGELOG section too large for a Release body"; exit 1; }
 
       - name: Create tag + GitHub Release
-        if: steps.validate.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
           SHA: ${{ steps.validate.outputs.sha }}
         run: |
           set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists — nothing to do"
+            exit 0
+          fi
           # gh release create makes the tag ref server-side when it does not
-          # exist yet — no git push, so it works regardless of who dispatched.
+          # exist yet (no git push involved) and attaches to the existing
+          # tag when it does — which is what repairs a run that tagged but
+          # never released.
           gh release create "$TAG" \
             --target "$SHA" \
             --title "$TAG" \
