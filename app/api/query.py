@@ -428,9 +428,16 @@ def _parse_connection():
     """
     global _PARSE_CONN
     if _PARSE_CONN is None:
+        from src.db import _open_duckdb
+
         with _PARSE_CONN_LOCK:
             if _PARSE_CONN is None:
-                _PARSE_CONN = duckdb.connect(":memory:")
+                # Via the shared helper, not a bare duckdb.connect: every
+                # connection in the codebase pins its session to UTC through
+                # it (guarded by tests/test_duckdb_session_tz.py). Parsing
+                # reads no timestamps, but staying on the one path costs
+                # nothing and keeps the invariant exceptionless.
+                _PARSE_CONN = _open_duckdb(":memory:")
     return _PARSE_CONN
 
 
