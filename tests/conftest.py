@@ -291,6 +291,17 @@ def _reset_module_caches():
         _cw.WARMUP_STATE = None
     except (ImportError, AttributeError):
         pass
+    # DuckDB parse-oracle health latch. Sticky by design: once a process
+    # decides the engine answers wrongly, it never re-probes. A leaked False
+    # would fail SILENTLY GREEN — the SQL name guards fall back to the text
+    # scan, which is conservative enough that every deny test still passes
+    # while none of them exercises the oracle those tests exist to cover.
+    try:
+        import app.api.query as _q_mod
+
+        _q_mod._ORACLE_HEALTHY = None
+    except (ImportError, AttributeError):
+        pass
     yield
     try:
         from app.api import v2_catalog as _vc
@@ -401,12 +412,13 @@ def seeded_app(e2e_env):
     that still reference them keep passing — gate semantics still match
     where it matters (admin bypass, dataset_permissions checks).
     """
+    from fastapi.testclient import TestClient
+
+    from app.auth.jwt import create_access_token
+    from app.main import create_app
     from src.db import SYSTEM_ADMIN_GROUP, get_system_db
     from src.repositories.user_group_members import UserGroupMembersRepository
     from src.repositories.users import UserRepository
-    from app.auth.jwt import create_access_token
-    from app.main import create_app
-    from fastapi.testclient import TestClient
 
     conn = get_system_db()
     repo = UserRepository(conn)
@@ -503,8 +515,8 @@ def bq_access():
     care about close behavior should use that factory directly (see
     tests/test_bq_access.py::TestDefaultDuckdbSessionFactory).
     """
-    from connectors.bigquery.access import BqAccess, BqProjects, get_bq_access
     from app.main import app
+    from connectors.bigquery.access import BqAccess, BqProjects, get_bq_access
 
     def _build(*, client=None, duckdb_conn=None, billing="test-billing", data="test-data"):
         bq = BqAccess(
@@ -633,10 +645,10 @@ def grant_table_via_package(
     just asserted "table visible after grant" stays correct without
     needing an explicit subscribe step.
     """
-    from src.repositories.user_groups import UserGroupsRepository
-    from src.repositories.user_group_members import UserGroupMembersRepository
-    from src.repositories.resource_grants import ResourceGrantsRepository
     from src.repositories.data_packages import DataPackagesRepository
+    from src.repositories.resource_grants import ResourceGrantsRepository
+    from src.repositories.user_group_members import UserGroupMembersRepository
+    from src.repositories.user_groups import UserGroupsRepository
 
     groups = UserGroupsRepository(conn)
     grp = groups.get_by_name(group_name)
