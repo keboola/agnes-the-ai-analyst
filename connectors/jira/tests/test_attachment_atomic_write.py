@@ -155,3 +155,32 @@ def test_backfill_crash_mid_write_leaves_no_partial_file(backfill):
             backfill.download_attachment(_attachment("report.pdf"), "PROJ-3")
     issue_dir = backfill.attachments_dir / "PROJ-3"
     assert list(issue_dir.iterdir()) == []
+
+
+def test_published_mode_is_pinned_regardless_of_umask(svc):
+    """Devin on #1297 — os.replace publishes the TEMP file's mode (0666 &
+    umask), not the previous inode's. Under a restrictive deploy-time umask
+    the published attachment would be unreadable to the download endpoint's
+    process; the publish pins 0o644 explicitly, like the organizations
+    publish (#203).
+    """
+    old_umask = os.umask(0o077)
+    try:
+        with patch("connectors.jira.service.httpx.Client", _fake_client(b"abc")):
+            out = svc.download_attachment(_attachment("modecheck.bin"), "PROJ-1")
+    finally:
+        os.umask(old_umask)
+    assert out is not None
+    assert (out.stat().st_mode & 0o777) == 0o644
+
+
+def test_backfill_published_mode_is_pinned_regardless_of_umask(backfill):
+    """Same mode pin for the backfill's sibling publisher."""
+    old_umask = os.umask(0o077)
+    try:
+        with patch("connectors.jira.scripts.backfill.httpx.Client", _fake_client(b"abc")):
+            out = backfill.download_attachment(_attachment("modecheck.bin"), "PROJ-2")
+    finally:
+        os.umask(old_umask)
+    assert out is not None
+    assert (out.stat().st_mode & 0o777) == 0o644

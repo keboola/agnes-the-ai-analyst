@@ -878,6 +878,12 @@ class JiraService:
                 try:
                     with open(tmp_path, "wb") as f:
                         f.write(response.content)
+                    # os.replace preserves the TEMP file's mode (0666 & umask),
+                    # not the previous inode's — pin it explicitly like the
+                    # organizations publish does (#203): a restrictive
+                    # deploy-time umask must not leave the published file
+                    # unreadable to the download endpoint's process.
+                    os.chmod(tmp_path, 0o644)
                     os.replace(tmp_path, file_path)
                 except BaseException:
                     tmp_path.unlink(missing_ok=True)
