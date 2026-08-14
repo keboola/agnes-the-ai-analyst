@@ -1,0 +1,23 @@
+/* =====================================================================
+ * group_drawer.css — what js/components/group_drawer.js adds INSIDE the
+ * shared drawer chrome (css/drawer.css).
+ *
+ * Two rules, because the drawer now asks for a name and nothing else.
+ * The audience read-out, the person-search rows and the review slab that
+ * used to live here went with the drawer's steps 2–4: those were a second
+ * copy of the member and grant editors, and /admin/access is the one that
+ * survived. Everything else the drawer draws is shared chrome —
+ * css/drawer.css for the sheet, `.btn` for the buttons.
+ * ===================================================================== */
+
+.gdw-optional { font-weight: 400; color: var(--ds-text-muted); }
+.gdw-locked {
+  margin: 0 0 14px;
+  padding: 9px 12px;
+  border-radius: var(--ds-radius-btn);
+  background: var(--ds-accent-info-bg);
+  color: var(--ds-accent-info-ink);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.gdw-locked[hidden] { display: none; }

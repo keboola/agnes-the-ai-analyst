@@ -1,0 +1,69 @@
+{# ══════════════════════════════════════════════════════════════════
+   fbar_card(c) — the Library's grid card, server-rendered.
+
+   `.fbar-card` (css/filter_toolbar.css) is the product's card for an
+   inventory of resources: the Library's grid view projects one per row,
+   and every metric in it — the reserved body height, the 53px head, the
+   40px footer bar — is measured so a grid of them lines up across rows
+   rather than merely within one. The Library builds them in JS because
+   its rows are the source of truth; a server-rendered page had no way to
+   emit the same DOM, so admin surfaces grew their own card instead and
+   the same object read differently on either side of the product.
+
+   This macro is that DOM, for templates. Same classes, same anatomy, no
+   second stylesheet: change the card once and both hosts follow.
+
+   `c` contract:
+     kind         'data'|'memory'|'plugins'|'recipes'|'library' — icon tile
+                  palette + glyph (see `.cc-icon--*` in catalog_card.css and
+                  `kind_glyph` in macros/_catalog_card.html)
+     glyph        optional override for the glyph alone, when the tile's
+                  colour and its picture come from different vocabularies
+     title        card heading                                    (required)
+     href         where the title links                           (required)
+     description  body copy, clamped to two lines
+     meta         ONE line of metadata, ellipsised — never a second sentence
+     tags         list[str]; first 3 render, the rest collapse to '+N'
+     attrs        extra attributes for the <article> (filter hooks, ids)
+
+   The FOOTER is the caller's: it is the one part that differs per surface
+   (a stack pill in the Library, a sharing read-out in the admin index), and
+   `.fbar-card__foot` is a two-slot bar — state on the left, control on the
+   right. Use `{% call %}`:
+
+       {% call fbar_card({'kind': 'data', 'title': …, 'href': …}) %}
+         <span class="fbar-card__access fbar-card__access--fixed">…</span>
+         <span class="…">…</span>
+       {% endcall %}
+
+   Called WITHOUT a body, the footer is omitted entirely rather than
+   rendered empty — a 40px band with nothing in it reads as a card that
+   failed to load.
+   ══════════════════════════════════════════════════════════════════ #}
+{% from "macros/_catalog_card.html" import kind_glyph %}
+
+{% macro fbar_card(c) %}
+{% set _tags = c.tags or [] %}
+<article class="fbar-card"{% if c.attrs %} {{ c.attrs | safe }}{% endif %}>
+  <div class="fbar-card__head">
+    <span class="cc-icon cc-icon--{{ c.kind }}">{{ kind_glyph(c.glyph or c.kind) }}</span>
+    <h3 class="fbar-card__title"><a href="{{ c.href }}">{{ c.title }}</a></h3>
+  </div>
+  <div class="fbar-card__body">
+    {# Both blocks render even when empty: their heights are RESERVED (see
+       `.fbar-card__body`), and that reserve is what keeps every footer in the
+       grid on one line. Omitting them would save nothing and cost the
+       alignment. #}
+    <p class="fbar-card__desc">{{ c.description or '' }}</p>
+    <p class="fbar-card__meta">{{ c.meta or '' }}</p>
+    {# The tag row is the one that collapses when empty — the reserve above
+       already holds its space, so an always-rendered empty band would read as
+       a hole in the card. #}
+    <div class="fbar-card__tags">
+      {% for t in _tags[:3] %}<span class="fbar-card__tag">{{ t }}</span>{% endfor %}
+      {% if _tags|length > 3 %}<span class="fbar-card__tag fbar-card__tag--more">+{{ _tags|length - 3 }}</span>{% endif %}
+    </div>
+  </div>
+  {% if caller %}<div class="fbar-card__foot">{{ caller() }}</div>{% endif %}
+</article>
+{% endmacro %}

@@ -15,7 +15,10 @@ config_version: 1
 instance:
   name: "AI Harness"
   subtitle: "Your Organization"
-  copyright: "Your Organization"
+  copyright: "Your Organization"   # Footer credit, rendered "Deployed by <this>".
+                                     # Leave unset and the footer shows only the
+                                     # product name + running build — it never
+                                     # invents an attribution.
   # brand: "Agnes"                   # Product-name brand string used in analyst-facing UI copy
                                      # (/home hero, /setup, /login messages, clipboard setup
                                      # script). Default "Agnes". Set to e.g. "Foundry AI" to

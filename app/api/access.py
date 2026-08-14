@@ -142,7 +142,7 @@ async def get_resource_types(
 
 
 # ---------------------------------------------------------------------------
-# Access overview — single-shot payload for the /admin/access page
+# Access overview — single-shot payload for the group Access tab
 # ---------------------------------------------------------------------------
 
 
@@ -150,7 +150,7 @@ async def get_resource_types(
 async def access_overview(
     user: dict = Depends(require_admin),
 ):
-    """One-shot snapshot for the /admin/access page.
+    """One-shot snapshot for the group detail page's Access tab.
 
     Returns:
       - ``groups``: every user_group with member + grant counts
@@ -177,11 +177,17 @@ async def access_overview(
                 "is_system": bool(g.get("is_system", False)),
                 "created_by": g.get("created_by"),
                 # Same origin / google-management surface as `/api/admin/groups`
-                # so the /admin/access sidebar can render the identical pill +
+                # so the group list can render the identical pill +
                 # subtitle treatment without a second source of truth.
                 "origin": _derive_origin(g),
                 "is_google_managed": _is_google_managed(g),
                 "mapped_email": _mapped_email(g),
+                # The workspace on /admin/access is the only group surface
+                # now, so the snapshot has to carry what the retired list
+                # table showed in its own column — including when the group
+                # came into being. Same `str()` projection as the single-group
+                # payload below, so both spell a timestamp the same way.
+                "created_at": str(g["created_at"]) if g.get("created_at") else None,
                 "member_count": members_repo.count_members(g["id"]),
                 "grant_count": grants_repo.count_for_group(g["id"]),
             }
@@ -193,6 +199,14 @@ async def access_overview(
             "group_id": r["group_id"],
             "resource_type": r["resource_type"],
             "resource_id": r["resource_id"],
+            # The tier belongs in the snapshot: the editor on /admin/access
+            # renders an Optional/Automatic pair per grant off this payload,
+            # and without the field every grant read back as Optional — a
+            # grant saved as Automatic (here, or through the group drawer,
+            # or by `agnes admin grant`) showed the wrong half lit until the
+            # page was reloaded from a different endpoint. Same default the
+            # single-grant response uses.
+            "requirement": r.get("requirement") or "available",
         }
         for r in grants_repo.list_all()
     ]
@@ -352,7 +366,11 @@ async def get_group(
     user: dict = Depends(require_admin),
     conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
-    """Single-group payload for the /admin/groups/{id} detail page header."""
+    """Single-group payload for one group.
+
+    Fed the retired ``/admin/groups/{id}`` header; still the endpoint the
+    group drawer reads back after a create or rename.
+    """
     g = user_groups_repo().get(group_id)
     if not g:
         raise HTTPException(status_code=404, detail="Group not found")

@@ -70,6 +70,7 @@ Set the env var in `.env`/Terraform, or the YAML path in `instance.yaml`.
 |------|--------------|----------------------|---------|----------|
 | Deployment display name (page titles, email subjects) | — | `instance.name` | `AI Harness` | `get_instance_name()` |
 | Header subtitle | — | `instance.subtitle` | `""` | `get_instance_subtitle()` |
+| Operator credit in the page footer, rendered as "Deployed by {value}". Unset = the footer omits the line entirely (the product name + build on the left always render) | `AGNES_INSTANCE_COPYRIGHT` | `instance.copyright` | `""` (no attribution) | `get_instance_copyright()` |
 | Product brand string (hero copy, CTAs, setup script) | `AGNES_INSTANCE_BRAND` | `instance.brand` | `Agnes` | `get_instance_brand()` |
 | Short brand for mid-sentence body copy; when it differs from the full brand, the `/home` hero appends "Call me {short}." | `AGNES_INSTANCE_BRAND_SHORT` | `instance.brand_short` | derived (= `instance.brand`) | `get_instance_brand_short()` |
 | Inline `<svg>` logo for the header brand slot | `AGNES_INSTANCE_LOGO_SVG` | `instance.logo_svg` | `""` (text brand) | `get_instance_logo_svg()` |
@@ -155,7 +156,7 @@ The main configuration file lives at `config/instance.yaml`. See
 instance:
   name: "AI Harness"        # UI title, email subjects (get_instance_name)
   subtitle: "Acme Corp"          # Header subtitle (get_instance_subtitle)
-  copyright: "Acme Corp"         # Footer copyright
+  copyright: "Acme Corp"         # Footer credit, "Deployed by …" (get_instance_copyright)
   brand: "Acme Analyst"          # Product brand string (get_instance_brand)
   brand_short: "Acme"            # Short brand for body copy (get_instance_brand_short)
   theme: "blue"                  # UI palette (get_instance_theme); "paper" = prototype-derived light look

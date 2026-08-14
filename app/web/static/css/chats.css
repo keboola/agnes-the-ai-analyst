@@ -296,10 +296,18 @@
    `pointer-events: none`, so the empty space either side of the card doesn't eat
    clicks on the rows underneath; the card turns them back on for itself.
    Centring via left/right + flex, never `translateX` — a transform here would
-   make this the containing block for any `position: fixed` child. */
+   make this the containing block for any `position: fixed` child.
+
+   The left edge is `--rail-clearance` (rail.css, published beside the `body`
+   padding that encodes the same number), not a literal 240px: that literal was
+   the EXPANDED rail's width, so a collapsed rail left this centred 184px right
+   of the content it belongs to. Defaults to 0 for topnav layouts, so no
+   layout-conditional rule is needed, and transitions so it travels with the
+   rail rather than jumping mid-collapse. */
 .ch-bulk {
   position: fixed;
-  left: 0; right: 0; bottom: 20px;
+  left: var(--rail-clearance, 0px); right: 0; bottom: 20px;
+  transition: left var(--ds-motion-fast, .16s) var(--ds-ease-standard, ease);
   /* Above the rail (40) and the table, below the row menu (which is body-
      appended and must be able to cover this) and the modals. */
   z-index: 55;
@@ -307,8 +315,9 @@
   padding: 0 16px;
   pointer-events: none;
 }
-html[data-ui-layout="rail"] .ch-bulk { left: 240px; }
-@media (max-width: 760px) { html[data-ui-layout="rail"] .ch-bulk { left: 0; } }
+/* The rail's width jumps rather than animates with motion reduced (rail.css),
+   so a bar that still slid would arrive after the column it belongs to. */
+@media (prefers-reduced-motion: reduce) { .ch-bulk { transition: none; } }
 .ch-bulk[hidden] { display: none; }
 
 .ch-bulk__card {
