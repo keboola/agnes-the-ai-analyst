@@ -44,6 +44,7 @@ from app.instance_config import (
     get_data_apps_config,
     get_studio_enabled,
     get_agent_profiles_enabled,
+    get_mcp_connector_ui_enabled,
     feature_enabled,
 )
 from src.repositories import (
@@ -431,7 +432,11 @@ def _detail_template(base: str) -> str:
 #: `semantics` — see below.
 _RAIL_DETAIL_BACK: dict[str, tuple[str, str]] = {
     "data_package": ("/library?section=data_package", "All data packages"),
-    "memory_domain": ("/library?section=memory_domain", "All memory"),
+    # Memory is a rail destination again (#1276 restored the nav entry the
+    # redesign dropped), so its browse home is somewhere a rail caller really
+    # arrives from — back keeps the same target the topnav passes. Library
+    # arrivals still override via ?source=library (memory_domain_detail.html).
+    "memory_domain": ("/corporate-memory", "All memory domains"),
     "recipe": ("/library?section=recipe", "All recipes"),
     "plugin": ("/library?section=plugin", "All plugins"),
     "skill": ("/library?section=skill", "All skills"),
@@ -764,13 +769,19 @@ def _build_context(
 ) -> dict:
     """Build template context with config, user, and theme.
 
+    Composes `_chrome_ctx` — the single owner of every chrome-level key (nav,
+    branding, theme, feature toggles, …; see its docstring) — then layers on
+    the heavier, page-specific payloads only `_build_context` callers need:
+    the setup-prompt clipboard script and `server_url`. A chrome key added to
+    `_chrome_ctx` therefore reaches both builders automatically; add a key
+    HERE only if it is genuinely specific to the heavy payload, not shared
+    chrome (#996).
+
     `conn` is optional: when supplied alongside a logged-in `user`, the
     setup-prompt preview/clipboard payload is rendered with that user's
     RBAC-allowed Claude Code marketplace plugins inlined as install
     commands. Routes that don't render the env-setup-cta block can omit it.
     """
-    ConfigProxy = _config_proxy()
-
     ctx_server_url = str(request.base_url).rstrip("/")
 
     # Lines for the "Setup a new Claude Code" preview/clipboard partial.
@@ -835,65 +846,11 @@ def _build_context(
         )
 
     ctx = {
-        "request": request,
-        "config": ConfigProxy,
-        "user": _flex(user) if user else _FlexDict(),
-        "now": datetime.now,
+        **_chrome_ctx(request, user),
         "static_url": _static_url,
-        # Flask compatibility shims for templates
-        "get_flashed_messages": lambda **kwargs: [],
-        "url_for": lambda endpoint, **kw: _url_for_shim(endpoint, **kw),
-        "session": _FlexDict({"user": user}) if user else _FlexDict(),
         "setup_instructions_lines": setup_instructions_lines,
         "server_url": ctx_server_url,
-        # Resolved per AGNES_HOME_ROUTE env > instance.home_route YAML >
-        # /dashboard. The shared navbar's "Dashboard" link uses this so a
-        # single env flip routes the primary nav target between /home
-        # (state-aware landing) and /dashboard (legacy table inventory).
-        "home_route": _resolved_home_route(),
-        # Branding: `instance_name` is the deploying org's display name
-        # (page titles); `instance_brand` is the product name used in body
-        # copy and CTAs ("Setup {brand}", "{brand} runs SELECT…");
-        # `instance_brand_short` is the mid-sentence short form (defaults to
-        # the full brand); `workspace_dir` is the filesystem-safe folder name
-        # shown in `~/<workspace_dir>` and baked into the clipboard setup
-        # script. All default to the Agnes-flavored values out of the box;
-        # Terraform can flip them via env vars (AGNES_INSTANCE_BRAND /
-        # AGNES_INSTANCE_BRAND_SHORT / AGNES_WORKSPACE_DIR_NAME).
-        "instance_name": get_instance_name(),
-        "instance_brand": get_instance_brand(),
-        "instance_brand_short": get_instance_brand_short(),
-        "workspace_dir": get_workspace_dir_name(),
-        # Active palette — drives `<html data-theme="...">` in
-        # base.html so `--ds-*` tokens flip via CSS without
-        # touching markup. "blue" (default) = brand-blue palette;
-        # "navy" = darker opt-in palette. Admin toggles via
-        # /admin/server-config.
-        "instance_theme": get_instance_theme(),
-        # Structural chrome layout — "topnav" (default, horizontal
-        # _app_header bar) or "rail" (fixed left sidebar,
-        # _app_rail.html). Independent of the color theme so existing
-        # instances keep their exact chrome.
-        "ui_layout": get_ui_layout(),
-        # Whether /home renders the "Step 3 — turn on auto-accept mode"
-        # install-block. Operator can hide it via AGNES_HOME_SHOW_AUTOMODE=0
-        # for cautious rollouts; same content stays on /setup-advanced.
-        "home_automode": {"show": get_home_automode_visibility()},
-        # Operator-injected HTML/JS blocks rendered into base.html at
-        # head_start / head_end / body_end. Admin-only (instance.yaml,
-        # gated by require_admin) — used for feedback widgets
-        # (Marker.io), analytics, error capture. Empty default keeps
-        # the OSS vendor-neutral.
-        "custom_scripts": get_custom_scripts(),
     }
-    ctx["can_chat"] = _compute_can_chat(request, user)
-    # Studio nav visibility. Pure instance-level toggle (no per-user grant,
-    # unlike can_chat) — the enclosing `{% if session.user %}` already scopes
-    # the nav to signed-in users. The hard gate lives on the routes.
-    ctx["can_studio"] = get_studio_enabled()
-    # "My agents" nav entry visibility — instance-level toggle, mirrors
-    # can_studio. The hard gate lives on the /agents route + the API routers.
-    ctx["can_agent_profiles"] = get_agent_profiles_enabled()
     # Flex all extra context values for template compatibility
     # (but skip ones we just populated — extras with the same key win)
     for k, v in extra.items():
@@ -1331,8 +1288,17 @@ async def me_ai_connector_page(
     instance's menu says "Learn how it works", so a bookmark or alias hop
     must not resurrect the standalone page there (Devin Review on #1200).
     302, not 301: a permanent redirect is cached by the browser forever, so
-    it would be very hard to walk back if the consolidation is revisited."""
+    it would be very hard to walk back if the consolidation is revisited.
+
+    Checked before either chrome branch (#1024): with the MCP connector UI
+    hidden (``mcp.connector_ui_enabled: false`` — a VPN/intranet-only instance
+    whose cloud-side MCP clients can never reach the endpoint), this whole
+    page IS the surface being hidden, so both branches bounce home rather
+    than one of them rendering it anyway."""
     from fastapi.responses import RedirectResponse
+
+    if not get_mcp_connector_ui_enabled():
+        return RedirectResponse("/", status_code=302)
 
     if get_ui_layout() == "rail" or _is_paper_theme():
         return RedirectResponse("/how-it-works#connect", status_code=302)
@@ -1417,6 +1383,14 @@ async def mcp_connect_page(
     # `/me/ai-connector` owns it. Both links are guarded by
     # `tests/test_web_nav_agents.py`; don't drop them. (Comment, not docstring:
     # FastAPI copies docstrings into the OpenAPI description.)
+    #
+    # Same #1024 gate as /me/ai-connector — this page IS install instructions
+    # for the surface being hidden.
+    if not get_mcp_connector_ui_enabled():
+        from fastapi.responses import RedirectResponse
+
+        return RedirectResponse("/", status_code=302)
+
     ctx = _build_context(
         request,
         user=user,
@@ -3298,6 +3272,83 @@ async def library_page(
         except Exception as e:
             logger.warning("/library: could not resolve %s: %s", rt.value, e)
 
+    # Data apps — hosted apps the caller owns or has been granted. The
+    # Library is "everything you have", and an app you built from chat is as
+    # much yours as a collection you uploaded; until this row existed a
+    # `rail` instance had no way to reach one at all, since the "Apps" nav
+    # entry shipped in the topnav only.
+    #
+    # Visibility is OWNERSHIP ∪ GRANT, deliberately NOT `data_apps._can_view`.
+    # That helper short-circuits True for any admin, and this page's contract
+    # is the opposite — see this function's docstring: "Deliberately NOT admin
+    # god-mode — an admin still sees their own Library, not every item in the
+    # instance". Reusing it listed every hosted app in the instance in an
+    # admin's Library, other people's private ones included, labelled "Shared
+    # with you" with owner "Your workspace" — a claim that is simply false for
+    # an app they hold no grant on (Devin Review on this PR). Reuse was the
+    # right instinct for the *shape* and the draft rule; it was the wrong one
+    # for the scope, because the two surfaces answer different questions.
+    #
+    # The grant set is fetched ONCE rather than per row: `_can_view` costs two
+    # DB lookups per app, on every Library render.
+    #
+    # Drafts are excluded (they are iteration branches of an app, not apps)
+    # and so is `linked_hidden`, matching `/apps` exactly.
+    # Aliased imports: both names are bound locally further down this
+    # function, so referencing the module-level ones here is a use-before-
+    # assignment in the same scope.
+    from app.instance_config import feature_enabled as _feat_enabled
+    from src.repositories import data_apps_repo as _apps_repo
+
+    if _feat_enabled("data_apps", "enabled", env_var="AGNES_DATA_APPS_ENABLED", default=False):
+        try:
+            # Grants on this type are keyed by SLUG (see `_can_view`), not id.
+            _app_grants = _granted_ids(ResourceType.DATA_APP.value)
+
+            # `limit=100000` like every sibling listing in this function
+            # (`data_packages_repo`, `memory_domains_repo`, `recipes_repo`).
+            # The repo defaults to 1000 ordered `created_at DESC`, and that
+            # cap applies BEFORE the ownership/grant filter below — so on an
+            # instance with more apps than that, a caller's older apps drop
+            # off their own Library silently, and under the rail chrome this
+            # page is the only way to click through to one. Linked rows are
+            # created one-per-upstream-app by the MCP listers, so the count is
+            # not bounded by what people build by hand (Devin Review).
+            for a in _apps_repo().list(include_drafts=False, limit=100000):
+                if a.get("state") == "linked_hidden":
+                    continue
+                if a.get("owner_user_id") != uid and a.get("slug") not in _app_grants:
+                    continue
+                _mine = a.get("owner_user_id") == user["id"]
+                _created = a.get("created_at")
+                items.append(
+                    _library_row_base(
+                        item_id=a["id"],
+                        kind="data_app",
+                        title=a.get("name") or a.get("slug") or "",
+                        description=a.get("description") or "",
+                        href=f"/apps/detail/{a['slug']}",
+                        glyph="app",
+                        type_key="data_app",
+                        type_label="App",
+                        origin="mine" if _mine else "granted",
+                        origin_label="Yours" if _mine else "Shared with you",
+                        added_iso=_created.isoformat() if hasattr(_created, "isoformat") else None,
+                        owner_label="You" if _mine else "Your workspace",
+                        ownership="mine" if _mine else "shared_with_me",
+                        visibility="private" if _mine else "shared",
+                        visibility_label="Private" if _mine else "Shared with you",
+                        # The state is the one thing worth knowing at a glance:
+                        # an app can be running, sleeping, or in error, and the
+                        # row is a link you are deciding whether to click.
+                        meta_text=(a.get("state") or "").replace("_", " "),
+                        share_type=None,
+                        owner_key="me" if _mine else "workspace",
+                    )
+                )
+        except Exception as e:
+            logger.warning("/library: could not resolve data apps: %s", e)
+
     # Recipes — granted, resolved straight off the repo (no _fetch_entries
     # support for this type in StackResolver).
     try:
@@ -3586,6 +3637,7 @@ async def library_page(
     # Unlisted types fall to the end, alphabetically.
     _SECTION_ORDER = [
         "data_package",
+        "data_app",
         "plugin",
         "skill",
         "agent",
@@ -3616,6 +3668,7 @@ async def library_page(
         "agent": "Agents",
         "recipe": "Recipes",
         "data_package": "Data packages",
+        "data_app": "Apps",
         "memory_domain": "Memory",
     }
     #: One line per group, in the header beside the label — the same slot My
@@ -3631,6 +3684,7 @@ async def library_page(
         "agent": "Assistants you installed.",
         "recipe": "Prepared analyses you can run.",
         "data_package": "Governed data you can query.",
+        "data_app": "Hosted apps running next to your data.",
         "memory_domain": "Curated organizational knowledge.",
     }
     #: Marker for a kind that will land INSIDE an existing section rather than
@@ -3640,16 +3694,15 @@ async def library_page(
     #: appear; it is not worth a paragraph above the inventory the reader came
     #: for. Rendered by `group_toggle`, so the table and the grid pick it up
     #: from one place.
-    _SECTION_SOON = {
-        "files": "Data apps coming soon",
-    }
-    _SECTION_SOON_TIP = {
-        "files": (
-            "Hosted apps that run next to your data will appear here. You'll be "
-            "able to build them with Agnes or link an existing one. Nothing to "
-            "do yet."
-        ),
-    }
+    #: "<kind> coming soon" badges, keyed by the section the kind will ship
+    #: INTO. Empty because the one entry it carried — "Data apps coming soon",
+    #: on the Files band — has shipped: apps now have their own section above,
+    #: and leaving the badge would have the same page list your apps and tell
+    #: you they do not exist yet (Devin Review on this PR). The mechanism stays
+    #: for the next kind; the badge is meant to delete itself when the kind
+    #: lands, which is what this is.
+    _SECTION_SOON: dict[str, str] = {}
+    _SECTION_SOON_TIP: dict[str, str] = {}
     #: Each section wears the SAME accent its members' detail pages wear, so a
     #: type is recognizable by colour before the label is read. Values are the
     #: `--ds-kind-*` vocabulary the detail hero resolves through
@@ -3662,6 +3715,7 @@ async def library_page(
         "agent": ("agent", "agent"),
         "recipe": ("recipe", "recipes"),
         "data_package": ("data", "data"),
+        "data_app": ("app", "app"),
         "memory_domain": ("memory", "memory"),
     }
 
@@ -4757,17 +4811,26 @@ async def memory_domain_detail(
 
 
 def _chrome_ctx(request: Request, user: Optional[dict]) -> dict:
-    """Base context every base_ds page needs for the shared nav + footer chrome.
+    """Single owner of every chrome-level template-context key (#996).
 
-    Routes that render ``base_ds.html`` MUST spread this in — otherwise the
-    navbar, theme, branding, and url helpers render empty (the studio pages
-    regressed on exactly this: no top menu, no styling). Mirrors the canonical
-    context the home/setup routes build.
+    Routes that render ``base_ds.html``/``base_page.html`` MUST spread this
+    in — otherwise the navbar, theme, branding, and url helpers render empty
+    (the studio pages regressed on exactly this: no top menu, no styling).
+    ``_build_context`` composes this same dict for its (heavier) pages, so a
+    chrome key only ever needs to be added HERE to reach both — see its
+    docstring. ``is_admin`` is deliberately NOT a chrome key: unlike the keys
+    below, it isn't needed by the shared header/rail (which reads
+    ``session.user.is_admin`` instead) and most ``_build_context`` callers
+    compute it themselves (often reusing a request-scoped ``conn``); adding
+    it here would silently grant it to every page and cost an extra,
+    cache-less ``is_user_admin()`` lookup none of them asked for. The one
+    ``_chrome_ctx`` page whose *own* template reads top-level ``is_admin``
+    (``/admin/studio/{domain}``) sets it explicitly, the same way
+    ``_build_context`` callers do.
     """
     return {
         "request": request,
         "user": _flex(user) if user else _FlexDict(),
-        "is_admin": bool(user) and is_user_admin(user.get("id")),
         "now": datetime.now,
         "get_flashed_messages": lambda **kw: [],
         "url_for": lambda endpoint, **kw: _url_for_shim(endpoint, **kw),
@@ -4789,6 +4852,10 @@ def _chrome_ctx(request: Request, user: Optional[dict]) -> dict:
         # can_studio (the hard gate lives on the /agents route + the API
         # routers, this only hides the entry point).
         "can_agent_profiles": get_agent_profiles_enabled(),
+        # MCP connector surface visibility (#1024), same reason as
+        # can_agent_profiles above — set independently here so it survives on
+        # every _chrome_ctx page too.
+        "can_mcp_connector_ui": get_mcp_connector_ui_enabled(),
         # Same `config` object as _build_context — templates read
         # config.INSTANCE_NAME in <title> blocks and the header logo, which
         # rendered empty on _chrome_ctx pages ("Studio — " title).
@@ -5056,7 +5123,14 @@ async def studio(
     return templates.TemplateResponse(
         request,
         "admin_studio.html",
-        {**_chrome_ctx(request, user), "domain": spec, "profile_slug": spec.profile},
+        {
+            **_chrome_ctx(request, user),
+            "domain": spec,
+            "profile_slug": spec.profile,
+            # Not a chrome key (see _chrome_ctx's docstring) — this page's own
+            # template is the one place that needs it, so it's set here.
+            "is_admin": is_user_admin(user["id"]),
+        },
     )
 
 
@@ -6442,8 +6516,7 @@ async def admin_semantic_layer_page(
     # here. So the page says a subset is shown, without a number it cannot
     # compute honestly. (Devin Review on this PR.)
     ctx["unresolved_tables_truncated"] = any(
-        int(e.get("unresolved_tables_total") or 0) > len(e.get("unresolved_tables") or [])
-        for e in last_by_ref.values()
+        int(e.get("unresolved_tables_total") or 0) > len(e.get("unresolved_tables") or []) for e in last_by_ref.values()
     )
     ctx["skipped_unresolved_total"] = sum(int(e.get("skipped_unresolved_table") or 0) for e in last_by_ref.values())
     ctx["default_connection_id"] = default_id

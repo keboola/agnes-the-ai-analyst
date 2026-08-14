@@ -33,6 +33,7 @@ import asyncio
 import contextlib
 import logging
 import math
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote
@@ -400,6 +401,7 @@ from app.api.me_stats import router as me_stats_router
 from app.api.admin import router as admin_router
 from app.api.admin_bigquery_test import router as admin_bigquery_test_router
 from app.api.admin_keboola_test import router as admin_keboola_test_router
+from app.api.attachments import router as attachments_router
 from app.api.jira_webhooks import router as jira_webhooks_router
 from app.api.metrics import router as metrics_router
 from app.api.glossary import router as glossary_router
@@ -665,7 +667,9 @@ def _state_checkpoint_interval_s() -> float:
 
 
 async def _state_checkpoint_loop(interval_s: float) -> None:
-    """Periodically fold the system.duckdb WAL into the main file (#710).
+    """Periodically fold the system.duckdb WAL into the main file (#710),
+    and — on the cadence configured separately — refresh the rolling
+    recovery snapshot (#380).
 
     The app's long-lived singleton connection makes DuckDB defer its own
     threshold checkpoint indefinitely, so without this loop the state-DB
@@ -677,10 +681,18 @@ async def _state_checkpoint_loop(interval_s: float) -> None:
     cancellation waits for an in-flight CHECKPOINT/read instead of letting
     the lifespan's ``close_system_db()`` race it (see that helper's
     docstring in ``app/api/health_probes.py``).
+
+    ``refresh_rolling_snapshot`` piggybacks on this same tick rather than
+    getting its own loop/timer: it needs the identical locking discipline
+    (the app's own ``system.duckdb`` singleton, never a second connection),
+    so reusing this loop is both the simplest wiring and the only safe one.
+    It self-gates on its own (much coarser) cadence — see
+    ``backups.rolling_snapshot_interval_hours`` — so most ticks here no-op
+    for it in a single mtime check.
     """
     from app.api.health_probes import to_thread_drain_on_cancel
     from app.secrets import reapply_all_overlay_tokens_from_vault
-    from src.db import checkpoint_operational_db, checkpoint_system_db
+    from src.db import checkpoint_operational_db, checkpoint_system_db, refresh_rolling_snapshot
 
     while True:
         await asyncio.sleep(interval_s)
@@ -694,6 +706,14 @@ async def _state_checkpoint_loop(interval_s: float) -> None:
             # checkpoint_*_db already swallow DB errors; this guards the loop
             # itself (e.g. to_thread failure) so it never dies.
             logger.exception("state-checkpoint tick failed; loop continues")
+        try:
+            # No-ops instantly on a Postgres-state instance, when no
+            # system.duckdb singleton is open yet, or when the rolling
+            # snapshot is still within its configured cadence — the
+            # EXPORT DATABASE cost only actually runs on the (rare) stale tick.
+            await to_thread_drain_on_cancel(refresh_rolling_snapshot)
+        except Exception:
+            logger.exception("rolling-snapshot refresh tick failed; loop continues")
         try:
             # Belt-and-braces piggyback (wave 2C task 6): re-apply every
             # env_overlay/* vault row to os.environ on every tick. Covers a
@@ -1037,11 +1057,17 @@ async def lifespan(app):
     if role_enabled(Role.WORKER):
         _maybe_rebuild_on_boot()
 
-    # Rebuild the FTS BM25 index over knowledge_items at boot (issue #121).
-    # The migration to schema v47 already does this on first upgrade, but
-    # for instances that have been on v47 across restarts the boot-time
-    # rebuild guarantees the index reflects whatever mutations landed via
-    # the BG-task / scheduler paths that bypass the per-mutation hook.
+    # Rebuild the FTS BM25 indexes over knowledge_items and glossary_terms at
+    # boot (issue #121; glossary_terms joined in for #1294 — a rolling/WAL
+    # recovery restore lands a plain system.duckdb with no fts_main_* schemas
+    # until something rebuilds them, and this is the only unconditional
+    # safety net for that: knowledge_items/glossary_terms mutations rebuild
+    # their own index on write, but a table that hasn't been touched since
+    # restore would otherwise stay on the ILIKE fallback indefinitely). The
+    # migration to schema v47 already does this on first upgrade, but for
+    # instances that have been on v47 across restarts the boot-time rebuild
+    # guarantees the index reflects whatever mutations landed via the
+    # BG-task / scheduler paths that bypass the per-mutation hook.
     # Soft-failure — logs WARNING and the repo falls back to ILIKE.
     #
     # DuckDB-only: the BM25 index is a DuckDB FTS-extension artefact built on
@@ -1052,9 +1078,11 @@ async def lifespan(app):
     if not _use_pg():
         try:
             from src.db import get_system_db
-            from src.fts import ensure_knowledge_fts_index
+            from src.fts import ensure_glossary_fts_index, ensure_knowledge_fts_index
 
-            ensure_knowledge_fts_index(get_system_db())
+            _fts_conn = get_system_db()
+            ensure_knowledge_fts_index(_fts_conn)
+            ensure_glossary_fts_index(_fts_conn)
         except Exception:
             logger.exception("startup FTS index rebuild failed; falling back to ILIKE on /api/memory?search=")
 
@@ -2084,6 +2112,9 @@ def create_app() -> FastAPI:
         minimum_size=1024,
         skip_prefixes=(
             "/api/data/",
+            # Attachment binaries (PDF/PNG/ZIP …) are already compressed;
+            # same rationale as the parquet exclusion above.
+            "/api/attachments/",
             "/api/mcp",  # SSE stream — do not gzip
             # Chat sandbox LLM proxy: the model completion streams back as
             # text/event-stream. GZipMiddleware buffers a StreamingResponse
@@ -2139,6 +2170,27 @@ def create_app() -> FastAPI:
         if o.strip()
     ]
     cors_allow_credentials = True
+    # Data-app subdomains also make credentialed cross-origin requests to the
+    # main host (the readiness poll in data_app_waking.html). Allow any host
+    # under data_apps.subdomain_base when that is configured; the session
+    # cookie is already scoped to the shared parent domain.
+    cors_origin_regex: str | None = None
+    try:
+        from app.instance_config import get_data_apps_config
+
+        # `.strip(".")` matches DataAppSubdomainMiddleware's own normalisation:
+        # a value written `.apps.example.com` would otherwise escape to a
+        # doubled dot and match NOTHING, so the middleware would serve the
+        # subdomain while the readiness poll was CORS-blocked.
+        data_app_base = (get_data_apps_config().get("subdomain_base") or "").strip().strip(".")
+        if data_app_base:
+            escaped = re.escape(data_app_base)
+            # A SINGLE label, not `[^:\s/]+` — the middleware only routes
+            # single-label slugs, so accepting `a.b.<base>` would widen the
+            # credentialed-CORS surface past anything that can be served.
+            cors_origin_regex = rf"^https?://[^.:\s/]+\.{escaped}(:\d+)?$"
+    except Exception:
+        logger.exception("Failed to compute data-app CORS origin regex")
     if "*" in cors_origins:
         # SECURITY: Starlette's CORSMiddleware, when allow_origins contains "*"
         # AND allow_credentials=True, reflects the caller's Origin into
@@ -2157,6 +2209,7 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
+        allow_origin_regex=cors_origin_regex,
         allow_credentials=cors_allow_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -2432,6 +2485,7 @@ def create_app() -> FastAPI:
     app.include_router(me_access_router)
     app.include_router(me_router)
     app.include_router(me_stats_router)
+    app.include_router(attachments_router)
     app.include_router(jira_webhooks_router)
     app.include_router(metrics_router)
     app.include_router(glossary_router)

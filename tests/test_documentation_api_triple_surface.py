@@ -22,7 +22,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-
 # Endpoints that must have all three surfaces. Forward-only — add new
 # entries when they land, do NOT retroactively backfill old endpoints
 # (the policy is a ratchet, not a sweep). Tuple of (cli_cmd, mcp_tool).
@@ -150,11 +149,12 @@ _COHORT: dict[str, tuple[str, str]] = {
 
 def test_rest_endpoints_callable():
     """REST surface — every cohort entry resolves to a router handler."""
-    from app.web.router import router  # noqa: F401  (import surface registration)
-
     # documentation_api is the handler name; importing the module is enough
     # to register the route on the router. Spot-check the new one explicitly.
-    from app.web.router import documentation_api  # type: ignore[attr-defined]
+    from app.web.router import (
+        documentation_api,  # type: ignore[attr-defined]
+        router,  # noqa: F401  (import surface registration)
+    )
 
     assert callable(documentation_api)
 
@@ -630,6 +630,12 @@ _EXEMPT: dict[str, str] = {
         "admin-only bucket/table discovery for the 'Add data source' wizard (#755) — "
         "keboola-only browse-and-register primitive with no analyst CLI/MCP analogue; "
         "`agnes admin register-table` already covers the actual registration step"
+    ),
+    "/api/attachments/{source}/{attachment_id}/download": (
+        "connector-catalogued attachment binary download (Jira first) — one-shot "
+        "fetch by id consumed by `agnes attachment get`; binary byte-stream with "
+        "no MCP/JSON analogue, mirrors the parquet /api/data/{table_id}/download "
+        "and knowledge-artifact download channels"
     ),
     "/api/knowledge/artifacts/{corpus_id}/download": (
         "K3 local packaging (#798) — binary knowledge.duckdb artifact consumed by "

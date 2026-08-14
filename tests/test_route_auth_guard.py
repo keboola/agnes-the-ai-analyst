@@ -55,6 +55,18 @@ _EXEMPT: dict[str, str] = {
         "page instead of a raw 401 JSON body (same pattern as "
         "/api/initial-workspace.zip; Devin Review on #1130)"
     ),
+    "/api/data-apps/{slug}/readiness": (
+        "authenticates INSIDE the handler via the proxy's own resolver "
+        "(app/api/data_apps_proxy.py::_resolve_proxy_caller) rather than a "
+        "Depends chain, because the holding page this endpoint serves is "
+        "rendered by that proxy and its callers include a "
+        "`data-app-preview:<slug>` scoped token — a credential "
+        "get_current_user rejects outright, so a Depends(get_current_user) "
+        "here 401'd the poll on a page the same request chain had just "
+        "served (Devin Review on #1272). Unauthenticated callers still get "
+        "401 and the preview token is pinned to the slug being polled; "
+        "tests/test_data_apps_proxy.py covers both"
+    ),
     "/api/initial-workspace.zip": (
         "uses Depends(get_optional_user) plus a manual 401/redirect check in the "
         "handler body (not a Depends-chain auth dependency) so an anonymous browser "
