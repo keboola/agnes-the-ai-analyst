@@ -122,6 +122,24 @@ def test_the_prompt_mandates_the_next_actions_trailer():
     assert "Skip the block" in flat, "the prompt must say when NOT to emit it"
 
 
+def test_the_template_carries_the_trailer_for_the_sandbox_only():
+    """The LIVE sandbox prompt renders from config/claude_md_template.txt
+    (app/main.py hands render_claude_md(is_sandbox=True) to WorkdirManager);
+    the bundled CLAUDE.md is the fallback. Both must carry the contract, or
+    the buttons never appear on a normally-deployed instance. The template's
+    copy is sandbox-gated: a terminal session has nothing that lifts the
+    fence, so mandating it there would put raw wire format on every answer.
+    (Found by /agnes-review on the first cut of this change.)"""
+    tpl = Path("config/claude_md_template.txt").read_text(encoding="utf-8")
+    assert "```next_actions" in tpl, "the rendered sandbox prompt must mandate the trailer"
+    section_start = tpl.index("## Offer the next step")
+    guard_open = tpl.rindex("{% if is_sandbox %}", 0, section_start)
+    guard_close = tpl.index("{% endif %}", section_start)
+    body = tpl[guard_open:guard_close]
+    assert "```next_actions" in body, "the section must sit inside an is_sandbox guard"
+    assert "{% if" not in body[len("{% if is_sandbox %}") :], "no nested guard — the whole section is sandbox-only"
+
+
 # ── tool labels: a reader-facing verb, never a raw tool id ───────────────────
 
 
