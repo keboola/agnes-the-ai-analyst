@@ -155,6 +155,7 @@ def get_ui_layout() -> str:
 **Interfaces:**
 - Produces: the new contract later waves rely on — default render IS rail+paper; `classic`/`topnav` values are tolerated-but-inert.
 
+- [ ] **Step 0: Full default-pin sweep (T1 audit follow-up)** — beyond this file, ~19 tests across 7 files pin the retired "unset ⇒ classic" defaults (list + reasoning in `.superpowers/sdd/2026-08-14-workspace-w0-legacy-retirement/task-1-report.md`): `tests/test_stack_membership_modes.py`, `tests/db_pg/test_parity_stack.py`, `tests/test_e2e_stack_rbac.py`, `tests/test_cli_api_parity.py`, `tests/test_web_catalog_unified.py`, `tests/test_web_library.py`, `tests/test_api_sync_manifest_v49.py`. For each failure: if it pins the old default, re-pin to the redesign default (auto-membership True etc.); if it asserts classic-only behavior that no longer exists, delete it with a note; if it reveals an actual regression, STOP and report. The PG parity suite is in the list — both backends' expectations move together.
 - [ ] **Step 1: Delete retired classes** — `TestDefaultChromeUnchanged`, every `TestDefaultContentParity`-style assertion (`test_topnav_catalog_keeps_classic_page` at :546 and siblings), and any test monkeypatching `AGNES_UI_LAYOUT=rail` to opt in (now the default).
 - [ ] **Step 2: Add the new default-contract class:**
 
@@ -185,7 +186,7 @@ class TestRedesignIsTheOnlyExperience:
 
 - [ ] **Step 1: Docs sweep** — `grep -rn 'topnav\|classic' CLAUDE.md docs/ config/ .claude/skills/agnes-conventions/ | grep -vi changelog` and rewrite each hit that describes a choice that no longer exists (chrome switch, default parity, dual-surface fix rule).
 - [ ] **Step 2: CHANGELOG** — under `## [Unreleased]` → `### Changed`:
-  `**BREAKING**: the classic experience (topnav chrome, pre-redesign pages, legacy chat) is retired; every instance renders the redesign (rail + paper default). Explicit theme choices still win; \`instance.ui_layout\`/\`experience: classic\` are ignored with a startup warning.`
+  `**BREAKING**: the classic experience (topnav chrome, pre-redesign pages, legacy chat) is retired; every instance renders the redesign (rail + paper default). Explicit theme choices still win; \`instance.ui_layout\`/\`experience: classic\` are ignored with a startup warning. Stack membership defaults to auto-membership (\`features.stack_auto_membership\` default flips to true; an explicit \`false\` still wins).`
 - [ ] **Step 3: Gates** — `scripts/verify_syncmap.py`; `pytest tests/test_design_system_contract.py -q`; openapi snapshot only if `gh pr checks` complains.
 - [ ] **Step 4: Commit + draft PR** — `git commit -m "docs: single-surface guidance + BREAKING changelog"`; `gh pr create --draft` → watch CI (`gh pr checks --watch`, then confirm conclusions via `gh run list`).
 
