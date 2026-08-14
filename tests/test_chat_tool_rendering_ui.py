@@ -120,3 +120,51 @@ def test_the_prompt_mandates_the_next_actions_trailer():
     assert "```next_actions" in md
     assert "one-click buttons" in flat
     assert "Skip the block" in flat, "the prompt must say when NOT to emit it"
+
+
+# ── tool labels: a reader-facing verb, never a raw tool id ───────────────────
+
+
+def test_tool_label_executable():
+    js = _read(CHAT_JS)
+    fn = js[js.index("const _TOOL_LABELS") : js.index("function renderApprovalRequest")]
+    cases = [
+        ["Bash", {"command": 'agnes query "SELECT 1"'}],
+        ["Bash", {"command": "agnes catalog --json"}],
+        ["Bash", {"command": "ls -la"}],
+        ["Read", {"file_path": "/tmp/x"}],
+        ["mcp__agnes__crm_search_accounts", {"q": "acme"}],
+        ["totally_unknown_tool", {}],
+        [None, None],
+    ]
+    script = fn + f"\nprocess.stdout.write(JSON.stringify({json.dumps(cases)}.map(([t, a]) => _toolLabel(t, a))));\n"
+    res = json.loads(_node_run(script))
+    assert res[0] == "Querying data"
+    assert res[1] == "Reading the data catalog"
+    assert res[2] == "Running a command"
+    assert res[3] == "Reading a file"
+    assert res[4] == "Crm search accounts", "mcp prefix stripped, words humanized"
+    assert res[5] == "Totally unknown tool"
+    assert res[6] == "tool"
+    assert not any("mcp__" in r for r in res)
+
+
+def test_live_and_history_headers_use_the_label():
+    js = _read(CHAT_JS)
+    start = js[js.index("function renderToolCallStart") : js.index("function renderToolCallEnd")]
+    assert "_toolLabel(frame.tool, frame.args)" in start
+    assert "name.title = frame.tool" in start, "the raw id stays reachable as a tooltip"
+    assert "_toolLabel(tc.tool, tc.args)" in js, "history formatToolCall must agree"
+
+
+def test_summarize_args_shows_the_command_line():
+    js = _read(CHAT_JS)
+    fn = js[js.index("function _summarizeArgs") : js.index("const _TOOL_LABELS")]
+    cases = {"cmd": {"command": "agnes schema hr_headcount"}, "sql": {"sql": "SELECT 1"}}
+    script = (
+        fn
+        + f"\nprocess.stdout.write(JSON.stringify(Object.fromEntries(Object.entries({json.dumps(cases)}).map(([k, v]) => [k, _summarizeArgs(v)]))));\n"
+    )
+    res = json.loads(_node_run(script))
+    assert res["cmd"] == "agnes schema hr_headcount"
+    assert res["sql"] == "SELECT 1"

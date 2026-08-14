@@ -557,7 +557,7 @@ function renderAnswerMarkdown(content) {
  *  an empty fence. */
 function formatToolCall(tc) {
   if (!tc || typeof tc.tool !== "string") return null;
-  return { label: tc.tool, argsJson: JSON.stringify(tc.args ?? {}, null, 2) };
+  return { label: _toolLabel(tc.tool, tc.args), argsJson: JSON.stringify(tc.args ?? {}, null, 2) };
 }
 
 /** Markdown transcript of one conversation. ``title`` must be captured by the
@@ -2005,6 +2005,10 @@ function _summarizeArgs(args) {
   // Heuristic: prefer the SQL arg if present (run_query, agnes query)
   // — that's what the user actually wants to see. Otherwise show the
   // first scalar value or a "k=v, k=v" sketch.
+  if (typeof args.command === "string") {
+    const cmd = args.command.replace(/\s+/g, " ").trim();
+    return cmd.length > 100 ? cmd.slice(0, 98) + "…" : cmd;
+  }
   if (typeof args.sql === "string") {
     const sql = args.sql.replace(/\s+/g, " ").trim();
     return sql.length > 100 ? sql.slice(0, 98) + "…" : sql;
@@ -2019,6 +2023,59 @@ function _summarizeArgs(args) {
     parts.push(`${k}=${text.length > 30 ? text.slice(0, 28) + "…" : text}`);
   }
   return parts.join(", ");
+}
+
+// ---------- Tool labels -----------------------------------------------------
+// The header of a tool block shows a reader-facing verb, not a tool id. Three
+// layers: (1) the agent does most data work through the agnes CLI inside
+// Bash, so for Bash the COMMAND LINE is what names the action — first
+// matching prefix wins; (2) exact names for the harness builtins; (3) an
+// unknown tool is humanized (mcp prefix off, underscores to spaces), so raw
+// JSON-ish ids never headline a block. The raw id stays in the tooltip and
+// the args panel.
+const _TOOL_LABELS = {
+  Bash: "Running a command",
+  Read: "Reading a file",
+  Write: "Writing a file",
+  Edit: "Editing a file",
+  Glob: "Listing files",
+  Grep: "Searching files",
+  Task: "Delegating to a subagent",
+  WebSearch: "Searching the web",
+  WebFetch: "Fetching a page",
+  TodoWrite: "Planning steps",
+};
+
+const _BASH_COMMAND_LABELS = [
+  ["agnes catalog", "Reading the data catalog"],
+  ["agnes schema", "Reading a table schema"],
+  ["agnes describe", "Sampling table rows"],
+  ["agnes query", "Querying data"],
+  ["agnes snapshot", "Snapshotting remote data"],
+  ["agnes stack", "Browsing data packages"],
+  ["agnes pull", "Syncing data"],
+  ["python", "Running Python"],
+];
+
+/** `mcp__<server>__<tool>` → `<tool>`; anything else unchanged. */
+function _plainToolName(tool) {
+  const m = /^mcp__.+?__(.+)$/.exec(tool || "");
+  return m ? m[1] : tool || "";
+}
+
+function _toolLabel(tool, args) {
+  const bare = _plainToolName(tool);
+  if (bare === "Bash") {
+    const cmd = args && typeof args.command === "string" ? args.command.trim() : "";
+    for (const [prefix, label] of _BASH_COMMAND_LABELS) {
+      if (cmd.startsWith(prefix)) return label;
+    }
+    return _TOOL_LABELS.Bash;
+  }
+  if (Object.prototype.hasOwnProperty.call(_TOOL_LABELS, bare)) return _TOOL_LABELS[bare];
+  const words = bare.replace(/[_-]+/g, " ").trim();
+  if (!words) return "tool";
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 function renderApprovalRequest(frame) {
@@ -2156,7 +2213,8 @@ function renderToolCallStart(frame) {
   } else {
     name = document.createElement("span");
     name.className = "cloud-chat-tool-name";
-    name.textContent = frame.tool || "tool";
+    name.textContent = _toolLabel(frame.tool, frame.args);
+    name.title = frame.tool || "";
   }
   head.appendChild(name);
 
