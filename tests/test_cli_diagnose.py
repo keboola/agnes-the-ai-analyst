@@ -328,7 +328,10 @@ class TestLocalDeliveryCheck:
         c = self._run(monkeypatch, tmp_path, manifest=self._manifest("events"))
         assert c["status"] == "ok", c
         assert c["tables_local"] == 1
-        assert mod._local_table_names(tmp_path / "server" / "parquet") == {"events"}
+        # The rule now lives in `cli/lib/local_tables.py` so `agnes status` and
+        # `agnes diagnose` cannot drift on "what is a local table?"; `diagnose`
+        # re-exports it by importing the name.
+        assert mod.local_table_names(tmp_path / "server" / "parquet") == {"events"}
 
     def test_typed_stack_sections_decide_what_is_offered(self, monkeypatch, tmp_path):
         """The flat `tables` dict is gated by `can_access_table`, whose Admin

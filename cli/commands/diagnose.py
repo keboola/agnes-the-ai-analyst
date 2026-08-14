@@ -8,40 +8,11 @@ import typer
 from cli.client import RedirectHardStop, api_get
 from cli.config import get_sync_state, get_workspace_root
 from cli.lib.jira_partition_check import detect_jira_partition_layout
+from cli.lib.local_tables import local_table_names
 from cli.lib.session_health import session_upload_health
 from cli.lib.workspace_resolve import resolve_data_workspace
 
 diagnose_app = typer.Typer(help="System diagnostics")
-
-
-def _local_table_names(parquet_dir: Path) -> set[str]:
-    """Which tables are actually readable from `<workspace>/server/parquet/`.
-
-    Mirrors the DuckDB view rebuild in `cli/lib/pull.py` exactly, because that
-    rebuild is what decides whether `agnes query <table>` resolves — which is
-    the question this check is really asking. A partitioned table lives as a
-    DIRECTORY of parts (`server/parquet/<table_id>/**/*.parquet`) and gets ONE
-    view named after the directory, so a top-level `*.parquet` glob misses it
-    entirely and would warn about missing data the analyst already has.
-    `.staging-<tid>` dirs are the debris of an interrupted partitioned sync and
-    are never exposed as a view, so they are not a table either.
-    """
-    if not parquet_dir.exists():
-        return set()
-    names: set[str] = set()
-    try:
-        entries = list(parquet_dir.iterdir())
-    except OSError:
-        return set()
-    for entry in entries:
-        if entry.name.startswith(".staging-"):
-            continue
-        if entry.is_dir():
-            if any(entry.rglob("*.parquet")):
-                names.add(entry.name)
-        elif entry.suffix == ".parquet":
-            names.add(entry.stem)
-    return names
 
 
 def _offered_table_names(manifest: dict) -> set[str]:
@@ -132,7 +103,7 @@ def _local_delivery_check() -> dict:
             )
             return check
 
-        local = _local_table_names(root / "server" / "parquet")
+        local = local_table_names(root / "server" / "parquet")
 
         try:
             resp = api_get("/api/sync/manifest")
