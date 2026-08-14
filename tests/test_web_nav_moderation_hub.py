@@ -8,8 +8,9 @@ even with verification off, so hiding the row would unlink live content.
 The page itself hides its verification section when the switch is off
 (`admin_moderation_hub.html` renders off `store_verification_enabled`).
 
-Renders the default topnav chrome (no AGNES_UI_LAYOUT) — the rail collapse is
-guarded in test_rail_journey_chrome.py.
+Renders the default topnav chrome (no AGNES_UI_LAYOUT) — so this proves the
+additive mega-menu entry, not the rail collapse (that is guarded in
+test_rail_journey_chrome.py).
 """
 
 from __future__ import annotations

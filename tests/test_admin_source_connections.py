@@ -1675,7 +1675,13 @@ def test_the_admin_page_offers_a_way_out_of_a_project_binding():
 
     assert "function unbindProject(" in src
     assert 'onclick="unbindProject(' in src, "the control is defined but never rendered"
-    assert ".ds-unbind {" in src, "the control must be styled, not bare"
+    # "Styled, not bare" — originally a page-local `.ds-unbind` rule. The card
+    # rework moved the control onto the source card's own fact row, where it
+    # takes the SHARED button (`.btn.btn-secondary`) like every other action on
+    # that card. That is the same property, satisfied by the design system
+    # instead of by a private class, so the guard asks for the shared one.
+    unbind_line = next(line for line in src.splitlines() if 'onclick="unbindProject(' in line)
+    assert "btn btn-secondary" in unbind_line, "the control must be styled, not bare"
     # It has to send explicit nulls: the handler carries the keys forward when
     # they are ABSENT, which is what stops an ordinary edit dropping them.
     assert "project_id: null" in src and "project_name: null" in src
@@ -1697,7 +1703,15 @@ def test_the_test_button_is_targeted_explicitly_not_by_position():
 
     assert 'data-role="test"' in src, "the Test button carries no stable handle"
     assert 'card.querySelector("button")' not in src, "still selecting by position"
-    assert "card.querySelector('button[data-role=\"test\"]')" in src
+    # The original fix was to look the button up by that handle instead of by
+    # position (`card.querySelector('button[data-role="test"]')`). Test has
+    # since moved into the card's Actions menu, which is a fixed portal — there
+    # is no button left on the card to grey out, so `testConn` opens the body
+    # and reports "Testing…" there instead. Requiring the old lookup would be
+    # requiring dead code; what must hold is that the press is acknowledged
+    # somewhere, which is the failure the position bug actually caused.
+    assert "setSourceOpen(id, true);" in src, "a press must open the body it reports into"
+    assert '"Testing…"' in src, "a press must say it registered"
 
 
 class TestOnlyKeboolaCarriesItsProjectForward:
@@ -1782,7 +1796,11 @@ def test_the_add_project_wizard_reuses_its_connection_on_retry():
     # ignored. (Devin Review, second pass.)
     reuse_block = src[reuse : src.index("// 2. Store the token.")]
     assert "stack_url: stack" in reuse_block, "a corrected URL is never saved on retry"
-    assert reuse_block.index("stack_url: stack") < reuse_block.index("await fetch(API_CONNECTIONS,") if "await fetch(API_CONNECTIONS," in reuse_block else True
+    assert (
+        reuse_block.index("stack_url: stack") < reuse_block.index("await fetch(API_CONNECTIONS,")
+        if "await fetch(API_CONNECTIONS," in reuse_block
+        else True
+    )
 
     # The restructure moved a `return` inside a new block — parse the page's
     # script to be sure it is still valid JS, since nothing else here would.

@@ -40,11 +40,9 @@
       {% block page_surface %}{% endblock %}
     </div>
   </div>
-  <footer>
-    {# Footer credit is config-driven on every chrome (INSTANCE_COPYRIGHT):
-       the public distribution carries no vendor branding — an instance puts
-       its own name here via config. #}
-    <p>&copy; {{ now().year if now is defined else 2026 }} {{ config.INSTANCE_COPYRIGHT or 'AI Harness' }}</p>
-  </footer>
+  {# Shared footer partial — see _footer.html. The `.idx > footer` rule in
+     style-custom.css keys on the element, so the index shell's flush-to-band
+     treatment still applies. #}
+  {% include '_footer.html' %}
 </main>
 {% endblock %}
