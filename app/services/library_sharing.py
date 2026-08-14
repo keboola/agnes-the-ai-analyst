@@ -95,15 +95,40 @@ def _agent_owner(resource_id: str) -> Optional[str]:
     return row.get("owner_user_id") if row else None
 
 
+def _data_app_owner(resource_id: str) -> Optional[str]:
+    """``resource_id`` is the app's SLUG, not its row id — grants on this
+    type are slug-keyed everywhere (``app.api.data_apps._can_view`` checks
+    ``can_access(uid, 'data_app', row['slug'])``, and the admin layer writes
+    the same rows), so the owner-sharing surface must key the same way or the
+    grants it writes would be read by nothing.
+
+    LINKED rows (``repo_mode='linked'``, synthetic ``system`` owner) are
+    deliberately NOT carved out here, unlike the ``_reject_linked`` set on
+    the data-apps control plane (deploy/secrets/logs/preview). Those refuse
+    because they mutate or expose an upstream-managed runtime; sharing is
+    visibility policy, which admins already control for linked apps via
+    ``/admin/access`` writing the very same ``(data_app, <slug>)`` grant
+    rows. No real user matches the ``system`` owner, so only an admin passes
+    ``_require_owned`` — same authority, friendlier surface — and grants
+    keyed on the reconciler's deterministic slug surviving a re-sync is the
+    point, not a leak (Devin Review on #1321)."""
+    from src.repositories import data_apps_repo
+
+    row = data_apps_repo().get_by_slug(resource_id)
+    return row.get("owner_user_id") if row else None
+
+
 _OWNER_RESOLVERS[ResourceType.COLLECTION.value] = _collection_owner
 _OWNER_RESOLVERS[ResourceType.AGENT.value] = _agent_owner
 _OWNER_RESOLVERS[ResourceType.CORPUS_FILE.value] = _corpus_file_owner
+_OWNER_RESOLVERS[ResourceType.DATA_APP.value] = _data_app_owner
 
 #: Human labels for the shareable types, used in error messages.
 SHAREABLE_TYPES: Dict[str, str] = {
     ResourceType.COLLECTION.value: "artefact",
     ResourceType.AGENT.value: "agent",
     ResourceType.CORPUS_FILE.value: "file",
+    ResourceType.DATA_APP.value: "app",
 }
 
 
