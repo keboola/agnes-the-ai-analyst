@@ -716,7 +716,20 @@ table-not-in-your-stack 403 until an admin registers `attachments`
 package granted to their group. Admins pass via god-mode either way. A 404 with code
 `attachment_not_stored` means the catalogue row exists but the server holds
 no bytes (over-50MB skip or transform-time miss): fall back to the Jira REST
-API for exactly those. The catalogue declaration (table, id/path columns,
+API for exactly those.
+
+Rollout note for existing deployments: `local_path` is written at
+*transform* time, and the webhook path historically ran its transform
+BEFORE the attachment download (worker-timeout rationale) — so attachments
+first ingested via a single webhook event carry `local_path = NULL` even
+though the bytes are on disk, and the endpoint answers
+`attachment_not_stored` for them. New events heal their own issue (the
+webhook now re-transforms after a download actually lands new files), but
+history does not heal itself: after upgrading, run the one-off full
+re-transform from the backfill section above — **with `--attachments-dir`**,
+which is also mandatory for any batch invocation; omitting it rewrites the
+whole `attachments` history with `local_path = NULL` and produces a
+catalogue this endpoint can never serve from. The catalogue declaration (table, id/path columns,
 permitted root) lives in `src/attachment_sources.py`; any connector that
 stores attachments adds its own declaration there and reuses the same
 route and CLI command.
