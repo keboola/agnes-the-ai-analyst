@@ -86,8 +86,11 @@
 </section>
 {% endif %}
 
-{# Search is served globally by the rail's #global-search combobox
-   (js/global_search.js) — no page-local search box here. #}
+{# No page-local search box. NOTE: the premise this shipped with — "search is
+   served globally by the rail's #global-search combobox" — stopped being true
+   when the rail redesign dropped the global search input; under `rail` this
+   page currently has no search at all (under `topnav` the header combobox
+   still covers it). #}
 {# Data/Memory tabs are hidden entirely when there is nothing addable —
    auto-membership means every granted package/domain is already in the
    caller's stack, so these two tabs are normally empty for a regular
@@ -170,8 +173,8 @@ window.CATALOG_DEFAULT_KIND = {{ default_kind|tojson }};
   }
   tabs.forEach(t => t.addEventListener('click', () => activate(t.dataset.kind, true)));
 
-  // Search is served globally by the rail's #global-search combobox
-  // (js/global_search.js) — no page-local grid filter here.
+  // No page-local grid filter (the topnav header's #global-search combobox
+  // covers search there; the rail chrome currently has no search box).
 
   // The Add/Remove stack toggle is handled globally by catalog_card.js
   // (one delegated listener covering server-rendered + hydrated cards).
