@@ -510,6 +510,15 @@ _OAUTH_DISCONNECT_REASON = (
     "out from under a live session is the same class of self-service "
     "identity operation the my-secret endpoints were never MCP-exposed for."
 )
+_MCP_SOURCE_GRANT_REASON = (
+    "grant/revoke every tool of one MCP source to a group — an RBAC widening "
+    "write. Reachable via `agnes admin mcp source grant [--revoke]`; "
+    "deliberately never MCP-exposed, on the same reasoning as the standing "
+    "credential-provisioning exemption in CONTRIBUTING.md: a tool an agent can "
+    "call that widens which tools a group may call is a privilege-escalation "
+    "seam, and this one widens by the whole source at once"
+)
+
 _EXEMPT: dict[str, str] = {
     "/api/me/display-name": (
         "self-service display-name edit (issue #1036) — UI-only affordance on "
@@ -618,6 +627,8 @@ _EXEMPT: dict[str, str] = {
     "/api/admin/source-connections/{connection_id}": _SOURCE_CONNECTIONS_CRUD_REASON,
     "/api/admin/source-connections/{connection_id}/secret": _SOURCE_CONNECTIONS_CRUD_REASON,
     "/api/admin/source-connections/{connection_id}/test": _SOURCE_CONNECTIONS_CRUD_REASON,
+    "/api/admin/mcp-sources/{source_id}/grants": _MCP_SOURCE_GRANT_REASON,
+    "/api/admin/mcp-sources/{source_id}/grants/{group_id}": _MCP_SOURCE_GRANT_REASON,
     "/api/admin/source-connections/{connection_id}/chat-tools": (
         "derives a Keboola MCP source from a connection and copies that "
         "connection's storage token into the MCP vault — a credential-"
