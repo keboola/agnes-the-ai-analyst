@@ -1157,3 +1157,72 @@ class TestInstanceYamlPermissions:
         assert all(m == 0o600 for m in seen_modes), (
             f"tmp file must already be 0600 at rename time, saw {[f'{m:04o}' for m in seen_modes]}"
         )
+
+
+class TestSectionMetadataHasNoPhantomSections:
+    """The page's client-side section lists must not outlive the server's.
+
+    `SECTION_META` (labels) and `SECTION_GROUPS` (sidenav) are hand-written
+    in the template, while the sections the API actually accepts come from
+    `_EDITABLE_SECTIONS`. Deleting a config section server-side therefore
+    leaves dead entries behind — invisible today only because `buildSidenav`
+    filters against the GET response, which is exactly the kind of silent
+    half-removal that resurfaces the moment that filter changes. That
+    happened with the `desktop:` section; this guard is the ratchet.
+
+    Only one direction is asserted. The reverse (a section the API serves
+    that the template does not label) is legitimate: switch-derived
+    sections render with a generated label and deliberately carry no
+    hand-written entry.
+    """
+
+    @staticmethod
+    def _template_text():
+        import pathlib
+
+        return pathlib.Path("app/web/templates/admin_server_config.html").read_text()
+
+    @staticmethod
+    def _section_meta_keys(tpl):
+        import re
+
+        m = re.search(r"const SECTION_META\s*=\s*\{", tpl)
+        assert m, "SECTION_META map not found — did the template get restructured?"
+        depth, i = 0, m.end() - 1
+        while True:
+            if tpl[i] == "{":
+                depth += 1
+            elif tpl[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        return set(re.findall(r"^\s{2}(\w+):", tpl[m.end() : i], re.M))
+
+    @staticmethod
+    def _section_group_names(tpl):
+        import re
+
+        names = set()
+        for group in re.findall(r"sections:\s*\[([^\]]*)\]", tpl):
+            names |= set(re.findall(r'"([^"]+)"', group))
+        assert names, "SECTION_GROUPS listed no sections — parser out of date?"
+        return names
+
+    def test_section_meta_has_no_entry_the_api_rejects(self):
+        from app.api.admin import _EDITABLE_SECTIONS
+
+        phantom = sorted(self._section_meta_keys(self._template_text()) - set(_EDITABLE_SECTIONS))
+        assert not phantom, (
+            f"SECTION_META labels sections the API no longer accepts: {phantom}. "
+            "Remove them from admin_server_config.html together with the server-side section."
+        )
+
+    def test_sidenav_groups_list_no_section_the_api_rejects(self):
+        from app.api.admin import _EDITABLE_SECTIONS
+
+        phantom = sorted(self._section_group_names(self._template_text()) - set(_EDITABLE_SECTIONS))
+        assert not phantom, (
+            f"SECTION_GROUPS lists sections the API no longer accepts: {phantom}. "
+            "Remove them from admin_server_config.html together with the server-side section."
+        )

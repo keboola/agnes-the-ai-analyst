@@ -10086,6 +10086,11 @@
             ],
             "title": "Created At"
           },
+          "data_package_count": {
+            "default": 0,
+            "title": "Data Package Count",
+            "type": "integer"
+          },
           "deactivated_at": {
             "anyOf": [
               {
@@ -10144,6 +10149,17 @@
             "default": false,
             "title": "Is Sso User",
             "type": "boolean"
+          },
+          "last_pull_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Pull At"
           },
           "name": {
             "anyOf": [
@@ -10653,7 +10669,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.83.5"
+    "version": "0.83.15"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -10728,7 +10744,7 @@
     },
     "/admin": {
       "get": {
-        "description": "Admin hub \u2014 the canonical landing page for instance administration.\n\nA settings-style index that groups every /admin/* surface by domain\n(Activity Center, Users & Access, Data Packages, Sources, Agent\nExperience, Documentation, Server). The header's Admin mega-menu links\nhere; this page is the scalable home as the admin surface grows past what\na dropdown holds. Shell-only \u2014 every card links to an existing gated\nroute (each still enforces require_admin independently).",
+        "description": "Admin dashboard \u2014 what needs the admin's attention, on landing.\n\nThis page used to be a card grid of every /admin/* surface. Once the\ngrouped sidebar shipped (`admin_nav.py`) the grid became a second copy of\nthe navigation rendered beside the first, answering \"where do I go\" for a\nquestion the column already answered better. The sidebar is now the only\nadmin navigation (the three API-doc links the grid carried moved into it\nas `ADMIN_NAV_DOCS`), and this page answers \"what needs me?\" instead.\n\nOnly the \"Needs you\" zone \u2014 approval queues, all COUNT-shaped \u2014 resolves\nhere. \"Needs fixing\" reads the unbounded audit/history tables and is\nfetched after first paint from /api/admin/dashboard/signals, so an\ninstance with a large audit log doesn't pay for it on every render. Row\ninventory: `app/web/admin_signals.py`.",
         "operationId": "admin_hub_admin_get",
         "parameters": [
           {
@@ -10778,7 +10794,7 @@
     },
     "/admin/access": {
       "get": {
-        "description": "Resource access management \u2014 master-detail layout with the group list\non the left and per-resource-type checkbox tree on the right. Supports\n``?group=<id>`` deep-link from the group detail page.\n\nUnderlying entity is `resource_grants`; the UI label \"Resource access\"\nmatches what admins think about (who has access) rather than the table\nname (grants).",
+        "description": "The Access surface \u2014 the third leg of People \u2192 Data \u2192 Access, and\nthe ONE place a group is edited.\n\nThis URL has had four lives. It was a standalone grant matrix; it was\nretired into the group detail page's Access tab (``resource_grants``\nkeys on ``group_id``, so the group's own page looked like where the\neditor belonged); it came back as a two-pane workspace beside that tab;\nand it is now the only one of the three left standing.\n\nThe consolidation is the point. A group is one object with two sides \u2014\nan audience, and a bundle of what that audience can use \u2014 and the\nproduct had grown FOUR editors over that one object: this page, the\ngroup list, the group detail page, and the create drawer's own copies\nof both panes. Four surfaces, one pair of tables\n(``user_group_members``, ``resource_grants``), and every one of them\nfree to drift from the others.\n\nSo this page absorbed what the other three uniquely had, rather than\ndropping it:\n\n  * the list's origin pill and member/grant counts \u2192 the selector rows;\n    its description, created date, rename and delete \u2192 the pane header\n  * the detail page's full roster, with each member's origin and the\n    rule that only admin-added membership can be removed here \u2192 the\n    audience block's \"Show all N\"; its resource filter and its\n    ``#table:`` deep link \u2192 the pane's filter and ``?resource=``\n  * the drawer keeps the one job nothing else does (naming a group)\n    and lost its duplicate people/access steps\n\nWhat stays elsewhere is only the TRANSPOSE \u2014 a resource's Share panel\n(which groups get this package) and a person's memberships on their own\npage. Those answer different questions; they are not second copies of\nthis one.\n\n``?group=<id>`` selects that group \u2014 the shape ``/admin/groups/{id}``\nnow redirects to. ``?resource=<type>:<id>`` pre-filters the grant tree,\nwhich is how /admin/tables' \"Manage access\" arrives.",
         "operationId": "admin_access_page_admin_access_get",
         "parameters": [
           {
@@ -11658,6 +11674,65 @@
         ]
       }
     },
+    "/admin/data-packages/{package_id}": {
+      "get": {
+        "description": "ONE package, end to end \u2014 what is in it, who can use it, who has it.\n\nThe package is the unit an analyst actually receives, and until this page\nexisted it was the one object in the Data section with no home: its\ncomposition was edited inside the package-grouped layout on /admin/tables,\nits sharing on /admin/data-packages, and the card's own drilldown left the\nadmin area entirely for the analyst-facing /catalog/p/<slug>. Three places,\nnone of them about the package.\n\nEverything here rides EXISTING repositories and endpoints \u2014 the page adds\nno repo method, so there is no DuckDB\u2194Postgres parity sibling to write\n(CLAUDE.md). Composition writes through ``/api/admin/data-packages/{id}\n/tables``; sharing writes the same ``/api/admin/grants`` rows a group's\nAccess tab does, so the two ends of one relationship can never disagree.\n\nThe delivery read-out is the part the product could not draw anywhere:\na grant is a PERMISSION, and the data only lands once `agnes pull` runs.\n``users.last_pull_at`` (stamped by app/api/sync.py on every human pull) is\nwhat turns \"shared with 14 people\" into \"11 of them actually have it\".",
+        "operationId": "admin_package_detail_admin_data_packages__package_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "title": "Package Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Package Detail",
+        "tags": [
+          "web"
+        ]
+      }
+    },
     "/admin/data-sources": {
       "get": {
         "description": "\"Add data source\" wizard (#755): paste a Keboola project's connection\nURL + storage token, validate, then browse buckets/tables and register\nthe ones you want \u2014 no SSH, no config-file edits. Also the home for\nper-project \"Set as default\" and \"Rotate token\" controls \u2014 the single\nplace to manage a Keboola connection end to end.\n\nDistinct from /admin/mcp-sources (MCP tool servers Agnes calls at\nruntime) and from /admin/datasource-credentials (GWS/BQ instance\nsecrets) \u2014 this page owns Keboola project connect/browse/register/\ndefault/rotate. Passes ``vault_key_configured`` so the template can\nrender the same blocking banner as /admin/datasource-credentials when\n``AGNES_VAULT_KEY`` is absent (the wizard can't store a secret without\nit).",
@@ -11810,30 +11885,8 @@
     },
     "/admin/grants": {
       "get": {
-        "description": "Backward-compat redirect for the page's previous URL.",
+        "description": "Backward-compat redirect for the page's oldest URL.\n\nCarries ``?group=`` through, which the Access page reads to preselect a\ngroup. Keeps the admin gate the destination has, so a non-admin gets 403\nhere rather than a 308 naming an internal URL.",
         "operationId": "admin_grants_redirect_admin_grants_get",
-        "responses": {
-          "200": {
-            "content": {
-              "text/html": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Admin Grants Redirect",
-        "tags": [
-          "web"
-        ]
-      }
-    },
-    "/admin/groups": {
-      "get": {
-        "description": "Group list view \u2014 full-width table of user_groups with origin chips,\nmember/grant counts, and edit/delete affordances for non-system rows.",
-        "operationId": "admin_groups_page_admin_groups_get",
         "parameters": [
           {
             "in": "header",
@@ -11874,7 +11927,57 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Admin Groups Page",
+        "summary": "Admin Grants Redirect",
+        "tags": [
+          "web"
+        ]
+      }
+    },
+    "/admin/groups": {
+      "get": {
+        "description": "The group LIST is the Access workspace's left column.\n\nThis URL was a full-width table of ``user_groups`` \u2014 name, description,\norigin, member and grant counts, created, edit/delete. Every one of\nthose is on ``/admin/access`` now: the counts and the origin ride the\nselector rows, the description and the created date are the pane's\nheader, and edit/delete are the header's two buttons. What the table\ncould not do is the thing the page is for \u2014 change what a group can\nuse \u2014 so the section had two tabs that were both a list of groups.\n\n``#table:<id>`` (the /admin/tables deep link) is a fragment, so it never\nreaches the server; the workspace rewrites it to its own ``?resource=``\nspelling client-side. Kept as a 308 rather than deleted: this URL is\nlinked from a dozen places, is in the admin keyboard shortcuts, and is\nwhat an operator's muscle memory types.",
+        "operationId": "admin_groups_redirect_admin_groups_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Groups Redirect",
         "tags": [
           "web"
         ]
@@ -11882,8 +11985,8 @@
     },
     "/admin/groups/{group_id}": {
       "get": {
-        "description": "Single-group detail page \u2014 header + members table. Resource grants\nlive on /admin/grants (deep-linked from here).",
-        "operationId": "admin_group_detail_page_admin_groups__group_id__get",
+        "description": "A single group is the Access workspace with that group selected.\n\nThe detail page carried a header plus Members and Access tabs. Those\ntwo tabs are the workspace's two panes, side by side rather than behind\na switch, and the header is the pane's header \u2014 so this page was the\nsame three editors reached by a second route, over one pair of tables\n(``user_group_members``, ``resource_grants``). The full roster it owned,\nincluding each member's origin, is the pane's \"Show all N\" disclosure.\n\n``?group=`` is the shape the workspace already accepted, so the\nselection survives the hop. The 404 on an unknown id stays here: it is\ncheaper and more honest than redirecting to a page that would silently\nopen on a different group.",
+        "operationId": "admin_group_detail_redirect_admin_groups__group_id__get",
         "parameters": [
           {
             "in": "path",
@@ -11933,7 +12036,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Admin Group Detail Page",
+        "summary": "Admin Group Detail Redirect",
         "tags": [
           "web"
         ]
@@ -13603,7 +13706,7 @@
     },
     "/api/admin/access-overview": {
       "get": {
-        "description": "One-shot snapshot for the /admin/access page.\n\nReturns:\n  - ``groups``: every user_group with member + grant counts\n  - ``grants``: every (group_id, resource_type, resource_id) row\n  - ``resources``: per-resource-type hierarchical layout, where each\n    type has a list of *blocks* (parent entities, e.g. a marketplace)\n    and each block has *items* (concrete grantable resources).\n\nUI stitches the three pieces into the two-column layout: groups on\nthe left, resources tree on the right with per-item checkboxes whose\nstate derives from ``grants``.",
+        "description": "One-shot snapshot for the group detail page's Access tab.\n\nReturns:\n  - ``groups``: every user_group with member + grant counts\n  - ``grants``: every (group_id, resource_type, resource_id) row\n  - ``resources``: per-resource-type hierarchical layout, where each\n    type has a list of *blocks* (parent entities, e.g. a marketplace)\n    and each block has *items* (concrete grantable resources).\n\nUI stitches the three pieces into the two-column layout: groups on\nthe left, resources tree on the right with per-item checkboxes whose\nstate derives from ``grants``.",
         "operationId": "access_overview_api_admin_access_overview_get",
         "parameters": [
           {
@@ -15427,6 +15530,64 @@
         ]
       }
     },
+    "/api/admin/dashboard/signals": {
+      "get": {
+        "description": "Signals in the \"Needs fixing\" zone that currently have something to say.\n\nClear signals are omitted entirely rather than returned with ``count: 0``\n\u2014 an empty ``signals`` list IS the healthy state, and the page renders it\nas such. A signal whose resolver raised is returned with ``failed: true``\nso the page can say \"couldn't check\" instead of implying all-clear.",
+        "operationId": "dashboard_signals_api_admin_dashboard_signals_get",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Dashboard Signals Api Admin Dashboard Signals Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Dashboard Signals",
+        "tags": [
+          "admin-dashboard"
+        ]
+      }
+    },
     "/api/admin/data-packages": {
       "get": {
         "description": "List all packages, optionally name-prefix filtered for the chip-input\ntypeahead on ``/admin/tables``.\n\n``include_table_ids=true`` (v54): each row carries a\n``table_ids: [...]`` array. The /admin/tables hydrator uses this to\ncollapse the prior N+1 fan-out (one ``GET /api/admin/data-packages/\n{id}`` per package) into a single round-trip \u2014 see\n``DataPackagesRepository.list_member_ids_bulk``.",
@@ -17144,7 +17305,7 @@
         ]
       },
       "get": {
-        "description": "Single-group payload for the /admin/groups/{id} detail page header.",
+        "description": "Single-group payload for one group.\n\nFed the retired ``/admin/groups/{id}`` header; still the endpoint the\ngroup drawer reads back after a create or rename.",
         "operationId": "get_group_api_admin_groups__group_id__get",
         "parameters": [
           {
@@ -18500,6 +18661,146 @@
           }
         },
         "summary": "Classify Mcp Source",
+        "tags": [
+          "admin-mcp"
+        ]
+      }
+    },
+    "/api/admin/mcp-sources/{source_id}/grants": {
+      "post": {
+        "description": "Grant a user group every tool registered under one source.\n\nThe per-tool grant is the right granularity for curating an upstream a\nhandful of tools at a time. It is the wrong one for a source that arrives\nwith its whole toolset at once \u2014 a connected Keboola project registers\naround forty, and granting them one page at a time is the friction the\nchat-tools switch exists to remove. This grants the set.\n\nIdempotent per tool, and it does NOT widen anything the source did not\nregister: the set is exactly ``tool_registry`` rows for this source, so a\ntool that arrives later needs another call rather than being granted in\nadvance. Returns what changed and what was already granted, because\n\"granted 0 of 37\" and \"granted 37 of 37\" mean very different things to an\nadmin and both look like success otherwise.",
+        "operationId": "add_mcp_source_grant_api_admin_mcp_sources__source_id__grants_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "title": "Source Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddGrantRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Mcp Source Grant",
+        "tags": [
+          "admin-mcp"
+        ]
+      }
+    },
+    "/api/admin/mcp-sources/{source_id}/grants/{group_id}": {
+      "delete": {
+        "description": "Revoke a group's access to every tool of one source (idempotent).\n\nThe counterpart matters more than the convenience: an admin who granted a\nwhole project in one action must be able to take it back in one action,\nrather than revoking forty tools by hand while access stays live.",
+        "operationId": "remove_mcp_source_grant_api_admin_mcp_sources__source_id__grants__group_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "title": "Source Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "group_id",
+            "required": true,
+            "schema": {
+              "title": "Group Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove Mcp Source Grant",
         "tags": [
           "admin-mcp"
         ]
@@ -28568,6 +28869,78 @@
         ]
       }
     },
+    "/api/attachments/{source}/{attachment_id}/download": {
+      "get": {
+        "description": "Stream one connector-catalogued attachment binary.\n\nOutcomes a client can tell apart:\n\n- 404 ``unknown_attachment_source`` \u2014 ``{source}`` has no declaration\n  (decided before any catalogue or filesystem work).\n- 403 \u2014 caller lacks read access to the source's catalogue table.\n- 404 ``attachment_not_found`` \u2014 no catalogue row with this id.\n- 404 ``attachment_not_stored`` \u2014 the row exists but the server holds\n  no bytes (over-size skip, transform-time miss, or removed since);\n  fall back to the upstream system's own API for these.\n- 503 ``attachment_unreadable`` \u2014 the row exists and points at a file\n  the server cannot OPEN (permissions/I/O) \u2014 a malfunction, logged,\n  never disguised as a miss.\n- 200 \u2014 the bytes, with the original filename in Content-Disposition.",
+        "operationId": "download_attachment_api_attachments__source___attachment_id__download_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source",
+            "required": true,
+            "schema": {
+              "title": "Source",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "attachment_id",
+            "required": true,
+            "schema": {
+              "title": "Attachment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Attachment",
+        "tags": [
+          "attachments"
+        ]
+      }
+    },
     "/api/auth/exchange-setup-token": {
       "post": {
         "description": "Exchange a one-time setup token for a regular PAT.\n\nThis endpoint requires **no prior authentication** \u2014 the setup token\nembedded in the bundle IS the authentication credential.\n\nSecurity properties:\n- Token is matched by SHA-256 hash, never stored or logged in plaintext.\n- Single-use: atomically marked used on first consumption.\n- Short-lived: 24 h TTL enforced server-side regardless of client clock.\n- On success, the setup token is consumed and cannot be replayed.",
@@ -31986,7 +32359,7 @@
     },
     "/api/data-apps/{slug}/readiness": {
       "get": {
-        "description": "Runner-backed readiness probe. Doubles as the wake-completion flip:\nwhen a `deploying` app's runner reports `ready`, this call itself\ntransitions the row to `running` \u2014 the ingress proxy's holding page\n(`app/api/data_apps_proxy.py``, ``data_app_waking.html``'s poll loop)\nis the only caller that hits this endpoint on a cadence, so the flip\nhappening here (rather than a dedicated poller) is what actually\nsurfaces \"the app is up\" back to the browser tab that triggered the\nwake. See that module's docstring for the other half of this contract.",
+        "description": "Runner-backed readiness probe. Doubles as the wake-completion flip:\nwhen a `deploying` app's runner reports `ready`, this call itself\ntransitions the row to `running` \u2014 the ingress proxy's holding page\n(`app/api/data_apps_proxy.py``, ``data_app_waking.html``'s poll loop)\nis the only caller that hits this endpoint on a cadence, so the flip\nhappening here (rather than a dedicated poller) is what actually\nsurfaces \"the app is up\" back to the browser tab that triggered the\nwake. See that module's docstring for the other half of this contract.\n\nThe caller is resolved through the PROXY's chain, not a plain\n``Depends(get_current_user)``. The holding page this serves is rendered\nby the proxy, which accepts a ``data-app-preview:<slug>`` scoped token \u2014\nthe credential the in-chat preview iframe carries \u2014 while\n``get_current_user`` rejects it outright. So a preview iframe used to get\na holding page whose poll 401'd forever and never noticed the app come\nup (Devin Review on this PR; pre-existing for the `sleeping`/`deploying`\nbranches, but the starting-app branch added here reaches it far more\noften). Serving the page and refusing its only poll is half a fix.\n\nResolved BEFORE the registry read: with auth moved out of the ``Depends``\nchain into the handler body, a lookup-first ordering answered anonymous\nprobes 404 for a made-up slug and 401 for a real one \u2014 letting a caller\nwith no credentials at all enumerate which hosted apps exist (Devin\nReview on this PR). Anonymous now gets a uniform 401 either way, the\nsame shape the old ``Depends(get_current_user)`` signature enforced.\n\nImported inside the function: `data_apps_proxy` imports this module, so a\nmodule-level import would be circular.",
         "operationId": "get_data_app_readiness_api_data_apps__slug__readiness_get",
         "parameters": [
           {
@@ -31996,22 +32369,6 @@
             "schema": {
               "title": "Slug",
               "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           }
         ],
@@ -50389,7 +50746,7 @@
     },
     "/me/ai-connector": {
       "get": {
-        "description": "AI Connector \u2014 chrome-dependent (spec 2026-08-07 wave 2).\n\nDefault chrome keeps the pre-redesign standalone page (frozen\n``me_cowork_legacy.html``: OAuth connector URL, plugin packages,\navailable tools \u2014 including the /mcp-connect token fallback link).\nUnder ANY redesign opt-in \u2014 rail layout or paper theme, the same\nexpression the user-menu row keys on \u2014 the page stays consolidated into\n/how-it-works#connect via the 302 the redesign shipped: a paper-on-topnav\ninstance's menu says \"Learn how it works\", so a bookmark or alias hop\nmust not resurrect the standalone page there (Devin Review on #1200).\n302, not 301: a permanent redirect is cached by the browser forever, so\nit would be very hard to walk back if the consolidation is revisited.",
+        "description": "AI Connector \u2014 chrome-dependent (spec 2026-08-07 wave 2).\n\nDefault chrome keeps the pre-redesign standalone page (frozen\n``me_cowork_legacy.html``: OAuth connector URL, plugin packages,\navailable tools \u2014 including the /mcp-connect token fallback link).\nUnder ANY redesign opt-in \u2014 rail layout or paper theme, the same\nexpression the user-menu row keys on \u2014 the page stays consolidated into\n/how-it-works#connect via the 302 the redesign shipped: a paper-on-topnav\ninstance's menu says \"Learn how it works\", so a bookmark or alias hop\nmust not resurrect the standalone page there (Devin Review on #1200).\n302, not 301: a permanent redirect is cached by the browser forever, so\nit would be very hard to walk back if the consolidation is revisited.\n\nChecked before either chrome branch (#1024): with the MCP connector UI\nhidden (``mcp.connector_ui_enabled: false`` \u2014 a VPN/intranet-only instance\nwhose cloud-side MCP clients can never reach the endpoint), this whole\npage IS the surface being hidden, so both branches bounce home rather\nthan one of them rendering it anyway.",
         "operationId": "me_ai_connector_page_me_ai_connector_get",
         "parameters": [
           {

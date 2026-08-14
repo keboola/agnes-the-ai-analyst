@@ -1,0 +1,90 @@
+{#
+  The shared page footer — one partial for every chrome that has a footer.
+
+  Two-part attribution, both config-driven so the public distribution ships no
+  vendor branding:
+
+    left   the PRODUCT — `instance.brand` (default "Agnes") plus the running
+           build, filled from /api/version. A self-hosted operator needs to
+           know what they are running, and this is now the only place that
+           says it on an authed page: the fixed bottom-right build chip
+           (`_version_badge.html`) is retired from the app chromes. Pre-auth
+           `base_login.html` keeps the chip — it has no footer to move it to.
+    right  the DEPLOYMENT — `instance.copyright`, rendered ONLY when set.
+
+  What this replaced, and why: `© {year} {instance.name}` repeated the header
+  brand, and asserted a copyright the deploying org does not hold over
+  software it did not write. Worse, `INSTANCE_COPYRIGHT` was hardcoded empty
+  in the context builder, so the `or 'AI Harness'` fallback fired on every
+  page of every instance — the string operators saw was a leak, not a choice.
+
+  Both values come off `config` rather than the `instance_brand` /
+  `instance_copyright` context keys, because this partial renders on chromes
+  whose context builders don't set those (see `_config_proxy`, which every
+  builder exposes). `default(…, true)` covers the pages that skip `config`
+  altogether — a missing key resolves to an empty dict, which is falsy, so
+  the brand falls back and the attribution line is simply omitted.
+
+  Callers pass their chrome's own footer class:
+    {% raw %}{% with footer_class = 'footer' %}{% include '_footer.html' %}{% endwith %}{% endraw %}
+#}
+{#
+  One <p> of inline spans, deliberately NOT a flex row. This partial renders
+  into six different layout contexts — a centered `.container`, the index
+  shell's white band, and `.cloud-chat-empty-foot`, which is a shrink-to-fit
+  item in a flex column. Inline flow asks nothing of any of them: it inherits
+  whatever `text-align` the chrome already sets (all six centre their footer),
+  needs no width of its own, and wraps by itself on narrow viewports. A flex
+  row would have to be told how to align and how wide to be in each one.
+#}
+<footer class="site-footer{% if footer_class %} {{ footer_class }}{% endif %}">
+    {#- Whitespace-controlled: the separators are `::before` margins, so any
+        newline left between these spans collapses to a space and makes the
+        first gap wider than the rest. -#}
+    <p class="site-footer__line">
+        <span class="site-footer__brand">{{ config.INSTANCE_BRAND | default('Agnes', true) }}</span>{#-
+        Build slot: filled by the script below, hidden until then so a failed
+        or slow /api/version never leaves a dangling separator.
+        -#}<span class="site-footer__build" data-agnes-build hidden></span>{%- if config.INSTANCE_COPYRIGHT -%}
+        <span class="site-footer__deploy">Deployed by {{ config.INSTANCE_COPYRIGHT }}</span>{%- endif -%}
+    </p>
+</footer>
+{#
+  Build provenance. Same single cached /api/version call the retired badge
+  made, so this costs no extra request. The hover carries the fields the
+  endpoint actually returns — the old badge's tooltip also printed
+  `commit_sha` and `schema_version`, which /api/version has never returned,
+  so those two lines read "undefined" for as long as the badge existed.
+#}
+<script>
+(function () {
+    if (window.__agnesFooterBuild) return;  // one fetch even if two footers render
+    window.__agnesFooterBuild = true;
+    var slots = document.querySelectorAll('[data-agnes-build]');
+    if (!slots.length) return;
+    fetch('/api/version').then(function (r) { return r.ok ? r.json() : null; }).then(function (v) {
+        if (!v || !v.version) return;
+        var age = '';
+        var t = Date.parse(v.deployed_at);
+        if (!isNaN(t)) {
+            var s = Math.floor((Date.now() - t) / 1000);
+            age = s < 60 ? s + 's ago'
+                : s < 3600 ? Math.floor(s / 60) + 'm ago'
+                : s < 86400 ? Math.floor(s / 3600) + 'h ago'
+                : Math.floor(s / 86400) + 'd ago';
+        }
+        // Only a numbered release gets the "v" — /api/version reports "dev"
+        // when AGNES_VERSION is unset, and "vdev" reads like a typo.
+        var ver = /^\d/.test(v.version) ? 'v' + v.version : v.version;
+        var label = ver + (age ? ' · updated ' + age : '');
+        Array.prototype.forEach.call(slots, function (el) {
+            el.textContent = label;
+            el.title = 'version ' + v.version
+                + '\nchannel ' + v.channel
+                + '\nimage tag ' + v.image_tag
+                + '\ndeployed ' + v.deployed_at;
+            el.hidden = false;
+        });
+    }).catch(function () { /* provenance is additive — never block the page */ });
+})();
+</script>

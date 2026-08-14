@@ -70,6 +70,7 @@ Set the env var in `.env`/Terraform, or the YAML path in `instance.yaml`.
 |------|--------------|----------------------|---------|----------|
 | Deployment display name (page titles, email subjects) | — | `instance.name` | `AI Harness` | `get_instance_name()` |
 | Header subtitle | — | `instance.subtitle` | `""` | `get_instance_subtitle()` |
+| Operator credit in the page footer, rendered as "Deployed by {value}". Unset = the footer omits the line entirely (the product name + build on the left always render) | `AGNES_INSTANCE_COPYRIGHT` | `instance.copyright` | `""` (no attribution) | `get_instance_copyright()` |
 | Product brand string (hero copy, CTAs, setup script) | `AGNES_INSTANCE_BRAND` | `instance.brand` | `Agnes` | `get_instance_brand()` |
 | Short brand for mid-sentence body copy; when it differs from the full brand, the `/home` hero appends "Call me {short}." | `AGNES_INSTANCE_BRAND_SHORT` | `instance.brand_short` | derived (= `instance.brand`) | `get_instance_brand_short()` |
 | Inline `<svg>` logo for the header brand slot | `AGNES_INSTANCE_LOGO_SVG` | `instance.logo_svg` | `""` (text brand) | `get_instance_logo_svg()` |
@@ -82,6 +83,7 @@ Set the env var in `.env`/Terraform, or the YAML path in `instance.yaml`.
 | Hide individual `/login` feature cards (keys: `data`, `marketplace`, `mcp`, `memory`, `anywhere`; list or comma-string) | `AGNES_INSTANCE_HIDE_LOGIN_FEATURES` | `instance.hide_login_features` | `""` (nothing hidden) | `get_hidden_login_features()` |
 | Expose the authoring Studio (`/admin/studio*` incl. the admin moderation queue, plus the public suggestion API). `false` hides the nav/palette entries, redirects the routes home, and 403s the suggestion API | `AGNES_STUDIO_ENABLED` | `studio.enabled` | `true` | `get_studio_enabled()` |
 | Expose agent profiles (`/agents` builder, `/api/v1/agents*` management + runtime API, `agnes agent`/`agnes chat` CLI). `false` hides the nav/palette entries, redirects `/agents` home, and 403s the API with `agent_profiles_disabled`; internal mechanisms (default-agent seeding, chat attribution, broker agent policy) keep running and data survives re-enabling. Deliberately not writable via the `/admin/server-config` editor — set the env var (or hand-edit the static `instance.yaml`) and restart | `AGNES_AGENT_PROFILES_ENABLED` | `agent_profiles.enabled` | `true` | `get_agent_profiles_enabled()` |
+| Expose the user-facing MCP connector surface (`/me/ai-connector`, `/mcp-connect`, and the MCP tab of `/how-it-works#connect`, plus their nav/palette entries). `false` hides all of them — for a VPN/intranet-only instance whose cloud-side MCP clients can never reach the endpoint. UI only: the MCP protocol endpoints (`/api/mcp/http`, `/api/mcp/sse`) keep serving in-network clients regardless. See [`DEPLOYMENT.md`](DEPLOYMENT.md) | `AGNES_MCP_CONNECTOR_UI_ENABLED` | `mcp.connector_ui_enabled` | `true` | `get_mcp_connector_ui_enabled()` |
 | Legacy theme block (colors/fonts) | — | `theme` | `{}` | `get_theme()` |
 
 ### Onboarding & `/home`
@@ -154,7 +156,7 @@ The main configuration file lives at `config/instance.yaml`. See
 instance:
   name: "AI Harness"        # UI title, email subjects (get_instance_name)
   subtitle: "Acme Corp"          # Header subtitle (get_instance_subtitle)
-  copyright: "Acme Corp"         # Footer copyright
+  copyright: "Acme Corp"         # Footer credit, "Deployed by …" (get_instance_copyright)
   brand: "Acme Analyst"          # Product brand string (get_instance_brand)
   brand_short: "Acme"            # Short brand for body copy (get_instance_brand_short)
   theme: "blue"                  # UI palette (get_instance_theme); "paper" = prototype-derived light look
@@ -195,15 +197,6 @@ shown directly in the browser (development mode). Compatible with any SMTP relay
 server:
   host: "10.0.0.1"              # Server IP
   hostname: "data.acme.com"     # Server DNS name
-```
-
-### Desktop App
-
-```yaml
-desktop:
-  jwt_issuer: "acme-analyst"
-  jwt_secret: "${DESKTOP_JWT_SECRET}"
-  url_scheme: "acme-analyst"
 ```
 
 ### Data Source
@@ -299,7 +292,7 @@ values. Never commit `.env`.
 | `LLM_API_KEY` | API key for LLM proxy (LiteLLM, OpenRouter, etc.) |
 | `JIRA_WEBHOOK_SECRET` | For Jira webhook integration |
 | `JIRA_API_TOKEN` | For Jira REST API access |
-| `DESKTOP_JWT_SECRET` | Separate secret for desktop app tokens |
+| `DESKTOP_JWT_SECRET` | HS256 secret the notifications WebSocket (`/api/notifications/ws`) validates client tokens against. Unset = every connection fails auth (fail-closed). No in-repo flow mints these tokens yet — see issue #412. |
 | `CONFIG_DIR` | Override config directory path |
 | `LOG_LEVEL` | Logging level: `debug`, `info`, `warning`, `error` |
 | `DOMAIN` | Public hostname for Caddy TLS (production profile) |

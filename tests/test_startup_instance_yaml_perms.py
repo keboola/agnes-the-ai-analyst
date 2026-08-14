@@ -510,29 +510,71 @@ def test_the_applier_uid_is_pinned_not_allocated():
     two numbers match. `useradd --system` without `--uid` produces that match
     by allocating the top free id in the system range, which is not the same
     thing as intending it.
+
+    #1217: the target uid is a single named variable (`AGNES_APPLIER_UID`),
+    not a literal repeated at every call site — declared once near the top,
+    with a comment tying it to the app container's uid, so the two useradd
+    attempts and the readback check below can't drift apart from each other.
     """
     body = TPL.read_text()
-    assert "--uid 999" in body, (
-        "the state-applier user must pin uid 999 — allocation happens to land there on "
-        "today's image, and 0600 turns that coincidence load-bearing"
+    assert re.search(r"^AGNES_APPLIER_UID=999\s*$", body, re.MULTILINE), (
+        "the applier's target uid must be a single declared variable "
+        "(AGNES_APPLIER_UID=999), not a literal scattered across the file"
+    )
+    assert '--uid "$AGNES_APPLIER_UID"' in body, (
+        "the state-applier user must pin its uid from $AGNES_APPLIER_UID — allocation happens "
+        "to land on the app's uid on today's image, and 0600 turns that coincidence load-bearing"
     )
 
 
 def test_the_chmod_is_conditional_on_the_pin_having_taken():
     """The mode must not outrun its own precondition.
 
-    If uid 999 was already taken at provisioning time the pin falls through to
-    an allocated id, and a 0600 file the app does not own is one it cannot
-    read — which, with the fail-closed read this change also introduces, is a
-    refusal to start. A full outage in place of the silent degradation 0644
-    gave. Where the pin did not take, the mode stays as it was and the reason
-    goes to the console.
+    If the pinned uid was already taken at provisioning time the pin falls
+    through to an allocated id, and a 0600 file the app does not own is one it
+    cannot read — which, with the fail-closed read this change also
+    introduces, is a refusal to start. A full outage in place of the silent
+    degradation 0644 gave. Where the pin did not take, the mode stays as it
+    was and the reason goes to the console.
     """
     body = TPL.read_text()
     assert "APPLIER_UID=$(id -u agnes-applier" in body, "provisioning must read back the uid it pinned"
-    gate = body.index('if [ "$APPLIER_UID" = "999" ]')
+    gate = body.index('if [ "$APPLIER_UID" = "$AGNES_APPLIER_UID" ]')
     chmod_at = body.index('chmod 600 "$INSTANCE_YAML"')
     assert gate < chmod_at, "the chmod must sit inside the uid gate, not before it"
+
+
+def test_every_applier_useradd_attempt_shares_the_pinned_uid_variable():
+    """#1217 was exactly this bug: the pin was added to ONE of two useradd
+    call sites in this file and the second — the belt-and-braces block right
+    before the `.env` chown — kept allocating an uid by chance. In the normal
+    boot order the second block's `if` is always false (the first already
+    created the user), so nothing observable caught the drift; it only bites
+    on a reordering or a partial run. Every `useradd … agnes-applier` line in
+    the template must pin the same variable so they cannot disagree.
+    """
+    body = TPL.read_text()
+    # useradd invocations wrap across lines via `\` continuation — join
+    # continued lines, then split into one logical string per invocation
+    # (non-greedy up to the first `agnes-applier`, so a pinned attempt
+    # immediately followed by `|| useradd …` is still two separate matches).
+    logical_body = re.sub(r"\\\n\s*", " ", body)
+    useradd_attempts = re.findall(r"useradd --system.*?agnes-applier(?: 2>/dev/null)?", logical_body)
+    assert len(useradd_attempts) >= 4, (
+        f"expected 2 pinned + 2 unpinned-fallback useradd attempts (primary block + B3-NEW "
+        f"belt-and-braces block), got {len(useradd_attempts)}: {useradd_attempts}"
+    )
+    pinned = [a for a in useradd_attempts if '--uid "$AGNES_APPLIER_UID"' in a]
+    unpinned_fallbacks = [a for a in useradd_attempts if "--uid" not in a]
+    # Every pinned attempt must be followed by exactly one unpinned fallback
+    # form (the `|| useradd …` without `--uid`, taken only when the pin fails)
+    # — so counting them 1:1 catches a pinned attempt with no fallback
+    # (bricks on any collision) as well as a fallback with no pinned attempt
+    # first (silently never pins).
+    assert len(pinned) == len(unpinned_fallbacks) and len(pinned) >= 2, (
+        f"expected each pinned useradd attempt to have exactly one unpinned fallback; "
+        f"pinned={pinned}, unpinned_fallbacks={unpinned_fallbacks}"
+    )
 
 
 def test_the_chmod_still_runs_outside_the_create_branch():
@@ -697,3 +739,275 @@ def test_the_applier_honours_the_migrator_no_revert_decision():
         "the class check must precede the rollback write, not follow it"
     )
     assert rollback is not None
+
+
+# ---------------------------------------------------------------------------
+# The applier's own writer must honour the same precondition the provisioning
+# script gates its `chmod 600` on. Behavioural, not static: the functions are
+# extracted from the shell script and driven in a sandbox with stubbed `id`
+# and `chown`, so the assertions are about the mode instance.yaml actually
+# ends up with and the group grant it was handed.
+# ---------------------------------------------------------------------------
+
+APP_UID = 999  # Dockerfile: `useradd --system --uid 999 … agnes`, `USER agnes`
+
+
+def _extract_shell_functions(body: str, *names: str) -> str:
+    """Return the source of the named shell functions, in file order.
+
+    Relies on this script's house style: `name() {` on its own line, closing
+    `}` at column 0.
+    """
+    out = []
+    for name in names:
+        m = re.search(rf"^{re.escape(name)}\(\) \{{\n.*?^\}}$", body, re.DOTALL | re.MULTILINE)
+        assert m, f"could not find shell function {name}() in {APPLIER}"
+        out.append(m.group(0))
+    return "\n\n".join(out)
+
+
+def _write_instance_yaml_sandbox(
+    tmp_path,
+    *,
+    process_uid: int,
+    applier_uid: int | None,
+    seed_mode: int | None,
+    force_bash_fallback: bool = False,
+    chown_works: bool = True,
+) -> int:
+    """Run the applier's `write_instance_yaml` against a sandboxed overlay.
+
+    Returns the mode `/data/state/instance.yaml` is left at. `id` is stubbed
+    so the test can put the process and the agnes-applier account on any uid;
+    `chown` is stubbed because a test process cannot give a file away —
+    `chown_works` drives whether the gid-999 grant probe (and the post-rename
+    re-assert) reports success, and every invocation is appended to
+    ``chown.log`` so tests can assert WHAT was granted. ``seed_mode=None``
+    starts with no overlay at all (the fresh-provision case).
+    """
+    import shutil
+    import stat as stat_mod
+    import subprocess
+    import sys
+
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    overlay = tmp_path / "instance.yaml"
+    if seed_mode is not None:
+        overlay.write_text("logging:\n  level: debug\ndatabase:\n  backend: duckdb\n")
+        os.chmod(overlay, seed_mode)
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+
+    applier_line = f"echo {applier_uid}; exit 0" if applier_uid is not None else "exit 1"
+    (fake_bin / "id").write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$1" = "-u" ] && [ -z "${2:-}" ]; then echo ' + str(process_uid) + "; exit 0; fi\n"
+        'if [ "$1" = "-u" ] && [ "$2" = "agnes-applier" ]; then ' + applier_line + "; fi\n"
+        "exit 1\n"
+    )
+    # journald is not reachable from a test; swallow the warning.
+    (fake_bin / "logger").write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$LOGGER_LOG"\nexit 0\n')
+    # A non-root process cannot really give a file away, so `chown` is a stub
+    # either way; its exit code decides whether the host can hand the overlay
+    # to the app's gid (the probe + the post-rename re-assert both ride it).
+    (fake_bin / "chown").write_text(
+        '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$CHOWN_LOG"\nexit ' + ("0" if chown_works else "1") + "\n"
+    )
+    if force_bash_fallback:
+        # Drives the PyYAML-less branch: `python3 -c 'import yaml'` must fail.
+        (fake_bin / "python3").write_text("#!/usr/bin/env bash\nexit 1\n")
+    else:
+        # The interpreter running the tests definitely has PyYAML; the host's
+        # bare `python3` may not.
+        (fake_bin / "python3").write_text(f'#!/usr/bin/env bash\nexec "{sys.executable}" "$@"\n')
+    for f in fake_bin.iterdir():
+        os.chmod(f, 0o755)
+
+    body = APPLIER.read_text().replace("/data/state/instance.yaml", str(overlay))
+    funcs = _extract_shell_functions(
+        body, "_instance_yaml_target_mode", "_instance_yaml_reassert_owner", "write_instance_yaml"
+    )
+    script = (
+        "set -euo pipefail\n"
+        + funcs
+        + '\nwrite_instance_yaml side_car "postgresql+psycopg://agnes:pw@postgres:5432/agnes"\n'
+    )
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "LOGGER_LOG": str(tmp_path / "logger.log"),
+        "CHOWN_LOG": str(tmp_path / "chown.log"),
+    }
+    proc = subprocess.run(
+        [shutil.which("bash") or "/bin/bash", "-c", script],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert proc.returncode == 0, f"write_instance_yaml failed: {proc.stderr}"
+    assert "backend: side_car" in overlay.read_text(), "the sandbox did not actually rewrite the overlay"
+    return stat_mod.S_IMODE(os.stat(overlay).st_mode)
+
+
+@pytest.mark.parametrize("force_bash_fallback", [False, True], ids=["pyyaml", "bash-fallback"])
+def test_a_mismatched_host_writes_the_overlay_group_readable_not_0600(tmp_path, force_bash_fallback):
+    """The documented degraded state must stay survivable — via the app's gid.
+
+    When uid 999 is already taken, provisioning falls back to an allocated id
+    and deliberately skips `chmod 600` (`test_the_chmod_is_conditional_on_the_
+    pin_having_taken`) — the runbook and the bootstrap unit both promise the
+    overlay stays readable by the app and everything keeps working.
+
+    The applier's writer originally ignored that: it chmodded the temp 0600
+    unconditionally and renamed it over the overlay, which re-owns the file to
+    whoever wrote it. On a host where agnes-applier is not uid 999 the app
+    container then owns neither the file nor a readable bit of it, and
+    `app/main.py`'s fail-closed strict read refuses to start the instance —
+    turning an availability-safe degradation into an outage, triggered by
+    ordinary admin activity (every backend flip, cancel and stuck-job recovery
+    rewrites this file). Found by Devin Review on #1298. The policy on such a
+    host is 0640 with the app's gid (999) as the group — read granted through
+    the group bit, never through an owner the app is not — with the
+    post-rename ownership re-assert landing on `agnes-applier:999`.
+    """
+    mode = _write_instance_yaml_sandbox(
+        tmp_path,
+        process_uid=997,
+        applier_uid=997,
+        seed_mode=0o644,
+        force_bash_fallback=force_bash_fallback,
+    )
+    assert mode == 0o640, (
+        f"expected 0640 (the app reads via group {APP_UID}) on a host where the applier does not "
+        f"resolve to uid {APP_UID}, got {mode:04o} — 0600 there locks the app out of its own "
+        f"config and the next boot refuses to start"
+    )
+    chown_calls = (tmp_path / "chown.log").read_text()
+    assert f"agnes-applier:{APP_UID}" in chown_calls, (
+        "at 0640 the read grant IS the group — the post-rename ownership re-assert must land on "
+        f"the app's gid, but chown was invoked with: {chown_calls!r}"
+    )
+    warnings = (tmp_path / "logger.log").read_text()
+    assert "0640" in warnings, "the degraded rewrite must say which mode it chose and why"
+
+
+@pytest.mark.parametrize("force_bash_fallback", [False, True], ids=["pyyaml", "bash-fallback"])
+def test_an_app_written_0600_overlay_is_not_preserved_across_the_reown(tmp_path, force_bash_fallback):
+    """Preserving an existing 0600 re-creates the exact outage, one tick later.
+
+    On a mismatched host the overlay is routinely 0600-owned-by-999 *before*
+    the applier touches it: every admin-triggered migration first calls
+    `write_backend_state()` from inside the app container (uid 999), and that
+    writer — like the admin config editors — chmods its temp 0600
+    unconditionally, which is correct where it runs. The applier's next
+    rewrite then re-owns the file to agnes-applier; carrying the 0600 across
+    that rename leaves it owner-only under a uid the app is not, and the next
+    boot fails closed (`load_instance_config(strict=True)`). So the first
+    fix's "preserve, never widen" was exactly wrong here: the mode must be
+    recomputed for the account the file will come to REST on. Found by Devin
+    Review on #1298 (second round).
+    """
+    mode = _write_instance_yaml_sandbox(
+        tmp_path,
+        process_uid=997,
+        applier_uid=997,
+        seed_mode=0o600,
+        force_bash_fallback=force_bash_fallback,
+    )
+    assert mode == 0o640, (
+        f"a 0600 overlay rewritten by a mismatched-uid applier came out {mode:04o}; 0600 under a "
+        f"non-{APP_UID} owner is unreadable by the app, and preserving the existing mode is how it happens"
+    )
+
+
+def test_the_group_grant_fallback_is_0644_and_says_so(tmp_path):
+    """Where the gid-999 grant is impossible, availability still wins.
+
+    The common mismatched host runs the applier as a non-root agnes-applier
+    on an allocated uid with no gid-999 membership — `chown :999` fails
+    there, and a 0640 whose group grant never landed is the same lockout
+    0600 was. The fallback is 0644: the same degradation provisioning
+    documents for this host state, but as a conscious decision with a logged
+    warning naming the exposure (the database url with its password inline),
+    not something falling out of a stat default. Never 0600, never silent.
+    """
+    mode = _write_instance_yaml_sandbox(
+        tmp_path,
+        process_uid=997,
+        applier_uid=997,
+        seed_mode=0o600,
+        chown_works=False,
+    )
+    assert mode == 0o644, f"expected the documented 0644 fallback, got {mode:04o}"
+    warnings = (tmp_path / "logger.log").read_text()
+    assert "0644" in warnings and "world-readable" in warnings, (
+        "the 0644 fallback must be announced with its exposure — it is a deliberate "
+        f"availability-over-hardening trade, not a default; got: {warnings!r}"
+    )
+
+
+def test_a_fresh_overlay_is_created_by_policy_not_by_stat_default(tmp_path):
+    """No file yet is a decision point, not a stat failure.
+
+    The first policy read the existing mode with a `|| existing=644` fallback,
+    so on a mismatched host the applier CREATED the overlay world-readable —
+    database url and password inline — because there was nothing to preserve.
+    Found by Devin Review on #1298 (second round). A fresh overlay follows the
+    same policy as a rewrite: 0640 + group 999 where the grant lands, the
+    logged 0644 degradation where it cannot.
+    """
+    grantable = _write_instance_yaml_sandbox(tmp_path / "a", process_uid=997, applier_uid=997, seed_mode=None)
+    assert grantable == 0o640, (
+        f"a fresh overlay on a mismatched host came out {grantable:04o}, not 0640 — "
+        "world-readable-by-default is the finding this test pins"
+    )
+
+    degraded = _write_instance_yaml_sandbox(
+        tmp_path / "b", process_uid=997, applier_uid=997, seed_mode=None, chown_works=False
+    )
+    assert degraded == 0o644
+    assert "0644" in (tmp_path / "b" / "logger.log").read_text(), (
+        "even the 0644 fallback on a fresh overlay must be logged, not silent"
+    )
+
+
+@pytest.mark.parametrize("force_bash_fallback", [False, True], ids=["pyyaml", "bash-fallback"])
+def test_the_applier_still_tightens_the_overlay_it_will_own(tmp_path, force_bash_fallback):
+    """…and the hardening must survive the fix.
+
+    Where the pin DID take, the applier is uid 999, the app owns the file it
+    writes, and 0600 is exactly right — the overlay carries the database url
+    with its password inline on a volume several non-root containers mount.
+    """
+    mode = _write_instance_yaml_sandbox(
+        tmp_path,
+        process_uid=APP_UID,
+        applier_uid=APP_UID,
+        seed_mode=0o644,
+        force_bash_fallback=force_bash_fallback,
+    )
+    assert mode == 0o600, (
+        f"expected the 0600 tightening to still apply when the applier is uid {APP_UID}, got {mode:04o}"
+    )
+
+
+def test_the_applier_reads_the_owner_the_rename_will_leave_not_its_own_uid(tmp_path):
+    """Running as root does not make 0600 safe — or unsafe — by itself.
+
+    The pre-Phase-8.1 shape (and the in-flight tick described in the runbook)
+    runs the applier as root. Root's own uid is never 999, but the `chown
+    agnes-applier` after the rename still moves the file onto whatever that
+    account resolves to, so the mode has to follow the account, not the
+    process.
+    """
+    tight = _write_instance_yaml_sandbox(tmp_path / "a", process_uid=0, applier_uid=APP_UID, seed_mode=0o644)
+    assert tight == 0o600, (
+        f"root + agnes-applier on uid {APP_UID} ends up owned by the app; 0600 is safe (got {tight:04o})"
+    )
+
+    loose = _write_instance_yaml_sandbox(tmp_path / "b", process_uid=0, applier_uid=997, seed_mode=0o644)
+    assert loose == 0o640, (
+        f"root + agnes-applier on uid 997 hands the file to a uid the app is not — and root can "
+        f"always grant group {APP_UID}, so the policy mode there is 0640 (got {loose:04o})"
+    )

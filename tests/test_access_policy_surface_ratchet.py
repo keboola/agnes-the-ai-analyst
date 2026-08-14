@@ -334,6 +334,22 @@ EXEMPT: frozenset[str] = frozenset(
         # structurally, independent of RBAC. ────────────────────────────
         "app/api/data.py::check_access",
         "app/api/data.py::download_table",
+        # ── attachment binaries: the SAME server_only interlock as data.py's
+        # parquet route, one indirection removed. `_lookup_stored_path` reads
+        # `local_path` from the catalogue view, but its ONLY caller is
+        # `download_attachment`, which 403s a `server_only` table BEFORE the
+        # lookup runs (the "these bytes do not leave the server" gate at the
+        # `reg_row.get("server_only")` check, mirroring `_distribution_refusal`).
+        # A policy attaches only to `server_only=true` or `query_mode='remote'`
+        # (the Task 4 interlock): the former is refused before
+        # `_lookup_stored_path` is ever reached, and the latter can never be an
+        # attachment source — the declared sources
+        # (`src/attachment_sources.py::_SOURCES`) are a fixed dict whose only
+        # entry is Jira's local `attachments` table, so `get_attachment_source`
+        # returns None for a remote-policied table long before any catalogue
+        # read. Neither node can therefore reach a policied table's rows. ────
+        "app/api/attachments.py::_lookup_stored_path",
+        "app/api/attachments.py::download_attachment",
         # ── writes-only / not a registry-table read at all ──────────────
         # Scheduler/background sync job (POST /api/sync/trigger or the
         # cron tick) -- writes the RAW profile to storage (needed so the

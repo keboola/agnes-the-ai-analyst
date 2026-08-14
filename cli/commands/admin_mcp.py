@@ -106,6 +106,14 @@ def _print_source_table(rows: list[dict]) -> None:
     table.add_column("TRANSPORT")
     table.add_column("ENDPOINT")
     table.add_column("AUTH")
+    # DNS-free url-policy sweep/report (#1216 part 1) — `would_refuse` means
+    # the CURRENT policy would reject this row's url if it were saved today;
+    # it stays live because `check_source_url` only gates configuration-time
+    # writes. Blank only for stdio (the API returns `null`: the url is inert
+    # there); an ordinary hostname the DNS-free check cannot judge shows
+    # "ok". `no_wrap` so a narrow render squeezes ENDPOINT, never folds the
+    # verdict mid-word.
+    table.add_column("URL POLICY", no_wrap=True)
     for row in rows:
         endpoint = row.get("url") or row.get("command") or ""
         args = row.get("args") or []
@@ -114,12 +122,15 @@ def _print_source_table(rows: list[dict]) -> None:
         auth = row.get("auth_method") or ""
         if row.get("auth_secret_env"):
             auth = f"{auth}:{row['auth_secret_env']}" if auth else row["auth_secret_env"]
+        verdict = row.get("url_policy_verdict") or {}
+        url_policy = str(verdict.get("verdict") or "")
         table.add_row(
             str(row.get("id") or ""),
             str(row.get("name") or ""),
             str(row.get("transport") or ""),
             str(endpoint),
             str(auth),
+            url_policy,
         )
     _console.print(table)
 
@@ -366,6 +377,48 @@ def source_delete(
     if resp.status_code not in (200, 204):
         _fail(resp)
     typer.echo(f"Deleted MCP source {name_or_id} (id={src_id})")
+
+
+@source_app.command("grant")
+def source_grant(
+    name_or_id: str = typer.Argument(..., help="Source name or id (src_*)"),
+    group: str = typer.Option(..., "--group", help="User group id to grant (or revoke with --revoke)"),
+    revoke: bool = typer.Option(False, "--revoke", help="Revoke instead of grant"),
+):
+    """Grant (or revoke) a group EVERY tool registered under one source.
+
+    Per-tool grants suit an upstream curated a few tools at a time; a source
+    that arrives with its whole toolset — a connected Keboola project brings
+    around forty — is why this exists.
+    """
+    src_id = _resolve_source_id(name_or_id)
+    if revoke:
+        resp = api_delete(f"/api/admin/mcp-sources/{src_id}/grants/{group}")
+        if resp.status_code not in (200, 204):
+            _fail(resp)
+        typer.echo(f"Revoked group {group} from every tool of {name_or_id}")
+        return
+    resp = api_post(f"/api/admin/mcp-sources/{src_id}/grants", json={"group_id": group})
+    if resp.status_code not in (200, 201):
+        _fail(resp)
+    body = resp.json() if resp.content else {}
+    # "granted 0 of 37" and "granted 37 of 37" both read as success otherwise.
+    typer.echo(
+        f"Granted {body.get('granted', 0)} of {body.get('total', 0)} tools to {group}"
+        + (f" ({body['already_granted']} already granted)" if body.get("already_granted") else "")
+    )
+    # A grant does not reach a mutating tool: the passthrough gate refuses
+    # those for every non-admin anyway. Saying so beats the group finding out.
+    if body.get("skipped_disabled"):
+        typer.echo(
+            f"{body['skipped_disabled']} disabled tools were skipped — a grant on a "
+            "switched-off tool would take effect the moment someone re-enables it."
+        )
+    if body.get("admin_only"):
+        typer.echo(
+            f"{body['admin_only']} of them are mutating and stay admin-only — a grant "
+            "does not make those reachable for analysts."
+        )
 
 
 @source_app.command("set-secret")

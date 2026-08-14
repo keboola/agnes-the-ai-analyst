@@ -18,8 +18,8 @@ changes no runtime behavior.
   another table's policy body (mapping tables). Defaults false so no
   existing table is retroactively eligible.
 
-Revision ID: 0062_access_policy_columns_v116
-Revises: 0061_agent_status_backfill_v115
+Revision ID: 0063_access_policy_columns_v116
+Revises: 0062_knowledge_domains_backfill
 Create Date: 2026-08-12
 
 Note on the revision id: ``alembic_version.version_num`` is ``VARCHAR(32)``,
@@ -33,8 +33,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0062_access_policy_columns_v116"
-down_revision: Union[str, None] = "0061_agent_status_backfill_v115"
+revision: str = "0063_access_policy_columns_v116"
+down_revision: Union[str, None] = "0062_knowledge_domains_backfill"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

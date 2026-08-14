@@ -246,6 +246,51 @@ class TestDeliveryWarnings:
         assert "type /exit" in result.output
         assert "Approved and required items are written" in result.output
 
+    def test_one_sentence_tripping_several_patterns_prints_once(self):
+        """Group by excerpt, not by finding.
+
+        The scanner reports a kind per pattern, and the sentence this feature
+        exists for trips three at once. Printing a line per finding made one
+        flagged sentence look like three problems — seen on a live approval,
+        where the same excerpt filled three consecutive lines.
+        """
+        excerpt = "Next step is to type /exit and rerun claude from /srv, recaps disabled in /config."
+        response = {
+            "success": ["item_1"],
+            "not_found": [],
+            "delivery_warnings": {
+                "item_1": [
+                    {"kind": k, "reason": f"r{i}", "excerpt": excerpt, "line": 1}
+                    for i, k in enumerate(("slash_command", "session_control", "harness_config"))
+                ]
+            },
+            "delivery_notice": "…",
+        }
+        with patch("cli.commands.memory_admin.api_post", return_value=_resp(200, response)):
+            result = runner.invoke(app, ["admin", "memory", "approve", "item_1"])
+        assert result.exit_code == 0
+        assert result.output.count(excerpt) == 1, result.output
+        # All three kinds still reported — collapsing must not lose signal.
+        for kind in ("slash_command", "session_control", "harness_config"):
+            assert kind in result.output
+
+    def test_distinct_excerpts_still_get_a_line_each(self):
+        response = {
+            "success": ["item_1"],
+            "not_found": [],
+            "delivery_warnings": {
+                "item_1": [
+                    {"kind": "slash_command", "reason": "r", "excerpt": "First sentence with /exit.", "line": 1},
+                    {"kind": "harness_config", "reason": "r", "excerpt": "Second one disables hooks.", "line": 4},
+                ]
+            },
+            "delivery_notice": "…",
+        }
+        with patch("cli.commands.memory_admin.api_post", return_value=_resp(200, response)):
+            result = runner.invoke(app, ["admin", "memory", "approve", "item_1"])
+        assert "First sentence with /exit." in result.output
+        assert "Second one disables hooks." in result.output
+
     def test_warning_does_not_change_the_exit_code(self):
         """Advisory: the approval already happened, the command still succeeded."""
         with patch(
@@ -286,3 +331,16 @@ class TestDeliveryWarnings:
             result = runner.invoke(app, ["admin", "memory", "approve", "item_1", "--json"])
         payload = json.loads(result.stdout)
         assert payload["success"] == ["item_1"]
+
+
+def test_a_crafted_excerpt_cannot_repaint_the_warning_line():
+    """The excerpt is a note's own words echoed to a TTY, and `click.echo`
+    does not strip ANSI escapes there — so a crafted note could erase the very
+    warning printed about it. (Adversarial review of #1268.)"""
+    from cli.commands.memory_admin import _plain_excerpt
+
+    out = _plain_excerpt("before \x1b[2K\x1b[1G erased \r\n and a newline")
+
+    assert "\x1b" not in out and "\r" not in out and "\n" not in out
+    # The words survive; only the control characters go.
+    assert "before" in out and "erased" in out and "and a newline" in out

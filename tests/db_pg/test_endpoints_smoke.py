@@ -10,14 +10,13 @@ from __future__ import annotations
 import pytest
 
 from tests.helpers.factories import (
-    make_skill_zip,
-    make_plugin_zip,
     make_agent_zip,
     make_bad_desc_zip,
     make_no_name_zip,
+    make_plugin_zip,
     make_security_fail_zip,
+    make_skill_zip,
 )
-
 
 pytestmark = pytest.mark.integration
 
@@ -45,6 +44,7 @@ class TestAuthSmoke:
     def test_bootstrap_returns_403_after_seeding(self, seeded_app_both):
         """Bootstrap window is closed once a user with a password exists."""
         from argon2 import PasswordHasher
+
         from src.repositories import users_repo
 
         users_repo().update(id="admin1", password_hash=PasswordHasher().hash("admin-pass"))
@@ -72,6 +72,7 @@ class TestAuthSmoke:
     def test_token_with_password_user(self, seeded_app_both):
         """POST /auth/token returns 200 + access_token for a user with a password_hash."""
         from argon2 import PasswordHasher
+
         from src.repositories import users_repo
 
         ph = PasswordHasher()
@@ -1560,6 +1561,42 @@ class TestMarketplacesSmoke:
 
 
 # ---------------------------------------------------------------------------
+# Admin dashboard signals (the /admin "Needs fixing" zone)
+# ---------------------------------------------------------------------------
+
+
+class TestAdminDashboardSmoke:
+    COVERED_ROUTES = {
+        "GET /api/admin/dashboard/signals",
+    }
+
+    def test_signals_shape(self, seeded_app_both):
+        from app.services.admin_dashboard import invalidate_cache
+
+        # The zone-2 TTL cache is process-global, so the duckdb leg of this
+        # parametrised fixture would otherwise serve its rollup to the pg leg.
+        invalidate_cache()
+        r = seeded_app_both["client"].get(
+            "/api/admin/dashboard/signals",
+            headers=_admin_headers(seeded_app_both),
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["zone"] == "needs_fixing"
+        assert isinstance(body["signals"], list)
+        # Clear signals are omitted, never returned at zero — an empty list is
+        # the healthy state and the page renders it as such.
+        for sig in body["signals"]:
+            assert sig["count"] > 0 or sig["failed"] is True
+            assert set(sig) >= {"key", "title", "zone", "severity", "failed", "count", "href", "blurb"}
+        invalidate_cache()
+
+    def test_signals_requires_admin(self, seeded_app_both):
+        r = seeded_app_both["client"].get("/api/admin/dashboard/signals")
+        assert r.status_code in (401, 403)
+
+
+# ---------------------------------------------------------------------------
 # Reports (marketplace usage digest)
 # ---------------------------------------------------------------------------
 
@@ -1668,6 +1705,13 @@ KNOWN_UNTESTED = {
     # tests/test_api_knowledge_artifacts.py (manifest section, 401/404/200/304,
     # RBAC fail-closed).
     "GET /api/knowledge/artifacts/{corpus_id}/download",
+    # Connector-catalogued attachment download (Jira first) — binary
+    # byte-stream by id; no new repo methods/migration (the catalogue is an
+    # analytics view, the bytes live on disk), RBAC via can_access_table like
+    # the parquet download. Behaviour covered in
+    # tests/test_attachment_download.py (403 vs miss taxonomy, byte roundtrip,
+    # path containment, audit both outcomes, second-source registration).
+    "GET /api/attachments/{source}/{attachment_id}/download",
     # K4 maintained digests (#799) — digest markdown content endpoint, RBAC
     # via require_resource_access(KNOWLEDGE_DIGEST). Behaviour covered in
     # tests/test_api_knowledge_digests_distribution.py (manifest kind:"digest"
@@ -1975,6 +2019,9 @@ KNOWN_UNTESTED = {
     # Admin audit view over all Data Packages / Memory Domains (catalog
     # reshape) — rendering covered by tests/test_web_catalog_reshape.py.
     "GET /admin/data-packages",
+    # A data package's own page (tables · sharing · at a glance) — rendering
+    # covered by tests/test_web_admin_package_detail.py.
+    "GET /admin/data-packages/{package_id}",
     # Agent builder (rail-layout WIP surface) — rendering covered by
     # tests/test_ui_layout_theme.py::TestRailOptIn.
     "GET /agents",
@@ -2112,6 +2159,9 @@ KNOWN_UNTESTED = {
     "DELETE /api/admin/mcp-sources/{source_id}/secret",
     "DELETE /api/admin/mcp-tools/{tool_id}",
     "DELETE /api/admin/mcp-tools/{tool_id}/grants/{group_id}",
+    # Grant/revoke a whole MCP source at once — tested in test_keboola_chat_tools.py
+    "POST /api/admin/mcp-sources/{source_id}/grants",
+    "DELETE /api/admin/mcp-sources/{source_id}/grants/{group_id}",
     "GET /api/admin/mcp-sources",
     "GET /api/admin/mcp-sources/{source_id}",
     "GET /api/admin/mcp-tools",
@@ -2528,10 +2578,10 @@ def test_every_route_is_covered_or_excluded():
     ({metric_id:path} -> {metric_id}), so KNOWN_UNTESTED entries must use the
     plain {param} form.
     """
-    import json  # noqa: PLC0415
-    import os  # noqa: PLC0415
-    import subprocess  # noqa: PLC0415
-    import sys  # noqa: PLC0415
+    import json
+    import os
+    import subprocess
+    import sys
 
     repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     script = (

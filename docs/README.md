@@ -73,7 +73,7 @@ Working on the Agnes codebase.
 - [`llm-routing.md`](llm-routing.md) — design: provider-agnostic LLM routing
 - [`sample-data.md`](sample-data.md) — sample data generator (e-commerce schema, size presets)
 - [`theme-reference.html`](theme-reference.html) — web UI theme/color reference
-- [`../dev_docs/`](../dev_docs/) — **server/developer-internal docs** (not synced to analyst machines): server ops, disaster recovery, security audit, desktop app, design system, Telegram bot
+- [`../dev_docs/`](../dev_docs/) — **server/developer-internal docs** (not synced to analyst machines): server ops, disaster recovery, security audit, design system, Telegram bot
 
 Code-adjacent READMEs: [`../connectors/jira/README.md`](../connectors/jira/README.md),
 [`../services/corporate_memory/README.md`](../services/corporate_memory/README.md),

@@ -310,7 +310,6 @@ _STATIC_EDITABLE_SECTIONS: tuple[str, ...] = (
     "auth",
     "ai",
     "openmetadata",
-    "desktop",
     "corporate_memory",
     "materialize",
     "marketplace",
@@ -458,6 +457,19 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                 "cleartext http to a public one. Leaving it off is what allows a "
                 "source on your own intranet. Turn it on if every MCP service you "
                 "use is third-party — it makes an internal source unconfigurable."
+            ),
+        },
+        "connector_ui_enabled": {
+            "kind": "bool",
+            "default": _flag_default("mcp", "connector_ui_enabled", True),
+            "hint": (
+                "Expose the user-facing MCP connector surface — /me/ai-connector, "
+                "/mcp-connect, and the MCP tab of /how-it-works#connect, plus their "
+                "nav/palette entries. On by default. Turn off on a VPN/intranet-only "
+                "instance whose cloud-side MCP clients can never reach the endpoint, "
+                "so users are not shown a setup path that cannot work for them. UI "
+                "only — the MCP protocol endpoints keep serving in-network clients "
+                "regardless."
             ),
         },
     },
@@ -722,22 +734,6 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                 "TLS verification. Default true. Set false ONLY for internal CAs / "
                 "self-signed certs — sends the JWT over an unverified channel."
             ),
-        },
-    },
-    "desktop": {
-        "jwt_issuer": {
-            "kind": "string",
-            "default": "data-analyst",
-            "hint": "JWT iss claim. Match what the desktop app verifies.",
-        },
-        "jwt_secret": {
-            "kind": "secret",
-            "hint": "JWT signing secret. Use ${DESKTOP_JWT_SECRET} env-var reference.",
-        },
-        "url_scheme": {
-            "kind": "string",
-            "default": "data-analyst",
-            "hint": "Custom URL scheme registered by the desktop app (data-analyst://...).",
         },
     },
     # corporate_memory governance — optional. When the section is missing

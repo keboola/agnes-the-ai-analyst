@@ -1,13 +1,31 @@
-{% extends "base_ds.html" %}
+{% extends "base_admin.html" %}
+{% import "macros/_icon.html" as ico %}
 
 {% block title %}Table Management - {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block body_attrs %}data-source-type="{{ data_source_type }}"{% endblock %}
+{% block body_attrs %}data-source-type="{{ data_source_type }}" data-connected-source-types="{{ (connected_source_types or []) | join(',') }}"{% endblock %}
 
 {% block head_extra %}
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+{# The Library's control chrome + the paper dropdown, imported rather than
+   reimplemented — the same two sheets People and Groups took when their tables
+   were rebuilt. Chrome AND engine now: `.fbar`, the two-level `.fbar-menu--cats`
+   Filter popover, the `.fbar-chips` row and the floating `.fbar-bulk` selection
+   bar all come from this sheet, and static/js/filter_toolbar.js (loaded at the
+   foot of the page, before the page script that mounts it) does the filtering,
+   the ordering and the chips. The page's private copy of that logic is gone. #}
+<link rel="stylesheet" href="{{ static_url('css/filter_toolbar.css') }}">
+<link rel="stylesheet" href="{{ static_url('css/ds_dropdown.css') }}">
+{# The shared right-side drawer — the chrome Connect-source, the Add-data
+   wizard and the group editor already open in. Registering a table is a setup
+   flow, and setup flows in this product come from the right, not from a
+   centred modal. `package_drawer.css` is the create-a-package flow's own two
+   objects inside that chrome; the flow itself is the shared component, so this
+   page and the Packages lens open the same one. #}
+<link rel="stylesheet" href="{{ static_url('css/drawer.css') }}">
+<link rel="stylesheet" href="{{ static_url('css/package_drawer.css') }}">
 <style>
         /* Design tokens come from the global `:root` block in
            style-custom.css. The local override that used to live
@@ -423,173 +441,99 @@
             flex-shrink: 0;
         }
 
-        /* ── Registry table ── */
-        .registry-table {
-            width: 100%;
-            border-collapse: collapse;
-            table-layout: fixed;
-        }
+        /* ── The list ──────────────────────────────────────────────────
+           `.data-table` (style-custom.css) is the product's ONE table — the
+           one People, Groups and the Library render. This page carried its own
+           `.registry-table` with its own borders, header treatment and row
+           padding, which is a second table in a product that had agreed on
+           one. What is left here is only what belongs to THIS table: its
+           column behaviour and its cells. */
+        #adminTablesFlat { table-layout: fixed; }
+        /* Explicit, not left to the UA rule: `[hidden]` is a low-specificity
+           author-overridable default, and the shared `.data-table` block is one
+           `display` declaration away from silently winning it. The toolbar hides
+           the whole table when a filter matches nothing — see `onApply`. */
+        #adminTablesFlat[hidden] { display: none; }
 
-        .registry-table .col-description {
-            overflow: hidden;
-            display: -webkit-box;
-            -webkit-line-clamp: 2;
-            -webkit-box-orient: vertical;
-            overflow-wrap: anywhere;
-            line-height: 1.4;
-            color: var(--text-secondary);
-        }
+        /* `table-layout: fixed` makes the <colgroup> binding. All percent and
+           summing to 100 — a px width mixed in is ADDED to the percentages
+           rather than taken out of them, so 100% + 56px overflows by exactly
+           56px and the last column (the actions an admin came here for) is the
+           one clipped. Learned on the People table; same trap here. */
 
-        .registry-table th {
-            text-align: left;
-            font-size: 11px;
+        /* Name over bucket — the Library's `.lib-namecell` two-line anatomy.
+           Bucket rode in a column of its own and cost the name the width it
+           needed; underneath, it identifies the table without competing. */
+        .tbl-name {
+            display: block;
             font-weight: 600;
-            color: var(--text-secondary);
-            text-transform: uppercase;
-            letter-spacing: 0.4px;
-            padding: 10px 16px;
-            border-bottom: 1px solid var(--border);
-            background: var(--background);
-        }
-
-        .registry-table td {
-            padding: 12px 16px;
-            font-size: 13px;
-            border-bottom: 1px solid var(--border-light);
-            vertical-align: middle;
-        }
-
-        .registry-table tr:last-child td {
-            border-bottom: none;
-        }
-
-        .registry-table tr:hover td {
-            background: rgba(243, 244, 246, 0.5);
-        }
-
-        .registry-table .col-id {
-            font-family: var(--font-mono);
-            font-size: 12px;
-            max-width: 220px;
+            font-size: 13.5px;
+            color: var(--ds-text-primary);
+            text-decoration: none;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
         }
+        a.tbl-name:hover { color: var(--ds-primary); }
+        .tbl-sub {
+            display: block;
+            margin-top: 2px;
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--ds-text-muted);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .tbl-warn { display: block; margin-top: 3px; font-size: 11px; color: var(--ds-accent-warn-ink); }
 
-        .registry-table .col-actions {
-            width: 152px;
-            min-width: 152px;
+        /* Mode leads with meaning, keeps the system word. */
+        .tbl-mode { white-space: nowrap; font-size: 12.5px; color: var(--ds-text-secondary); }
+
+        /* A package the row belongs to — a chip that is also the way in. */
+        .tbl-pkg {
+            display: inline-block;
+            max-width: 100%;
+            margin: 1px 3px 1px 0;
+            padding: 2px 9px;
+            border-radius: var(--ds-radius-pill);
+            background: var(--ds-resource-data-soft);
+            color: var(--ds-resource-data-ink);
+            font-size: 11.5px;
+            font-weight: 600;
+            text-decoration: none;
+            overflow: hidden;
+            text-overflow: ellipsis;
             white-space: nowrap;
             vertical-align: top;
         }
+        .tbl-pkg:hover { filter: brightness(0.96); }
+        /* "In no package" is the row state this whole lens exists to surface,
+           so it is a WARNING chip, not an empty cell. */
+        .tbl-pkg--none {
+            background: var(--ds-accent-warn-bg);
+            color: var(--ds-accent-warn-ink);
+            border: 1px dashed var(--ds-accent-warn-line);
+            cursor: pointer;
+        }
+        .tbl-reach { font-size: 12.5px; color: var(--ds-text-secondary); white-space: nowrap; }
+        .tbl-reach--none { color: var(--ds-accent-warn-ink); font-weight: 600; }
+        .tbl-muted { color: var(--ds-text-muted); }
 
-        /* ── Registry table — wide layout ── */
-        .registry-table .col-mode {
-            width: 100px;
-        }
-
-        .registry-table .col-source {
-            width: 200px;
-            font-family: var(--font-mono);
-            font-size: 12px;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-            color: var(--text-secondary);
-        }
-
-        .registry-table .col-pk {
-            width: 100px;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-
-        .registry-table .col-schedule {
-            width: 100px;
-            font-size: 12px;
-            color: var(--text-secondary);
-        }
-
-        .registry-table .col-folder {
-            width: 120px;
-        }
-
-        .registry-table .col-registered {
-            width: 160px;
-            font-size: 11px;
-            line-height: 1.4;
-            overflow: hidden;
-        }
-
-        .registry-table .col-registered .registered-by {
-            color: var(--text-primary);
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-
-        .registry-table .col-registered .registered-at {
-            color: var(--text-secondary);
-        }
-
-        .registry-table .col-last-sync {
-            width: 110px;
-            white-space: nowrap;
-        }
-        .registry-table td.col-last-sync {
-            font-size: 12px;
-            color: var(--text-secondary);
-        }
-
-        .registry-table .col-status {
-            width: 40px;
-            text-align: center;
-        }
-
-        .mode-badge {
-            display: inline-block;
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-size: 11px;
-            font-weight: 600;
-        }
-
-        .mode-badge.mode-local {
-            background: var(--success-light);
-            color: var(--success);
-        }
-
-        .mode-badge.mode-remote {
-            background: var(--ds-primary-light);
-            color: var(--ds-primary);
-        }
-
-        .mode-badge.mode-materialized {
-            background: rgba(139, 92, 246, 0.1);
-            color: #8B5CF6;
-        }
-
-        .mode-badge.mode-internal {
-            background: rgba(15, 118, 110, 0.1);
-            color: #0F766E;
-        }
+        /* Source reads as a quiet label, not a coloured badge: with one badge
+           per row down a 14-row table the column became the loudest thing on
+           a page whose subject is the name beside it. */
+        .tbl-src { font-size: 12.5px; color: var(--ds-text-secondary); white-space: nowrap; }
+        .tbl-src__proj { display: block; font-size: 11px; color: var(--ds-text-muted); }
 
         /* ── Access column chip (table access policies, admin UI — Task 15)
            One control, three visual states, all opening the SAME policy
            editor modal (`openAccessPolicyModal`) — the modal explains an
            ineligible table's fix inline rather than the row silently
            offering nothing (design doc §13: "visible but disabled with the
-           reason inline"). Modelled on the `.lib-vis` table-cell chip
-           (library.html) rather than folded into `.col-actions`, which is
-           already at its 152px budget with up to 4 icons on an unpackaged
-           row (see the col-actions overflow comment in
-           _renderPackageTableRows below) — a 5th icon there is exactly
-           that bug. ── */
-        .registry-table .col-access {
-            width: 130px;
-        }
-
+           reason inline"). Modelled on the `.tbl-pkg` chip above rather
+           than folded into the ⋯ actions menu — a security control an
+           admin should see at a glance, not one buried behind a menu item. ── */
         .access-chip {
             display: inline-flex;
             align-items: center;
@@ -669,6 +613,186 @@
 
         .ap-history-row:last-child {
             border-bottom: none;
+        }
+
+        /* ── Row actions — one ⋯ per row, one menu for the table ────────
+           Five icon buttons per row spent the widest column in the table on
+           controls used once a month, and read as noise beside the data. The
+           menu is a fixed-position portal parked outside the table: the table
+           clips its own overflow to keep its rounded corners, so a popover
+           anchored inside the last row is cut off. (Learned on People.) */
+        .tbl-more__btn {
+            display: inline-flex; align-items: center; justify-content: center;
+            width: 28px; height: 28px; padding: 0;
+            border: 1px solid transparent; border-radius: 8px;
+            background: transparent; color: var(--ds-text-muted);
+            font-size: 15px; line-height: 1; cursor: pointer;
+        }
+        .tbl-more__btn:hover,
+        .tbl-more__btn[aria-expanded="true"] {
+            background: var(--ds-surface-dim);
+            border-color: var(--ds-border);
+            color: var(--ds-text-primary);
+        }
+        .tbl-more__btn:focus-visible { outline: 2px solid var(--ds-primary); outline-offset: 1px; }
+        .tbl-more__menu {
+            position: fixed; z-index: 1200; min-width: 208px; padding: 6px;
+            background: var(--ds-surface); border: 1px solid var(--ds-border);
+            border-radius: 12px; box-shadow: var(--ds-shadow-md);
+        }
+        .tbl-more__menu[hidden] { display: none; }
+        .tbl-more__item {
+            display: flex; align-items: center; gap: 9px; width: 100%;
+            padding: 7px 10px; border: none; background: none; border-radius: 8px;
+            font: inherit; font-size: 13.5px; color: var(--ds-text-primary);
+            text-align: left; cursor: pointer; text-decoration: none;
+        }
+        .tbl-more__item:hover { background: color-mix(in srgb, var(--ds-text-primary) 6%, transparent); color: var(--ds-primary); }
+        .tbl-more__item--danger { color: var(--ds-accent-danger-ink); }
+        .tbl-more__item--danger:hover { background: var(--ds-accent-danger-bg); color: var(--ds-accent-danger-ink); }
+        .tbl-more__sep { height: 1px; margin: 5px 6px; background: var(--ds-border); }
+
+        /* Header text for a column whose cells are icon buttons — present for
+           a screen reader, clipped for everyone else. */
+        .tbl-sr {
+            position: absolute; width: 1px; height: 1px;
+            padding: 0; margin: -1px; overflow: hidden;
+            clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+        }
+
+        /* The count, in the bar rather than in a row of its own. Quiet and
+           tabular so it doesn't jitter as the filter narrows. */
+        .tbl-count {
+            flex: 0 0 auto;
+            font-size: 13px;
+            color: var(--ds-text-muted);
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+        }
+
+        /* ── Selection ─────────────────────────────────────────────────────
+           The box column is the narrowest in the table and its cells are all
+           the same width, so it is centred and pays no right padding.
+
+           The boxes themselves ride the row's own ink rather than the brand
+           accent at rest: 159 blue squares down the left edge of a list read
+           as the page's dominant colour, and the thing that should be blue on
+           this table is the state that gets picked — not the affordance for
+           picking it. `accent-color` still lights each one primary the moment
+           it is checked, which is where the accent means something. */
+        .data-table th.tbl-check,
+        .data-table td.tbl-check { padding-right: 0; text-align: center; }
+        .tbl-check input {
+            width: 14px; height: 14px; margin: 0;
+            accent-color: var(--ds-primary); cursor: pointer;
+            vertical-align: middle;
+        }
+
+        /* A selected row is TINTED, the way a selected chat row is: with the
+           verbs that will act on it floating at the foot of the viewport,
+           "which rows did I pick" has to be answerable without scrolling back
+           up to a checkbox column. The tint outranks the hover wash below,
+           which is why it is declared after it in `:hover` order and reasserted
+           here — a selected row under the pointer must still read as selected.
+           `:has()` so it follows the checkbox with no class bookkeeping. */
+        #adminTablesFlat tbody tr:has(.tbl-rowcheck:checked),
+        #adminTablesFlat tbody tr:has(.tbl-rowcheck:checked):hover {
+            background: color-mix(in srgb, var(--ds-primary) 8%, transparent);
+        }
+
+        /* Room under the list for the floating bulk bar, so the last row is
+           never the one hiding beneath it. Reserved unconditionally rather
+           than only while a selection stands: adding 76px at the moment a row
+           is ticked would shift the list under the pointer that ticked it. */
+        .tbl-listwrap { padding-bottom: 76px; }
+
+        .tbl-loading, .tbl-empty {
+            padding: 34px 16px; text-align: center;
+            font-size: 13px; color: var(--ds-text-secondary);
+        }
+        .tbl-empty[hidden] { display: none; }
+        .tbl-empty .big { font-size: 15px; font-weight: 600; color: var(--ds-text-primary); margin-bottom: 4px; }
+        /* The way out of an over-narrowed list, offered where the reader hits
+           it. `data-fbar-reset` is the shared toolbar engine's own hook, so
+           this clears search AND every facet in one press. */
+        .tbl-empty .btn { margin-top: 14px; }
+
+        /* ── Toolbar members that are this page's own ──────────────────── */
+        /* Cache freshness — a STATUS that happens to open, not a control.
+           It sits at the quiet end of the bar in the muted register the count
+           uses, with only a hairline to say it is pressable: at
+           `.fbar-filter__btn`'s full weight it read as a fourth filter, and an
+           operator scanning the bar for something to narrow the list with kept
+           landing on a read-out. Same height and radius as its neighbours, so
+           the row still reads as one strip. */
+        .tbl-cache { flex: 0 0 auto; position: relative; }
+        .tbl-cache > summary {
+            display: inline-flex; align-items: center; gap: 7px;
+            height: 38px; padding: 0 12px; list-style: none; cursor: pointer;
+            font-size: 12.5px; font-weight: 600; color: var(--ds-text-muted);
+            background: transparent; border: 1px solid var(--ds-border);
+            border-radius: 9px; white-space: nowrap;
+        }
+        .tbl-cache > summary::-webkit-details-marker { display: none; }
+        .tbl-cache > summary:hover { border-color: var(--ds-text-muted); color: var(--ds-text-primary); }
+        .tbl-cache > summary:focus-visible {
+            outline: var(--ds-focus-outline); outline-offset: var(--ds-focus-outline-offset);
+        }
+        /* Opens as a POPOVER, not by pushing the toolbar taller — a details
+           that grows in place shoves the table down every time it is opened. */
+        .tbl-cache__body {
+            position: absolute; top: calc(100% + 6px); right: 0; z-index: 40;
+            width: 320px; padding: 12px 14px;
+            background: var(--ds-surface); border: 1px solid var(--ds-border);
+            border-radius: 12px; box-shadow: var(--ds-shadow-md);
+        }
+        .tbl-cache__body pre {
+            background: var(--ds-surface-sunken); color: var(--ds-text-secondary);
+            font-family: var(--font-mono); font-size: 11px; padding: 6px;
+            max-height: 200px; overflow-y: auto; margin-top: 6px; border-radius: 4px;
+        }
+
+        .tbl-register { flex: 0 0 auto; position: relative; }
+        .tbl-register__menu {
+            display: none; position: absolute; top: calc(100% + 4px); right: 0; z-index: 40;
+            min-width: 240px; padding: 6px;
+            background: var(--ds-surface); border: 1px solid var(--ds-border);
+            border-radius: 12px; box-shadow: var(--ds-shadow-md);
+        }
+        .tbl-register__item {
+            display: block; width: 100%; padding: 7px 10px;
+            border: none; background: none; border-radius: 8px;
+            font: inherit; font-size: 13.5px; color: var(--ds-text-primary);
+            text-align: left; cursor: pointer; text-decoration: none;
+        }
+        .tbl-register__item:hover { background: color-mix(in srgb, var(--ds-text-primary) 6%, transparent); color: var(--ds-primary); }
+
+        {# `.fbar-menu__foot` used to be restyled here — bordered buttons over
+           the component's own bare ones — so the Filter menu on this page and
+           the Filter menu on /library closed with two different footers. The
+           component owns it; the page does not. #}
+
+        /* ── Mode — plain word over system word ─────────────────────────
+           Exactly the Source column's two-line anatomy, three cells to its
+           right: what it MEANS on the first line, the `query_mode` value the
+           CLI and the API use quietly under it. One shape, used twice on one
+           table.
+
+           It used to be a coloured pill per row — green for local, blue for
+           remote, purple for materialized — beside the plain-language label,
+           so the Mode column was a stripe of four hues down a list whose
+           subject is the table name two columns left, competing with the
+           Package chip and the "In no package" warning immediately beside it.
+           Mode is a PROPERTY, and a property is read, not alarmed at; the two
+           cells on this row that carry a colour are the two that carry a state
+           worth acting on. (The purple was a raw `#8B5CF6` besides, so it did
+           not follow the theme into paper or dark at all.) */
+        .tbl-mode__label { display: block; }
+        .tbl-mode__sys {
+            display: block;
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--ds-text-muted);
         }
 
         .folder-badge {
@@ -870,10 +994,6 @@
                 gap: 4px;
             }
 
-            .registry-table .col-id {
-                max-width: 160px;
-            }
-
             .modal {
                 margin: 16px;
             }
@@ -952,12 +1072,19 @@
     </style>
 {% endblock %}
 
-{% block content %}
-<!-- ═══════════════ PAGE TITLE ═══════════════ -->
-    {% set page_hero_eyebrow = "Administration" %}
-    {% set page_hero_title = "Tables & Data Packages" %}
-    {% set page_hero_subtitle = "Group registered tables into Data Packages so analysts can opt-in to bundles." %}
+{% block admin_content %}
+{# ═══════════════ PAGE HEAD ═══════════════
+   The SAME head every Data lens renders — "Data", plain, with the lens named
+   by the tab strip under it. This page carried a gradient hero card titled
+   "Tables" with a "DATA" eyebrow above it, which made a lens of the Data
+   section look like a page of its own: standing on Sources or Packages you
+   saw one heading, and one click later a different, taller one. The section
+   is the place you are in; the tab says which lens. #}
+    {% set page_hero_title = "Data" %}
+    {% set page_hero_subtitle = "Every registered table, and the data package that carries it to analysts. A table reaches nobody until it is in a package." %}
+    {% set page_hero_plain = True %}
     {% include "_page_hero.html" %}
+    {% include "_admin_tabs.html" %}
 
     <!-- ═══════════════ CONTENT ═══════════════ -->
     <div class="content">
@@ -967,103 +1094,240 @@
            dropdown picks a connector → opens the matching modal (BQ /
            Keboola / Jira) instead of letting the connector drive the
            page layout. #}
-        <section id="adminTablesActionBar" class="card" style="margin-bottom: 16px;">
-          <div class="card-body" style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; padding:12px 16px;">
-            <div style="position:relative;">
-              <button id="registerNewTableBtn" class="btn btn-primary" type="button"
-                      onclick="toggleRegisterNewTableMenu(event)">
-                + Register new table ▾
+        {# ─── The note the list needs, and nothing more ──────────────────
+           Access is not a property of a table — it is written against the
+           PACKAGE that carries it. The page used to make that point twice (a
+           subtitle sentence and a button sending you to Packages), and the
+           button was the wrong answer: a reader here is looking at tables, and
+           a CTA out is not context. One quiet line, no exit. #}
+        <div class="apg-strip">
+          {# The product's own package glyph, not the emoji this line shipped
+             with: an emoji is a font's picture of a parcel, it renders four
+             different ways across platforms, and it cannot take the strip's
+             ink. `macros/_icon.html` is where a meaningful glyph comes from —
+             tests/test_no_ui_emoji.py enforces it. #}
+          <span class="apg-strip__mark" aria-hidden="true">{{ ico.icon('package', 15) }}</span>
+          <span>
+            Sharing is managed per <strong>data package</strong> — a table reaches people
+            through the packages that carry it, so grants are set on the package,
+            never on a row here.
+          </span>
+        </div>
+
+        {# An instance-level warning, stated once — filled by
+           renderConnectorNotice() once the rows are known. It sits with the
+           note above it, ABOVE the toolbar: both are standing facts about the
+           surface, and a strip below the controls put one of them between the
+           toolbar and the rows it acts on. #}
+        <div class="apg-strip apg-strip--warn" id="adminTablesConnectorNotice" hidden></div>
+
+        {# ─── One toolbar: search, narrowing, order, then the page's actions ──
+           `.fbar` — the Library's control chrome, the same component People,
+           Groups and /chats run, and now on the same ENGINE as well
+           (static/js/filter_toolbar.js, wired in `mountTablesToolbar()`): this
+           page had a private copy of the engine's job — its own facet matcher,
+           its own sorter, its own badge bookkeeping — which is how a lens of
+           the product ends up filtering by rules nothing else in it uses.
+
+           Two rows, and only ever two:
+             row 1 — search · Filter · Sort · [gap] · cache freshness ·
+                     "+ Register new table". Controls that narrow the list read
+                     left to right; the one action that CHANGES it is pinned
+                     right, the position People gives "+ Invite person".
+             row 2 — `#tbl-chips`, the applied filters as removable chips. It
+                     is a SIBLING of the bar, never a child: the bar is the
+                     machinery, the chips are the state it produced, and a
+                     wrapping second line inside the bar would push the
+                     controls around as filters are added.
+           Bulk verbs are in neither — they live in a floating bar at the foot
+           of the viewport (`#adminTablesBulk`), the way /chats does it.
+
+           The bar stays put and stays usable while rows are selected. It used
+           to be swapped out for the bulk bar in place, which meant ticking one
+           row took search and Filter off the page. #}
+        <div class="fbar apg-bar" role="group" aria-label="Search, filter and sort tables">
+          <div class="fbar__search" role="search">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M21 21l-4.3-4.3"></path></svg>
+            <input id="adminTablesSearch" type="search" autocomplete="off"
+                   placeholder="Search tables…" aria-label="Search tables">
+          </div>
+
+          {# The count, IN the bar. It had a row of its own between the toolbar
+             and the table — ~40px of page spent on three words, and a band of
+             empty space cutting the controls off from the rows they act on. #}
+          <span class="tbl-count" id="adminTablesCount" role="status" aria-live="polite"></span>
+
+          {# One FILTER control, and TWO LEVELS behind it. Source, project,
+             mode, package and "needs attention" are five families running to
+             dozens of values between them (one option per Keboola bucket), and
+             as a single flat popover that was a scroll — the reader had to
+             hunt for the family before they could pick a value. The menu now
+             lists the FAMILIES; hovering or focusing one opens its values
+             beside it (`.fbar-cat` / `.fbar-cat__pop`, placed by
+             filter_toolbar.js, which also grows a search field inside any
+             family past ten options). Same menu the Library opens.
+
+             "In no package" stays a plain checkbox in the menu body rather
+             than a family of its own: it is one condition, not a category, so
+             a submenu offering it and its complement would only be a longer
+             way to say the same thing.
+
+             Both the families and their values are built by
+             `buildTableFacets()` FROM THE ROWS, so a facet nothing carries —
+             no Jira tables, no BigQuery project — never renders an option
+             nobody can use. #}
+          <div class="fbar-filter">
+            <button type="button" class="fbar-filter__btn" id="tbl-filter-btn"
+                    aria-haspopup="true" aria-expanded="false">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16M7 12h10M10 19h4"></path></svg>
+              Filter
+              <span class="fbar-filter__n" id="tbl-filter-n" hidden>0</span>
+            </button>
+            <div class="fbar-menu fbar-menu--cats" id="tbl-filter-menu" role="menu" aria-label="Filter tables" hidden></div>
+          </div>
+
+          <div class="fbar-select">
+            <select id="adminTablesSort" class="ds-dropdown-native" aria-label="Sort tables">
+              <option value="name_asc">Name A–Z</option>
+              <option value="name_desc">Name Z–A</option>
+              <option value="source_asc">Source</option>
+              <option value="package_asc">Package</option>
+              <option value="reach_desc">Reach — most people first</option>
+              <option value="reach_asc">Reach — fewest first</option>
+              <option value="sync_desc">Last synced — newest first</option>
+              <option value="sync_asc">Last synced — oldest first</option>
+            </select>
+            {{ ds.dropdown(
+              id='adminTablesSort-dd', target='adminTablesSort',
+              aria_label='Sort tables', selected='name_asc',
+              options=[
+                {'value': 'name_asc',    'label': 'Name A–Z'},
+                {'value': 'name_desc',   'label': 'Name Z–A'},
+                {'value': 'source_asc',  'label': 'Source'},
+                {'value': 'package_asc', 'label': 'Package'},
+                {'value': 'reach_desc',  'label': 'Reach — most people first'},
+                {'value': 'reach_asc',   'label': 'Reach — fewest first'},
+                {'value': 'sync_desc',   'label': 'Last synced — newest first'},
+                {'value': 'sync_asc',    'label': 'Last synced — oldest first'},
+              ],
+            ) }}
+          </div>
+
+          {# Search caps at 420px, so without this the page's own actions would
+             sit mid-bar with dead space behind them. #}
+          <span class="apg-bar__gap" aria-hidden="true"></span>
+
+          {# Cache freshness — a page-level STATUS + action, previously floating
+             at the right edge of the retired action card. #}
+          <details id="cacheWarmupCard" class="tbl-cache">
+            <summary><span id="cacheWarmupSummary">Cache freshness — loading…</span></summary>
+            <div class="tbl-cache__body">
+              <div id="cacheWarmupProgress" style="margin-bottom:8px;"></div>
+              <progress id="cacheWarmupBar" max="100" value="0" style="width:100%; display:none;"></progress>
+              <button class="btn btn-secondary btn-sm" id="cacheWarmupRunBtn" onclick="cacheWarmupRun()"
+                      style="margin-top:8px;">
+                Re-warm all
               </button>
-              <div id="registerNewTableMenu"
-                   style="display:none; position:absolute; top:100%; left:0; margin-top:4px;
-                          background:var(--surface); border:1px solid var(--border); border-radius:8px;
-                          box-shadow:var(--shadow-md); min-width:220px; z-index:20; padding:6px;">
-                <button class="btn btn-secondary" type="button" data-register-source="bigquery"
-                        style="display:block; width:100%; text-align:left; margin-bottom:4px;"
-                        onclick="closeRegisterNewTableMenu(); openRegisterModal('bigquery')">
-                  BigQuery
-                </button>
-                <button class="btn btn-secondary" type="button" data-register-source="keboola"
-                        style="display:block; width:100%; text-align:left; margin-bottom:4px;"
-                        onclick="closeRegisterNewTableMenu(); openRegisterModal('keboola')">
-                  Keboola
-                </button>
-                <a class="btn btn-secondary" type="button"
-                   href="docs/connectors/jira.md"
-                   style="display:block; width:100%; text-align:left; text-decoration:none;"
-                   onclick="closeRegisterNewTableMenu()">
-                  Jira (webhook-driven — see docs)
-                </a>
-              </div>
+              <details id="cacheWarmupDetails" style="margin-top:8px;">
+                <summary style="cursor:pointer; user-select:none; font-size:12px;">Show log</summary>
+                <p id="cacheWarmupHint" style="font-size:11px; color:var(--ds-text-muted); margin:6px 0 0;">
+                  Live log from <em>Re-warm all</em>. Historical runs aren't persisted; check
+                  <a href="/admin/activity">/admin/activity</a> for the audit trail.
+                </p>
+                <pre id="cacheWarmupLog"></pre>
+              </details>
             </div>
-            <button class="btn btn-secondary" type="button" onclick="groupTablesByBucket()"
-                    title="One-click: create one Data Package per distinct bucket and assign its tables">
-              Group tables by bucket
-            </button>
-            <button class="btn btn-secondary" type="button" onclick="openBulkAssignModal('')">
-              Bulk assign tables
-            </button>
-            <button class="btn btn-secondary" type="button" onclick="openCreateDataPackageModal('', null)">
-              + New Data Package
-            </button>
-            <span style="flex:1;"></span>
-            <details id="cacheWarmupCard" style="margin:0;">
-              <summary style="cursor:pointer; user-select:none; font-size:13px; color:var(--text-secondary);">
-                <span id="cacheWarmupSummary">Cache freshness — loading…</span>
-              </summary>
-              <div style="margin-top:8px; padding:12px; background:var(--background); border-radius:8px;">
-                <div id="cacheWarmupProgress" style="margin-bottom:8px;"></div>
-                <progress id="cacheWarmupBar" max="100" value="0" style="width:100%; display:none;"></progress>
-                <button class="btn btn-secondary btn-sm" id="cacheWarmupRunBtn" onclick="cacheWarmupRun()"
-                        style="margin-top:8px;">
-                  Re-warm all
-                </button>
-                <details id="cacheWarmupDetails" style="margin-top:8px;">
-                  <summary style="cursor:pointer; user-select:none; font-size:12px;">Show log</summary>
-                  <p id="cacheWarmupHint" style="font-size:11px; color:var(--text-secondary); margin:6px 0 0;">
-                    Live log from <em>Re-warm all</em>. Historical runs aren't persisted; check
-                    <a href="/admin/activity">/admin/activity</a> for the audit trail.
-                  </p>
-                  <pre id="cacheWarmupLog" style="background:#0a0a0a; color:#dcdcdc; font-family:ui-monospace, Menlo, monospace; font-size:11px; padding:6px; max-height:200px; overflow-y:auto; margin-top:6px; border-radius:4px;"></pre>
-                </details>
-              </div>
-            </details>
-          </div>
-        </section>
+          </details>
 
-        {# ─── Package-centric layout (replaces the connector-tab nav) ───
-           Hydrated client-side by loadAdminTablesLayout(): pulls both
-           /api/admin/data-packages and /api/admin/registry, renders one
-           collapsible <details> per package containing its member tables,
-           then an "Unpackaged tables" section for everything else.
-
-           "On the side" data-packages was the wrong framing — packages ARE
-           the org structure now, so every table appears under either a
-           package or the explicit Unpackaged bucket. Bucket / source_type
-           survive as inline tags but no longer drive the layout. #}
-        <section id="adminTablesLayout" class="card" style="margin-bottom: 16px;">
-          <div class="card-body" id="adminTablesLayoutBody" style="padding:16px;">
-            {# Search bar — UX parity with /catalog + /memory. Filters the
-               package details + the table rows inside them; an unpackaged
-               row matches by table name / source_type / bucket. Hides any
-               package whose name doesn't match AND has zero matching rows. #}
-            <div style="margin-bottom: 12px; display:flex; align-items:center; gap:8px;">
-              <input id="adminTablesSearch" type="search"
-                     class="form-input"
-                     placeholder="Filter packages and tables by name, source, or bucket…"
-                     oninput="filterAdminTablesLayout()"
-                     style="flex:1; max-width:520px;">
-              <span id="adminTablesSearchHint"
-                    style="font-size:12px; color:var(--text-secondary);"></span>
+          {# The one action that CHANGES this page rather than the view of it,
+             filled and pinned right — the position People gives "+ Invite
+             person" and the Library gives its primary. #}
+          <div class="tbl-register">
+            <button id="registerNewTableBtn" class="btn btn-primary" type="button"
+                    onclick="toggleRegisterNewTableMenu(event)">
+              + Register new table ▾
+            </button>
+            <div id="registerNewTableMenu" class="tbl-register__menu">
+              <button class="tbl-register__item" type="button" data-register-source="bigquery"
+                      onclick="closeRegisterNewTableMenu(); openRegisterModal('bigquery')">BigQuery</button>
+              <button class="tbl-register__item" type="button" data-register-source="keboola"
+                      onclick="closeRegisterNewTableMenu(); openRegisterModal('keboola')">Keboola</button>
+              <a class="tbl-register__item" href="docs/connectors/jira.md"
+                 onclick="closeRegisterNewTableMenu()">Jira (webhook-driven — see docs)</a>
             </div>
-            <div id="adminTablesLayoutPackages">
-              <div style="padding:16px; color:var(--text-secondary); font-size:13px; text-align:center;">
-                Loading packages…
-              </div>
-            </div>
-            <div id="adminTablesLayoutUnpackaged" style="margin-top:20px;"></div>
           </div>
-        </section>
+        </div>
+
+        {# ─── Row 2: the applied filters ────────────────────────────────
+           One chip per filter CATEGORY, reading "Source: keboola, jira", each
+           its own edit affordance (click reopens that family's options, the ×
+           clears the family) with a trailing "Clear all". Rendered by
+           filter_toolbar.js into this element, and `hidden` while nothing is
+           applied — so the resting page is one toolbar row, not a bar with an
+           empty shelf under it.
+
+           Filters used to be legible ONLY as a number on the Filter button:
+           "3" said how narrowed the list was but not by what, so the way to
+           find out was to open the menu and read five families of checkboxes.
+           And that number is all four families had to share. #}
+        <div class="fbar-chips" id="tbl-chips" hidden></div>
+
+        {# ─── The list ──────────────────────────────────────────────────
+           `.data-table` inside `.data-table-wrap` — the same table People,
+           Groups and the Library render. This page had its own `.registry-table`
+           with its own borders, padding and header treatment, which is one more
+           table in a product that had agreed on one. #}
+        <div class="data-table-wrap tbl-listwrap" id="adminTablesLayout">
+          <div id="adminTablesLayoutRows">
+            <div class="tbl-loading">Loading tables…</div>
+          </div>
+          {# Shown when the registry has rows but the current search + facets
+             match none of them — distinct from "no tables registered", which
+             the hydrator renders in place of the table. `hidden`, not an
+             inline display: the toolbar engine owns this element's visibility
+             and drives it through the attribute. #}
+          <div class="tbl-empty" id="adminTablesEmptyFiltered" hidden>
+            <div class="big">No table matches</div>
+            <div>Try a different search, or clear the filters above.</div>
+            <button type="button" class="btn btn-secondary btn-sm" data-fbar-reset>Clear filters</button>
+          </div>
+        </div>
+
+        {# ─── Contextual bulk bar ───────────────────────────────────────
+           `.fbar-bulk` (filter_toolbar.css) — the floating bar /chats uses,
+           pinned to the foot of the viewport and revealed only while rows are
+           ticked. It is NOT the toolbar: narrowing a list and acting on a
+           selection are different jobs, and folding the verbs into the
+           toolbar means either a strip of permanently-disabled buttons or —
+           what this page did — swapping search and Filter off the page the
+           moment one row is ticked.
+
+           Bottom-anchored because the registry is long: a selection is made
+           at row 150 as readily as at row 1, and a bar above the list leaves
+           the reader holding a selection they cannot act on. The list
+           reserves its clearance unconditionally (see `.tbl-listwrap`), so
+           the bar's arrival never moves the row under the pointer that just
+           ticked it. #}
+        <div class="fbar-bulk" id="adminTablesBulk" hidden>
+          <div class="fbar-bulk__card" role="group" aria-label="Actions for selected tables">
+            <span class="fbar-bulk__n" id="adminTablesBulkN" aria-live="polite">0 selected</span>
+            <span class="fbar-bulk__sep" aria-hidden="true"></span>
+            <button type="button" class="fbar-bulk__btn" id="bulkAssign">Add to a data package…</button>
+            <button type="button" class="fbar-bulk__btn" id="bulkSync">Sync now</button>
+            {# Unregister is gated on the whole selection being unpackaged —
+               the rule the row menu enforces per row. Disabled rather than
+               absent, with the reason in the title, so the operator learns
+               why instead of watching a verb come and go. #}
+            <button type="button" class="fbar-bulk__btn is-danger" id="bulkDelete">Unregister…</button>
+            <button type="button" class="fbar-bulk__clear" id="bulkClear">Clear</button>
+          </div>
+        </div>
+
+        {# ONE row-actions menu for the whole table, parked outside it: the
+           table clips its own overflow to keep its rounded corners, so a
+           popover anchored in the last row would be cut off. Fixed-positioned
+           against the ⋯ button's rect on open. #}
+        <div class="tbl-more__menu" id="tbl-menu" role="menu" hidden></div>
 
         {# Register modals (BigQuery / Keboola) live as top-level overlays,
            reachable via the "+ Register new table" dropdown in the action
@@ -1072,18 +1336,21 @@
            layout regardless of source_type. #}
 
             <!-- ── BigQuery Register Modal ── -->
-            <div class="modal-overlay" id="registerBqModal">
-                <div class="modal">
-                    <div class="modal-header">
-                        <h2>Register BigQuery Table</h2>
-                        <button class="modal-close" onclick="closeRegisterBqModal()">
+            <div class="ds-drawer ds-drawer--wide" id="registerBqModal" role="dialog" aria-modal="true" aria-labelledby="registerBqModal-title">
+                <div class="ds-drawer__backdrop" onclick="closeRegisterBqModal()"></div>
+                <div class="ds-drawer__panel">
+                    <div class="ds-drawer__head"><div class="ds-drawer__head-main">
+                        <h2 class="ds-drawer__title" id="registerBqModal-title">Register a BigQuery table</h2>
+                        <p class="ds-drawer__sub">Point Agnes at a BigQuery table. Nothing is downloaded — queries run against BigQuery with the instance scan cap applied.</p>
+                        </div>
+                        <button class="ds-drawer__x" aria-label="Close" onclick="closeRegisterBqModal()">
                             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                 <line x1="18" y1="6" x2="6" y2="18"/>
                                 <line x1="6" y1="6" x2="18" y2="18"/>
                             </svg>
                         </button>
                     </div>
-                    <div class="modal-body">
+                    <div class="ds-drawer__body">
                         {# Two orthogonal questions: (1) live vs synced, (2) when synced,
                            whole table vs custom SQL. Visibility classes:
                              bq-access-live    — only when accessMode='live'
@@ -1265,7 +1532,7 @@
                             <div class="form-hint">Bundle this table into one or more Data Packages so analysts can opt-in to it as a group.</div>
                         </div>
                     </div>
-                    <div class="modal-footer">
+                    <div class="ds-drawer__foot">
                         <button class="btn btn-secondary" onclick="closeRegisterBqModal()">Cancel</button>
                         <button class="btn btn-primary" id="registerBqSubmitBtn" onclick="registerBqTable()">
                             Register Table
@@ -1455,18 +1722,21 @@
             </div>
 
             <!-- ── Keboola Register Modal ── -->
-            <div class="modal-overlay" id="registerKeboolaModal">
-                <div class="modal">
-                    <div class="modal-header">
-                        <h2>Register Keboola Table</h2>
-                        <button class="modal-close" onclick="closeRegisterKeboolaModal()">
+            <div class="ds-drawer ds-drawer--wide" id="registerKeboolaModal" role="dialog" aria-modal="true" aria-labelledby="registerKeboolaModal-title">
+                <div class="ds-drawer__backdrop" onclick="closeRegisterKeboolaModal()"></div>
+                <div class="ds-drawer__panel">
+                    <div class="ds-drawer__head"><div class="ds-drawer__head-main">
+                        <h2 class="ds-drawer__title" id="registerKeboolaModal-title">Register a Keboola table</h2>
+                        <p class="ds-drawer__sub">Pick what to sync and how. The view name is what analysts see; the mode decides whether a copy lands locally.</p>
+                        </div>
+                        <button class="ds-drawer__x" aria-label="Close" onclick="closeRegisterKeboolaModal()">
                             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                 <line x1="18" y1="6" x2="6" y2="18"/>
                                 <line x1="6" y1="6" x2="18" y2="18"/>
                             </svg>
                         </button>
                     </div>
-                    <div class="modal-body">
+                    <div class="ds-drawer__body">
                         {# Banner: shown when Keboola is not the configured data source.
                            Discover buttons are hidden in that case (see guard below), so
                            the operator would hit a silent dead-end without this warning. #}
@@ -1713,7 +1983,7 @@
                             </div>
                         </div>
                     </div>
-                    <div class="modal-footer">
+                    <div class="ds-drawer__foot">
                         <div class="kbc-test-wrap" style="margin-right:auto; display:flex; align-items:center; gap:10px;">
                             <button type="button" class="btn btn-secondary" onclick="onTestKeboola(this)">Test connection</button>
                             <span class="kbc-test-result" hidden style="font-size:13px;"></span>
@@ -2039,88 +2309,6 @@
         </div>
     </div>
 
-    <!-- ═══════════════ Access Policy modal (table access policies, Task 15) ═══════════════
-         Opened from the Access column (openAccessPolicyModal), not from
-         col-actions — a separate state var (`_apTable`) from the generic
-         edit-table modal so the two can be opened independently without
-         clobbering each other's in-progress edit. Plain <textarea>, no
-         syntax highlighting (design doc §13: "inventing it here is scope
-         creep"). -->
-    <div class="modal-overlay" id="accessPolicyModal">
-        <div class="modal" style="max-width:720px;">
-            <div class="modal-header">
-                <h2>Access Policy — <span id="apTableName">—</span></h2>
-                <button class="modal-close" onclick="closeAccessPolicyModal()">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <line x1="18" y1="6" x2="6" y2="18"/>
-                        <line x1="6" y1="6" x2="18" y2="18"/>
-                    </svg>
-                </button>
-            </div>
-            <div class="modal-body">
-                <div class="form-hint form-hint--warn" id="apInterlockWarning" style="display:none;">
-                    <!-- Filled by _apRenderInterlockWarning() — mirrors the
-                         onEditBqAccessModeChange() pattern: computed and
-                         shown BEFORE save, not discovered only from a
-                         rejected PUT. -->
-                </div>
-
-                <div class="form-group">
-                    <label class="form-label" for="apSql">Policy SQL</label>
-                    <textarea class="form-textarea" id="apSql" rows="8"
-                              placeholder="SELECT * FROM &lt;table&gt; WHERE ..."></textarea>
-                    <div class="form-hint">
-                        Plain SQL, DuckDB dialect. Reference the caller's identity with
-                        <code>$user_email</code>, <code>$user_id</code>, or <code>$user_groups</code>
-                        (a list — use <code>list_contains($user_groups, col)</code>). A variable may only
-                        stand where a value stands.
-                    </div>
-                    <button type="button" class="btn btn-secondary btn-sm" style="margin-top:8px;"
-                            onclick="apUseTableAsBase()">Use table as base</button>
-                </div>
-
-                <div class="form-group">
-                    <label class="form-label" for="apNote">Why does this policy exist?
-                        <span class="optional">(required when a policy is attached)</span></label>
-                    <textarea class="form-textarea" id="apNote" rows="2"
-                              placeholder="e.g. restrict rows to the caller's cost centre"></textarea>
-                    <div class="form-hint">The next admin who finds this policy needs to know whether it's safe to change.</div>
-                </div>
-
-                <div class="form-hint form-hint--danger" id="apSaveError" style="display:none;"></div>
-
-                <div class="form-group">
-                    <label class="form-label">Preview</label>
-                    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-                        <input type="text" class="form-input" id="apPreviewUser" placeholder="preview as user email"
-                               style="max-width:220px;">
-                        <span class="form-hint" style="margin:0;">or</span>
-                        <input type="text" class="form-input" id="apPreviewGroups" placeholder="groups, comma-separated"
-                               style="max-width:220px;">
-                        <button type="button" class="btn btn-secondary btn-sm" onclick="apRunPreview()">Preview</button>
-                    </div>
-                    <div class="form-hint">
-                        Single-persona preview — pick a user OR type an ad-hoc group set. Runs the SQL above
-                        (or, left blank, the stored policy) without saving anything.
-                    </div>
-                    <div id="apPreviewResult" style="display:none;"></div>
-                </div>
-
-                <div class="form-group" id="apHistorySection" style="display:none;">
-                    <label class="form-label">Recent policy edits</label>
-                    <div id="apHistoryList"></div>
-                </div>
-            </div>
-            <div class="modal-footer" style="justify-content:space-between;">
-                <button class="btn btn-danger btn-sm" id="apClearBtn" onclick="apClearPolicy()" style="display:none;">Clear policy</button>
-                <div style="display:flex; gap:10px;">
-                    <button class="btn btn-secondary" onclick="closeAccessPolicyModal()">Cancel</button>
-                    <button class="btn btn-primary" id="apSaveBtn" onclick="apSavePolicy()">Save policy</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
     <!-- ═══════════════ TOAST ═══════════════ -->
     <div class="toast" id="toast">
         <div class="toast-icon" id="toastIcon"></div>
@@ -2132,134 +2320,28 @@
         <a href="{{ url_for('dashboard') }}">Back to Dashboard</a>
         </footer>
 
-    <!-- ═══════════════ Create Data Package modal (Task 8.10) ═══════════════
-         Fired from a chip-input `chip-create` event — the chip-input emits
-         a CustomEvent with the typed name; the handler below opens this
-         modal pre-filled, POSTs to /api/admin/data-packages, and adds the
-         freshly-created chip back into the chip-input host via .addChip(). -->
-    <div class="modal-overlay" id="createDataPackageModal" style="display:none;">
-      <div class="modal" style="max-width:520px;">
-        <div class="modal-header">
-          <h2>Create Data Package</h2>
-          <button class="modal-close" onclick="closeCreateDataPackageModal()">×</button>
-        </div>
-        <div class="modal-body">
-          <div class="form-group">
-            <label class="form-label">Name</label>
-            <input id="cdp-name" type="text" class="form-input" placeholder="Sales bundle">
-          </div>
-          <div class="form-group">
-            <label class="form-label">Slug</label>
-            <input id="cdp-slug" type="text" class="form-input" placeholder="sales-bundle">
-            <div class="form-hint">URL-safe identifier; auto-derived from Name.</div>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Description <span class="optional">(optional)</span></label>
-            <textarea id="cdp-desc" class="form-textarea" rows="2"></textarea>
-          </div>
-          {# v51 lifecycle + classification — drive the hero filter
-             checkboxes on /catalog and the eyebrow line above the
-             card title. Both fields are admin-facing only and have
-             safe defaults (status=prod, category=null). #}
-          <div class="form-group" style="display:flex; gap:12px;">
-            <div style="flex:1;">
-              <label class="form-label">Status</label>
-              <select id="cdp-status" class="form-input" style="height:38px;">
-                <option value="prod" selected>Prod — ready for analyst use</option>
-                <option value="poc">POC — try-before-you-buy</option>
-                <option value="coming-soon">Coming soon — visible but not usable yet</option>
-                <option value="draft">Draft — admin-only, hidden from analysts</option>
-              </select>
-            </div>
-            <div style="flex:1;">
-              <label class="form-label">Category <span class="optional">(optional)</span></label>
-              <input id="cdp-category" type="text" class="form-input"
-                     placeholder="e.g. Sessions &amp; Traffic">
-              <div class="form-hint">Eyebrow line above the card title. Keep it short and consistent.</div>
-            </div>
-          </div>
-          <div class="form-group" style="display:flex; gap:12px;">
-            <div style="flex:1;">
-              <label class="form-label">Icon</label>
-              <input id="cdp-icon" type="text" class="form-input" value="" maxlength="4">
-            </div>
-            <div style="flex:1;">
-              <label class="form-label">Color</label>
-              {# v51 palette row — admin clicks a swatch to set #cdp-color.
-                 Free-form picker stays below as the escape hatch. Palette
-                 is a vendor-neutral design-system set (teal/blue/violet/
-                 pink/red/amber/emerald/slate) — no brand colors. #}
-              <div class="cf-palette-row" data-target="cdp-color"></div>
-              {# type=color forces the native swatch picker so admins can't
-                 type/append a malformed hex into the field. #}
-              <input id="cdp-color" type="color" class="form-input" value="#e0f2fe"
-                     style="height:32px; padding:2px; cursor:pointer;">
-            </div>
-          </div>
-          {# Cover image upload (v50). When set, the /catalog card renders
-             <img src=cover_image_url> instead of letter initials — closes
-             the visual gap with /marketplace cards. PNG/JPEG/GIF/WebP, 5
-             MiB cap server-side. #}
-          <div class="form-group">
-            <label class="form-label">Cover image <span class="optional">(optional)</span></label>
-            <div style="display:flex; gap:12px; align-items:center;">
-              <div id="cdp-cover-preview"
-                   style="width:120px; height:72px; border-radius:8px;
-                          border:1px solid var(--border); background:#f1f5f9;
-                          display:flex; align-items:center; justify-content:center;
-                          font-size:12px; color:var(--text-secondary); overflow:hidden;">
-                No image
-              </div>
-              <div style="flex:1;">
-                <input id="cdp-cover-file" type="file"
-                       accept="image/png,image/jpeg,image/gif,image/webp"
-                       onchange="onCoverFilePicked(this, 'cdp')">
-                <input id="cdp-cover-url" type="hidden" value="">
-                <div class="form-hint">PNG / JPEG / GIF / WebP, max 5 MiB. Uploads on Save.</div>
-              </div>
-            </div>
-          </div>
+    {# ═══════ Creating a Data Package is a DRAWER, and it is shared ═══════
+       The form that used to be here — name, slug, description, lifecycle,
+       category, icon, colour, cover image and a group-access matrix, in a
+       520px centred card whose footer landed on top of its own last field —
+       is now js/components/package_drawer.js, opened from the right.
 
-          {# Inline RBAC matrix — replaces the modal-on-modal step-2 that
-             popped up after Create succeeded. <details> is collapsed by
-             default so the modal stays compact for admins who'll set
-             access later via the Resource Access page; opening it loads
-             the group list lazily. submitCreateDataPackage() reads any
-             chosen requirements and POSTs grants in parallel. #}
-          <details class="form-group" id="cdp-rbac-details"
-                   style="border:1px solid var(--border); border-radius:8px; padding:8px 12px;">
-            <summary style="cursor:pointer; font-weight:600; font-size:13px; user-select:none;">
-              Group access
-              <span style="color:var(--text-secondary); font-weight:normal; font-size:12px;">(optional)</span>
-            </summary>
-            <p class="form-hint" style="margin:8px 0;">
-              Grant per-group access tiers — <em>available</em> shows the
-              package in the group's Browse; <em>required</em>
-              auto-installs it into the group's stack on next pull. Leave
-              everything blank to manage access later from
-              <a href="/admin/access">Resource access</a>.
-            </p>
-            <div id="cdp-rbac-rows"
-                 style="display:flex; flex-direction:column; gap:6px; max-height:30vh; overflow-y:auto;">
-              <div class="loading" style="padding:6px; color:var(--text-secondary); font-size:12px;">
-                Click to load groups…
-              </div>
-            </div>
-          </details>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-secondary" onclick="closeCreateDataPackageModal()">Cancel</button>
-          <button class="btn btn-primary" id="cdp-submit-btn" onclick="submitCreateDataPackage()">
-            Create &amp; assign
-          </button>
-        </div>
-      </div>
-    </div>
+       Component, not page furniture, for the reason the tab switch made
+       obvious: the Packages lens is where "+ New package" belongs, and while
+       this page owned the only scaffolding, that button had to LINK here, so
+       creating a package moved you to the Tables tab to do it. Both lenses
+       now open the same drawer in place. What is left here is
+       `openCreatePackageDrawer()` — a two-line delegate this page's own two
+       entry points call: the chip-input's `chip-create` handler (which passes
+       the host, so the new package comes back as a chip on the table being
+       edited) and the `?new_package=1` auto-open the legacy catalog CTA
+       lands on. #}
 
     <script>
       // ── Cover image upload helpers (v50) ─────────────────────────────
-      // Shared between Create / Edit Data Package modals. The `prefix`
-      // arg is the modal's id prefix (`cdp` or `edp`); same DOM-id
+      // The Edit Data Package modal's cover picker. The `prefix` arg is the
+      // modal's id prefix (`edp`; the create side took its own copy into the
+      // drawer component with the rest of that form); same DOM-id
       // convention `<prefix>-cover-file`, `<prefix>-cover-url`,
       // `<prefix>-cover-preview`. Uploads on file pick (not on Save) so
       // the admin gets an immediate preview + failure-feedback loop;
@@ -2329,35 +2411,36 @@
         }
       }
 
-      // Track which chip-input host triggered the create flow so we can
-      // append the new chip back into it on success.
-      let _cdpHost = null;
-
-      function openCreateDataPackageModal(typed, host) {
-        _cdpHost = host;
-        document.getElementById('cdp-name').value = typed || '';
-        document.getElementById('cdp-slug').value =
-          (typed || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-        document.getElementById('cdp-desc').value = '';
-        document.getElementById('cdp-icon').value = '';
-        document.getElementById('cdp-color').value = '#e0f2fe';
-        // Reset cover image inputs on every open so a previous typed-and-
-        // cancelled value doesn't leak into the new package.
-        var coverUrl = document.getElementById('cdp-cover-url');
-        var coverFile = document.getElementById('cdp-cover-file');
-        if (coverUrl) coverUrl.value = '';
-        if (coverFile) coverFile.value = '';
-        _renderCoverPreview('cdp', '');
-        document.getElementById('createDataPackageModal').style.display = 'flex';
+      // ── Create a Data Package → the shared drawer ────────────────────
+      // The flow itself is js/components/package_drawer.js. These two keep
+      // the names this page's callers already use (the chip-input's
+      // `chip-create` handler, the `?new_package=1` entry point) so nothing
+      // has to know where the form moved to.
+      //
+      // `host` is the chip-input that asked for the package, if any: the
+      // drawer hands the new package back to it as a chip, so a table's
+      // edit form does not lose the assignment it was in the middle of.
+      function openCreatePackageDrawer(typed, host) {
+        window.AgnesPackageDrawer.open({
+          typed: typed,
+          chipHost: host,
+          onCreated: function (pkg, grantFailures) {
+            if (typeof loadDataPackagesSection === 'function') {
+              try { loadDataPackagesSection(); } catch (_) {}
+            }
+            if (typeof showToast === 'function') {
+              const msg = 'Data Package "' + pkg.name + '" created';
+              if (grantFailures > 0) {
+                showToast(msg + ' — ' + grantFailures + ' grant(s) failed', 'error');
+              } else {
+                showToast(msg, 'success');
+              }
+            }
+          },
+        });
       }
-      function closeCreateDataPackageModal() {
-        _cdpHost = null;
-        // Re-collapse + invalidate the lazy-loaded RBAC matrix so the
-        // next "+ New Data Package" starts with a clean, unloaded state.
-        const det = document.getElementById('cdp-rbac-details');
-        if (det) det.open = false;
-        _cdpRbacLoaded = false;
-        document.getElementById('createDataPackageModal').style.display = 'none';
+      function closeCreatePackageDrawer() {
+        if (window.AgnesPackageDrawer) window.AgnesPackageDrawer.close();
       }
 
       // ── Edit Data Package modal ──────────────────────────────────────
@@ -2447,7 +2530,7 @@
           _edpRbacOriginal = Object.assign({}, current);
 
           if (!groups.length) {
-            rowsEl.innerHTML = '<div style="padding:8px; color:var(--text-secondary); font-size:12px;">No groups defined yet. Create groups in <a href="/admin/access">Resource access</a> first.</div>';
+            rowsEl.innerHTML = '<div style="padding:8px; color:var(--text-secondary); font-size:12px;">No groups defined yet. Create groups in <a href="/admin/groups">Groups</a> first.</div>';
             return;
           }
           rowsEl.innerHTML = groups.map(g => {
@@ -2809,182 +2892,13 @@
           .replace(/[^a-z0-9]+/g, '-')
           .replace(/^-|-$/g, '');
       }
-      async function submitCreateDataPackage() {
-        const btn = document.getElementById('cdp-submit-btn');
-        btn.disabled = true;
-        try {
-          const nameVal = document.getElementById('cdp-name').value.trim();
-          // Auto-derive slug from name when the slug field is blank —
-          // fixes the silent-fail-on-empty-slug bug where the form just
-          // stayed open with no error if the user typed Name and clicked
-          // Create without focusing-out of the Name input.
-          let slugVal = document.getElementById('cdp-slug').value.trim();
-          if (!slugVal && nameVal) {
-            slugVal = _deriveSlug(nameVal);
-            document.getElementById('cdp-slug').value = slugVal;
-          }
-          // v50: cover_image_url is set by onCoverFilePicked() when the
-          // admin selects + uploads a file. If they didn't, it stays
-          // empty — send null so the server doesn't see "".
-          var cdpCoverUrl = document.getElementById('cdp-cover-url').value;
-          const payload = {
-            name: nameVal,
-            slug: slugVal,
-            description: document.getElementById('cdp-desc').value.trim() || null,
-            icon: document.getElementById('cdp-icon').value.trim() || null,
-            color: document.getElementById('cdp-color').value.trim() || null,
-            cover_image_url: cdpCoverUrl || null,
-            // v51: lifecycle status + classification category.
-            status: document.getElementById('cdp-status').value || 'prod',
-            category: document.getElementById('cdp-category').value.trim() || null,
-          };
-          if (!payload.name || !payload.slug) {
-            await alertModal('Name is required (slug auto-derives from it).');
-            btn.disabled = false;
-            return;
-          }
-          const r = await fetch('/api/admin/data-packages', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'same-origin',
-            body: JSON.stringify(payload),
-          });
-          if (!r.ok) {
-            const detail = await r.json().catch(() => ({}));
-            await alertModal('Failed: ' + (detail.detail || r.statusText));
-            btn.disabled = false;
-            return;
-          }
-          const body = await r.json();
-          const newPkgId = body.id;
-          if (_cdpHost && _cdpHost.addChip) {
-            _cdpHost.addChip({ id: newPkgId, name: payload.name });
-          }
-
-          // Inline grants — read any per-group requirement the admin set
-          // in the collapsible "Group access" section and POST in parallel.
-          // Per-grant failures surface in the success toast; they don't
-          // roll back the package creation (admin can retry from
-          // /admin/access).
-          const grantFailures = await _submitCdpGrantsInline(newPkgId);
-
-          closeCreateDataPackageModal();
-
-          if (typeof loadDataPackagesSection === 'function') {
-            try { loadDataPackagesSection(); } catch (_) {}
-          }
-          if (typeof showToast === 'function') {
-            const baseMsg = 'Data Package "' + payload.name + '" created';
-            if (grantFailures > 0) {
-              showToast(baseMsg + ' — ' + grantFailures + ' grant(s) failed', 'error');
-            } else {
-              showToast(baseMsg, 'success');
-            }
-          }
-        } catch (e) {
-          await alertModal('Network error: ' + e.message);
-          btn.disabled = false;
-        } finally {
-          btn.disabled = false;
-        }
-      }
-
-      // Lazy-load groups into the inline RBAC matrix the first time the
-      // <details> is opened. Subsequent opens are no-ops. Groups are
-      // small + admin-only data — cache for the lifetime of the modal.
-      let _cdpRbacLoaded = false;
-      async function _cdpHydrateRbacMatrix() {
-        if (_cdpRbacLoaded) return;
-        const rowsEl = document.getElementById('cdp-rbac-rows');
-        rowsEl.innerHTML = '<div class="loading" style="padding:6px; color:var(--text-secondary); font-size:12px;">Loading groups…</div>';
-        try {
-          const r = await fetch('/api/admin/groups', { credentials: 'same-origin' });
-          if (!r.ok) throw new Error('HTTP ' + r.status);
-          const body = await r.json();
-          const groups = Array.isArray(body) ? body : (body.groups || []);
-          if (!groups.length) {
-            rowsEl.innerHTML = '<div style="padding:8px; color:var(--text-secondary); font-size:12px;">No groups defined yet. Create groups in <a href="/admin/access">Resource access</a> first.</div>';
-            return;
-          }
-          rowsEl.innerHTML = groups.map(g => {
-            const gid = String(g.id || g.name || '');
-            const gname = String(g.name || gid);
-            return (
-              '<div data-group-id="' + gid + '" '
-              + 'style="display:flex; gap:8px; align-items:center; '
-              +        'padding:6px; border:1px solid var(--border); border-radius:6px;">'
-              + '<span style="flex:1;">' + gname + '</span>'
-              + '<select class="cdp-rbac-req" style="padding:4px; border:1px solid var(--border); border-radius:4px;">'
-              + '<option value="">(no grant)</option>'
-              + '<option value="available">available</option>'
-              + '<option value="required">required</option>'
-              + '</select>'
-              + '</div>'
-            );
-          }).join('');
-          _cdpRbacLoaded = true;
-        } catch (e) {
-          rowsEl.innerHTML = '<div style="padding:8px; color:var(--error); font-size:12px;">Failed to load groups: ' + e.message + '</div>';
-        }
-      }
-      // Wire the lazy load on first <details> open. Re-fetched if the
-      // admin re-opens a fresh modal (closeCreateDataPackageModal resets
-      // the flag).
-      document.addEventListener('toggle', (e) => {
-        if (e.target && e.target.id === 'cdp-rbac-details' && e.target.open) {
-          _cdpHydrateRbacMatrix();
-        }
-      }, true);
-
-      async function _submitCdpGrantsInline(pkgId) {
-        const rows = document.querySelectorAll('#cdp-rbac-rows [data-group-id]');
-        const calls = [];
-        rows.forEach(row => {
-          const gid = row.getAttribute('data-group-id');
-          const sel = row.querySelector('.cdp-rbac-req');
-          const req = sel && sel.value;
-          if (!req) return;
-          calls.push(fetch('/api/admin/grants', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'same-origin',
-            body: JSON.stringify({
-              group_id: gid,
-              resource_type: 'data_package',
-              resource_id: pkgId,
-              requirement: req,
-            }),
-          }));
-        });
-        if (!calls.length) return 0;
-        const results = await Promise.allSettled(calls);
-        return results.filter(
-          r => r.status === 'rejected' || (r.value && !r.value.ok)
-        ).length;
-      }
-
-      // ── (removed) Step-2 RBAC modal-on-modal — folded into the
-      // create modal's collapsible "Group access" section. Stubs kept
-      // for callers that may still reference these names; they're no-ops
-      // now. Safe to delete in a follow-up once the audit confirms no
-      // other call sites. ──
-      let _cdpNewId = null;
-      let _cdpNewName = null;
-
-      function openCreateDataPackageRbacModal() { /* deprecated — inlined */ }
-      function skipCreateDataPackageRbac() {
-        if (typeof loadDataPackagesSection === 'function') {
-          loadDataPackagesSection();
-        }
-      }
-      function submitCreateDataPackageRbac() { /* deprecated — inlined */ }
 
       // Hook: chip-input on this page fires `chip-create` when the user
       // selects the "+ Create new" tail row in the dropdown.
       document.addEventListener('chip-create', (e) => {
         const host = e.detail && e.detail.host;
         if (host && host.dataset.chipInput === 'data_package') {
-          openCreateDataPackageModal(e.detail.typed, host);
+          openCreatePackageDrawer(e.detail.typed, host);
         }
       });
 
@@ -3412,9 +3326,9 @@
     </script>
 
     {# (removed) Create Data Package RBAC step-2 modal — the per-group
-       Available|Required matrix is now an inline collapsible section
-       inside #createDataPackageModal (#cdp-rbac-details). The modal-on-
-       modal pattern was confusing per user feedback. #}
+       Available|Required matrix folded into the create form itself, and
+       moved out of this page with it: it is the "Who gets it" section of
+       js/components/package_drawer.js now. #}
 
     <!-- ═══════════════ Bulk-assign tables → package ═══════════════
          Replaces the 50-clicks workflow ("edit each table individually
@@ -3665,9 +3579,100 @@
         </div>
       </div>
     </div>
+
+    <!-- ═══════════════ Access Policy modal (table access policies, Task 15) ═══════════════
+         Opened from the Access column (openAccessPolicyModal), not from the
+         ⋯ actions menu — a separate state var (`_apTable`) from the generic
+         edit-table modal so the two can be opened independently without
+         clobbering each other's in-progress edit. Plain <textarea>, no
+         syntax highlighting (design doc §13: "inventing it here is scope
+         creep"). -->
+    <div class="modal-overlay" id="accessPolicyModal">
+        <div class="modal" style="max-width:720px;">
+            <div class="modal-header">
+                <h2>Access Policy — <span id="apTableName">—</span></h2>
+                <button class="modal-close" onclick="closeAccessPolicyModal()">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18"/>
+                        <line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="form-hint form-hint--warn" id="apInterlockWarning" style="display:none;">
+                    <!-- Filled by _apRenderInterlockWarning() — mirrors the
+                         onEditBqAccessModeChange() pattern: computed and
+                         shown BEFORE save, not discovered only from a
+                         rejected PUT. -->
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" for="apSql">Policy SQL</label>
+                    <textarea class="form-textarea" id="apSql" rows="8"
+                              placeholder="SELECT * FROM &lt;table&gt; WHERE ..."></textarea>
+                    <div class="form-hint">
+                        Plain SQL, DuckDB dialect. Reference the caller's identity with
+                        <code>$user_email</code>, <code>$user_id</code>, or <code>$user_groups</code>
+                        (a list — use <code>list_contains($user_groups, col)</code>). A variable may only
+                        stand where a value stands.
+                    </div>
+                    <button type="button" class="btn btn-secondary btn-sm" style="margin-top:8px;"
+                            onclick="apUseTableAsBase()">Use table as base</button>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label" for="apNote">Why does this policy exist?
+                        <span class="optional">(required when a policy is attached)</span></label>
+                    <textarea class="form-textarea" id="apNote" rows="2"
+                              placeholder="e.g. restrict rows to the caller's cost centre"></textarea>
+                    <div class="form-hint">The next admin who finds this policy needs to know whether it's safe to change.</div>
+                </div>
+
+                <div class="form-hint form-hint--danger" id="apSaveError" style="display:none;"></div>
+
+                <div class="form-group">
+                    <label class="form-label">Preview</label>
+                    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                        <input type="text" class="form-input" id="apPreviewUser" placeholder="preview as user email"
+                               style="max-width:220px;">
+                        <span class="form-hint" style="margin:0;">or</span>
+                        <input type="text" class="form-input" id="apPreviewGroups" placeholder="groups, comma-separated"
+                               style="max-width:220px;">
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="apRunPreview()">Preview</button>
+                    </div>
+                    <div class="form-hint">
+                        Single-persona preview — pick a user OR type an ad-hoc group set. Runs the SQL above
+                        (or, left blank, the stored policy) without saving anything.
+                    </div>
+                    <div id="apPreviewResult" style="display:none;"></div>
+                </div>
+
+                <div class="form-group" id="apHistorySection" style="display:none;">
+                    <label class="form-label">Recent policy edits</label>
+                    <div id="apHistoryList"></div>
+                </div>
+            </div>
+            <div class="modal-footer" style="justify-content:space-between;">
+                <button class="btn btn-danger btn-sm" id="apClearBtn" onclick="apClearPolicy()" style="display:none;">Clear policy</button>
+                <div style="display:flex; gap:10px;">
+                    <button class="btn btn-secondary" onclick="closeAccessPolicyModal()">Cancel</button>
+                    <button class="btn btn-primary" id="apSaveBtn" onclick="apSavePolicy()">Save policy</button>
+                </div>
+            </div>
+        </div>
+    </div>
 {% endblock %}
 
 {% block scripts %}
+{# The shared toolbar engine, BEFORE the page script: `mountTablesToolbar()`
+   calls `FilterToolbar.init()` the moment the registry fetch resolves, and a
+   classic <script> that arrives later would leave the first render unfiltered
+   and unsorted. Same file /library and /chats load. #}
+<script src="{{ static_url('js/filter_toolbar.js') }}"></script>
+{# Create-a-package, as a component: the chip-input's `chip-create` handler and
+   the `?new_package=1` entry point both go through it. NOT deferred — the
+   auto-open on `?new_package=1` runs at DOMContentLoaded. #}
+<script src="{{ static_url('js/components/package_drawer.js') }}"></script>
 <script>
     /* ═══════════════════════════════════════════════════════════════
        Admin Tables - JavaScript
@@ -3836,6 +3841,27 @@
     // type. Lives on <body> after C3 (previously on the now-removed
     // #registerModal).
     var DATA_SOURCE_TYPE = document.body.dataset.sourceType || 'keboola';
+    // Source types with at least one connection in the source-connection
+    // registry (see _connected_source_types in app/web/router.py). The legacy
+    // scalar above names ONE default type and cannot answer "is X connected?".
+    var CONNECTED_SOURCE_TYPES = (document.body.dataset.connectedSourceTypes || '')
+        .split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+
+    // The end of each table's chain: which package carries it and how many
+    // people that reaches ({table_id: {packages: [{id, name}], people}}).
+    // Server-rendered because reach is a grants x group-membership join that
+    // no browser-reachable endpoint exposes — see `_table_delivery()` in
+    // app/web/router.py. `people === -1` is the "Everyone" sentinel.
+    var TABLE_DELIVERY = {{ table_delivery | default({}) | tojson }};
+
+    // {connection_id: display name} — what turns a `connection_id` on a row
+    // into "Keboola Test" in the Source cell and into a Project facet. Rows
+    // registered before connection tracking carry only a `source_type` and
+    // simply do not appear under Project.
+    var SOURCE_CONNECTIONS = {{ source_connections | default({}) | tojson }};
+
+    // Raw registry rows by id, refilled on every hydrate — see the row menu.
+    var _ADMIN_TABLES_BY_ID = {};
 
     function openRegisterModal(arg) {
         // Phase E + F: dispatch by string argument.
@@ -3873,7 +3899,7 @@
         btn.disabled = false;
         btn.textContent = 'Register Table';
         btn.onclick = registerBqTable;
-        document.getElementById('registerBqModal').classList.add('active');
+        document.getElementById('registerBqModal').classList.add('is-open');
     }
 
     // C3: removed dead helpers _openKeboolaRegisterModal /
@@ -3881,7 +3907,7 @@
     // The Phase F #registerKeboolaModal owns the Keboola flow now.
 
     function closeRegisterBqModal() {
-        document.getElementById('registerBqModal').classList.remove('active');
+        document.getElementById('registerBqModal').classList.remove('is-open');
     }
 
     // ── Keboola tab register modal (Phase F1) ──────────────────────
@@ -3924,11 +3950,15 @@
         // form doesn't show a prior run's badge.
         var kbcResult = modal.querySelector('.kbc-test-result');
         if (kbcResult) { kbcResult.hidden = true; kbcResult.textContent = ''; }
-        modal.classList.add('active');
+        // `.is-open` — this flow moved from a centred modal onto the shared
+        // right-side drawer (drawer.css), the chrome Connect-source and the
+        // Add-data wizard already use. Registering a table is a setup flow,
+        // and setup flows in this product open from the right.
+        modal.classList.add('is-open');
     }
 
     function closeRegisterKeboolaModal() {
-        document.getElementById('registerKeboolaModal').classList.remove('active');
+        document.getElementById('registerKeboolaModal').classList.remove('is-open');
     }
 
     function _getKbSyncMode() {
@@ -5521,11 +5551,29 @@
         materialized: 'Materialised SQL — scheduler runs admin SQL through DuckDB and writes the result to a parquet, distributed like a local table.',
         internal:     'Internal agnes_* table backed by system.duckdb; read-only, seeded on app boot.',
     };
+    // Plain language LEADS; the system word rides behind it as the badge.
+    // `query_mode` is vocabulary an admin meets again in `agnes catalog` and
+    // in the API, so hiding it behind a friendly synonym would cost them the
+    // word they need later — but "local" alone never said what it does to a
+    // reader who has not read the docs. Both, in that order. Mirrors
+    // `_mode_words()` in app/web/router.py, which words the same modes for the
+    // package detail page; keep the two in step.
+    var _MODE_LABELS = {
+        local:        'Synced copy',
+        remote:       'Live query',
+        materialized: 'Saved query',
+        internal:     'Internal',
+    };
     function renderModeBadge(mode) {
         var m = (mode || 'local').toLowerCase();
-        var cls = 'mode-badge mode-' + (['local','remote','materialized','internal'].indexOf(m) >= 0 ? m : 'local');
         var tip = _MODE_TOOLTIPS[m] || '';
-        return '<span class="' + cls + '" title="' + escapeHtmlAttr(tip) + '">' + escapeHtml(m) + '</span>';
+        var label = _MODE_LABELS[m] || m;
+        // Meaning over machine word, the same two-line cell the Source column
+        // uses — not a coloured pill. See `.tbl-mode__sys` for why.
+        return '<span title="' + escapeHtmlAttr(tip) + '">'
+             + '<span class="tbl-mode__label">' + escapeHtml(label) + '</span>'
+             + '<span class="tbl-mode__sys">' + escapeHtml(m) + '</span>'
+             + '</span>';
     }
 
     // Table access policies design doc §3: a policy may only survive on a
@@ -5583,18 +5631,42 @@
              + "onclick='" + openCall + "'>—</button>";
     }
 
-    // Deep-link from a table row to /admin/access scoped to this table_id.
-    // The /admin/access page reads window.location.hash on bootstrap and,
-    // when it matches `table:<id>`, pre-fills the resource filter so the
-    // operator lands on the just-clicked table once they pick a group.
+    // Deep-link from a table row into the grant editor, scoped to this
+    // table_id. Grants are group-scoped, so this lands on the group list
+    // with a "pick a group" banner; picking one carries the hash to that
+    // group's Access tab, which pre-fills its resource filter.
     function manageAccess(tableId) {
-        window.location.href = '/admin/access#table:' + encodeURIComponent(tableId);
+        window.location.href = '/admin/groups#table:' + encodeURIComponent(tableId);
+    }
+
+    async function deleteTable(tableId) {
+        if (!(await confirmModal('Are you sure you want to unregister "' + tableId + '"?\n\nThis will remove it from sync and clean up user subscriptions.'))) {
+            return;
+        }
+
+        // DELETE doesn't need a body — the API has no `version` field.
+        fetch('/api/admin/registry/' + encodeURIComponent(tableId), {
+            method: 'DELETE',
+        })
+        .then(function(r) {
+            // 204 No Content has an empty body, so don't .json() it.
+            if (r.status === 204) return null;
+            if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || d.error || 'Delete failed'); });
+            return r.json();
+        })
+        .then(function() {
+            showToast('Table unregistered successfully', 'success');
+            loadRegistry();
+        })
+        .catch(function(err) {
+            showToast('Delete failed: ' + err.message, 'error');
+        });
     }
 
     // ── Access Policy modal (table access policies, admin UI — Task 15) ──
     // Deliberately separate state (`_apTable`) from the generic edit-table
-    // modal (`openEditModal` / `currentEditTableId`) — the pencil icon and
-    // the Access chip can be opened independently on the same row, and
+    // modal (`openEditModal` / `currentEditTableId`) — the Access chip and
+    // the ⋯ actions menu can be opened independently on the same row, and
     // sharing state would let one clobber the other's in-progress edit.
     let _apTable = null;
 
@@ -5620,9 +5692,8 @@
         _apTable = null;
     }
 
-    // Inline interlock warning (design doc §3.1/§13) — reuses the
-    // onEditBqAccessModeChange() pattern: computed and shown BEFORE save,
-    // not discovered only from a rejected PUT.
+    // Inline interlock warning (design doc §3.1/§13) — computed and shown
+    // BEFORE save, not discovered only from a rejected PUT.
     function _apRenderInterlockWarning() {
         var warn = document.getElementById('apInterlockWarning');
         if (!_apTable || _apIsEligible(_apTable)) {
@@ -5886,30 +5957,6 @@
             try { return JSON.parse(raw); } catch (e) { return null; }
         }
         return null;
-    }
-
-    async function deleteTable(tableId) {
-        if (!(await confirmModal('Are you sure you want to unregister "' + tableId + '"?\n\nThis will remove it from sync and clean up user subscriptions.'))) {
-            return;
-        }
-
-        // DELETE doesn't need a body — the API has no `version` field.
-        fetch('/api/admin/registry/' + encodeURIComponent(tableId), {
-            method: 'DELETE',
-        })
-        .then(function(r) {
-            // 204 No Content has an empty body, so don't .json() it.
-            if (r.status === 204) return null;
-            if (!r.ok) return r.json().then(function(d) { throw new Error(d.detail || d.error || 'Delete failed'); });
-            return r.json();
-        })
-        .then(function() {
-            showToast('Table unregistered successfully', 'success');
-            loadRegistry();
-        })
-        .catch(function(err) {
-            showToast('Delete failed: ' + err.message, 'error');
-        });
     }
 
     // btn is the clicked element (passed as `this` from onclick) so the
@@ -6185,40 +6232,28 @@
     // "+ New" entry point that opens the existing Create Data Package
     // modal directly. The card grid reuses the .stack-grid + .stack-card
     // classes shared with /catalog + /memory.
-    // ── Package-centric layout hydrator ──────────────────────────
-    // Replaces the prior loadDataPackagesSection (card grid) + the four
-    // per-tab listing renders. Pulls /api/admin/data-packages and
-    // /api/admin/registry in parallel, then renders:
-    //   1. one collapsible <details> per package containing its member tables
-    //   2. an "Unpackaged tables" callout for everything else
-    // Source_type appears as an inline tag on each row but no longer
-    // drives the layout (the user's "everything must live within some
-    // group in data packages" feedback).
+    // ── Flat cross-source lens hydrator ──────────────────────────
+    // ONE list of every registered table, from /api/admin/registry.
+    //
+    // This used to render a collapsible <details> per PACKAGE with its member
+    // tables inside, plus an Unpackaged bucket — which made /admin/tables a
+    // second list of packages next to /admin/data-packages, with a package's
+    // composition here and its sharing there. Composition moved to the
+    // package's own page; what stays here is the flat lookup only this lens
+    // can do: "where is orders_daily, and does it reach anyone?"
+    //
+    // TABLE_DELIVERY is server-rendered ({table_id: {packages, people}}) —
+    // reach is a grants x group-membership join no browser endpoint exposes.
     async function loadAdminTablesLayout() {
-        var pkgsEl = document.getElementById('adminTablesLayoutPackages');
-        var unpkEl = document.getElementById('adminTablesLayoutUnpackaged');
-        if (!pkgsEl || !unpkEl) return;
+        var host = document.getElementById('adminTablesLayoutRows');
+        if (!host) return;
         try {
-            // v54: single round-trip for packages + their member ids via
-            // ``?include_table_ids=true``. Was N+1 (one GET per package
-            // after the list); on instances with 50+ packages the page
-            // took multiple seconds before this collapsed fetch.
-            var [pkgResp, tableResp] = await Promise.all([
-                fetch('/api/admin/data-packages?include_table_ids=true',
-                      { credentials: 'same-origin' }),
-                fetch('/api/admin/registry', { credentials: 'same-origin' }),
-            ]);
-            if (!pkgResp.ok) {
-                pkgsEl.innerHTML = '<div class="panel-body-empty" style="color:var(--error);">Failed to load Data Packages (HTTP ' + pkgResp.status + ').</div>';
-                unpkEl.innerHTML = '';
-                return;
-            }
+            var tableResp = await fetch('/api/admin/registry', { credentials: 'same-origin' });
             if (!tableResp.ok) {
-                pkgsEl.innerHTML = '<div class="panel-body-empty" style="color:var(--error);">Failed to load registry (HTTP ' + tableResp.status + ').</div>';
-                unpkEl.innerHTML = '';
+                host.innerHTML = '<div class="panel-body-empty" style="color:var(--error);">'
+                    + 'Failed to load registry (HTTP ' + tableResp.status + ').</div>';
                 return;
             }
-            var pkgs = await pkgResp.json();
             var registryBody = await tableResp.json();
             registryData = registryBody;
             registryVersion = registryBody.version;
@@ -6226,269 +6261,351 @@
                 ? registryBody
                 : (registryBody.tables || []);
 
-            var tableById = {};
-            allTables.forEach(function(t) { tableById[t.id] = t; });
-            var packagedIds = new Set();
-            var pkgsWithTables = pkgs.map(function(p) {
-                // table_ids comes from the new ?include_table_ids=true
-                // server-side join. Empty packages omit the field — default to [].
-                var memberIds = p.table_ids || [];
-                memberIds.forEach(function(id) { packagedIds.add(id); });
-                var memberRows = memberIds
-                    .map(function(id) { return tableById[id]; })
-                    .filter(Boolean);
-                return Object.assign({}, p, { _members: memberRows });
+            // Business tables first, Agnes internal bookkeeping last: internal
+            // rows are read-only, never packaged and never synced, so they are
+            // noise at the top of a list whose question is distribution.
+            var business = allTables.filter(function(t) { return t.source_type !== 'internal'; });
+            var internal = allTables.filter(function(t) { return t.source_type === 'internal'; });
+            business.sort(function(a, b) {
+                return String(a.name || '').localeCompare(String(b.name || ''));
+            });
+            internal.sort(function(a, b) {
+                return String(a.name || '').localeCompare(String(b.name || ''));
             });
 
-            // ── Render packages ──
-            if (!pkgsWithTables.length) {
-                pkgsEl.innerHTML = ''
+            if (!business.length && !internal.length) {
+                host.innerHTML = ''
                     + '<div style="padding:24px; text-align:center; color:var(--text-secondary); '
                     +            'background:var(--background); border:1px dashed var(--border); '
                     +            'border-radius:8px;">'
                     + '  <p style="margin:0 0 8px; font-size:14px; color:var(--text-primary);">'
-                    + '    <strong>No Data Packages yet</strong>'
-                    + '  </p>'
+                    + '    <strong>No tables registered yet</strong></p>'
                     + '  <p style="margin:0 0 12px; font-size:13px;">'
-                    + '    Bundle related tables so analysts can opt-in to them as a group.'
-                    + '  </p>'
+                    + '    Register one from a connected source, then bundle it into a package '
+                    + '    so analysts can pull it.</p>'
                     + '  <button class="btn btn-primary" type="button" '
-                    + '          onclick="openCreateDataPackageModal(\'\', null)">+ New Data Package</button>'
-                    + '  <button class="btn btn-secondary" type="button" '
-                    + '          onclick="groupTablesByBucket()" style="margin-left:8px;">'
-                    + '    Group tables by bucket'
-                    + '  </button>'
+                    + '          onclick="toggleRegisterNewTableMenu(event)">+ Register new table</button>'
                     + '</div>';
-            } else {
-                pkgsEl.innerHTML = pkgsWithTables.map(function(p) {
-                    var iconRaw = p.icon || '';
-                    var color = p.color || '#f3f4f6';
-                    var name = String(p.name || '');
-                    var slug = String(p.slug || '');
-                    var desc = String(p.description || '');
-                    var tcount = (p._members || []).length;
-                    var rowsHtml = (p._members || []).length
-                        ? _renderPackageTableRows(p._members, p.id)
-                        : '<div class="panel-body-empty" style="padding:16px; font-size:12px;">'
-                          + 'No tables in this package yet. Click <strong>+ Add tables</strong> above.</div>';
-                    return ''
-                      + '<details open data-package-id="' + escapeHtmlAttr(p.id) + '" '
-                      +          'style="margin-bottom:12px; border:1px solid var(--border); '
-                      +                 'border-radius:10px; background:var(--surface);">'
-                      + '  <summary style="display:flex; align-items:center; gap:12px; padding:12px 16px; '
-                      +                  'cursor:pointer; user-select:none; list-style:none;">'
-                      + '    <span style="display:inline-flex; align-items:center; justify-content:center; '
-                      +                  'width:32px; height:32px; border-radius:8px; flex-shrink:0; '
-                      +                  'background:' + escapeHtmlAttr(color) + ';">'
-                      +        packageIconHtml(iconRaw)
-                      + '    </span>'
-                      + '    <span style="flex:1; min-width:0;">'
-                      + '      <strong style="font-size:14px;">' + escapeHtml(name) + '</strong>'
-                      +        (desc ? ('<div style="font-size:12px; color:var(--text-secondary); '
-                      +                       'margin-top:2px;">' + escapeHtml(desc) + '</div>') : '')
-                      + '    </span>'
-                      + '    <span style="font-size:12px; color:var(--text-secondary);">'
-                      +        tcount + ' table' + (tcount === 1 ? '' : 's') + '</span>'
-                      + '    <button class="btn btn-secondary btn-sm" type="button" '
-                      +            'onclick="event.preventDefault(); event.stopPropagation(); '
-                      +                     'openBulkAssignModal(\'' + escapeHtmlAttr(p.id) + '\')">'
-                      + '      + Add tables'
-                      + '    </button>'
-                      + '    <button class="btn btn-secondary btn-sm" type="button" '
-                      +            'onclick="event.preventDefault(); event.stopPropagation(); '
-                      +                     'openEditDataPackageModal(\'' + escapeHtmlAttr(p.id) + '\')">'
-                      + '      Edit package'
-                      + '    </button>'
-                      + '    <a class="btn btn-secondary btn-sm" '
-                      +       'href="/catalog/p/' + escapeHtmlAttr(slug) + '" '
-                      +       'onclick="event.stopPropagation()" '
-                      +       'title="See this package as analysts will">'
-                      + '      View as analyst'
-                      + '    </a>'
-                      + '  </summary>'
-                      + '  <div style="padding:0 12px 12px;">' + rowsHtml + '</div>'
-                      + '</details>';
-                }).join('');
+                return;
             }
 
-            // ── Render Unpackaged tables ──
-            // Exclude internal/agnes_* rows from "needs packaging" — they're
-            // auto-seeded and shouldn't be auto-bundled. Still listed in a
-            // separate read-only group below.
-            var unpackagedNeedsAttention = allTables.filter(function(t) {
-                return !packagedIds.has(t.id)
-                    && (t.source_type || '') !== 'internal';
-            });
-            var internalUnpackaged = allTables.filter(function(t) {
-                return !packagedIds.has(t.id)
-                    && (t.source_type || '') === 'internal';
-            });
+            var ordered = business.concat(internal);
+            // Keep the raw rows by id: the ⋯ menu's "Edit table…" hands the
+            // whole record to openEditModal(), which needs every field the
+            // registry returned, not the subset the row markup carries.
+            _ADMIN_TABLES_BY_ID = {};
+            ordered.forEach(function(t) { _ADMIN_TABLES_BY_ID[String(t.id)] = t; });
 
-            var unpkParts = [];
-            if (unpackagedNeedsAttention.length) {
-                unpkParts.push(''
-                    + '<section id="adminTablesUnpackaged" style="border:1px solid #FCD34D; '
-                    +          'background:rgba(255,247,205,0.4); border-radius:10px;">'
-                    + '  <header style="display:flex; align-items:center; gap:12px; '
-                    +                 'padding:12px 16px; border-bottom:1px solid #FCD34D;">'
-                    + '    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="ui-ico"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>'
-                    + '    <strong style="flex:1; font-size:14px;">Unpackaged tables '
-                    +      '<span style="color:var(--text-secondary); font-weight:500;">'
-                    +      '(' + unpackagedNeedsAttention.length + ' — needs packaging)</span></strong>'
-                    + '    <button class="btn btn-secondary btn-sm" type="button" '
-                    +            'onclick="groupTablesByBucket()">Group by bucket</button>'
-                    + '    <button class="btn btn-primary btn-sm" type="button" '
-                    +            'onclick="openBulkAssignModal(\'\')">Bulk assign</button>'
-                    + '  </header>'
-                    + '  <div style="padding:0 12px 12px;">'
-                    +      _renderPackageTableRows(unpackagedNeedsAttention, null)
-                    + '  </div>'
-                    + '</section>');
-            }
-            if (internalUnpackaged.length) {
-                unpkParts.push(''
-                    + '<section style="margin-top:16px; border:1px solid var(--border); '
-                    +          'background:var(--background); border-radius:10px;">'
-                    + '  <header style="display:flex; align-items:center; gap:12px; '
-                    +                 'padding:12px 16px; border-bottom:1px solid var(--border);">'
-                    + '    <strong style="flex:1; font-size:13px; color:var(--text-secondary);">'
-                    + '      Agnes internal tables '
-                    +      '<span style="font-weight:500;">(read-only; seeded on app boot)</span>'
-                    + '    </strong>'
-                    + '  </header>'
-                    + '  <div style="padding:0 12px 12px;">'
-                    +      _renderPackageTableRows(internalUnpackaged, null)
-                    + '  </div>'
-                    + '</section>');
-            }
-            unpkEl.innerHTML = unpkParts.join('');
+            host.innerHTML = _renderFlatTableRows(ordered);
+            renderConnectorNotice(ordered);
+            // Menu first, engine second: the engine wires itself to the options
+            // it is handed, so building the menu after mounting would hand it a
+            // set of checkboxes nothing is listening to.
+            buildTableFacets();
+            mountTablesToolbar();
+            applyTableViewFromQuery();
         } catch (e) {
-            pkgsEl.innerHTML = '<div class="panel-body-empty" style="color:var(--error);">'
+            host.innerHTML = '<div class="panel-body-empty" style="color:var(--error);">'
                 + 'Network error: ' + escapeHtml(e.message) + '</div>';
-            unpkEl.innerHTML = '';
         }
     }
+    // Render the flat lens as the product's ONE table (`.data-table`).
+    //
+    // Columns carry a table from where it comes FROM to who it reaches:
+    // Table (+bucket) · Source (+project) · Mode · Package · Reaches · ⋯
+    //
+    // Mode leads with what it MEANS and keeps the system word, so
+    // `query_mode=remote` in the CLI and "Live query" here are the same fact.
+    // Package/Reaches are the end of the chain: a table in no package reaches
+    // nobody, and these are the cells that say so.
+    //
+    // Every row carries its facet values as data-* attributes; the toolbar
+    // filters and sorts against those without re-fetching.
+    function _renderFlatTableRows(tables) {
+        var html = ''
+          + '<table class="data-table" id="adminTablesFlat">'
+          + '<colgroup>'
+          +   '<col style="width: 4%">'
+          +   '<col style="width: 24%">'
+          +   '<col style="width: 13%">'
+          +   '<col style="width: 13%">'
+          +   '<col style="width: 16%">'
+          +   '<col style="width: 11%">'
+          +   '<col style="width: 13%">'
+          +   '<col style="width: 6%">'
+          + '</colgroup>'
+          + '<thead><tr>'
+          +   '<th class="tbl-check"><input type="checkbox" id="adminTablesCheckAll"'
+          +     ' aria-label="Select all shown tables"></th>'
+          +   '<th>Table</th>'
+          +   '<th>Source</th>'
+          +   '<th>Mode</th>'
+          +   '<th>Package</th>'
+          +   '<th>Access</th>'
+          +   '<th>Reaches</th>'
+          +   '<th><span class="tbl-sr">Actions</span></th>'
+          + '</tr></thead><tbody>';
 
-    // Render a list of table rows for the package-centric layout. Each row:
-    //   [name link → /admin/tables?edit=<id>] [source_type tag] [bucket] [mode]
-    //   [Edit] [Remove from package | + Add to package ▾]
-    // pkgIdOrNull → when non-null, rows expose a "Remove from package" action;
-    //               when null (Unpackaged section), rows expose "+ Add to package".
-    function _renderPackageTableRows(tables, pkgIdOrNull) {
-        if (!tables || !tables.length) {
-            return '<div class="panel-body-empty">No tables here yet.</div>';
-        }
-        // Only show Last synced column when the section has at least one
-        // syncable (non-internal) table — internal tables never sync.
-        var hasSync = tables.some(function(t) { return t.source_type !== 'internal'; });
-        var html = '<table class="registry-table" style="margin-top:8px;">';
-        html += '<thead><tr>';
-        html += '<th class="col-id">Table</th>';
-        html += '<th>Source</th>';
-        html += '<th>Bucket</th>';
-        html += '<th class="col-mode">Mode</th>';
-        html += '<th class="col-access">Access</th>';
-        if (hasSync) { html += '<th class="col-last-sync">Last synced</th>'; }
-        html += '<th class="col-actions">Actions</th>';
-        html += '</tr></thead><tbody>';
         tables.forEach(function(t) {
             var id = String(t.id || '');
             var name = String(t.name || id);
             var src = String(t.source_type || '');
             var bucket = String(t.bucket || '');
-            var editUrl = '/admin/tables?edit=' + encodeURIComponent(id);
+            var connId = String(t.connection_id || '');
             var isInternal = (src === 'internal');
-            // data-table-row-{name,source,bucket} attributes power the
-            // filterAdminTablesLayout() search; lower-case once at render
-            // time so the filter can use plain substring matching.
-            html += '<tr data-table-id="' + escapeHtmlAttr(id) + '" '
-                  + 'data-table-row-name="' + escapeHtmlAttr(name.toLowerCase()) + '" '
-                  + 'data-table-row-source="' + escapeHtmlAttr(src.toLowerCase()) + '" '
-                  + 'data-table-row-bucket="' + escapeHtmlAttr(bucket.toLowerCase()) + '">';
-            var kbDisconnectedWarning = (src === 'keboola' && DATA_SOURCE_TYPE !== 'keboola')
-                ? '<div style="margin-top:3px; font-size:11px; color:var(--warning); display:flex; align-items:center; gap:4px;">'
-                  + '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>'
-                  + 'Keboola not connected</div>'
-                : '';
-            html += '<td class="col-id" title="' + escapeHtml(id) + '">'
-                  + '<a href="' + escapeHtmlAttr(editUrl) + '" '
-                  +    'style="color:var(--ds-primary); text-decoration:none;">'
-                  + escapeHtml(name) + '</a>'
-                  + kbDisconnectedWarning
+            var editUrl = '/admin/tables?edit=' + encodeURIComponent(id);
+            var delivery = (typeof TABLE_DELIVERY === 'object' && TABLE_DELIVERY) ? TABLE_DELIVERY[id] : null;
+            var pkgs = (delivery && delivery.packages) || [];
+            var people = delivery ? delivery.people : 0;
+            var mode = (t.query_mode || 'local').toLowerCase();
+            var projName = (typeof SOURCE_CONNECTIONS === 'object' && SOURCE_CONNECTIONS && SOURCE_CONNECTIONS[connId])
+                ? SOURCE_CONNECTIONS[connId] : '';
+            // Sort key for reach: Everyone (-1) is the LARGEST audience, so it
+            // must not sort below "3 people" just because its sentinel is
+            // negative.
+            var reachSort = isInternal ? -1 : (people === -1 ? 1e9 : people);
+            // Freshness comes from TABLE_DELIVERY, not from the registry
+            // response: that endpoint joins sync_state on the table's NAME
+            // while everything else keys it by ID, so its `last_sync` is null
+            // on instances where the two differ — and a sort built on it would
+            // silently order nothing. Never-synced rows sort oldest rather
+            // than NaN-ing the comparator.
+            var syncSort = (delivery && delivery.last_sync) || 0;
+
+            // ONE blob for the toolbar's search box. The shared engine matches a
+            // single attribute (it is one query against one haystack, not four
+            // OR'd probes), so everything a reader might type at this list —
+            // name, connector, bucket, the packages carrying it — is folded in
+            // here, lowercased once at render rather than per keystroke.
+            var searchBlob = [name, src, bucket, projName]
+                  .concat(pkgs.map(function(p) { return String(p.name || ''); }))
+                  .join(' ').toLowerCase();
+
+            html += '<tr data-table-id="' + escapeHtmlAttr(id) + '"'
+                  + ' data-search="' + escapeHtmlAttr(searchBlob) + '"'
+                  + ' data-f-source="' + escapeHtmlAttr(src.toLowerCase()) + '"'
+                  + ' data-f-project="' + escapeHtmlAttr(connId) + '"'
+                  + ' data-f-mode="' + escapeHtmlAttr(mode) + '"'
+                  // PIPE-separated, which is the shared engine's contract for a
+                  // multi-valued facet attribute (`facets[].multi`) — a package
+                  // id can't contain one, and a space could.
+                  + ' data-f-packages="' + escapeHtmlAttr(pkgs.map(function(p) { return p.id; }).join('|')) + '"'
+                  + ' data-f-unpackaged="' + ((!pkgs.length && !isInternal) ? '1' : '0') + '"'
+                  + ' data-s-name="' + escapeHtmlAttr(name.toLowerCase()) + '"'
+                  + ' data-s-source="' + escapeHtmlAttr((src + ' ' + projName).toLowerCase()) + '"'
+                  + ' data-s-package="' + escapeHtmlAttr((pkgs.map(function(p) { return String(p.name || ''); }).join(' ') || '￿').toLowerCase()) + '"'
+                  + ' data-s-reach="' + reachSort + '"'
+                  + ' data-s-sync="' + syncSort + '"'
+                  // Agnes' own bookkeeping tables (agnes_*) are read-only, never
+                  // packaged and never synced. They sort LAST under every order,
+                  // or "Name A–Z" opens the page on three internal rows before
+                  // the first business table.
+                  //
+                  // Stated as the POSITIVE — business rows carry the attribute,
+                  // internal ones simply lack it. The shared engine's `pinFirst`
+                  // asks whether the attribute is present, and the old
+                  // `data-s-internal="0"` is the string "0", which is truthy: an
+                  // inverted flag would have pinned every internal row to the top.
+                  + (isInternal ? '' : ' data-s-business="1"')
+                  + '>';
+
+            // ── Select. Internal rows carry no checkbox: they are read-only
+            // and none of the bulk verbs can act on them, so offering the box
+            // would only let a selection claim more than it can do.
+            html += '<td class="tbl-check">'
+                  + (isInternal ? ''
+                      : '<input type="checkbox" class="tbl-rowcheck" value="' + escapeHtmlAttr(id) + '"'
+                        + ' aria-label="Select ' + escapeHtmlAttr(name) + '">')
                   + '</td>';
-            html += '<td><span class="badge badge-available" style="font-size:11px;">'
-                  + escapeHtml(src || '—') + '</span></td>';
-            html += '<td style="font-family:var(--font-mono); font-size:12px; color:var(--text-secondary);">'
-                  + escapeHtml(bucket || '—') + '</td>';
-            html += '<td class="col-mode">' + renderModeBadge(t.query_mode) + '</td>';
-            html += '<td class="col-access">' + renderAccessPolicyChip(t) + '</td>';
-            if (hasSync) { html += '<td class="col-last-sync">' + escapeHtml(t.last_sync_display || '—') + '</td>'; }
-            html += '<td class="col-actions"><div style="display:flex; gap:4px; justify-content:flex-end;">';
-            if (!isInternal) {
-                html += '<button class="btn-icon" data-tooltip="Edit" '
-                      + 'onclick=\'openEditModal(' + escapeHtmlAttr(JSON.stringify(t)) + ')\'>'
-                      + '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>'
-                      + '</button>';
+
+            // ── Table: name over bucket
+            html += '<td>'
+                  + '<a class="tbl-name" href="' + escapeHtmlAttr(editUrl) + '" title="' + escapeHtml(id) + '">'
+                  +   escapeHtml(name) + '</a>'
+                  + (bucket ? '<span class="tbl-sub">' + escapeHtml(bucket) + '</span>' : '')
+                  + '</td>';
+            // NOT a per-row "Keboola not connected" line. It is an INSTANCE
+            // fact — the connector is unconfigured — so repeating it on every
+            // Keboola row said one thing two hundred times and cost each row a
+            // third line. It is hoisted to one strip above the list; see
+            // `renderConnectorNotice()`.
+
+            // ── Source: connector over project
+            html += '<td><span class="tbl-src">' + escapeHtml(src || '—')
+                  + (projName ? '<span class="tbl-src__proj">' + escapeHtml(projName) + '</span>' : '')
+                  + '</span></td>';
+
+            // ── Mode
+            html += '<td class="tbl-mode">' + renderModeBadge(t.query_mode) + '</td>';
+
+            // ── Package
+            if (isInternal) {
+                html += '<td class="tbl-muted">—</td>';
+            } else if (pkgs.length) {
+                html += '<td>' + pkgs.map(function(p) {
+                    return '<a class="tbl-pkg" href="/admin/data-packages/' + encodeURIComponent(p.id) + '"'
+                         + ' title="' + escapeHtmlAttr(String(p.name || '')) + '">'
+                         + escapeHtml(String(p.name || '')) + '</a>';
+                }).join('') + '</td>';
+            } else {
+                html += '<td><button type="button" class="tbl-pkg tbl-pkg--none"'
+                      + ' onclick="openBulkAssignFromRow(&#39;' + escapeHtmlAttr(id) + '&#39;)"'
+                      + ' title="A table reaches nobody until a package carries it">'
+                      + 'In no package</button></td>';
             }
-            if (!isInternal) {
-                html += '<button class="btn-icon" data-tooltip="Sync now" onclick="syncTable(this, &#39;' + escapeHtmlAttr(id) + '&#39;)">'
-                      + '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>'
-                      + '</button>';
+
+            // ── Access (table access policies, admin UI — Task 15): what a
+            // caller who can reach this table actually sees, narrower than
+            // Package/Reaches which answer whether they can reach it at all.
+            html += '<td>' + renderAccessPolicyChip(t) + '</td>';
+
+            // ── Reaches
+            if (isInternal) {
+                html += '<td class="tbl-muted">—</td>';
+            } else if (!pkgs.length) {
+                // Unpackaged rows say "Nobody" QUIETLY: the cell beside this one
+                // already carries the alarm, in the colour of the thing that can
+                // be fixed, and it is the same fact. Two amber cells on every
+                // unpackaged row — and most rows on a fresh instance are
+                // unpackaged — is a list that reads as entirely on fire, which is
+                // a list nobody reads.
+                html += '<td class="tbl-reach tbl-muted">Nobody</td>';
+            } else if (people === 0) {
+                // Packaged and STILL reaching nobody is the one that has to
+                // shout: nothing else on the row says it, and the package it
+                // sits in looks healthy from here.
+                html += '<td class="tbl-reach tbl-reach--none">Nobody</td>';
+            } else if (people === -1) {
+                html += '<td class="tbl-reach">Everyone</td>';
+            } else {
+                // Two packages carry this row: their audiences may overlap, and
+                // two counts cannot be summed into a union. The larger is the
+                // honest floor, said as one.
+                html += '<td class="tbl-reach">' + (pkgs.length > 1 ? 'at least ' : '')
+                      + people + ' ' + (people === 1 ? 'person' : 'people') + '</td>';
             }
-            if (pkgIdOrNull && !isInternal) {
-                html += '<button class="btn-icon danger" data-tooltip="Remove from package" '
-                      + 'onclick="removeTableFromPackageById(&#39;' + escapeHtmlAttr(pkgIdOrNull) + '&#39;, &#39;' + escapeHtmlAttr(id) + '&#39;)">'
-                      + '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>'
-                      + '</button>';
-            } else if (!pkgIdOrNull && !isInternal) {
-                // Icon button for visual rhythm with Edit (the wide
-                // "+ Add to package" text button used to overflow the
-                // 120px col-actions and bleed leftward into the Mode
-                // column — user-reported visual bug). Title attr keeps
-                // the explicit label discoverable on hover.
-                html += '<button class="btn-icon" type="button" '
-                      + 'data-tooltip="Add to a Data Package" '
-                      + 'onclick="openBulkAssignFromRow(&#39;' + escapeHtmlAttr(id) + '&#39;)" '
-                      + 'style="color:var(--ds-primary);">'
-                      + '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
-                      +   '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>'
-                      +   '<line x1="12" y1="11" x2="12" y2="17"/>'
-                      +   '<line x1="9" y1="14" x2="15" y2="14"/>'
-                      + '</svg>'
-                      + '</button>';
-                // Unregister (delete) the table — only offered on UNPACKAGED
-                // rows. An unpackaged table has no data_package_tables
-                // membership, so unregistering it leaves no dangling
-                // package -> table link. Tables shown inside a package expose
-                // "Remove from package" instead; the admin detaches first, the
-                // row reappears in this unpackaged section, then deletes it.
-                html += '<button class="btn-icon danger" type="button" '
-                      + 'data-tooltip="Unregister (delete) table" '
-                      + 'onclick="deleteTable(&#39;' + escapeHtmlAttr(id) + '&#39;)">'
-                      + '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
-                      +   '<polyline points="3 6 5 6 21 6"/>'
-                      +   '<path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>'
-                      +   '<line x1="10" y1="11" x2="10" y2="17"/>'
-                      +   '<line x1="14" y1="11" x2="14" y2="17"/>'
-                      +   '<path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/>'
-                      + '</svg>'
-                      + '</button>';
-            }
-            html += '</div></td></tr>';
+
+            // ── Actions: one ⋯, opening the shared menu
+            html += '<td style="text-align:right;">'
+                  + (isInternal
+                      ? '<span class="tbl-muted">—</span>'
+                      : '<button type="button" class="tbl-more__btn" data-tbl-more="' + escapeHtmlAttr(id) + '"'
+                        + ' aria-haspopup="menu" aria-expanded="false"'
+                        + ' aria-label="Actions for ' + escapeHtmlAttr(name) + '">⋯</button>')
+                  + '</td>';
+
+            html += '</tr>';
         });
         html += '</tbody></table>';
         return html;
     }
 
-    // Remove a single table from a package, then refresh the layout.
-    async function removeTableFromPackageById(pkgId, tableId) {
-        if (!(await confirmModal('Remove this table from the package? (The table itself is not deleted.)'))) return;
-        var r = await fetch('/api/admin/data-packages/' + encodeURIComponent(pkgId)
-                            + '/tables/' + encodeURIComponent(tableId),
-                            { method: 'DELETE', credentials: 'same-origin' });
-        if (!r.ok) { await alertModal('Remove failed: HTTP ' + r.status); return; }
-        if (typeof loadAdminTablesLayout === 'function') loadAdminTablesLayout();
+    // One line for an INSTANCE-level fact, above the list.
+    //
+    // Every Keboola row used to carry its own "Keboola not connected" warning:
+    // the same sentence repeated once per row, costing each of them a third
+    // line and saying nothing new after the first. It is a property of the
+    // instance, not of a table, so it is stated once — and it names the fix.
+    function renderConnectorNotice(tables) {
+        var host = document.getElementById('adminTablesConnectorNotice');
+        if (!host) return;
+        // Connected is what the registry says. Keying this on DATA_SOURCE_TYPE
+        // alone claimed "Keboola is not connected" on instances with Keboola
+        // projects connected — listed, by name, on the adjacent Sources tab.
+        if (DATA_SOURCE_TYPE === 'keboola'
+            || CONNECTED_SOURCE_TYPES.indexOf('keboola') !== -1) {
+            host.hidden = true; host.innerHTML = ''; return;
+        }
+        var n = tables.filter(function(t) {
+            return t.source_type === 'keboola';
+        }).length;
+        if (!n) { host.hidden = true; host.innerHTML = ''; return; }
+        host.hidden = false;
+        host.innerHTML = '<span class="apg-strip__mark" aria-hidden="true">!</span>'
+          + '<span><strong>Keboola is not connected</strong> — ' + n + ' registered table'
+          + (n === 1 ? '' : 's') + ' point at it and cannot sync until a project is '
+          + 'connected.</span>'
+          + '<span class="apg-strip__end"><a href="/admin/data-sources">Connect a project →</a></span>';
     }
+
+    // The row menu — ONE node for the table (see .tbl-more__menu). Built per
+    // open from the row's own data, so it never holds a stale table id.
+    function openTableRowMenu(btn) {
+        var menu = document.getElementById('tbl-menu');
+        var id = btn.dataset.tblMore;
+        var row = btn.closest('tr');
+        var packaged = row && row.getAttribute('data-f-unpackaged') === '0';
+        var t = (_ADMIN_TABLES_BY_ID || {})[id];
+        var items = ''
+          + '<button type="button" class="tbl-more__item" data-act="edit">Edit table…</button>'
+          + '<button type="button" class="tbl-more__item" data-act="sync">Sync now</button>'
+          + '<button type="button" class="tbl-more__item" data-act="assign">Add to a data package…</button>'
+          + '<div class="tbl-more__sep"></div>'
+          + '<a class="tbl-more__item" href="/admin/sync">Sync history</a>';
+        // Unregister stays gated on being in NO package: deleting a table a
+        // package still lists would leave the package pointing at a row that
+        // no longer exists. Detach first.
+        if (!packaged) {
+            items += '<div class="tbl-more__sep"></div>'
+                  + '<button type="button" class="tbl-more__item tbl-more__item--danger" data-act="delete">'
+                  + 'Unregister table…</button>';
+        }
+        menu.innerHTML = items;
+        menu.dataset.tableId = id;
+        menu.hidden = false;
+        var r = btn.getBoundingClientRect();
+        // Fixed-positioned against the button's rect: the table clips its own
+        // overflow, so a popover inside the last row would be cut off.
+        var w = menu.offsetWidth || 208;
+        menu.style.left = Math.max(8, Math.min(r.right - w, window.innerWidth - w - 8)) + 'px';
+        menu.style.top = (r.bottom + 6) + 'px';
+        btn.setAttribute('aria-expanded', 'true');
+        menu._btn = btn;
+        menu._table = t;
+    }
+
+    function closeTableRowMenu() {
+        var menu = document.getElementById('tbl-menu');
+        if (!menu || menu.hidden) return;
+        if (menu._btn) menu._btn.setAttribute('aria-expanded', 'false');
+        menu.hidden = true;
+        menu._btn = null;
+    }
+
+    document.addEventListener('click', function(e) {
+        var btn = e.target.closest && e.target.closest('[data-tbl-more]');
+        if (btn) {
+            var menu = document.getElementById('tbl-menu');
+            if (!menu.hidden && menu._btn === btn) { closeTableRowMenu(); return; }
+            closeTableRowMenu();
+            openTableRowMenu(btn);
+            return;
+        }
+        var item = e.target.closest && e.target.closest('.tbl-more__item[data-act]');
+        if (item) {
+            var menu2 = document.getElementById('tbl-menu');
+            var id = menu2.dataset.tableId;
+            var t = menu2._table;
+            closeTableRowMenu();
+            if (item.dataset.act === 'edit' && t) { openEditModal(t); }
+            else if (item.dataset.act === 'sync') { syncTable(item, id); }
+            else if (item.dataset.act === 'assign') { openBulkAssignFromRow(id); }
+            else if (item.dataset.act === 'delete') { deleteTable(id); }
+            return;
+        }
+        if (!(e.target.closest && e.target.closest('.tbl-more__menu'))) closeTableRowMenu();
+    });
+    document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeTableRowMenu(); });
+    window.addEventListener('scroll', closeTableRowMenu, true);
+    window.addEventListener('resize', closeTableRowMenu);
+
+    // Remove a single table from a package, then refresh the layout.
+    // `removeTableFromPackageById` lived here and is gone: it served the
+    // "Remove from package" action on the old package-grouped rows. Removing a
+    // table from a package now happens on the package's own page, where you
+    // can see what else the package still carries — a row in this flat lens
+    // can sit in several packages, so "remove from package" has no single
+    // answer here.
 
     // Open bulk-assign modal pre-checking a single table — the "+ Add to
     // package" CTA on each unpackaged row. Defers to the existing modal so
@@ -6519,62 +6636,374 @@
     var loadDataPackagesSection = loadAdminTablesLayout;
     window.loadDataPackagesSection = loadDataPackagesSection;
 
-    // ── Search filter for the /admin/tables layout ───────────────────
-    // Mirrors the /catalog + /memory hero-search pattern: one input
-    // narrows both packages and table rows in place. A package is
-    // visible when its name matches OR any of its member tables match;
-    // an unpackaged row is visible when its name / source / bucket
-    // matches.
-    function filterAdminTablesLayout() {
-      var input = document.getElementById('adminTablesSearch');
-      var hint = document.getElementById('adminTablesSearchHint');
-      var q = (input && input.value || '').toLowerCase().trim();
-      var matched = 0;
-      var total = 0;
-      // Per-package <details> filtering — show the package if its name
-      // matches, OR any of the rows inside match.
-      document.querySelectorAll(
-        '#adminTablesLayoutPackages details[data-package-id]'
-      ).forEach(function(d) {
-        var pkgName = ((d.querySelector('summary strong')||{}).textContent || '').toLowerCase();
-        var rows = d.querySelectorAll('[data-table-row-name]');
-        var anyRow = false;
-        rows.forEach(function(r) {
-          total += 1;
-          var rn = (r.getAttribute('data-table-row-name') || '').toLowerCase();
-          var rs = (r.getAttribute('data-table-row-source') || '').toLowerCase();
-          var rb = (r.getAttribute('data-table-row-bucket') || '').toLowerCase();
-          var hit = !q || rn.indexOf(q) !== -1 || rs.indexOf(q) !== -1 || rb.indexOf(q) !== -1;
-          r.style.display = hit ? '' : 'none';
-          if (hit) { anyRow = true; matched += 1; }
-        });
-        var pkgHit = !q || pkgName.indexOf(q) !== -1 || anyRow;
-        d.style.display = pkgHit ? '' : 'none';
-        // When the query hits the package name only, expand it; when the
-        // query is empty leave the user's open/closed state alone.
-        if (q && pkgHit && (anyRow || pkgName.indexOf(q) !== -1)) {
-          d.open = true;
-        }
-      });
-      // Unpackaged rows live outside the per-package <details>.
-      document.querySelectorAll(
-        '#adminTablesLayoutUnpackaged [data-table-row-name]'
-      ).forEach(function(r) {
-        total += 1;
-        var rn = (r.getAttribute('data-table-row-name') || '').toLowerCase();
-        var rs = (r.getAttribute('data-table-row-source') || '').toLowerCase();
-        var rb = (r.getAttribute('data-table-row-bucket') || '').toLowerCase();
-        var hit = !q || rn.indexOf(q) !== -1 || rs.indexOf(q) !== -1 || rb.indexOf(q) !== -1;
-        r.style.display = hit ? '' : 'none';
-        if (hit) matched += 1;
-      });
-      if (hint) {
-        hint.textContent = q
-          ? matched + ' of ' + total + ' table' + (total === 1 ? '' : 's')
-          : '';
-      }
+    // ── Facets, filtering and ordering for the flat lens ─────────────
+    //
+    // Driven by the SHARED toolbar engine (static/js/filter_toolbar.js), the
+    // one /library and /chats run. This page used to carry its own copy of that
+    // engine — a private facet matcher, a private comparator, private badge
+    // bookkeeping — which is how one lens of a product ends up filtering by
+    // rules nothing else in it uses. Everything below is now configuration:
+    // which attribute each family reads, and how the menu is built.
+    //
+    // The MENU is still ours to build, because its options come from the rows
+    // and the rows come from a fetch. Two levels: the menu lists FAMILIES and
+    // each opens its values beside it. Families and values alike are tallied
+    // from the rows, so a family nothing carries — no Jira tables, no BigQuery
+    // project — never renders an option nobody can use.
+
+    // The live engine handle. Re-created (never stacked) whenever the registry
+    // is re-fetched: the option set changes with the data, so the menu has to
+    // be rebuilt, and the engine's listeners are attached to the menu it was
+    // handed. `destroy()` is what makes that a swap rather than an accumulation
+    // of engines all filtering the same rows.
+    var _tblToolbar = null;
+
+    // The families, in the order the menu lists them. `attr` is the row
+    // attribute the engine matches; `multi` marks a pipe-separated set; `label`
+    // is what the chip and the menu row both say, so they can never drift.
+    function _tblFacetSpecs() {
+        return [
+            { key: 'source',  attr: 'data-f-source',  label: 'Source' },
+            // Keboola project (and any other connector that keeps connection
+            // rows) — the precise link is `connection_id`; rows registered
+            // before it existed carry only a source_type and simply do not
+            // appear here.
+            { key: 'project', attr: 'data-f-project', label: 'Project' },
+            { key: 'mode',    attr: 'data-f-mode',    label: 'Mode' },
+            { key: 'package', attr: 'data-f-packages', label: 'Data package', multi: true },
+            // One CONDITION, not a family: it has no complement worth offering
+            // ("in some package" is the rest of the list), so it sits as a
+            // plain checkbox in the menu body and its chip states the condition
+            // rather than naming a category. The engine renders toggle facets
+            // that way natively.
+            { key: 'state',   attr: 'data-f-unpackaged', label: 'In no package', toggle: true },
+        ];
     }
-    window.filterAdminTablesLayout = filterAdminTablesLayout;
+
+    function buildTableFacets() {
+        var host = document.getElementById('tbl-filter-menu');
+        if (!host) return;
+        var rows = Array.prototype.slice.call(
+            document.querySelectorAll('#adminTablesLayoutRows tbody tr'));
+
+        function tally(getter) {
+            var counts = {};
+            rows.forEach(function(r) {
+                var vals = getter(r);
+                (Array.isArray(vals) ? vals : [vals]).forEach(function(v) {
+                    if (!v) return;
+                    counts[v] = (counts[v] || 0) + 1;
+                });
+            });
+            return counts;
+        }
+
+        var bySource  = tally(function(r) { return r.getAttribute('data-f-source'); });
+        var byProject = tally(function(r) { return r.getAttribute('data-f-project'); });
+        var byMode    = tally(function(r) { return r.getAttribute('data-f-mode'); });
+        var byPackage = tally(function(r) {
+            var v = r.getAttribute('data-f-packages');
+            return v ? v.split('|').filter(Boolean) : [];
+        });
+        var unpackaged = rows.filter(function(r) { return r.getAttribute('data-f-unpackaged') === '1'; }).length;
+
+        var pkgNames = {};
+        Object.keys(TABLE_DELIVERY || {}).forEach(function(tid) {
+            ((TABLE_DELIVERY[tid] || {}).packages || []).forEach(function(p) { pkgNames[p.id] = p.name; });
+        });
+
+        function opt(facet, value, label, n) {
+            return '<label class="fbar-menu__opt">'
+                 + '<input type="checkbox" data-facet="' + escapeHtmlAttr(facet) + '" value="' + escapeHtmlAttr(value) + '">'
+                 + '<span class="fbar-menu__opt-text">' + escapeHtml(String(label)) + '</span>'
+                 + '<span class="fbar-menu__opt-n">' + n + '</span>'
+                 + '</label>';
+        }
+
+        // A FAMILY row + its popover. The count badge is `hidden` at render and
+        // driven by the engine from applied state (see `syncCatCounts()`), so
+        // the menu says which family is doing the narrowing before it is
+        // opened — the Filter button's own badge is a total, and a total cannot
+        // point at a family.
+        function cat(facet, label, counts, labelFor) {
+            var keys = Object.keys(counts).sort(function(a, b) {
+                return String(labelFor(a)).localeCompare(String(labelFor(b)));
+            });
+            if (!keys.length) return '';
+            return '<div class="fbar-cat" data-cat="' + escapeHtmlAttr(facet) + '">'
+                 + '<button type="button" class="fbar-cat__btn" aria-haspopup="true" aria-expanded="false">'
+                 +   '<span class="fbar-cat__label">' + escapeHtml(label) + '</span>'
+                 +   '<span class="fbar-cat__end">'
+                 +     '<span class="fbar-cat__n" data-cat-count="' + escapeHtmlAttr(facet) + '" hidden>0</span>'
+                 +     '<svg class="fbar-cat__caret" viewBox="0 0 24 24" fill="none" aria-hidden="true">'
+                 +       '<path d="m9 6 6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+                 +     '</svg>'
+                 +   '</span>'
+                 + '</button>'
+                 + '<div class="fbar-cat__pop" hidden>'
+                 +   keys.map(function(k) { return opt(facet, k, labelFor(k), counts[k]); }).join('')
+                 + '</div></div>';
+        }
+
+        var html = '';
+        html += cat('source', 'Source', bySource, function(k) { return k; });
+        html += cat('project', 'Project', byProject, function(k) {
+            return (SOURCE_CONNECTIONS && SOURCE_CONNECTIONS[k]) || k;
+        });
+        html += cat('mode', 'Mode', byMode, function(k) {
+            return (_MODE_LABELS[k] ? _MODE_LABELS[k] + ' (' + k + ')' : k);
+        });
+        html += cat('package', 'Data package', byPackage, function(k) { return pkgNames[k] || k; });
+        if (unpackaged) {
+            // Directly in the menu body, under a rule: it is the one condition
+            // here rather than a family, and burying it one hop behind a
+            // submenu would hide the state this whole lens exists to surface.
+            html += '<div class="fbar-menu__group">'
+                  + opt('state', '1', 'In no package', unpackaged)
+                  + '</div>';
+        }
+        html += '<div class="fbar-menu__foot">'
+              + '<button type="button" data-fbar-clear>Clear</button>'
+              + '<button type="button" data-fbar-done>Done</button>'
+              + '</div>';
+        host.innerHTML = html;
+    }
+
+    // Mount (or re-mount) the shared engine over the freshly-rendered rows and
+    // the freshly-built menu.
+    function mountTablesToolbar() {
+        if (!window.FilterToolbar) return;
+        if (_tblToolbar && _tblToolbar.destroy) _tblToolbar.destroy();
+        _tblToolbar = window.FilterToolbar.init({
+            rows: '#adminTablesFlat tbody tr',
+            search: { el: '#adminTablesSearch', attr: 'data-search' },
+            facets: _tblFacetSpecs(),
+            filterBtn: '#tbl-filter-btn',
+            menu: '#tbl-filter-menu',
+            chips: '#tbl-chips',
+            sort: {
+                el: '#adminTablesSort',
+                keys: {
+                    name: 'data-s-name', source: 'data-s-source',
+                    package: 'data-s-package', reach: 'data-s-reach',
+                    sync: 'data-s-sync',
+                },
+                numeric: ['reach', 'sync'],
+                // Agnes' own bookkeeping rows sink under EVERY order — they are
+                // read-only, never packaged and never synced, so "Name A–Z"
+                // opening on three of them buries the first business table.
+                pinFirst: 'data-s-business',
+                initial: 'name_asc',
+            },
+            count: { el: '#adminTablesCount', noun: 'table' },
+            noResults: '#adminTablesEmptyFiltered',
+            // Two things the engine cannot know about, run after every apply and
+            // every sort: a row the filter hid must not stay selected (the bulk
+            // verbs act on what you can see, and a hidden row silently in the
+            // set is how an Unregister takes something the operator never
+            // looked at), and the bulk bar has to be told what is left.
+            onApply: function() {
+                document.querySelectorAll('#adminTablesFlat tbody tr[hidden] .tbl-rowcheck:checked')
+                    .forEach(function(cb) { cb.checked = false; });
+                syncBulkBar();
+                // With nothing left after filtering, the TABLE goes too — a
+                // bordered header row over an empty body, with the no-results
+                // panel below it, reads as a table that failed to load rather
+                // than as a filter that matched nothing. (The Library's engine
+                // does this for the same reason, but only for pages that
+                // declare a `view`; this one has a single host.)
+                var table = document.getElementById('adminTablesFlat');
+                if (table) {
+                    table.hidden = !document.querySelector('#adminTablesFlat tbody tr:not([hidden])');
+                }
+            },
+        });
+        return _tblToolbar;
+    }
+
+    {# `window.filterAdminTablesLayout` is gone with the private engine. It was
+       the page's own "re-apply the filter" entry point, called from the search
+       box's `oninput`, the sort select's `onchange` and the facet menu's change
+       handler — all three of which the shared engine now owns and wires itself.
+       Every flow that MUTATES a row (register, edit, unregister, assign) calls
+       `loadAdminTablesLayout()`, which re-renders the rows and re-mounts the
+       toolbar over them, so there was nothing left for it to do. #}
+
+    // ── Bulk selection ───────────────────────────────────────────────
+    // Managing "many tables" was a per-row job: assigning twelve tables to a
+    // package meant twelve trips through the ⋯ menu. Ticking rows swaps the
+    // toolbar for a contextual bar carrying the verbs that make sense for a
+    // SET — and only while a set exists, because a bar of permanently
+    // disabled buttons is worse than no bar.
+    //
+    // Selection lives on the checkboxes themselves rather than in a parallel
+    // Set: the rows are already in the DOM, filtering only toggles their
+    // display, and a Set would drift the moment a filtered-out row was
+    // re-rendered.
+
+    function selectedTableIds() {
+        return Array.prototype.slice.call(
+            document.querySelectorAll('#adminTablesFlat .tbl-rowcheck:checked'))
+            .map(function(cb) { return cb.value; });
+    }
+
+    // Only rows the current filter shows can be selected by "select all" —
+    // ticking the header box while a filter is on must not quietly arm 200
+    // hidden rows for an Unregister.
+    // `hidden`, not `style.display`: the shared engine hides a filtered-out row
+    // through the attribute, and a check against the inline style would have
+    // called every row visible and armed the whole registry for a bulk verb.
+    function _visibleRowChecks() {
+        return Array.prototype.slice.call(
+            document.querySelectorAll('#adminTablesFlat tbody tr'))
+            .filter(function(r) { return !r.hidden; })
+            .map(function(r) { return r.querySelector('.tbl-rowcheck'); })
+            .filter(Boolean);
+    }
+
+    function syncBulkBar() {
+        var ids = selectedTableIds();
+        var bar = document.getElementById('adminTablesBulk');
+        if (!bar) return;
+        // The bar APPEARS; the toolbar stays. It used to swap the toolbar out
+        // in place, so ticking one row took search, Filter and Sort off the
+        // page — exactly when an operator is most likely to want to widen or
+        // re-narrow the set they are building.
+        bar.hidden = ids.length === 0;
+        document.getElementById('adminTablesBulkN').textContent =
+            ids.length + ' selected';
+
+        // Unregister is gated on the whole selection being unpackaged: deleting
+        // a table a package still lists leaves the package pointing at a row
+        // that no longer exists. Disabled with the reason in its title rather
+        // than hidden, so the rule is learnable instead of a verb that blinks
+        // in and out as rows are ticked.
+        var packaged = ids.filter(function(id) {
+            var row = document.querySelector('#adminTablesFlat tr[data-table-id="' + CSS.escape(id) + '"]');
+            return row && row.getAttribute('data-f-unpackaged') === '0';
+        }).length;
+        var del = document.getElementById('bulkDelete');
+        if (del) {
+            del.disabled = packaged > 0;
+            del.title = packaged
+                ? packaged + ' of the selected tables ' + (packaged === 1 ? 'is' : 'are')
+                  + ' still in a data package — remove ' + (packaged === 1 ? 'it' : 'them')
+                  + ' from the package first.'
+                : '';
+        }
+
+        // The header box reflects the VISIBLE set: checked when all of it is
+        // selected, indeterminate when only some is.
+        var vis = _visibleRowChecks();
+        var on = vis.filter(function(cb) { return cb.checked; }).length;
+        var box = document.getElementById('adminTablesCheckAll');
+        if (box) {
+            box.checked = vis.length > 0 && on === vis.length;
+            box.indeterminate = on > 0 && on < vis.length;
+        }
+    }
+
+    function setAllVisibleSelected(on) {
+        _visibleRowChecks().forEach(function(cb) { cb.checked = on; });
+        syncBulkBar();
+    }
+
+    document.addEventListener('change', function(e) {
+        if (e.target.matches && e.target.matches('.tbl-rowcheck')) { syncBulkBar(); return; }
+        if (e.target.id === 'adminTablesCheckAll') {
+            setAllVisibleSelected(e.target.checked);
+        }
+    });
+
+    document.addEventListener('click', async function(e) {
+        var t = e.target;
+        if (!t.closest) return;
+
+        if (t.closest('#bulkClear')) {
+            document.querySelectorAll('#adminTablesFlat .tbl-rowcheck:checked')
+                .forEach(function(cb) { cb.checked = false; });
+            syncBulkBar();
+            return;
+        }
+
+        if (t.closest('#bulkAssign')) {
+            // Reuses the existing bulk-assign modal — it already takes a set of
+            // tables and one target package, which is exactly this verb.
+            var ids = selectedTableIds();
+            if (!ids.length) return;
+            openBulkAssignModal('');
+            var tries = 0;
+            var tick = setInterval(function() {
+                tries += 1;
+                var host = document.getElementById('bulk-assign-list');
+                if (host && host.querySelector('.bulk-assign-cb')) {
+                    ids.forEach(function(id) {
+                        var cb = host.querySelector('.bulk-assign-cb[value="' + id.replace(/"/g, '') + '"]');
+                        if (cb) cb.checked = true;
+                    });
+                    clearInterval(tick);
+                } else if (tries > 50) {
+                    clearInterval(tick);
+                }
+            }, 50);
+            return;
+        }
+
+        if (t.closest('#bulkSync')) {
+            var syncIds = selectedTableIds();
+            if (!syncIds.length) return;
+            if (!(await confirmModal('Sync ' + syncIds.length + ' table' +
+                    (syncIds.length === 1 ? '' : 's') + ' now?'))) return;
+            var btn = t.closest('#bulkSync');
+            btn.disabled = true;
+            for (var i = 0; i < syncIds.length; i++) {
+                try {
+                    await fetch('/api/sync/trigger?table_id=' + encodeURIComponent(syncIds[i]),
+                                { method: 'POST', credentials: 'same-origin' });
+                } catch (err) { /* keep going — one failure must not strand the rest */ }
+            }
+            btn.disabled = false;
+            await alertModal('Sync requested for ' + syncIds.length + ' table' +
+                             (syncIds.length === 1 ? '' : 's') + '.');
+            return;
+        }
+
+        if (t.closest('#bulkDelete')) {
+            var delIds = selectedTableIds();
+            if (!delIds.length) return;
+            // The rule the ⋯ menu enforces per row, enforced for the set: a
+            // table a package still lists cannot be unregistered, or the
+            // package is left pointing at a row that no longer exists.
+            var packaged = delIds.filter(function(id) {
+                var row = document.querySelector('#adminTablesFlat tr[data-table-id="' + CSS.escape(id) + '"]');
+                return row && row.getAttribute('data-f-unpackaged') === '0';
+            });
+            if (packaged.length) {
+                await alertModal(packaged.length + ' of the selected tables '
+                    + (packaged.length === 1 ? 'is' : 'are') + ' still in a data package. '
+                    + 'Remove ' + (packaged.length === 1 ? 'it' : 'them')
+                    + ' from the package first — deleting would leave the package '
+                    + 'pointing at a table that no longer exists.');
+                return;
+            }
+            if (!(await confirmModal('Unregister ' + delIds.length + ' table' +
+                    (delIds.length === 1 ? '' : 's') + '?\n\nThis removes them from sync '
+                    + 'and cleans up user subscriptions.'))) return;
+            for (var j = 0; j < delIds.length; j++) {
+                try {
+                    await fetch('/api/admin/registry/' + encodeURIComponent(delIds[j]),
+                                { method: 'DELETE', credentials: 'same-origin' });
+                } catch (err) { /* keep going */ }
+            }
+            loadAdminTablesLayout();
+            return;
+        }
+    });
+
+    {# The Filter popover's open/close, its outside-click and Escape dismissal,
+       the two-level category hover/focus behaviour, "Clear" and "Done" are all
+       the shared engine's now (filter_toolbar.js). The page-local copy that
+       used to live here only knew how to open ONE flat menu. #}
 
     document.addEventListener('DOMContentLoaded', loadAdminTablesLayout);
 
@@ -6625,8 +7054,8 @@
       // doesn't actually depend on it, but the page feels less janky if
       // the layout has rendered first).
       setTimeout(function() {
-        if (typeof openCreateDataPackageModal === 'function') {
-          openCreateDataPackageModal('', null);
+        if (typeof openCreatePackageDrawer === 'function') {
+          openCreatePackageDrawer('', null);
         }
       }, 50);
       // Strip the query param so a manual refresh doesn't re-open the
@@ -6634,6 +7063,48 @@
       history.replaceState(null, '',
         window.location.pathname + window.location.hash);
     });
+
+    // Auto-open the group-by-bucket preview on `?group_by_bucket=1`.
+    // The Packages lens owns this verb now (it makes packages), but the flow
+    // itself is wired to the table registry and stays here — so the entry
+    // point on /admin/data-packages carries the caller in with the flow named.
+    document.addEventListener('DOMContentLoaded', function() {
+      var qs = new URLSearchParams(window.location.search);
+      if (qs.get('group_by_bucket') !== '1') return;
+      setTimeout(function() {
+        if (typeof groupTablesByBucket === 'function') groupTablesByBucket();
+      }, 50);
+      history.replaceState(null, '', window.location.pathname + window.location.hash);
+    });
+
+    // Pre-arm a filter from the URL. `?unpackaged=1` is what the unpackaged
+    // tray on the Data packages lens links to — the pile it was pointing at
+    // should be the only thing on screen when you land. Called from the
+    // hydrator (not on DOMContentLoaded) because the facet checkboxes are
+    // built from the rows and do not exist until those have rendered.
+    //
+    // NOT stripped from the URL: unlike a modal, a filtered view is worth
+    // keeping across a refresh and worth being able to send to someone.
+    function applyTableViewFromQuery() {
+      var qs = new URLSearchParams(window.location.search);
+      // Tick the box and let it announce itself. The engine owns facet state
+      // and learns about a selection through the checkbox's own `change`
+      // event, so setting `.checked` and calling apply() would have filtered
+      // nothing while leaving a box looking ticked — and no chip to say why.
+      function arm(sel) {
+        var box = document.querySelector(sel);
+        if (!box || box.checked) return;
+        box.checked = true;
+        box.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      if (qs.get('unpackaged') === '1') {
+        arm('#tbl-filter-menu input[data-facet="state"][value="1"]');
+      }
+      var pkg = qs.get('package');
+      if (pkg) {
+        arm('#tbl-filter-menu input[data-facet="package"][value="' + CSS.escape(pkg) + '"]');
+      }
+    }
 
     // Auto-open the Edit Data Package modal when the page is opened
     // with `?edit_package=<pkg_id>` — closes the /catalog/p/<slug>

@@ -83,6 +83,18 @@ taken after a `CHECKPOINT` to flush pending WAL writes into the main file.
 A post-migration `CHECKPOINT` runs after every upgrade to minimize the window
 in which an uncommitted `ALTER TABLE` can sit unresolved in the WAL.
 
+**`system.duckdb.pre-migrate` is frozen at the last migration, never
+refreshed afterwards (#379/#380).** `refresh_rolling_snapshot` (`src/db.py`)
+maintains a separate, rolling-refreshed artifact —
+`<STATE_DIR>/system.duckdb.rolling-snapshot/`, a logical `EXPORT DATABASE`
+(Parquet + `schema.sql`) taken over the app's own `system.duckdb` connection
+on a configurable cadence (`backups.rolling_snapshot_interval_hours`, default
+6h, `0` disables; DuckDB-backend only — a no-op on a Postgres-state
+instance). It is usually much fresher than `pre-migrate`, but it is a
+**manual-recovery aid only** — `_try_open_system_db`'s auto-restore below
+still only ever considers `system.duckdb.pre-migrate`. See Option A2 in §4
+for how to restore from it.
+
 ---
 
 ## 3. Manual recovery — Step A failed, Step B succeeded (no data loss)
@@ -181,6 +193,11 @@ for p in sorted(pathlib.Path(salvage).glob('*.parquet')):
     t = p.stem
     conn.execute(f\"CREATE TABLE {t} AS SELECT * FROM read_parquet('{p}')\")
     print('imported', t)
+# Flush the WAL into the .recovered file and close cleanly — the cp below
+# copies the single file only, so rows still sitting in a companion
+# .recovered.wal would be silently left behind.
+conn.execute('CHECKPOINT')
+conn.close()
 "
 
 # Move recovered DB into place (app still stopped)
@@ -189,11 +206,100 @@ cp "${STATE_DIR}/system.duckdb.recovered" "${STATE_DIR}/system.duckdb"
 
 Then start the app and verify (see §6).
 
+#### Option A2 — restore from the rolling snapshot (`system.duckdb.rolling-snapshot/`)
+
+If Option A's broken-DB salvage isn't possible (the broken file itself won't
+open at all), check for a rolling snapshot **before** falling back to Option
+B's pre-migrate restore. `system.duckdb.pre-migrate` is frozen at the last
+migration transition (`applied_at`, `SCHEMA_VERSION`); `system.duckdb.rolling-
+snapshot/` is refreshed on a cadence (`backups.rolling_snapshot_interval_hours`,
+default 6h — see `config/instance.yaml.example`) and is usually far more
+recent (#380). It is a logical `EXPORT DATABASE` — a directory of Parquet
+files plus `schema.sql` — not a single DuckDB file, so restoring it is an
+`IMPORT DATABASE` into a fresh file rather than a plain `cp`:
+
+```bash
+# Check the snapshot's age before trusting it — an operator can also always
+# `docker exec agnes-app-1 stat /data-state/system.duckdb.rolling-snapshot`
+ls -la ${STATE_DIR}/system.duckdb.rolling-snapshot/ 2>/dev/null
+
+docker run --rm -v "${STATE_DIR}:/state" \
+  --entrypoint /usr/local/bin/python3 \
+  $(docker inspect agnes-app-1 --format '{{.Config.Image}}') \
+  -c "
+import duckdb
+fresh = duckdb.connect('/state/system.duckdb.recovered')
+fresh.execute(\"IMPORT DATABASE '/state/system.duckdb.rolling-snapshot'\")
+print('schema_version:', fresh.execute('SELECT MAX(version) FROM schema_version').fetchone()[0])
+print('users:', fresh.execute('SELECT count(*) FROM users').fetchone()[0])
+# Flush the WAL into the .recovered file and close cleanly — the cp below
+# copies the single file only, so imported rows still sitting in a companion
+# .recovered.wal would be silently left behind.
+fresh.execute('CHECKPOINT')
+fresh.close()
+"
+
+# Move recovered DB into place (app still stopped)
+cp "${STATE_DIR}/system.duckdb.recovered" "${STATE_DIR}/system.duckdb"
+```
+
+**If `system.duckdb.rolling-snapshot/` is missing, also look for
+`system.duckdb.rolling-snapshot.prev/`.** `.prev` is normally swap scratch that
+exists for milliseconds, but if a refresh's swap failed *and* its restore
+failed too, the last good snapshot is preserved there under that name until the
+next refresh moves it back. It is a complete, importable export — use it
+exactly as above.
+
+The snapshot directory is `0o700` and its files `0o600`, owned by the app's
+user: it is a full logical copy of `system.duckdb`, password hashes and
+personal-access-token rows included. Read it as that user (or root) — the
+`docker run` recipe above already does.
+
+**This is a manual step only** — `refresh_rolling_snapshot` (`src/db.py`) does
+not participate in `_try_open_system_db`'s auto-recovery; the WAL-replay
+auto-restore in §2 still only ever considers `system.duckdb.pre-migrate`.
+
+**Search indexes rebuild themselves — with one caveat for offline hosts.**
+The snapshot is a real `EXPORT DATABASE`, including the DuckDB FTS artifacts
+`PRAGMA create_fts_index` builds over `knowledge_items` and `glossary_terms`
+(`src/fts.py`) — `fts_main_knowledge_items` / `fts_main_glossary_terms`,
+each its own schema of tables plus an extension-generated `match_bm25`
+macro. `IMPORT DATABASE` replays that macro's `CREATE MACRO` statement,
+which needs DuckDB to resolve the `fts` extension's functions; if the
+extension isn't already loaded on the host running the import, DuckDB
+auto-installs it on the spot (the same autoload it uses for
+`read_json`/spatial/etc.) — invisible on a host with normal network access,
+but on an offline/air-gapped recovery host that auto-install fails, and
+because `IMPORT DATABASE` runs the whole `schema.sql` as one transaction,
+that single failing statement aborts the *entire* import — no table comes
+back, not just search. If `IMPORT DATABASE` fails with an extension-download
+error, import from a copy of the snapshot with the FTS lines stripped out —
+`knowledge_items` and `glossary_terms` themselves are untouched by this,
+only their search index:
+
+```bash
+cp -r "${STATE_DIR}/system.duckdb.rolling-snapshot" /tmp/snapshot-no-fts
+sed -i '/fts_main_/d' /tmp/snapshot-no-fts/schema.sql /tmp/snapshot-no-fts/load.sql
+# then IMPORT DATABASE '/tmp/snapshot-no-fts' in place of the recipe above
+```
+
+Either way — full import or the stripped-copy workaround — both indexes
+rebuild themselves for free the next time the app starts against the
+restored file (`app/main.py`'s boot-time `ensure_knowledge_fts_index` /
+`ensure_glossary_fts_index` call) or the next time either table is written
+through its repository. Until a rebuild completes, `/api/memory?search=` and
+the glossary search box serve unranked `ILIKE` results — the same fallback
+the whole feature already uses whenever the `fts` extension can't load —
+never an error.
+
+Then start the app and verify (see §6).
+
 #### Option B — force the pre-migrate snapshot (data loss: rows since last migration)
 
-Only use this if the broken DB itself is unreadable. The snapshot predates
-whatever migration step triggered the WAL corruption. Any data written after
-the snapshot was captured is lost.
+Only use this if the broken DB itself is unreadable **and** no usable rolling
+snapshot exists (Option A2). The pre-migrate snapshot predates whatever
+migration step triggered the WAL corruption. Any data written after the
+snapshot was captured is lost.
 
 ```bash
 # Confirm snapshot version before accepting the loss
@@ -315,8 +421,12 @@ curl -sf http://localhost:5000/api/health | python3 -m json.tool
 | `_move_to_broken` | `src/db.py` — moves broken DB + WAL to `.broken.<ts>` |
 | `_peek_schema_version` | `src/db.py` — read-only version probe for the snapshot |
 | `_ensure_schema` | `src/db.py` — takes pre-migrate snapshot; runs post-migration `CHECKPOINT` |
+| `refresh_rolling_snapshot` | `src/db.py` — Option A2: rolling `system.duckdb.rolling-snapshot/` refresh (#380) |
+| `ensure_knowledge_fts_index` / `ensure_glossary_fts_index` | `src/fts.py` — build the `fts_main_*` BM25 index schemas; boot-time rebuild in `app/main.py` (Option A2 search-index note) |
 | `SCHEMA_VERSION` | `src/db.py` line 51 — current target version |
 | `schema_version` table | `src/db.py` `_SYSTEM_SCHEMA` — `version INTEGER`, `applied_at TIMESTAMP` |
 | WAL-recovery tests | `tests/test_db_wal_recovery.py` |
+| Rolling-snapshot tests | `tests/test_rolling_snapshot.py` |
 | State directory layout | `docs/state-dir.md` — A (nested) vs B (flat) mount topologies |
 | Issue #379 | schema-version-aware refusal guard |
+| Issue #380 | rolling `system.duckdb.rolling-snapshot/` refresh |

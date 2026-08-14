@@ -95,6 +95,7 @@ class TestFeatureFlagsRegistry:
             "stack_auto_membership",
             "mcp_query_param_token",
             "mcp_source_url_strict",
+            "mcp_connector_ui",
             "agent_profiles",
             "access_policies",
         }
@@ -238,6 +239,7 @@ class TestServerConfigFeatureFlagsInventory:
             "stack_auto_membership",
             "mcp_query_param_token",
             "mcp_source_url_strict",
+            "mcp_connector_ui",
             "agent_profiles",
             "access_policies",
         }

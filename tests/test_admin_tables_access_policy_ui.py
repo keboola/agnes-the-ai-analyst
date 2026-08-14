@@ -3,7 +3,7 @@ inline interlock warning, the preview call, and policy history on
 /admin/tables (table access policies design doc §13, §13.1).
 
 The per-table listing renders entirely client-side
-(``_renderPackageTableRows`` fetches ``/api/admin/registry`` and builds
+(``_renderFlatTableRows`` fetches ``/api/admin/registry`` and builds
 ``<tr>``s in JS — see ``loadAdminTablesLayout``), so — like every other
 admin_tables UI test in this suite (``test_admin_tables_tab_ui.py``,
 ``test_admin_tables_warmup_ui.py``, ``test_admin_tables_ui_materialized.py``)
@@ -23,7 +23,7 @@ def test_access_column_header_present(seeded_app):
     token = seeded_app["admin_token"]
     r = c.get("/admin/tables", headers=_auth(token))
     assert r.status_code == 200, r.text
-    assert '<th class="col-access">Access</th>' in r.text
+    assert "'<th>Access</th>'" in r.text
 
 
 def test_access_column_renders_three_states(seeded_app):

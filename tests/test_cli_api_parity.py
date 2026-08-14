@@ -1649,6 +1649,17 @@ class TestKeboolaChatToolsParity:
             verify.return_value = {"isMasterToken": False, "owner": {"id": 4242, "name": "Test Project"}}
             yield verify
 
+    @pytest.fixture(autouse=True)
+    def _fake_upstream(self, monkeypatch):
+        """Enabling dials the upstream to register its tools; stand in for it
+        so parity neither spawns `uv` nor reaches the network."""
+        from connectors.mcp.client import ToolInfo
+
+        async def _fake_list_tools(source, *, caller_user_id=None):
+            return [ToolInfo(name="query_data", description="sql", input_schema=None, read_only=True)]
+
+        monkeypatch.setattr("connectors.mcp.client.list_tools_async", _fake_list_tools)
+
     def _seed_connection(self, parity_env, name: str) -> str:
         c, token = parity_env["client"], parity_env["admin_token"]
         r = c.post(
@@ -1674,13 +1685,18 @@ class TestKeboolaChatToolsParity:
 
     def _snapshot(self, conn_id: str) -> tuple:
         from src.keboola_chat_tools import derived_source_id
-        from src.repositories import mcp_sources_repo, shared_secrets_repo
+        from src.repositories import mcp_sources_repo, shared_secrets_repo, tool_registry_repo
 
-        row = mcp_sources_repo().get(derived_source_id(conn_id))
+        source_id = derived_source_id(conn_id)
+        row = mcp_sources_repo().get(source_id)
         projected = None
         if row is not None:
             projected = (row["transport"], row["command"], json.dumps(row.get("args")), row.get("auth_secret_env"))
-        return (projected, shared_secrets_repo().get(derived_source_id(conn_id)))
+        tools = sorted(
+            (t["original_name"], t["exposed_name"], t["mode"], bool(t["mutating"]))
+            for t in tool_registry_repo().list_for_source(source_id)
+        )
+        return (projected, shared_secrets_repo().get(source_id), tools)
 
     def test_enable_parity(self, parity_env):
         conn_id = self._seed_connection(parity_env, "parity-chat-tools")
@@ -1696,7 +1712,7 @@ class TestKeboolaChatToolsParity:
             f"/api/admin/source-connections/{conn_id}/chat-tools",
             headers=_auth(parity_env["admin_token"]),
         )
-        assert self._snapshot(conn_id) == (None, None)
+        assert self._snapshot(conn_id) == (None, None, [])
 
         parity_env["run_cli"](["admin", "connection", "chat-tools", conn_id])
         delta_cli = self._snapshot(conn_id)
@@ -1717,4 +1733,107 @@ class TestKeboolaChatToolsParity:
         parity_env["run_cli"](["admin", "connection", "chat-tools", conn_id, "--disable"])
         delta_cli = self._snapshot(conn_id)
 
-        assert delta_api == delta_cli == (None, None)
+        assert delta_api == delta_cli == (None, None, [])
+
+
+class TestMCPSourceBulkGrantParity:
+    """``POST/DELETE /api/admin/mcp-sources/{id}/grants`` ↔
+    ``agnes admin mcp source grant [--revoke]``.
+
+    Both paths must land the same `tool_grants` rows AND the same audit line.
+    A CLI that granted without auditing, or that resolved the source
+    differently, would widen access with a thinner trail than the API.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _stable_vault_key(self, monkeypatch):
+        from cryptography.fernet import Fernet
+
+        from app.secrets_vault import _reset_ephemeral_key_for_tests
+
+        monkeypatch.setenv("AGNES_VAULT_KEY", Fernet.generate_key().decode())
+        _reset_ephemeral_key_for_tests()
+        yield
+        _reset_ephemeral_key_for_tests()
+
+    def _seed(self, parity_env):
+        """A source with two registered tools, and a group to grant them to."""
+        from src.repositories import mcp_sources_repo, tool_registry_repo, user_groups_repo
+
+        source_id = "src_parity_bulk_grant"
+        mcp_sources_repo().upsert(
+            id=source_id,
+            name="Parity bulk grant",
+            transport="stdio",
+            command="true",
+            args=[],
+            scope="shared",
+        )
+        repo = tool_registry_repo()
+        for name in ("alpha", "beta"):
+            repo.upsert(
+                tool_id=f"{source_id}__{name}",
+                source_id=source_id,
+                original_name=name,
+                exposed_name=f"parity_{name}",
+                mode="passthrough",
+            )
+        gid = user_groups_repo().get_by_name("Everyone")["id"]
+        return source_id, gid
+
+    def _snapshot(self, source_id: str, gid: str):
+        from src.repositories import tool_registry_repo
+
+        repo = tool_registry_repo()
+        return sorted(
+            t["tool_id"] for t in repo.list_for_source(source_id) if gid in repo.grants_for_tool(t["tool_id"])
+        )
+
+    def test_grant_parity(self, parity_env):
+        source_id, gid = self._seed(parity_env)
+
+        r = parity_env["client"].post(
+            f"/api/admin/mcp-sources/{source_id}/grants",
+            json={"group_id": gid},
+            headers=_auth(parity_env["admin_token"]),
+        )
+        assert r.status_code == 200, r.text
+        conn = get_system_db()
+        api_state = self._snapshot(source_id, gid)
+        api_audit = _snapshot_audit_actions(conn, prefix="mcp_source.grant")
+        conn.close()
+
+        parity_env["client"].delete(
+            f"/api/admin/mcp-sources/{source_id}/grants/{gid}",
+            headers=_auth(parity_env["admin_token"]),
+        )
+        conn = get_system_db()
+        _reset_audit_log(conn)
+        conn.close()
+        assert self._snapshot(source_id, gid) == []
+
+        parity_env["run_cli"](["admin", "mcp", "source", "grant", source_id, "--group", gid])
+        conn = get_system_db()
+        cli_state = self._snapshot(source_id, gid)
+        cli_audit = _snapshot_audit_actions(conn, prefix="mcp_source.grant")
+        conn.close()
+
+        assert api_state == cli_state
+        assert api_audit == cli_audit
+        assert len(api_state) == 2
+
+    def test_revoke_parity(self, parity_env):
+        source_id, gid = self._seed(parity_env)
+        client, token = parity_env["client"], parity_env["admin_token"]
+
+        client.post(f"/api/admin/mcp-sources/{source_id}/grants", json={"group_id": gid}, headers=_auth(token))
+        assert client.delete(
+            f"/api/admin/mcp-sources/{source_id}/grants/{gid}", headers=_auth(token)
+        ).status_code == 204
+        api_state = self._snapshot(source_id, gid)
+
+        client.post(f"/api/admin/mcp-sources/{source_id}/grants", json={"group_id": gid}, headers=_auth(token))
+        parity_env["run_cli"](["admin", "mcp", "source", "grant", source_id, "--group", gid, "--revoke"])
+        cli_state = self._snapshot(source_id, gid)
+
+        assert api_state == cli_state == []

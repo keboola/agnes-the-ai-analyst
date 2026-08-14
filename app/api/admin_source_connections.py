@@ -21,6 +21,7 @@ Surface (all gated by ``Depends(require_admin)``):
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -38,7 +39,14 @@ from app.auth.access import require_admin
 from app.secrets_vault import VaultKeyNotConfiguredError, can_store_secrets
 from connectors.keboola.semantic_layer import MasterTokenRequiredError, require_master_token
 from connectors.keboola.storage_api import KeboolaStorageClient, StorageApiError, is_upstream_client_error
-from src.keboola_chat_tools import build_stdio_spec, derived_source_id
+from connectors.mcp.client import exc_summary
+from src.keboola_chat_tools import (
+    build_stdio_spec,
+    merge_env,
+    derived_source_id,
+    derived_tool_id,
+    exposed_tool_name,
+)
 from src.repositories import (
     connection_secrets_repo,
     mcp_sources_repo,
@@ -48,10 +56,50 @@ from src.repositories import (
     table_registry_repo,
     tool_registry_repo,
 )
+from src.repositories.tool_registry import PASSTHROUGH
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin/source-connections", tags=["admin"])
+
+# Ceiling on the chat-tools introspection dial-out. Generous because the first
+# run downloads the upstream server (~157 MB through `uv`), but finite so a
+# stalled download turns into the endpoint's 502-with-retry-hint instead of an
+# admin request that never returns.
+CHAT_TOOLS_INTROSPECT_TIMEOUT_S = 300.0
+
+# The exact keyword surface of the repos' `upsert`s. A rollback replays rows it
+# read with `get`/`list_for_source`, and those carry `created_at`/`updated_at`
+# too, which the upserts do not accept.
+_MCP_SOURCE_UPSERT_FIELDS = (
+    "id",
+    "name",
+    "transport",
+    "command",
+    "args",
+    "env",
+    "url",
+    "auth_method",
+    "auth_secret_env",
+    "enabled",
+    "scope",
+    "connect_hint",
+)
+_TOOL_UPSERT_FIELDS = (
+    "tool_id",
+    "source_id",
+    "original_name",
+    "exposed_name",
+    "mode",
+    "table_id",
+    "input_schema",
+    "description",
+    "mutating",
+    "pii_fields",
+    "rate_limit_pm",
+    "schedule",
+    "enabled",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -126,9 +174,28 @@ def _with_secret_status(row: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any
         # nothing because the row was there all along. (Devin Review.)
         derived = mcp_sources_repo().get(derived_source_id(row["id"]))
         row["has_chat_tools"] = bool(derived) and derived.get("enabled", True) is not False
+        # The page needs the source id to grant the whole set in one call.
+        # Served rather than recomputed in JS: `derived_source_id` is server
+        # logic, and a second copy of it in the template is a rename away from
+        # pointing the grant at a source that does not exist.
+        row["chat_tools_source_id"] = derived["id"] if derived else None
     except Exception:
         row["has_chat_tools"] = False
+        row["chat_tools_source_id"] = None
     return row
+
+
+def _workspace_schema_of(config: Optional[Dict[str, Any]]) -> Optional[str]:
+    """The connection's ``workspace_schema``, or None when unset.
+
+    ``config`` is admin-supplied free-form JSON, so the value can be any
+    type; only a non-empty string counts. Anything else is treated as unset
+    rather than letting enable/re-sync crash on it. (Devin Review on this PR.)
+    """
+    raw = (config or {}).get("workspace_schema")
+    if not isinstance(raw, str):
+        return None
+    return raw.strip() or None
 
 
 def _resolve_token(connection_id: str, row: Dict[str, Any]) -> Optional[str]:
@@ -498,6 +565,11 @@ def _resync_derived_chat_tools(connection_id: str) -> None:
             connection_id=connection_id,
             connection_name=row.get("name") or connection_id,
             stack_url=stack_url,
+            # Connection-derived exactly like the stack URL: added later it has
+            # to arrive, removed it has to go. Without it here, setting a
+            # workspace schema on an already-enabled connection did nothing
+            # until the admin toggled chat tools off and on.
+            workspace_schema=_workspace_schema_of(row.get("config")),
         )
         # Only what the CONNECTION determines is re-derived — its name and its
         # stack URL, the two things that actually go stale when it is edited.
@@ -512,11 +584,10 @@ def _resync_derived_chat_tools(connection_id: str) -> None:
             for field in ("enabled", "scope", "connect_hint", "command", "args", "auth_method", "auth_secret_env"):
                 if field in existing:
                     spec[field] = existing[field]
-            # `env` is merged rather than replaced: the stack URL is ours, any
-            # other key the admin added is theirs.
-            merged_env = dict(existing.get("env") or {})
-            merged_env.update(spec.get("env") or {})
-            spec["env"] = merged_env
+            # `env` is merged rather than replaced: the keys this module
+            # derives are ours (and absent means absent — see `merge_env`),
+            # any other key the admin added is theirs.
+            spec["env"] = merge_env(existing.get("env"), spec.get("env") or {})
         # A rename onto a name another MCP source already holds cannot be
         # upserted — `mcp_sources.name` is unique. Skipping loudly beats
         # letting the upsert raise into the broad handler below, which would
@@ -811,11 +882,7 @@ async def delete_connection_secret(
             source = mcp_sources_repo().get(derived)
             if source is not None and source.get("enabled") is not False:
                 mcp_sources_repo().upsert(
-                    **{
-                        k: v
-                        for k, v in {**source, "enabled": False}.items()
-                        if k not in ("created_at", "updated_at")
-                    }
+                    **{k: v for k, v in {**source, "enabled": False}.items() if k not in ("created_at", "updated_at")}
                 )
         except Exception:  # noqa: BLE001 — best-effort; the primary delete already succeeded
             logger.warning(
@@ -921,6 +988,90 @@ def _remove_chat_tools(connection_id: str) -> None:
         )
 
 
+async def _register_derived_tools(source: Dict[str, Any], connection_id: str, connection_name: str) -> int:
+    """Introspect the derived source and register its tools as passthrough.
+
+    Without this the switch would create a source and nothing else: the
+    passthrough surface the agent sees is built from ``tool_registry``, and
+    those rows are otherwise only written by an admin curating each tool by
+    hand under ``/admin/mcp``. Thirty-odd hand-registrations is not the "one
+    switch" this endpoint promises.
+
+    Grants are deliberately NOT created here — registering a tool makes it
+    curatable, granting it makes it reachable, and only the second is an
+    access-control decision.
+    """
+    from connectors.mcp.client import list_tools_async
+
+    # Bounded: the introspection spawns `uv tool run …`, whose first run
+    # downloads the server, and neither the stdio session nor the subprocess
+    # sets a read timeout — an upstream that hangs would otherwise hold the
+    # admin request open forever instead of failing into the 502 path this
+    # handler was written for. (Devin Review on this PR.)
+    tools = await asyncio.wait_for(list_tools_async(source), timeout=CHAT_TOOLS_INTROSPECT_TIMEOUT_S)
+    registry = tool_registry_repo()
+    existing = {r["tool_id"]: r for r in registry.list_for_source(source["id"])}
+    # An upstream that starts but lists nothing (expired token, a runner that
+    # resolved an older package) must not be read as "the server dropped all
+    # its tools" — reconciling on it would retire every registered tool AND
+    # its grants, unrecoverably, behind a 201. Refuse into the 502 path
+    # instead; a first enable has nothing to destroy and stays permissive.
+    # (Devin Review on this PR, sixth round.)
+    if not tools and existing:
+        raise RuntimeError("the upstream answered with an empty tool list — refusing to retire the registered tools")
+    mutating_count = 0
+    for tool in tools:
+        row = existing.get(derived_tool_id(connection_id, tool.name))
+        if row is None:
+            # `read_only is True` — not `not read_only`. An upstream that
+            # annotates nothing yields None, and treating that as read-only
+            # would mark every tool of such a server safe to call unattended.
+            mutating = tool.read_only is not True
+            curated: Dict[str, Any] = {}
+        else:
+            # A re-run re-derives what is THIS release's (names, schema,
+            # description) and keeps what is the ADMIN's: PII masking, rate
+            # limit and the off-switch are per-tool curation that a token
+            # re-sync must not silently reset. `mutating` is the admin's too
+            # once the row exists — the CLI explicitly invites correcting it —
+            # but an upstream that EXPLICITLY declares a tool not-read-only
+            # re-tightens: trusting an explicit claim to restrict is safe,
+            # relaxing stays a human decision.
+            # (Devin Review on this PR, sixth round.)
+            mutating = bool(row["mutating"]) or tool.read_only is False
+            curated = {
+                "pii_fields": row["pii_fields"],
+                "rate_limit_pm": row["rate_limit_pm"],
+                "enabled": row["enabled"],
+            }
+        mutating_count += int(mutating)
+        registry.upsert(
+            tool_id=derived_tool_id(connection_id, tool.name),
+            source_id=source["id"],
+            original_name=tool.name,
+            exposed_name=exposed_tool_name(connection_id, connection_name, tool.name),
+            mode=PASSTHROUGH,
+            input_schema=tool.input_schema,
+            description=tool.description,
+            mutating=mutating,
+            **curated,
+        )
+    # Reconcile: a tool the upstream no longer offers must not stay callable.
+    # `derived_tool_id` is deterministic per name, so the loop above updates
+    # matching rows in place but never removes one whose name vanished (e.g.
+    # after a `KEBOOLA_MCP_VERSION` bump drops a tool) — and the passthrough
+    # surface joins `tool_registry` to grants only, so a stale row with a
+    # grant would keep being served and fail at the far end. Matching on
+    # `original_name` also retires hand-registered rows under this source
+    # whose upstream tool is gone — those would fail identically.
+    # (Devin Review on this PR.)
+    fresh_names = {tool.name for tool in tools}
+    for row in registry.list_for_source(source["id"]):
+        if row["original_name"] not in fresh_names:
+            registry.delete(row["tool_id"])  # cascades the tool's grants
+    return len(tools), mutating_count
+
+
 @router.post("/{connection_id}/chat-tools", status_code=201)
 async def enable_chat_tools(
     connection_id: str,
@@ -980,6 +1131,13 @@ async def enable_chat_tools(
         connection_id=connection_id,
         connection_name=row.get("name") or connection_id,
         stack_url=stack_url,
+        # Passed through whenever the connection sets `config.workspace_schema`
+        # — no token-kind check, the code only refuses to invent a value. A
+        # master-token setup normally leaves it unset (Keboola creates the
+        # workspace itself); setting it anyway pins query_data to that
+        # workspace deliberately. Read from the connection so the admin sets it
+        # in one place rather than editing the derived MCP source by hand.
+        workspace_schema=_workspace_schema_of(config),
     )
     # What the vault held before this call decides how a failed write is undone.
     # This endpoint is idempotent by design — re-running is how a rotated token
@@ -1047,26 +1205,116 @@ async def enable_chat_tools(
         # request to re-derive anything. (Devin Review on this PR, both sides.)
         if "connect_hint" in existing_row:
             spec["connect_hint"] = existing_row["connect_hint"]
-        merged_env = dict(existing_row.get("env") or {})
-        merged_env.update(spec.get("env") or {})
-        spec["env"] = merged_env
+        spec["env"] = merge_env(existing_row.get("env"), spec.get("env") or {})
+    was_enabled = existing_row is not None
+    # What the registry held before this call. The registration step both
+    # writes fresh rows and reconciles stale ones away, so a failed re-run has
+    # real tool-set damage to put back, not just a credential slot. Grants are
+    # captured too: `delete` cascades them, and a rollback that resurrects the
+    # tool but not its permissions would silently revoke analyst access.
+    registry = tool_registry_repo()
+    previous_tools = registry.list_for_source(spec["id"]) if was_enabled else []
+    previous_grants = {t["tool_id"]: registry.grants_for_tool(t["tool_id"]) for t in previous_tools}
+
+    def _undo() -> bool:
+        """Put back what was here. Never raises — it runs inside an exception
+        handler, and masking the original failure with a cleanup error would
+        cost the admin the only useful diagnostic. Returns whether the restore
+        actually succeeded, so the 502 can say "restored" only when it is true
+        — asserting it unconditionally was the same class of unverified claim
+        the restore itself was built to retire.
+        (Devin Review on this PR, seventh round.)"""
+        try:
+            if not was_enabled:
+                # First enable: never leave a source, its tools or the token
+                # behind under an id the admin does not know exists.
+                _remove_chat_tools(connection_id)
+                return True
+            # Re-run: by the time registration fails the source row has been
+            # rewritten and forced on, the vault slot rewritten, and the
+            # registration loop may have written rows before dying. The 502's
+            # "nothing was changed" is made true here, not just claimed —
+            # earlier this branch put back only the credential, so an admin
+            # re-enabling a deliberately disabled source was told the project
+            # was untouched while it sat enabled with a fresh token.
+            # (Devin Review on this PR, fourth round.)
+            mcp_sources_repo().upsert(**{k: existing_row[k] for k in _MCP_SOURCE_UPSERT_FIELDS if k in existing_row})
+            if previous_secret is not None:
+                shared_secrets_repo().upsert(spec["id"], previous_secret)
+            else:
+                # The pre-call state held no credential (e.g. auto-cleared when
+                # the connection's token was removed) — so neither may this one.
+                shared_secrets_repo().delete(spec["id"])
+            undo_registry = tool_registry_repo()
+            keep = {t["tool_id"] for t in previous_tools}
+            for r in undo_registry.list_for_source(spec["id"]):
+                if r["tool_id"] not in keep:
+                    undo_registry.delete(r["tool_id"])
+            for t in previous_tools:
+                undo_registry.upsert(**{k: t[k] for k in _TOOL_UPSERT_FIELDS if k in t})
+                for group_id in previous_grants.get(t["tool_id"], []):
+                    undo_registry.add_grant(t["tool_id"], group_id)
+            return True
+        except Exception:
+            logger.warning("could not roll back a failed enable for %s", connection_id, exc_info=True)
+            return False
+
     try:
         mcp_sources_repo().upsert(**spec)
     except Exception:
         # First enable: never leave the token behind under a source id that
-        # does not exist. Re-sync: put back what was working.
+        # does not exist. Re-sync: put back what was working. The error itself
+        # propagates — a failed local config write is not something the admin
+        # can fix by retrying an upstream, so it must not be dressed up as one.
         if previous_secret is None:
             shared_secrets_repo().delete(spec["id"])
         else:
             shared_secrets_repo().upsert(spec["id"], previous_secret)
         raise
 
+    # Registering is a separate failure domain: this one really is "the
+    # upstream did not answer", and it is the step most likely to fail on a
+    # cold cache, so it gets the 502 and the retry hint.
+    try:
+        tool_count, mutating_count = await _register_derived_tools(
+            spec, connection_id, row.get("name") or connection_id
+        )
+    except Exception as exc:
+        restored = _undo()
+        logger.warning("chat-tools tool registration failed for connection %s", connection_id, exc_info=True)
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"could not reach the Keboola MCP server: {exc_summary(exc)}. "
+                "The first run downloads it, so a retry is usually quick; "
+                + (
+                    "the previous chat-tools state was restored."
+                    if restored
+                    else "the previous chat-tools state could not be fully restored — review "
+                    "the derived source under /admin/mcp before retrying."
+                )
+            ),
+        ) from exc
+
     logger.info(
-        "chat tools enabled for connection %s (source %s)",
+        "chat tools enabled for connection %s (source %s, %d tools, %d admin-only)",
         connection_id,
         spec["id"],
+        tool_count,
+        mutating_count,
     )
-    return {"source_id": spec["id"], "name": spec["name"], "granted_to_groups": 0}
+    return {
+        "source_id": spec["id"],
+        "name": spec["name"],
+        "tools_registered": tool_count,
+        # `mutating=True` rows are refused for every non-admin by the
+        # passthrough policy gate, so a grant alone does not make them
+        # reachable. On an upstream that annotates nothing this is ALL of
+        # them — the caller must be able to see that, or "grant and go"
+        # is a false promise. (Devin Review on this PR, fifth round.)
+        "tools_admin_only": mutating_count,
+        "granted_to_groups": 0,
+    }
 
 
 @router.delete("/{connection_id}/chat-tools", status_code=204)

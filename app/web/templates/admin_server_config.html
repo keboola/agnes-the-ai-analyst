@@ -1,4 +1,4 @@
-{% extends "base_ds.html" %}
+{% extends "base_admin.html" %}
 {% block title %}Instance settings — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block head_extra %}
@@ -270,7 +270,7 @@
 </style>
 {% endblock %}
 
-{% block content %}
+{% block admin_content %}
 <div class="cfg-page" data-page="server-config">
   {% set page_hero_eyebrow = "Server" %}
   {% set page_hero_title = "Instance settings" %}
@@ -458,7 +458,6 @@ const SECTION_META = {
   auth: { title: "Authentication", help: "Allowed sign-in domain and Google OAuth keys. Misconfiguration can lock everyone out." },
   ai: { title: "AI / LLM", help: "Provider + API key for the corporate-memory extractor. provider=anthropic|openai_compat; api_key uses ${ENV_VAR} so the secret stays in .env." },
   openmetadata: { title: "OpenMetadata", help: "Optional REST catalog enrichment. Without it, the app runs without catalog cross-links." },
-  desktop: { title: "Desktop app", help: "JWT auth for the desktop client (rarely changed)." },
   corporate_memory: {
     title: "Corporate Memory",
     help: "Optional governance for AI-extracted knowledge. When the section is unset, the system runs in legacy democratic-wiki mode with no admin review.",
@@ -993,7 +992,7 @@ function renderSection(section, payload, knownForSection) {
 
 const SECTION_GROUPS = [
   { label: "General",      sections: ["instance", "data_source", "email", "theme"] },
-  { label: "Integrations", sections: ["telegram", "jira", "ai", "openmetadata", "desktop", "corporate_memory", "materialize", "guardrails", "marketplace", "connectors", "library"] },
+  { label: "Integrations", sections: ["telegram", "jira", "ai", "openmetadata", "corporate_memory", "materialize", "guardrails", "marketplace", "connectors", "library"] },
   { label: "Services",     sections: [], bespoke: [
     { id: "chat-section",          title: "Cloud chat" },
     { id: "slack-secrets-section", title: "Slack bot secrets" },

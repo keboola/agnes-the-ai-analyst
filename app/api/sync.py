@@ -594,6 +594,16 @@ def _run_sync(
     # alert in the outer `except` can report the same context.
     collected_errors: List[dict] = []
 
+    # Names of tables THIS run actually attempted-and-succeeded syncing
+    # (extractor-driven local tables minus any per-table failure, plus
+    # materialized rows the pass reports as `materialized`). Used to narrow
+    # the orchestrator's full rebuild result down to "what changed this
+    # tick" for `notify_sync_completed` (#412 review: the rebuild result
+    # covers every table from every prior sync too, not just this run's —
+    # passing it straight through spammed a "tables refreshed" notification
+    # on every scheduler tick even when nothing was due).
+    synced_table_names: set = set()
+
     try:
         from app.instance_config import get_data_source_type
         from src.db import get_system_db
@@ -626,32 +636,25 @@ def _run_sync(
             )
 
         # Read table configs in main process (has shared DuckDB connection)
-        # Track whether the REGISTRY (not the post-filter list) was empty.
-        # Auto-discovery must only fire on a truly empty registry; if the
-        # filter returned [] because nothing was due, re-discovering would
-        # bypass the schedule entirely on Keboola instances. (Devin BUG_0001
-        # on ebb8cc9.)
-        registry_has_tables = False
+        # Track whether the REGISTRY (not the post-filter/post-lookup list)
+        # was empty. Auto-discovery must only fire on a truly empty
+        # registry — computed from the WHOLE registry (`list_all()`) in
+        # BOTH branches below, never from the caller-supplied subset.
+        # If the schedule filter returned [] because nothing was due, or a
+        # scoped `tables=[...]` id no longer exists in the registry (e.g. it
+        # was deleted between queuing and running), re-discovering would
+        # bypass the schedule / re-register the entire source project even
+        # though the registry is populated. (Devin BUG_0001 on ebb8cc9;
+        # #1253 hardened the `tables` branch the same way.)
         repo = table_registry_repo()
+        registry_has_tables = bool(repo.list_all())
         if tables:
             # Manual operator override — bypass schedule filter entirely
             # so an admin saying "sync these specific tables now" wins.
             all_configs = [repo.get(t) for t in tables]
             table_configs = [c for c in all_configs if c is not None]
-            registry_has_tables = bool(table_configs)
         else:
             table_configs = repo.list_local(effective_source_type) if effective_source_type else repo.list_local()
-            # Auto-discover gate must consider the WHOLE registry, not
-            # just `local` rows. After the Keboola migration to
-            # materialized (v25→v26), an instance can have 30
-            # materialized Keboola rows and zero local rows — but
-            # `bool(table_configs)` here would be False, and
-            # `not registry_has_tables` would re-trigger
-            # `_discover_and_register_tables` on every scheduler tick,
-            # creating duplicate "auto-discovered" rows with the wrong
-            # bucket prefix every time.
-            # Use list_all (any source, any mode) for the gate.
-            registry_has_tables = bool(repo.list_all())
             # Without this filter, every scheduler tick would re-sync
             # every table regardless of its sync_schedule cadence,
             # making the field a no-op at trigger time. Tables with
@@ -929,6 +932,39 @@ sys.exit(compute_exit_code(result, len(configs)))
                             }
                         )
 
+                # Record which of THIS run's attempted tables actually landed
+                # data, for notify_sync_completed below. "Attempted minus
+                # recovered errors" over-claims in two ways, so both are
+                # excluded here — an analyst-facing "N table(s) refreshed"
+                # must never count a table this run did not write:
+                #
+                #  - Only `local` rows land parquet through this extractor.
+                #    A `tables=[…]` operator trigger reads registry rows
+                #    directly (`repo.get`), so table_configs can also carry
+                #    `materialized` rows — which the extractor `continue`s
+                #    over without recording anything, because
+                #    `_run_materialized_pass` owns them and contributes its
+                #    own positively-accounted names below (and may itself
+                #    have skipped the row on its due/in_flight check) — and
+                #    `remote` rows, which only get a view over the source:
+                #    no data is downloaded, and `agnes pull` skips them.
+                #  - Exit 2 means SOME table failed. When the stats line
+                #    couldn't be parsed there is no per-table error list to
+                #    subtract (that's the fallback branch above), so we know
+                #    a failure happened but not whose — claim none rather
+                #    than announce the failures as refreshes. Exit 0 carries
+                #    no failures by construction (`compute_exit_code`), so
+                #    it needs no such evidence.
+                _stats_recovered = result.returncode == 0 or bool(extractor_table_errors)
+                if result.returncode in (0, 2) and _stats_recovered:
+                    _failed_names = {e.get("table") for e in extractor_table_errors}
+                    for _tc in table_configs:
+                        _name = _tc.get("name")
+                        if not _name or (_tc.get("query_mode") or "local") != "local":
+                            continue
+                        if _name not in _failed_names:
+                            synced_table_names.add(_name)
+
             # Run custom connectors (Tier A: local mount) — only when there
             # were local-mode tables to drive the extractor. Custom connectors
             # currently piggyback on the same env as the Keboola extractor.
@@ -1026,6 +1062,10 @@ sys.exit(compute_exit_code(result, len(configs)))
             # (fired after this block, and also surfaced if a later fatal
             # error hits the outer except).
             collected_errors.extend(mat_summary["errors"])
+            # `materialized` already lists only the rows this pass wrote
+            # successfully this tick — feed straight into the "what did THIS
+            # run actually sync" set for notify_sync_completed below.
+            synced_table_names.update(mat_summary["materialized"])
         except Exception as e:
             print(
                 f"[SYNC] Materialized SQL pass FAILED: {e}",
@@ -1117,6 +1157,36 @@ sys.exit(compute_exit_code(result, len(configs)))
                 notify_sync_failure(failed_tables=collected_errors, fatal=None)
             except Exception:
                 logger.exception("sync-failure notifier raised on per-table path")
+
+        # Analyst desktop notification (#412: `agnes watch`) — fired here,
+        # AFTER the error accounting above, not right after the rebuild: the
+        # payload carries the run's outcome, so a run with per-table
+        # failures that still rebuilt views announces status="partial" +
+        # the error count instead of an unqualified success. (If the
+        # rebuild itself raises, control jumps to the fatal handler and no
+        # completed event fires at all.) Best-effort: notify_sync_completed
+        # never raises on its own, but wrap anyway — same "second line of
+        # defence" pattern as notify_sync_failure above.
+        #
+        # `views` is the orchestrator's FULL rebuild result — every table of
+        # every source that has ever synced, not just this run's. Passing it
+        # straight through fired a "tables refreshed" notification on every
+        # scheduler tick, even ones where `filter_due_tables` selected
+        # nothing and the rebuild just re-attached the same unchanged
+        # extracts (review finding: notification spam). Narrow it down to
+        # `synced_table_names` — the tables THIS run actually attempted and
+        # landed — so a tick that synced nothing sends nothing.
+        synced_views = {
+            source_name: [t for t in table_names if t in synced_table_names]
+            for source_name, table_names in views.items()
+        }
+        synced_views = {k: v for k, v in synced_views.items() if v}
+        try:
+            from app.services.sync_notifier import notify_sync_completed
+
+            notify_sync_completed(synced_views, error_count=len(collected_errors))
+        except Exception:
+            logger.exception("sync-completed notifier raised")
 
         # Honest outcome for the `data-refresh` job path (see docstring):
         # only *transient* per-table failures flip the run to False (job
