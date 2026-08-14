@@ -512,7 +512,7 @@ def test_a_tool_call_row_with_no_tool_name_is_skipped_not_rendered_as_undefined(
         "label": "Agnes query",
         "tool": "agnes_query",
         "argsJson": json.dumps({"sql": "SELECT 1"}, indent=2),
-    }, "a real tool call renders with its humanized label AND keeps the raw id for the export"
+    }, "a real tool call carries its humanized label AND the raw id (the export has no tooltip)"
     assert cancelled is None, "a cancelled marker has no `tool` name and must be skipped, not stringified"
     assert interrupted is None, "an interrupted marker has no `tool` name and must be skipped, not stringified"
     assert empty is None

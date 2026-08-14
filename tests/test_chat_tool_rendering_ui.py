@@ -296,6 +296,7 @@ def test_turn_stopping_frames_flush_the_withheld_stream_tail():
     assert "function _flushStreamingTail" in js
     fn = js[js.index("function _flushStreamingTail") : js.index("function _resetStreamingState")]
     assert "renderAnswerMarkdown(currentAssistantText)" in fn, "full text, not the streaming-safe slice"
+    assert "_streamingSafeText" not in fn, "the flush paint must not withhold anything"
     assert "currentAssistantArticle = null" not in fn, "flush must NOT reset — finalize may still be coming"
     sw = js[js.index("switch (frame.type)") : js.index("function applySessionRename")]
     assert sw.count("_flushStreamingTail()") >= 3, "cancelled, confirmation_required, error"
@@ -321,12 +322,14 @@ def test_a_turn_that_never_finalizes_cannot_leak_into_the_next_bubble():
 def test_transcript_export_keeps_the_raw_tool_id():
     """The export header is `tool: <label> (<raw id>)` — the humanized label
     reads well, but a transcript pasted into a bug report or another tool
-    still needs the real id."""
+    still needs the real id. The DOM history block keeps the id reachable as
+    a tooltip instead, mirroring the live tool-block header."""
     js = _read(CHAT_JS)
     fmt = js[js.index("function formatToolCall") : js.index("async function fetchTranscriptMarkdown")]
     assert "tool: tc.tool" in fmt, "formatToolCall must carry the raw id alongside the label"
     export = js[js.index("async function fetchTranscriptMarkdown") : js.index("function wireCopyTranscript")]
     assert "${call.label} (${call.tool})" in export
+    assert "summary.title = call.tool" in js, "the history block's tooltip carries the raw id"
 
 
 def test_streaming_safe_text_executable():
@@ -370,6 +373,15 @@ def test_errors_and_cancels_reach_the_transcript():
     assert sw.count("renderSystemNote(") >= 3, "confirmation_required, error, cancelled"
     body = js[js.index("function renderSystemNote") : js.index("function renderSystemNote") + 800]
     assert "textContent" in body and ".innerHTML" not in body
+
+
+def test_next_action_chips_wear_the_button_radius():
+    """Design-system shape rule: pill radius is badge language; every labelled
+    button wears --ds-radius-btn. (Devin Review on this PR.)"""
+    css = _read(CHAT_CSS)
+    rule = css[css.index(".cloud-chat-next-action {") : css.index(".cloud-chat-next-action:hover")]
+    assert "var(--ds-radius-btn)" in rule
+    assert "radius-pill" not in rule
 
 
 def test_system_note_styles_exist():

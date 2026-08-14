@@ -1489,8 +1489,8 @@ pre.code-block-wrap code .hljs-deletion {
   border: 1px solid var(--ds-border);
   background: var(--ds-surface);
   color: var(--ds-text-primary);
-  /* A labelled button wears the button radius — the design system reserves
-     the pill radius for badges. */
+  /* --ds-radius-btn, not -pill: pill is badge language; these are labelled
+     buttons (design-system shape rule). */
   border-radius: var(--ds-radius-btn);
   padding: 4px 12px;
   font-size: 0.85rem;

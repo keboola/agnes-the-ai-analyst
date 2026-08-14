@@ -570,6 +570,9 @@ function renderAnswerMarkdown(content) {
  *  an empty fence. */
 function formatToolCall(tc) {
   if (!tc || typeof tc.tool !== "string") return null;
+  // Both the verb and the raw id: the DOM keeps the id in a tooltip, but the
+  // markdown export has no tooltip — the copied record must still name which
+  // tool actually ran, or the one artifact handed to a debugger goes vague.
   return { label: _toolLabel(tc.tool, tc.args), tool: tc.tool, argsJson: JSON.stringify(tc.args ?? {}, null, 2) };
 }
 
@@ -593,8 +596,6 @@ async function fetchTranscriptMarkdown(chatId, title) {
       if (!call) continue;
       // Fenced, not inline: an `agnes query` argument is multi-line SQL, and
       // the point of carrying tool calls at all is that they stay readable.
-      // The humanized label reads well, but an EXPORT pasted into a bug
-      // report or another tool still needs the raw id next to it.
       out.push(`<details><summary>tool: ${call.label} (${call.tool})</summary>`, "", "```json", call.argsJson, "```", "", "</details>", "");
     }
   }
@@ -1692,6 +1693,7 @@ function renderMessage(m) {
       // untrusted and were previously interpolated into innerHTML unescaped.
       const summary = document.createElement("summary");
       summary.textContent = `tool: ${call.label}`;
+      summary.title = call.tool;
       const pre = document.createElement("pre");
       const code = document.createElement("code");
       code.textContent = call.argsJson;
@@ -2023,13 +2025,16 @@ function _renderStreamingMarkdown() {
 
 /** Repaint the streaming bubble with the FULL accumulated text. The live
  *  painter withholds a trailing half-fence (_streamingSafeText); that is only
- *  correct while more of the stream is coming. The turn-stopping frames
+ *  correct while more of the stream is coming, and a half-open fence shown
+ *  raw is honest about where the turn died. The turn-stopping frames
  *  (cancelled / confirmation_required / error) may be the turn's last word —
  *  a trailing assistant_message is common (graceful interrupt, the watchdog's
- *  partial-save, the budget stop) but NOT guaranteed — so each flushes the
- *  withheld tail here. The stream pointers stay set on purpose: when the
- *  trailing assistant_message DOES arrive, finalizeAssistantMessage must land
- *  in this same bubble, not render a duplicate. */
+ *  partial-save emits error THEN the partial assistant_message, the budget
+ *  stop breaks out into the turn's trailing emit) but NOT guaranteed — so
+ *  each flushes the withheld tail here. The stream pointers stay set on
+ *  purpose: when the trailing assistant_message DOES arrive,
+ *  finalizeAssistantMessage must land in this same bubble, not render a
+ *  duplicate next to it. */
 function _flushStreamingTail() {
   if (_streamRenderTimer) {
     clearTimeout(_streamRenderTimer);
