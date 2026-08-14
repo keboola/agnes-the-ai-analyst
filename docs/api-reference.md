@@ -1213,7 +1213,10 @@ analogue) drive the in-chat split-pane preview iframe on top of this grant.
   it keeps its parquet. Misses stay distinguishable from denials: 404
   `attachment_not_found` (no such row) / `attachment_not_stored` (row exists,
   no bytes on the server — over-size skip, transform-time miss, or removed
-  since; fall back to the upstream system for these) vs the RBAC 403. Every
+  since; fall back to the upstream system for these) vs the RBAC 403 — and
+  both stay distinguishable from malfunctions: a catalogued file the server
+  cannot OPEN (permissions/I-O) answers 503 `attachment_unreadable`, never a
+  404 that would send callers upstream while the outage looks normal. Every
   fetch, granted or denied, is audited as `attachment.download`. Consumed by
   `agnes attachment get <source> <id>`; no MCP analogue (binary byte-stream,
   mirrors the `/api/data/{table_id}/download` channel).

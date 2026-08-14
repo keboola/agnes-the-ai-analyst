@@ -235,6 +235,33 @@ def test_no_stored_bytes_is_distinguishable(jira_attachment_env, analyst_user, a
     assert b"never served" not in resp.content
 
 
+def test_unreadable_stored_file_is_503_not_a_miss(jira_attachment_env, analyst_user, monkeypatch):
+    """A catalogued file the OS refuses to open (EACCES/EIO…) is a server
+    malfunction, not a miss: `attachment_not_stored` would send every caller
+    to the upstream API while the outage looks like normal behaviour. Patched
+    at os.open (not chmod) so the test also holds when the suite runs as
+    root, where mode bits do not deny reads."""
+    import errno
+    import os as os_mod
+
+    _grant_table("analyst1", "attachments", "att-unread")
+    target = str((jira_attachment_env["root"] / "SUP-1" / "101_report.pdf").resolve())
+    real_open = os_mod.open
+
+    def deny(path, flags, *args, **kwargs):
+        if str(path) == target:
+            raise PermissionError(errno.EACCES, "Permission denied", str(path))
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr("app.api.attachments.os.open", deny)
+    resp = jira_attachment_env["client"].get("/api/attachments/jira/101/download", headers=analyst_user)
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["code"] == "attachment_unreadable"
+    row = _last_audit_row()
+    assert row[3] == "error.503"
+    assert "file_unreadable" in (row[4] or "")
+
+
 def test_second_source_needs_no_route_change(seeded_app, analyst_user, monkeypatch):
     """Registering another declaration makes the same route + CLI path serve
     it — the acceptance criterion for source-parameterized reuse."""
@@ -352,6 +379,28 @@ class TestOpenContained:
         assert fh.read() == b"old-bytes"  # complete old file, matching st
         fh.close()
 
+    def test_permission_failure_is_unreadable_not_missing(self, tmp_path, monkeypatch):
+        """EACCES (and any non-ENOENT/ENOTDIR OSError) must come back as
+        `file_unreadable`, never `file_missing` — the 0o660 pin makes a
+        serving process outside the writer's group exactly this case."""
+        import errno
+        import os as os_mod
+
+        from app.api.attachments import _open_contained
+
+        root = self._root(tmp_path)
+        f = root / "1_locked.bin"
+        f.write_bytes(b"x")
+        real_open = os_mod.open
+
+        def deny(path, flags, *args, **kwargs):
+            if str(path) == str(f):
+                raise PermissionError(errno.EACCES, "Permission denied", str(path))
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr("app.api.attachments.os.open", deny)
+        assert _open_contained(root, str(f)) == (None, None, "file_unreadable")
+
     def test_fifo_is_refused_without_blocking(self, tmp_path):
         """open() on a FIFO with no writer blocks forever — the guard must
         identify and refuse it via a non-blocking open, not by reading."""
@@ -404,7 +453,6 @@ def test_registry_read_failure_fails_closed_not_open(jira_attachment_env, admin_
     `distribution_check_unavailable`, the download must 503 instead —
     including for admin god-mode, whose RBAC short-circuit never touches
     the registry and so would sail past the broken gate."""
-    import app.api.attachments as attachments_mod
 
     def _boom():
         raise RuntimeError("system.duckdb lock lost")

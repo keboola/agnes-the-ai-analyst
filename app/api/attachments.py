@@ -22,6 +22,7 @@ removed since), and a client needs to tell that 404 apart from a 403 so it
 can fall back to the upstream system's own API for exactly those cases.
 """
 
+import errno
 import logging
 import os
 import stat as stat_module
@@ -139,7 +140,13 @@ def _open_contained(root: Path, stored: str | None) -> tuple[BinaryIO | None, os
     response advertises is of exactly the inode being streamed; a concurrent
     re-publish of the same path cannot make Content-Length disagree with the
     body — or ``(None, None, reason)`` with reason ``no_path_recorded`` /
-    ``path_rejected`` / ``file_missing`` for the audit trail. The caller
+    ``path_rejected`` / ``file_missing`` / ``file_unreadable`` for the audit
+    trail. Only an absent file (``ENOENT``/``ENOTDIR``, or a non-regular
+    inode) is ``file_missing`` — the genuine "no bytes here" the handler may
+    render as a miss; any other ``OSError`` (``EACCES``/``EPERM``/``EIO``…)
+    is a server-side malfunction, logged and returned as
+    ``file_unreadable`` so the handler refuses loudly instead of sending
+    the client upstream for bytes the server actually holds. The caller
     owns closing the file.
     """
     if not stored:
@@ -163,8 +170,15 @@ def _open_contained(root: Path, stored: str | None) -> tuple[BinaryIO | None, os
     # file (confirmed below) the flag has no effect on reads.
     try:
         fd = os.open(resolved, os.O_RDONLY | os.O_NONBLOCK)
-    except OSError:
-        return None, None, "file_missing"
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+            return None, None, "file_missing"
+        # EACCES/EPERM/EIO/ELOOP…: the server cannot read a file it
+        # catalogued — a malfunction (e.g. the serving process outside the
+        # writer's 0o660 group), never a miss. Log it: the 404 path is
+        # deliberately quiet, this one must not be.
+        logger.warning("attachment file exists in the catalogue but could not be opened: %r (%s)", stored, exc)
+        return None, None, "file_unreadable"
     st = os.fstat(fd)
     if not stat_module.S_ISREG(st.st_mode):
         os.close(fd)
@@ -197,6 +211,9 @@ def download_attachment(
     - 404 ``attachment_not_stored`` — the row exists but the server holds
       no bytes (over-size skip, transform-time miss, or removed since);
       fall back to the upstream system's own API for these.
+    - 503 ``attachment_unreadable`` — the row exists and points at a file
+      the server cannot OPEN (permissions/I/O) — a malfunction, logged,
+      never disguised as a miss.
     - 200 — the bytes, with the original filename in Content-Disposition.
     """
     decl = get_attachment_source(source)
@@ -301,6 +318,24 @@ def download_attachment(
 
     fh, st, miss_reason = _open_contained(decl.root(), stored)
     if fh is None or st is None:
+        if miss_reason == "file_unreadable":
+            # The catalogue says the bytes are here and the OS refused to
+            # hand them over (EACCES/EIO…) — a malfunction, same posture as
+            # `registry_unavailable`/`catalogue_unavailable`: refuse loudly
+            # rather than tell the client the server never stored the file
+            # and send every caller upstream while the outage looks normal.
+            _audit(user, source, attachment_id, "error.503", error="attachment_unreadable", reason=miss_reason)
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "attachment_unreadable",
+                    "hint": (
+                        "the catalogued attachment file exists but could not be "
+                        "opened (permissions or I/O); server-side misconfiguration — "
+                        "see server logs"
+                    ),
+                },
+            )
         _audit(user, source, attachment_id, "error.404", error="attachment_not_stored", reason=miss_reason)
         raise HTTPException(
             status_code=404,
