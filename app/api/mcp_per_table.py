@@ -37,6 +37,7 @@ from src.rbac import can_access_table
 from src.access_policy import (
     PolicyError,
     PolicyIdentityUnresolvable,
+    assert_unique_output_columns,
     policied_from_sql,
     policied_relation,
 )
@@ -187,6 +188,13 @@ def query_table(
         if relation.policied:
             from_sql = policied_from_sql(relation, table_name=table["name"], source_sql=quote_ident(view_name))
             columns = _describe_columns(analytics_conn, from_sql, relation.params)
+            # Read-path guard: duplicate output names (a masking policy that
+            # re-derives a column `*` still emits) leak the plaintext copy
+            # through the pandas `.to_dict` rename below. Fail closed.
+            try:
+                assert_unique_output_columns(columns, relation.table_id)
+            except PolicyError as exc:
+                raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": exc.table_id})
         else:
             from_sql = quote_ident(view_name)
             columns = _column_names(analytics_conn, view_name)

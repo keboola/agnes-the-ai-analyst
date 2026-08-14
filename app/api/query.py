@@ -40,6 +40,7 @@ from src.access_policy import (
     PolicyError,
     PolicyIdentityUnresolvable,
     PolicyNameCollision,
+    assert_policied_reads_unique,
     policied_relation,
     rewrite_sql,
     row_scope_payload,
@@ -1317,6 +1318,13 @@ def execute_query(
                 # touches is policied, or the policied one isn't BQ-remote —
                 # so a retry on ``policy_rewritten_sql`` below never
                 # re-exposes the unfiltered original (§7.4).
+                if policied_table_ids:
+                    # Read-path guard (§17): fail closed if a policy's output
+                    # has duplicate column names (a masking policy that
+                    # re-derives a column `*` still emits leaks the plaintext
+                    # copy). Checks the policy body itself — the outer SELECT
+                    # here would dedup the names and hide it.
+                    assert_policied_reads_unique(analytics, policied_table_ids, user)
                 try:
                     if policy_params:
                         result = analytics.execute(execution_sql, policy_params).fetchmany(request.limit + 1)

@@ -119,6 +119,60 @@ class PolicyError(Exception):
         super().__init__(f"access policy for table {table_id!r} failed to resolve or execute")
 
 
+def assert_unique_output_columns(column_names, table_id: str) -> None:
+    """Fail closed when a POLICIED read produced duplicate output column names.
+
+    A masking policy authored as ``SELECT * EXCLUDE (national_id), md5(email)
+    AS email`` yields TWO columns literally named ``email`` — the star's own
+    *plaintext* copy first, the masked one second. DuckDB permits this; the
+    plaintext then leaks (raw positional column lists in ``/api/query``, or
+    ``pandas.to_dict`` silently renaming the *second* dup to ``email_1`` so
+    ``row['email']`` returns the plaintext). ``probe_policy`` rejects such a
+    policy at save time, but only once the base table has a resolvable schema
+    — a policy attached BEFORE the table syncs slips through and leaks once
+    data arrives. This read-path guard closes that gap unconditionally.
+
+    Callers MUST invoke this only for a policied read (``policied_table_ids``
+    non-empty / ``relation.policied``), on the RAW executed column names,
+    BEFORE any pandas conversion (pandas dedups the names, hiding the
+    collision). A legitimate non-policied query that returns same-named
+    columns (e.g. a self-join) is deliberately untouched.
+
+    Comparison is case-insensitive because DuckDB resolves column names that
+    way, so ``email`` and ``Email`` would collide at read time.
+    """
+    seen: set[str] = set()
+    for name in column_names or []:
+        key = str(name).lower()
+        if key in seen:
+            raise PolicyError(table_id)
+        seen.add(key)
+
+
+def assert_policied_reads_unique(conn, policied_table_ids, principal) -> None:
+    """Read-path dup-column guard for the AST-rewrite surface (`/api/query`).
+
+    The rewrite substitutes each policied table as ``(<policy body>) AS
+    <alias>``; the caller's outer ``SELECT`` then re-projects it, and DuckDB's
+    binder silently renames a duplicate output name to ``<name>_1`` — so the
+    executed query's own column list never shows the collision even though the
+    plaintext value still ships. To catch it we DESCRIBE each policy body
+    **unwrapped** (its ``FROM <name>`` resolves against the analytics master
+    view) and fail closed on a duplicate. BigQuery-remote policies need no such
+    guard: BigQuery itself rejects a query whose result has duplicate column
+    names, so a leaky transpiled policy fails at the jobs API (→ PolicyError).
+    """
+    for table_id in policied_table_ids or []:
+        relation = policied_relation(table_id, principal)
+        if not relation.policied:
+            continue
+        try:
+            described = conn.execute(f"DESCRIBE ({relation.relation_sql})", relation.params).fetchall()
+        except Exception as exc:  # noqa: BLE001 — any resolve/describe failure denies
+            raise PolicyError(table_id) from exc
+        assert_unique_output_columns([r[0] for r in described], table_id)
+
+
 def policied_relation(table_id: str, principal, *, dialect: str = "duckdb") -> PoliciedRelation:
     """Resolve ``(table_id, principal)`` to a :class:`PoliciedRelation` (§5).
 

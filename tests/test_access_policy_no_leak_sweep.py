@@ -829,3 +829,102 @@ class TestDesignDocCanonicalExampleRejectedAtSave:
         assert r.status_code == 200, r.text
         assert "alice@example.com" not in r.text
         assert "bob@example.com" not in r.text
+
+
+# ---------------------------------------------------------------------------
+# Read-path duplicate-output-column guard (attach-before-sync gap)
+# ---------------------------------------------------------------------------
+# `probe_policy` rejects a duplicate-output-column masking policy at SAVE time,
+# but only once the base table has a resolvable schema. A policy stored while
+# the table has no columns yet (registered, not yet synced) slips through and
+# leaks the plaintext once data arrives. These tests store the leaky canonical
+# policy DIRECTLY via the repository (bypassing save validation — exactly the
+# attach-before-sync state) on a table that DOES have data, then confirm every
+# read surface fails closed (no plaintext email ever ships).
+
+_PLAINTEXT_EMAILS = (b"alice@example.com", b"bob@example.com", b"carol@example.com", b"dave@example.com")
+
+
+def _store_leaky_policy_on_demo():
+    from src.db import get_system_db
+    from src.repositories.table_registry import TableRegistryRepository
+
+    conn = get_system_db()
+    try:
+        TableRegistryRepository(conn).set_access_policy(
+            "invoices_canonical_demo",
+            sql=CANONICAL_BUT_LEAKY_POLICY_SQL,
+            note="leaky form stored directly, simulating attach-before-sync",
+            updated_by="admin",
+        )
+    finally:
+        conn.close()
+
+
+def _assert_no_plaintext(resp):
+    body = resp.content or b""
+    for needle in _PLAINTEXT_EMAILS:
+        assert needle not in body, f"PLAINTEXT LEAK: {needle!r} present in response body"
+
+
+class TestReadPathGuardCatchesStoredLeakyPolicy:
+    def test_api_query_fails_closed(self, sweep):
+        _store_leaky_policy_on_demo()
+        c = sweep["client"]
+        r = c.post(
+            "/api/query",
+            json={"sql": "SELECT * FROM invoices_canonical_demo"},
+            headers=_auth(sweep["cca_token"]),
+        )
+        assert r.status_code >= 400, r.text
+        _assert_no_plaintext(r)
+
+    def test_v2_sample_fails_closed(self, sweep):
+        _store_leaky_policy_on_demo()
+        c = sweep["client"]
+        r = c.get("/api/v2/sample/invoices_canonical_demo?n=10", headers=_auth(sweep["cca_token"]))
+        assert r.status_code >= 400, r.text
+        _assert_no_plaintext(r)
+
+    def test_v2_scan_fails_closed(self, sweep):
+        _store_leaky_policy_on_demo()
+        c = sweep["client"]
+        r = c.post(
+            "/api/v2/scan", json={"table_id": "invoices_canonical_demo"}, headers=_auth(sweep["cca_token"])
+        )
+        assert r.status_code >= 400, r.text
+        _assert_no_plaintext(r)
+
+    def test_mcp_query_table_fails_closed(self, sweep):
+        _store_leaky_policy_on_demo()
+        c = sweep["client"]
+        r = c.post(
+            "/api/mcp/query-table/invoices_canonical_demo",
+            json={"filter": {}, "limit": 10},
+            headers=_auth(sweep["cca_token"]),
+        )
+        assert r.status_code >= 400, r.text
+        _assert_no_plaintext(r)
+
+    def test_guard_is_not_vacuous(self, sweep, monkeypatch):
+        """Neutralize the guard on every surface's bound reference → the
+        plaintext leak must reappear, proving the tests above are real."""
+        import app.api.mcp_per_table as mcp_mod
+        import app.api.v2_sample as sample_mod
+        import src.access_policy as ap
+
+        noop = lambda *a, **k: None  # noqa: E731
+        # /api/query calls assert_policied_reads_unique -> assert_unique_output_columns
+        # (both in src.access_policy); the table_id surfaces bound their own copy.
+        monkeypatch.setattr(ap, "assert_unique_output_columns", noop)
+        monkeypatch.setattr(ap, "assert_policied_reads_unique", noop)
+        monkeypatch.setattr(sample_mod, "assert_unique_output_columns", noop)
+        monkeypatch.setattr(mcp_mod, "assert_unique_output_columns", noop)
+        _store_leaky_policy_on_demo()
+        c = sweep["client"]
+
+        r = c.get("/api/v2/sample/invoices_canonical_demo?n=10", headers=_auth(sweep["cca_token"]))
+        # With the guard off, the leaky policy returns rows and the plaintext
+        # email surfaces (pandas renamed the masked dup to `email_1`).
+        assert r.status_code == 200, r.text
+        assert b"alice@example.com" in (r.content or b""), "expected the leak to reappear with the guard disabled"

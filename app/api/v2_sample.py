@@ -14,6 +14,7 @@ from src.rbac import can_access_table
 from src.access_policy import (
     PolicyError,
     PolicyIdentityUnresolvable,
+    assert_unique_output_columns,
     policied_from_sql,
     policied_relation,
     policy_cache_identity,
@@ -371,6 +372,17 @@ def build_sample(
                     table_name=row["name"],
                     source_sql=f"read_parquet('{escaped_parquet}', union_by_name=true, hive_partitioning=true)",
                 )
+                # Read-path guard (§17): DESCRIBE the policy relation itself —
+                # a masking policy that re-derives a column `*` still emits has
+                # duplicate output names and leaks the plaintext copy (pandas
+                # `.to_dict` below renames the 2nd dup, hiding it under the
+                # expected key). The outer `SELECT * FROM (...)` would dedup
+                # and mask the collision, so DESCRIBE `from_sql` directly.
+                try:
+                    _out_cols = [r[0] for r in c.execute(f"DESCRIBE {from_sql}", relation.params).fetchall()]
+                    assert_unique_output_columns(_out_cols, relation.table_id)
+                except PolicyError as exc:
+                    raise HTTPException(status_code=500, detail={"reason": "policy_error", "table": exc.table_id})
                 df = c.execute(f"SELECT * FROM {from_sql} LIMIT {n}", relation.params).fetchdf()
             else:
                 df = c.execute(
