@@ -455,8 +455,11 @@ class JiraBackfill:
         safe_filename = f"{attachment_id}_{filename}"
         file_path = issue_attachments_dir / safe_filename
 
-        # Skip if already downloaded
-        if file_path.exists():
+        # Skip if already downloaded AND complete — a short file (worker
+        # SIGKILLed mid-write by the pre-atomic writer) must be re-fetched,
+        # or the download endpoint serves the truncated bytes forever
+        # (Devin on #1297).
+        if file_path.exists() and (not size or file_path.stat().st_size == size):
             return file_path
 
         try:

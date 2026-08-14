@@ -1123,7 +1123,13 @@ class JiraService:
             logger.error(f"Path traversal blocked for attachment filename {safe_filename!r}: {e}")
             return None
 
-        if file_path.exists():
+        # Jira attachment ids are immutable, so an existing <id>_<name> file
+        # is already the right bytes — but only if it is COMPLETE. A short
+        # file (e.g. a worker SIGKILLed mid-write by the pre-atomic writer)
+        # must be re-fetched, or the download endpoint serves the truncated
+        # bytes with a self-consistent Content-Length forever (Devin on
+        # #1297).
+        if file_path.exists() and (not size or file_path.stat().st_size == size):
             logger.debug(f"Attachment {safe_filename} already on disk; skipping download")
             return None
 

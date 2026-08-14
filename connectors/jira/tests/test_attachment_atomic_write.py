@@ -280,3 +280,32 @@ def test_existing_attachment_is_not_refetched_and_not_reported_new(svc):
         again = svc.download_attachment(_attachment("keep.bin"), "PROJ-1")
     assert again is None, "already-present must not count as a NEW publish"
     assert first.read_bytes() == b"abc", "existing bytes untouched"
+
+
+def test_truncated_existing_attachment_is_refetched(svc):
+    """Devin on #1297 — the exists-skip must not trust a short file: a worker
+    SIGKILLed mid-write by the pre-atomic writer left truncated bytes under
+    the final name, and an existence-only skip would serve them (with a
+    self-consistent Content-Length) forever. Size mismatch → re-fetch."""
+    with patch("connectors.jira.service.httpx.Client", _fake_client(b"abc")):
+        out = svc.download_attachment(_attachment("heal.bin"), "PROJ-1")
+    assert out is not None
+
+    out.write_bytes(b"ab")  # simulate a pre-atomic truncated leftover
+    with patch("connectors.jira.service.httpx.Client", _fake_client(b"abc")):
+        healed = svc.download_attachment(_attachment("heal.bin"), "PROJ-1")
+    assert healed is not None, "size mismatch must re-fetch"
+    assert healed.read_bytes() == b"abc"
+
+
+def test_backfill_truncated_existing_attachment_is_refetched(backfill):
+    """Same completeness check for the backfill's exists-skip."""
+    with patch("connectors.jira.scripts.backfill.httpx.Client", _fake_client(b"abc")):
+        out = backfill.download_attachment(_attachment("heal.bin"), "PROJ-2")
+    assert out is not None
+
+    out.write_bytes(b"ab")
+    with patch("connectors.jira.scripts.backfill.httpx.Client", _fake_client(b"abc")):
+        healed = backfill.download_attachment(_attachment("heal.bin"), "PROJ-2")
+    assert healed is not None
+    assert healed.read_bytes() == b"abc"
