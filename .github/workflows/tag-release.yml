@@ -158,3 +158,22 @@ jobs:
               echo "created $TAG at $SHA"
               ;;
           esac
+          # Trust nothing above: verify the tag ref actually exists server-side
+          # and points at the validated commit. The draft-publish branch in
+          # particular creates the ref through `gh release edit --target`,
+          # and a gh that silently ignored --target would otherwise leave a
+          # GREEN run with no tag — the exact failure this workflow's
+          # re-dispatch guarantees are built to prevent.
+          ACTUAL=$(git ls-remote origin "refs/tags/$TAG" | awk '{print $1; exit}')
+          if [ -z "$ACTUAL" ]; then
+            echo "::error::post-check: refs/tags/$TAG does not exist on the remote after a green publish path"
+            exit 1
+          fi
+          # Annotated tags: ls-remote reports the tag object; peel to compare commits.
+          PEELED=$(git ls-remote origin "refs/tags/$TAG^{}" | awk '{print $1; exit}')
+          [ -n "$PEELED" ] || PEELED="$ACTUAL"
+          if [ "$PEELED" != "$SHA" ]; then
+            echo "::error::post-check: $TAG points at $PEELED, expected $SHA"
+            exit 1
+          fi
+          echo "post-check: $TAG verified at $SHA"
