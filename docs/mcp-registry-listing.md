@@ -128,3 +128,28 @@ that list:
 No forbidden category is returned as a first-class Agnes concept by any
 foundation tool. Nothing to fix in this codebase for this item; it is a
 statement to carry into the OpenAI submission, not an open finding.
+
+---
+
+## GitHub Copilot: registry listing is not enough on its own (CON-6)
+
+Registering `io.github.<org>` in the community registry (this document, above)
+also makes the server discoverable through the **GitHub MCP Registry**
+(`github.com/mcp`) — the same manifest, a second surface, no extra content.
+But that only gets Agnes *listed*; it does not get it *usable*.
+
+Copilot Business and Enterprise tenants have a separate admin policy toggle,
+**"MCP servers in Copilot," off by default**. A registry listing does nothing
+for a customer whose admin has not turned that on — the failure mode looks
+identical to "the server isn't published," so it is worth spelling out for
+customers up front rather than letting it surface as a support ticket:
+
+1. Confirm the tenant admin has enabled the MCP servers policy for Copilot
+   Business/Enterprise.
+2. Only then does adding the Agnes MCP server (by registry name, or by URL as
+   a manual fallback) do anything in a Copilot session.
+
+There is currently no enterprise-level allowlist for *which* registries or
+individual servers a Copilot user may add — it is an open community discussion
+upstream, not something Agnes controls. Worth flagging to security-conscious
+customers alongside the policy-toggle note, not as a gap in Agnes.
