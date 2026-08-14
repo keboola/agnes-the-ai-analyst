@@ -10,6 +10,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Changed
+
+- **The data-app detail page joins the redesign under the rail chrome** — the kind-hero anatomy the other detail pages wear (hero with the app glyph, state in the meta line, a back link to the Library's Data apps band), with the facts grid, Deploy/Stop, logs and the description-override form unchanged. Topnav keeps the pre-redesign page byte-for-byte (frozen `data_app_detail_legacy.html`, resolved through the shared detail-template switch).
+
+- **My connections joins the redesign under the rail chrome.** The page trades the gradient page-shell hero for the flat account-page anatomy `/me/profile` and `/me/activity` already wear (head band + surface cards + shared controls); every behavior contract — OAuth Connect/Reconnect/Disconnect, token save/test/remove, the revoked-access and no-tools-yet card states — is unchanged, and the card guards now run against both templates. Default (topnav) instances keep the pre-redesign page byte-for-byte (frozen `me_connections_legacy.html`, same pattern as the other redesigned pages).
+
+- **Under the rail chrome, the Library is now the one browse surface for memory domains and hosted data apps.** The Memory band carries the item/required counts the standalone cards had and hides empty optional domains; the Files band is renamed **Artefacts** and holds the caller's sub-kinds in stable blocks — folders, loose files, then their visible data apps (rows keep the "Data app" type for the Type facet; gated on `data_apps.enabled`) — fulfilling the old "Data apps coming soon" badge literally. `/corporate-memory` and `/apps` now 302 to their Library sections under rail — the interim rail nav rows for both are gone again, and a memory-domain detail's back link points straight at the band. Default (topnav) instances render exactly what they rendered before; detail pages (`/memory/d/…`, `/apps/detail/…`) stay live in both chromes.
+
 ### Fixed
 
 - **A table named for a SQL keyword poisoned ordinary queries — `ORDER BY` on an internal table was rejected as a join with it.** Both `/api/query` name guards decided "does this SQL reference table N?" by scanning the SQL text for N as a word, so a registry row called `order` matched the `ORDER BY` of any query: the internal mixed-plane guard 400'd every sorted query against `agnes_sessions`/`agnes_telemetry`/`agnes_audit` ("can't be joined with registered table 'order'"), and the non-admin master-view denylist 403'd with a not-in-stack error whenever such a view was outside the caller's stack. The collision was never limited to `order` — a view named `limit`, `filter`, `date` or `list` broke `LIMIT 5`, `count(*) FILTER (…)`, `CAST(x AS date)` and `list(x)` the same way, since the scan cannot tell a table reference from a keyword, a type, a function, a column or an alias.
@@ -18,9 +26,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
   The word-boundary scan survives only as the fallback for SQL DuckDB will not serialize (a `PIVOT` subquery, a backtick-quoted BigQuery path, anything malformed), where it stays deliberately over-matching because nothing is known about the statement's structure; it also skips the `BY` of a two-word clause, so the reported symptom does not come back on that path. Known and unchanged: a table macro hides its body from the parser, but equally from a text scan — neither can see a name the SQL does not contain — and SQL smuggled through a string-taking table function or `EXECUTE` never reaches these guards, being blocked by `_assert_select_only` first.
 
+- **A Library row for a stack membership you created yourself now offers Remove, matching /catalog.** Adding a granted data package or memory domain from the Library (classic membership mode) used to flip the row to a locked pill claiming "only an admin can remove it" — false for a self-subscription, and read in testing as an admin mandate — while /catalog offered a working Remove for the very same membership. The lock now follows droppability: required-tier and auto-membership rows keep it (there really is nothing the caller can drop), classic self-subscriptions render the same Remove control both views agree on, live through any number of add/remove cycles without a reload.
+
+- **Postgres-backed instances now count required memory items — the Library's "· N required" suffix was hardcoded to zero there.** Two reads in the PG memory-domains repository (`count_items_by_domain`'s `0 AS required`, `list_items_of_domain`'s `FALSE AS is_required`) still claimed `knowledge_items.is_required` "does not exist in the PG schema" — stale since `0012_duckdb_v59_parity` added the column, which the PG writers have been persisting all along. So on a Postgres backend the Library rendered "3 items" where DuckDB rendered "3 items · 1 required", a governance mandate invisible by backend choice (Devin review on PR #1278). Both reads now use the real column (`NULL` counts as not-required, matching DuckDB's `DEFAULT FALSE`), and the cross-engine contract test seeds a required item so the two backends must agree on `(3, 1)` — the old all-FALSE fixtures let the hardcoded zero pass by coincidence. No schema change: both ladders already carried the column.
+
 ### Internal
 
 - Semantic-layer groundwork: `src/semantic_validation.py` — pure validator core over semantic-model documents (used-object detection, constraint evaluation with static/post-execution split, dialect checks incl. `locally_executable`). No user-visible surface yet; REST/CLI/MCP wiring and the UI land with the storage slice per `docs/superpowers/specs/2026-08-14-semantic-layer-ui-and-agent-parity-design.md`.
+umn.
 
 ## [0.83.18] - 2026-08-14
 
