@@ -8,6 +8,7 @@ import os
 import re
 import threading
 import time
+from typing import Optional
 
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -168,7 +169,7 @@ def _looks_like_bq_rewrite_parse_error(exc: BaseException) -> bool:
 _SQL_LOG_PREVIEW_CHARS = 200
 
 
-def _bq_error_offset(message: str, sql: str) -> int | None:
+def _bq_error_offset(message: str, sql: str) -> Optional[int]:
     """Absolute offset into ``sql`` for a BigQuery ``at [line:col]`` suffix.
 
     BigQuery reports where it stopped parsing, and for the ROLLUP rejection this
@@ -204,7 +205,7 @@ def _bq_error_offset(message: str, sql: str) -> int | None:
     return offset if offset <= len(raw) else None
 
 
-def _sql_log_preview(sql: str, *, around: int | None = None) -> str:
+def _sql_log_preview(sql: str, *, around: Optional[int] = None) -> str:
     """Truncate SQL for logging. Query literals can carry sensitive values,
     so the log must never become the one place a full query body lands
     unbounded.
@@ -439,13 +440,21 @@ def _parse_connection():
 _ORACLE_HEALTHY: bool | None = None
 _ORACLE_PROBE_LOCK = threading.Lock()
 
-# Above this, the SQL is handed to the text scan instead of the parser. The
-# serialized tree runs ~27x the size of the statement, so a 100 KB query
-# transiently allocates tens of MB — on the anyio threadpool, times however
-# many requests are in flight, against a `sql` field with no length limit.
-# Falling back is conservative (the text scan over-matches), and no analyst
-# query approaches this: the largest thing measured here was 1.6 KB.
-_MAX_ORACLE_SQL_BYTES = 64 * 1024
+# Above this many characters the SQL goes to the text scan instead of the
+# parser. Measured expansion for a wide statement: 16k chars -> 1.3 MB of
+# serialized JSON -> 6 MB of Python objects, growing linearly (64k chars ->
+# 24 MB). `sql` has no length limit and the handler runs on the shared anyio
+# threadpool, so the ceiling is per-request memory times whatever is in
+# flight. 16k leaves ~10x headroom over the largest statement seen here
+# (1.6 KB) while bounding one request to single-digit MB.
+#
+# Characters, not bytes — non-ASCII SQL can be up to 4x this in UTF-8, still
+# bounded. And falling back is conservative in PRECISION, not in cost: over a
+# statement this size the text scan burns more CPU than the parse it replaces
+# (~87 ms against 200 view names). Bounding `sql` at the request model and
+# rejecting outright would beat both, but that is a user-visible API change,
+# so it is filed rather than smuggled in here.
+_MAX_ORACLE_SQL_CHARS = 16 * 1024
 
 
 def _oracle_answers_as_expected() -> bool:
@@ -459,34 +468,67 @@ def _oracle_answers_as_expected() -> bool:
     net here, because ``duckdb`` is pinned open-ended (``>=1.5.2``) and a
     built image can resolve a newer wheel than the one the suite ran against.
 
-    So the parse path asks this first, once per process, and a failed probe
-    turns the oracle off for good: callers get ``None`` and fall back to the
-    conservative text scan. Loudly over-denying beats silently under-denying.
+    So the parse path asks this first, and a wrong answer turns the oracle off
+    for good: callers get ``None`` and fall back to the conservative text scan.
+
+    A *wrong answer* latches; a *raised exception* does not. The first is
+    deterministic — this engine will keep answering wrongly, so re-probing
+    every request would cost a parse to learn nothing. The second may be a
+    transient (an interrupted call, memory pressure), and latching on one
+    would degrade the process until restart with no way back.
     """
     global _ORACLE_HEALTHY
-    if _ORACLE_HEALTHY is None:
-        # Its own lock, NOT _PARSE_CONN_LOCK: the probe below opens the parse
-        # connection, which takes that one, and a plain Lock is not reentrant.
-        # Without any lock a cold-start burst runs the probe once per thread
-        # (measured: 32 threads, 32 probes) — harmless, being idempotent and
-        # one-time, but "once per process" should be true, not nearly true.
-        with _ORACLE_PROBE_LOCK:
-            if _ORACLE_HEALTHY is None:
-                try:
-                    probe = _extract_referenced_names("SELECT 1 FROM __agnes_oracle_probe__")
-                    _ORACLE_HEALTHY = probe == {"__agnes_oracle_probe__"}
-                except Exception:
-                    _ORACLE_HEALTHY = False
-        if not _ORACLE_HEALTHY:
-            logger.error(
-                "DuckDB parse oracle failed its self-check — SQL name guards fall back to "
-                "text scanning for the life of this process. Expect over-denial, not under-denial."
-            )
-    return _ORACLE_HEALTHY
+    # Its own lock, NOT _PARSE_CONN_LOCK: the probe opens the parse connection,
+    # which takes that one, and a plain Lock is not reentrant.
+    with _ORACLE_PROBE_LOCK:
+        if _ORACLE_HEALTHY is None:
+            try:
+                probe = _sql_referenced_names_unguarded("SELECT 1 FROM __agnes_oracle_probe__")
+            except Exception:
+                logger.warning(
+                    "DuckDB parse oracle self-check raised; retrying on the next query. "
+                    "SQL name guards fall back to text scanning until it succeeds.",
+                    exc_info=True,
+                )
+                return False
+            _ORACLE_HEALTHY = probe == {"__agnes_oracle_probe__"}
+            if not _ORACLE_HEALTHY:
+                logger.error(
+                    "DuckDB parse oracle answered its self-check wrongly (got %r) — SQL name "
+                    "guards fall back to text scanning for the life of this process.",
+                    probe,
+                )
+        return _ORACLE_HEALTHY
 
 
 def _sql_referenced_names(sql: str) -> set[str] | None:
     """Lowercased names of every table ``sql`` references, according to DuckDB.
+
+    Returns ``None`` — meaning "no answer, use the conservative text scan" —
+    in three cases: the statement is longer than ``_MAX_ORACLE_SQL_CHARS``,
+    the engine failed its self-check (see ``_oracle_answers_as_expected``), or
+    DuckDB would not serialize the SQL (a ``PIVOT`` subquery, a backtick-quoted
+    BQ path, anything malformed, or a non-SELECT statement anywhere in it).
+
+    Otherwise every name reported is a real reference, and every reference
+    DuckDB will resolve at bind time is reported — with two exceptions that
+    ``_assert_select_only`` blocks upstream, so no caller can meet them: SQL
+    smuggled through a string-taking table function (``query('…')``), and
+    ``EXECUTE`` of a prepared statement. A table macro hides its body from
+    this too, but equally from the text scan — neither can see a name the SQL
+    does not contain.
+    """
+    if len(sql) > _MAX_ORACLE_SQL_CHARS or not _oracle_answers_as_expected():
+        return None
+    return _sql_referenced_names_unguarded(sql)
+
+
+def _sql_referenced_names_unguarded(sql: str) -> set[str] | None:
+    """The parse and walk itself, with none of the guards above it.
+
+    Call ``_sql_referenced_names`` instead — this exists unguarded only
+    because the self-check has to exercise the real parse path to be worth
+    anything, and it cannot do that through a function that asks it first.
 
     ``json_serialize_sql`` hands back DuckDB's own parse tree, in which every
     table reference is a ``BASE_TABLE`` node. Using the engine that will run
@@ -502,26 +544,6 @@ def _sql_referenced_names(sql: str) -> set[str] | None:
     happily, a non-SELECT statement is refused, and a serialized INSERT
     inserts nothing. The SQL is passed as a bound parameter — never
     interpolated. All statements of a multi-statement string are covered.
-
-    Returns ``None`` when DuckDB will not serialize the SQL (a ``PIVOT``
-    subquery, a backtick-quoted BQ path, anything malformed, or a non-SELECT
-    statement anywhere in it), so callers fall back to the conservative text
-    scan. Every name this reports is a real reference, and every reference
-    DuckDB will resolve at bind time is reported — with two exceptions that
-    are blocked upstream by ``_assert_select_only`` and therefore cannot
-    reach a caller: SQL smuggled through a string-taking table function
-    (``query('…')``), and ``EXECUTE`` of a prepared statement. A table macro
-    hides its body from this too, but equally from the text scan — neither
-    can see a name the SQL does not contain.
-    """
-    if len(sql) > _MAX_ORACLE_SQL_BYTES or not _oracle_answers_as_expected():
-        return None
-    return _extract_referenced_names(sql)
-
-
-def _extract_referenced_names(sql: str) -> set[str] | None:
-    """The parse + walk itself, without the self-check — which has to call it
-    to run the probe. Everything else goes through ``_sql_referenced_names``.
     """
     try:
         cursor = _parse_connection().cursor()
@@ -534,7 +556,7 @@ def _extract_referenced_names(sql: str) -> set[str] | None:
         return None
     if not isinstance(document, dict) or document.get("error"):
         return None
-    names: set = set()
+    names: set[str] = set()
     # Iterative walk: a deeply nested statement parses fine but would blow
     # Python's recursion limit, and that must not decide an access question.
     stack = [document]
@@ -556,18 +578,23 @@ def _extract_referenced_names(sql: str) -> set[str] | None:
     return names
 
 
-def _sql_reference_test(sql: str):
-    """Return ``predicate(name) -> bool``: does ``sql`` reference that table?
+def _sql_reference_test(sql_lower: str):
+    """Return ``predicate(name) -> bool``: does the SQL reference that table?
 
-    Parses once and answers every name from the result, falling back to the
-    conservative text scan when DuckDB won't parse the SQL. Both guards go
-    through here so the "oracle, else text scan" decision — and the shape of
-    the string each hands the parser — cannot drift apart.
+    Takes an already-lowercased statement — both guards hold one, and the
+    parameter says so, because what gets handed to the parser matters (a
+    case-folded copy folds quoted identifiers too, which is safe only because
+    DuckDB resolves names case-insensitively and this module lowercases every
+    name it extracts).
+
+    Parses once and answers every name from that result, falling back to the
+    conservative text scan when the oracle declines. Both guards go through
+    here so the "oracle, else text scan" decision cannot drift apart.
     """
-    referenced = _sql_referenced_names(sql)
+    referenced = _sql_referenced_names(sql_lower)
     if referenced is not None:
         return referenced.__contains__
-    masked = _mask_backticks(sql.lower())
+    masked = _mask_backticks(sql_lower)
     return lambda name: _sql_text_references_name(masked, name)
 
 
@@ -711,7 +738,7 @@ class QueryResponse(BaseModel):
     truncated: bool = False
     # BigQuery dry-run scan estimate (bytes) for `query_mode='remote'`
     # queries; ``None`` for local DuckDB queries (no BQ tables involved).
-    bytes_scanned: int | None = None
+    bytes_scanned: Optional[int] = None
 
 
 def _run_internal_query(
@@ -900,7 +927,7 @@ def _next_nonspace(s: str, idx: int) -> str:
     return s[idx] if idx < n else ""
 
 
-def _normalize_table_path(raw: str) -> str | None:
+def _normalize_table_path(raw: str) -> Optional[str]:
     """Reduce a matched identifier path to the table id used for tagging.
 
     Quotes are stripped per segment and the segments are re-joined with dots,
@@ -931,7 +958,7 @@ def _normalize_table_path(raw: str) -> str | None:
     return ".".join(parts)
 
 
-def _first_table_from_sql(sql: str) -> str | None:
+def _first_table_from_sql(sql: str) -> Optional[str]:
     """Extract the first table reference after FROM or JOIN, for audit tagging.
 
     Regex-based and still best-effort, but the result is the group-by key of
@@ -1549,7 +1576,7 @@ def _materialized_hint_for_query_error(
     conn: duckdb.DuckDBPyConnection,
     sql: str,
     error_msg: str,
-) -> str | None:
+) -> Optional[str]:
     """Return a materialize-aware error message if the failed query
     references a registry row whose `query_mode='materialized'` and which
     has no master view in analytics.duckdb yet, OR ``None`` to fall back
@@ -1625,7 +1652,7 @@ def _build_materialized_hint(row: dict) -> str:
     )
 
 
-def _bq_row_target(row: dict) -> tuple[str, str, str | None]:
+def _bq_row_target(row: dict) -> tuple[str, str, Optional[str]]:
     """Resolve a BQ registry row to ``(dataset, table, project_override)``.
 
     ``bq_fqn`` (v51, issue #343) pins a row's own ``project.dataset.table``
@@ -1665,7 +1692,7 @@ def _bq_guardrail_inputs(
     sql_lower: str,
     sys_conn: duckdb.DuckDBPyConnection,
     user: dict,
-    allowed: list | None,
+    allowed: Optional[list],
 ):
     """Two-pass scan over user SQL for the upcoming BQ guardrail + RBAC patch.
 

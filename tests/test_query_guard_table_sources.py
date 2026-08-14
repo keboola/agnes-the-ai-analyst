@@ -18,6 +18,7 @@ import duckdb
 import pytest
 from fastapi import HTTPException
 
+import app.api.query as query_module
 from app.api.query import (
     _enforce_non_admin_sql_rbac,
     _sql_referenced_names,
@@ -129,70 +130,73 @@ def test_duckdb_still_reports_parse_failure_the_way_we_detect_it():
     assert ok.get("error") is False and "statements" in ok, f"success shape changed: {ok}"
 
 
-def test_oracle_disables_itself_if_duckdb_stops_answering_as_expected(monkeypatch):
+def test_oracle_latches_off_when_duckdb_answers_wrongly(monkeypatch):
     """A renamed AST field would make every statement 'reference nothing' —
-    a silent, total bypass. The self-check turns the oracle off instead, so
-    callers get None and fall back to the conservative text scan."""
-    import app.api.query as query_module
+    which reads as 'denies nothing', a silent total bypass. A wrong answer is
+    deterministic, so the oracle turns off and stays off: callers get None and
+    fall back to the conservative text scan."""
+    monkeypatch.setattr(query_module, "_ORACLE_HEALTHY", None)
+    monkeypatch.setattr(query_module, "_sql_referenced_names_unguarded", lambda sql: set())
+    assert query_module._sql_referenced_names("select * from t") is None
+    # Stays off even once the engine behaves again — one probe per process,
+    # deliberately not re-checked per request.
+    monkeypatch.setattr(query_module, "_sql_referenced_names_unguarded", lambda sql: {"t"})
+    assert query_module._sql_referenced_names("select * from t") is None
+
+
+def test_oracle_retries_after_a_raised_probe(monkeypatch):
+    """A raised exception may be transient (an interrupted call, memory
+    pressure). Latching on one would degrade the process until restart, so it
+    falls back for that request and re-probes on the next."""
+
+    def boom(sql):
+        raise RuntimeError("transient")
 
     monkeypatch.setattr(query_module, "_ORACLE_HEALTHY", None)
-    monkeypatch.setattr(query_module, "_extract_referenced_names", lambda sql: set())
+    monkeypatch.setattr(query_module, "_sql_referenced_names_unguarded", boom)
     assert query_module._sql_referenced_names("select * from t") is None
-    # And it stays off even once the engine behaves again — one probe per
-    # process, deliberately not re-checked per request.
-    monkeypatch.setattr(
-        query_module,
-        "_extract_referenced_names",
-        lambda sql: {"t"},
-    )
-    assert query_module._sql_referenced_names("select * from t") is None
+    assert query_module._ORACLE_HEALTHY is None, "a transient failure must not latch"
+    monkeypatch.undo()
+    monkeypatch.setattr(query_module, "_ORACLE_HEALTHY", None)
+    assert query_module._sql_referenced_names("select * from t") == {"t"}
 
 
-def test_oracle_declines_absurdly_large_sql(monkeypatch):
-    """The serialized tree runs ~27x the statement, and `sql` has no length
-    cap, so past a generous ceiling the text scan takes over."""
-    import app.api.query as query_module
-
-    monkeypatch.setattr(query_module, "_MAX_ORACLE_SQL_BYTES", 100)
+def test_oracle_declines_oversized_sql(monkeypatch):
+    """The parse tree costs ~6 MB of Python objects for a 16k-char statement
+    and grows linearly, on a field with no length limit, so past the ceiling
+    the text scan takes over."""
+    monkeypatch.setattr(query_module, "_MAX_ORACLE_SQL_CHARS", 100)
     assert query_module._sql_referenced_names("select * from t") == {"t"}
     assert query_module._sql_referenced_names("select * from t where x in (" + "1," * 100 + "1)") is None
 
 
-def test_oracle_probe_runs_once_under_a_cold_start_burst():
-    """The probe opens the parse connection, which takes its own lock — so
-    the probe must not share that lock (a plain Lock is not reentrant) and
-    must not run per-thread."""
+def test_oracle_probe_runs_once_under_a_cold_start_burst(monkeypatch):
+    """The probe opens the parse connection, which takes its own lock — so it
+    must not share that lock (a plain Lock is not reentrant) and must not run
+    per-thread."""
     import threading
 
-    import app.api.query as query_module
-
-    query_module._ORACLE_HEALTHY = None
+    monkeypatch.setattr(query_module, "_ORACLE_HEALTHY", None)
     calls: list[str] = []
-    real = query_module._extract_referenced_names
+    real = query_module._sql_referenced_names_unguarded
 
     def counting(sql):
         calls.append(sql)
         return real(sql)
 
-    query_module._extract_referenced_names = counting
-    try:
-        results: list = []
-        threads = [
-            threading.Thread(
-                target=lambda i=i: results.append(query_module._sql_referenced_names(f"select * from t{i}"))
-            )
-            for i in range(16)
-        ]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=30)
-        assert not any(t.is_alive() for t in threads), "deadlock: probe and parse connection share a lock"
-        assert len(results) == 16
-        assert sum(1 for sql in calls if "__agnes_oracle_probe__" in sql) == 1
-    finally:
-        query_module._extract_referenced_names = real
-        query_module._ORACLE_HEALTHY = None
+    monkeypatch.setattr(query_module, "_sql_referenced_names_unguarded", counting)
+    results: list = []
+    threads = [
+        threading.Thread(target=lambda i=i: results.append(query_module._sql_referenced_names(f"select * from t{i}")))
+        for i in range(16)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    assert not any(t.is_alive() for t in threads), "deadlock: probe and parse connection share a lock"
+    assert len(results) == 16
+    assert sum(1 for sql in calls if "__agnes_oracle_probe__" in sql) == 1
 
 
 def test_oracle_parses_without_executing():
