@@ -122,7 +122,15 @@ def test_backfill_publishes_via_temp_then_replace(backfill, monkeypatch):
         out = backfill.download_attachment(_attachment("report.pdf"), "PROJ-2")
     assert out is not None and out.read_bytes() == b"xyz"
     # Full body already in the temp at replace time; final name untouched until then.
-    assert observed == [(f".tmp-{os.getpid()}-77_report.pdf", "77_report.pdf", b"xyz", False)]
+    assert len(observed) == 1
+    tmp_name, final_name, tmp_bytes, final_existed = observed[0]
+    import re as _re
+
+    # Staging name: pid + random component + bounded basename prefix — the
+    # random part keeps concurrent writers of the SAME attachment on their
+    # own staging files (Devin on #1297).
+    assert _re.fullmatch(rf"\.tmp-{os.getpid()}-[0-9a-f]{{8}}-77_report\.pdf", tmp_name)
+    assert (final_name, tmp_bytes, final_existed) == ("77_report.pdf", b"xyz", False)
     leftovers = [p.name for p in out.parent.iterdir() if p.name.startswith(".tmp-")]
     assert leftovers == []
 
@@ -184,3 +192,50 @@ def test_backfill_published_mode_is_pinned_regardless_of_umask(backfill):
         os.umask(old_umask)
     assert out is not None
     assert (out.stat().st_mode & 0o777) == 0o644
+
+
+def test_staging_names_are_unique_per_download(backfill, monkeypatch):
+    """Two downloads of the same attachment must never share a staging file:
+    with a pid-only temp name, one os.replace() could publish the other's
+    half-written bytes (Devin on #1297)."""
+    names = []
+    real_replace = os.replace
+
+    def recording_replace(src, dst):
+        names.append(Path(src).name)
+        return real_replace(src, dst)
+
+    monkeypatch.setattr("connectors.jira.scripts.backfill.os.replace", recording_replace)
+    with patch("connectors.jira.scripts.backfill.httpx.Client", _fake_client(b"abc")):
+        first = backfill.download_attachment(_attachment("dup.bin"), "PROJ-2")
+        assert first is not None
+        first.unlink()  # the backfill skips an already-present file
+        assert backfill.download_attachment(_attachment("dup.bin"), "PROJ-2") is not None
+    assert len(names) == 2 and names[0] != names[1]
+
+
+def test_save_issue_retransforms_after_attachment_download(svc, monkeypatch):
+    """Devin on #1297 — the incremental transform deliberately runs BEFORE
+    the attachment download (worker-timeout rationale), so a freshly
+    attached file is catalogued with local_path=NULL and the download
+    endpoint 404s it until some later transform. After a download that
+    actually landed files, save_issue must re-transform so the catalogue
+    points at the bytes."""
+    calls = []
+    monkeypatch.setattr(
+        "connectors.jira.service.trigger_incremental_transform",
+        lambda key, deleted=False: calls.append(key) or True,
+    )
+    monkeypatch.setattr(
+        JiraService, "download_all_attachments", lambda self, data: [Path("stored.bin")]
+    )
+    out = svc.save_issue({"key": "PROJ-9", "fields": {}})
+    assert out is not None
+    assert calls == ["PROJ-9", "PROJ-9"], "transform must run before AND after a landing download"
+
+    # And with nothing downloaded, no second transform.
+    calls.clear()
+    monkeypatch.setattr(JiraService, "download_all_attachments", lambda self, data: [])
+    out = svc.save_issue({"key": "PROJ-9", "fields": {}})
+    assert out is not None
+    assert calls == ["PROJ-9"]

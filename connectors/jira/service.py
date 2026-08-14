@@ -1035,6 +1035,15 @@ class JiraService:
                 downloaded = self.download_all_attachments(issue_data)
                 if downloaded:
                     logger.info(f"Downloaded {len(downloaded)} attachments for {issue_key}")
+                    # Re-transform now that the files exist: the transform above
+                    # deliberately ran BEFORE the download (worker-timeout
+                    # rationale), so it catalogued any freshly attached file
+                    # with local_path=NULL — the download endpoint would 404
+                    # (`attachment_not_stored`) the very attachments users are
+                    # most likely to fetch, until some later event happened to
+                    # re-transform the issue. Same non-fatal posture as the
+                    # download itself (Devin on #1297).
+                    trigger_incremental_transform(issue_key, deleted=False)
             except Exception as att_err:
                 logger.warning(f"Attachment download failed for {issue_key}: {att_err}")
 
@@ -1114,7 +1123,12 @@ class JiraService:
                 # previously-storable attachment fail to save. 40 codepoints
                 # (<=160 UTF-8 bytes) keeps the total well under NAME_MAX and
                 # stays unique: the name starts with the attachment id.
-                tmp_path = file_path.with_name(f".tmp-{os.getpid()}-{file_path.name[:40]}")
+                # pid alone is not unique enough: two webhook events for the
+                # same issue run concurrently in one process's threadpool and
+                # would share the staging name — one os.replace() could publish
+                # the other's half-written bytes (Devin on #1297). The random
+                # component makes each writer's staging file its own.
+                tmp_path = file_path.with_name(f".tmp-{os.getpid()}-{os.urandom(4).hex()}-{file_path.name[:32]}")
                 try:
                     with open(tmp_path, "wb") as f:
                         f.write(response.content)

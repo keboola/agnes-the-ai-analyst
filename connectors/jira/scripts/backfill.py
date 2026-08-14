@@ -475,7 +475,11 @@ class JiraBackfill:
                 # previously-storable attachment fail to save. 40 codepoints
                 # (<=160 UTF-8 bytes) keeps the total well under NAME_MAX and
                 # stays unique: the name starts with the attachment id.
-                tmp_path = file_path.with_name(f".tmp-{os.getpid()}-{file_path.name[:40]}")
+                # pid alone is not unique enough: the backfill downloads under a
+                # thread pool, so two workers on the same attachment would share
+                # the staging name — one os.replace() could publish the other's
+                # half-written bytes (Devin on #1297).
+                tmp_path = file_path.with_name(f".tmp-{os.getpid()}-{os.urandom(4).hex()}-{file_path.name[:32]}")
                 try:
                     with open(tmp_path, "wb") as f:
                         f.write(response.content)
