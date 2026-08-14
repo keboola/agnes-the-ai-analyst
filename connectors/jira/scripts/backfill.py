@@ -41,7 +41,11 @@ import httpx
 from dotenv import load_dotenv
 
 from app.logging_config import setup_logging
-from connectors.jira.service import JiraFetchError, complete_issue_comments
+from connectors.jira.service import (
+    JiraFetchError,
+    complete_issue_comments,
+    sweep_stale_attachment_staging,
+)
 
 setup_logging(__name__)
 logger = logging.getLogger(__name__)
@@ -451,12 +455,16 @@ class JiraBackfill:
         # Create issue-specific directory
         issue_attachments_dir = self.attachments_dir / issue_key
         issue_attachments_dir.mkdir(parents=True, exist_ok=True)
+        sweep_stale_attachment_staging(issue_attachments_dir)
 
         safe_filename = f"{attachment_id}_{filename}"
         file_path = issue_attachments_dir / safe_filename
 
-        # Skip if already downloaded
-        if file_path.exists():
+        # Skip if already downloaded AND complete — a short file (worker
+        # SIGKILLed mid-write by the pre-atomic writer) must be re-fetched,
+        # or the download endpoint serves the truncated bytes forever
+        # (Devin on #1297).
+        if file_path.exists() and (not size or file_path.stat().st_size == size):
             return file_path
 
         try:
@@ -464,8 +472,41 @@ class JiraBackfill:
                 response = client.get(content_url, auth=self.auth)
 
             if response.status_code == 200:
-                with open(file_path, "wb") as f:
-                    f.write(response.content)
+                # Publish atomically (per-process temp + os.replace), mirroring
+                # JiraService.download_attachment: the attachment download
+                # endpoint serves this very tree, and a webhook-driven
+                # incremental transform in another process can catalogue this
+                # exact path mid-backfill — a reader must never fstat a
+                # partially written file.
+                # Bounded temp name: appending to the full name could push a
+                # near-NAME_MAX (255-byte) filename over the limit and make a
+                # previously-storable attachment fail to save. 40 codepoints
+                # (<=160 UTF-8 bytes) keeps the total well under NAME_MAX and
+                # stays unique: the name starts with the attachment id.
+                # pid alone is not unique enough: the backfill downloads under a
+                # thread pool, so two workers on the same attachment would share
+                # the staging name — one os.replace() could publish the other's
+                # half-written bytes (Devin on #1297).
+                tmp_path = file_path.with_name(f".tmp-{os.getpid()}-{os.urandom(4).hex()}-{file_path.name[:32]}")
+                try:
+                    with open(tmp_path, "wb") as f:
+                        f.write(response.content)
+                    # os.replace preserves the TEMP file's mode (0666 & umask),
+                    # not the previous inode's — pin it explicitly so a
+                    # restrictive deploy-time umask cannot leave the published
+                    # file unreadable to the serving process. 0o660, matching
+                    # the sibling issue-JSON writer's "Restore group rw for
+                    # ACL" pin: 0o644 would grant world-read to attachment
+                    # bytes AND collapse any named POSIX-ACL entries to
+                    # read-only (chmod resets the ACL mask from the group
+                    # bits) — a widening relative to the pre-atomic writer
+                    # under the documented 0007-umask ACL deployments (Devin
+                    # on #1297).
+                    os.chmod(tmp_path, 0o660)
+                    os.replace(tmp_path, file_path)
+                except BaseException:
+                    tmp_path.unlink(missing_ok=True)
+                    raise
                 return file_path
             else:
                 logger.debug(f"Failed to download {filename}: {response.status_code}")
