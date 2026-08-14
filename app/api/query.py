@@ -357,9 +357,19 @@ def _local_extract_catalogs(conn) -> set[str]:
         default = conn.execute("SELECT current_database()").fetchone()[0]
         rows = conn.execute("SELECT database_name, type FROM duckdb_databases()").fetchall()
     except Exception:
-        # If catalog enumeration fails we can't run the #868 catalog gate, but
-        # the view-name + internal-table denylists below still apply. Don't 500
-        # the request over it.
+        # If catalog enumeration fails we can't run the #868 catalog gate, so
+        # the request rides on the view-name + internal-table denylists below.
+        # Don't 500 over it.
+        #
+        # Those denylists are a weaker backstop than this comment used to
+        # imply, and weaker again since the guards started matching parsed
+        # table references: a qualified path whose last segment is itself
+        # quoted and dotted (`src.main."bucket.orders"`) yields the whole
+        # `bucket.orders` as the table name, so a denied view called `orders`
+        # no longer matches it. The old text scan caught that by coincidence —
+        # it matched the substring anywhere — not by design. Reaching a source
+        # catalog by qualified path is this gate's job; when it cannot run,
+        # accept that it is not covered rather than assume layer (b) stands in.
         logger.warning("RBAC catalog gate: could not enumerate attached catalogs", exc_info=True)
         return set()
     reserved = {default, "system", "temp", "memory"}
