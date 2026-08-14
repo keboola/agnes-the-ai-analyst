@@ -14,6 +14,7 @@ Three guarantees:
 """
 
 import re
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -2127,7 +2128,6 @@ class TestDefaultContentParity:
         input (caught by the screenshot audit). The BASE rule is the topnav
         contract: two columns, exactly as before the redesign; rail lays its
         composer out with its own flex rules and never reads this grid."""
-        from pathlib import Path
 
         css = Path("app/web/static/css/chat.css").read_text()
         import re
@@ -2145,7 +2145,6 @@ class TestDefaultContentParity:
         the module reads ``data-ui-layout`` off the root element and its boot
         path early-returns off the rail, so topnav gets no journey fetch, no
         greeting bubbles, and no auto-launched coach-mark tour."""
-        from pathlib import Path
 
         src = Path("app/web/static/js/chat_onboarding.js").read_text()
         assert 'dataset.uiLayout === "rail"' in src, (
@@ -2362,7 +2361,6 @@ class TestDetailPageParity:
 
     @pytest.mark.parametrize("base,token,why", FORKED_PAIR_INVARIANTS)
     def test_frozen_copy_carries_the_same_invariant(self, base, token, why):
-        from pathlib import Path
 
         live = Path(f"app/web/templates/{base}.html").read_text()
         legacy = Path(f"app/web/templates/{base}_legacy.html").read_text()
@@ -2377,7 +2375,6 @@ class TestDetailPageParity:
         """No render site may keep the bare redesigned template literal — a
         new call site that bypasses the switch reintroduces the redesign on
         topnav silently."""
-        from pathlib import Path
 
         src = Path("app/web/router.py").read_text()
         for name in self.DETAIL_TEMPLATES:
@@ -2435,3 +2432,103 @@ class TestDetailPageParity:
         assert resp.status_code == 200
         assert 'class="detail-page"' in resp.text
         assert "td-back" not in resp.text
+
+
+class TestChromeNavParity:
+    """A feature must be reachable in BOTH chromes — not necessarily the same way.
+
+    `data-ui-layout` picks one of two hand-written navs (`_app_header.html`
+    for `topnav`, `_app_rail.html` for `rail`), and a destination added to one
+    is invisible on instances running the other. That is how hosted data apps
+    became unreachable: the "Apps" entry shipped in the topnav only, so a
+    `rail` instance had the feature enabled, deployed and serving with nothing
+    anywhere in the UI pointing at it.
+
+    The fix is deliberately NOT a second rail icon. Under the rail, apps live
+    in the Library alongside data packages and memory domains — "everything
+    you have" — which is the same route those already take. So the reachable-
+    from-the-rail half is proved behaviourally, by rendering the page:
+    `tests/test_web_library.py::test_library_lists_a_hosted_data_app`. What is
+    pinned here is the topnav's own entry and its gate.
+    """
+
+    HEADER = "app/web/templates/_app_header.html"
+    RAIL = "app/web/templates/_app_rail.html"
+
+    def _read(self, p):
+        from pathlib import Path
+
+        return Path(p).read_text(encoding="utf-8")
+
+    def test_topnav_keeps_its_apps_entry(self):
+        body = self._read(self.HEADER)
+        assert 'href="/apps"' in body, "topnav lost its link to the data-apps list"
+
+    def test_topnav_apps_entry_is_feature_gated(self):
+        """Ungated, it would offer a link to a page that renders an empty
+        state explaining the feature is off."""
+        body = self._read(self.HEADER)
+        at = body.index('href="/apps"')
+        assert "data_apps_enabled()" in body[max(0, at - 700) : at]
+
+    def test_agents_destination_is_in_both_chromes(self):
+        """The sibling destination that IS a nav entry in both, pinned so the
+        two chromes cannot silently drift apart on it."""
+        for tpl in (self.HEADER, self.RAIL):
+            body = self._read(tpl)
+            assert 'href="/agents"' in body, f"{tpl} has no link to the agent builder"
+
+
+class TestSectionKindColours:
+    """Every Library section kind must resolve to a real colour token.
+
+    `library.html` sets each band's accent inline as
+    `--lib-kind: var(--ds-kind-{{ sec.kind }})`. A kind with no matching
+    token does NOT fall back to a default — the custom property is invalid
+    at computed-value time, so the heading, count, edge stripe and icon tiles
+    render colourless. Adding a section without its token is therefore a
+    silent visual break, which is exactly what happened to Apps (Devin
+    Review on this PR).
+    """
+
+    def _css(self):
+        from pathlib import Path
+
+        return Path("app/web/static/css/design-tokens.css").read_text(encoding="utf-8")
+
+    def _router(self):
+        from pathlib import Path
+
+        return Path("app/web/router.py").read_text(encoding="utf-8")
+
+    def test_every_section_kind_has_a_colour_token(self):
+        import re
+
+        src = self._router()
+        block = src[src.index("_SECTION_KINDS = {") : src.index("}", src.index("_SECTION_KINDS = {"))]
+        kinds = {m for _, m in re.findall(r'"([a-z_]+)":\s*\("([a-z_]+)",', block)}
+        css = self._css()
+        for kind in sorted(kinds):
+            # The BASE (default-theme) definition specifically — a literal
+            # colour. Matching "any --ds-kind-<k>: ..." would be satisfied by
+            # the paper theme's `var(--ds-resource-*)` alias alone, leaving
+            # the default theme colourless while the guard stayed green. That
+            # is not hypothetical: the first version of this test did exactly
+            # that and passed with the token deleted.
+            assert re.search(rf"--ds-kind-{kind}:\s*#[0-9a-fA-F]{{3,8}}\s*;", css), (
+                f"section kind '{kind}' has no base --ds-kind-{kind} colour: "
+                "its band renders colourless in the default theme"
+            )
+            assert re.search(rf"--ds-kind-{kind}-soft:\s*#[0-9a-fA-F]{{3,8}}\s*;", css), (
+                f"--ds-kind-{kind}-soft has no base colour"
+            )
+
+    def test_the_paper_theme_repoints_every_kind(self):
+        """Paper aliases --ds-kind-* onto --ds-resource-*; a kind left out
+        keeps the blue theme's hex on a paper surface."""
+        import re
+
+        css = self._css()
+        base = set(re.findall(r"--ds-kind-([a-z_]+):\s*#", css))
+        aliased = set(re.findall(r"--ds-kind-([a-z_]+):\s*var\(--ds-resource", css))
+        assert base - aliased == set(), f"kinds with no paper mapping: {sorted(base - aliased)}"

@@ -247,18 +247,23 @@ def test_openmetadata_is_editable_section_with_known_fields(seeded_app):
     assert fields["cache_ttl_seconds"]["kind"] == "int"
 
 
-def test_desktop_is_editable_section(seeded_app):
-    """desktop is a new editable section with jwt_secret marked secret."""
+def test_desktop_section_is_gone(seeded_app):
+    """The desktop pairing flow was removed with the legacy webapp; its
+    config section configured nothing and is no longer served or writable
+    (unknown sections are rejected loudly, not merged into the YAML root)."""
     c = seeded_app["client"]
     token = seeded_app["admin_token"]
     r = c.get("/api/admin/server-config", headers=_auth(token))
     body = r.json()
-    assert "desktop" in body["editable_sections"]
-    fields = body["known_fields"].get("desktop", {})
-    assert "jwt_issuer" in fields
-    assert "jwt_secret" in fields
-    assert fields["jwt_secret"]["kind"] == "secret"
-    assert "url_scheme" in fields
+    assert "desktop" not in body["editable_sections"]
+    assert "desktop" not in body["known_fields"]
+    r = c.post(
+        "/api/admin/server-config",
+        headers=_auth(token),
+        json={"sections": {"desktop": {"jwt_issuer": "data-analyst"}}},
+    )
+    assert r.status_code == 400
+    assert "unknown section" in r.json()["detail"]
 
 
 def test_connectors_is_editable_section(seeded_app):
@@ -338,31 +343,6 @@ def test_post_openmetadata_section_persists(seeded_app, tmp_path, monkeypatch):
         loaded = _yaml.safe_load((state / "instance.yaml").read_text())
         assert loaded["openmetadata"]["url"] == "https://om.example.com"
         assert loaded["openmetadata"]["cache_ttl_seconds"] == 1800
-    finally:
-        ic._instance_config = None
-
-
-def test_post_desktop_section_persists(seeded_app, tmp_path, monkeypatch):
-    """desktop section accepts patches via the standard editor flow."""
-    monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    state = tmp_path / "state"
-    state.mkdir(parents=True, exist_ok=True)
-    import app.instance_config as ic
-
-    ic._instance_config = None
-    try:
-        c = seeded_app["client"]
-        token = seeded_app["admin_token"]
-        r = c.post(
-            "/api/admin/server-config",
-            headers=_auth(token),
-            json={"sections": {"desktop": {"jwt_issuer": "data-analyst"}}},
-        )
-        assert r.status_code in (200, 204), r.text
-        import yaml as _yaml
-
-        loaded = _yaml.safe_load((state / "instance.yaml").read_text())
-        assert loaded["desktop"]["jwt_issuer"] == "data-analyst"
     finally:
         ic._instance_config = None
 

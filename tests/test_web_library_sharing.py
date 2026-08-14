@@ -780,6 +780,7 @@ def test_data_apps_schedule_badge_retired_when_the_kind_shipped(seeded_app):
     text = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"])).text
 
     assert "Soon Badge Anchor" in text  # the Files band really rendered
+    assert 'class="fbar-group__soon"' not in text
     assert "Data apps coming soon" not in text
     assert "Nothing to do yet." not in text
     # The old pre-badge panels stay gone too — markup and CSS both.

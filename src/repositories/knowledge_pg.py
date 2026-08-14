@@ -309,8 +309,18 @@ class KnowledgePgRepository:
             sql_parts.append(" AND id IN (SELECT item_id FROM knowledge_votes WHERE user_id = :upv AND vote > 0)")
             params["upv"] = upvoted_by_user
         if domain:
-            sql_parts.append(" AND domain = :domain")
-            params["domain"] = domain
+            # Junction-only read (parity with the DuckDB repo): the scalar
+            # column goes stale the moment replace_domains_for_item moves an
+            # item, so filtering on it shows moved items under the domain
+            # they left and hides them under the one they joined.
+            domain_id = self._resolve_domain_slug(domain)
+            if domain_id is None:
+                return []  # unknown slug → empty, mirror the DuckDB repo
+            sql_parts.append(
+                " AND EXISTS (SELECT 1 FROM knowledge_item_domains kid "
+                "WHERE kid.item_id = knowledge_items.id AND kid.domain_id = :domain_id)"
+            )
+            params["domain_id"] = domain_id
         if source_type:
             sql_parts.append(" AND source_type = :st_param")
             params["st_param"] = source_type
@@ -372,10 +382,15 @@ class KnowledgePgRepository:
         """FTS via Postgres ``to_tsvector`` + ``plainto_tsquery`` /
         ``ts_rank`` with ILIKE fallback.
         """
+        # Resolve domain slug → id once (mirror the DuckDB repo's search()):
+        # unknown slug → return [] before running any SQL.
+        domain_id = self._resolve_domain_slug(domain) if domain else None
+        if domain and domain_id is None:
+            return []
         filter_parts, filter_params = self._build_filter_clauses(
             statuses=statuses,
             category=category,
-            domain=domain,
+            domain_id=domain_id,
             source_type=source_type,
             exclude_personal=exclude_personal,
             user_groups=user_groups,
@@ -434,10 +449,15 @@ class KnowledgePgRepository:
         hide_dismissed: bool = False,
         is_required: Optional[bool] = None,
     ) -> int:
+        # v49 parity: domain slug → id resolution (unknown slug → count = 0),
+        # matching the DuckDB repo's count_items().
+        domain_id = self._resolve_domain_slug(domain) if domain else None
+        if domain and domain_id is None:
+            return 0
         filter_parts, filter_params = self._build_filter_clauses(
             statuses=statuses,
             category=category,
-            domain=domain,
+            domain_id=domain_id,
             source_type=source_type,
             exclude_personal=exclude_personal,
             user_groups=user_groups,
@@ -477,7 +497,7 @@ class KnowledgePgRepository:
         *,
         statuses: Optional[List[str]],
         category: Optional[str],
-        domain: Optional[str],
+        domain_id: Optional[str],
         source_type: Optional[str],
         exclude_personal: bool,
         user_groups: Optional[List[str]],
@@ -501,9 +521,15 @@ class KnowledgePgRepository:
         if category:
             parts.append(" AND category = :category")
             params["category"] = category
-        if domain:
-            parts.append(" AND domain = :domain")
-            params["domain"] = domain
+        if domain_id:
+            # Junction-only read (parity with the DuckDB repo). Callers
+            # resolve the slug first and short-circuit unknown slugs to an
+            # empty result / zero count before any SQL runs.
+            parts.append(
+                " AND EXISTS (SELECT 1 FROM knowledge_item_domains kid "
+                "WHERE kid.item_id = knowledge_items.id AND kid.domain_id = :domain_id)"
+            )
+            params["domain_id"] = domain_id
         if source_type:
             parts.append(" AND source_type = :st_param")
             params["st_param"] = source_type
@@ -550,8 +576,25 @@ class KnowledgePgRepository:
         statuses: Optional[List[str]] = None,
         limit: int = 100,
     ) -> List[Dict[str, Any]]:
-        sql_parts = ["SELECT * FROM knowledge_items WHERE domain = :domain"]
-        params: Dict[str, Any] = {"domain": domain, "limit": limit}
+        """Mirrors the DuckDB repo (#1017): resolves the slug through
+        ``memory_domains`` and EXISTS-joins ``knowledge_item_domains`` instead
+        of reading the ``knowledge_items.domain`` scalar column. The scalar
+        only ever reflects the domain passed to ``create``/``update`` — a
+        multi-domain write via ``MemoryDomainsRepositoryPg.replace_domains_for_item``
+        (the admin edit-item ``domain_ids`` field) touches only the junction,
+        so the scalar-based read silently missed those items (and kept
+        showing them under a domain they had moved off of). Unknown slug →
+        empty (matches the old ``WHERE domain = ?`` semantic).
+        """
+        domain_id = self._resolve_domain_slug(domain)
+        if domain_id is None:
+            return []
+        sql_parts = [
+            "SELECT * FROM knowledge_items "
+            "WHERE EXISTS (SELECT 1 FROM knowledge_item_domains kid "
+            "WHERE kid.item_id = knowledge_items.id AND kid.domain_id = :domain_id)"
+        ]
+        params: Dict[str, Any] = {"domain_id": domain_id, "limit": limit}
         if statuses:
             keys = []
             for i, s in enumerate(statuses):
@@ -916,7 +959,19 @@ class KnowledgePgRepository:
         min_overlap: int,
         limit: int = 100,
     ) -> List[Dict[str, Any]]:
+        """Mirrors the DuckDB repo (Devin Review on #1290, other half of
+        #1017): resolves the slug through ``memory_domains`` and EXISTS-joins
+        ``knowledge_item_domains`` instead of reading the ``knowledge_items.domain``
+        scalar column. Same reasoning as ``list_by_domain`` — a multi-domain
+        write via ``MemoryDomainsRepositoryPg.replace_domains_for_item`` touches
+        only the junction, so the scalar-based read missed items moved between
+        domains that way. Unknown slug → no candidates (matches the old
+        ``WHERE domain = ?`` semantic).
+        """
         if not entities or not domain:
+            return []
+        domain_id = self._resolve_domain_slug(domain)
+        if domain_id is None:
             return []
         new_set = set(entities)
         with self._engine.connect() as conn:
@@ -926,13 +981,16 @@ class KnowledgePgRepository:
                         """SELECT * FROM knowledge_items
                        WHERE status IN ('approved', 'pending')
                          AND (is_personal = FALSE OR is_personal IS NULL)
-                         AND domain = :d
+                         AND EXISTS (
+                             SELECT 1 FROM knowledge_item_domains kid
+                              WHERE kid.item_id = knowledge_items.id AND kid.domain_id = :domain_id
+                         )
                          AND id != :id
                          AND entities IS NOT NULL
                        ORDER BY updated_at DESC
                        LIMIT :limit"""
                     ),
-                    {"d": domain, "id": new_item_id, "limit": limit},
+                    {"domain_id": domain_id, "id": new_item_id, "limit": limit},
                 )
                 .mappings()
                 .all()

@@ -266,11 +266,24 @@
                    on is_paper() (rail has its own nav with a "How {brand}
                    works" row). Guarded by tests/test_web_nav_cowork.py. "My
                    connections" (#1086) stays — tests/test_web_nav_me_connections
-                   requires it here. #}
+                   requires it here. The "Learn how it works" branch stays
+                   regardless of can_mcp_connector_ui (#1024): /how-it-works is
+                   the general orientation page (chat, CLI, privacy…), not an
+                   MCP-only surface, so it keeps its nav entry — only the
+                   MCP-only "AI Connector" branch (default chrome) is gated.
+                   That claim only held under paper until the else-branch below:
+                   on the default chrome with the switch off, gating the
+                   connector row alone left the menu with no entry to either
+                   surface, so /how-it-works — which also carries the CLI
+                   setup, the first-session narrative and the privacy content —
+                   became unreachable from the menu as a side effect of hiding
+                   MCP. Devin Review on #1024. #}
                 {% if is_paper() %}
                 <a class="app-user-menu-item {% if _path == '/how-it-works' %}is-active{% endif %}" role="menuitem" href="/how-it-works">Learn how it works</a>
-                {% else %}
+                {% elif can_mcp_connector_ui %}
                 <a class="app-user-menu-item {% if _path.startswith('/me/ai-connector') or _path.startswith('/me/cowork') or _path.startswith('/me/mcp') %}is-active{% endif %}" role="menuitem" href="/me/ai-connector">AI Connector</a>
+                {% else %}
+                <a class="app-user-menu-item {% if _path == '/how-it-works' %}is-active{% endif %}" role="menuitem" href="/how-it-works">Learn how it works</a>
                 {% endif %}
                 <a class="app-user-menu-item {% if _path.startswith('/me/connections') %}is-active{% endif %}" role="menuitem" href="/me/connections">My connections</a>
                 <a class="app-user-menu-item {% if _path.startswith('/me/activity') %}is-active{% endif %}" role="menuitem" href="/me/activity">My activity</a>
