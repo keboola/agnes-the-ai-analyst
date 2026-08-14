@@ -192,3 +192,49 @@ def test_show_all_rows_is_a_table_not_json():
     assert "Show all rows (JSON)" not in body, "the expansion is a table now"
     assert "_TOOL_RESULT_FULL_ROWS_MAX" in body, "a DOM cap must exist for huge results"
     assert body.count("_buildResultTable(") == 2, "preview and expansion share one builder"
+
+
+# ── streaming: markdown renders as it arrives ────────────────────────────────
+
+
+def test_streaming_renders_markdown_not_textcontent():
+    js = _read(CHAT_JS)
+    body = js[js.index("function appendToken") : js.index("function finalizeAssistantMessage")]
+    assert "currentAssistantBody.textContent = currentAssistantText" not in body, (
+        "raw markdown source must not sit on screen until turn end"
+    )
+    assert "_scheduleStreamRender()" in body
+    stream = js[js.index("function _renderStreamingMarkdown") : js.index("function appendToken")]
+    assert "renderAnswerMarkdown(" in stream, "streaming and finalize must share the pipeline"
+    assert "renderMermaidBlocks" not in stream, "no mermaid on partial content"
+    assert "enhanceCodeBlocks" not in stream, "heavy enhancement waits for finalize"
+
+
+def test_finalize_clears_the_stream_timer():
+    js = _read(CHAT_JS)
+    fin = js[js.index("function finalizeAssistantMessage") : js.index("// ---------- Inline tool-call blocks")]
+    assert "_streamRenderTimer" in fin, "a late tick must not repaint a finalized bubble"
+
+
+def test_streaming_safe_text_executable():
+    js = _read(CHAT_JS)
+    fn = js[js.index("function _streamingSafeText") : js.index("function _scheduleStreamRender")]
+    cases = {
+        "plain": "Hello **world**",
+        "open_lang_partial": "Answer.\n\n```sour",
+        "open_next_actions": "Answer.\n\n```next_actions\n- half",
+        "open_sql_with_body": "Answer.\n\n```sql\nSELECT 1",
+        "closed_fence": "Answer.\n\n```sql\nSELECT 1\n```\n",
+        "bare_open_no_newline": "Answer.\n\n```",
+    }
+    script = (
+        fn
+        + f"\nprocess.stdout.write(JSON.stringify(Object.fromEntries(Object.entries({json.dumps(cases)}).map(([k, v]) => [k, _streamingSafeText(v)]))));\n"
+    )
+    res = json.loads(_node_run(script))
+    assert res["plain"] == "Hello **world**"
+    assert res["open_lang_partial"] == "Answer.\n\n", "a partial wire-trailer id is hidden"
+    assert res["open_next_actions"] == "Answer.\n\n", "a streaming wire trailer is hidden"
+    assert "SELECT 1" in res["open_sql_with_body"], "a streaming CODE block stays visible"
+    assert res["closed_fence"] == cases["closed_fence"], "closed fences pass through"
+    assert res["bare_open_no_newline"] == "Answer.\n\n", "a bare open fence waits for its id"
