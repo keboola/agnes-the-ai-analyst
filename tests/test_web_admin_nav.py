@@ -1264,7 +1264,7 @@ class TestDataLensFlowStrip:
         assert [t["label"] for t in chained] == ["Sources", "Tables", "Data packages"]
 
     def test_semantic_layer_is_named_in_full_and_not_in_the_chain(self) -> None:
-        """"Semantic" is an adjective with no noun, and "Packages" collides
+        """ "Semantic" is an adjective with no noun, and "Packages" collides
         with the marketplace's plugin packages — both shipped with a caption
         under them explaining what they meant, which is the tell that the name
         was doing too little. The names carry it now; there are no captions."""
@@ -1302,3 +1302,58 @@ class TestDataLensFlowStrip:
         people_html = c.get("/admin/users", headers=headers).text
         assert 'class="tab-strip"' in people_html
         assert "tab-flow__item" not in people_html
+
+
+class TestTopnavAdminMenuCoversTheInventory:
+    """The default (`topnav`) chrome's Admin mega-menu must carry a row for
+    every page the sidebar's inventory lists.
+
+    Its COLUMNS are its own on purpose — it groups by the job you came to do
+    ("Moderation queues", "Onboarding & messaging") where the sidebar groups by
+    section, and the header comment above them records that as a decision. What
+    is not a decision is falling behind: the menu had no `/admin/data-packages`
+    row at all — under a column literally named "Data Packages", for the object
+    the Data section is now built around — and still called `/admin/access`
+    "Groups", a section this release deletes. The admin PAGES are not
+    theme-gated, so a default instance got the new IA behind a menu describing
+    the old one, and the package was unreachable from its nav.
+
+    Coverage is the invariant, not layout: add a section to `admin_nav.py` and
+    this fails until the menu carries it too. The reverse direction (a menu row
+    with no inventory entry) is already guarded by
+    `tests/test_admin_nav_parity.py`.
+    """
+
+    def _menu(self, seeded_app, monkeypatch) -> str:
+        monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)  # default = topnav
+        client = seeded_app["client"]
+        html = client.get("/admin", headers={"Authorization": f"Bearer {seeded_app['admin_token']}"}).text
+        start = html.index('id="adminMenuPanel"')
+        return html[start : html.index("</header>", start)]
+
+    def test_every_ungated_inventory_entry_has_a_row(self, seeded_app, monkeypatch) -> None:
+        menu = self._menu(seeded_app, monkeypatch)
+        expected: list[tuple[str, str]] = []
+        for section in ADMIN_NAV_SECTIONS:
+            entries = section["tabs"] if section.get("href") else section["items"]
+            # `when`-gated rows (Studio) follow an instance flag; the sidebar
+            # hides them too, so they are not part of this contract.
+            #
+            # Query strings are dropped, the same granularity
+            # `tests/test_admin_nav_parity.py` compares this menu at: a lens
+            # (`/admin/access?lens=simulate`) reaches the same PAGE as the row
+            # above it, and the page's own tab strip is where a lens belongs.
+            expected += [(section["label"], e["href"].split("?", 1)[0]) for e in entries if not e.get("when")]
+
+        missing = [f"[{sec}] {href}" for sec, href in expected if f'href="{href}"' not in menu]
+        assert missing == [], (
+            "the topnav Admin menu has no row for these admin_nav.py entries — "
+            f"add one (its columns are its own, but every page needs a door): {missing}"
+        )
+
+    def test_the_package_lens_and_the_access_label(self, seeded_app, monkeypatch) -> None:
+        """The two concrete symptoms of the drift, pinned by name."""
+        menu = self._menu(seeded_app, monkeypatch)
+        assert 'href="/admin/data-packages"' in menu
+        assert ">Access<" in menu
+        assert ">Groups<" not in menu
