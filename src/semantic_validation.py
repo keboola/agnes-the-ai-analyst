@@ -240,7 +240,10 @@ def evaluate_constraints(
     against the metrics actually detected as used and the raw SQL text.
 
     A constraint whose ``metrics`` don't overlap ``used_metrics`` is not on a
-    used metric and is skipped entirely -- it shows up in neither list. A
+    used metric and is skipped entirely -- it shows up in neither list. That
+    includes a constraint with an empty/absent ``metrics`` list: the
+    provisional constraint convention has no model-wide scope, so such an
+    entry is never evaluated (deliberate, not an oversight). A
     constraint on a used metric whose ``type`` is not statically checkable
     (see ``_STATICALLY_CHECKABLE_CONSTRAINT_TYPES``) degrades to a
     ``post_execution_checks`` entry, never a guessed violation. Only a
@@ -293,10 +296,40 @@ def _declared_dialects(metric: dict[str, Any]) -> list[str]:
     return [str(d["dialect"]) for d in dialects if isinstance(d, dict) and d.get("dialect")]
 
 
-def _mixed_dialect_warning(dialects: list[str]) -> str | None:
-    non_ansi = sorted({d for d in dialects if d.strip().lower() != "ansi_sql"}, key=str.lower)
-    if len(non_ansi) <= 1:
+def _canonical_dialect(dialect: str) -> str:
+    return dialect.strip().lower()
+
+
+def _used_metric_dialects(document: dict[str, Any], used_metrics: list[str]) -> list[list[str]]:
+    """Per *used* metric in ``document``, the dialect labels it declares
+    (raw display form; an entry may be empty for a metric with no
+    expressions)."""
+    used = set(used_metrics or [])
+    per_metric: list[list[str]] = []
+    for metric in document.get("metrics") or []:
+        if not isinstance(metric, dict) or metric.get("name") not in used:
+            continue
+        per_metric.append(_declared_dialects(metric))
+    return per_metric
+
+
+def _mixed_dialect_warning(declared: list[str], metric_dialect_lists: list[list[str]]) -> str | None:
+    """Warn only when the used metrics share no dialect to compose in.
+
+    A metric's declared dialects are ALTERNATIVES for one expression, not
+    requirements, so a metric constrains the composition only through the
+    set it declares -- and a metric declaring nothing, or only ``ANSI_SQL``
+    (universally composable per the contract spec's dialect-handling rule),
+    constrains it not at all. The warning fires when the constraining
+    metrics' dialect sets have no common member. Labels come from untrusted
+    imported text and are compared case-insensitively -- ``"DUCKDB"`` and
+    ``"duckdb"`` are one dialect (Devin Review on PR #1319, both points).
+    """
+    constraining = [{_canonical_dialect(d) for d in dialects} - {"ansi_sql"} for dialects in metric_dialect_lists]
+    constraining = [s for s in constraining if s]
+    if not constraining or set.intersection(*constraining):
         return None
+    non_ansi = sorted((d for d in declared if _canonical_dialect(d) != "ansi_sql"), key=str.lower)
     return (
         "Used metrics declare mixed SQL dialects (" + ", ".join(non_ansi) + "); "
         "composing their expressions into one query may not run as written."
@@ -309,40 +342,43 @@ def check_dialects(
     target_engine: str = "duckdb",
 ) -> dict[str, Any]:
     """Dialects declared by the *used* metrics in ``document``, a mixed-dialect
-    warning, and whether every used metric is executable on ``target_engine``.
+    warning (only when those metrics share no composable dialect -- see
+    ``_mixed_dialect_warning``), and whether every used metric is executable
+    on ``target_engine``.
 
-    ``locally_executable`` is ``False`` when a used metric declares
-    expressions but none of them target ``target_engine`` (or, for
+    ``sql_dialects`` is de-duplicated case-insensitively (first-seen display
+    form wins). ``locally_executable`` is ``False`` when a used metric
+    declares expressions but none of them target ``target_engine`` (or, for
     ``duckdb``, ``ANSI_SQL`` -- see ``_LOCAL_DIALECT_ALIASES``). A metric with
     no expressions at all is not flagged here -- nothing to conflict with.
     """
     document = document if isinstance(document, dict) else {}
     target = (target_engine or "duckdb").strip().lower()
     usable = _LOCAL_DIALECT_ALIASES.get(target, frozenset({target}))
-    used = set(used_metrics or [])
+
+    per_metric = _used_metric_dialects(document, used_metrics)
 
     declared: list[str] = []
+    seen: set[str] = set()
     locally_executable = True
-    for metric in document.get("metrics") or []:
-        if not isinstance(metric, dict) or metric.get("name") not in used:
-            continue
-        metric_dialects = _declared_dialects(metric)
+    for metric_dialects in per_metric:
         for dialect in metric_dialects:
-            if dialect not in declared:
+            key = _canonical_dialect(dialect)
+            if key not in seen:
+                seen.add(key)
                 declared.append(dialect)
-        if metric_dialects and not any(d.strip().lower() in usable for d in metric_dialects):
+        if metric_dialects and not any(_canonical_dialect(d) in usable for d in metric_dialects):
             locally_executable = False
 
     return {
         "sql_dialects": declared,
-        "mixed_dialect_warning": _mixed_dialect_warning(declared),
+        "mixed_dialect_warning": _mixed_dialect_warning(declared, per_metric),
         "locally_executable": locally_executable,
     }
 
 
 def _build_summary(
     *,
-    valid: bool,
     used_datasets: list[str],
     used_metrics: list[str],
     violations: list[dict[str, Any]],
@@ -350,15 +386,25 @@ def _build_summary(
     locally_executable: bool,
     mixed_dialect_warning: str | None,
 ) -> str:
+    # Written from the violations list, not the pass/fail flag: a
+    # warning-severity violation keeps valid=True but must still be named
+    # here, never summarized as "no constraint violations detected"
+    # (Devin Review on PR #1319).
+    error_count = sum(1 for v in violations if v.get("severity") == "error")
+    warning_count = len(violations) - error_count
+
     parts: list[str] = []
-    if valid:
-        parts.append(
-            f"Query references {len(used_datasets)} dataset(s) and {len(used_metrics)} "
-            "metric(s) from the semantic layer; no constraint violations detected."
-        )
-    else:
-        error_count = sum(1 for v in violations if v.get("severity") == "error")
+    if error_count:
         parts.append(f"{error_count} constraint violation(s) found -- see 'violations'.")
+    else:
+        base = (
+            f"Query references {len(used_datasets)} dataset(s) and {len(used_metrics)} "
+            "metric(s) from the semantic layer"
+        )
+        if warning_count:
+            parts.append(f"{base}; {warning_count} advisory constraint violation(s) detected -- see 'violations'.")
+        else:
+            parts.append(f"{base}; no constraint violations detected.")
     if post_execution_checks:
         parts.append(
             f"{len(post_execution_checks)} constraint(s) cannot be checked before execution -- "
@@ -428,6 +474,8 @@ def validate_query(
     used_metrics: list[str] = []
     matched_relationships: list[str] = []
     declared_dialects: list[str] = []
+    seen_dialects: set[str] = set()
+    metric_dialect_lists: list[list[str]] = []
     locally_executable = True
     violations: list[dict[str, Any]] = []
     post_execution_checks: list[dict[str, Any]] = []
@@ -437,7 +485,9 @@ def validate_query(
     # name-keyed pool across models — a constraint (or a dialect declaration)
     # in model A must not fire on a same-named metric that only model B
     # defines (Devin Review on PR #1319). The result lists are still unions
-    # across documents, de-duplicated in first-seen order.
+    # across documents, de-duplicated in first-seen order (case-insensitively
+    # for dialect labels); the mixed-dialect warning is computed over the
+    # per-metric dialect sets of every used metric across all documents.
     for document in documents:
         detected = detect_used_objects(sql, document)
         for name in detected["used_datasets"]:
@@ -452,10 +502,13 @@ def validate_query(
 
         dialect_info = check_dialects(document, detected["used_metrics"], target_engine)
         for dialect in dialect_info["sql_dialects"]:
-            if dialect not in declared_dialects:
+            key = _canonical_dialect(dialect)
+            if key not in seen_dialects:
+                seen_dialects.add(key)
                 declared_dialects.append(dialect)
         if not dialect_info["locally_executable"]:
             locally_executable = False
+        metric_dialect_lists.extend(_used_metric_dialects(document, detected["used_metrics"]))
 
         document_violations, document_checks = evaluate_constraints(
             extract_constraints(document), detected["used_metrics"], sql
@@ -463,10 +516,9 @@ def validate_query(
         violations.extend(document_violations)
         post_execution_checks.extend(document_checks)
     valid = not any(v.get("severity") == "error" for v in violations)
-    mixed_dialect_warning = _mixed_dialect_warning(declared_dialects)
+    mixed_dialect_warning = _mixed_dialect_warning(declared_dialects, metric_dialect_lists)
 
     summary = _build_summary(
-        valid=valid,
         used_datasets=used_datasets,
         used_metrics=used_metrics,
         violations=violations,

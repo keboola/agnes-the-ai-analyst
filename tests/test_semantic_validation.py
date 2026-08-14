@@ -318,6 +318,61 @@ class TestCheckDialects:
         result = check_dialects({}, ["revenue"], target_engine="duckdb")
         assert result == {"sql_dialects": [], "mixed_dialect_warning": None, "locally_executable": True}
 
+    def test_no_mixed_warning_when_one_metric_declares_alternative_dialects(self):
+        # Devin Review on PR #1319: a metric's dialects are ALTERNATIVES for
+        # one expression, not requirements -- offering both engines is not a mix.
+        document = {
+            "metrics": [
+                {
+                    "name": "revenue",
+                    "expression": {
+                        "dialects": [
+                            {"dialect": "DUCKDB", "expression": "SUM(amount)"},
+                            {"dialect": "SNOWFLAKE", "expression": "SUM(amount)"},
+                        ]
+                    },
+                }
+            ]
+        }
+        result = check_dialects(document, ["revenue"], target_engine="duckdb")
+        assert set(result["sql_dialects"]) == {"DUCKDB", "SNOWFLAKE"}
+        assert result["mixed_dialect_warning"] is None
+        assert result["locally_executable"] is True
+
+    def test_no_mixed_warning_when_used_metrics_share_a_common_dialect(self):
+        document = {
+            "metrics": [
+                {
+                    "name": "revenue",
+                    "expression": {
+                        "dialects": [
+                            {"dialect": "DUCKDB", "expression": "SUM(amount)"},
+                            {"dialect": "SNOWFLAKE", "expression": "SUM(amount)"},
+                        ]
+                    },
+                },
+                {
+                    "name": "orders_count",
+                    "expression": {"dialects": [{"dialect": "DUCKDB", "expression": "COUNT(*)"}]},
+                },
+            ]
+        }
+        result = check_dialects(document, ["revenue", "orders_count"], target_engine="duckdb")
+        assert result["mixed_dialect_warning"] is None
+
+    def test_case_variant_dialect_labels_count_as_one_dialect(self):
+        # Devin Review on PR #1319: labels come from untrusted imported text --
+        # "DUCKDB" and "duckdb" are one dialect, in the list and in the warning.
+        document = {
+            "metrics": [
+                {"name": "revenue", "expression": {"dialects": [{"dialect": "DUCKDB", "expression": "SUM(a)"}]}},
+                {"name": "orders_count", "expression": {"dialects": [{"dialect": "duckdb", "expression": "COUNT(*)"}]}},
+            ]
+        }
+        result = check_dialects(document, ["revenue", "orders_count"], target_engine="duckdb")
+        assert result["sql_dialects"] == ["DUCKDB"]
+        assert result["mixed_dialect_warning"] is None
+
 
 # --------------------------------------------------------------------------- #
 # validate_query (vendor-shape composition)
@@ -399,6 +454,62 @@ class TestValidateQuery:
         assert "missing_expected_objects" not in result
         assert "unexpected_detected_objects" not in result
 
+    def test_summary_reports_advisory_violations_instead_of_claiming_none(self):
+        # Devin Review on PR #1319: a warning-severity violation keeps
+        # valid=True, but the summary must not claim "no constraint
+        # violations detected" while 'violations' lists one.
+        document = _fixture_document()
+        document["custom_extensions"] = [
+            _agnes_extension(
+                [
+                    {
+                        "name": "prefer_date_filter",
+                        "type": "required_filter",
+                        "rule": "order_date",
+                        "severity": "warning",
+                        "metrics": ["revenue"],
+                    }
+                ]
+            )
+        ]
+        result = validate_query("SELECT SUM(amount) AS revenue FROM orders", [document])
+        assert result["valid"] is True
+        assert [v["name"] for v in result["violations"]] == ["prefer_date_filter"]
+        assert "no constraint violations" not in result["summary"]
+        assert "advisory" in result["summary"]
+
+    def test_no_cross_document_mixed_warning_when_a_common_dialect_exists(self):
+        # One metric per document; both offer DUCKDB (one alongside a
+        # SNOWFLAKE alternative) -- composable, so no mixed-dialect warning.
+        doc_a = {
+            "datasets": [{"name": "orders", "source": "analytics.orders"}],
+            "metrics": [
+                {
+                    "name": "revenue",
+                    "expression": {
+                        "dialects": [
+                            {"dialect": "DUCKDB", "expression": "SUM(amount)"},
+                            {"dialect": "SNOWFLAKE", "expression": "SUM(amount)"},
+                        ]
+                    },
+                }
+            ],
+        }
+        doc_b = {
+            "datasets": [{"name": "customers", "source": "analytics.customers"}],
+            "metrics": [
+                {
+                    "name": "customers_count",
+                    "expression": {"dialects": [{"dialect": "DUCKDB", "expression": "COUNT(*)"}]},
+                }
+            ],
+        }
+        sql = "SELECT revenue, customers_count FROM orders JOIN customers USING (customer_id)"
+        result = validate_query(sql, [doc_a, doc_b])
+        assert set(result["sql_dialects"]) == {"DUCKDB", "SNOWFLAKE"}
+        assert "mixed" not in result["summary"].lower()
+        assert result["locally_executable"] is True
+
 
 class TestOffShapeDocuments:
     """Devin Review on PR #1319: imported documents are untrusted — an
@@ -409,7 +520,7 @@ class TestOffShapeDocuments:
         return {
             "name": "off_shape",
             "metrics": [{"name": "revenue", "expression": 'SUM("amount")'}],
-            "datasets": [{"name": "orders", "table_id": "analytics.orders"}],
+            "datasets": [{"name": "orders", "source": "analytics.orders"}],
         }
 
     def test_check_dialects_tolerates_string_expression(self):
@@ -434,7 +545,7 @@ class TestCrossModelConstraintScoping:
     def _model_b_with_revenue(self) -> dict:
         return {
             "name": "model_b",
-            "datasets": [{"name": "orders_b", "table_id": "analytics.orders_b"}],
+            "datasets": [{"name": "orders_b", "source": "analytics.orders_b"}],
             "metrics": [{"name": "revenue", "expression": {"dialects": [{"dialect": "DUCKDB"}]}}],
         }
 
@@ -443,7 +554,7 @@ class TestCrossModelConstraintScoping:
         # metric itself (plausible in imported data after a partial edit).
         return {
             "name": "model_a",
-            "datasets": [{"name": "unrelated", "table_id": "analytics.unrelated"}],
+            "datasets": [{"name": "unrelated", "source": "analytics.unrelated"}],
             "metrics": [],
             "custom_extensions": [
                 {
