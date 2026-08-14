@@ -1,4 +1,4 @@
-{% extends "base_ds.html" %}
+{% extends "base_admin.html" %}
 {% block title %}MCP tool grants — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block head_extra %}
@@ -96,7 +96,7 @@
 </style>
 {% endblock %}
 
-{% block content %}
+{% block admin_content %}
 <div class="mcp-grants-page">
   <a class="gr-back" id="gr-back-link" href="/admin/mcp-sources">&larr; Back to MCP sources</a>
 
@@ -232,7 +232,7 @@ function renderGroups() {
 
   if (!allGroups.length) {
     list.innerHTML = "";
-    empty.textContent = "No user groups defined. Create one on /admin/groups first.";
+    empty.textContent = "No user groups defined. Create one on /admin/access first.";
     empty.style.display = "block";
     return;
   }

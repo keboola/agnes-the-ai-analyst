@@ -1,0 +1,517 @@
+/* =====================================================================
+   admin_page.css — the shared page vocabulary for admin SURFACES
+   =====================================================================
+   Loaded by both admin bases (base_admin.html, base_admin_page.html)
+   next to admin-nav.css, which owns the chrome around the page (the
+   sidebar column, `.admin-main`, the `.admin-tabs` strip). This sheet
+   owns what is INSIDE that column and is the same on every surface:
+
+       h1 + lede            ← `.page-header--plain` (style-custom.css)
+       tabs                 ← `.admin-tabs` (admin-nav.css)
+       context strip        ← `.apg-strip`      · optional
+       section head         ← `.apg-sechead`    · name / count / actions
+       toolbar              ← `.fbar` + `.apg-bar` (filter_toolbar.css)
+       content              ← `.data-table`, `.ds-card`, cards…
+
+   Why it exists: People, Data and Access each grew a private copy of
+   the same four objects (`.pp-sechead` / `.gp-sechead` /
+   `.ds-section-header`; `.idp-strip` / `.ds-semantic-summary`;
+   `.pp-bar` / `.gp-bar`), each a few pixels and one type size from the
+   others. Three copies of one object is three chances to drift, and
+   the drift is what made three pages of the same product read as three
+   products. Nothing here is new design — it is the Library's section
+   head and the shared filter bar, named once so an admin page can use
+   them instead of re-deriving them.
+
+   Rules: every colour is a `--ds-*` token; no raw hex; nothing here
+   restyles a shared component (`.fbar`, `.data-table`, `.ds-card`,
+   `.btn`) — it only places one.
+   ===================================================================== */
+
+/* ── The page's top clearance ─────────────────────────────────────────
+   An admin page begins where /library and /agents begin. Those two are
+   the app's other two inventory surfaces, and they open on 32px above
+   the title (`.idx-head { padding: 32px 32px 0 }` in style-custom.css) —
+   the breath that makes a page read as starting rather than as having
+   been cut off at the top of the window.
+
+   Admin pages had 16px: the container's own top padding and nothing
+   else, because `.admin-main` is a grid cell rather than a padded head
+   band, so no rule had ever set one. Sixteen pixels is not a decision
+   anyone made, it is the gutter left over.
+
+   `--space-4` here + `--space-4` on `.container` = the `--space-8` the
+   index surfaces use. It is stated as the DIFFERENCE rather than as a
+   flat 32px on purpose: the container's padding is what positions the
+   sidebar column too, and a page that set 32px here on top of a
+   container that later changes would drift away from `.idx-head` again.
+
+   Only the CONTENT column is padded, not `.admin-split`. That is the
+   same shape as the index pages, where the rail is chrome that starts
+   at the top of the window and the head below it takes the clearance —
+   the admin sidebar is the second tier of that same chrome. */
+.admin-main { padding-top: var(--space-4); }
+
+/* ── The head's clearance ─────────────────────────────────────────────
+   `.page-header--plain` closes with 22px of padding, which is the right
+   gap to a first PARAGRAPH of content. The tab strip is a ruled band and
+   reads as part of the header block, so where one follows the head the
+   two close up. */
+.admin-main .page-header--plain:has(+ .admin-tabs) { padding-bottom: 14px; }
+
+/* ── Back to the surface ─────────────────────────────────────────────
+   A detail page's first line: the way back to the list it was reached
+   from. ABOVE the title, not beside it — the title is the subject of the
+   page, and a link sharing its line reads as a sibling of the heading
+   while pushing the heading off the page's own left margin. Above, it is
+   what it is: the breadcrumb you arrived on, then the thing you came for.
+
+   It names the DESTINATION ("People"), not the act of leaving ("Back to
+   users") — the destination is the word the reader is already looking for,
+   and it matches the sidebar row that will light up when they land.
+
+   Five detail pages had grown a private copy of this link — `.gd-back`,
+   `.src-back`, `.det-back`, `.adopt-back`, `.gr-back` — each a pixel, a
+   type size and a hover colour from the others. This is that link, once. */
+.apg-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0 0 10px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ds-text-secondary);
+    text-decoration: none;
+}
+.apg-back:hover { color: var(--ds-primary); }
+.apg-back:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
+    border-radius: var(--ds-radius-btn);
+}
+
+/* ── Context strip ───────────────────────────────────────────────────
+   One line of standing FACTS about the surface, above the work: where
+   these accounts come from, when the semantic layer last synced. Not a
+   notice (`.pnote` is the component for "read this before you act") and
+   never a metric card — it is a sentence with the one or two links that
+   act on it pinned to its end.
+
+   Neutral by default. A tint here means "worth acting on": an admin who
+   sees green for "nothing is wrong" learns to read the strip as
+   decoration, and then misses the day it turns amber. */
+.apg-strip {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 10px 14px;
+    margin: 0 0 14px;
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: var(--ds-radius-btn);
+    font-size: 13px;
+    line-height: 1.45;
+    color: var(--ds-text-secondary);
+}
+.apg-strip b,
+.apg-strip strong { color: var(--ds-text-primary); font-weight: 600; }
+.apg-strip code { font-size: 12px; }
+
+/* The SENTENCE is the strip's flexible child, and its basis is ZERO. Without
+   that, a long sentence wraps BELOW its own leading glyph, leaving the glyph
+   sitting alone on a line above it — two stacked fragments instead of one
+   line of standing fact.
+
+   `flex: 1 1 auto` does not fix it and is the tempting wrong answer:
+   flexbox decides WRAPPING from each item's hypothetical main size, which for
+   an auto basis is the text's max-content width, so the line breaks before
+   shrinking is ever considered (`min-width: 0` only helps once the item is
+   already on the line). A zero basis contributes nothing to that decision and
+   then grows into whatever the mark and the trailing links leave.
+
+   Both of those keep their own `flex: 0 0 auto`, hence the exclusions. */
+.apg-strip > span:not(.apg-strip__mark):not(.apg-strip__end) {
+    flex: 1 1 0;
+    min-width: 0;
+}
+
+/* A leading identity mark — a provider's initial, a connector's glyph.
+   Sized to the strip's line, never to a card's icon tile. */
+.apg-strip__mark {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 800;
+    background: var(--ds-accent-info-bg);
+    color: var(--ds-accent-info-ink);
+}
+
+/* The strip's own actions — links, pushed to the end of the line. */
+.apg-strip__end {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex: 0 0 auto;
+}
+.apg-strip__end a { font-size: 12.5px; font-weight: 600; }
+
+/* Two states worth tinting, in the accent vocabulary the `.flash` family
+   and the status pills already use — so "needs attention" reads the same
+   here as it does anywhere else in the product. */
+.apg-strip--warn {
+    background: var(--ds-accent-warn-bg);
+    border-color: var(--ds-accent-warn-line);
+    color: var(--ds-accent-warn-ink);
+}
+.apg-strip--danger {
+    background: var(--ds-accent-danger-bg);
+    border-color: var(--ds-accent-danger-line);
+    color: var(--ds-accent-danger-ink);
+}
+/* Inside a tinted strip every part is the accent's ink — a `b` that stayed
+   `--ds-text-primary` reads as a hole in the sentence. */
+.apg-strip--warn b,
+.apg-strip--warn strong,
+.apg-strip--warn a,
+.apg-strip--danger b,
+.apg-strip--danger strong,
+.apg-strip--danger a { color: inherit; }
+.apg-strip--warn a,
+.apg-strip--danger a { text-decoration: underline; }
+
+/* A strip whose content wraps to several lines (a setup instruction, a
+   stack trace of a failed sync) aligns to the top instead of centring a
+   paragraph against its glyph. */
+.apg-strip--block { align-items: flex-start; }
+
+/* ── Section head ────────────────────────────────────────────────────
+   The Library's `.lib-section-head`, verbatim in structure and type
+   scale: what this block of the page is, how many things are in it, and
+   — pinned right — the actions that change it.
+
+   Every part is optional. A page with one section and a toolbar under
+   it often needs only the count; a page with two sections names both. */
+.apg-sechead {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin: 0 0 12px;
+}
+.apg-sechead__title {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--ds-text-primary);
+}
+/* The count is METADATA about the list, not a metric: quiet, tabular so
+   it doesn't jitter as it updates, and never in a box of its own. */
+.apg-sechead__count {
+    font-size: 13px;
+    color: var(--ds-text-muted);
+    font-variant-numeric: tabular-nums;
+}
+/* A qualification of the number ("25 of 300") stands one shade in front
+   of it — it is the part a reader must not skim past. */
+.apg-sechead__count b { color: var(--ds-text-secondary); font-weight: 600; }
+.apg-sechead__end {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
+}
+
+/* One sentence under the head, for a section whose job isn't obvious from
+   its name. A SIBLING of the head rather than a third flex item in it: as a
+   flex child its line-breaking size is clamped by the 68ch measure, so it
+   fitted beside the action button on a wide column instead of dropping to
+   its own line. Outside the row it is simply a paragraph, and the head
+   closes up above it. */
+.apg-sechead:has(+ .apg-sec-desc) { margin-bottom: 4px; }
+.apg-sec-desc {
+    margin: 0 0 14px;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--ds-text-secondary);
+    max-width: 68ch;
+}
+
+/* ── Toolbar ─────────────────────────────────────────────────────────
+   The bar itself is `.fbar` (filter_toolbar.css) — the same component,
+   the same control heights, radii and focus rings the Library runs. The
+   Library floats it in a bottom dock because it scrolls a long
+   inventory; an admin surface is read top-down, so here the same bar
+   sits statically above the rows. All this adds is the placement. */
+.apg-bar { margin: 0 0 14px; }
+/* The shared search caps at 420px, so on a wide admin column the primary
+   button would otherwise sit mid-bar with dead space behind it. This
+   pushes it to the edge — the reading order the dock gets from its own
+   width. */
+.apg-bar__gap { flex: 1 1 auto; }
+
+/* ── Between two sections ────────────────────────────────────────────
+   Deliberately NOT a rule here. Sections stand apart by air rather than
+   by a border or a card (the head is already a heading, and a page whose
+   body is cards must not put a card around the cards) — but "the next
+   section" has a different shape on every page, so the gap is set by the
+   page's own wrapper (`.adp-section + .adp-section`, `.sl-page`) at the
+   ~24-28px both use. A selector guessing at sibling order from here
+   would fire on the head that merely has a paragraph under it. */
+
+/* ── Actions menu ────────────────────────────────────────────────────
+   The overflow menu an object carries: one trigger, a popover of verbs.
+
+   It exists because a row of five outlined buttons is not a hierarchy —
+   `Test`, `Browse & register tables`, `Set as default`, `Rotate token`,
+   `Delete` all shouted equally on every source card, so the reader had
+   to read five labels to find the one they wanted and the destructive
+   one sat in the same row as the routine ones. Behind a trigger they
+   become a LIST, which is a shape the eye scans instead of parses, and
+   `Delete` can be separated by a rule where momentum cannot reach it.
+
+   The trigger is a labelled button, so it wears `--ds-radius-btn` like
+   every other labelled button; the popover is `position: fixed`, parked
+   against the trigger's viewport rect, because the cards and tables it
+   opens from clip their own overflow (rounded corners) and would cut it
+   off on the last row. Dismissal is therefore deliberately broad —
+   outside click, Escape, scroll, resize — since a fixed popover does not
+   travel with the object it belongs to, and a menu pointing at the wrong
+   row is the one mistake a Delete item must not make.
+
+   People's `.pp-more__*` (admin_users.html) is this same object with a
+   `⋯` trigger; it predates this sheet and should fold into `.apg-menu`
+   next time that page is touched. TODO(#admin-redesign): one menu. */
+.apg-menu__btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px 5px 12px;
+    border: 1px solid var(--ds-border);
+    border-radius: var(--ds-radius-btn);
+    background: var(--ds-surface);
+    color: var(--ds-text-secondary);
+    font: inherit;
+    font-size: 12.5px;
+    font-weight: 600;
+    line-height: 1.4;
+    cursor: pointer;
+}
+.apg-menu__btn:hover,
+.apg-menu__btn[aria-expanded="true"] {
+    border-color: var(--ds-text-muted);
+    color: var(--ds-text-primary);
+}
+.apg-menu__btn:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
+}
+/* The chevron is the affordance that survives greyscale: it says "this
+   opens something" without spending the brand accent at rest. */
+.apg-menu__btn .ui-ico { opacity: 0.7; }
+
+.apg-menu__pop {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 90;
+    min-width: 220px;
+    padding: 6px;
+    background: var(--ds-surface);
+    border: 1px solid var(--ds-border);
+    border-radius: 12px;
+    box-shadow: var(--ds-shadow-md);
+}
+.apg-menu__pop[hidden] { display: none; }
+.apg-menu__item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 8px 10px;
+    border: none;
+    border-radius: 8px;
+    background: none;
+    font: inherit;
+    font-size: 13.5px;
+    font-weight: 500;
+    color: var(--ds-text-primary);
+    text-align: left;
+    text-decoration: none;
+    white-space: nowrap;
+    cursor: pointer;
+}
+.apg-menu__item:hover {
+    background: color-mix(in srgb, var(--ds-text-primary) 6%, transparent);
+    color: var(--ds-primary);
+}
+.apg-menu__item:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: calc(var(--ds-focus-outline-offset) * -1);
+}
+/* The item's trailing note — "vault", "off", "→ Instance secrets". It is
+   the current STATE of the thing the verb acts on, so the verb can stay a
+   verb instead of growing a parenthesis. */
+.apg-menu__item .note {
+    margin-left: auto;
+    padding-left: 16px;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--ds-text-muted);
+}
+.apg-menu__item--danger { color: var(--ds-accent-danger-ink); }
+.apg-menu__item--danger:hover {
+    background: var(--ds-accent-danger-bg);
+    color: var(--ds-accent-danger-ink);
+}
+.apg-menu__sep { height: 1px; margin: 5px 6px; background: var(--ds-border); }
+/* A one-line explanation of why a verb is absent, for a source this page
+   does not own. Says where the control lives instead of a dead item. */
+.apg-menu__note {
+    padding: 6px 10px 4px;
+    font-size: 11.5px;
+    line-height: 1.45;
+    color: var(--ds-text-muted);
+    white-space: normal;
+    max-width: 260px;
+}
+
+/* A closing footnote — where the neighbouring thing lives, in the one
+   place the reader is standing when they wonder. */
+.apg-foot {
+    margin-top: 16px;
+    font-size: 12.5px;
+    color: var(--ds-text-secondary);
+}
+
+/* ── Flow strip ──────────────────────────────────────────────────────
+   The Data section's lenses, drawn as what they are: one pipeline.
+
+   `.tab-strip` (ds.tabs) draws PEERS — a row of equal choices, which is
+   right for People and for Access. It is wrong for Data, where Sources,
+   Tables and Packages are three views of one journey (where data comes in →
+   what there is → who receives it) and reading them as siblings makes
+   "why is Sources next to Packages?" an unanswerable question.
+
+   The arrows carry the direction; each item's second line carries the stage.
+   Anything not in the chain (the semantic registry, which sits ACROSS the
+   pipeline rather than in it) renders past `.tab-flow__break` with no arrow
+   into it — same strip, visibly not part of the sentence.
+
+   Rendered only where a tab declares a `purpose` (see admin_nav.py); every
+   other section keeps `.tab-strip` untouched. */
+.tab-flow {
+    display: flex;
+    align-items: stretch;
+    flex-wrap: wrap;
+    gap: 2px;
+    margin: 0 0 18px;
+    border-bottom: 1px solid var(--ds-border);
+    padding-bottom: 0;
+}
+/* ONE LINE. The item briefly stacked a name over a purpose caption; the
+   names carry the stage now, so this is the same height and weight as
+   `.tab-strip__item` — the two variants differ in their connectors, not in
+   their density. */
+.tab-flow__item {
+    display: inline-flex;
+    align-items: center;
+    padding: 9px 14px 10px;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    font-size: 13.5px;
+    font-weight: 600;
+    text-decoration: none;
+    color: var(--ds-text-secondary);
+    border-radius: var(--ds-radius-btn) var(--ds-radius-btn) 0 0;
+}
+.tab-flow__item:hover { background: var(--ds-surface-dim); }
+.tab-flow__item.is-active {
+    color: var(--ds-primary-dark);
+    border-bottom-color: var(--ds-primary);
+}
+
+.tab-flow__arrow {
+    display: flex;
+    align-items: center;
+    color: var(--ds-text-muted);
+    font-size: 13px;
+    user-select: none;
+}
+/* Where the pipeline ends and a lens that merely belongs to the section
+   begins. A rule, not a gap — a gap at this width reads as accidental. */
+.tab-flow__break {
+    align-self: center;
+    width: 1px;
+    height: 22px;
+    margin: 0 12px;
+    background: var(--ds-border);
+}
+
+/* Below ~640px the four items + arrows cannot hold one line, and a wrapped
+   arrow points across a line break at nothing. The strip becomes a plain
+   scrolling row of names; the purposes stay, the direction is carried by
+   order alone. */
+@media (max-width: 640px) {
+    .tab-flow { flex-wrap: nowrap; overflow-x: auto; }
+    .tab-flow__arrow, .tab-flow__break { display: none; }
+    .tab-flow__item { flex: 0 0 auto; }
+}
+
+/* ── The add-row at the foot of a list ─────────────────────────────────────
+   Making the thing a list is missing is part of reading that list, not a
+   toolbar action about it — so it is the list's LAST ROW: same height, same
+   radius, same left gutter as the rows above it, and dashed rather than
+   filled because it is a place that does not exist yet. A filled secondary
+   button in the same slot reads as chrome that wandered into the content.
+
+   Origin: `.ax-gnew` on /admin/access (the group selector). Promoted here
+   when the invite drawer on /admin/users needed the same row for the same
+   act; /admin/access still carries its own copy of these two rules and
+   should fold onto this one next time that file is open.
+
+   `--tile` is the width of whatever leads a row in THIS list — a 32px
+   avatar on Access, a 15px checkbox in a pick-list — so the label lands in
+   the same column as the names above it instead of near them. */
+.apg-addrow {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    margin-top: 4px;
+    padding: 9px 10px;
+    border: 1px dashed var(--ds-border);
+    background: transparent;
+    border-radius: var(--ds-radius-btn);
+    cursor: pointer;
+    font: inherit;
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--ds-text-secondary);
+    text-align: left;
+}
+.apg-addrow:hover { background: var(--ds-surface-sunken); color: var(--ds-text-primary); }
+.apg-addrow:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
+}
+.apg-addrow__plus {
+    width: var(--tile, 24px);
+    height: var(--tile, 24px);
+    flex: 0 0 auto;
+    border-radius: 7px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 15px;
+    font-weight: 700;
+    background: var(--ds-surface-sunken);
+    color: var(--ds-text-secondary);
+}

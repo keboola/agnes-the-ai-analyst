@@ -25,6 +25,11 @@
 
   - The hero renders only when `page_hero_title` is set (`_page_hero.html`
     self-guards), so a page can omit it.
+  - `{% block page_prehead %}` is the ONE line above the heading. It exists for
+    the way BACK off a detail page: a `.apg-back` link belongs on the page's
+    first line, naming where it returns to, and every page that rendered it
+    inside `{% block page %}` put it *under* the title it was supposed to
+    precede. Nothing else goes here — a toolbar is `{% block toolbar %}`.
   - Opt into a wider shell with `{% block container_modifier %}container--wide{% endblock %}`
     (inherited from base_ds.html) — never a per-page `max-width` override.
   - Leaf pages should carry NO inline `<style>` and NO `.container:has()` /
@@ -33,6 +38,7 @@
 {% extends "base_ds.html" %}
 
 {% block content %}
+{% block page_prehead %}{% endblock %}
 {% include "_page_hero.html" %}
 {% block toolbar %}{% endblock %}
 {% block page %}{% endblock %}
