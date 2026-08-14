@@ -489,6 +489,36 @@ function stripNextActionsFence(markdown) {
   return extractNextActions(markdown).text;
 }
 
+/** One-click follow-ups under the LATEST assistant answer. Exactly one chip
+ *  row exists at a time — a new row (or a new user message) removes the old
+ *  one, mirroring how suggestions age out the moment the conversation moves. */
+function renderNextActions(bubble, actions) {
+  _clearNextActions();
+  if (!bubble || !actions || actions.length === 0) return;
+  const row = document.createElement("div");
+  row.className = "cloud-chat-next-actions";
+  for (const action of actions) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "cloud-chat-next-action";
+    btn.textContent = action;
+    btn.addEventListener("click", () => {
+      const ta = $("chat-input");
+      if (!ta) return;
+      ta.value = action;
+      ta.focus();
+      const form = $("chat-form");
+      if (form) form.dispatchEvent(new SubmitEvent("submit", { cancelable: true }));
+    });
+    row.appendChild(btn);
+  }
+  bubble.appendChild(row);
+}
+
+function _clearNextActions() {
+  document.querySelectorAll(".cloud-chat-next-actions").forEach(el => el.remove());
+}
+
 /** The one way answer markdown reaches the DOM: both wire-format trailers
  *  removed, then sanitized. Streaming and both final render paths go through
  *  here so a fence can never reach the screen from one path and not another. */
@@ -1118,6 +1148,16 @@ async function loadAndRenderHistory(chatId) {
     for (const m of history) {
       renderMessage(m);
       if (m.role === "user") lastUserText = m.content || "";
+    }
+    // A reload must end in the same state as the live turn: the follow-up
+    // chips belong under the newest assistant answer. renderMessage stripped
+    // the trailer from the DOM; re-extract it from the raw content here.
+    const lastAssistantMsg = [...history].reverse().find(m => m.role === "assistant");
+    if (lastAssistantMsg && lastAssistantArticle) {
+      renderNextActions(
+        lastAssistantArticle.querySelector(".msg-bubble"),
+        extractNextActions(lastAssistantMsg.content || "").actions,
+      );
     }
   }
   // Re-draw any approval still waiting for an answer. The wipe above is a
@@ -1906,6 +1946,7 @@ function finalizeAssistantMessage(frame) {
     // verdict — stamped onto this frame before the fan-out and recomputed
     // identically by GET /sessions/{id}/messages.
     renderSourcesChips(currentAssistantBody.closest(".msg-bubble"), frame && frame.sources);
+    renderNextActions(currentAssistantBody.closest(".msg-bubble"), extractNextActions(content).actions);
     attachMessageActions(currentAssistantArticle, stripNextActionsFence(content));
     _markLatestAssistant(currentAssistantArticle);
     maybeMakeCollapsible(currentAssistantArticle);
@@ -2742,6 +2783,8 @@ async function submitUserMessage(text) {
   // 3. Now ``#chat-messages`` is stable — render the user bubble and
   //    the thinking placeholder so the user sees their submit landed
   //    and the agent is working on it.
+  // The conversation moved on — yesterday's follow-up chips are stale now.
+  _clearNextActions();
   renderMessage({ role: "user", content: text });
   lastUserText = text;
 

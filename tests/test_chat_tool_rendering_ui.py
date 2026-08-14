@@ -9,6 +9,7 @@ shipped functions, not copies.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -84,3 +85,30 @@ def test_extract_next_actions_executable():
     assert res["two_blocks"]["actions"] == ["x", "y"]
     assert "```sql" in res["code_block_kept"]["text"], "an ordinary code block must survive"
     assert len(res["caps_capped"]["actions"]) == 3, "at most 3 buttons"
+
+
+def test_next_action_buttons_render_and_are_singular():
+    js = _read(CHAT_JS)
+    assert "function renderNextActions" in js
+    assert "function _clearNextActions" in js
+    body = js[js.index("function renderNextActions") : js.index("function _clearNextActions")]
+    assert "textContent" in body and "innerHTML" not in body, "suggestion text is model output — textContent only"
+    # finalize renders them; a new user message clears them.
+    assert re.search(r"renderNextActions\(", js[js.index("function finalizeAssistantMessage") :]), (
+        "finalizeAssistantMessage must render the chips"
+    )
+    assert js.count("_clearNextActions()") >= 2, "cleared on new turn AND before re-render"
+
+
+def test_next_action_click_reuses_the_suggestion_flow():
+    js = _read(CHAT_JS)
+    body = js[js.index("function renderNextActions") : js.index("function _clearNextActions")]
+    assert 'dispatchEvent(new SubmitEvent("submit"' in body, (
+        "clicking a chip submits like the existing suggested-prompt buttons"
+    )
+
+
+def test_next_action_chip_styles_use_ds_tokens():
+    css = _read(CHAT_CSS)
+    assert ".cloud-chat-next-actions" in css
+    assert ".cloud-chat-next-action" in css

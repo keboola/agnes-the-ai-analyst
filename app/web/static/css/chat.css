@@ -1458,6 +1458,33 @@ pre.code-block-wrap code .hljs-deletion {
   outline-offset: var(--ds-focus-outline-offset);
 }
 
+/* Next-action chips — the model's suggested follow-ups, lifted out of the
+   ```next_actions trailer and rendered under the latest answer only. */
+.cloud-chat-next-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.cloud-chat-next-action {
+  border: 1px solid var(--ds-border);
+  background: var(--ds-surface);
+  color: var(--ds-text-primary);
+  border-radius: var(--ds-radius-pill);
+  padding: 4px 12px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  text-align: left;
+}
+.cloud-chat-next-action:hover {
+  border-color: var(--ds-primary);
+  color: var(--ds-primary);
+}
+.cloud-chat-next-action:focus-visible {
+  outline: var(--ds-focus-outline);
+  outline-offset: var(--ds-focus-outline-offset);
+}
+
 .cloud-chat-capabilities-footer {
   margin-top: var(--space-1);
   padding-top: var(--space-4);
