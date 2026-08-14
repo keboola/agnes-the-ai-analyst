@@ -1,0 +1,194 @@
+name: Tag release
+
+# Create the semver tag + GitHub Release for a release-cut that has already
+# merged to main. docs/RELEASING.md's post-merge step ("tag vX.Y.Z on the
+# merge commit + create the GitHub Release") normally runs from an
+# operator's clone — but remote/CI-managed operator environments commonly
+# allow branch pushes while refusing tag pushes, so this makes the step
+# dispatchable from anywhere the Actions API is reachable. Server-side it
+# verifies what a local operator would eyeball: the target commit is on
+# main, the tag matches pyproject.toml's version at that commit, and the
+# CHANGELOG section for the version exists (it becomes the Release body).
+#
+# Re-dispatching is safe: an already-tagged-and-released version is a
+# no-op, a tag that exists without its Release gets the Release created
+# (repairing a half-finished run), and a tag pointing at a different
+# commit refuses — release tags never move.
+#
+# Semver tags deliberately do NOT trigger release.yml (its `on:` has no tag
+# events — the stable-* image build rides the main-branch push), so
+# creating the tag here queues no duplicate build. keboola-deploy.yml
+# reacts to infra tags only, not vX.Y.Z.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Semver tag to create (e.g. v0.83.14)"
+        type: string
+        required: true
+      target:
+        description: "Commit SHA to tag. Must be reachable from main. Defaults to main's HEAD."
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: write # create the tag ref + the Release
+
+jobs:
+  tag-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # ancestry check needs history
+          fetch-tags: true # the existing-tag guard must see server-side tags
+
+      - name: Validate inputs against main
+        id: validate
+        env:
+          TAG: ${{ inputs.tag }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::tag must look like vX.Y.Z, got '$TAG'"; exit 1; }
+          SHA="${TARGET:-$(git rev-parse origin/main)}"
+          SHA=$(git rev-parse --verify "${SHA}^{commit}") || { echo "::error::target '$TARGET' is not a commit"; exit 1; }
+          git merge-base --is-ancestor "$SHA" origin/main || { echo "::error::$SHA is not reachable from main"; exit 1; }
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            EXISTING=$(git rev-parse "refs/tags/$TAG^{commit}")
+            if [ "$EXISTING" != "$SHA" ]; then
+              echo "::error::$TAG already exists at $EXISTING (wanted $SHA) — refusing to move a release tag"
+              exit 1
+            fi
+            # Same tag, same commit: fall through — the create step still
+            # checks whether the RELEASE exists, so a half-finished prior
+            # run (tag created, Release missing) is repaired by re-running.
+            echo "tag $TAG already points at $SHA"
+          fi
+          VERSION="${TAG#v}"
+          # Materialize the blobs before scanning them: piping `git show`
+          # into an early-exiting reader (grep -q, head -1, awk exit) dies
+          # on SIGPIPE under pipefail once the reader closes the pipe with
+          # megabytes still buffered — CHANGELOG.md is ~2 MB and the match
+          # sits near the top, so that is the COMMON case, not an edge.
+          git show "$SHA:pyproject.toml" > /tmp/pyproject-at-sha.toml
+          git show "$SHA:CHANGELOG.md" > /tmp/changelog-at-sha.md
+          PYVER=$(awk -F'"' '/^version = /{print $2; exit}' /tmp/pyproject-at-sha.toml)
+          [ "$PYVER" = "$VERSION" ] || { echo "::error::pyproject.toml at $SHA says $PYVER, tag wants $VERSION — tag the release-cut commit"; exit 1; }
+          grep -q "^## \[$VERSION\]" /tmp/changelog-at-sha.md || { echo "::error::CHANGELOG.md at $SHA has no ## [$VERSION] section"; exit 1; }
+          # The two checks above pass for EVERY commit between this cut and
+          # the next one (pyproject's version stays at the just-released
+          # value until the next cut), so alone they let a blank target
+          # stamp vX.Y.Z onto later, unreleased work at main's HEAD. Pin
+          # the tag to the commit that INTRODUCED the section: the first
+          # parent must not know this version's heading yet. (First parent
+          # is main's previous tip for a squash or merge commit, which is
+          # exactly the history the cut landed on.)
+          PARENT=$(git rev-parse -q --verify "$SHA^" || true)
+          if [ -n "$PARENT" ] && git show "$PARENT:CHANGELOG.md" > /tmp/changelog-at-parent.md 2>/dev/null; then
+            if grep -q "^## \[$VERSION\]" /tmp/changelog-at-parent.md; then
+              echo "::error::$SHA is not the release-cut commit for $VERSION — its parent already carries ## [$VERSION]. Pass target=<the release-cut commit: the commit that bumped pyproject to $VERSION — the squash/merge commit on a squash-merged train, the branch's own cut commit when the cut merged unsquashed>."
+              exit 1
+            fi
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Extract CHANGELOG section for the Release body
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          # Reads the file materialized by the validate step; awk's early
+          # exit is harmless on a regular file (no upstream pipe to break).
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" {inside=1; next}
+            inside && /^## \[/ {exit}
+            inside {print}
+          ' /tmp/changelog-at-sha.md > /tmp/release-body.md
+          # The API rejects bodies over ~125k characters, and real sections
+          # do exceed that (several historical ones run 150-350 KB) — so
+          # TRUNCATE at a line boundary and point at the CHANGELOG rather
+          # than refusing to tag the biggest releases, which is exactly when
+          # this workflow matters most.
+          if [ "$(wc -c < /tmp/release-body.md)" -ge 120000 ]; then
+            awk 'BEGIN{total=0} {total += length($0) + 1; if (total >= 118000) exit; print}' \
+              /tmp/release-body.md > /tmp/release-body-trunc.md
+            printf '\n\n… truncated — see the full `## [%s]` section in CHANGELOG.md.\n' "$VERSION" >> /tmp/release-body-trunc.md
+            mv /tmp/release-body-trunc.md /tmp/release-body.md
+            echo "::warning::CHANGELOG section exceeded the Release body limit; truncated with a pointer to CHANGELOG.md"
+          fi
+
+      - name: Create tag + GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          SHA: ${{ steps.validate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # "Latest" must follow version order, not dispatch order: gh's
+          # make_latest default would let a backfilled older version steal
+          # the Latest badge from the real newest release. (sort -V | tail
+          # is safe under pipefail — tail reads its whole input, no
+          # early-exit SIGPIPE.)
+          HIGHEST=$(printf '%s\n' "$TAG" $(git tag -l 'v[0-9]*') | sort -V | tail -1)
+          if [ "$HIGHEST" = "$TAG" ]; then LATEST_FLAG="--latest=true"; else LATEST_FLAG="--latest=false"; fi
+          # Three states, three actions. `gh release view` also succeeds for
+          # DRAFTS — and GitHub demotes a published release to a draft when
+          # its tag is deleted, which is exactly the docs/RELEASING.md
+          # re-tag recovery flow — so "a release exists" alone must not
+          # no-op: that would report green with no tag created.
+          STATE=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null || echo "absent")
+          case "$STATE" in
+            false)
+              # A PUBLISHED release cannot exist without its tag ref
+              # (deleting the tag is what demotes it to draft), so this is
+              # the one genuinely-done state.
+              echo "release $TAG already published — nothing to do"
+              ;;
+            true)
+              # Draft left behind by a deleted tag: publishing it re-creates
+              # the tag at --target, and the notes/title are refreshed from
+              # the validated CHANGELOG rather than trusting the stale draft.
+              gh release edit "$TAG" \
+                --draft=false \
+                --target "$SHA" \
+                --title "$TAG" \
+                "$LATEST_FLAG" \
+                --notes-file /tmp/release-body.md
+              echo "published existing draft $TAG at $SHA"
+              ;;
+            *)
+              # gh release create makes the tag ref server-side when it does
+              # not exist yet (no git push involved) and attaches to the
+              # existing tag when it does — which is what repairs a run that
+              # tagged but never released.
+              gh release create "$TAG" \
+                --target "$SHA" \
+                --title "$TAG" \
+                "$LATEST_FLAG" \
+                --notes-file /tmp/release-body.md
+              echo "created $TAG at $SHA"
+              ;;
+          esac
+          # Trust nothing above: verify the tag ref actually exists server-side
+          # and points at the validated commit. The draft-publish branch in
+          # particular creates the ref through `gh release edit --target`,
+          # and a gh that silently ignored --target would otherwise leave a
+          # GREEN run with no tag — the exact failure this workflow's
+          # re-dispatch guarantees are built to prevent.
+          ACTUAL=$(git ls-remote origin "refs/tags/$TAG" | awk '{print $1; exit}')
+          if [ -z "$ACTUAL" ]; then
+            echo "::error::post-check: refs/tags/$TAG does not exist on the remote after a green publish path"
+            exit 1
+          fi
+          # Annotated tags: ls-remote reports the tag object; peel to compare commits.
+          PEELED=$(git ls-remote origin "refs/tags/$TAG^{}" | awk '{print $1; exit}')
+          [ -n "$PEELED" ] || PEELED="$ACTUAL"
+          if [ "$PEELED" != "$SHA" ]; then
+            echo "::error::post-check: $TAG points at $PEELED, expected $SHA"
+            exit 1
+          fi
+          echo "post-check: $TAG verified at $SHA"
