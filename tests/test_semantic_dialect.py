@@ -25,3 +25,9 @@ def test_empty_expression_is_unusable():
     sql, reason = resolve_expression({"dialects": []})
     assert sql is None
     assert reason
+
+
+def test_dialect_entry_without_a_name_is_ignored_not_a_crash():
+    sql, reason = resolve_expression({"dialects": [{"dialect": None, "expression": "SUM(a)"}]})
+    assert sql is None
+    assert reason
