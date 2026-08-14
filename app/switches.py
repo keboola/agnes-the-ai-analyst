@@ -260,6 +260,24 @@ SWITCHES: tuple[Switch, ...] = (
         ),
     ),
     Switch(
+        name="mcp_session_pool",
+        config_keys=("mcp", "session_pool"),
+        env_var="AGNES_MCP_SESSION_POOL",
+        kind="bool",
+        default=True,
+        effect="live",
+        category="operations",
+        editable=True,
+        description=(
+            "Keep a stdio MCP server's process warm between tool calls instead of starting "
+            "one per call (~6 s of upstream import time each). Read per call, so a save "
+            "applies to the next tool call; sessions already warm age out on their own. Turn "
+            "off to go back to a process per call — the debugging shape, and the answer for "
+            "an upstream that cannot survive being reused. Only stdio sources are affected; "
+            "http/sse have no spawn to amortize."
+        ),
+    ),
+    Switch(
         name="mcp_connector_ui",
         config_keys=("mcp", "connector_ui_enabled"),
         env_var="AGNES_MCP_CONNECTOR_UI_ENABLED",
