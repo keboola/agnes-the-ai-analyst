@@ -85,6 +85,16 @@
    table stays the single source of truth and grid view inherits filtering,
    sorting and the no-results state for free. The choice persists in
    localStorage under `storageKey`.
+
+   The handle `init()` returns carries `destroy()`, for a page whose ROWS AND
+   MENU are both rendered by a fetch (the admin table registry): the option set
+   changes with the data, so the menu has to be rebuilt, and rebuilding it
+   throws away the listeners this engine attached to it. `destroy()` releases
+   everything init took — including the document/window listeners, which
+   outlive any re-render — so `destroy(); rebuildMenu(); init()` is a clean
+   swap rather than a slow accumulation of duplicate handlers on the shared
+   surfaces (a second engine still holding the old menu would keep filtering
+   the same rows against stale state).
 */
 (function (global) {
   'use strict';
@@ -93,6 +103,21 @@
   function qsa(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }
 
   function init(cfg) {
+    // Every listener this instance attaches, so `destroy()` can take them all
+    // back. Routed through one helper rather than remembered case by case:
+    // the ones that matter are on `document` and `window`, which no re-render
+    // ever clears, and those are exactly the ones easiest to forget.
+    var bound = [];
+    function on(target, type, fn, opts) {
+      if (!target) return;
+      target.addEventListener(type, fn, opts);
+      bound.push([target, type, fn, opts]);
+    }
+    function destroy() {
+      bound.forEach(function (b) { b[0].removeEventListener(b[1], b[2], b[3]); });
+      bound = [];
+    }
+
     var rows = qsa(cfg.rows);
     if (!rows.length && !cfg.always) { /* still wire controls so empty page is inert-safe */ }
     var total = rows.length;
@@ -198,6 +223,24 @@
       }, 0);
     }
 
+    //: The badge on a CATEGORY row, saying how many of its values are picked.
+    //: The Filter button's own badge is a total, and a total cannot say which
+    //: category to open — with the options one hop behind a submenu, that is
+    //: the question the menu has to answer at a glance. Driven from apply()
+    //: like every other readout, so the chip row, the button badge and these
+    //: can never disagree. A category that renders no badge (or a page with no
+    //: `.fbar-cat` markup at all) is simply skipped.
+    function syncCatCounts() {
+      if (!menuEl) return;
+      facets.forEach(function (f) {
+        var el = qs('[data-cat-count="' + f.key + '"]', menuEl);
+        if (!el) return;
+        var n = facetState[f.key].size;
+        el.textContent = n;
+        el.hidden = n === 0;
+      });
+    }
+
     // ── chips (row 2) ──
     function labelFor(facet, value) {
       // Prefer the menu option's own text so labels never drift from the DOM.
@@ -206,8 +249,18 @@
         if (input) {
           var opt = input.closest('.fbar-menu__opt');
           if (opt) {
-            var txt = (opt.querySelector('.fbar-menu__opt-text') || opt).textContent || '';
-            return txt.replace(/\s+\d+\s*$/, '').trim() || value;
+            // The label element when the option has one; otherwise the whole
+            // row, whose text ends in the tally.
+            var span = opt.querySelector('.fbar-menu__opt-text');
+            var txt = (span || opt).textContent || '';
+            // Strip the trailing tally ONLY when it is actually in the string —
+            // i.e. when we fell back to the row. `.fbar-menu__opt-text` holds
+            // the name alone (the count is its sibling `.fbar-menu__opt-n`), so
+            // stripping there ate any label that legitimately ends in a number:
+            // a data package called "Customer 360" chipped as "Customer", and a
+            // tag "Q3 2026" as "Q3".
+            if (!span) txt = txt.replace(/\s+\d+\s*$/, '');
+            return txt.trim() || value;
           }
         }
       }
@@ -433,8 +486,8 @@
       var open = qs('.fbar-cat.is-open', menuEl);
       if (open) placeSubmenu(open);
     }
-    global.addEventListener('resize', replaceOpenSubmenu);
-    global.addEventListener('scroll', replaceOpenSubmenu, true);
+    on(global, 'resize', replaceOpenSubmenu);
+    on(global, 'scroll', replaceOpenSubmenu, true);
 
     // Open the Filter menu with ONE category's options showing — what a chip
     // click does, so a filter is edited where it was applied. A TOGGLE facet has
@@ -621,6 +674,7 @@
         if (badge) { badge.textContent = n; badge.hidden = n === 0; }
       }
       renderChips();
+      syncCatCounts();
       syncExternalControls();
       applyView();  // re-project the grid from the new visible set
       if (cfg.onApply) {
@@ -780,14 +834,14 @@
     }
 
     // ── wiring ──
-    if (searchEl) searchEl.addEventListener('input', apply);
-    if (sortEl) sortEl.addEventListener('change', function () { setSort(sortEl.value); });
+    on(searchEl, 'input', apply);
+    on(sortEl, 'change', function () { setSort(sortEl.value); });
     // Clicking a column header: the SAME column flips direction, a different
     // one takes over in the direction that column is read in. There is no
     // third "unsorted" state — the list always has an order, so a click that
     // removed it would only ever leave the reader somewhere arbitrary.
     sortBtns.forEach(function (btn) {
-      btn.addEventListener('click', function () {
+      on(btn, 'click', function () {
         var key = btn.getAttribute('data-sort-key');
         var cur = sortParts(sortValue);
         var dir = cur.key === key ? (cur.dir === 'asc' ? 'desc' : 'asc') : firstDir(btn);
@@ -796,7 +850,7 @@
     });
     if (cfg.segments) {
       qsa('.fbar-seg__btn', qs(cfg.segments.container)).forEach(function (btn) {
-        btn.addEventListener('click', function () {
+        on(btn, 'click', function () {
           setSegment(btn.getAttribute('data-' + (cfg.segments.name || 'own')) || btn.getAttribute('data-own'));
         });
       });
@@ -831,24 +885,24 @@
       }
       cats.forEach(function (cat) {
         setupCatSearch(cat);
-        cat.addEventListener('mouseenter', function () { openOnly(cat); });
-        cat.addEventListener('mouseleave', function () { scheduleClose(cat); });
+        on(cat, 'mouseenter', function () { openOnly(cat); });
+        on(cat, 'mouseleave', function () { scheduleClose(cat); });
         var pop = qs('.fbar-cat__pop', cat);
         if (pop) {
-          pop.addEventListener('mouseenter', cancelClose);
-          pop.addEventListener('mouseleave', function () { scheduleClose(cat); });
+          on(pop, 'mouseenter', cancelClose);
+          on(pop, 'mouseleave', function () { scheduleClose(cat); });
         }
         var btn = qs('.fbar-cat__btn', cat);
         if (btn) {
           // Click/Enter toggles — the keyboard and touch path.
-          btn.addEventListener('click', function (e) {
+          on(btn, 'click', function (e) {
             e.stopPropagation();
             var willOpen = pop ? pop.hidden : true;
             cancelClose();
             cats.forEach(function (c) { setCatOpen(c, false); });
             setCatOpen(cat, willOpen);
           });
-          btn.addEventListener('focus', function () { openOnly(cat); });
+          on(btn, 'focus', function () { openOnly(cat); });
         }
       });
     }
@@ -858,41 +912,39 @@
     facets.forEach(function (f) {
       var el = externalEl(f);
       if (!el) return;
-      el.addEventListener('click', function () {
+      on(el, 'click', function () {
         setFacet(f.key, externalValue(f), el.getAttribute('aria-pressed') !== 'true');
       });
     });
 
     if (menuEl) {
       qsa('input[data-facet]', menuEl).forEach(function (input) {
-        input.addEventListener('change', function () {
+        on(input, 'change', function () {
           setFacet(input.getAttribute('data-facet'), input.value, input.checked);
         });
       });
-      var clearBtn = qs('[data-fbar-clear]', menuEl);
-      if (clearBtn) clearBtn.addEventListener('click', clearFacets);
-      var doneBtn = qs('[data-fbar-done]', menuEl);
-      if (doneBtn) doneBtn.addEventListener('click', function () { openMenu(false); });
+      on(qs('[data-fbar-clear]', menuEl), 'click', clearFacets);
+      on(qs('[data-fbar-done]', menuEl), 'click', function () { openMenu(false); });
     }
     if (filterBtn) {
-      filterBtn.addEventListener('click', function (e) {
+      on(filterBtn, 'click', function (e) {
         e.stopPropagation();
         openMenu(menuEl && menuEl.hidden);
       });
-      document.addEventListener('click', function (e) {
+      on(document, 'click', function (e) {
         if (menuEl && !menuEl.hidden && !menuEl.contains(e.target) && e.target !== filterBtn && !filterBtn.contains(e.target)) {
           openMenu(false);
         }
       });
-      document.addEventListener('keydown', function (e) {
+      on(document, 'keydown', function (e) {
         if (e.key === 'Escape' && menuEl && !menuEl.hidden) openMenu(false);
       });
     }
     qsa('[data-fbar-reset]').forEach(function (btn) {
-      btn.addEventListener('click', resetAll);
+      on(btn, 'click', resetAll);
     });
     viewBtns.forEach(function (btn) {
-      btn.addEventListener('click', function () { setView(btn.getAttribute('data-view')); });
+      on(btn, 'click', function () { setView(btn.getAttribute('data-view')); });
     });
 
     // Restore the persisted view BEFORE the first apply so the page never
@@ -922,6 +974,7 @@
     return {
       apply: apply, refresh: refresh, reset: resetAll,
       setView: setView, renderGrid: renderGrid, setSort: setSort,
+      destroy: destroy,
     };
   }
 

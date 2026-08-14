@@ -12,7 +12,13 @@ what this now pins.
 
 The same ordering is asserted across every writer of ``instance.yaml`` in
 ``tests/test_startup_instance_yaml_perms.py``; this file stays focused on the
-two job-file writers, which is where the H2 finding originally landed.
+two job-file writers, which is where the H2 finding originally landed. The
+applier's own ``instance.yaml`` rewrite also lives in this script and shares
+the chmod-the-temp-first ordering, but its mode is computed
+(``_instance_yaml_target_mode`` — 0600 only where the file rests on the app
+container's uid, otherwise 0640 with the app's gid where the host lets the
+applier grant it, 0644 where it does not), so the literal 0600 pin applies
+to the job-file writers alone.
 """
 
 from __future__ import annotations
@@ -31,16 +37,28 @@ def test_job_rewrites_chmod_the_temp_before_the_rename() -> None:
     )
 
     misses = []
+    unpinned_job_sites = []
     for lineno, _src in replace_sites:
         # Look BEHIND the rename, not ahead of it.
-        window = "\n".join(lines[max(0, lineno - 7) : lineno - 1])
-        if not re.search(r"os\.chmod\(\s*tmp\s*,[^)]*0o600", window):
+        window = "\n".join(lines[max(0, lineno - 12) : lineno - 1])
+        if not re.search(r"os\.chmod\(\s*tmp\s*,", window):
             misses.append(lineno)
+        # Job-file writers serialize with json.dump and must pin the literal
+        # 0600. The instance.yaml rewrite (yaml.safe_dump) carries a computed
+        # mode so it never lands an owner-only mode on an uid the app is not;
+        # the full mode policy is pinned in test_startup_instance_yaml_perms.
+        elif "json.dump" in window and not re.search(r"os\.chmod\(\s*tmp\s*,[^)]*0o600", window):
+            unpinned_job_sites.append(lineno)
 
     assert not misses, (
-        f"These os.replace sites have no os.chmod(tmp, 0o600) before them: lines {misses}\n"
+        f"These os.replace sites have no os.chmod(tmp, ...) before them: lines {misses}\n"
         "Chmodding the destination afterwards still leaves the real path readable "
         "at the umask default for the window between the two calls."
+    )
+    assert not unpinned_job_sites, (
+        f"Job-file writers must chmod the temp to the literal 0o600: lines {unpinned_job_sites}\n"
+        "The job JSON can quote a database url — a computed or looser mode is "
+        "not enough there."
     )
 
 

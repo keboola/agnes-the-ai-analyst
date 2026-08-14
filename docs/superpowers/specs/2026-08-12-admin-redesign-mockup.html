@@ -1,0 +1,2200 @@
+<meta charset="utf-8">
+<title>Agnes Admin — redesign mockup</title>
+<style>
+/* ════════════════════════════════════════════════════════════════════
+   Agnes admin redesign — high-fidelity mockup.
+   Token values lifted from app/web/static/css/design-tokens.css
+   (paper theme = the issue-#896 look: paper canvas, white panels,
+   one sky-blue accent, Inter-first, hairline slate borders).
+   ════════════════════════════════════════════════════════════════════ */
+:root {
+  --ds-primary: #0284c7;
+  --ds-primary-dark: #0369a1;
+  --ds-primary-light: #e0f2fe;
+  --ds-bg: #f3f6fa;
+  --ds-surface: #ffffff;
+  --ds-surface-dim: #f5f7fb;
+  --ds-surface-sunken: #eaeef2;
+  --ds-border: #e2e8f0;
+  --ds-border-light: #edf2f8;
+  --ds-text-primary: #0f172a;
+  --ds-text-secondary: #475569;
+  --ds-text-muted: #64748b;
+  --ds-accent-success-bg: #e6f6f4;
+  --ds-accent-success-ink: #0f766e;
+  --ds-accent-success-line: #b7e3de;
+  --ds-accent-warn-bg: #fff7e8;
+  --ds-accent-warn-ink: #a16207;
+  --ds-accent-warn-line: #f6dfb4;
+  --ds-accent-danger-bg: #feecec;
+  --ds-accent-danger-ink: #dc2626;
+  --ds-accent-danger-line: #fca5a5;
+  --ds-accent-info-bg: #eef3ff;
+  --ds-accent-info-ink: #1c3994;
+  --ds-accent-info-line: #4f7cf2;
+  --ds-resource-data-ink: #0f5f5c;
+  --ds-resource-data-soft: #e2f2f0;
+  --ds-resource-data-line: #a9d8d3;
+  --ds-resource-skill-ink: #6d28d9;
+  --ds-resource-skill-soft: #f1eafe;
+  --ds-resource-memory-ink: #b0246a;
+  --ds-resource-memory-soft: #fce8f0;
+  --ds-resource-collection-ink: #b83b32;
+  --ds-resource-collection-soft: #fdece9;
+  --ds-resource-agent-ink: #4338ca;
+  --ds-resource-agent-soft: #eaeafb;
+  --ds-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05);
+  --ds-shadow-md: 0 8px 20px rgba(0, 0, 0, 0.06);
+  --ds-shadow-lg: 0 12px 34px rgba(37, 99, 235, 0.08);
+  --ds-radius-btn: 9px;
+  --ds-radius-pill: 9999px;
+  --ds-font: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --ds-font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --note-ink: #7c5c10;
+  --note-bg: #fdf6e3;
+  --note-line: #e8d59a;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ds-primary: #4f9deb;
+    --ds-primary-dark: #7ab8f2;
+    --ds-primary-light: rgba(79, 157, 235, 0.18);
+    --ds-bg: #0c1224;
+    --ds-surface: #141a30;
+    --ds-surface-dim: #1c2440;
+    --ds-surface-sunken: #1a2038;
+    --ds-border: #283255;
+    --ds-border-light: #1f2845;
+    --ds-text-primary: #f3f6ff;
+    --ds-text-secondary: #b9c1d8;
+    --ds-text-muted: #7d86a3;
+    --ds-accent-success-bg: rgba(22, 163, 74, 0.20);
+    --ds-accent-success-ink: #86e1a3;
+    --ds-accent-success-line: rgba(22, 163, 74, 0.5);
+    --ds-accent-warn-bg: rgba(245, 200, 75, 0.16);
+    --ds-accent-warn-ink: #ffd970;
+    --ds-accent-warn-line: rgba(245, 200, 75, 0.45);
+    --ds-accent-danger-bg: rgba(220, 38, 38, 0.20);
+    --ds-accent-danger-ink: #ff9b9b;
+    --ds-accent-danger-line: rgba(220, 38, 38, 0.5);
+    --ds-accent-info-bg: rgba(79, 124, 242, 0.18);
+    --ds-accent-info-ink: #a8c1ff;
+    --ds-accent-info-line: #4f7cf2;
+    --ds-resource-data-ink: #5ccdc2;
+    --ds-resource-data-soft: rgba(92, 205, 194, 0.14);
+    --ds-resource-data-line: rgba(92, 205, 194, 0.38);
+    --ds-resource-skill-ink: #b794f6;
+    --ds-resource-skill-soft: rgba(183, 148, 246, 0.14);
+    --ds-resource-memory-ink: #f191b8;
+    --ds-resource-memory-soft: rgba(241, 145, 184, 0.14);
+    --ds-resource-collection-ink: #f0897d;
+    --ds-resource-collection-soft: rgba(240, 137, 125, 0.14);
+    --ds-resource-agent-ink: #9b93f5;
+    --ds-resource-agent-soft: rgba(155, 147, 245, 0.14);
+    --ds-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+    --ds-shadow-md: 0 4px 16px rgba(0, 0, 0, 0.45);
+    --ds-shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.55);
+    --note-ink: #e8cf8a;
+    --note-bg: rgba(232, 207, 138, 0.10);
+    --note-line: rgba(232, 207, 138, 0.35);
+  }
+}
+:root[data-theme="light"] {
+  --ds-primary: #0284c7; --ds-primary-dark: #0369a1; --ds-primary-light: #e0f2fe;
+  --ds-bg: #f3f6fa; --ds-surface: #ffffff; --ds-surface-dim: #f5f7fb; --ds-surface-sunken: #eaeef2;
+  --ds-border: #e2e8f0; --ds-border-light: #edf2f8;
+  --ds-text-primary: #0f172a; --ds-text-secondary: #475569; --ds-text-muted: #64748b;
+  --ds-accent-success-bg: #e6f6f4; --ds-accent-success-ink: #0f766e; --ds-accent-success-line: #b7e3de;
+  --ds-accent-warn-bg: #fff7e8; --ds-accent-warn-ink: #a16207; --ds-accent-warn-line: #f6dfb4;
+  --ds-accent-danger-bg: #feecec; --ds-accent-danger-ink: #dc2626; --ds-accent-danger-line: #fca5a5;
+  --ds-accent-info-bg: #eef3ff; --ds-accent-info-ink: #1c3994; --ds-accent-info-line: #4f7cf2;
+  --ds-resource-data-ink: #0f5f5c; --ds-resource-data-soft: #e2f2f0; --ds-resource-data-line: #a9d8d3;
+  --ds-resource-skill-ink: #6d28d9; --ds-resource-skill-soft: #f1eafe;
+  --ds-resource-memory-ink: #b0246a; --ds-resource-memory-soft: #fce8f0;
+  --ds-resource-collection-ink: #b83b32; --ds-resource-collection-soft: #fdece9;
+  --ds-resource-agent-ink: #4338ca; --ds-resource-agent-soft: #eaeafb;
+  --ds-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05); --ds-shadow-md: 0 8px 20px rgba(0, 0, 0, 0.06);
+  --ds-shadow-lg: 0 12px 34px rgba(37, 99, 235, 0.08);
+  --note-ink: #7c5c10; --note-bg: #fdf6e3; --note-line: #e8d59a;
+}
+:root[data-theme="dark"] {
+  --ds-primary: #4f9deb; --ds-primary-dark: #7ab8f2; --ds-primary-light: rgba(79, 157, 235, 0.18);
+  --ds-bg: #0c1224; --ds-surface: #141a30; --ds-surface-dim: #1c2440; --ds-surface-sunken: #1a2038;
+  --ds-border: #283255; --ds-border-light: #1f2845;
+  --ds-text-primary: #f3f6ff; --ds-text-secondary: #b9c1d8; --ds-text-muted: #7d86a3;
+  --ds-accent-success-bg: rgba(22, 163, 74, 0.20); --ds-accent-success-ink: #86e1a3; --ds-accent-success-line: rgba(22, 163, 74, 0.5);
+  --ds-accent-warn-bg: rgba(245, 200, 75, 0.16); --ds-accent-warn-ink: #ffd970; --ds-accent-warn-line: rgba(245, 200, 75, 0.45);
+  --ds-accent-danger-bg: rgba(220, 38, 38, 0.20); --ds-accent-danger-ink: #ff9b9b; --ds-accent-danger-line: rgba(220, 38, 38, 0.5);
+  --ds-accent-info-bg: rgba(79, 124, 242, 0.18); --ds-accent-info-ink: #a8c1ff; --ds-accent-info-line: #4f7cf2;
+  --ds-resource-data-ink: #5ccdc2; --ds-resource-data-soft: rgba(92, 205, 194, 0.14); --ds-resource-data-line: rgba(92, 205, 194, 0.38);
+  --ds-resource-skill-ink: #b794f6; --ds-resource-skill-soft: rgba(183, 148, 246, 0.14);
+  --ds-resource-memory-ink: #f191b8; --ds-resource-memory-soft: rgba(241, 145, 184, 0.14);
+  --ds-resource-collection-ink: #f0897d; --ds-resource-collection-soft: rgba(240, 137, 125, 0.14);
+  --ds-resource-agent-ink: #9b93f5; --ds-resource-agent-soft: rgba(155, 147, 245, 0.14);
+  --ds-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35); --ds-shadow-md: 0 4px 16px rgba(0, 0, 0, 0.45);
+  --ds-shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --note-ink: #e8cf8a; --note-bg: rgba(232, 207, 138, 0.10); --note-line: rgba(232, 207, 138, 0.35);
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: var(--ds-font);
+  background: var(--ds-bg);
+  color: var(--ds-text-primary);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+button { font: inherit; cursor: pointer; }
+a { color: var(--ds-primary); }
+
+/* ── Mockup chrome (not part of the product) ─────────────────────── */
+.mock-bar {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 10px 20px;
+  background: var(--ds-surface);
+  border-bottom: 1px solid var(--ds-border);
+  font-size: 12.5px; color: var(--ds-text-secondary);
+  position: sticky; top: 0; z-index: 300;
+}
+.mock-bar b { color: var(--ds-text-primary); font-weight: 700; letter-spacing: -0.01em; }
+.mock-bar .spacer { flex: 1; }
+.mock-toggle {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 5px 12px; border-radius: var(--ds-radius-pill);
+  border: 1px solid var(--ds-border); background: var(--ds-surface);
+  color: var(--ds-text-secondary); font-size: 12px; font-weight: 600;
+}
+.mock-toggle[aria-pressed="true"] {
+  background: var(--ds-primary-light); border-color: var(--ds-primary);
+  color: var(--ds-primary-dark);
+}
+.mock-flows { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.mock-flow {
+  padding: 4px 10px; border-radius: var(--ds-radius-pill);
+  border: 1px dashed var(--ds-border); background: transparent;
+  color: var(--ds-text-muted); font-size: 11.5px; font-weight: 600;
+}
+.mock-flow:hover { border-color: var(--ds-primary); color: var(--ds-primary-dark); }
+
+/* design-note annotations */
+.note {
+  display: none;
+  margin: 10px 0 0;
+  padding: 9px 12px;
+  border: 1px dashed var(--note-line);
+  background: var(--note-bg);
+  border-radius: 8px;
+  color: var(--note-ink);
+  font-size: 12px; line-height: 1.5;
+}
+.note b { font-weight: 700; }
+body.notes-on .note { display: block; }
+
+/* ── App frame ───────────────────────────────────────────────────── */
+.frame { display: flex; min-height: calc(100vh - 45px); }
+
+/* Rail — ONE navigation tier. Replaces app-rail + admin column. */
+.rail {
+  width: 232px; flex: 0 0 232px;
+  background: var(--ds-surface);
+  border-right: 1px solid var(--ds-border);
+  display: flex; flex-direction: column;
+  padding: 16px 12px 14px;
+  position: sticky; top: 45px;
+  height: calc(100vh - 45px);
+}
+.rail-brand {
+  display: flex; align-items: center; gap: 9px;
+  padding: 2px 8px 14px;
+}
+.rail-orb {
+  width: 26px; height: 26px; border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, var(--ds-primary), var(--ds-primary-dark));
+  flex: 0 0 auto;
+}
+.rail-brand-name { font-weight: 700; font-size: 15px; letter-spacing: -0.02em; }
+.rail-brand-sub { font-size: 10.5px; color: var(--ds-text-muted); text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; }
+.rail-back {
+  display: flex; align-items: center; gap: 7px;
+  margin: 0 0 10px; padding: 7px 10px;
+  border-radius: var(--ds-radius-btn);
+  color: var(--ds-text-muted); font-size: 12.5px; font-weight: 600;
+  text-decoration: none;
+}
+.rail-back:hover { background: var(--ds-surface-dim); color: var(--ds-text-secondary); }
+.rail-i {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; padding: 8px 10px; margin: 1px 0;
+  border: none; background: transparent; text-align: left;
+  border-radius: var(--ds-radius-btn);
+  color: var(--ds-text-secondary); font-size: 13.5px; font-weight: 600;
+}
+.rail-i:hover { background: var(--ds-surface-dim); }
+.rail-i.active { background: var(--ds-primary-light); color: var(--ds-primary-dark); }
+.rail-i .ico { width: 18px; height: 18px; flex: 0 0 auto; opacity: 0.85; }
+.rail-i .badge-n {
+  margin-left: auto; font-size: 11px; font-weight: 700;
+  background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink);
+  border-radius: var(--ds-radius-pill); padding: 1px 7px;
+}
+.rail-div {
+  margin: 12px 10px; border: 0; border-top: 1px solid var(--ds-border-light);
+}
+.rail-sec-label {
+  padding: 2px 10px 4px; font-size: 10.5px; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--ds-text-muted);
+}
+.rail-foot {
+  margin-top: auto; padding: 10px 10px 0;
+  border-top: 1px solid var(--ds-border-light);
+  font-size: 11.5px; color: var(--ds-text-muted);
+  display: flex; gap: 10px; flex-wrap: wrap;
+}
+.rail-foot a { color: var(--ds-text-muted); text-decoration: none; }
+.rail-foot a:hover { color: var(--ds-primary); }
+
+/* ── Content ─────────────────────────────────────────────────────── */
+.content { flex: 1; min-width: 0; padding: 26px 32px 80px; max-width: 1180px; }
+.screen { display: none; }
+.screen.active { display: block; }
+
+.crumb { font-size: 12px; color: var(--ds-text-muted); font-weight: 600; margin-bottom: 4px; }
+.crumb a { color: var(--ds-text-muted); text-decoration: none; }
+.crumb a:hover { color: var(--ds-primary); }
+.page-head { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 20px; }
+.page-head h1 {
+  margin: 0; font-size: 24px; font-weight: 700; letter-spacing: -0.03em;
+}
+.page-head .sub { margin: 3px 0 0; font-size: 13.5px; color: var(--ds-text-secondary); max-width: 640px; }
+.page-head .actions { margin-left: auto; display: flex; gap: 8px; flex: 0 0 auto; }
+
+/* buttons */
+.btn {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 7px 14px; border-radius: var(--ds-radius-btn);
+  font-size: 13px; font-weight: 600;
+  border: 1px solid var(--ds-border); background: var(--ds-surface);
+  color: var(--ds-text-primary);
+}
+.btn:hover { border-color: var(--ds-text-muted); }
+.btn.primary { background: var(--ds-primary); border-color: var(--ds-primary); color: #fff; }
+.btn.primary:hover { background: var(--ds-primary-dark); border-color: var(--ds-primary-dark); }
+.btn.sm { padding: 4px 10px; font-size: 12px; }
+.btn.ghost { border-color: transparent; color: var(--ds-text-secondary); }
+.btn.ghost:hover { background: var(--ds-surface-dim); border-color: transparent; }
+.btn:focus-visible, .rail-i:focus-visible, .mock-toggle:focus-visible {
+  outline: 2px solid var(--ds-primary); outline-offset: 2px;
+}
+
+/* panels & cards */
+.panel {
+  background: var(--ds-surface);
+  border: 1px solid var(--ds-border);
+  border-radius: 12px;
+  box-shadow: var(--ds-shadow-sm);
+}
+.panel + .panel { margin-top: 14px; }
+.panel-hd {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 14px 18px 0;
+}
+.panel-hd h2 { margin: 0; font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
+.panel-hd .hint { font-size: 12.5px; color: var(--ds-text-muted); }
+.panel-hd .end { margin-left: auto; }
+.panel-bd { padding: 14px 18px 16px; }
+
+/* chips / status */
+.chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11.5px; font-weight: 700; letter-spacing: 0.01em;
+  padding: 2px 9px; border-radius: var(--ds-radius-pill);
+  border: 1px solid transparent; white-space: nowrap;
+}
+.chip::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.chip.ok    { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); border-color: var(--ds-accent-success-line); }
+.chip.warn  { background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink); border-color: var(--ds-accent-warn-line); }
+.chip.err   { background: var(--ds-accent-danger-bg); color: var(--ds-accent-danger-ink); border-color: var(--ds-accent-danger-line); }
+.chip.info  { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); border-color: transparent; }
+.chip.mute  { background: var(--ds-surface-dim); color: var(--ds-text-muted); border-color: var(--ds-border); }
+.chip.plain::before { display: none; }
+.tag {
+  display: inline-flex; align-items: center;
+  font-size: 11px; font-weight: 700; padding: 2px 8px;
+  border-radius: var(--ds-radius-pill);
+}
+.tag.data { background: var(--ds-resource-data-soft); color: var(--ds-resource-data-ink); }
+.tag.skill { background: var(--ds-resource-skill-soft); color: var(--ds-resource-skill-ink); }
+.tag.memory { background: var(--ds-resource-memory-soft); color: var(--ds-resource-memory-ink); }
+.tag.collection { background: var(--ds-resource-collection-soft); color: var(--ds-resource-collection-ink); }
+.tag.agent { background: var(--ds-resource-agent-soft); color: var(--ds-resource-agent-ink); }
+.mono {
+  font-family: var(--ds-font-mono); font-size: 11px;
+  background: var(--ds-surface-sunken); color: var(--ds-text-secondary);
+  padding: 1px 6px; border-radius: 5px;
+}
+
+/* tables */
+table.dt { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.dt th {
+  text-align: left; font-size: 11px; font-weight: 700; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--ds-text-muted);
+  padding: 8px 12px; border-bottom: 1px solid var(--ds-border);
+  background: var(--ds-surface-dim);
+}
+table.dt th:first-child { border-top-left-radius: 8px; }
+table.dt th:last-child { border-top-right-radius: 8px; }
+table.dt td { padding: 9px 12px; border-bottom: 1px solid var(--ds-border-light); vertical-align: middle; }
+table.dt tr:last-child td { border-bottom: none; }
+table.dt tr.rowlink { cursor: pointer; }
+table.dt tr.rowlink:hover td { background: var(--ds-surface-dim); }
+table.dt .num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* ══ Overview ═════════════════════════════════════════════════════ */
+.setup-path { border: 1px solid var(--ds-primary); }
+.setup-steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; }
+.setup-step {
+  padding: 14px 16px; border-right: 1px solid var(--ds-border-light);
+  display: flex; flex-direction: column; gap: 6px; position: relative;
+}
+.setup-step:last-child { border-right: none; }
+.setup-step .st-state {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+}
+.setup-step.done .st-state { color: var(--ds-accent-success-ink); }
+.setup-step.now .st-state { color: var(--ds-primary-dark); }
+.setup-step.todo .st-state { color: var(--ds-text-muted); }
+.setup-step .st-dot {
+  width: 18px; height: 18px; border-radius: 50%; flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 800; color: #fff;
+}
+.setup-step.done .st-dot { background: var(--ds-accent-success-ink); }
+.setup-step.now .st-dot { background: var(--ds-primary); }
+.setup-step.todo .st-dot { background: var(--ds-text-muted); opacity: 0.5; }
+.setup-step h3 { margin: 0; font-size: 14px; font-weight: 700; letter-spacing: -0.01em; }
+.setup-step p { margin: 0; font-size: 12.5px; color: var(--ds-text-secondary); }
+.setup-step .st-cta { margin-top: auto; }
+
+.gaps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 14px 0; }
+.gap-card {
+  background: var(--ds-surface); border: 1px solid var(--ds-border);
+  border-radius: 12px; padding: 16px 18px; box-shadow: var(--ds-shadow-sm);
+  display: flex; flex-direction: column; gap: 4px;
+  text-align: left; text-decoration: none; color: inherit;
+  transition: box-shadow .16s, border-color .16s;
+}
+.gap-card:hover { box-shadow: var(--ds-shadow-md); border-color: var(--ds-text-muted); }
+.gap-card .g-title { font-size: 12px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ds-text-muted); }
+.gap-card .g-facts { font-size: 13.5px; color: var(--ds-text-secondary); display: flex; gap: 14px; }
+.gap-card .g-facts b { font-size: 20px; font-weight: 700; color: var(--ds-text-primary); font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.gap-card .g-gap {
+  margin-top: 8px; padding-top: 10px; border-top: 1px dashed var(--ds-border);
+  font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px;
+}
+.gap-card .g-gap.warn { color: var(--ds-accent-warn-ink); }
+.gap-card .g-gap.ok { color: var(--ds-accent-success-ink); }
+.gap-card .g-gap .arrow { margin-left: auto; color: var(--ds-text-muted); }
+
+.sig-row {
+  display: flex; align-items: center; gap: 14px;
+  padding: 12px 16px; margin: 8px 0;
+  background: var(--ds-surface); border: 1px solid var(--ds-border);
+  border-left: 3px solid var(--ds-border);
+  border-radius: var(--ds-radius-btn);
+  text-decoration: none; color: inherit;
+}
+.sig-row:hover { border-color: var(--ds-text-muted); box-shadow: var(--ds-shadow-sm); }
+.sig-row.action { border-left-color: var(--ds-accent-info-line); }
+.sig-row.err { border-left-color: var(--ds-accent-danger-line); }
+.sig-row .n { font-size: 20px; font-weight: 700; min-width: 2ch; font-variant-numeric: tabular-nums; }
+.sig-row.err .n { color: var(--ds-accent-danger-ink); }
+.sig-row .t { font-weight: 600; }
+.sig-row .b { display: block; font-size: 12.5px; color: var(--ds-text-secondary); }
+.sig-row .go { margin-left: auto; font-size: 12.5px; font-weight: 700; color: var(--ds-primary); }
+
+.zone-hd { display: flex; align-items: baseline; gap: 10px; margin: 26px 0 6px; }
+.zone-hd h2 { margin: 0; font-size: 15px; font-weight: 700; }
+.zone-hd .hint { font-size: 12.5px; color: var(--ds-text-muted); }
+
+/* ══ Data · sources ═══════════════════════════════════════════════ */
+.lens-tabs {
+  display: inline-flex; gap: 2px; padding: 3px;
+  background: var(--ds-surface-sunken); border-radius: var(--ds-radius-btn);
+  margin-bottom: 18px;
+}
+.lens-tab {
+  border: none; background: transparent; padding: 6px 16px;
+  border-radius: 7px; font-size: 13px; font-weight: 600; color: var(--ds-text-secondary);
+}
+.lens-tab.active { background: var(--ds-surface); color: var(--ds-text-primary); box-shadow: var(--ds-shadow-sm); }
+
+.src-card { margin-bottom: 14px; overflow: hidden; }
+.src-hd {
+  display: flex; align-items: center; gap: 12px; padding: 15px 18px;
+  cursor: pointer;
+}
+.src-hd:hover { background: var(--ds-surface-dim); }
+.src-logo {
+  width: 36px; height: 36px; border-radius: 9px; flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 800; font-size: 13px;
+  background: var(--ds-resource-data-soft); color: var(--ds-resource-data-ink);
+}
+.src-name { font-weight: 700; font-size: 14.5px; letter-spacing: -0.01em; }
+.src-url { font-family: var(--ds-font-mono); font-size: 11px; color: var(--ds-text-muted); }
+.src-chips { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+.src-caret { color: var(--ds-text-muted); transition: transform .16s; }
+.src-card.open .src-caret { transform: rotate(90deg); }
+
+/* pipeline strip: the source's whole vertical in one glance */
+.pipe {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  border-top: 1px solid var(--ds-border-light);
+  background: var(--ds-surface-dim);
+}
+.pipe-cell {
+  padding: 10px 16px; border: none; border-right: 1px solid var(--ds-border-light);
+  font-size: 12px; color: var(--ds-text-secondary);
+  display: flex; flex-direction: column; gap: 2px;
+  background: transparent; text-align: left;
+}
+button.pipe-cell:hover { background: var(--ds-surface); }
+.pipe-cell:last-child { border-right: none; }
+.pipe-cell .k { font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ds-text-muted); }
+.pipe-cell .v { font-weight: 600; color: var(--ds-text-primary); display: flex; align-items: center; gap: 6px; }
+.pipe-cell .v.ok { color: var(--ds-accent-success-ink); }
+.pipe-cell .v.warn { color: var(--ds-accent-warn-ink); }
+.pipe-cell .v.err { color: var(--ds-accent-danger-ink); }
+
+.src-body { border-top: 1px solid var(--ds-border); display: none; }
+.src-card.open .src-body { display: block; }
+.src-tabs { display: flex; gap: 2px; padding: 10px 14px 0; border-bottom: 1px solid var(--ds-border-light); }
+.src-tab {
+  border: none; background: transparent; padding: 7px 13px 9px;
+  font-size: 12.5px; font-weight: 600; color: var(--ds-text-secondary);
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.src-tab.active { color: var(--ds-primary-dark); border-bottom-color: var(--ds-primary); }
+.src-pane { display: none; padding: 14px 18px 18px; }
+.src-pane.active { display: block; }
+
+/* ══ Packages ═════════════════════════════════════════════════════ */
+.pkg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+.pkg-card {
+  background: var(--ds-surface); border: 1px solid var(--ds-border);
+  border-radius: 12px; padding: 16px; box-shadow: var(--ds-shadow-sm);
+  display: flex; flex-direction: column; gap: 8px; cursor: pointer;
+  transition: box-shadow .16s, border-color .16s;
+}
+.pkg-card:hover { box-shadow: var(--ds-shadow-md); border-color: var(--ds-text-muted); }
+.pkg-top { display: flex; align-items: center; gap: 10px; }
+.pkg-ico {
+  width: 34px; height: 34px; border-radius: 9px; flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: center; font-size: 16px;
+}
+.pkg-name { font-weight: 700; font-size: 14.5px; letter-spacing: -0.01em; }
+.pkg-cat { font-size: 11px; color: var(--ds-text-muted); font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
+.pkg-meta { font-size: 12.5px; color: var(--ds-text-secondary); }
+.pkg-share {
+  display: flex; align-items: center; gap: 8px;
+  padding-top: 10px; border-top: 1px solid var(--ds-border-light);
+  font-size: 12.5px;
+}
+.pkg-share.none { color: var(--ds-accent-warn-ink); font-weight: 600; }
+.avatars { display: inline-flex; }
+.avatars span {
+  width: 20px; height: 20px; border-radius: 50%;
+  background: var(--ds-surface-sunken); border: 1.5px solid var(--ds-surface);
+  font-size: 9.5px; font-weight: 800; color: var(--ds-text-secondary);
+  display: inline-flex; align-items: center; justify-content: center;
+  margin-left: -6px;
+}
+.avatars span:first-child { margin-left: 0; }
+
+.tray {
+  border: 1px dashed var(--ds-accent-warn-line);
+  background: var(--ds-accent-warn-bg);
+  border-radius: 12px; padding: 14px 18px; margin-top: 16px;
+}
+.tray-hd { display: flex; align-items: center; gap: 10px; }
+.tray-hd h3 { margin: 0; font-size: 14px; font-weight: 700; color: var(--ds-accent-warn-ink); }
+.tray-hd p { margin: 0; font-size: 12.5px; color: var(--ds-accent-warn-ink); opacity: 0.9; }
+.tray-tables { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+
+/* ══ Package detail / sharing ═════════════════════════════════════ */
+.det-cols { display: grid; grid-template-columns: 1fr 320px; gap: 16px; align-items: start; }
+@media (max-width: 980px) { .det-cols { grid-template-columns: 1fr; } .gaps { grid-template-columns: 1fr; } .setup-steps { grid-template-columns: 1fr 1fr; } }
+
+.share-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 0; border-bottom: 1px solid var(--ds-border-light);
+}
+.share-row:last-child { border-bottom: none; }
+.grp-ava {
+  width: 30px; height: 30px; border-radius: 9px; flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 800;
+  background: var(--ds-surface-sunken); color: var(--ds-text-secondary);
+}
+.share-row .g-name { font-weight: 600; font-size: 13.5px; }
+.share-row .g-sub { font-size: 12px; color: var(--ds-text-muted); }
+.seg {
+  margin-left: auto; display: inline-flex; padding: 2px;
+  background: var(--ds-surface-sunken); border-radius: var(--ds-radius-btn);
+}
+.seg button {
+  border: none; background: transparent; padding: 4px 11px;
+  font-size: 12px; font-weight: 600; border-radius: 7px; color: var(--ds-text-muted);
+}
+.seg button.on { background: var(--ds-surface); color: var(--ds-text-primary); box-shadow: var(--ds-shadow-sm); }
+.seg button.on.auto { color: var(--ds-primary-dark); }
+.share-remove { border: none; background: none; color: var(--ds-text-muted); font-size: 15px; padding: 4px; }
+.share-remove:hover { color: var(--ds-accent-danger-ink); }
+
+.delivery {
+  background: var(--ds-surface-dim); border: 1px solid var(--ds-border-light);
+  border-radius: 10px; padding: 12px 14px; margin-top: 12px;
+  font-size: 13px;
+}
+.delivery .d-line { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+.delivery .d-line .dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+.delivery b { font-variant-numeric: tabular-nums; }
+
+/* ══ Access ═══════════════════════════════════════════════════════ */
+.acc-cols { display: grid; grid-template-columns: 250px 1fr; gap: 16px; align-items: start; }
+@media (max-width: 900px) { .acc-cols { grid-template-columns: 1fr; } }
+.acc-group {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 10px 12px; border: none; background: transparent; text-align: left;
+  border-radius: var(--ds-radius-btn); font-size: 13.5px; font-weight: 600;
+  color: var(--ds-text-secondary);
+}
+.acc-group:hover { background: var(--ds-surface-dim); }
+.acc-group.active { background: var(--ds-primary-light); color: var(--ds-primary-dark); }
+.acc-group .cnt { margin-left: auto; font-size: 11.5px; color: var(--ds-text-muted); font-weight: 600; }
+.acc-sec { padding: 4px 0 10px; }
+.acc-sec summary {
+  cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px;
+  font-size: 13px; font-weight: 700; padding: 9px 4px;
+  color: var(--ds-text-secondary);
+}
+.acc-sec summary::-webkit-details-marker { display: none; }
+.acc-sec summary .car { transition: transform .16s; color: var(--ds-text-muted); font-size: 11px; }
+.acc-sec[open] summary .car { transform: rotate(90deg); }
+.acc-sec summary .cnt { margin-left: auto; font-size: 11.5px; font-weight: 600; color: var(--ds-text-muted); }
+.acc-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 4px 8px 22px; border-bottom: 1px solid var(--ds-border-light);
+  font-size: 13px;
+}
+.acc-item:last-child { border-bottom: none; }
+.acc-item input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--ds-primary); }
+.acc-item .sub { font-size: 11.5px; color: var(--ds-text-muted); }
+
+/* simulate */
+.sim-chain { margin: 12px 0 0; padding: 0; list-style: none; }
+.sim-chain li {
+  display: flex; gap: 10px; align-items: baseline;
+  padding: 8px 0 8px 4px; border-left: 2px solid var(--ds-border);
+  margin-left: 8px; padding-left: 16px; position: relative;
+  font-size: 13px;
+}
+.sim-chain li::before {
+  content: ''; position: absolute; left: -5px; top: 14px;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--ds-primary); border: 2px solid var(--ds-surface);
+}
+.sim-chain li.stop::before { background: var(--ds-accent-danger-line); }
+
+/* ══ People ═══════════════════════════════════════════════════════ */
+.ppl-ava {
+  width: 28px; height: 28px; border-radius: 50%;
+  background: var(--ds-surface-sunken); color: var(--ds-text-secondary);
+  font-size: 11px; font-weight: 800;
+  display: inline-flex; align-items: center; justify-content: center;
+  margin-right: 9px; vertical-align: middle;
+}
+
+/* ══ Stub screens (Library / Instance / Activity) ═════════════════ */
+.stub-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+.stub-card {
+  background: var(--ds-surface); border: 1px solid var(--ds-border);
+  border-radius: 12px; padding: 14px 16px; box-shadow: var(--ds-shadow-sm);
+}
+.stub-card h3 { margin: 0 0 3px; font-size: 13.5px; font-weight: 700; }
+.stub-card p { margin: 0; font-size: 12.5px; color: var(--ds-text-secondary); }
+.stub-card .from { display: inline-block; margin-top: 8px; font-size: 11px; color: var(--ds-text-muted); font-family: var(--ds-font-mono); }
+
+/* ══ Wizard overlay ═══════════════════════════════════════════════ */
+.wiz-overlay {
+  position: fixed; inset: 0; background: rgba(15, 23, 42, 0.48);
+  display: none; align-items: stretch; justify-content: flex-end; z-index: 400;
+}
+.wiz-overlay.open { display: flex; }
+.wiz {
+  width: min(680px, 96vw); background: var(--ds-surface);
+  display: flex; flex-direction: column;
+  box-shadow: -12px 0 40px rgba(15, 23, 42, 0.18);
+  animation: slidein .22s cubic-bezier(.22,.9,.22,1);
+}
+@keyframes slidein { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .wiz { animation: none; } .src-caret, .seg button, .gap-card, .pkg-card { transition: none; } }
+.wiz-hd {
+  display: flex; align-items: center; gap: 12px;
+  padding: 18px 24px 0;
+}
+.wiz-hd h2 { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: -0.02em; }
+.wiz-close { margin-left: auto; border: none; background: none; font-size: 20px; color: var(--ds-text-muted); padding: 4px 8px; }
+.wiz-steps { display: flex; gap: 6px; padding: 14px 24px; border-bottom: 1px solid var(--ds-border-light); }
+.wiz-step {
+  flex: 1; display: flex; align-items: center; gap: 8px;
+  font-size: 12px; font-weight: 600; color: var(--ds-text-muted);
+  padding: 6px 4px; border: none; background: none; text-align: left;
+}
+.wiz-step .wn {
+  width: 20px; height: 20px; border-radius: 50%; flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 800;
+  background: var(--ds-surface-sunken); color: var(--ds-text-muted);
+}
+.wiz-step.now { color: var(--ds-primary-dark); }
+.wiz-step.now .wn { background: var(--ds-primary); color: #fff; }
+.wiz-step.done { color: var(--ds-accent-success-ink); }
+.wiz-step.done .wn { background: var(--ds-accent-success-ink); color: #fff; }
+.wiz-bd { flex: 1; overflow-y: auto; padding: 20px 24px; }
+.wiz-pane { display: none; }
+.wiz-pane.active { display: block; }
+.wiz-ft {
+  display: flex; gap: 8px; padding: 14px 24px;
+  border-top: 1px solid var(--ds-border); background: var(--ds-surface-dim);
+}
+.wiz-ft .spacer { flex: 1; }
+
+.field { margin-bottom: 14px; }
+.field label { display: block; font-size: 12.5px; font-weight: 700; margin-bottom: 4px; }
+.field input[type="text"], .field input[type="password"], .field input[type="email"], .field select {
+  width: 100%; padding: 8px 12px; font: inherit; font-size: 13.5px;
+  border: 1px solid var(--ds-border); border-radius: var(--ds-radius-btn);
+  background: var(--ds-surface); color: var(--ds-text-primary);
+}
+.field input:focus, .field select:focus { outline: 2px solid var(--ds-primary); outline-offset: 0; border-color: var(--ds-primary); }
+.field .fh { font-size: 12px; color: var(--ds-text-muted); margin-top: 4px; }
+.opt-box {
+  border: 1px solid var(--ds-border); border-radius: 10px;
+  padding: 12px 14px; margin-top: 16px; background: var(--ds-surface-dim);
+}
+.opt-box .oh { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 13px; }
+.opt-box p { margin: 5px 0 0 24px; font-size: 12.5px; color: var(--ds-text-secondary); }
+.opt-box input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--ds-primary); }
+
+.wtable { border: 1px solid var(--ds-border); border-radius: 10px; overflow: hidden; margin-top: 8px; }
+.wt-bucket {
+  display: flex; align-items: center; gap: 9px;
+  padding: 9px 12px; background: var(--ds-surface-dim);
+  border-bottom: 1px solid var(--ds-border-light);
+  font-size: 12.5px; font-weight: 700;
+}
+.wt-row {
+  display: flex; align-items: center; gap: 9px;
+  padding: 7px 12px 7px 30px; border-bottom: 1px solid var(--ds-border-light);
+  font-size: 13px;
+}
+.wt-row:last-child { border-bottom: none; }
+.wt-row .sz { margin-left: auto; font-size: 11.5px; color: var(--ds-text-muted); font-variant-numeric: tabular-nums; }
+.wt-row input, .wt-bucket input { width: 15px; height: 15px; accent-color: var(--ds-primary); }
+
+.suggest {
+  display: flex; gap: 12px; align-items: flex-start;
+  border: 1px solid var(--ds-accent-info-line); background: var(--ds-accent-info-bg);
+  color: var(--ds-accent-info-ink);
+  border-radius: 10px; padding: 12px 14px; margin: 14px 0; font-size: 13px;
+}
+.suggest b { display: block; }
+.suggest .btn { flex: 0 0 auto; }
+
+.success-slab {
+  text-align: center; padding: 40px 20px;
+}
+.success-slab .big {
+  width: 52px; height: 52px; margin: 0 auto 14px; border-radius: 50%;
+  background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink);
+  display: flex; align-items: center; justify-content: center; font-size: 24px;
+}
+.success-slab h3 { margin: 0 0 6px; font-size: 18px; letter-spacing: -0.02em; }
+.success-slab p { margin: 0 0 18px; color: var(--ds-text-secondary); font-size: 13.5px; }
+
+/* source-type picker (wizard step 1) */
+.src-pick {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+  margin-bottom: 16px;
+}
+@media (max-width: 720px) { .src-pick { grid-template-columns: 1fr 1fr; } }
+.src-opt {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+  padding: 11px 12px; text-align: left;
+  border: 1px solid var(--ds-border); border-radius: 10px;
+  background: var(--ds-surface); color: var(--ds-text-primary);
+}
+.src-opt:hover { border-color: var(--ds-text-muted); }
+.src-opt.on {
+  border-color: var(--ds-primary);
+  background: var(--ds-primary-light);
+  box-shadow: 0 0 0 1px var(--ds-primary);
+}
+.src-opt .so-logo {
+  width: 26px; height: 26px; border-radius: 7px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-weight: 800; font-size: 12px;
+}
+.src-opt .so-name { font-weight: 700; font-size: 13px; }
+.src-opt .so-sub { font-size: 11.5px; color: var(--ds-text-muted); line-height: 1.3; }
+
+.drop {
+  border: 1.5px dashed var(--ds-border); border-radius: 12px;
+  padding: 34px 20px; text-align: center;
+  background: var(--ds-surface-dim);
+  display: flex; flex-direction: column; gap: 4px;
+  font-size: 13.5px; color: var(--ds-text-secondary);
+}
+.drop b { color: var(--ds-text-primary); }
+
+/* bundling board (wizard step 3) */
+.seed-row {
+  display: flex; gap: 8px; align-items: center; margin: 0 0 14px;
+  font-size: 12.5px; color: var(--ds-text-muted); flex-wrap: wrap;
+}
+.seed-chip {
+  padding: 5px 12px; border-radius: var(--ds-radius-pill);
+  border: 1px solid var(--ds-border); background: var(--ds-surface);
+  font-size: 12px; font-weight: 600; color: var(--ds-text-secondary);
+}
+.seed-chip:hover { border-color: var(--ds-primary); color: var(--ds-primary-dark); }
+.btray {
+  border: 1px solid var(--ds-border); border-radius: 10px;
+  margin-bottom: 10px; overflow: hidden; background: var(--ds-surface);
+}
+.btray-hd {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; background: var(--ds-surface-dim);
+  border-bottom: 1px solid var(--ds-border-light);
+}
+.btray-hd .cnt { font-size: 11.5px; color: var(--ds-text-muted); font-weight: 600; }
+.tray-name {
+  font: inherit; font-weight: 700; font-size: 13px; width: 180px;
+  border: none; background: transparent; color: var(--ds-text-primary);
+  padding: 2px 6px; border-radius: 5px;
+}
+.tray-name:hover { background: var(--ds-surface); }
+.tray-name:focus { background: var(--ds-surface); outline: 1.5px solid var(--ds-primary); }
+.btray-row {
+  display: flex; align-items: center; gap: 9px;
+  padding: 7px 12px; border-bottom: 1px solid var(--ds-border-light); font-size: 13px;
+}
+.btray-row:last-child { border-bottom: none; }
+.btray-row input { width: 15px; height: 15px; accent-color: var(--ds-primary); }
+.btray-empty { padding: 10px 12px; font-size: 12.5px; color: var(--ds-text-muted); }
+.btray.out { border-style: dashed; border-color: var(--ds-accent-warn-line); }
+.btray.out .btray-hd { background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink); border-bottom-color: var(--ds-accent-warn-line); }
+.movebar {
+  position: sticky; bottom: 8px; z-index: 5;
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  padding: 9px 12px; margin-top: 10px;
+  background: var(--ds-surface); border: 1px solid var(--ds-primary);
+  border-radius: 10px; box-shadow: var(--ds-shadow-md);
+  font-size: 12.5px; font-weight: 700;
+}
+.movebar[hidden] { display: none; }
+
+/* per-package share cards (wizard step 4) */
+.share-card {
+  border: 1px solid var(--ds-border); border-radius: 10px;
+  padding: 2px 14px 8px; margin-bottom: 12px; background: var(--ds-surface);
+}
+.share-card-hd { display: flex; align-items: center; gap: 8px; padding: 10px 0 4px; }
+.share-card-hd b { font-size: 13.5px; }
+.share-card-hd .m { font-size: 12px; color: var(--ds-text-muted); }
+.share-none {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 0 7px; font-size: 12.5px; font-weight: 600;
+  color: var(--ds-accent-warn-ink);
+}
+
+/* identity strip (People) */
+.idp-strip {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 16px; margin-bottom: 14px;
+  background: var(--ds-surface); border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-btn); font-size: 13px;
+  color: var(--ds-text-secondary);
+}
+.idp-strip .idp-logo {
+  width: 24px; height: 24px; border-radius: 50%;
+  background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-weight: 800; font-size: 11px;
+}
+.idp-strip b { color: var(--ds-text-primary); }
+.idp-strip .end { margin-left: auto; display: flex; gap: 12px; align-items: center; }
+
+/* advanced disclosure inside drawer */
+details.adv { margin-top: 16px; border: 1px solid var(--ds-border); border-radius: 10px; }
+details.adv summary {
+  cursor: pointer; padding: 10px 14px; font-size: 12.5px; font-weight: 700;
+  color: var(--ds-text-secondary); list-style: none;
+}
+details.adv summary::-webkit-details-marker { display: none; }
+details.adv summary::before { content: '▸ '; color: var(--ds-text-muted); }
+details.adv[open] summary::before { content: '▾ '; }
+details.adv .adv-bd { padding: 4px 14px 14px; border-top: 1px solid var(--ds-border-light); }
+.radio-line { display: flex; align-items: baseline; gap: 8px; padding: 6px 0; font-size: 13px; }
+.radio-line input { accent-color: var(--ds-primary); }
+.radio-line .rl-sub { font-size: 12px; color: var(--ds-text-muted); }
+</style>
+
+<div class="mock-bar">
+  <b>Agnes Admin — redesign mockup</b>
+  <span>UX exploration · not implemented · all data illustrative</span>
+  <span class="mock-flows">
+    <button class="mock-flow" data-go="overview" data-fresh="1">Flow: first run</button>
+    <button class="mock-flow" data-wiz="1">Flow: add data</button>
+    <button class="mock-flow" data-go="pkg-detail">Flow: share a package</button>
+    <button class="mock-flow" data-go="access-sim">Flow: “why can’t Maria see it?”</button>
+  </span>
+  <span class="spacer"></span>
+  <button class="mock-toggle" id="notesToggle" aria-pressed="false">Design notes: off</button>
+</div>
+
+<div class="frame">
+
+  <!-- ═══════════ RAIL — one tier, seven rows ═══════════ -->
+  <nav class="rail" aria-label="Admin">
+    <div class="rail-brand">
+      <div class="rail-orb" aria-hidden="true"></div>
+      <div>
+        <div class="rail-brand-name">Agnes</div>
+        <div class="rail-brand-sub">Admin</div>
+      </div>
+    </div>
+    <a class="rail-back" href="#" onclick="return false">← Back to the app</a>
+
+    <button class="rail-i active" data-nav="overview">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+      Overview <span class="badge-n">4</span>
+    </button>
+    <button class="rail-i" data-nav="people">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.4 3.4-5 6.5-5s5.7 1.6 6.5 5"/><circle cx="17.5" cy="9.5" r="2.5"/><path d="M16 15.2c2.9.2 4.9 1.6 5.5 4.3"/></svg>
+      People
+    </button>
+    <button class="rail-i" data-nav="data-sources">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/><path d="M4 11.5v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>
+      Data
+    </button>
+    <button class="rail-i" data-nav="access">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10.5" width="16" height="9.5" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/><circle cx="12" cy="15.5" r="1.6" fill="currentColor" stroke="none"/></svg>
+      Access
+    </button>
+
+    <hr class="rail-div">
+    <div class="rail-sec-label">Maintain</div>
+
+    <button class="rail-i" data-nav="library">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5V6a2 2 0 0 1 2-2h13.5v14H6a2 2 0 0 0-2 2Z"/><path d="M4 19.5A2 2 0 0 0 6 21.5h13.5v-3.5"/></svg>
+      Library <span class="badge-n">8</span>
+    </button>
+    <button class="rail-i" data-nav="instance">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.2-1.6l2-1.6-2-3.4-2.4 1a7 7 0 0 0-2.7-1.6L13.2 2h-4l-.5 2.8a7 7 0 0 0-2.7 1.6l-2.4-1-2 3.4 2 1.6A7 7 0 0 0 5 12c0 .5.1 1.1.2 1.6l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 2.7 1.6l.5 2.8h4l.5-2.8a7 7 0 0 0 2.7-1.6l2.4 1 2-3.4-2-1.6c.1-.5.2-1.1.2-1.6Z"/></svg>
+      Instance
+    </button>
+    <button class="rail-i" data-nav="activity">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>
+      Activity
+    </button>
+
+    <div class="rail-foot">
+      <a href="#" onclick="return false">API guide</a>
+      <a href="#" onclick="return false">Interactive API</a>
+      <a href="#" onclick="return false">Reference</a>
+    </div>
+  </nav>
+
+  <!-- ═══════════ CONTENT ═══════════ -->
+  <main class="content">
+
+    <!-- ══════════ OVERVIEW ══════════ -->
+    <section class="screen active" id="scr-overview">
+      <div class="crumb">Admin</div>
+      <div class="page-head">
+        <div>
+          <h1>Overview</h1>
+          <p class="sub">Where this instance stands, and what to do next.</p>
+        </div>
+        <div class="actions">
+          <button class="btn" data-go="people">Invite people</button>
+          <button class="btn primary" data-wiz="1">＋ Add data</button>
+        </div>
+      </div>
+
+      <div class="note"><b>Design note — the two global actions.</b> “Add data” and “Invite people” are the only two verbs an admin needs on day one, so they live on the Overview header — not behind a nav taxonomy. “Add data” opens the guided flow (connect → choose → bundle → share) that today spans /admin/data-sources, /admin/tables, /admin/semantic-layer and a group’s Access tab.</div>
+
+      <!-- first-run setup path: self-retiring -->
+      <div class="panel setup-path" id="setupPath">
+        <div class="panel-hd">
+          <h2>Set up this instance</h2>
+          <span class="hint">Retires itself once data has reached a person.</span>
+          <span class="end"><button class="btn ghost sm" id="setupToggle">Show steady state</button></span>
+        </div>
+        <div class="setup-steps">
+          <div class="setup-step done">
+            <span class="st-state"><span class="st-dot">✓</span> Done</span>
+            <h3>Connect a source</h3>
+            <p>Production (Keboola) connected · 132 tables visible.</p>
+          </div>
+          <div class="setup-step done">
+            <span class="st-state"><span class="st-dot">✓</span> Done</span>
+            <h3>Add tables</h3>
+            <p>46 tables added from 5 buckets.</p>
+          </div>
+          <div class="setup-step now">
+            <span class="st-state"><span class="st-dot">3</span> Next</span>
+            <h3>Bundle into packages</h3>
+            <p>Tables reach people only through a package. 6 tables are in none.</p>
+            <span class="st-cta"><button class="btn primary sm" data-go="data-packages">Bundle them →</button></span>
+          </div>
+          <div class="setup-step todo">
+            <span class="st-state"><span class="st-dot">4</span> Then</span>
+            <h3>Share with people</h3>
+            <p>Pick who gets each package — optional or automatic.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="note"><b>Design note — first-run state.</b> Today a fresh instance shows “Nothing needs your attention.” This path shows live progress against the four stages the product actually requires (connect → tables → package → share), each step naming the dependency that is invisible today (“tables reach people only through a package”). It disappears at 4/4, same self-retiring pattern as the rail’s onboarding card.</div>
+
+      <!-- the three jobs as gap cards -->
+      <div class="gaps" id="steadyGaps">
+        <a class="gap-card" href="#" data-go="people">
+          <span class="g-title">People</span>
+          <span class="g-facts"><span><b>23</b> people</span><span><b>5</b> groups</span></span>
+          <span class="g-gap warn">2 people are in no group with data access <span class="arrow">→</span></span>
+        </a>
+        <a class="gap-card" href="#" data-go="data-sources">
+          <span class="g-title">Data</span>
+          <span class="g-facts"><span><b>3</b> sources</span><span><b>46</b> tables</span><span><b>7</b> packages</span></span>
+          <span class="g-gap warn">6 tables are in no package — nobody can use them <span class="arrow">→</span></span>
+        </a>
+        <a class="gap-card" href="#" data-go="access">
+          <span class="g-title">Access</span>
+          <span class="g-facts"><span><b>5</b> packages shared</span><span><b>19</b> people covered</span></span>
+          <span class="g-gap warn">2 packages are shared with nobody <span class="arrow">→</span></span>
+        </a>
+      </div>
+
+      <div class="note"><b>Design note — the gap is the metric.</b> Each card counts what exists, then leads with the broken link in the People→Data→Access chain and links to the page that fixes it. When there is no gap the third line reads “Everything here is reachable ✓”. This is where “fragmented status” gets one home.</div>
+
+      <div class="zone-hd"><h2>Needs you</h2><span class="hint">Decisions waiting on an admin</span></div>
+      <a class="sig-row action" href="#" data-go="library">
+        <span class="n">3</span>
+        <span><span class="t">Submissions to review</span><span class="b">3 submissions need review before publishing.</span></span>
+        <span class="go">Review →</span>
+      </a>
+      <a class="sig-row action" href="#" data-go="library">
+        <span class="n">5</span>
+        <span><span class="t">Memory items pending</span><span class="b">Corporate-memory items are awaiting review.</span></span>
+        <span class="go">Review →</span>
+      </a>
+
+      <div class="zone-hd"><h2>Needs fixing</h2><span class="hint">Breakage — wants an operator, not a verdict</span></div>
+      <a class="sig-row err" href="#" data-go="data-sources" data-open-src="mkt">
+        <span class="n">2</span>
+        <span><span class="t">Failed syncs</span><span class="b">2 sync runs failed in the last 24h — both on Marketing (Keboola).</span></span>
+        <span class="go">Open source →</span>
+      </a>
+      <a class="sig-row err" href="#" data-go="library">
+        <span class="n">1</span>
+        <span><span class="t">Marketplace sync</span><span class="b">1 curated marketplace has an error or no sync in 48h.</span></span>
+        <span class="go">Fix →</span>
+      </a>
+      <div class="note"><b>Design note — kept as-is.</b> These two zones are today’s <span class="mono">admin_signals.py</span> dashboard, unchanged: decisions vs. breakage, zero renders nothing, every row lands where the work happens. The redesign adds context *around* them (setup path + gap cards); it does not touch them. One improvement: a failed-sync row now names the source and deep-links to its Sync panel instead of the fleet-wide table.</div>
+    </section>
+
+    <!-- ══════════ PEOPLE ══════════ -->
+    <section class="screen" id="scr-people">
+      <div class="crumb"><a href="#" data-go="overview">Admin</a> / People</div>
+      <div class="page-head">
+        <div>
+          <h1>People</h1>
+          <p class="sub">Accounts, groups, and the credentials issued to them.</p>
+        </div>
+        <div class="actions">
+          <button class="btn">＋ New group</button>
+          <button class="btn primary">＋ Invite person</button>
+        </div>
+      </div>
+
+      <div class="lens-tabs" role="tablist">
+        <button class="lens-tab active" role="tab">People</button>
+        <button class="lens-tab" role="tab">Groups</button>
+        <button class="lens-tab" role="tab">Tokens</button>
+      </div>
+
+      <div class="idp-strip">
+        <span class="idp-logo">G</span>
+        <span><b>Google Workspace</b> is the identity provider — people sign in with <b>@acme.com</b>, groups sync nightly.</span>
+        <span class="chip ok">Groups synced 4 h ago</span>
+        <span class="end">
+          <a href="#" onclick="return false" style="font-size:12.5px; font-weight:600;">Sync now</a>
+          <a href="#" data-go="instance" style="font-size:12.5px; font-weight:600;">Settings →</a>
+        </span>
+      </div>
+
+      <div class="panel">
+        <table class="dt">
+          <thead><tr><th>Person</th><th>Groups</th><th>Data access</th><th>Last pull</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr class="rowlink">
+              <td><span class="ppl-ava">JM</span><b>Jana Malá</b> <span style="color:var(--ds-text-muted)">jana@acme.com</span></td>
+              <td><span class="chip mute plain">Finance</span> <span class="chip mute plain">Everyone</span></td>
+              <td>3 packages</td>
+              <td>2 h ago</td>
+              <td><span class="chip ok">Active</span></td>
+            </tr>
+            <tr class="rowlink">
+              <td><span class="ppl-ava">MK</span><b>Maria Kowalski</b> <span style="color:var(--ds-text-muted)">maria@acme.com</span></td>
+              <td><span class="chip mute plain">Marketing</span> <span class="chip mute plain">Everyone</span></td>
+              <td>2 packages</td>
+              <td><span style="color:var(--ds-accent-warn-ink); font-weight:600;">8 days ago</span></td>
+              <td><span class="chip ok">Active</span></td>
+            </tr>
+            <tr class="rowlink">
+              <td><span class="ppl-ava">TN</span><b>Tomáš Novák</b> <span style="color:var(--ds-text-muted)">tomas@acme.com</span></td>
+              <td><span class="chip mute plain">Everyone</span></td>
+              <td><span style="color:var(--ds-accent-warn-ink); font-weight:600;">No data access</span></td>
+              <td>—</td>
+              <td><span class="chip ok">Active</span></td>
+            </tr>
+            <tr class="rowlink">
+              <td><span class="ppl-ava">RS</span><b>Riley Singh</b> <span style="color:var(--ds-text-muted)">riley@acme.com</span></td>
+              <td><span class="chip mute plain">Analysts</span> <span class="chip mute plain">Everyone</span></td>
+              <td>5 packages</td>
+              <td>26 min ago</td>
+              <td><span class="chip ok">Active</span></td>
+            </tr>
+            <tr class="rowlink" style="opacity:.6">
+              <td><span class="ppl-ava">PB</span><b>Petra Bauer</b> <span style="color:var(--ds-text-muted)">petra@acme.com</span></td>
+              <td>—</td>
+              <td>—</td>
+              <td>Jun 30</td>
+              <td><span class="chip mute">Deactivated</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="note"><b>Design note — outcome columns.</b> Today’s /admin/users shows account plumbing (created, deactivated). Here every row answers the question the admin actually has: <i>does this person get data, and is it reaching them?</i> “Data access” is derived from group→package grants; “Last pull” surfaces delivery. Tomáš’s row shows the gap Overview counted. Row click → today’s user-detail page (account, memberships, effective access, tokens, sessions — all kept).</div>
+      <div class="note"><b>Design note — Google Workspace lives here, not in Data.</b> Workspace is the identity provider (OAuth sign-in + nightly group sync), so its status strip sits above the people it produces — where an admin wondering “why isn’t Maria in Finance yet?” is already looking. Its credentials stay in Instance → Secrets; Google-managed groups keep their origin marking in the Groups lens, exactly as today (`source` segregates Google-synced members from admin-added ones).</div>
+    </section>
+
+    <!-- ══════════ DATA · SOURCES ══════════ -->
+    <section class="screen" id="scr-data-sources">
+      <div class="crumb"><a href="#" data-go="overview">Admin</a> / Data</div>
+      <div class="page-head">
+        <div>
+          <h1>Data</h1>
+          <p class="sub">Everything from “connected” to “in someone’s hands”, in one place.</p>
+        </div>
+        <div class="actions"><button class="btn primary" data-wiz="1">＋ Add data</button></div>
+      </div>
+
+      <div class="lens-tabs" role="tablist">
+        <button class="lens-tab active" role="tab" data-go="data-sources">Sources</button>
+        <button class="lens-tab" role="tab" data-go="data-tables">Tables</button>
+        <button class="lens-tab" role="tab" data-go="data-packages">Packages</button>
+      </div>
+
+      <!-- Source: Production, healthy, expanded -->
+      <div class="panel src-card open" id="src-prod">
+        <div class="src-hd" data-srctoggle="src-prod">
+          <div class="src-logo">K</div>
+          <div>
+            <div class="src-name">Production <span class="chip info plain" style="margin-left:6px">default</span></div>
+            <div class="src-url">connection.keboola.com · Keboola project 4381</div>
+          </div>
+          <div class="src-chips">
+            <span class="chip ok">Healthy</span>
+            <span class="src-caret">▸</span>
+          </div>
+        </div>
+        <div class="pipe">
+          <button class="pipe-cell"><span class="k">Tables</span><span class="v">38 added · 94 more available</span></button>
+          <button class="pipe-cell"><span class="k">Sync</span><span class="v ok">✓ 12 min ago</span></button>
+          <button class="pipe-cell"><span class="k">Semantic layer</span><span class="v ok">✓ 48 metrics · 112 terms</span></button>
+          <button class="pipe-cell"><span class="k">Feeds</span><span class="v">5 packages → 19 people</span></button>
+        </div>
+        <div class="src-body">
+          <div class="src-tabs">
+            <button class="src-tab active" data-srctab="prod-tables">Tables</button>
+            <button class="src-tab" data-srctab="prod-sync">Sync</button>
+            <button class="src-tab" data-srctab="prod-sl">Semantic layer</button>
+            <button class="src-tab" data-srctab="prod-settings">Settings</button>
+          </div>
+          <div class="src-pane active" id="pane-prod-tables">
+            <div style="display:flex; gap:8px; margin-bottom:10px;">
+              <button class="btn sm primary">＋ Add tables from this project</button>
+              <button class="btn sm">Re-warm cache</button>
+            </div>
+            <table class="dt">
+              <thead><tr><th>Table</th><th>Bucket</th><th>Mode</th><th class="num">Rows</th><th>Package</th></tr></thead>
+              <tbody>
+                <tr><td><b>orders_daily</b></td><td><span class="mono">in.c-sales</span></td><td>Synced copy <span class="mono">local</span></td><td class="num">2.4 M</td><td><span class="tag data">Revenue</span></td></tr>
+                <tr><td><b>invoices</b></td><td><span class="mono">in.c-sales</span></td><td>Synced copy <span class="mono">local</span></td><td class="num">840 k</td><td><span class="tag data">Revenue</span></td></tr>
+                <tr><td><b>web_sessions</b></td><td><span class="mono">in.c-web</span></td><td>Live query <span class="mono">remote</span></td><td class="num">225 M</td><td><span class="tag data">Web analytics</span></td></tr>
+                <tr><td><b>mrr_rollup</b></td><td><span class="mono">out.c-metrics</span></td><td>Saved query <span class="mono">materialized</span></td><td class="num">18 k</td><td><span class="tag data">Revenue</span></td></tr>
+                <tr><td><b>churn_events</b></td><td><span class="mono">in.c-product</span></td><td>Synced copy <span class="mono">local</span></td><td class="num">312 k</td><td><span class="chip warn plain">No package</span></td></tr>
+              </tbody>
+            </table>
+            <div class="note"><b>Design note — plain language + the system word.</b> <span class="mono">query_mode</span> survives as the mono chip so CLI/API vocabulary stays learnable, but the label leads with what it means: Synced copy / Live query / Saved query. The Package column makes “reaches nobody” visible per table, at the place tables are managed.</div>
+          </div>
+          <div class="src-pane" id="pane-prod-sync">
+            <div style="display:flex; gap:8px; align-items:center; margin-bottom:10px;">
+              <span class="chip ok">Last run OK · 12 min ago · 38 tables · 4.1 GB</span>
+              <span class="chip mute plain">Schedule: every 6 h</span>
+              <span style="flex:1"></span>
+              <button class="btn sm">Edit schedule</button>
+              <button class="btn sm primary">Sync now</button>
+            </div>
+            <table class="dt">
+              <thead><tr><th>Run</th><th>Status</th><th class="num">Tables</th><th class="num">Volume</th><th class="num">Duration</th></tr></thead>
+              <tbody>
+                <tr><td>Today 14:02</td><td><span class="chip ok">OK</span></td><td class="num">38</td><td class="num">4.1 GB</td><td class="num">3 m 12 s</td></tr>
+                <tr><td>Today 08:02</td><td><span class="chip ok">OK</span></td><td class="num">38</td><td class="num">4.1 GB</td><td class="num">3 m 40 s</td></tr>
+                <tr><td>Yesterday 20:02</td><td><span class="chip ok">OK</span></td><td class="num">38</td><td class="num">4.0 GB</td><td class="num">3 m 05 s</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="src-pane" id="pane-prod-sl">
+            <div style="display:flex; gap:8px; align-items:center; margin-bottom:10px;">
+              <span class="chip ok">Synced 1 h ago · 48 metrics updated · 0 pruned</span>
+              <span style="flex:1"></span>
+              <a href="#" onclick="return false" style="font-size:12.5px; font-weight:600;">Browse metrics & glossary →</a>
+              <button class="btn sm primary">Sync now</button>
+            </div>
+            <p style="font-size:13px; color:var(--ds-text-secondary); margin:0 0 10px;">
+              Business metrics and glossary terms defined in this Keboola project, kept in sync so analysts
+              (and agents) compute metrics one way. Requires the <b>semantic-layer token</b> — a project
+              <i>owner</i> token, separate from the storage token — set in <a href="#" data-srcgoto="prod-settings">Settings</a>.
+            </p>
+            <table class="dt">
+              <thead><tr><th>Last runs</th><th>Result</th></tr></thead>
+              <tbody>
+                <tr><td>Today 13:00</td><td><span class="chip ok">48 updated · 0 pruned</span></td></tr>
+                <tr><td>Today 07:00</td><td><span class="chip ok">48 updated · 2 pruned</span></td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="src-pane" id="pane-prod-settings">
+            <table class="dt">
+              <tbody>
+                <tr><td style="width:220px"><b>Storage token</b><br><span style="font-size:12px;color:var(--ds-text-muted)">Reads buckets & tables</span></td>
+                    <td><span class="chip ok plain">vault</span></td>
+                    <td style="text-align:right"><button class="btn sm">Test</button> <button class="btn sm">Rotate</button></td></tr>
+                <tr><td><b>Semantic-layer token</b><br><span style="font-size:12px;color:var(--ds-text-muted)">Project owner token — enables metrics & glossary sync</span></td>
+                    <td><span class="chip ok plain">set</span></td>
+                    <td style="text-align:right"><button class="btn sm">Rotate</button> <button class="btn sm">Remove</button></td></tr>
+                <tr><td><b>Default connection</b><br><span style="font-size:12px;color:var(--ds-text-muted)">Used when a table names no source</span></td>
+                    <td><span class="chip info plain">yes</span></td>
+                    <td style="text-align:right"></td></tr>
+                <tr><td><b>Danger zone</b></td><td></td>
+                    <td style="text-align:right"><button class="btn sm" style="color:var(--ds-accent-danger-ink); border-color:var(--ds-accent-danger-line)">Disconnect project</button></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Source: Marketing, degraded -->
+      <div class="panel src-card" id="src-mkt">
+        <div class="src-hd" data-srctoggle="src-mkt">
+          <div class="src-logo">K</div>
+          <div>
+            <div class="src-name">Marketing</div>
+            <div class="src-url">connection.eu-central-1.keboola.com · Keboola project 7702</div>
+          </div>
+          <div class="src-chips">
+            <span class="chip err">2 failed syncs</span>
+            <span class="src-caret">▸</span>
+          </div>
+        </div>
+        <div class="pipe">
+          <button class="pipe-cell"><span class="k">Tables</span><span class="v">6 added · 41 more available</span></button>
+          <button class="pipe-cell"><span class="k">Sync</span><span class="v err">✗ failed 2× · token expired</span></button>
+          <button class="pipe-cell"><span class="k">Semantic layer</span><span class="v warn">Token not set</span></button>
+          <button class="pipe-cell"><span class="k">Feeds</span><span class="v">1 package → 6 people</span></button>
+        </div>
+      </div>
+
+      <!-- Source: BigQuery -->
+      <div class="panel src-card" id="src-bq">
+        <div class="src-hd" data-srctoggle="src-bq">
+          <div class="src-logo" style="background:var(--ds-accent-info-bg); color:var(--ds-accent-info-ink)">BQ</div>
+          <div>
+            <div class="src-name">Warehouse (BigQuery)</div>
+            <div class="src-url">acme-warehouse · via instance secrets</div>
+          </div>
+          <div class="src-chips">
+            <span class="chip ok">Healthy</span>
+            <span class="src-caret">▸</span>
+          </div>
+        </div>
+        <div class="pipe" style="grid-template-columns: repeat(3, 1fr);">
+          <button class="pipe-cell"><span class="k">Tables</span><span class="v">2 live · 1 saved query</span></button>
+          <button class="pipe-cell"><span class="k">Cost guard</span><span class="v ok">5 GiB scan cap · 10 GiB materialize cap</span></button>
+          <button class="pipe-cell"><span class="k">Feeds</span><span class="v">1 package → 8 people</span></button>
+        </div>
+      </div>
+
+      <!-- Source: Jira -->
+      <div class="panel src-card" id="src-jira">
+        <div class="src-hd" data-srctoggle="src-jira">
+          <div class="src-logo" style="background:var(--ds-resource-skill-soft); color:var(--ds-resource-skill-ink)">J</div>
+          <div>
+            <div class="src-name">Jira</div>
+            <div class="src-url">acme.atlassian.net · webhook-driven</div>
+          </div>
+          <div class="src-chips">
+            <span class="chip ok">Healthy</span>
+            <span class="src-caret">▸</span>
+          </div>
+        </div>
+        <div class="pipe" style="grid-template-columns: repeat(3, 1fr);">
+          <button class="pipe-cell"><span class="k">Tables</span><span class="v">5 added (issues, sprints, worklogs…)</span></button>
+          <button class="pipe-cell"><span class="k">Webhook</span><span class="v ok">✓ last event 40 s ago</span></button>
+          <button class="pipe-cell"><span class="k">Feeds</span><span class="v">1 package → 12 people</span></button>
+        </div>
+      </div>
+
+      <!-- Source: CSV uploads -->
+      <div class="panel src-card" id="src-csv">
+        <div class="src-hd" data-srctoggle="src-csv">
+          <div class="src-logo" style="background:var(--ds-resource-collection-soft); color:var(--ds-resource-collection-ink)">⇪</div>
+          <div>
+            <div class="src-name">Uploaded files</div>
+            <div class="src-url">CSV / Parquet · uploaded by admins</div>
+          </div>
+          <div class="src-chips">
+            <span class="chip warn">1 stale file</span>
+            <span class="src-caret">▸</span>
+          </div>
+        </div>
+        <div class="pipe" style="grid-template-columns: repeat(3, 1fr);">
+          <button class="pipe-cell"><span class="k">Tables</span><span class="v">3 uploaded</span></button>
+          <button class="pipe-cell"><span class="k">Freshness</span><span class="v warn">targets_2026.csv last replaced 94 days ago</span></button>
+          <button class="pipe-cell"><span class="k">Feeds</span><span class="v">1 package → 6 people</span></button>
+        </div>
+      </div>
+
+      <div class="note"><b>Design note — the source owns its vertical.</b> Data sources, Tables, Sync and Semantic layer are today four sibling nav rows; every one of them is really “about one connected project”. Here each source is a panel whose pipeline strip answers connected → synced → semantic → feeding-whom in one glance, and the four old pages become its tabs. <b>The strip is per-connector</b>: Keboola gets sync + semantic layer; BigQuery gets a cost-guard cell (nothing to sync; credentials live in Instance → Secrets); Jira gets webhook liveness instead of a schedule; uploaded files get replaced-when freshness. The Marketing card shows how breakage surfaces where it can be fixed — the missing semantic-layer token is a warning on the source, not an empty state on a page nobody visits. Google Workspace is not listed here on purpose: it produces people, not tables — its strip lives on the People page.</div>
+    </section>
+
+    <!-- ══════════ DATA · TABLES ══════════ -->
+    <section class="screen" id="scr-data-tables">
+      <div class="crumb"><a href="#" data-go="overview">Admin</a> / Data</div>
+      <div class="page-head">
+        <div>
+          <h1>Data</h1>
+          <p class="sub">Everything from “connected” to “in someone’s hands”, in one place.</p>
+        </div>
+        <div class="actions"><button class="btn primary" data-wiz="1">＋ Add data</button></div>
+      </div>
+      <div class="lens-tabs" role="tablist">
+        <button class="lens-tab" role="tab" data-go="data-sources">Sources</button>
+        <button class="lens-tab active" role="tab">Tables</button>
+        <button class="lens-tab" role="tab" data-go="data-packages">Packages</button>
+      </div>
+      <div class="panel">
+        <div class="panel-bd" style="padding-bottom:0">
+          <input type="search" placeholder="Find a table across every source — name, bucket, package…" style="width:100%; max-width:520px; padding:8px 12px; border:1px solid var(--ds-border); border-radius:var(--ds-radius-btn); font:inherit; font-size:13.5px; background:var(--ds-surface); color:var(--ds-text-primary);">
+        </div>
+        <div class="panel-bd">
+          <table class="dt">
+            <thead><tr><th>Table</th><th>Source</th><th>Mode</th><th>Package</th><th>Reaches</th></tr></thead>
+            <tbody>
+              <tr class="rowlink"><td><b>orders_daily</b></td><td>Production</td><td>Synced copy <span class="mono">local</span></td><td><span class="tag data">Revenue</span></td><td>14 people</td></tr>
+              <tr class="rowlink"><td><b>campaign_spend</b></td><td>Marketing</td><td>Synced copy <span class="mono">local</span></td><td><span class="tag data">Web analytics</span></td><td>6 people</td></tr>
+              <tr class="rowlink"><td><b>web_sessions</b></td><td>Production</td><td>Live query <span class="mono">remote</span></td><td><span class="tag data">Web analytics</span></td><td>6 people</td></tr>
+              <tr class="rowlink"><td><b>events_raw</b></td><td>Warehouse (BQ)</td><td>Live query <span class="mono">remote</span></td><td><span class="tag data">Product events</span></td><td>8 people</td></tr>
+              <tr class="rowlink"><td><b>churn_events</b></td><td>Production</td><td>Synced copy <span class="mono">local</span></td><td><span class="chip warn plain">No package</span></td><td><span style="color:var(--ds-accent-warn-ink); font-weight:600">Nobody</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="note"><b>Design note — the flat lens survives for search.</b> “Where is <span class="mono">orders_daily</span>?” shouldn’t require knowing its source. This is today’s /admin/tables reduced to what it is good at: cross-source lookup. Registration moved into the source panel and the Add-data flow; the “Reaches” column extends each row to the end of the chain. Row click opens the same table drawer (schedule, custom SQL, partitioning, package membership — the full current edit surface, behind Advanced).</div>
+    </section>
+
+    <!-- ══════════ DATA · PACKAGES ══════════ -->
+    <section class="screen" id="scr-data-packages">
+      <div class="crumb"><a href="#" data-go="overview">Admin</a> / Data</div>
+      <div class="page-head">
+        <div>
+          <h1>Data</h1>
+          <p class="sub">Everything from “connected” to “in someone’s hands”, in one place.</p>
+        </div>
+        <div class="actions">
+          <button class="btn">＋ New package</button>
+          <button class="btn primary" data-wiz="1">＋ Add data</button>
+        </div>
+      </div>
+      <div class="lens-tabs" role="tablist">
+        <button class="lens-tab" role="tab" data-go="data-sources">Sources</button>
+        <button class="lens-tab" role="tab" data-go="data-tables">Tables</button>
+        <button class="lens-tab active" role="tab">Packages</button>
+      </div>
+
+      <div class="pkg-grid">
+        <div class="pkg-card" data-go="pkg-detail">
+          <div class="pkg-top">
+            <div class="pkg-ico" style="background:var(--ds-resource-data-soft)">📈</div>
+            <div><div class="pkg-cat">Sales</div><div class="pkg-name">Revenue</div></div>
+            <span class="chip ok plain" style="margin-left:auto">prod</span>
+          </div>
+          <div class="pkg-meta">12 tables from Production · updated 12 min ago</div>
+          <div class="pkg-share">
+            <span class="avatars"><span>F</span><span>A</span><span>E</span></span>
+            3 groups · 14 people <span style="margin-left:auto; color:var(--ds-text-muted)">11 pulled ✓</span>
+          </div>
+        </div>
+        <div class="pkg-card">
+          <div class="pkg-top">
+            <div class="pkg-ico" style="background:var(--ds-resource-collection-soft)">🌐</div>
+            <div><div class="pkg-cat">Sessions & traffic</div><div class="pkg-name">Web analytics</div></div>
+            <span class="chip ok plain" style="margin-left:auto">prod</span>
+          </div>
+          <div class="pkg-meta">8 tables from Production + Marketing</div>
+          <div class="pkg-share">
+            <span class="avatars"><span>M</span><span>A</span></span>
+            2 groups · 9 people <span style="margin-left:auto; color:var(--ds-text-muted)">9 pulled ✓</span>
+          </div>
+        </div>
+        <div class="pkg-card">
+          <div class="pkg-top">
+            <div class="pkg-ico" style="background:var(--ds-resource-agent-soft)">⚡</div>
+            <div><div class="pkg-cat">Product</div><div class="pkg-name">Product events</div></div>
+            <span class="chip ok plain" style="margin-left:auto">prod</span>
+          </div>
+          <div class="pkg-meta">4 tables from Warehouse (BQ)</div>
+          <div class="pkg-share">
+            <span class="avatars"><span>A</span></span>
+            1 group · 8 people <span style="margin-left:auto; color:var(--ds-text-muted)">7 pulled ✓</span>
+          </div>
+        </div>
+        <div class="pkg-card">
+          <div class="pkg-top">
+            <div class="pkg-ico" style="background:var(--ds-resource-memory-soft)">🧭</div>
+            <div><div class="pkg-cat">—</div><div class="pkg-name">Customer 360</div></div>
+            <span class="chip mute plain" style="margin-left:auto">draft</span>
+          </div>
+          <div class="pkg-meta">9 tables from Production</div>
+          <div class="pkg-share none">Shared with nobody — invisible to analysts <span style="margin-left:auto">Share →</span></div>
+        </div>
+      </div>
+
+      <!-- unpackaged tray -->
+      <div class="tray">
+        <div class="tray-hd">
+          <div>
+            <h3>6 tables in no package</h3>
+            <p>Tables reach people only through a package — these are added and syncing, but nobody can use them.</p>
+          </div>
+          <span style="margin-left:auto; display:flex; gap:8px;">
+            <button class="btn sm">Suggest packages by bucket</button>
+            <button class="btn sm primary">Assign to a package</button>
+          </span>
+        </div>
+        <div class="tray-tables">
+          <span class="mono">churn_events</span><span class="mono">nps_responses</span><span class="mono">support_tickets</span>
+          <span class="mono">refunds</span><span class="mono">trial_starts</span><span class="mono">feature_flags</span>
+        </div>
+      </div>
+      <div class="note"><b>Design note — the audit view becomes a workspace.</b> Today /admin/data-packages is explicitly read-only (its share buttons are hidden by CSS) and packages are edited from inside the 6,000-line /admin/tables page. Here packages are the primary Data lens: every card carries its share-and-delivery state, a package shared with nobody warns on the card, and the unpackaged tray turns the invisible “tables outside packages reach nobody” rule into a visible, actionable pile. “Suggest packages by bucket” is today’s <i>Group tables by bucket</i> toolbar button, moved to where the problem lives.</div>
+    </section>
+
+    <!-- ══════════ PACKAGE DETAIL ══════════ -->
+    <section class="screen" id="scr-pkg-detail">
+      <div class="crumb"><a href="#" data-go="overview">Admin</a> / <a href="#" data-go="data-packages">Data / Packages</a> / Revenue</div>
+      <div class="page-head">
+        <div>
+          <h1>📈 Revenue</h1>
+          <p class="sub">12 tables from Production · category “Sales” · status <b>prod</b></p>
+        </div>
+        <div class="actions">
+          <button class="btn">Settings</button>
+          <button class="btn primary">＋ Add tables</button>
+        </div>
+      </div>
+
+      <div class="det-cols">
+        <div>
+          <div class="panel">
+            <div class="panel-hd"><h2>Tables</h2><span class="hint">12 tables · one source</span></div>
+            <div class="panel-bd">
+              <table class="dt">
+                <thead><tr><th>Table</th><th>Mode</th><th class="num">Rows</th><th>Synced</th></tr></thead>
+                <tbody>
+                  <tr><td><b>orders_daily</b></td><td>Synced copy <span class="mono">local</span></td><td class="num">2.4 M</td><td><span class="chip ok plain">12 min</span></td></tr>
+                  <tr><td><b>invoices</b></td><td>Synced copy <span class="mono">local</span></td><td class="num">840 k</td><td><span class="chip ok plain">12 min</span></td></tr>
+                  <tr><td><b>mrr_rollup</b></td><td>Saved query <span class="mono">materialized</span></td><td class="num">18 k</td><td><span class="chip ok plain">1 h</span></td></tr>
+                  <tr><td><b>subscriptions</b></td><td>Synced copy <span class="mono">local</span></td><td class="num">96 k</td><td><span class="chip ok plain">12 min</span></td></tr>
+                  <tr><td colspan="4" style="color:var(--ds-text-muted); font-size:12.5px;">+ 8 more…</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-hd"><h2>Sharing</h2><span class="hint">Who can use this package</span><span class="end"><button class="btn sm primary">＋ Share with a group</button></span></div>
+            <div class="panel-bd">
+              <div class="share-row">
+                <div class="grp-ava">F</div>
+                <div><div class="g-name">Finance</div><div class="g-sub">6 people</div></div>
+                <div class="seg" role="group" aria-label="Access tier for Finance">
+                  <button>Optional</button><button class="on auto">Automatic</button>
+                </div>
+                <button class="share-remove" title="Stop sharing">✕</button>
+              </div>
+              <div class="share-row">
+                <div class="grp-ava">A</div>
+                <div><div class="g-name">Analysts</div><div class="g-sub">7 people</div></div>
+                <div class="seg" role="group" aria-label="Access tier for Analysts">
+                  <button>Optional</button><button class="on auto">Automatic</button>
+                </div>
+                <button class="share-remove" title="Stop sharing">✕</button>
+              </div>
+              <div class="share-row">
+                <div class="grp-ava" style="background:var(--ds-accent-info-bg); color:var(--ds-accent-info-ink)">E</div>
+                <div><div class="g-name">Everyone</div><div class="g-sub">the whole company — 23 people</div></div>
+                <div class="seg" role="group" aria-label="Access tier for Everyone">
+                  <button class="on">Optional</button><button>Automatic</button>
+                </div>
+                <button class="share-remove" title="Stop sharing">✕</button>
+              </div>
+
+              <div class="delivery">
+                <div class="d-line"><span class="dot" style="background:var(--ds-primary)"></span><span><b>14</b> people get this automatically; the rest of the company can add it themselves.</span></div>
+                <div class="d-line"><span class="dot" style="background:var(--ds-accent-success-line)"></span><span><b>11</b> have it on their machine (pulled within 7 days).</span></div>
+                <div class="d-line"><span class="dot" style="background:var(--ds-accent-warn-line)"></span><span><b>3</b> haven’t pulled since Aug 4 — <a href="#" onclick="return false">see who</a>.</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <div class="panel">
+            <div class="panel-hd"><h2>At a glance</h2></div>
+            <div class="panel-bd" style="font-size:13px; display:flex; flex-direction:column; gap:8px;">
+              <div style="display:flex; justify-content:space-between;"><span style="color:var(--ds-text-muted)">Source</span><b>Production</b></div>
+              <div style="display:flex; justify-content:space-between;"><span style="color:var(--ds-text-muted)">Freshness</span><span class="chip ok plain">synced 12 min ago</span></div>
+              <div style="display:flex; justify-content:space-between;"><span style="color:var(--ds-text-muted)">Shared with</span><b>3 groups</b></div>
+              <div style="display:flex; justify-content:space-between;"><span style="color:var(--ds-text-muted)">Reaches</span><b>14 people</b></div>
+              <div style="display:flex; justify-content:space-between;"><span style="color:var(--ds-text-muted)">Metrics attached</span><b>9</b></div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-hd"><h2>Appears as</h2></div>
+            <div class="panel-bd" style="font-size:12.5px; color:var(--ds-text-secondary);">
+              How analysts see this package in their Library — cover, icon, category, description.
+              <br><button class="btn sm" style="margin-top:10px">Edit presentation</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="note"><b>Design note — the relationship is the object.</b> This Sharing panel and the group-side Access editor are the <i>same component</i> rendered from either end — one thing to learn, two entry points. “Optional / Automatic” replaces <span class="mono">available / required</span> (the API keeps the old names). “Everyone” wears a distinct tint because a grant to it is company-wide. The delivery read-out closes the loop the product currently can’t: shared ≠ delivered until <span class="mono">agnes pull</span> runs, and now the admin can see that instead of learning it from a confused analyst.</div>
+    </section>
+
+    <!-- ══════════ ACCESS ══════════ -->
+    <section class="screen" id="scr-access">
+      <div class="crumb"><a href="#" data-go="overview">Admin</a> / Access</div>
+      <div class="page-head">
+        <div>
+          <h1>Access</h1>
+          <p class="sub">Who can use what. Pick a group to edit, or simulate a person to verify.</p>
+        </div>
+        <div class="actions">
+          <button class="btn" data-go="access-sim">🔍 Simulate a person</button>
+          <button class="btn primary">＋ New group</button>
+        </div>
+      </div>
+
+      <div class="acc-cols">
+        <div class="panel" style="padding:8px;">
+          <button class="acc-group"><span class="grp-ava" style="width:24px;height:24px;font-size:10px;background:var(--ds-accent-info-bg);color:var(--ds-accent-info-ink)">E</span> Everyone <span class="cnt">23</span></button>
+          <button class="acc-group active"><span class="grp-ava" style="width:24px;height:24px;font-size:10px;">F</span> Finance <span class="cnt">6</span></button>
+          <button class="acc-group"><span class="grp-ava" style="width:24px;height:24px;font-size:10px;">A</span> Analysts <span class="cnt">7</span></button>
+          <button class="acc-group"><span class="grp-ava" style="width:24px;height:24px;font-size:10px;">M</span> Marketing <span class="cnt">5</span></button>
+          <button class="acc-group"><span class="grp-ava" style="width:24px;height:24px;font-size:10px;">P</span> People Ops <span class="cnt">3</span></button>
+        </div>
+
+        <div class="panel">
+          <div class="panel-hd">
+            <h2>Finance can use…</h2>
+            <span class="hint">6 members · Google-synced</span>
+            <span class="end"><a href="#" onclick="return false" style="font-size:12.5px; font-weight:600;">Members →</a></span>
+          </div>
+          <div class="panel-bd">
+            <details class="acc-sec" open>
+              <summary><span class="car">▸</span> <span class="tag data">Data packages</span> <span class="cnt">2 of 7 granted</span></summary>
+              <div class="acc-item">
+                <input type="checkbox" checked id="g1"><label for="g1"><b>Revenue</b> <span class="sub">12 tables</span></label>
+                <div class="seg" style="margin-left:auto"><button>Optional</button><button class="on auto">Automatic</button></div>
+              </div>
+              <div class="acc-item">
+                <input type="checkbox" checked id="g2"><label for="g2"><b>Web analytics</b> <span class="sub">8 tables</span></label>
+                <div class="seg" style="margin-left:auto"><button class="on">Optional</button><button>Automatic</button></div>
+              </div>
+              <div class="acc-item">
+                <input type="checkbox" id="g3"><label for="g3"><b>Product events</b> <span class="sub">4 tables</span></label>
+              </div>
+              <div class="acc-item">
+                <input type="checkbox" id="g4"><label for="g4"><b>Customer 360</b> <span class="sub">draft — hidden from analysts</span></label>
+              </div>
+            </details>
+
+            <details class="acc-sec">
+              <summary><span class="car">▸</span> <span class="tag skill">Skills, agents & plugins</span> <span class="cnt">4 granted</span></summary>
+              <div class="acc-item"><span class="sub" style="padding:4px 0;">Marketplace plugins, published skills and agents — same grant model, collapsed until needed.</span></div>
+            </details>
+            <details class="acc-sec">
+              <summary><span class="car">▸</span> <span class="tag memory">Memory domains</span> <span class="cnt">1 granted</span></summary>
+            </details>
+            <details class="acc-sec">
+              <summary><span class="car">▸</span> <span class="tag collection">Collections & files</span> <span class="cnt">none</span></summary>
+            </details>
+            <details class="acc-sec">
+              <summary><span class="car">▸</span> <span class="tag agent">Features — chat, Slack, data apps, recipes, digests</span> <span class="cnt">2 granted</span></summary>
+            </details>
+          </div>
+        </div>
+      </div>
+      <div class="note"><b>Design note — everything grantable, one editor, data first.</b> This is today’s group-detail Access tab, kept — with two changes. Data packages open first and carry the tier control inline (today the tier is a separate interaction after ticking). The other twelve <span class="mono">ResourceType</span>s stay fully manageable but collapsed — progressive disclosure of breadth, not removal. The left column keeps groups one click away instead of a page away.</div>
+    </section>
+
+    <!-- ══════════ ACCESS · SIMULATE ══════════ -->
+    <section class="screen" id="scr-access-sim">
+      <div class="crumb"><a href="#" data-go="overview">Admin</a> / <a href="#" data-go="access">Access</a> / Simulate</div>
+      <div class="page-head">
+        <div>
+          <h1>Simulate a person</h1>
+          <p class="sub">See exactly what someone can use, and why — before they ask.</p>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-bd">
+          <div class="field" style="max-width:420px;">
+            <label for="simwho">Person</label>
+            <select id="simwho"><option>Maria Kowalski — maria@acme.com</option><option>Jana Malá</option><option>Tomáš Novák</option></select>
+          </div>
+
+          <div style="display:flex; gap:10px; flex-wrap:wrap; margin:6px 0 4px;">
+            <span class="chip ok">Can use: Web analytics</span>
+            <span class="chip ok">Can use: Brand assets (collection)</span>
+            <span class="chip err">Cannot use: Revenue</span>
+          </div>
+
+          <ul class="sim-chain">
+            <li><b>Maria is in</b>&nbsp;Marketing and Everyone <span style="color:var(--ds-text-muted)">(Google-synced 4 h ago)</span></li>
+            <li><b>Web analytics</b>&nbsp;is shared with Marketing as <b>Automatic</b> → in her workspace</li>
+            <li class="stop"><b>Revenue</b>&nbsp;is shared with Finance and Analysts — Maria is in neither. <a href="#" data-go="pkg-detail">Share Revenue with Marketing →</a></li>
+            <li><b>Delivery:</b>&nbsp;her last <span class="mono">agnes pull</span> was <b style="color:var(--ds-accent-warn-ink)">8 days ago</b> — anything shared since then hasn’t reached her machine yet.</li>
+          </ul>
+        </div>
+      </div>
+      <div class="note"><b>Design note — debugging access is a first-class job.</b> “Why can’t X see Y?” is the most common admin support question and today requires mentally joining four pages. The reason chain walks membership → grant → tier → delivery and stops at the broken link with the fix as a link. This is a promotion of the user-detail page’s “Effective access” section into a tool, backed by the same <span class="mono">access-overview</span> data.</div>
+    </section>
+
+    <!-- ══════════ LIBRARY (stub) ══════════ -->
+    <section class="screen" id="scr-library">
+      <div class="crumb"><a href="#" data-go="overview">Admin</a> / Library</div>
+      <div class="page-head">
+        <div>
+          <h1>Library</h1>
+          <p class="sub">What analysts can find — curation, moderation and knowledge. Every current page keeps its home here.</p>
+        </div>
+      </div>
+      <div class="zone-hd"><h2>Moderation</h2><span class="hint">8 items waiting</span></div>
+      <div class="stub-grid">
+        <div class="stub-card"><h3>Store moderation</h3><p>Verification requests, publishing queue.</p><span class="from">/admin/store</span></div>
+        <div class="stub-card"><h3>Submissions</h3><p>3 need review before publishing.</p><span class="from">/admin/store/submissions</span></div>
+        <div class="stub-card"><h3>Lint findings</h3><p>Open findings across published entities.</p><span class="from">/admin/store/lint</span></div>
+        <div class="stub-card"><h3>Studio suggestions</h3><p>Authoring suggestions waiting to be replayed.</p><span class="from">/admin/studio/suggestions</span></div>
+      </div>
+      <div class="zone-hd"><h2>Sources & knowledge</h2></div>
+      <div class="stub-grid">
+        <div class="stub-card"><h3>Marketplaces</h3><p>Curated marketplaces, nightly sync.</p><span class="from">/admin/marketplaces</span></div>
+        <div class="stub-card"><h3>Corporate memory</h3><p>5 items pending review.</p><span class="from">/admin/corporate-memory</span></div>
+        <div class="stub-card"><h3>Knowledge digests</h3><p>Maintained digest documents.</p><span class="from">/admin/knowledge-digests</span></div>
+        <div class="stub-card"><h3>News · Studio · Contribute</h3><p>Announcements and authoring (Studio keeps its can-studio gate).</p><span class="from">/admin/news · /admin/studio</span></div>
+      </div>
+      <div class="note"><b>Design note.</b> Sketched as cards only — this area’s pages work; the redesign just gives them one roof (“what analysts can find”) instead of two nav sections named Moderation and Content.</div>
+    </section>
+
+    <!-- ══════════ INSTANCE (stub) ══════════ -->
+    <section class="screen" id="scr-instance">
+      <div class="crumb"><a href="#" data-go="overview">Admin</a> / Instance</div>
+      <div class="page-head">
+        <div>
+          <h1>Instance</h1>
+          <p class="sub">The machine itself — configuration, secrets, and outbound connections.</p>
+        </div>
+      </div>
+      <div class="stub-grid">
+        <div class="stub-card"><h3>Server config</h3><p>Feature switches, caps, chat settings.</p><span class="from">/admin/server-config</span></div>
+        <div class="stub-card"><h3>Database backend</h3><p>DuckDB ⇄ Postgres state & migration.</p><span class="from">/admin/database</span></div>
+        <div class="stub-card"><h3>Prompts & workspace</h3><p>Agent prompt, workspace prompt, initial workspace.</p><span class="from">/admin/prompts · /admin/initial-workspace</span></div>
+        <div class="stub-card"><h3>Secrets</h3><p>Instance-level credentials (BigQuery, Google, Slack).</p><span class="from">/admin/datasource-credentials</span></div>
+        <div class="stub-card"><h3>MCP sources</h3><p>Outbound MCP servers + tool grants.</p><span class="from">/admin/mcp-sources</span></div>
+        <div class="stub-card"><h3>Linked apps</h3><p>OAuth apps linked to the instance.</p><span class="from">/admin/linked-apps</span></div>
+      </div>
+    </section>
+
+    <!-- ══════════ ACTIVITY (stub) ══════════ -->
+    <section class="screen" id="scr-activity">
+      <div class="crumb"><a href="#" data-go="overview">Admin</a> / Activity</div>
+      <div class="page-head">
+        <div>
+          <h1>Activity</h1>
+          <p class="sub">What’s happening — audit, usage, and adoption.</p>
+        </div>
+      </div>
+      <div class="stub-grid">
+        <div class="stub-card"><h3>Audit log</h3><p>Every admin action, filterable.</p><span class="from">/admin/activity</span></div>
+        <div class="stub-card"><h3>Telemetry</h3><p>Tool usage & error rates.</p><span class="from">/admin/telemetry</span></div>
+        <div class="stub-card"><h3>Sessions</h3><p>Analyst + chat sessions.</p><span class="from">/admin/sessions · /admin/chat</span></div>
+        <div class="stub-card"><h3>Adoption</h3><p>Who is actually using the instance.</p><span class="from">/admin/adoption</span></div>
+        <div class="stub-card"><h3>All sync runs</h3><p>Fleet-wide run history across every source (per-source view lives on the source).</p><span class="from">/admin/sync</span></div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- ═══════════ ADD DATA WIZARD ═══════════ -->
+<div class="wiz-overlay" id="wiz" role="dialog" aria-modal="true" aria-labelledby="wizTitle">
+  <div class="wiz">
+    <div class="wiz-hd">
+      <h2 id="wizTitle">Add data</h2>
+      <button class="wiz-close" data-wizclose aria-label="Close">✕</button>
+    </div>
+    <div class="wiz-steps">
+      <button class="wiz-step now" data-wizgo="1"><span class="wn">1</span> Connect</button>
+      <button class="wiz-step" data-wizgo="2"><span class="wn">2</span> Choose tables</button>
+      <button class="wiz-step" data-wizgo="3"><span class="wn">3</span> Bundle</button>
+      <button class="wiz-step" data-wizgo="4"><span class="wn">4</span> Share</button>
+    </div>
+    <div class="wiz-bd">
+
+      <!-- step 1 -->
+      <div class="wiz-pane active" data-wizpane="1">
+        <p style="margin:0 0 12px; font-size:13.5px; color:var(--ds-text-secondary);">
+          Where does the data live? Already connected? <a href="#" onclick="return false">Pick tables from an existing source</a> instead.
+        </p>
+
+        <div class="src-pick" role="radiogroup" aria-label="Source type">
+          <button class="src-opt on" data-srcpick="keboola">
+            <span class="so-logo" style="background:var(--ds-resource-data-soft); color:var(--ds-resource-data-ink)">K</span>
+            <span class="so-name">Keboola project</span>
+            <span class="so-sub">Buckets & tables, synced copies</span>
+          </button>
+          <button class="src-opt" data-srcpick="bigquery">
+            <span class="so-logo" style="background:var(--ds-accent-info-bg); color:var(--ds-accent-info-ink)">BQ</span>
+            <span class="so-name">BigQuery</span>
+            <span class="so-sub">Live queries or saved queries</span>
+          </button>
+          <button class="src-opt" data-srcpick="csv">
+            <span class="so-logo" style="background:var(--ds-resource-collection-soft); color:var(--ds-resource-collection-ink)">⇪</span>
+            <span class="so-name">CSV / files</span>
+            <span class="so-sub">Upload once or re-upload</span>
+          </button>
+          <button class="src-opt" data-srcpick="jira">
+            <span class="so-logo" style="background:var(--ds-resource-skill-soft); color:var(--ds-resource-skill-ink)">J</span>
+            <span class="so-name">Jira</span>
+            <span class="so-sub">Real-time via webhooks</span>
+          </button>
+        </div>
+
+        <!-- Keboola connect form -->
+        <div class="src-form" data-srcform="keboola">
+          <div class="field">
+            <label for="w-url">Project URL</label>
+            <input type="text" id="w-url" value="https://connection.keboola.com" spellcheck="false">
+          </div>
+          <div class="field">
+            <label for="w-token">Storage token</label>
+            <input type="password" id="w-token" value="••••••••••••••••••••••">
+            <div class="fh">Read access to buckets & tables. Stored in the server vault, never echoed back.</div>
+          </div>
+          <div class="opt-box">
+            <div class="oh"><input type="checkbox" id="w-sl" checked><label for="w-sl">Also sync business metrics & glossary (semantic layer)</label></div>
+            <p>Keeps this project’s metric definitions in Agnes so analysts and agents compute metrics one way.
+               Needs a second token — a project <b>owner</b> token.</p>
+            <div class="field" style="margin:10px 0 2px 24px;">
+              <label for="w-mtoken">Semantic-layer token <span style="font-weight:500; color:var(--ds-text-muted)">(project owner)</span></label>
+              <input type="password" id="w-mtoken" placeholder="paste owner token">
+            </div>
+          </div>
+        </div>
+
+        <!-- BigQuery connect form -->
+        <div class="src-form" data-srcform="bigquery" hidden>
+          <div class="field">
+            <label for="w-gcp">GCP project</label>
+            <input type="text" id="w-gcp" placeholder="acme-warehouse">
+          </div>
+          <div class="field">
+            <label>Credentials</label>
+            <div style="display:flex; align-items:center; gap:8px; font-size:13px;">
+              <span class="chip ok plain">service account set</span>
+              <span style="color:var(--ds-text-muted); font-size:12.5px;">from Instance → Secrets · <a href="#" onclick="return false">change</a></span>
+            </div>
+            <div class="fh">BigQuery uses the instance-level service account — one credential for every dataset, managed in Instance → Secrets.</div>
+          </div>
+          <div class="opt-box">
+            <div class="oh">Cost guardrails</div>
+            <p>Live queries are capped at <b>5 GiB scanned</b>; saved queries at <b>10 GiB per materialization</b>.
+               Both are adjustable later in this source’s Settings. Nothing is copied unless you choose a saved query.</p>
+          </div>
+        </div>
+
+        <!-- CSV connect form -->
+        <div class="src-form" data-srcform="csv" hidden>
+          <div class="drop">
+            <b>Drop CSV or Parquet files here</b>
+            <span>or <a href="#" onclick="return false">browse</a> — each file becomes a table you can bundle and share like any other</span>
+          </div>
+          <div class="fh" style="margin-top:8px;">Re-uploading a file with the same name replaces the table’s data and keeps its package membership and sharing.</div>
+        </div>
+
+        <!-- Jira connect form -->
+        <div class="src-form" data-srcform="jira" hidden>
+          <div class="field">
+            <label for="w-jurl">Jira site</label>
+            <input type="text" id="w-jurl" placeholder="https://acme.atlassian.net">
+          </div>
+          <div class="opt-box">
+            <div class="oh">How Jira stays fresh</div>
+            <p>Jira pushes changes to Agnes over a webhook — no polling schedule. After connecting, register the
+               webhook in Jira’s admin (we’ll show the exact URL and secret), and issues, sprints and worklogs
+               update within seconds of changing.</p>
+          </div>
+        </div>
+
+        <div class="note"><b>Design note — one flow, many connectors.</b> Step 1 is the only step that varies by source: each connector brings its own connect form (Keboola: URL + tokens; BigQuery: project + the instance service account; CSV: an upload; Jira: site + webhook). Steps 2–4 are identical for all of them, because once tables exist, bundling and sharing don’t care where the data came from. The semantic-layer token stays a Keboola-only affordance — offered here, skippable, resurfacing as a warn chip on the source if skipped. <b>Google Workspace is deliberately absent:</b> it is the identity provider, not a data source — it lives in People (sign-in + group sync), with its credentials in Instance → Secrets.</div>
+      </div>
+
+      <!-- step 2 -->
+      <div class="wiz-pane" data-wizpane="2">
+        <p style="margin:0 0 8px; font-size:13.5px; color:var(--ds-text-secondary);">
+          <b>Production</b> connected ✓ — 132 tables in 8 buckets. Choose what Agnes should manage.
+        </p>
+        <div class="wtable">
+          <div class="wt-bucket"><input type="checkbox" checked id="wb1"><label for="wb1"><span class="mono">in.c-sales</span></label> <span style="color:var(--ds-text-muted); font-weight:500;">4 of 4 tables</span></div>
+          <div class="wt-row"><input type="checkbox" checked id="wt1"><label for="wt1">orders_daily</label><span class="sz">2.4 M rows · 1.1 GB</span></div>
+          <div class="wt-row"><input type="checkbox" checked id="wt2"><label for="wt2">invoices</label><span class="sz">840 k rows · 410 MB</span></div>
+          <div class="wt-row"><input type="checkbox" checked id="wt3"><label for="wt3">subscriptions</label><span class="sz">96 k rows · 38 MB</span></div>
+          <div class="wt-row"><input type="checkbox" checked id="wt4"><label for="wt4">refunds</label><span class="sz">31 k rows · 9 MB</span></div>
+          <div class="wt-bucket"><input type="checkbox" id="wb2"><label for="wb2"><span class="mono">in.c-web</span></label> <span style="color:var(--ds-text-muted); font-weight:500;">0 of 12 tables</span></div>
+          <div class="wt-bucket"><input type="checkbox" checked id="wb3"><label for="wb3"><span class="mono">in.c-product</span></label> <span style="color:var(--ds-text-muted); font-weight:500;">2 of 6 tables</span></div>
+          <div class="wt-row"><input type="checkbox" checked id="wt5"><label for="wt5">churn_events</label><span class="sz">312 k rows · 120 MB</span></div>
+          <div class="wt-row"><input type="checkbox" checked id="wt6"><label for="wt6">trial_starts</label><span class="sz">88 k rows · 21 MB</span></div>
+        </div>
+        <details class="adv">
+          <summary>Advanced — how each table is queried</summary>
+          <div class="adv-bd">
+            <div class="radio-line"><input type="radio" name="qm" checked id="qm1"><label for="qm1"><b>Synced copy</b> <span class="mono">local</span> — <span class="rl-sub">downloaded on a schedule, fast local queries (default)</span></label></div>
+            <div class="radio-line"><input type="radio" name="qm" id="qm2"><label for="qm2"><b>Live query</b> <span class="mono">remote</span> — <span class="rl-sub">no copy; every query runs at the source</span></label></div>
+            <div class="radio-line"><input type="radio" name="qm" id="qm3"><label for="qm3"><b>Saved query</b> <span class="mono">materialized</span> — <span class="rl-sub">your SQL, run on a schedule, result distributed like a table</span></label></div>
+            <p style="font-size:12px; color:var(--ds-text-muted); margin:8px 0 2px;">Per-table overrides, custom SQL, partitioning and sync strategy stay editable on each table afterwards.</p>
+          </div>
+        </details>
+        <div class="note"><b>Design note — sensible default, full depth.</b> The current register-table modals front-load query_mode, sync strategy, and partitioning on every table. Here the default (synced copy) is applied silently, the choice is one disclosure away, and per-table depth lives on the table drawer — nothing removed, just re-sequenced.</div>
+      </div>
+
+      <!-- step 3 -->
+      <div class="wiz-pane" data-wizpane="3">
+        <p style="margin:0 0 10px; font-size:13.5px; color:var(--ds-text-secondary);">
+          Arrange the <b>6 tables</b> into packages — the bundles analysts add to their workspace.
+          Nothing is final: merge, split or rename any time from Data → Packages.
+        </p>
+        <div class="seed-row">
+          <span>Start from:</span>
+          <button class="seed-chip" data-seed="one">One package</button>
+          <button class="seed-chip" data-seed="bucket">Split by bucket (2)</button>
+          <span style="margin-left:auto"></span>
+          <button class="btn sm" id="newTrayBtn">＋ New package</button>
+        </div>
+        <div id="bundleBoard"></div>
+        <div class="movebar" id="movebar" hidden>
+          <span id="movebarLabel">0 selected</span>
+          <span style="font-weight:500; color:var(--ds-text-muted);">Move to:</span>
+          <span id="movebarTargets" style="display:flex; gap:6px; flex-wrap:wrap;"></span>
+        </div>
+        <details class="adv">
+          <summary>Presentation & lifecycle — status, category, icon, color, cover image</summary>
+          <div class="adv-bd"><p style="font-size:12.5px; color:var(--ds-text-muted); margin:6px 0 2px;">Set per package after creation (status defaults to <b>prod</b>). All of today’s package fields stay available on the package’s Settings.</p></div>
+        </details>
+        <div class="note"><b>Design note — compose, don’t configure.</b> “Tables reach people only through a package” is the sentence the current UI never says. Step 3 is a bundling board: the seeds (one package / by bucket — today’s <i>Group tables by bucket</i>) are one-click <b>starting points, not modes</b> — the admin then moves any table anywhere via select → Move to, creates more packages, or parks tables in <b>Leave out</b> (they land in the visible unpackaged tray, never silently). Package names edit inline; taxonomy stays cheap to change later, and the copy says so, so nobody stalls here chasing the perfect split.</div>
+      </div>
+
+      <!-- step 4 -->
+      <div class="wiz-pane" data-wizpane="4">
+        <div class="wiz-share">
+          <p style="margin:0 0 10px; font-size:13.5px; color:var(--ds-text-secondary);">
+            Who gets these packages? Share now or skip — an unshared package stays private
+            and waits for you on Overview. Change any of this later from the package or from a group.
+          </p>
+          <div style="display:flex; gap:8px; margin: 0 0 12px;">
+            <button class="btn sm" id="shareAllBtn">Share all with Everyone (optional)</button>
+            <button class="btn sm ghost" id="skipShareBtn">Skip sharing for now</button>
+          </div>
+          <div id="shareCards"></div>
+          <div id="leftOutNote" style="font-size:12.5px; color:var(--ds-text-muted); margin-top:4px;"></div>
+          <div class="delivery" style="margin-top:14px;">
+            <div class="d-line"><span class="dot" style="background:var(--ds-primary)"></span><span><b>Automatic</b> — lands in their workspace on the next sync.</span></div>
+            <div class="d-line"><span class="dot" style="background:var(--ds-text-muted)"></span><span><b>Optional</b> — appears in their Library; they add it themselves.</span></div>
+          </div>
+          <div class="note"><b>Design note — the safety net makes skipping safe.</b> Step 4 is a stack of per-package share cards — each one the SAME component as the package detail’s Sharing panel, so there is one thing to learn. It doesn’t have to guarantee sharing: an unshared package warns on its own card and is counted by Overview’s “packages shared with nobody” gap card, so “Skip for now” moves the work to a visible queue instead of hiding it. The bulk action covers the common “one group gets everything” case; the summary is honest about what reached people and what is still waiting.</div>
+        </div>
+        <div class="wiz-done" style="display:none;">
+          <div class="success-slab" id="successSlab"></div>
+        </div>
+      </div>
+    </div>
+    <div class="wiz-ft">
+      <button class="btn ghost" data-wizclose>Cancel</button>
+      <span class="spacer"></span>
+      <button class="btn" id="wizBack" disabled>Back</button>
+      <button class="btn primary" id="wizNext">Connect & continue</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  /* ── nav / screens ── */
+  const screens = document.querySelectorAll('.screen');
+  const railItems = document.querySelectorAll('.rail-i');
+  const navMap = {
+    'overview': 'overview', 'people': 'people',
+    'data-sources': 'data-sources', 'data-tables': 'data-sources', 'data-packages': 'data-sources',
+    'pkg-detail': 'data-sources',
+    'access': 'access', 'access-sim': 'access',
+    'library': 'library', 'instance': 'instance', 'activity': 'activity',
+  };
+  function go(id) {
+    screens.forEach(s => s.classList.toggle('active', s.id === 'scr-' + id));
+    railItems.forEach(r => r.classList.toggle('active', r.dataset.nav === (navMap[id] || id)));
+    window.scrollTo({ top: 0 });
+  }
+  document.addEventListener('click', (e) => {
+    const g = e.target.closest('[data-go]');
+    if (g) {
+      e.preventDefault();
+      go(g.dataset.go);
+      if (g.dataset.openSrc === 'mkt') {
+        const c = document.getElementById('src-mkt');
+        document.getElementById('src-prod').classList.remove('open');
+        c.classList.add('open');
+      }
+      if (g.dataset.fresh) { /* first-run flow just lands on overview with the setup path visible */ }
+    }
+    const nv = e.target.closest('[data-nav]');
+    if (nv) go(nv.dataset.nav);
+    const st = e.target.closest('[data-srctoggle]');
+    if (st) document.getElementById(st.dataset.srctoggle).classList.toggle('open');
+    const tab = e.target.closest('[data-srctab]');
+    if (tab) {
+      const card = tab.closest('.src-card');
+      card.querySelectorAll('.src-tab').forEach(t => t.classList.toggle('active', t === tab));
+      card.querySelectorAll('.src-pane').forEach(p => p.classList.toggle('active', p.id === 'pane-' + tab.dataset.srctab));
+    }
+    const sg = e.target.closest('[data-srcgoto]');
+    if (sg) {
+      e.preventDefault();
+      const card = sg.closest('.src-card');
+      card.querySelectorAll('.src-tab').forEach(t => t.classList.toggle('active', t.dataset.srctab === sg.dataset.srcgoto));
+      card.querySelectorAll('.src-pane').forEach(p => p.classList.toggle('active', p.id === 'pane-' + sg.dataset.srcgoto));
+    }
+    /* segmented tier controls — visual toggle only */
+    const segBtn = e.target.closest('.seg button');
+    if (segBtn) {
+      segBtn.parentElement.querySelectorAll('button').forEach(b => b.classList.remove('on', 'auto'));
+      segBtn.classList.add('on');
+      if (segBtn.textContent.trim() === 'Automatic') segBtn.classList.add('auto');
+    }
+  });
+
+  /* ── design notes toggle ── */
+  const nt = document.getElementById('notesToggle');
+  nt.addEventListener('click', () => {
+    const on = document.body.classList.toggle('notes-on');
+    nt.setAttribute('aria-pressed', String(on));
+    nt.textContent = 'Design notes: ' + (on ? 'on' : 'off');
+  });
+
+  /* ── setup path toggle (fresh vs steady) ── */
+  const sp = document.getElementById('setupPath');
+  document.getElementById('setupToggle').addEventListener('click', (e) => {
+    const hidden = sp.classList.toggle('retired');
+    sp.querySelector('.setup-steps').style.display = hidden ? 'none' : '';
+    e.target.textContent = hidden ? 'Show setup path' : 'Show steady state';
+  });
+
+  /* ── wizard ── */
+  const wiz = document.getElementById('wiz');
+  let step = 1;
+  let srcType = 'keboola';
+  const CONNECT_LABEL = {
+    keboola: 'Connect & continue',
+    bigquery: 'Connect & continue',
+    csv: 'Upload & continue',
+    jira: 'Connect & show webhook',
+  };
+  const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+  /* source-type picker: swap the connect form, relabel the CTA */
+  document.addEventListener('click', (e) => {
+    const opt = e.target.closest('[data-srcpick]');
+    if (!opt) return;
+    srcType = opt.dataset.srcpick;
+    wiz.querySelectorAll('[data-srcpick]').forEach(o => o.classList.toggle('on', o === opt));
+    wiz.querySelectorAll('[data-srcform]').forEach(f => f.hidden = f.dataset.srcform !== srcType);
+    if (step === 1) document.getElementById('wizNext').textContent = CONNECT_LABEL[srcType];
+  });
+
+  /* ── step 3: bundling board ── */
+  const WIZ_TABLES = [
+    { n: 'orders_daily',  b: 'in.c-sales' },
+    { n: 'invoices',      b: 'in.c-sales' },
+    { n: 'subscriptions', b: 'in.c-sales' },
+    { n: 'refunds',       b: 'in.c-sales' },
+    { n: 'churn_events',  b: 'in.c-product' },
+    { n: 'trial_starts',  b: 'in.c-product' },
+  ];
+  const GROUP_POOL = [
+    { name: 'Finance', size: 6 }, { name: 'Analysts', size: 7 },
+    { name: 'Marketing', size: 5 }, { name: 'People Ops', size: 3 },
+    { name: 'Everyone', size: 23 },
+  ];
+  const groupSize = g => (GROUP_POOL.find(x => x.name === g) || { size: 0 }).size;
+  let board = null;   // { trays: [{id, name, tables[]}], out: [] }
+  let shares = null;  // { trayId: [{g, tier: 'opt'|'auto'}] }
+  let trayIdSeq = 0;
+  const bucketOf = n => (WIZ_TABLES.find(t => t.n === n) || {}).b || '';
+
+  function seedBoard(kind) {
+    trayIdSeq = 0;
+    if (kind === 'bucket') {
+      board = { trays: [
+        { id: 't' + (++trayIdSeq), name: 'Sales',   tables: WIZ_TABLES.filter(t => t.b === 'in.c-sales').map(t => t.n) },
+        { id: 't' + (++trayIdSeq), name: 'Product', tables: WIZ_TABLES.filter(t => t.b === 'in.c-product').map(t => t.n) },
+      ], out: [] };
+    } else {
+      board = { trays: [
+        { id: 't' + (++trayIdSeq), name: 'Revenue', tables: WIZ_TABLES.map(t => t.n) },
+      ], out: [] };
+    }
+    shares = null;
+    renderBoard();
+  }
+
+  function renderBoard() {
+    const trayHtml = (t, out) => `
+      <div class="btray ${out ? 'out' : ''}" data-tray="${t.id}">
+        <div class="btray-hd">
+          ${out
+            ? '<b style="font-size:13px;">Leave out</b>'
+            : `<input class="tray-name" value="${esc(t.name)}" aria-label="Package name">`}
+          <span class="cnt">${t.tables.length} table${t.tables.length === 1 ? '' : 's'}</span>
+          ${out ? '<span class="cnt" style="margin-left:auto; font-weight:500;">won’t be usable until packaged — they wait in the unpackaged tray</span>' : ''}
+        </div>
+        ${t.tables.map(n => `
+          <div class="btray-row">
+            <input type="checkbox" class="bt-check" data-table="${esc(n)}" aria-label="Select ${esc(n)}">
+            <b>${esc(n)}</b> <span class="mono">${esc(bucketOf(n))}</span>
+          </div>`).join('')}
+        ${t.tables.length ? '' : '<div class="btray-empty">Empty — tick tables anywhere and move them here.</div>'}
+      </div>`;
+    document.getElementById('bundleBoard').innerHTML =
+      board.trays.map(t => trayHtml(t, false)).join('') +
+      (board.out.length ? trayHtml({ id: 'out', tables: board.out }, true) : '');
+    updateMovebar();
+    updateWizLabels();
+  }
+
+  const selectedTables = () => [...document.querySelectorAll('.bt-check:checked')].map(c => c.dataset.table);
+
+  function updateMovebar() {
+    const sel = selectedTables();
+    const bar = document.getElementById('movebar');
+    bar.hidden = sel.length === 0;
+    if (!sel.length) return;
+    document.getElementById('movebarLabel').textContent = sel.length + ' selected';
+    document.getElementById('movebarTargets').innerHTML =
+      board.trays.map(t => `<button class="btn sm" data-move="${t.id}">${esc(t.name)}</button>`).join('') +
+      '<button class="btn sm" data-move="out">Leave out</button>' +
+      '<button class="btn sm" data-move="__new">＋ New package</button>';
+  }
+
+  function moveSelected(target) {
+    const sel = new Set(selectedTables());
+    if (!sel.size) return;
+    board.trays.forEach(t => { t.tables = t.tables.filter(n => !sel.has(n)); });
+    board.out = board.out.filter(n => !sel.has(n));
+    if (target === '__new') board.trays.push({ id: 't' + (++trayIdSeq), name: 'New package', tables: [...sel] });
+    else if (target === 'out') board.out.push(...sel);
+    else { const t = board.trays.find(t => t.id === target); if (t) t.tables.push(...sel); }
+    renderBoard();
+  }
+
+  function updateWizLabels() {
+    if (step !== 3) return;
+    const n = board ? board.trays.filter(t => t.tables.length).length : 0;
+    document.getElementById('wizNext').textContent =
+      n === 0 ? 'Continue (no packages)' : `Create ${n} package${n === 1 ? '' : 's'} & continue`;
+  }
+
+  document.addEventListener('change', (e) => {
+    if (e.target.classList.contains('bt-check')) updateMovebar();
+  });
+  document.addEventListener('input', (e) => {
+    if (e.target.classList.contains('tray-name')) {
+      const t = board.trays.find(t => t.id === e.target.closest('.btray').dataset.tray);
+      if (t) t.name = e.target.value;
+    }
+  });
+
+  /* ── step 4: per-package share cards ── */
+  function renderShareStep() {
+    const pkgs = board.trays.filter(t => t.tables.length);
+    if (!shares) shares = {};
+    pkgs.forEach((p, i) => { if (!shares[p.id]) shares[p.id] = i === 0 ? [{ g: 'Finance', tier: 'auto' }, { g: 'Analysts', tier: 'auto' }] : []; });
+    const card = p => {
+      const rows = shares[p.id].map((s, si) => `
+        <div class="share-row">
+          <div class="grp-ava"${s.g === 'Everyone' ? ' style="background:var(--ds-accent-info-bg); color:var(--ds-accent-info-ink)"' : ''}>${esc(s.g[0])}</div>
+          <div><div class="g-name">${esc(s.g)}</div><div class="g-sub">${s.g === 'Everyone' ? 'the whole company — ' : ''}${groupSize(s.g)} people</div></div>
+          <div class="seg" data-share="${p.id}:${si}" role="group" aria-label="Access tier for ${esc(s.g)}">
+            <button class="${s.tier === 'opt' ? 'on' : ''}">Optional</button><button class="${s.tier === 'auto' ? 'on auto' : ''}">Automatic</button>
+          </div>
+          <button class="share-remove" data-unshare="${p.id}:${si}" title="Stop sharing">✕</button>
+        </div>`).join('');
+      return `
+      <div class="share-card">
+        <div class="share-card-hd">
+          <b>${esc(p.name)}</b><span class="m">${p.tables.length} table${p.tables.length === 1 ? '' : 's'}</span>
+          <span style="margin-left:auto"><button class="btn sm" data-addshare="${p.id}">＋ Group</button></span>
+        </div>
+        ${rows || '<div class="share-none">Not shared yet — analysts won’t see it. It will wait on Overview.</div>'}
+      </div>`;
+    };
+    document.getElementById('shareCards').innerHTML = pkgs.map(card).join('');
+    document.getElementById('leftOutNote').textContent = board.out.length
+      ? `${board.out.length} table${board.out.length === 1 ? '' : 's'} left out — waiting in the unpackaged tray on Data → Packages.`
+      : '';
+  }
+
+  function finishWizard() {
+    const pkgs = board.trays.filter(t => t.tables.length);
+    const lines = pkgs.map(p => {
+      const sh = (shares && shares[p.id]) || [];
+      if (!sh.length) return `<b>${esc(p.name)}</b> — created, shared with nobody yet. It waits on Overview.`;
+      const people = sh.reduce((a, s) => a + groupSize(s.g), 0);
+      const det = sh.map(s => `${esc(s.g)} <span style="color:var(--ds-text-muted)">(${s.tier === 'auto' ? 'automatic' : 'optional'})</span>`).join(', ');
+      return `<b>${esc(p.name)}</b> — live for ${people} people: ${det}.`;
+    });
+    if (board.out.length) lines.push(`<b>${board.out.length} table${board.out.length === 1 ? '' : 's'}</b> left unpackaged — see the tray on Data → Packages.`);
+    const shared = pkgs.filter(p => (shares[p.id] || []).length).length;
+    document.getElementById('successSlab').innerHTML = `
+      <div class="big">✓</div>
+      <h3>${pkgs.length} package${pkgs.length === 1 ? '' : 's'} created${shared ? ` · ${shared} shared` : ''}</h3>
+      <p style="text-align:left; max-width:480px; margin:0 auto 18px;">${lines.map(l => '•&nbsp; ' + l).join('<br>')}</p>
+      <button class="btn" data-wizclose data-go="data-packages">Open packages</button>
+      <button class="btn primary" data-wizclose data-go="overview">Done</button>`;
+    const p4 = wiz.querySelector('[data-wizpane="4"]');
+    p4.querySelector('.wiz-share').style.display = 'none';
+    p4.querySelector('.wiz-done').style.display = '';
+    document.getElementById('wizNext').style.display = 'none';
+  }
+
+  function renderWiz() {
+    wiz.querySelectorAll('.wiz-pane').forEach(p => p.classList.toggle('active', +p.dataset.wizpane === step));
+    wiz.querySelectorAll('.wiz-step').forEach((s, i) => {
+      s.classList.toggle('now', i + 1 === step);
+      s.classList.toggle('done', i + 1 < step);
+    });
+    document.getElementById('wizBack').disabled = step === 1;
+    const next = document.getElementById('wizNext');
+    next.style.display = '';
+    if (step === 1) next.textContent = CONNECT_LABEL[srcType];
+    else if (step === 2) next.textContent = 'Continue with 6 tables';
+    else if (step === 4) next.textContent = 'Share & finish';
+    if (step === 3) { if (!board) seedBoard('one'); else renderBoard(); updateWizLabels(); }
+    if (step === 4) renderShareStep();
+    const p4 = wiz.querySelector('[data-wizpane="4"]');
+    p4.querySelector('.wiz-share').style.display = '';
+    p4.querySelector('.wiz-done').style.display = 'none';
+  }
+
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('[data-wiz]')) { step = 1; board = null; shares = null; renderWiz(); wiz.classList.add('open'); }
+    if (e.target.closest('[data-wizclose]')) wiz.classList.remove('open');
+    const wg = e.target.closest('[data-wizgo]');
+    if (wg) { step = +wg.dataset.wizgo; renderWiz(); }
+    const seed = e.target.closest('[data-seed]');
+    if (seed) seedBoard(seed.dataset.seed);
+    const mv = e.target.closest('[data-move]');
+    if (mv) moveSelected(mv.dataset.move);
+    if (e.target.closest('#newTrayBtn')) {
+      board.trays.push({ id: 't' + (++trayIdSeq), name: 'New package', tables: [] });
+      renderBoard();
+      const inputs = document.querySelectorAll('.tray-name');
+      const last = inputs[inputs.length - 1];
+      if (last) { last.focus(); last.select(); }
+    }
+    const add = e.target.closest('[data-addshare]');
+    if (add) {
+      const pid = add.dataset.addshare;
+      const used = new Set(shares[pid].map(s => s.g));
+      const next = GROUP_POOL.find(g => !used.has(g.name));
+      if (next) { shares[pid].push({ g: next.name, tier: 'opt' }); renderShareStep(); }
+    }
+    const un = e.target.closest('[data-unshare]');
+    if (un) {
+      const [pid, si] = un.dataset.unshare.split(':');
+      shares[pid].splice(+si, 1);
+      renderShareStep();
+    }
+    if (e.target.closest('#shareAllBtn')) {
+      board.trays.filter(t => t.tables.length).forEach(p => {
+        if (!shares[p.id].some(s => s.g === 'Everyone')) shares[p.id].push({ g: 'Everyone', tier: 'opt' });
+      });
+      renderShareStep();
+    }
+    if (e.target.closest('#skipShareBtn')) finishWizard();
+    /* keep share-tier state in sync with the segmented control */
+    const segBtn2 = e.target.closest('.seg button');
+    if (segBtn2 && segBtn2.parentElement.dataset.share && shares) {
+      const [pid, si] = segBtn2.parentElement.dataset.share.split(':');
+      if (shares[pid] && shares[pid][+si]) shares[pid][+si].tier = segBtn2.textContent.trim() === 'Automatic' ? 'auto' : 'opt';
+    }
+  });
+  document.getElementById('wizBack').addEventListener('click', () => { if (step > 1) { step--; renderWiz(); } });
+  document.getElementById('wizNext').addEventListener('click', () => {
+    if (step < 4) { step++; renderWiz(); }
+    else finishWizard();
+  });
+  wiz.addEventListener('click', (e) => { if (e.target === wiz) wiz.classList.remove('open'); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') wiz.classList.remove('open'); });
+})();
+</script>

@@ -137,35 +137,37 @@ def test_rail_has_a_collapse_toggle():
     assert 'aria-controls="rail-collapsible"' in html
 
 
-def test_rail_admin_expands_into_area_rows_with_flyouts():
-    """Admin opens IN the rail into one row per admin area, and each area's
-    own links open in a flyout beside the column — never inline.
+def test_rail_admin_is_one_plain_link_to_the_hub():
+    """Admin is a single link to /admin. It does not expand, in the rail or
+    anywhere else.
 
-    That distinction is the whole point: an inline expansion contributes
-    height, so opening one area would push every row below it down and the
-    rail's geometry would differ page to page (areas restore their own open
-    state). An absolutely-positioned flyout contributes none, so `Admin` open
-    is always exactly as tall as its area list.
-
-    Native <details> + a plain <button> per area, zero JS — the rail's only
-    script (rail_history.js) is chat-gated, so an admin without a chat grant
-    would otherwise get a dead Admin section. The `rail-admin` wrapper class
+    It used to be a native <details> that opened into one row per admin area,
+    each area's links in a flyout beside the column. The mechanics were sound
+    (an absolutely-positioned flyout contributes no height, so the rail's
+    geometry stayed put); the CONTENT was the problem. Those areas were a
+    second, hand-written copy of the admin inventory in
+    `app/web/admin_nav.py`, already drifted from it — different labels,
+    different grouping, and three `/documentation` links that are not admin
+    pages at all. One inventory now, in admin_nav.py, rendered by the admin
+    sidebar; the rail just points at the hub. The `rail-admin` wrapper class
     stays either way (collapsible-order contract).
     """
     html = _rail_template()
     assert 'class="rail-admin"' in html
-    assert '<details class="rail-admin"' in html, "Admin must be a native <details>, not a bare link"
-    assert "rail-admin-summary" in html
-    # Data-driven: the area rows and their links are declared once, as the same
-    # set the header dropdown carries (_app_header.html) — the parity contract.
-    assert "admin_sections" in html
-    assert "rail-admin-flyout" in html, "area links must open in a flyout beside the rail"
-    # The area row is a <button>, NOT a nested <details>: Chrome hides a closed
-    # <details>'s content via `::details-content { content-visibility: hidden }`,
-    # which an author `display` rule on the child cannot override, so a
-    # hover-revealed panel inside a closed <details> never appears.
-    assert "rail-admin-sub-row" in html
-    assert 'aria-haspopup="true"' in html
+    assert '<a class="rail-i {% if _admin_page %}on{% endif %}" href="/admin">' in html
+    # None of the flyout anatomy, and no second inventory to drift. Matched on
+    # real markup, not on bare words — the template's own comment explains what
+    # was removed and names `<details>` while doing so.
+    for gone in (
+        '<details class="rail-admin"',
+        "rail-admin-summary",
+        "rail-admin-sub",
+        "rail-admin-flyout",
+        "rail-admin-groups",
+        "admin_sections",
+        'aria-haspopup="true"',
+    ):
+        assert gone not in html, gone
 
 
 def test_collapsible_wrapper_spans_nav_history_and_admin_only():
@@ -310,13 +312,37 @@ def test_every_chrome_context_builder_supplies_the_brand_the_rail_renders():
     the chat entry on /admin/studio. A page built by a builder that forgets the
     key renders "How  works" — a hole in the middle of a sentence, with nothing
     raising. Cheaper to pin than to re-audit every route.
+
+    Since #996 `_chrome_ctx` is the single owner of every chrome-level key and
+    `_build_context` composes it, rather than hand-copying the key into its own
+    source — so the static-source half of this check only makes sense against
+    `_chrome_ctx`; `_build_context` is verified dynamically (a real request
+    must carry the value through the composition), which is a stronger
+    guarantee than a source-substring match.
     """
     import inspect
+    from types import SimpleNamespace as _NS
+
+    from starlette.requests import Request
 
     from app.web import router as _router
 
-    for builder in (_router._build_context, _router._chrome_ctx):
-        src = inspect.getsource(builder)
-        assert '"instance_brand_short"' in src, (
-            f"{builder.__name__} must supply instance_brand_short — the rail renders it on every page"
-        )
+    assert '"instance_brand_short"' in inspect.getsource(_router._chrome_ctx), (
+        "_chrome_ctx must supply instance_brand_short — the rail renders it on every page"
+    )
+
+    app = _NS(state=_NS(chat_config=_NS(enabled=False)))
+    scope = {
+        "type": "http",
+        "app": app,
+        "method": "GET",
+        "path": "/",
+        "query_string": b"",
+        "headers": [],
+        "server": ("test", 80),
+        "scheme": "http",
+        "client": ("1.2.3.4", 9),
+    }
+    request = Request(scope)
+    ctx = _router._build_context(request)
+    assert ctx.get("instance_brand_short"), "_build_context must carry instance_brand_short through from _chrome_ctx"

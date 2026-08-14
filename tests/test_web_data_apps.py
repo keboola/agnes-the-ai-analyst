@@ -212,6 +212,9 @@ def test_detail_page_renders_for_owner_with_deploy_button(web_env):
     assert "Stop" in resp.text
     assert "/api/data-apps/" in resp.text
     assert "logs?tail=200" in resp.text
+    # The grant hint points at the Access workspace — the one place a group's
+    # members and its grants are edited. (It used to name the per-group
+    # detail page; that page 308s here, and the two surfaces are one now.)
     assert "/admin/access" in resp.text
 
 

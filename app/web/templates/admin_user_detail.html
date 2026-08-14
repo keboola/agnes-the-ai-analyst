@@ -1,371 +1,598 @@
-{% extends "base_ds.html" %}
-{% block title %}{{ target_user.email }} — User detail — {{ config.INSTANCE_NAME }}{% endblock %}
+{% extends "base_admin.html" %}
+{% import "macros/_icon.html" as ico %}
+{# One person, from the admin's side — the mirror of /me/profile.
+
+   That is the whole design brief for this page, and it is what it now looks
+   like. /me/profile is a person reading their own account: an identity-led
+   head with no card around it, then `.dsec` section cards (26px badge · 15px
+   sentence-case title · 12.5px sub · a summary pinned right that survives the
+   section being collapsed). This page asks the same questions about someone
+   else — which groups, what access, which credentials, what have they done —
+   so it wears the same anatomy, and every table in it is the shared
+   `.data-table`, every button `ds.button`, every toast `window.appToast`.
+
+   What changed, and why each one was wrong before:
+
+   (a) THE HEAD had a floating gradient hero card titled "User detail" over
+       the eyebrow "Users & Access". Three problems in one object: the page's
+       most prominent slot spent on the word for a page type rather than on
+       WHO this is; a card around a title on a page whose body is cards; and
+       an eyebrow restating the sidebar the reader used to get here. It is now
+       the identity: the person's own avatar circle (same initials and colour
+       the /admin/users row drew, via AgnesIdentity), their name, their state,
+       and the three account actions — on the page ground, nothing drawn round
+       it. See `.page-header--plain`'s rationale in style-custom.css; this is
+       the same argument for a head that has an avatar and a status in it.
+
+   (b) THE BACK LINK sat to the LEFT of the hero, vertically centred against a
+       112px card, which put it level with the middle of the title and off the
+       page's own left margin. It is the first line of the page now, above the
+       heading, and it is the shared `.apg-back` (admin_page.css) rather than a
+       sixth page-local copy of the same link.
+
+   (c) THE "ACCOUNT" SECTION was a whole bordered card whose entire content
+       was the sentence "<email> is active." — which the head already says
+       twice over — plus the three buttons. The sentence's only real cargo was
+       the consequence of being deactivated ("They cannot log in"), which is a
+       page-level condition and now reads as one: an `.apg-strip--warn` above
+       the work, where the reader meets it before acting. Same for the SSO
+       case, which used to be invisible except as two silently missing
+       buttons.
+
+   (d) FIVE PEER SECTIONS in identical grey-headed cards gave the page no
+       hierarchy at all — group membership and the audit log looked equally
+       important. They are now two named groups with one sentence each:
+       Access (the authority, and what it yields) and Credentials & activity
+       (what was issued, and what was done with it). The two working surfaces
+       open; the three read-outs are collapsed with their count in the head,
+       so the page answers "how many groups, how much access, how many
+       tokens, sessions, events" without scrolling and expands where asked.
+
+   The guards on this page's contents: tests/test_groups_mapped_email.py
+   (chip vocabulary + the Google-managed picker filter),
+   tests/test_users_sso_flag.py (SSO gating of the password/delete actions). #}
+{% block title %}{{ target_user.name or target_user.email }} — People — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block head_extra %}
+{# Two shared sheets, no page-local copies of either:
+     section_card.css   the `.dsec` collapsible section card + head anatomy —
+                        the same card /me/profile and /me/activity render
+     filter_toolbar.css `.fbar` + `.fbar-select`, so the add-to-group control
+                        is the product's control rather than a bare <select>
+                        in a grey footer band #}
+<link rel="stylesheet" href="{{ static_url('css/section_card.css') }}">
+<link rel="stylesheet" href="{{ static_url('css/filter_toolbar.css') }}">
 <style>
-  .ud-page { max-width: 1100px; margin: 0 auto; padding: 0; }
+  /* Page-local styles only, and every colour is a `--ds-*` token — the head
+     band, the state pill, the group chip, and the table cell decorations.
+     Everything else on the page belongs to something shared: cards to
+     `.dsec`, tables to `.data-table`, buttons to `.btn`, the section heads and
+     the context strip to `.apg-*` (css/admin_page.css), toasts to
+     `window.appToast`. The ~240 lines this block used to hold were, almost
+     entirely, private re-derivations of those five. */
 
-  .ud-header {
-    display: flex; align-items: center; gap: 16px;
-    margin-bottom: 24px;
+  /* ── Head band ───────────────────────────────────────────────────────
+     /me/profile's `.pf-head`, with the actions side it has no need for: the
+     52px 14px-radius avatar, a 24px name, the address under it, and the
+     standing facts as one quiet line. Wraps rather than squeezes — a long
+     display name and three buttons do not share 700px. */
+  .ud-head {
+    display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap;
+    margin: 0; padding-bottom: 22px;
   }
-  .ud-back {
-    display: inline-flex; align-items: center; gap: 6px;
-    text-decoration: none; color: var(--ds-text-secondary, #6b7280);
-    font-size: 13px;
+  .ud-id { display: flex; align-items: center; gap: 14px; min-width: 0; flex: 1 1 20rem; }
+  /* The colour and initials are hydrated from AgnesIdentity (js/identity.js),
+     the same derivation the /admin/users row uses — so the circle the admin
+     clicked is the circle they land on. `--ds-surface-sunken` is the resting
+     state before that script has run, never a second colour scheme. */
+  .ud-ava {
+    width: 52px; height: 52px; border-radius: 50%; flex-shrink: 0;
+    display: grid; place-items: center;
+    font-size: 18px; font-weight: 700; letter-spacing: 0.02em;
+    color: var(--ds-text-inverse); background: var(--ds-surface-sunken);
   }
-  .ud-back:hover { color: var(--ds-text-primary, #111827); }
-  .ud-title-block { flex: 1; }
-  .ud-status-pill {
-    display: inline-block; padding: 3px 10px; border-radius: 999px;
-    font-size: 11px; font-weight: 600;
-    text-transform: uppercase; letter-spacing: 0.5px;
-  }
-  .ud-status-pill.active { background: var(--ds-accent-success-bg, #dcfce7); color: var(--ds-accent-success-ink, #166534); }
-  .ud-status-pill.inactive { background: var(--ds-accent-danger-bg, #fee2e2); color: var(--ds-accent-danger-ink, #991b1b); }
+  .ud-id-txt { min-width: 0; }
+  .ud-name-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .ud-head h1 { font-size: 24px; margin: 0; overflow-wrap: anywhere; }
+  .ud-mail { font-size: 14px; color: var(--ds-text-secondary); margin: 4px 0 0; word-break: break-all; }
+  /* The account's bookkeeping — when it started, when it last pulled data.
+     One line of quiet facts under the address, not four rows of a card: each
+     is a single value that needs no label to be read. */
+  .ud-facts { font-size: 12.5px; color: var(--ds-text-muted); margin: 6px 0 0; }
+  /* Actions on the account itself, and only those: the three that act on the
+     PERSON live here, at the identity, and every action that acts on one of
+     the things below (a group, a token) lives in that thing's own row. That
+     split is what makes the page's buttons predictable. */
+  .ud-acts { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex-shrink: 0; }
 
-  .ud-section {
-    background: var(--ds-surface, #fff);
-    border: 1px solid var(--ds-border, #e4e7ee);
-    border-radius: 12px;
-    margin-bottom: 16px;
-    overflow: hidden;
+  /* ── Group landmark ──────────────────────────────────────────────────
+     The two halves of the page — what this person can reach, and what has
+     been issued to them — named by a labelled hairline. It is the admin
+     sidebar's own `.admin-nav__divider`, brought into the page content: the
+     sidebar splits Manage from Maintain with exactly this object, for exactly
+     this reason, and its rationale applies verbatim here ("a landmark, never
+     an operable row").
+     NOT `.apg-sechead__title`: that is 15px/600, the same as a `.dsec` card's
+     own h3, so a group name in it competed with the names of the two cards
+     under it instead of standing above them. A landmark is a different KIND
+     of thing from a heading, and it has to look like one.
+     Page-local for now; it graduates to admin_page.css the moment a second
+     detail page needs to group its sections. */
+  .ud-grouplabel {
+    display: flex; align-items: center; gap: 10px;
+    margin: 0 0 10px;
   }
-  .ud-section-head {
-    padding: 14px 18px;
-    border-bottom: 1px solid var(--ds-border, #e4e7ee);
-    background: var(--ds-surface-dim, #f9fafb);
-    display: flex; align-items: center; justify-content: space-between;
+  .ud-grouplabel span {
+    font-size: 10px; font-weight: 700; letter-spacing: 0.09em;
+    text-transform: uppercase; color: var(--ds-text-muted);
+    flex: 0 0 auto;
   }
-  .ud-section-head h2 { margin: 0; font-size: 14px; font-weight: 600; }
-  .ud-section-head .sub { font-size: 11px; color: var(--ds-text-secondary, #6b7280); }
+  .ud-grouplabel::after {
+    content: ""; flex: 1 1 auto;
+    border-top: 1px solid var(--ds-border-light);
+  }
+  /* The two halves stand apart by AIR, not by a border or a card. The gap is
+     the page's to set: admin_page.css deliberately ships no
+     `.apg-sec + .apg-sec` rule, because "the next section" has a different
+     shape on every surface and a selector guessing at sibling order from the
+     shared sheet would fire on a head that merely has a paragraph under it.
+     28px is what the other admin surfaces spend. */
+  .ud-page .apg-sec + .apg-sec { margin-top: 28px; }
 
-  /* Account actions */
-  .account-grid {
-    padding: 16px 18px;
-    display: grid; grid-template-columns: 1fr auto; gap: 12px;
-    align-items: center;
+  /* ── State pill ──────────────────────────────────────────────────────
+     ONE pill for every state on the page: the account's, a token's, an
+     unprocessed session's. It used to be three families — `.ud-status-pill`,
+     `.tok-pill`, `.unprocessed-badge` — with three type sizes and three
+     radii for the same object. Tones are the product's accent vocabulary, so
+     "needs attention" looks the same here as anywhere else, and the WORD
+     always carries the meaning (the tint never does it alone). */
+  .ud-state {
+    display: inline-block; padding: 2px 9px;
+    border-radius: var(--ds-radius-pill);
+    font-size: 11.5px; font-weight: 600; white-space: nowrap;
+    background: var(--ds-surface-sunken); color: var(--ds-text-secondary);
   }
-  /* `.account-action-btn` family kept only for the JS-generated
-     Remove button (which builds markup in a template literal we can't
-     reach). The page-rendered action buttons use ds.button instead. */
-  .account-action-btn {
-    padding: 7px 14px; border-radius: 6px; font-size: 12px;
-    border: 1px solid var(--ds-border, #e4e7ee); background: var(--ds-surface, #fff);
-    cursor: pointer;
-  }
-  .account-action-btn:hover { background: var(--ds-surface-dim, #f9fafb); }
-  .account-action-btn.danger { color: var(--ds-accent-danger-ink, #b91c1c); border-color: var(--ds-accent-danger-bg, #fecaca); }
-  .account-action-btn.danger:hover { background: var(--ds-accent-danger-bg, #fef2f2); }
+  .ud-state.is-ok     { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
+  .ud-state.is-warn   { background: var(--ds-accent-warn-bg);    color: var(--ds-accent-warn-ink); }
+  .ud-state.is-danger { background: var(--ds-accent-danger-bg);  color: var(--ds-accent-danger-ink); }
+  .ud-state.is-info   { background: var(--ds-accent-info-bg);    color: var(--ds-accent-info-ink); }
 
-  /* Memberships table */
-  .members-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  .members-table thead th {
-    text-align: left; padding: 10px 18px;
-    background: var(--ds-surface-dim, #f9fafb);
-    border-bottom: 1px solid var(--ds-border, #e4e7ee);
-    font-weight: 600; color: var(--ds-text-secondary, #6b7280);
-    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
-  }
-  .members-table tbody td {
-    padding: 10px 18px;
-    border-bottom: 1px solid var(--ds-border-light, #f0f2f6);
-  }
-  .members-table tbody tr:last-child td { border-bottom: none; }
-  .members-table tbody tr:hover { background: var(--ds-surface-dim, #f9fafb); }
-  /* Source as quiet metadata, not a status pill — group name dominates. */
-  .source-meta {
-    font-size: 12px; color: var(--ds-text-muted, #9ca3af);
-    font-weight: 400;
-  }
-  .source-meta .label { font-style: italic; }
-  .source-meta .added {
-    color: var(--ds-text-muted, #9ca3af);
-    font-size: 11px; margin-left: 6px;
-  }
-  .group-link {
-    color: var(--ds-text-primary, #111827); font-weight: 500;
-    text-decoration: none;
-  }
-  .group-link:hover { color: var(--ds-primary, #4338ca); text-decoration: underline; }
+  /* ── Group chip ──────────────────────────────────────────────────────
+     The shared chip vocabulary — the same four colours /admin/users,
+     /me/profile and /admin/access spend on a group, so a group wears one
+     colour across the product:
+       Admin            → amber  (grants everything)
+       Everyone         → grey   (seeded default, low signal)
+       google_sync      → green  (owned by Workspace, not editable here)
+       custom (default) → purple (created in Agnes)
+     Name match on Admin/Everyone wins over origin, so a row mapped via
+     AGNES_GROUP_{ADMIN,EVERYONE}_EMAIL keeps its canonical colour. The chip
+     is the link to the group, so the whole pill is the target.
 
-  /* Chip styling for the group cell — same color vocabulary as
-     /admin/users membership chips. Built as <a> so a click on the
-     chip lands the admin on the group's detail page. */
+     The BASE carries the neutral, theme-aware pair and each origin overrides
+     it — the purple does NOT live here as a default. That is not tidiness: a
+     base painted with a light-only `--ds-*-soft` tint, under a modifier whose
+     ink follows `--ds-text-*`, is the exact shape that measured ~1:1 in dark
+     mode (see test_light_only_soft_tint_never_backs_theme_flipping_ink). The
+     list page's copy of this chip still hides that from the guard behind a
+     `var(--ds-kind-agent-soft, #ede9fe)` hex fallback; this one does not need
+     hiding. A chip whose origin we have no colour for renders neutral, which
+     is honest. */
   .group-chip {
+    display: inline-block; max-width: 100%;
+    padding: 3px 10px; border-radius: var(--ds-radius-pill);
+    font-size: 12px; font-weight: 600; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; text-decoration: none;
+    background: var(--ds-surface-sunken); color: var(--ds-text-secondary);
+  }
+  .group-chip:hover { text-decoration: underline; text-underline-offset: 2px; }
+  .group-chip.is-admin       { background: var(--ds-accent-warn-bg);    color: var(--ds-accent-warn-ink); }
+  .group-chip.is-everyone    { background: var(--ds-surface-sunken);    color: var(--ds-text-secondary); }
+  .group-chip.is-google_sync { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
+  .group-chip.is-custom      { background: var(--ds-kind-agent-soft);   color: var(--ds-kind-agent); }
+
+  /* ── Table cell vocabulary ───────────────────────────────────────────
+     `.data-table` is left-aligned and neutral by design; these are the
+     per-cell decorations this page's four tables need. */
+  /* A wide table scrolls inside its own card — it must never widen the page.
+     Same wrapper /me/activity puts around its session table. */
+  .ud-tablewrap { overflow-x: auto; }
+  /* `.data-table` left-aligns every cell by design; a column of controls (or
+     of a single number) opts out per-cell. Both `th` and `td` are named, and
+     both carry the table's own specificity — `.ud-end` alone loses to
+     `.data-table th`, which is how the Actions header ended up left of the
+     buttons it labels. */
+  .data-table th.ud-end,
+  .data-table td.ud-end { text-align: right; }
+  .ud-mono {
+    font-family: var(--ds-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+    font-size: 12.5px;
+  }
+  /* Where a membership came from: quiet metadata, never a status pill. The
+     group name is what the eye should land on in that row. */
+  .ud-src { font-size: 12.5px; color: var(--ds-text-muted); }
+  .ud-src em { font-style: italic; }
+  /* A cell whose honest value is "nothing" (never used, no model recorded). */
+  .ud-nil { color: var(--ds-text-muted); }
+  .ud-err { color: var(--ds-accent-danger-ink); font-weight: 600; }
+
+  /* Resource kind, in Effective access. The categorical `--ds-kind-*` sticker
+     palette /me/profile spends on the same read-out, so a data package and a
+     plugin are not the same colour here while they differ everywhere else.
+     Unmapped types fall through to the neutral base — honest, since those
+     have no categorical colour anywhere yet. */
+  .ud-kind {
     display: inline-block;
-    padding: 3px 10px; border-radius: 999px;
-    font-size: 12px; font-weight: 500;
-    text-decoration: none;
-    background: var(--ds-kind-agent-soft, #ede9fe); color: var(--ds-kind-agent, #6d28d9);  /* default = custom (purple) */
+    font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
+    text-transform: uppercase; white-space: nowrap;
+    padding: 1px 8px; border-radius: var(--ds-radius-pill);
+    background: var(--ds-surface-sunken); color: var(--ds-text-secondary);
   }
-  .group-chip:hover { filter: brightness(0.97); }
-  .group-chip.is-admin       { background: var(--ds-accent-warn-bg, #fef3c7); color: var(--ds-accent-warn-ink, #92400e); font-weight: 600; }
-  .group-chip.is-everyone    { background: var(--ds-surface-dim, #f3f4f6); color: var(--ds-text-secondary, #4b5563); }
-  .group-chip.is-google_sync { background: var(--ds-accent-success-bg, #dcfce7); color: var(--ds-accent-success-ink, #166534); }
-  .group-chip.is-custom      { background: var(--ds-kind-agent-soft, #ede9fe); color: var(--ds-kind-agent, #6d28d9); }
+  .ud-kind--data   { background: var(--ds-kind-data-soft);    color: var(--ds-kind-data); }
+  .ud-kind--plugin { background: var(--ds-kind-plugin-soft);  color: var(--ds-kind-plugin); }
+  .ud-kind--memory { background: var(--ds-kind-memory-soft);  color: var(--ds-kind-memory); }
+  .ud-kind--recipe { background: var(--ds-kind-recipe-soft);  color: var(--ds-kind-recipe); }
+  .ud-kind--agent  { background: var(--ds-kind-agent-soft);   color: var(--ds-kind-agent); }
+  .ud-kind--file   { background: var(--ds-kind-library-soft); color: var(--ds-kind-library); }
 
-  .add-member-row {
-    padding: 12px 18px;
-    background: var(--ds-surface-dim, #f9fafb);
-    border-top: 1px solid var(--ds-border-light, #f0f2f6);
-    display: flex; gap: 8px; align-items: center;
+  /* "Granted via" — which group brings this resource. Each one links to that
+     group's Access tab, so the read path and the write path are one click
+     apart. Wraps: a resource can arrive through several groups at once. */
+  .ud-via { display: flex; flex-wrap: wrap; gap: 6px; }
+  .ud-via a {
+    font-size: 11.5px; font-weight: 600; text-decoration: none;
+    padding: 2px 9px; border-radius: var(--ds-radius-pill);
+    background: var(--ds-surface-sunken); color: var(--ds-text-secondary);
+    border: 1px solid var(--ds-border);
   }
-  .add-member-row select {
-    flex: 1; padding: 7px 10px;
-    border: 1px solid var(--ds-border, #e4e7ee); border-radius: 6px;
-    font-size: 13px; background: var(--ds-surface, #fff);
-  }
-  .add-member-row button {
-    padding: 7px 14px; border-radius: 6px; font-size: 12px; font-weight: 500;
-    background: var(--ds-primary, #6366f1); color: #fff;
-    border: 1px solid var(--ds-primary, #6366f1); cursor: pointer;
-  }
-  .add-member-row button:disabled { opacity: 0.5; cursor: not-allowed; }
-  .ud-hint {
-    margin: 8px 0 0; font-size: 12px;
-    color: var(--ds-text-secondary, #6b7280);
-  }
-  .ud-hint a { color: var(--ds-primary, #2563eb); }
-  .ud-hint code {
-    font-family: ui-monospace, Menlo, monospace;
-    font-size: 11px;
-    background: var(--ds-border-light, #f0f2f6);
-    padding: 1px 4px; border-radius: 3px;
+  .ud-via a:hover { color: var(--ds-primary); border-color: var(--ds-primary); }
+
+  /* A row's destructive action — the shared small secondary button with the
+     danger accent held back until it is reached for. A column of filled red
+     buttons reads as a page full of errors; the word carries the meaning
+     until the pointer arrives. */
+  .btn.ud-danger { color: var(--ds-accent-danger-ink); }
+  .btn.ud-danger:hover,
+  .btn.ud-danger:focus-visible {
+    background: var(--ds-accent-danger-bg);
+    border-color: var(--ds-accent-danger-line);
+    color: var(--ds-accent-danger-ink);
   }
 
-  /* Effective access */
-  .ea-empty, .ea-loading {
-    padding: 24px 18px; text-align: center;
-    color: var(--ds-text-secondary, #6b7280); font-size: 13px;
-  }
-  .ea-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  .ea-table thead th {
-    text-align: left; padding: 10px 18px;
-    background: var(--ds-surface-dim, #f9fafb);
-    border-bottom: 1px solid var(--ds-border, #e4e7ee);
-    font-weight: 600; color: var(--ds-text-secondary, #6b7280);
-    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
-  }
-  .ea-table tbody td {
-    padding: 10px 18px;
-    border-bottom: 1px solid var(--ds-border-light, #f0f2f6);
-    vertical-align: top;
-  }
-  .ea-table tbody tr:last-child td { border-bottom: none; }
-  .ea-rid {
-    font-family: var(--font-mono, ui-monospace, monospace);
-    font-size: 12px;
-  }
-  .ea-via {
-    font-size: 11px; color: var(--ds-text-secondary, #6b7280);
-  }
-  .ea-via .via-group {
-    display: inline-block; margin-right: 6px;
-    padding: 1px 6px; border-radius: 4px;
-    background: var(--ds-accent-info-bg, #e0e7ff); color: var(--ds-accent-info-ink, #3730a3); font-weight: 500;
+  /* ── Controls inside a section ───────────────────────────────────────
+     The add-to-group row is the shared `.fbar`, so it carries the product's
+     control heights and focus rings instead of a raw select in a grey band.
+     It closes the section, hence no bottom margin of its own. */
+  /* Capped, not full-width: a group name is a few words, and a select
+     stretched across a 1000px column reads as a page-wide form field rather
+     than as the small "pick one and add" pair it is. The two controls stay
+     next to each other on the left, in reading order. */
+  .ud-addrow { margin: 14px 0 0; }
+  .ud-addrow .fbar-select { flex: 0 1 340px; min-width: 0; }
+  .ud-addrow .fbar-select select { width: 100%; }
+  .ud-note { margin: 8px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--ds-text-secondary); }
+  .ud-note a { color: var(--ds-primary); }
+  .ud-note code { background: var(--ds-surface-sunken); padding: 1px 5px; border-radius: 4px; }
+
+  /* Paginator — the shared buttons, and the range between them. Sits under
+     the table it pages, right-aligned like /me/activity's. */
+  .ud-pager {
+    display: flex; align-items: center; justify-content: flex-end; gap: 10px;
+    margin: 12px 0 0; font-size: 12.5px; color: var(--ds-text-secondary);
+    font-variant-numeric: tabular-nums;
   }
 
-  /* Sessions section */
-  .ud-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  .ud-table thead th {
-    text-align: left; padding: 10px 18px;
-    background: var(--ds-surface-dim, #f9fafb);
-    border-bottom: 1px solid var(--ds-border, #e4e7ee);
-    font-weight: 600; color: var(--ds-text-secondary, #6b7280);
-    font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px;
-  }
-  .ud-table tbody td {
-    padding: 10px 18px;
-    border-bottom: 1px solid var(--ds-border-light, #f0f2f6);
-    vertical-align: middle;
-  }
-  .ud-table tbody tr:last-child td { border-bottom: none; }
-  .ud-table tbody tr:hover { background: var(--ds-surface-dim, #f9fafb); }
-  .ud-empty { padding: 24px 18px; text-align: center; color: var(--ds-text-secondary, #6b7280); font-size: 13px; }
-  .ud-pagination { padding: 10px 18px; display: flex; gap: 10px; align-items: center; font-size: 13px; }
-  .btn { display: inline-block; padding: 5px 12px; border-radius: 6px; font-size: 12px; font-weight: 500;
-         border: 1px solid var(--ds-border, #e4e7ee); background: var(--ds-surface, #fff);
-         cursor: pointer; text-decoration: none; color: inherit; }
-  .btn:hover { background: var(--ds-surface-dim, #f9fafb); }
-  .btn-secondary { background: var(--ds-surface, #fff); }
-  .btn-sm { padding: 3px 9px; font-size: 11px; }
-  .unprocessed-badge {
-    display: inline-block; padding: 1px 6px; border-radius: 4px;
-    font-size: 11px; background: var(--ds-accent-warn-bg, #fef9c3); color: var(--ds-accent-warn-ink, #854d0e);
-  }
-
-  .toast-stack {
-    position: fixed; bottom: 24px; right: 24px; z-index: 2000;
-    display: flex; flex-direction: column; gap: 8px; pointer-events: none;
-  }
-  .toast {
-    background: #111827; color: #fff; padding: 10px 16px;
-    border-radius: 8px; font-size: 13px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
-    opacity: 0; transform: translateY(8px); transition: opacity 0.2s, transform 0.2s;
-    pointer-events: auto; max-width: 380px;
-  }
-  .toast.show { opacity: 1; transform: translateY(0); }
-  .toast.success { background: var(--ds-accent-success-line, #047857); }
-  .toast.error { background: var(--ds-accent-danger-line, #b91c1c); }
+  /* Deep links land on an OPEN section (see revealHash below); the offset has
+     to clear the app header, or the section opens under it. */
+  .dsec[id] { scroll-margin-top: calc(var(--app-header-height, 0px) + var(--space-4)); }
 </style>
 {% endblock %}
 
-{% block content %}
-{# Download-all + Sessions/Activity paginators + 3 account-action buttons
-   render via `ds.button` (auto-imported by base_ds). JS-generated per-row
-   buttons stay page-local. The hero stays inside `.ud-page` (1100px content
-   width) — kept as-is, not hoisted to a full-width base_page hero. #}
+{% block admin_content %}
 <div class="ud-page" data-user-id="{{ target_user.id }}">
-  <div class="ud-header">
-    <a href="/admin/users" class="ud-back">← Back to users</a>
-    <div class="ud-title-block">
-      {% set page_hero_eyebrow = "Users & Access" %}
-      {% set page_hero_title = "User detail" %}
-      {% set page_hero_subtitle = "Account, group memberships, sessions, and activity for one user." %}
-      {% include "_page_hero.html" %}
+
+  {# The way back, on its own line above the heading. Names the destination —
+     the sidebar row that lights up when the reader lands there. #}
+  <a class="apg-back" href="/admin/users"><span aria-hidden="true">&larr;</span> People</a>
+
+  {# ── Who this is, what state they are in, what can be done to them ── #}
+  <header class="ud-head">
+    <div class="ud-id">
+      <span class="ud-ava" id="ud-avatar" aria-hidden="true"
+            data-seed-name="{{ target_user.name or target_user.email or '?' }}"
+            data-seed-color="{{ target_user.email or target_user.id }}"></span>
+      <div class="ud-id-txt">
+        <div class="ud-name-row">
+          {# The name if there is one, the address if there is not — the same
+             rule the people list applies to its name cell, so a row with no
+             display name doesn't render an em dash as a title. #}
+          <h1>{{ target_user.name or target_user.email }}</h1>
+          {# Server-rendered from the stored row so the state is right on the
+             first paint; `renderHeader()` keeps it in step after a toggle. #}
+          <span class="ud-state {{ 'is-ok' if target_user.active else 'is-danger' }}"
+                id="status-pill">{{ 'Active' if target_user.active else 'Deactivated' }}</span>
+          {# Revealed by renderAccountStatus() once the API confirms the
+             account is Workspace-managed. #}
+          <span class="ud-state is-info" id="sso-pill" hidden>Google Workspace</span>
+        </div>
+        {% if target_user.name %}<p class="ud-mail">{{ target_user.email }}</p>{% endif %}
+        <p class="ud-facts">
+          {%- if target_user.created_at %}Member since {{ target_user.created_at | string | truncate(10, true, '') }}{% else %}Join date unknown{% endif -%}
+          {% if target_user.last_pull_at %} · Last pulled data {{ target_user.last_pull_at | string | truncate(10, true, '') }}{% else %} · Never pulled data{% endif %}
+          {%- if not target_user.active and target_user.deactivated_at %} · Deactivated {{ target_user.deactivated_at | string | truncate(10, true, '') }}{% endif -%}
+        </p>
+      </div>
     </div>
+    {# The three account actions. Reset password and Delete are hidden for an
+       SSO-managed account (renderAccountStatus) — those operations are no-ops
+       there or get reverted by the next sync; Deactivate stays, because
+       gating access locally is something Agnes really can do. #}
+    <div class="ud-acts">
+      {{ ds.button('Reset password', variant='secondary', size='sm', id='reset-pw-btn') }}
+      {{ ds.button('Deactivate', variant='secondary', size='sm', id='toggle-active-btn') }}
+      {{ ds.button('Delete', variant='danger', size='sm', id='delete-user-btn') }}
+    </div>
+  </header>
+
+  {# ── The two conditions a reader must meet BEFORE acting ─────────────
+     Both used to be invisible: "deactivated" was a sentence inside a card
+     below the fold, and "managed by Workspace" was communicated only by two
+     buttons silently not being there. A `.apg-strip` is exactly the object
+     for a standing fact about the surface, tinted only when it is worth
+     acting on. #}
+  <div class="apg-strip apg-strip--warn" id="deactivated-note" {% if target_user.active %}hidden{% endif %}>
+    <span>
+      <b>This account is deactivated</b> — they cannot sign in. Group
+      memberships and access tokens are untouched, so reactivating restores
+      everything below as it stands.
+    </span>
+  </div>
+  {# `--block` because this one is a paragraph, not a line: the glyph aligns to
+     the top of the sentence rather than centring against three lines of it. #}
+  <div class="apg-strip apg-strip--block" id="sso-note" hidden>
+    <span class="apg-strip__mark" aria-hidden="true">G</span>
+    <span>
+      This account signs in through <b>Google Workspace</b> — the password and
+      the account itself are managed at <code>admin.google.com</code>, so Agnes
+      offers neither a password reset nor a delete. Deactivating here still
+      blocks access to this instance.
+    </span>
   </div>
 
-  <!-- Account actions -->
-  <section class="ud-section">
-    <div class="ud-section-head">
-      <h2>Account</h2>
-    </div>
-    <div class="account-grid">
-      <div id="account-status-text" style="font-size:13px;color:var(--ds-text-secondary,#6b7280);">
-        Loading…
+  {# ══ Access — the authority, and what it yields ═══════════════════════ #}
+  <section class="apg-sec">
+    <h2 class="ud-grouplabel"><span>Access</span></h2>
+    <p class="apg-sec-desc">
+      Nothing is granted to a person directly — groups are the only way in.
+      Change what they can reach here; the read-out below is what that yields.
+    </p>
+
+    {# ── Groups ─────────────────────────────────────────────────────── #}
+    <details class="dsec" id="groups" open aria-label="Group memberships">
+      <summary>
+        <div class="dsec-head">
+          <span class="dsec-ico">{{ ico.icon('users', 14) }}</span>
+          <div class="dsec-grow">
+            <h3>Groups</h3>
+            <div class="dsec-sub">The groups this person belongs to. Adding them to <strong>Admin</strong> grants everything on the instance.</div>
+          </div>
+          <span class="dsec-sum" id="memberships-sum">Loading…</span>
+          <span class="dsec-chev">{{ ico.icon('chevron', 16) }}</span>
+        </div>
+      </summary>
+      <div class="dsec-body">
+        <div class="dsec-empty" id="memberships-loading">Loading memberships…</div>
+        <div class="ud-tablewrap" id="memberships-wrap" hidden>
+          <table class="data-table" id="memberships-table">
+            <thead>
+              <tr>
+                <th>Group</th>
+                <th>How they got it</th>
+                <th class="ud-end">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="memberships-tbody"></tbody>
+          </table>
+        </div>
+        <div class="dsec-empty" id="memberships-empty" hidden>
+          <strong>Not in any group</strong>
+          Which means no data, no plugins and no memory reach this account yet.
+          Add them to a group below.
+        </div>
+
+        {# The picker is the shared toolbar's native-select chrome. NOT
+           ds.dropdown(): refreshGroupDropdown() rebuilds this <select>'s
+           options wholesale on every membership change (initial load, after
+           an add, after a remove), filtering out groups the person is already
+           in and the ones Workspace owns — and keeping a custom dropdown's
+           menu in sync would need re-running ds_dropdown.js's per-instance
+           init(), which it doesn't expose (it self-bootstraps once at
+           DOMContentLoaded). #}
+        <div class="fbar ud-addrow" role="group" aria-label="Add this person to a group">
+          <div class="fbar-select">
+            <select id="add-group-select" aria-label="Group to add">
+              <option value="">— Pick a group —</option>
+            </select>
+          </div>
+          {{ ds.button('Add to group', variant='primary', size='sm',
+                       id='add-group-btn', disabled=True) }}
+        </div>
+        <p id="add-group-hint" class="ud-note" hidden></p>
       </div>
-      <div style="display:flex; gap:8px;">
-        {{ ds.button('Reset password', variant='secondary', size='sm',
-                     id='reset-pw-btn') }}
-        {{ ds.button('Deactivate', variant='secondary', size='sm',
-                     id='toggle-active-btn') }}
-        {{ ds.button('Delete', variant='danger', size='sm',
-                     id='delete-user-btn') }}
+    </details>
+
+    {# ── Effective access ───────────────────────────────────────────── #}
+    <details class="dsec" id="effective-access" aria-label="Effective access">
+      <summary>
+        <div class="dsec-head">
+          <span class="dsec-ico">{{ ico.icon('shield-check', 14) }}</span>
+          <div class="dsec-grow">
+            <h3>Effective access</h3>
+            <div class="dsec-sub">Every resource those groups actually carry, and which group brings each one.</div>
+          </div>
+          <span class="dsec-sum" id="effective-sum">Loading…</span>
+          <span class="dsec-chev">{{ ico.icon('chevron', 16) }}</span>
+        </div>
+      </summary>
+      <div class="dsec-body">
+        <div class="dsec-empty" id="effective-loading">Loading…</div>
+        <div id="effective-content" hidden></div>
       </div>
-    </div>
+    </details>
   </section>
 
-  <!-- Group memberships -->
-  <section class="ud-section">
-    <div class="ud-section-head">
-      <h2>Group memberships</h2>
-      <span class="sub">Groups this user belongs to. Add to <strong>Admin</strong> to grant full access.</span>
-    </div>
-    <div id="memberships-loading" class="ea-loading">Loading memberships…</div>
-    <table class="members-table" id="memberships-table" style="display:none;">
-      <thead><tr>
-        <th>Group</th><th>Origin</th>
-        <th style="text-align:right">Actions</th>
-      </tr></thead>
-      <tbody id="memberships-tbody"></tbody>
-    </table>
-    <div class="ea-empty" id="memberships-empty" style="display:none;">
-      User is not in any groups.
-    </div>
-    <div class="add-member-row">
-      {# #1055: not converted to ds.dropdown() — refreshGroupDropdown() fully
-         rebuilds this <select>'s options (sel.innerHTML = ...) every time
-         membership changes (initial load, after add, after remove), filtering
-         out groups the user already belongs to / is Google-managed. Keeping a
-         custom dropdown's menu in sync would need re-running ds_dropdown.js's
-         per-instance init() on every rebuild, which it doesn't expose (self-
-         bootstraps once at DOMContentLoaded) — out of scope without touching
-         that file. #}
-      <select id="add-group-select">
-        <option value="">— Pick a group —</option>
-      </select>
-      <button id="add-group-btn" disabled>Add to group</button>
-    </div>
-    <p id="add-group-hint" class="ud-hint" style="display:none;"></p>
+  {# ══ Credentials & activity ═══════════════════════════════════════════
+     Offboarding is one page: deactivate at the head, drop the memberships
+     above, revoke the credentials here. /admin/tokens keeps the fleet-wide
+     view for incident response; this is the per-person slice of that same
+     list. #}
+  <section class="apg-sec">
+    <h2 class="ud-grouplabel"><span>Credentials &amp; activity</span></h2>
+    <p class="apg-sec-desc">
+      What has been issued to this account, and what it has done with it.
+      Revoking a token takes effect immediately.
+    </p>
+
+    {# ── Access tokens ──────────────────────────────────────────────── #}
+    {# `id="tokens"` is a PUBLIC ANCHOR: the ⋯ menu on the /admin/users row
+       deep-links `/admin/users/<id>#tokens`. Don't rename it. #}
+    <details class="dsec" id="tokens" open aria-label="Access tokens">
+      <summary>
+        <div class="dsec-head">
+          <span class="dsec-ico">{{ ico.icon('lock', 14) }}</span>
+          <div class="dsec-grow">
+            <h3>Access tokens</h3>
+            <div class="dsec-sub">Personal access tokens issued to this account — every <code>agnes</code> CLI and API caller signing in as them.</div>
+          </div>
+          <span class="dsec-sum" id="ud-tokens-sum">Loading…</span>
+          <span class="dsec-chev">{{ ico.icon('chevron', 16) }}</span>
+        </div>
+      </summary>
+      <div class="dsec-body">
+        <div class="dsec-empty" id="ud-tokens-loading">Loading…</div>
+        <div class="ud-tablewrap" id="ud-tokens-wrap" hidden>
+          <table class="data-table" id="ud-tokens-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Created</th>
+                <th>Last used</th>
+                <th>Expires</th>
+                <th>Status</th>
+                <th class="ud-end">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="ud-tokens-tbody"></tbody>
+          </table>
+        </div>
+        <div class="dsec-empty" id="ud-tokens-empty" hidden>
+          <strong>No access tokens</strong>
+          This account has never issued one, so nothing is authenticating as
+          them outside the browser.
+        </div>
+      </div>
+    </details>
+
+    {# ── Sessions ───────────────────────────────────────────────────── #}
+    <details class="dsec" id="sessions" aria-label="Collected sessions">
+      <summary>
+        <div class="dsec-head">
+          <span class="dsec-ico">{{ ico.icon('rows', 14) }}</span>
+          <div class="dsec-grow">
+            <h3>Sessions</h3>
+            <div class="dsec-sub">Claude Code sessions this account has uploaded, newest first.</div>
+          </div>
+          <span class="dsec-sum" id="ud-sessions-sum">Loading…</span>
+          {# An action inside a <summary> has to stop its own click reaching
+             the disclosure, or using it also collapses the section under it
+             (see css/section_card.css). Wired below as `ud-download-all`. #}
+          {{ ds.button('Download all (.zip)', variant='secondary', size='sm',
+                       id='ud-download-all', href='#') }}
+          <span class="dsec-chev">{{ ico.icon('chevron', 16) }}</span>
+        </div>
+      </summary>
+      <div class="dsec-body">
+        <div class="dsec-empty" id="ud-sessions-loading">Loading…</div>
+        <div class="ud-tablewrap" id="ud-sessions-wrap" hidden>
+          <table class="data-table" id="ud-sessions-table">
+            <thead>
+              <tr>
+                <th>Started</th>
+                <th>Active duration</th>
+                <th>Tool calls</th>
+                <th>Errors</th>
+                <th>Model</th>
+                <th class="ud-end">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="ud-sessions-tbody"></tbody>
+          </table>
+        </div>
+        <div class="dsec-empty" id="ud-sessions-empty" hidden>
+          <strong>No sessions collected</strong>
+          Sessions arrive when this person runs Claude Code in an Agnes
+          workspace — the <code>SessionEnd</code> hook uploads them.
+        </div>
+        <div class="ud-pager" id="ud-sessions-pagination" hidden>
+          <span id="ud-sessions-page-meta"></span>
+          {{ ds.button('Prev', variant='secondary', size='sm', id='ud-sessions-prev') }}
+          {{ ds.button('Next', variant='secondary', size='sm', id='ud-sessions-next') }}
+        </div>
+      </div>
+    </details>
+
+    {# ── Activity ───────────────────────────────────────────────────── #}
+    <details class="dsec" id="activity" aria-label="Recorded activity">
+      <summary>
+        <div class="dsec-head">
+          <span class="dsec-ico">{{ ico.icon('doc', 14) }}</span>
+          <div class="dsec-grow">
+            <h3>Activity</h3>
+            <div class="dsec-sub">Every server action recorded against this account, from the audit log.</div>
+          </div>
+          <span class="dsec-sum" id="ud-activity-sum">Loading…</span>
+          <span class="dsec-chev">{{ ico.icon('chevron', 16) }}</span>
+        </div>
+      </summary>
+      <div class="dsec-body">
+        <div class="dsec-empty" id="ud-activity-loading">Loading…</div>
+        <div class="ud-tablewrap" id="ud-activity-wrap" hidden>
+          <table class="data-table" id="ud-activity-table">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Action</th>
+                <th>Resource</th>
+                <th>Result</th>
+                <th>Client</th>
+                <th class="ud-end">Duration</th>
+              </tr>
+            </thead>
+            <tbody id="ud-activity-tbody"></tbody>
+          </table>
+        </div>
+        <div class="dsec-empty" id="ud-activity-empty" hidden>
+          <strong>No recorded activity</strong>
+          Nothing has been logged against this account yet.
+        </div>
+        <div class="ud-pager" id="ud-activity-pagination" hidden>
+          <span id="ud-activity-page-meta"></span>
+          {{ ds.button('Prev', variant='secondary', size='sm', id='ud-activity-prev') }}
+          {{ ds.button('Next', variant='secondary', size='sm', id='ud-activity-next') }}
+        </div>
+      </div>
+    </details>
   </section>
 
-  <!-- Effective access -->
-  <section class="ud-section">
-    <div class="ud-section-head">
-      <h2>Effective access</h2>
-      <span class="sub">Resources this user can see, derived from group memberships.</span>
-    </div>
-    <div id="effective-loading" class="ea-loading">Loading…</div>
-    <div id="effective-content" style="display:none;"></div>
-  </section>
-
-  <!-- Sessions -->
-  <section class="ud-section">
-    <div class="ud-section-head">
-      <h2>Sessions</h2>
-      {{ ds.button('Download all (.zip)', variant='secondary',
-                   id='ud-download-all', href='#') }}
-    </div>
-
-    <div class="ud-empty" id="ud-sessions-loading">Loading…</div>
-
-    <div class="ud-empty" id="ud-sessions-empty" hidden>
-      No collected sessions for this user yet.
-    </div>
-
-    <table class="ud-table" id="ud-sessions-table" hidden>
-      <thead>
-        <tr>
-          <th>Started</th>
-          <th>Active duration</th>
-          <th>Tool calls</th>
-          <th>Errors</th>
-          <th>Model</th>
-          <th>Actions</th>
-        </tr>
-      </thead>
-      <tbody id="ud-sessions-tbody"></tbody>
-    </table>
-
-    <div class="ud-pagination" id="ud-sessions-pagination" hidden>
-      {{ ds.button('Prev', variant='secondary', size='sm',
-                   id='ud-sessions-prev') }}
-      <span id="ud-sessions-page-meta"></span>
-      {{ ds.button('Next', variant='secondary', size='sm',
-                   id='ud-sessions-next') }}
-    </div>
-  </section>
-
-  <!-- Activity -->
-  <section class="ud-section">
-    <div class="ud-section-head">
-      <h2>Activity</h2>
-      <span class="sub">All recorded server actions for this user</span>
-    </div>
-
-    <div class="ud-empty" id="ud-activity-loading">Loading…</div>
-
-    <table class="ud-table" id="ud-activity-table" hidden>
-      <thead>
-        <tr>
-          <th>Time</th>
-          <th>Action</th>
-          <th>Resource</th>
-          <th>Result</th>
-          <th>Client</th>
-          <th>Duration</th>
-        </tr>
-      </thead>
-      <tbody id="ud-activity-tbody"></tbody>
-    </table>
-
-    <div class="ud-empty" id="ud-activity-empty" hidden>
-      No recorded activity for this user yet.
-    </div>
-
-    <div class="ud-pagination" id="ud-activity-pagination" hidden>
-      {{ ds.button('Prev', variant='secondary', size='sm',
-                   id='ud-activity-prev') }}
-      <span id="ud-activity-page-meta"></span>
-      {{ ds.button('Next', variant='secondary', size='sm',
-                   id='ud-activity-next') }}
-    </div>
-  </section>
+  {# Where the neighbouring views live, in the one place a reader is standing
+     when they wonder. `.apg-foot` — the shared closing footnote. #}
+  <p class="apg-foot">
+    Groups and their grants live in <a href="/admin/access">Access</a> ·
+    every token on the instance in <a href="/admin/tokens">Tokens</a> ·
+    what this person actually does with Agnes in
+    <a href="/admin/adoption/users/{{ target_user.id }}">Adoption</a>.
+  </p>
 </div>
-
-<div class="toast-stack" id="toast-stack" aria-live="polite"></div>
 
 <script>
 const USER_ID = document.querySelector("[data-user-id]").dataset.userId;
@@ -373,16 +600,43 @@ const USER_API = `/api/users/${encodeURIComponent(USER_ID)}`;
 const MEMBERSHIPS_API = `/api/admin/users/${encodeURIComponent(USER_ID)}/memberships`;
 const EFFECTIVE_API = `/api/admin/users/${encodeURIComponent(USER_ID)}/effective-access`;
 // Server-injected env: empty string = no prefix configured. Same shape as
-// /admin/groups + /admin/users — used to shorten google-sync chip text
+// /admin/access + /admin/users — used to shorten google-sync chip text
 // (`grp_acme_legal@workspace.example.com` → `Legal`) so the membership cell
 // stays readable.
 const GOOGLE_GROUP_PREFIX = {{ config.AGNES_GOOGLE_GROUP_PREFIX | tojson }};
 const GROUPS_API = "/api/admin/groups";
 
 function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
-function fmtDate(s) { return s ? (window.AgnesTime.formatDateTime(s) || "-") : "-"; }
+// datetime.js is loaded `defer`, so window.AgnesTime does not exist until
+// parsing finishes — but this script starts its fetches during parse. A fast
+// endpoint (the tokens list) can resolve first and would otherwise throw
+// here, aborting that section's render mid-loop with no visible error.
+// Fall back to the raw timestamp rather than taking the whole section down.
+function fmtDate(s) {
+  if (!s) return "-";
+  const T = window.AgnesTime;
+  if (!T || typeof T.formatDateTime !== "function") return String(s);
+  return T.formatDateTime(s) || "-";
+}
+// One plural helper for the five section summaries, so "1 group" / "2 groups"
+// is decided in one place rather than five.
+function count(n, one, many) { return `${n} ${n === 1 ? one : (many || one + "s")}`; }
+// Every transient outcome goes to the global toast (app.js), which is the
+// product's one notification surface — this page used to ship a private
+// `.toast-stack` with its own hardcoded near-black and its own animation.
+function toast(msg, kind = "") { window.appToast({ kind: kind || "info", msg }); }
+// A section's own loading/ready/empty swap, in one place. Each block is
+// `[loading, table wrap, empty]`; passing `rows === 0` shows the empty state.
+function showRows(loadingId, wrapId, emptyId, hasRows) {
+  const loading = document.getElementById(loadingId);
+  const wrap = document.getElementById(wrapId);
+  const empty = document.getElementById(emptyId);
+  if (loading) loading.hidden = true;
+  if (wrap) wrap.hidden = !hasRows;
+  if (empty) empty.hidden = hasRows;
+}
 
-// Same logic as /admin/groups + /admin/users: only safe to call on
+// Same logic as /admin/access + /admin/users: only safe to call on
 // google_sync rows whose `name` is the raw Workspace email; calling it
 // on a custom group name like "data-team" would over-capitalize it.
 function deriveDisplayName(fullEmail) {
@@ -396,18 +650,20 @@ function deriveDisplayName(fullEmail) {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-function toast(msg, kind = "") {
-  const el = document.createElement("div");
-  el.className = "toast " + kind;
-  el.textContent = msg;
-  document.getElementById("toast-stack").appendChild(el);
-  requestAnimationFrame(() => el.classList.add("show"));
-  setTimeout(() => { el.classList.remove("show"); setTimeout(() => el.remove(), 250); }, 3500);
-}
-
 let userState = null;     // /api/users/{id} response
 let memberships = [];     // [{group_id, group_name, is_system, source, added_at}]
 let allGroups = [];       // for the add-to-group dropdown
+
+// ── Identity circle ───────────────────────────────────────────────────────
+// The SAME derivation /admin/users and /admin/adoption use (js/identity.js),
+// so the circle the admin clicked is the circle they land on. identity.js is
+// deferred, so this runs from loadAll() (post-DOMContentLoaded).
+function renderAvatar() {
+  const el = document.getElementById("ud-avatar");
+  if (!el || !window.AgnesIdentity) return;
+  el.textContent = window.AgnesIdentity.initials(el.dataset.seedName);
+  el.style.background = window.AgnesIdentity.avatarColor(el.dataset.seedColor);
+}
 
 async function loadUser() {
   const r = await fetch(USER_API, { credentials: "include" });
@@ -420,42 +676,39 @@ async function loadUser() {
 
 function renderHeader() {
   const pill = document.getElementById("status-pill");
-  if (userState && !userState.active) {
-    pill.textContent = "Deactivated";
-    pill.className = "ud-status-pill inactive";
-    pill.style.display = "inline-block";
-  } else if (userState) {
-    pill.textContent = "Active";
-    pill.className = "ud-status-pill active";
-    pill.style.display = "inline-block";
-  }
+  const note = document.getElementById("deactivated-note");
+  if (!userState) return;
+  const active = !!userState.active;
+  pill.textContent = active ? "Active" : "Deactivated";
+  pill.className = "ud-state " + (active ? "is-ok" : "is-danger");
+  // The page-level condition follows the pill: a reader who scrolls past the
+  // head still meets "they cannot sign in" before they act on anything.
+  if (note) note.hidden = active;
 }
 
 function renderAccountStatus() {
-  const node = document.getElementById("account-status-text");
   const toggleBtn = document.getElementById("toggle-active-btn");
   // SSO-managed accounts (Google Workspace today) hide password / delete
   // affordances — those operations are no-ops or get reverted by the next
-  // sync. Deactivate stays so admins can still gate access locally.
+  // sync. Deactivate stays so admins can still gate access locally. The
+  // strip above says so in words, rather than leaving two missing buttons
+  // to carry the explanation.
   const resetBtn = document.getElementById("reset-pw-btn");
   const deleteBtn = document.getElementById("delete-user-btn");
   const sso = !!(userState && userState.is_sso_user);
-  if (resetBtn) resetBtn.style.display = sso ? "none" : "";
-  if (deleteBtn) deleteBtn.style.display = sso ? "none" : "";
-  if (!userState) { node.textContent = "—"; return; }
-  if (userState.active) {
-    node.innerHTML = `<strong>${esc(userState.email)}</strong> is active.`;
-    toggleBtn.textContent = "Deactivate";
-  } else {
-    node.innerHTML = `<strong>${esc(userState.email)}</strong> is deactivated. They cannot log in.`;
-    toggleBtn.textContent = "Reactivate";
-  }
+  if (resetBtn) resetBtn.hidden = sso;
+  if (deleteBtn) deleteBtn.hidden = sso;
+  document.getElementById("sso-pill").hidden = !sso;
+  document.getElementById("sso-note").hidden = !sso;
+  if (!userState) return;
+  toggleBtn.textContent = userState.active ? "Deactivate" : "Reactivate";
 }
 
 async function loadMemberships() {
   const r = await fetch(MEMBERSHIPS_API, { credentials: "include" });
-  document.getElementById("memberships-loading").style.display = "none";
   if (!r.ok) {
+    document.getElementById("memberships-loading").textContent = "Failed to load memberships.";
+    document.getElementById("memberships-sum").textContent = "unavailable";
     toast("Failed to load memberships", "error");
     return;
   }
@@ -472,35 +725,35 @@ async function loadMemberships() {
 }
 
 function renderMemberships() {
-  const table = document.getElementById("memberships-table");
-  const empty = document.getElementById("memberships-empty");
   const tbody = document.getElementById("memberships-tbody");
+  // The count lives in the section HEAD, so a collapsed section still
+  // answers its own question.
+  document.getElementById("memberships-sum").textContent = count(memberships.length, "group");
+  showRows("memberships-loading", "memberships-wrap", "memberships-empty", memberships.length > 0);
+  if (memberships.length === 0) return;
 
-  if (memberships.length === 0) {
-    table.style.display = "none";
-    empty.style.display = "block";
-    return;
-  }
-  empty.style.display = "none";
-  table.style.display = "table";
   tbody.innerHTML = "";
   for (const m of memberships) {
     const tr = document.createElement("tr");
+    // A membership Agnes doesn't own has no action — and no explanation is
+    // owed here either, because the column to its left already gives the
+    // reason ("Synced from Google Workspace", "System-managed"). It used to
+    // repeat the raw source slug back at the reader in this cell.
     const removable = m.source === "admin"
-      ? `<button class="account-action-btn danger" data-action="remove" data-group-id="${esc(m.group_id)}">Remove</button>`
-      : `<span style="color:var(--ds-text-muted,#9ca3af);font-size:11px">managed by ${esc(m.source)}</span>`;
-    // Map raw source value to a humane phrase. Keep the date inline as
-    // secondary metadata rather than a separate column.
+      ? `<button class="btn btn-secondary btn-sm ud-danger" data-action="remove" data-group-id="${esc(m.group_id)}">Remove</button>`
+      : "";
+    // Map the raw source value to a humane phrase, with the date inline as
+    // secondary metadata rather than as a column of its own.
     const sourceLabel = ({
-      admin: "added by admin",
-      google_sync: "synced from Google",
-      system_seed: "system-managed",
-    })[m.source] || m.source;
-    const addedFragment = m.added_at
-      ? `<span class="added">· ${esc(fmtDate(m.added_at))}</span>` : "";
-    // Same chip color + name-shortening rules as the user list:
+      admin: "Added by an admin",
+      google_sync: "Synced from Google Workspace",
+      system_seed: "System-managed",
+      auto: "Automatic — everyone here is a member",
+    })[m.source] || `Added via ${m.source}`;
+    const addedFragment = m.added_at ? ` · ${esc(fmtDate(m.added_at))}` : "";
+    // Same chip colour + name-shortening rules as the people list:
     //   - name match (Admin / Everyone) wins over origin so env-mapped
-    //     system rows keep their canonical color
+    //     system rows keep their canonical colour
     //   - google_sync chip text runs through deriveDisplayName ("Legal"
     //     instead of "grp_acme_legal@workspace.example.com"), full email in
     //     the title attribute for hover reveal
@@ -510,9 +763,9 @@ function renderMemberships() {
     const display = (m.origin === "google_sync" && m.group_name !== "Admin" && m.group_name !== "Everyone")
       ? deriveDisplayName(m.group_name) : m.group_name;
     tr.innerHTML = `
-      <td><a class="group-chip ${cls}" href="/admin/groups/${encodeURIComponent(m.group_id)}" title="${esc(m.group_name)}">${esc(display)}</a></td>
-      <td><span class="source-meta"><span class="label">${esc(sourceLabel)}</span>${addedFragment}</span></td>
-      <td style="text-align:right">${removable}</td>
+      <td><a class="group-chip ${cls}" href="/admin/access?group=${encodeURIComponent(m.group_id)}" title="${esc(m.group_name)}">${esc(display)}</a></td>
+      <td><span class="ud-src"><em>${esc(sourceLabel)}</em>${addedFragment}</span></td>
+      <td class="ud-end">${removable}</td>
     `;
     tbody.appendChild(tr);
   }
@@ -558,25 +811,25 @@ function refreshGroupDropdown() {
   //  (b) every remaining group is Google-Workspace-managed (POST would 409);
   //  (c) no groups exist at all (fresh deploy with the system seeds masked
   //      via AGNES_GROUP_{ADMIN,EVERYONE}_EMAIL). Cases (b)/(c) point the
-  //      admin at /admin/groups so they can create a custom group whose
-  //      membership flows through Agnes itself.
+  //      admin at Access so they can create a custom group whose membership
+  //      flows through Agnes itself.
   if (assignableCount === 0) {
     if (allGroups.length === 0) {
-      hint.textContent = "No groups exist on this server.";
-      hint.style.display = "block";
+      hint.textContent = "No groups exist on this server yet.";
+      hint.hidden = false;
     } else if (googleManagedSkipped > 0) {
       hint.innerHTML = (
-        "All assignable groups are managed by Google Workspace — membership flows from " +
-        "<code>admin.google.com</code>. To grant access manually, create a custom Agnes group at " +
-        "<a href=\"/admin/groups\">/admin/groups</a>."
+        "Every remaining group is managed by Google Workspace — membership flows from " +
+        "<code>admin.google.com</code>. To grant access from here, create a custom Agnes group in " +
+        "<a href=\"/admin/access\">Access</a>."
       );
-      hint.style.display = "block";
+      hint.hidden = false;
     } else {
-      hint.textContent = "User is already a member of every group.";
-      hint.style.display = "block";
+      hint.textContent = "This person is already a member of every group.";
+      hint.hidden = false;
     }
   } else {
-    hint.style.display = "none";
+    hint.hidden = true;
   }
 }
 
@@ -604,7 +857,7 @@ document.getElementById("add-group-btn").addEventListener("click", async () => {
 });
 
 async function removeFromGroup(group_id) {
-  if (!(await confirmModal("Remove user from this group?"))) return;
+  if (!(await confirmModal("Remove this person from the group? They lose everything it grants."))) return;
   const r = await fetch(`${MEMBERSHIPS_API}/${encodeURIComponent(group_id)}`, {
     method: "DELETE", credentials: "include",
   });
@@ -618,47 +871,72 @@ async function removeFromGroup(group_id) {
   refreshGroupDropdown();
 }
 
+// Map ResourceType → the categorical accent that type already wears in the
+// Library, the Catalog and the builder, so nothing changes colour between
+// here and where the resource actually lives. Same table /me/profile uses.
+const KIND_ACCENT = {
+  data_package: "data", table: "data",
+  marketplace_plugin: "plugin", store_entity: "plugin",
+  memory_domain: "memory", memory_item: "memory",
+  recipe: "recipe", agent: "agent", corpus_file: "file",
+};
+
 async function loadEffectiveAccess() {
   const r = await fetch(EFFECTIVE_API, { credentials: "include" });
-  document.getElementById("effective-loading").style.display = "none";
+  const loading = document.getElementById("effective-loading");
   const content = document.getElementById("effective-content");
-  content.style.display = "block";
+  const sum = document.getElementById("effective-sum");
+  loading.hidden = true;
+  content.hidden = false;
 
   if (!r.ok) {
-    content.innerHTML = `<div class="ea-empty">Failed to load.</div>`;
+    content.innerHTML = `<div class="dsec-empty"><strong>Failed to load</strong>
+      The effective-access read-out could not be fetched. Reload to try again.</div>`;
+    sum.textContent = "unavailable";
     return;
   }
   const data = await r.json();
 
-  // We deliberately don't short-circuit on `data.is_admin` anymore —
-  // admin users get the same explicit grant breakdown as everyone else
-  // so the operator can audit which Admin-group grants exist (and via
-  // which sibling groups). Authorization at runtime still grants admin
-  // god-mode regardless of this list (see `app.auth.access`).
-  if (!data.items || data.items.length === 0) {
-    content.innerHTML = `<div class="ea-empty">User has no resource access yet. Add them to a group with grants.</div>`;
+  // We deliberately don't short-circuit on `data.is_admin` — admin users get
+  // the same explicit grant breakdown as everyone else, so the operator can
+  // audit which Admin-group grants exist (and via which sibling groups).
+  // Authorization at runtime still grants admin god-mode regardless of this
+  // list (see `app.auth.access`).
+  const items = data.items || [];
+  sum.textContent = count(items.length, "resource");
+  if (items.length === 0) {
+    content.innerHTML = `<div class="dsec-empty"><strong>No resource access yet</strong>
+      Resources are granted to groups — add this person to one that carries the
+      access they need.</div>`;
     return;
   }
 
-  let html = `<table class="ea-table">
+  let html = `<div class="ud-tablewrap"><table class="data-table">
     <thead><tr>
       <th>Type</th><th>Resource</th><th>Granted via</th>
     </tr></thead><tbody>`;
-  for (const it of data.items) {
-    const viaHtml = it.via_groups
-      .map(g => `<span class="via-group">${esc(g.group_name)}</span>`).join(" ");
+  for (const it of items) {
+    // "Why can they see this?" — each granting group links straight to the
+    // Access workspace with that group open, where the grant can be
+    // inspected or revoked. Read path and write path are one click apart
+    // instead of on different pages.
+    const viaHtml = (it.via_groups || [])
+      .map(g => `<a href="/admin/access?group=${encodeURIComponent(g.group_id)}"
+                    title="Open ${esc(g.group_name)} in Access">${esc(g.group_name)}</a>`).join("");
+    const accent = KIND_ACCENT[it.resource_type];
+    const kindCls = "ud-kind" + (accent ? ` ud-kind--${accent}` : "");
     html += `
       <tr>
-        <td style="white-space:nowrap">${esc(it.resource_type)}</td>
-        <td class="ea-rid">${esc(it.resource_id)}</td>
-        <td class="ea-via">${viaHtml}</td>
+        <td><span class="${kindCls}">${esc(String(it.resource_type).replace(/_/g, " "))}</span></td>
+        <td class="ud-mono">${esc(it.resource_id)}</td>
+        <td><span class="ud-via">${viaHtml}</span></td>
       </tr>`;
   }
-  html += `</tbody></table>`;
+  html += `</tbody></table></div>`;
   content.innerHTML = html;
 }
 
-// Account actions
+// ── Account actions ───────────────────────────────────────────────────────
 document.getElementById("reset-pw-btn").addEventListener("click", async () => {
   if (!(await confirmModal({ message: "Send password reset link to " + (userState && userState.email) + "?", danger: false }))) return;
   const r = await fetch(`${USER_API}/reset-password`, {
@@ -676,7 +954,12 @@ document.getElementById("toggle-active-btn").addEventListener("click", async () 
   if (!userState) return;
   const newActive = !userState.active;
   const verb = newActive ? "Reactivate" : "Deactivate";
-  if (!(await confirmModal({ message: `${verb} this user?`, danger: false }))) return;
+  if (!(await confirmModal({
+    message: newActive
+      ? "Reactivate this account? They can sign in again immediately."
+      : "Deactivate this account? They can no longer sign in. Group memberships and tokens are left as they are.",
+    danger: false,
+  }))) return;
   const path = newActive ? "/activate" : "/deactivate";
   const r = await fetch(`${USER_API}${path}`, { method: "POST", credentials: "include" });
   if (!r.ok) {
@@ -710,7 +993,15 @@ let _sessionsOffset = 0;
 const _sessionsLimit = 50;
 let _sessionsTotal = 0;
 
-document.getElementById("ud-download-all").href = SESSIONS_DL_ALL;
+const _dlAll = document.getElementById("ud-download-all");
+_dlAll.href = SESSIONS_DL_ALL;
+// Hidden until we know there is something to download — a control that
+// returns an empty archive is worse than no control. Revealed by
+// loadSessions() once the count comes back non-zero.
+_dlAll.hidden = true;
+// The button lives in the section's <summary>, so its click would otherwise
+// bubble to the disclosure and collapse the section it belongs to.
+_dlAll.addEventListener("click", e => { e.stopPropagation(); });
 
 function fmtDuration(seconds) {
   if (seconds == null) return "—";
@@ -726,48 +1017,50 @@ async function loadSessions() {
   const url = `${SESSIONS_API}?limit=${_sessionsLimit}&offset=${_sessionsOffset}`;
   const r = await fetch(url, { credentials: "include" });
   const emptyEl = document.getElementById("ud-sessions-empty");
-  document.getElementById("ud-sessions-loading").hidden = true;
-  const tableEl = document.getElementById("ud-sessions-table");
   const paginEl = document.getElementById("ud-sessions-pagination");
   const tbody = document.getElementById("ud-sessions-tbody");
   const pageMeta = document.getElementById("ud-sessions-page-meta");
+  const sum = document.getElementById("ud-sessions-sum");
 
   if (!r.ok) {
-    emptyEl.textContent = "Failed to load sessions.";
+    document.getElementById("ud-sessions-loading").hidden = true;
+    document.getElementById("ud-sessions-wrap").hidden = true;
+    emptyEl.innerHTML = "<strong>Failed to load</strong>Sessions could not be fetched. Reload to try again.";
     emptyEl.hidden = false;
-    tableEl.hidden = true;
     paginEl.hidden = true;
+    sum.textContent = "unavailable";
     return;
   }
   const data = await r.json();
   _sessionsTotal = data.pagination.total;
+  sum.textContent = count(_sessionsTotal, "session");
+  _dlAll.hidden = _sessionsTotal === 0;
 
-  if (data.rows.length === 0 && _sessionsOffset === 0) {
-    emptyEl.hidden = false;
-    tableEl.hidden = true;
+  const hasRows = data.rows.length > 0;
+  showRows("ud-sessions-loading", "ud-sessions-wrap", "ud-sessions-empty", hasRows);
+  if (!hasRows) {
     paginEl.hidden = true;
     return;
   }
 
-  emptyEl.hidden = true;
-  tableEl.hidden = false;
   tbody.innerHTML = "";
-
   for (const row of data.rows) {
     const tr = document.createElement("tr");
     const dlHref = `/api/admin/users/${encodeURIComponent(USER_ID)}/sessions/${encodeURIComponent(row.session_file)}/download`;
     const modelText = row.primary_model
       ? esc(row.primary_model).replace(/claude-/i, "").replace(/-\d{8}$/, "")
-      : "—";
+      : `<span class="ud-nil">—</span>`;
+    // Not yet through the extraction pipeline — a state, so it wears the
+    // page's one state pill rather than a badge of its own.
     const unprocessed = !row.processed
-      ? ` <span class="unprocessed-badge">pending</span>` : "";
+      ? ` <span class="ud-state is-warn">pending</span>` : "";
     tr.innerHTML = `
       <td>${esc(fmtDate(row.started_at))}${unprocessed}</td>
       <td>${fmtDuration(row.active_seconds)}</td>
-      <td>${row.tool_calls != null ? esc(String(row.tool_calls)) : "—"}</td>
-      <td>${row.tool_errors != null && row.tool_errors > 0 ? `<span style="color:var(--ds-accent-danger-ink,#b91c1c)">${esc(String(row.tool_errors))}</span>` : (row.tool_errors === 0 ? "0" : "—")}</td>
-      <td style="font-size:11px;color:var(--ds-text-secondary,#6b7280)">${modelText}</td>
-      <td><a class="btn btn-sm" href="${dlHref}">Download .jsonl</a></td>
+      <td>${row.tool_calls != null ? esc(String(row.tool_calls)) : `<span class="ud-nil">—</span>`}</td>
+      <td>${row.tool_errors != null && row.tool_errors > 0 ? `<span class="ud-err">${esc(String(row.tool_errors))}</span>` : (row.tool_errors === 0 ? "0" : `<span class="ud-nil">—</span>`)}</td>
+      <td>${modelText}</td>
+      <td class="ud-end"><a class="btn btn-secondary btn-sm" href="${dlHref}">Download .jsonl</a></td>
     `;
     tbody.appendChild(tr);
   }
@@ -804,38 +1097,36 @@ const _activityLimit = 50;
 let _activityTotal = 0;
 
 function loadActivity() {
-  const table = document.getElementById('ud-activity-table');
   const empty = document.getElementById('ud-activity-empty');
   const tbody = document.getElementById('ud-activity-tbody');
   const pag = document.getElementById('ud-activity-pagination');
+  const sum = document.getElementById('ud-activity-sum');
 
   fetch(`${ACTIVITY_API}?limit=${_activityLimit}&offset=${_activityOffset}`, { credentials: 'include' })
     .then(r => r.json())
     .then(data => {
-      document.getElementById('ud-activity-loading').hidden = true;
-      if (!data.rows || (data.rows.length === 0 && _activityOffset === 0)) {
-        empty.hidden = false;
-        table.hidden = true;
+      const rows = data.rows || [];
+      _activityTotal = (data.pagination && data.pagination.total) || 0;
+      sum.textContent = count(_activityTotal, "event");
+      const hasRows = rows.length > 0;
+      showRows('ud-activity-loading', 'ud-activity-wrap', 'ud-activity-empty', hasRows);
+      if (!hasRows) {
         pag.hidden = true;
         return;
       }
-      empty.hidden = true;
-      table.hidden = false;
-      _activityTotal = data.pagination.total;
-      tbody.innerHTML = data.rows.map(r => {
+      tbody.innerHTML = rows.map(r => {
         const isErr = r.result && (r.result.startsWith('error') || r.result === 'failed');
-        const resultCls = isErr ? 'style="color:var(--ds-accent-danger-ink,#b91c1c)"' : '';
         return `<tr>
           <td><time datetime="${esc(r.timestamp)}">${esc(fmtDate(r.timestamp))}</time></td>
           <td><code>${esc(r.action)}</code></td>
-          <td style="font-size:12px;color:var(--ds-text-secondary,#6b7280)">${esc(r.resource || '—')}</td>
-          <td ${resultCls}>${esc(r.result || '—')}</td>
+          <td class="ud-src">${esc(r.resource || '—')}</td>
+          <td>${isErr ? `<span class="ud-err">${esc(r.result)}</span>` : esc(r.result || '—')}</td>
           <td>${esc(r.client_kind || '—')}</td>
-          <td>${r.duration_ms != null ? esc(String(r.duration_ms)) + ' ms' : '—'}</td>
+          <td class="ud-end">${r.duration_ms != null ? esc(String(r.duration_ms)) + ' ms' : '—'}</td>
         </tr>`;
       }).join('');
       const from = _activityOffset + 1;
-      const to = Math.min(_activityOffset + data.rows.length, _activityTotal);
+      const to = Math.min(_activityOffset + rows.length, _activityTotal);
       document.getElementById('ud-activity-page-meta').textContent = `${from}–${to} of ${_activityTotal}`;
       pag.hidden = _activityTotal <= _activityLimit;
       document.getElementById('ud-activity-prev').disabled = _activityOffset === 0;
@@ -843,10 +1134,11 @@ function loadActivity() {
     })
     .catch(() => {
       document.getElementById('ud-activity-loading').hidden = true;
-      empty.textContent = 'Failed to load activity.';
+      document.getElementById('ud-activity-wrap').hidden = true;
+      empty.innerHTML = "<strong>Failed to load</strong>The audit log could not be fetched. Reload to try again.";
       empty.hidden = false;
-      table.hidden = true;
       pag.hidden = true;
+      sum.textContent = "unavailable";
     });
 }
 
@@ -863,10 +1155,120 @@ document.getElementById('ud-activity-next').addEventListener('click', () => {
   }
 });
 
-async function loadAll() {
-  await Promise.all([loadUser(), loadMemberships(), loadGroups(), loadEffectiveAccess(), loadSessions(), loadActivity()]);
+// ── Access tokens (this user's slice of the fleet list) ──────────────────
+// GET /auth/admin/tokens returns every token with its owner; there is no
+// per-user variant, so we filter client-side rather than add an endpoint.
+// Revoke goes through the same admin DELETE the fleet page uses.
+async function loadTokens() {
+  const loading = document.getElementById("ud-tokens-loading");
+  const tbody = document.getElementById("ud-tokens-tbody");
+  const sum = document.getElementById("ud-tokens-sum");
+
+  let rows;
+  try {
+    const r = await fetch("/auth/admin/tokens", { credentials: "include" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    rows = (await r.json()).filter(t => t.user_id === USER_ID);
+  } catch (e) {
+    loading.innerHTML = `<strong>Failed to load</strong>Tokens could not be fetched: ${esc(e.message)}`;
+    sum.textContent = "unavailable";
+    return;
+  }
+
+  const active = rows.filter(t => tokenStatus(t) === "active").length;
+  // The head answers both halves of the question a collapsed section still
+  // has to answer: how many exist, and how many of them still work. At zero
+  // the second half would be noise.
+  sum.textContent = rows.length === 0
+    ? "0 tokens"
+    : `${count(rows.length, "token")} · ${active} active`;
+
+  showRows("ud-tokens-loading", "ud-tokens-wrap", "ud-tokens-empty", rows.length > 0);
+  if (rows.length === 0) return;
+
+  tbody.innerHTML = "";
+  for (const t of rows) {
+    const status = tokenStatus(t);
+    const tone = status === "active" ? "is-ok" : (status === "revoked" ? "is-danger" : "");
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>
+        <strong>${esc(t.name)}</strong>
+        <span class="ud-mono ud-nil" style="display:block">${esc(t.prefix)}…</span>
+      </td>
+      <td>${fmtDate(t.created_at)}</td>
+      <td>${t.last_used_at ? fmtDate(t.last_used_at) : `<span class="ud-nil">Never</span>`}</td>
+      <td>${t.expires_at ? fmtDate(t.expires_at) : `<span class="ud-nil">Never</span>`}</td>
+      <td><span class="ud-state ${tone}">${status}</span></td>
+      <td class="ud-end">${
+        status === "revoked"
+          ? `<span class="ud-nil">revoked</span>`
+          : `<button class="btn btn-secondary btn-sm ud-danger" data-revoke="${esc(t.id)}" data-name="${esc(t.name)}">Revoke</button>`
+      }</td>`;
+    tbody.appendChild(tr);
+  }
+  tbody.querySelectorAll("[data-revoke]").forEach(btn =>
+    btn.addEventListener("click", () => revokeToken(btn.dataset.revoke, btn.dataset.name)));
 }
 
-loadAll();
+function tokenStatus(t) {
+  if (t.revoked_at) return "revoked";
+  if (t.expires_at && new Date(t.expires_at) < new Date()) return "expired";
+  return "active";
+}
+
+async function revokeToken(tokenId, name) {
+  if (!(await confirmModal({
+    title: "Revoke this token?",
+    message: `"${name}" stops working immediately. Anything using it must be re-authorized.`,
+    confirmText: "Revoke token",
+    danger: true,
+  }))) return;
+  const r = await fetch(`/auth/admin/tokens/${encodeURIComponent(tokenId)}`, {
+    method: "DELETE", credentials: "include",
+  });
+  if (!r.ok) {
+    toast("Revoke failed: " + r.status, "error");
+    return;
+  }
+  toast("Token revoked", "success");
+  loadTokens();
+}
+
+// ── Deep links open their section ───────────────────────────────────────────
+// Three of the five sections are collapsed by default, so a URL fragment has
+// to be able to open the one it points at — otherwise the ⋯ menu's
+// `/admin/users/<id>#tokens` hand-off (and any anchor deeper inside a section)
+// lands on a closed drawer, which reads as "the thing you were sent here for
+// isn't here". Same helper /me/profile runs. Re-scrolls after opening, because
+// the browser measured the offset while the section was still closed.
+function revealHash() {
+  const id = decodeURIComponent((window.location.hash || "").slice(1));
+  if (!id) return;
+  const target = document.getElementById(id);
+  if (!target) return;
+  const sec = target.closest("details.dsec") || (target.matches("details.dsec") ? target : null);
+  if (sec && !sec.open) sec.open = true;
+  target.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+window.addEventListener("hashchange", revealHash);
+
+async function loadAll() {
+  renderAvatar();
+  await Promise.all([loadUser(), loadMemberships(), loadGroups(), loadEffectiveAccess(), loadTokens(), loadSessions(), loadActivity()]);
+  // The sections render after the fetches, so scroll once the content is
+  // actually there.
+  revealHash();
+}
+
+// Wait for DOMContentLoaded: deferred scripts (datetime.js → window.AgnesTime,
+// identity.js → window.AgnesIdentity) execute just before it fires, so every
+// section formats timestamps with the shared helper and the avatar gets its
+// shared derivation instead of racing them. fmtDate stays defensive regardless.
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", loadAll, { once: true });
+} else {
+  loadAll();
+}
 </script>
 {% endblock %}
