@@ -17,7 +17,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from connectors.jira.service import refresh_fields
+from connectors.jira.service import organization_detail_fields, refresh_fields
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +94,12 @@ ISSUES_SCHEMA = {
     "configuration_item": "string",
     "participants": "string",
     "organizations": "string",
+    # Organization *ids* alongside the names. The names in `organizations` are a
+    # point-in-time capture that drifts whenever an organization is renamed, so they
+    # cannot be joined on reliably; the ids are stable and are the join key into the
+    # `organizations` table. Kept as a JSON array because the Jira field is
+    # multi-valued — taking only the first would silently drop organizations.
+    "organization_ids": "string",
     "spam": "string",
     "context": "string",
     "custom_url": "string",
@@ -157,6 +163,100 @@ def issues_schema() -> dict:
     for _, column in resolved_refresh_columns():
         schema.setdefault(column, "string")
     return schema
+
+
+# Current-state dimension: one row per JSM organization, keyed by the id that
+# `issues.organization_ids` carries. Deliberately NOT month-partitioned like the
+# event tables — an organization has one current name and one current set of detail
+# values, not a history, so it is written as a single parquet.
+ORGANIZATIONS_SCHEMA = {
+    "org_id": "string",
+    "name": "string",
+    "_synced_at": "string",
+}
+
+
+def organizations_schema() -> dict:
+    """ORGANIZATIONS_SCHEMA extended with one string column per configured detail.
+
+    Mirrors ``issues_schema()``: the operator's ``JIRA_ORG_DETAIL_FIELDS`` columns are
+    appended so ``apply_schema`` keeps them. Resolved at call time, and used
+    everywhere the organizations parquet is written.
+    """
+    schema = dict(ORGANIZATIONS_SCHEMA)
+    for _, column in organization_detail_fields():
+        schema.setdefault(column, "string")
+    return schema
+
+
+def _detail_value(detail: dict) -> str | None:
+    """The scalar value of one organization detail, across both CSM response shapes.
+
+    ``GET /organization/{id}`` returns ``{"values": ["ACC-1"]}`` while the batched
+    profile endpoints return ``{"value": {"type": "TEXT", "text": ["ACC-1"]}}``. Both
+    are arrays; a detail field holds a single value in practice, so the first entry is
+    taken and an empty array reads as unset.
+    """
+    values = detail.get("values")
+    if values is None:
+        value = detail.get("value")
+        values = value.get("text") if isinstance(value, dict) else None
+    if not isinstance(values, list) or not values or values[0] is None:
+        return None
+    return str(values[0])
+
+
+def extract_organization_details(raw_org: dict) -> dict[str, str | None]:
+    """``{column: value}`` for each configured organization detail.
+
+    Each configured key is matched against a detail's ``id`` first and its ``name``
+    second. The id is what survives a rename of the detail field — the label is not —
+    so it is always preferred when present. The name fallback exists because only
+    ``GET /organization/{id}`` returns detail ids at all: the batched
+    ``POST /organization/profile/fetch`` and ``GET /organization/details`` responses
+    carry ``name`` alone. That also means the id is an observed property of one
+    endpoint rather than a documented guarantee, so the fallback is load-bearing, not
+    decorative.
+
+    A configured detail that the organization does not carry yields ``None`` rather
+    than a missing key, so every row has the same columns.
+    """
+    configured = organization_detail_fields()
+    if not configured:
+        return {}
+
+    details = raw_org.get("details")
+    details = details if isinstance(details, list) else []
+
+    by_id: dict[str, dict] = {}
+    by_name: dict[str, dict] = {}
+    for detail in details:
+        if not isinstance(detail, dict):
+            continue
+        detail_id = detail.get("id")
+        if detail_id is not None:
+            by_id.setdefault(str(detail_id), detail)
+        detail_name = detail.get("name")
+        if detail_name is not None:
+            by_name.setdefault(str(detail_name), detail)
+
+    out: dict[str, str | None] = {}
+    for key, column in configured:
+        detail = by_id.get(key) or by_name.get(key)
+        out[column] = _detail_value(detail) if detail else None
+    return out
+
+
+def transform_organization(raw_org: dict) -> dict:
+    """Transform one raw CSM organization into a flat ``organizations`` row."""
+    org_id = raw_org.get("id")
+    record: dict[str, Any] = {
+        "org_id": None if org_id is None else str(org_id),
+        "name": raw_org.get("name"),
+        "_synced_at": datetime.now(timezone.utc).isoformat(),
+    }
+    record.update(extract_organization_details(raw_org))
+    return record
 
 
 COMMENTS_SCHEMA = {
@@ -323,6 +423,28 @@ def extract_option_list(field: Any) -> list[str]:
     return [extract_option_value(item) for item in field if item]
 
 
+def extract_organization_ids(field: Any) -> list[str]:
+    """Ids from the Jira organizations field, in payload order.
+
+    The field is multi-valued and each entry carries ``id``, ``uuid`` and ``name``;
+    only the id is taken, as the stable join key into the ``organizations`` table.
+    Entries with no id are skipped rather than emitting a null, so the array holds
+    only usable keys. Ids are stringified because the column is text and Jira has
+    returned them both quoted and bare depending on the endpoint.
+    """
+    if not field or not isinstance(field, list):
+        return []
+    out: list[str] = []
+    for item in field:
+        if not isinstance(item, dict):
+            continue
+        org_id = item.get("id")
+        if org_id is None:
+            continue
+        out.append(str(org_id))
+    return out
+
+
 def parse_datetime(dt_str: str | None) -> datetime | None:
     """Parse Jira datetime string to datetime object."""
     if not dt_str:
@@ -402,6 +524,7 @@ def transform_issue(raw_issue: dict) -> dict:
             [extract_user_info(u).get("email") for u in (fields.get("customfield_10156") or [])]
         ),
         "organizations": json.dumps(extract_option_list(fields.get("customfield_10002"))),
+        "organization_ids": json.dumps(extract_organization_ids(fields.get("customfield_10002"))),
         "spam": extract_option_value(fields.get("customfield_10365")),
         "context": extract_text_from_adf(fields.get("customfield_10330")) or None,
         "custom_url": fields.get("customfield_10325"),
@@ -426,8 +549,41 @@ def transform_issue(raw_issue: dict) -> dict:
     return record
 
 
-def transform_comments(raw_issue: dict) -> list[dict]:
-    """Extract and transform comments from an issue."""
+def transform_comments(raw_issue: dict, *, preserve_on_incomplete: bool = True) -> list[dict] | None:
+    """Extract and transform comments from an issue.
+
+    Args:
+        raw_issue: raw Jira issue JSON.
+        preserve_on_incomplete: whether the ``_comments_incomplete`` marker
+            should suppress the (known-truncated) embedded list. Defaults to
+            True, which is the correct behaviour for the INCREMENTAL path
+            only. Full-rebuild callers pass False — see below.
+
+    Returns:
+      - list[dict]: transformed comment records. May be empty — the issue
+        legitimately has no comments.
+      - None: only when ``preserve_on_incomplete`` is True and
+        ``_comments_incomplete`` is set on ``raw_issue``, meaning
+        ``complete_issue_comments`` (connectors/jira/service.py) hit a
+        page-fetch failure mid-pagination and ``fields.comment.comments``
+        is a KNOWN-TRUNCATED subset of the full thread. This is the same
+        overlay-absent contract as ``transform_remote_links``: callers that
+        upsert onto an issue-scoped delete-then-insert store (the
+        incremental comments parquet) MUST treat ``None`` as "skip the
+        upsert, preserve existing rows" — otherwise a transient pagination
+        failure on a refetch would overwrite a previously-complete stored
+        comment thread with a known-incomplete one.
+
+    The preserve semantics only make sense where there are existing rows to
+    preserve. ``transform_all`` rebuilds the monthly parquets from scratch,
+    so suppressing there means the issue contributes ZERO comment rows —
+    strictly worse than writing the partially-fetched list the JSON already
+    carries. Batch/full-rebuild callers therefore pass
+    ``preserve_on_incomplete=False`` and get the partial list.
+    """
+    if preserve_on_incomplete and raw_issue.get("_comments_incomplete") is True:
+        return None
+
     issue_key = raw_issue.get("key")
     fields = raw_issue.get("fields", {})
     comments_data = fields.get("comment", {})
@@ -719,7 +875,14 @@ def transform_all(
             issues_by_month[month_key].append(issue_record)
 
             # Transform related data (all go to same month as parent issue)
-            comments_by_month[month_key].extend(transform_comments(raw_issue))
+            # This is a full rebuild from raw JSON — nothing is being preserved,
+            # so an issue marked `_comments_incomplete` still contributes the
+            # partially-fetched comments its JSON carries. Dropping them would
+            # write ZERO rows for that issue, which is strictly worse than a
+            # short thread; the preserve semantics belong to the incremental
+            # delete-then-insert path (incremental_transform.py) alone.
+            comment_records = transform_comments(raw_issue, preserve_on_incomplete=False) or []
+            comments_by_month[month_key].extend(comment_records)
 
             # Transform attachments with hierarchical paths
             issue_key = raw_issue.get("key", "unknown")
