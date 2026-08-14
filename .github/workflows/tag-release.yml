@@ -113,6 +113,13 @@ jobs:
           SHA: ${{ steps.validate.outputs.sha }}
         run: |
           set -euo pipefail
+          # "Latest" must follow version order, not dispatch order: gh's
+          # make_latest default would let a backfilled older version steal
+          # the Latest badge from the real newest release. (sort -V | tail
+          # is safe under pipefail — tail reads its whole input, no
+          # early-exit SIGPIPE.)
+          HIGHEST=$(printf '%s\n' "$TAG" $(git tag -l 'v[0-9]*') | sort -V | tail -1)
+          if [ "$HIGHEST" = "$TAG" ]; then LATEST_FLAG="--latest=true"; else LATEST_FLAG="--latest=false"; fi
           # Three states, three actions. `gh release view` also succeeds for
           # DRAFTS — and GitHub demotes a published release to a draft when
           # its tag is deleted, which is exactly the docs/RELEASING.md
@@ -134,6 +141,7 @@ jobs:
                 --draft=false \
                 --target "$SHA" \
                 --title "$TAG" \
+                "$LATEST_FLAG" \
                 --notes-file /tmp/release-body.md
               echo "published existing draft $TAG at $SHA"
               ;;
@@ -145,6 +153,7 @@ jobs:
               gh release create "$TAG" \
                 --target "$SHA" \
                 --title "$TAG" \
+                "$LATEST_FLAG" \
                 --notes-file /tmp/release-body.md
               echo "created $TAG at $SHA"
               ;;
