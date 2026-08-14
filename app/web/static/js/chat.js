@@ -570,7 +570,7 @@ function renderAnswerMarkdown(content) {
  *  an empty fence. */
 function formatToolCall(tc) {
   if (!tc || typeof tc.tool !== "string") return null;
-  return { label: _toolLabel(tc.tool, tc.args), argsJson: JSON.stringify(tc.args ?? {}, null, 2) };
+  return { label: _toolLabel(tc.tool, tc.args), tool: tc.tool, argsJson: JSON.stringify(tc.args ?? {}, null, 2) };
 }
 
 /** Markdown transcript of one conversation. ``title`` must be captured by the
@@ -593,7 +593,9 @@ async function fetchTranscriptMarkdown(chatId, title) {
       if (!call) continue;
       // Fenced, not inline: an `agnes query` argument is multi-line SQL, and
       // the point of carrying tool calls at all is that they stay readable.
-      out.push(`<details><summary>tool: ${call.label}</summary>`, "", "```json", call.argsJson, "```", "", "</details>", "");
+      // The humanized label reads well, but an EXPORT pasted into a bug
+      // report or another tool still needs the raw id next to it.
+      out.push(`<details><summary>tool: ${call.label} (${call.tool})</summary>`, "", "```json", call.argsJson, "```", "", "</details>", "");
     }
   }
   return out.join("\n");
@@ -1368,6 +1370,7 @@ function handleFrame(frame) {
     // The terminal frames below all disarm the long-run notification nudge —
     // a turn that has stopped is no longer worth offering to be pinged about.
     case "cancelled":
+      _flushStreamingTail();
       renderSystemNote("Turn cancelled.", "warn");
       setStatus(`Cancelled tool: ${frame.tool || ""}`, "warn");
       $("cancel-btn").hidden = true;
@@ -1375,9 +1378,10 @@ function handleFrame(frame) {
       onboardingNoteTurnEnded();
       break;
     case "confirmation_required":
-      // The runner stopped the turn at the per-turn tool budget — no
+      // The runner stopped the turn at the per-turn tool budget — often no
       // assistant_message follows, so without this note the turn just froze
       // with zero explanation (the frame used to be silently dropped).
+      _flushStreamingTail();
       renderSystemNote(
         `Stopped early: this turn hit its tool-call budget${frame.budget ? ` (${frame.budget})` : ""}. Send a message to continue where it left off.`,
         "warn",
@@ -1388,6 +1392,7 @@ function handleFrame(frame) {
       onboardingNoteTurnEnded();
       break;
     case "error":
+      _flushStreamingTail();
       renderSystemNote(
         `Something went wrong: ${frame.kind || "error"}${frame.message ? ` — ${frame.message}` : ""}`,
         "error",
@@ -1398,6 +1403,10 @@ function handleFrame(frame) {
       onboardingNoteTurnEnded();
       break;
     case "done":
+      // A turn that stopped without ever finalizing (interrupt surfaced as
+      // an exception — no trailing assistant_message) must not leave the
+      // stream pointers armed, or the next turn appends into this bubble.
+      _resetStreamingState();
       $("cancel-btn").hidden = true;
       onboardingNoteTurnEnded();
       break;
@@ -2010,6 +2019,42 @@ function _renderStreamingMarkdown() {
     currentAssistantBody.textContent = visible;
   }
   maybeScrollToBottom();
+}
+
+/** Repaint the streaming bubble with the FULL accumulated text. The live
+ *  painter withholds a trailing half-fence (_streamingSafeText); that is only
+ *  correct while more of the stream is coming. The turn-stopping frames
+ *  (cancelled / confirmation_required / error) may be the turn's last word —
+ *  a trailing assistant_message is common (graceful interrupt, the watchdog's
+ *  partial-save, the budget stop) but NOT guaranteed — so each flushes the
+ *  withheld tail here. The stream pointers stay set on purpose: when the
+ *  trailing assistant_message DOES arrive, finalizeAssistantMessage must land
+ *  in this same bubble, not render a duplicate. */
+function _flushStreamingTail() {
+  if (_streamRenderTimer) {
+    clearTimeout(_streamRenderTimer);
+    _streamRenderTimer = null;
+  }
+  if (!currentAssistantBody) return;
+  try {
+    currentAssistantBody.innerHTML = renderAnswerMarkdown(currentAssistantText);
+  } catch (_e) {
+    currentAssistantBody.textContent = currentAssistantText;
+  }
+}
+
+/** Close out a streamed bubble that never got its assistant_message — flush
+ *  the tail and drop the pointers, so the NEXT turn's tokens start a fresh
+ *  bubble instead of appending into this one after its stale text. Runs on
+ *  `done` (the turn terminator, always after any assistant_message) and again
+ *  defensively on the next submit (a hard-crashed turn may never even get a
+ *  done); both are no-ops after a normal finalize. */
+function _resetStreamingState() {
+  _flushStreamingTail();
+  if (currentAssistantArticle) currentAssistantArticle.classList.remove("is-streaming");
+  currentAssistantArticle = null;
+  currentAssistantBody = null;
+  currentAssistantText = "";
 }
 
 function appendToken(text) {
@@ -2974,7 +3019,10 @@ async function submitUserMessage(text) {
   // 3. Now ``#chat-messages`` is stable — render the user bubble and
   //    the thinking placeholder so the user sees their submit landed
   //    and the agent is working on it.
-  // The conversation moved on — yesterday's follow-up chips are stale now.
+  // The conversation moved on — yesterday's follow-up chips are stale now,
+  // and a previous turn that died without done/finalize must not leave its
+  // bubble armed to swallow this turn's tokens.
+  _resetStreamingState();
   _clearNextActions();
   renderMessage({ role: "user", content: text });
   lastUserText = text;

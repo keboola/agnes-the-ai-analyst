@@ -125,7 +125,12 @@ def test_history_reload_restores_chips_only_when_the_answer_is_the_tail():
 def test_next_action_chip_styles_use_ds_tokens():
     css = _read(CHAT_CSS)
     assert ".cloud-chat-next-actions" in css
-    assert ".cloud-chat-next-action" in css
+    block = css[css.index(".cloud-chat-next-action {") :]
+    block = block[: block.index("}")]
+    assert "var(--ds-radius-btn)" in block, (
+        "a labelled button wears --ds-radius-btn — the design system reserves pill for badges"
+    )
+    assert "--ds-radius-pill" not in block
 
 
 def test_the_prompt_mandates_the_next_actions_trailer():
@@ -277,6 +282,51 @@ def test_finalize_clears_the_stream_timer():
     js = _read(CHAT_JS)
     fin = js[js.index("function finalizeAssistantMessage") : js.index("// ---------- Inline tool-call blocks")]
     assert "_streamRenderTimer" in fin, "a late tick must not repaint a finalized bubble"
+
+
+def test_turn_stopping_frames_flush_the_withheld_stream_tail():
+    """_streamingSafeText withholds the tail after a trailing open fence while
+    it streams; only a full repaint shows it. cancelled / confirmation_required
+    / error may be the turn's last word — a trailing assistant_message is
+    common (graceful interrupt, the watchdog's partial-save, the budget stop)
+    but NOT guaranteed — so each must flush the full accumulated text itself,
+    WITHOUT dropping the stream pointers: when the trailing assistant_message
+    does arrive, finalize must land in this same bubble, not a duplicate."""
+    js = _read(CHAT_JS)
+    assert "function _flushStreamingTail" in js
+    fn = js[js.index("function _flushStreamingTail") : js.index("function _resetStreamingState")]
+    assert "renderAnswerMarkdown(currentAssistantText)" in fn, "full text, not the streaming-safe slice"
+    assert "currentAssistantArticle = null" not in fn, "flush must NOT reset — finalize may still be coming"
+    sw = js[js.index("switch (frame.type)") : js.index("function applySessionRename")]
+    assert sw.count("_flushStreamingTail()") >= 3, "cancelled, confirmation_required, error"
+
+
+def test_a_turn_that_never_finalizes_cannot_leak_into_the_next_bubble():
+    """When NO assistant_message ever follows a stop frame (interrupt surfaced
+    as an exception, hard crash), the stream pointers must still be dropped —
+    or the NEXT turn's tokens append into the stale bubble after the stale
+    text. `done` is the turn terminator (always after any assistant_message),
+    and the next submit is the belt for a turn that never even got a done."""
+    js = _read(CHAT_JS)
+    reset = js[js.index("function _resetStreamingState") : js.index("function appendToken")]
+    assert "_flushStreamingTail()" in reset, "reset flushes the tail first"
+    assert "currentAssistantArticle = null" in reset and 'currentAssistantText = ""' in reset
+    sw = js[js.index("switch (frame.type)") : js.index("function applySessionRename")]
+    done_case = sw[sw.index('case "done":') :]
+    assert "_resetStreamingState()" in done_case[: done_case.index("break;")]
+    submit = js[js.index("async function submitUserMessage") : js.index("function autosizeComposer")]
+    assert "_resetStreamingState()" in submit
+
+
+def test_transcript_export_keeps_the_raw_tool_id():
+    """The export header is `tool: <label> (<raw id>)` — the humanized label
+    reads well, but a transcript pasted into a bug report or another tool
+    still needs the real id."""
+    js = _read(CHAT_JS)
+    fmt = js[js.index("function formatToolCall") : js.index("async function fetchTranscriptMarkdown")]
+    assert "tool: tc.tool" in fmt, "formatToolCall must carry the raw id alongside the label"
+    export = js[js.index("async function fetchTranscriptMarkdown") : js.index("function wireCopyTranscript")]
+    assert "${call.label} (${call.tool})" in export
 
 
 def test_streaming_safe_text_executable():
