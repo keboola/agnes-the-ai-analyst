@@ -574,15 +574,19 @@ PRESET_COUPLED_FLAGS: frozenset[str] = frozenset({"stack_auto_membership"})
 
 
 def preset_knob_default(name: str) -> str:
-    """Preset-implied default for the experience-coupled STRING knobs
-    (``theme`` / ``ui_layout``) — the single source of the preset mapping,
-    shared by the runtime getters and the ``/admin/server-config``
-    known-fields resolver (so the editable panel can never render a default
-    the runtime doesn't use — Devin Review on #1199)."""
+    """Preset-implied default for the experience-coupled STRING knobs — the
+    single source of the preset mapping, shared by the runtime getters and
+    the ``/admin/server-config`` known-fields resolver (so the editable
+    panel can never render a default the runtime doesn't use — Devin Review
+    on #1199).
+
+    ``theme`` is the only knob left here: ``ui_layout`` used to be
+    preset-coupled too, but Wave 0 (2026-08) hard-wired the rail chrome —
+    :func:`get_ui_layout` always returns ``"rail"`` unconditionally now, so
+    there is no preset-implied default left to resolve for it."""
     redesign = get_experience() == "redesign"
     return {
         "theme": "paper" if redesign else "blue",
-        "ui_layout": "rail" if redesign else "topnav",
     }[name]
 
 

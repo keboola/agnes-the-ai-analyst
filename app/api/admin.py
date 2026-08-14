@@ -467,10 +467,13 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
             "default": "redesign",
             "hint": (
                 "One-line redesign adoption preset — retired as a choice; "
-                "`redesign` is the only option and the default. Changes only "
-                "the DEFAULTS of the coupled knobs — ui_layout → rail, theme "
-                "→ paper, features.stack_auto_membership → on; any per-knob "
-                "setting still wins. Kept only so an existing "
+                "`redesign` is the only option and the default. Changes the "
+                "DEFAULTS of theme → paper and features.stack_auto_membership "
+                "→ on; either can still be overridden per-knob. ui_layout is "
+                "NOT one of those overridable knobs any more — the rail "
+                "chrome is hard-wired (Wave 0, 2026-08); a configured "
+                "instance.ui_layout is ignored (logged as a startup warning), "
+                "not honored. Kept only so an existing "
                 "`instance.experience` yaml/env value doesn't error; any "
                 "other value (including the old `classic`) falls back to "
                 "this default."
@@ -1461,10 +1464,12 @@ def _feature_flags_inventory() -> List[Dict[str, Any]]:
             "env_var": "AGNES_INSTANCE_EXPERIENCE",
             "description": (
                 "Experience preset — retired as a choice; `redesign` is the only "
-                "option and the default. Changes only the DEFAULTS of the coupled "
-                "knobs — instance.ui_layout, instance.theme, "
-                "features.stack_auto_membership — any per-knob env/yaml setting "
-                "still wins."
+                "option and the default. Changes the DEFAULTS of "
+                "instance.theme and features.stack_auto_membership — either can "
+                "still be overridden per-knob. instance.ui_layout is NOT one of "
+                "those overridable knobs any more: the rail chrome is "
+                "hard-wired (Wave 0, 2026-08), so a configured value is ignored "
+                "with a startup warning instead of being honored."
             ),
             "effect": "live",
             "editable": True,

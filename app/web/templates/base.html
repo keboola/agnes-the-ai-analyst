@@ -59,9 +59,9 @@
          Library table + grid, catalog cards and every detail hero. Replaced four
          separate spellings, two of which read from different data. -->
     <link rel="stylesheet" href="{{ static_url('css/trustmark.css') }}">
-    {# app.js loaded by _app_header.html itself so pages that include
-       the header directly without extending base.html (e.g. admin_tables)
-       still get the nav-dropdown wiring. #}
+    {# app.js is loaded by _app_rail.html itself (the sole nav partial now),
+       so any page rendering it gets the nav-dropdown wiring regardless of
+       which base template it extends. #}
     {% block head_extra %}{% endblock %}
     {% include '_theme.html' %}
     {# Operator-injected scripts (placement=head_end, the default) —
@@ -72,11 +72,10 @@
     {% endfor %}
 </head>
 <body {% block body_attrs %}{% endblock %}>
-    {% if (ui_layout | default('topnav')) == 'rail' %}
+    {# Production nav — the fixed left sidebar. The topnav chrome
+       (`_app_header.html`) was retired in Wave 0 (2026-08); rail is the
+       only layout now. #}
     {% include '_app_rail.html' %}
-    {% else %}
-    {% include '_app_header.html' %}
-    {% endif %}
 
     {# `layout` block: pages opt out of the narrow .container wrap by overriding
        this entire block (e.g. dashboard.html renders its own full-width <main

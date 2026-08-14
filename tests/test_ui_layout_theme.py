@@ -64,6 +64,18 @@ def admin_cookie(web_client):
 
 
 class TestResolvers:
+    @pytest.fixture(autouse=True)
+    def _reset_ui_layout_warn_once(self):
+        """`get_ui_layout()`'s retired-value warning is gated by a
+        module-global, once-per-process guard (`_warned_once_keys`) — reset
+        it before every test in this class so one test setting a retired
+        value (e.g. `test_ui_layout_topnav_value_is_inert`) can't silently
+        suppress the warning another test asserts on."""
+        import app.instance_config as ic
+
+        ic._warned_once_keys = set()
+        yield
+
     def test_ui_layout_defaults_to_rail(self, monkeypatch):
         monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
         monkeypatch.delenv("AGNES_INSTANCE_EXPERIENCE", raising=False)
@@ -92,9 +104,6 @@ class TestResolvers:
         the log for the lifetime of a misconfigured instance."""
         import logging
 
-        import app.instance_config as ic
-
-        monkeypatch.setattr(ic, "_warned_once_keys", set())
         monkeypatch.setenv("AGNES_UI_LAYOUT", "topnav")
         with caplog.at_level(logging.WARNING, logger="app.instance_config"):
             assert get_ui_layout() == "rail"
