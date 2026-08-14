@@ -113,16 +113,39 @@ jobs:
           SHA: ${{ steps.validate.outputs.sha }}
         run: |
           set -euo pipefail
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "release $TAG already exists — nothing to do"
-            exit 0
-          fi
-          # gh release create makes the tag ref server-side when it does not
-          # exist yet (no git push involved) and attaches to the existing
-          # tag when it does — which is what repairs a run that tagged but
-          # never released.
-          gh release create "$TAG" \
-            --target "$SHA" \
-            --title "$TAG" \
-            --notes-file /tmp/release-body.md
-          echo "created $TAG at $SHA"
+          # Three states, three actions. `gh release view` also succeeds for
+          # DRAFTS — and GitHub demotes a published release to a draft when
+          # its tag is deleted, which is exactly the docs/RELEASING.md
+          # re-tag recovery flow — so "a release exists" alone must not
+          # no-op: that would report green with no tag created.
+          STATE=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null || echo "absent")
+          case "$STATE" in
+            false)
+              # A PUBLISHED release cannot exist without its tag ref
+              # (deleting the tag is what demotes it to draft), so this is
+              # the one genuinely-done state.
+              echo "release $TAG already published — nothing to do"
+              ;;
+            true)
+              # Draft left behind by a deleted tag: publishing it re-creates
+              # the tag at --target, and the notes/title are refreshed from
+              # the validated CHANGELOG rather than trusting the stale draft.
+              gh release edit "$TAG" \
+                --draft=false \
+                --target "$SHA" \
+                --title "$TAG" \
+                --notes-file /tmp/release-body.md
+              echo "published existing draft $TAG at $SHA"
+              ;;
+            *)
+              # gh release create makes the tag ref server-side when it does
+              # not exist yet (no git push involved) and attaches to the
+              # existing tag when it does — which is what repairs a run that
+              # tagged but never released.
+              gh release create "$TAG" \
+                --target "$SHA" \
+                --title "$TAG" \
+                --notes-file /tmp/release-body.md
+              echo "created $TAG at $SHA"
+              ;;
+          esac

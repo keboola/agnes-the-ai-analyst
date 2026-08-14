@@ -59,6 +59,17 @@ After the PR with the release-cut is merged to `main`:
 2. `git push origin vX.Y.Z`
 3. `gh release create vX.Y.Z --title "vX.Y.Z" --notes "<CHANGELOG body for [X.Y.Z]>"`
 
+From an environment that cannot push tags (remote/CI-managed sessions
+commonly allow branch pushes but refuse `refs/tags/*`), dispatch the
+server-side equivalent instead — it validates (tag shape, target on main,
+tag == pyproject version at the target, CHANGELOG section present),
+creates the tag ref via the API, and publishes the Release with the
+CHANGELOG section as its body; re-dispatching is idempotent/repairing:
+
+```
+gh workflow run tag-release.yml -f tag=vX.Y.Z -f target=<merge-sha>
+```
+
 Never tag or release before merge.
 
 ## Post-merge auto-rollback
