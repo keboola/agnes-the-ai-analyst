@@ -272,7 +272,10 @@ def test_streaming_renders_markdown_not_textcontent():
         "raw markdown source must not sit on screen until turn end"
     )
     assert "_scheduleStreamRender()" in body
-    stream = js[js.index("function _renderStreamingMarkdown") : js.index("function appendToken")]
+    # The PER-PAINT path only: _flushStreamingTail/_resetStreamingState run
+    # once at close-out and legitimately finish the bubble — the throttled
+    # painter is what must stay light.
+    stream = js[js.index("function _renderStreamingMarkdown") : js.index("function _flushStreamingTail")]
     assert "renderAnswerMarkdown(" in stream, "streaming and finalize must share the pipeline"
     assert "renderMermaidBlocks" not in stream, "no mermaid on partial content"
     assert "enhanceCodeBlocks" not in stream, "heavy enhancement waits for finalize"
@@ -319,6 +322,65 @@ def test_a_turn_that_never_finalizes_cannot_leak_into_the_next_bubble():
     assert "_resetStreamingState()" in submit
 
 
+def test_conversation_switch_resets_the_streaming_pointers():
+    """openSession wipes #chat-messages, but the stream pointers used to
+    survive the switch: a pending 150 ms tick painted into a detached node,
+    and a token arriving on the new socket without a submit appended the OLD
+    conversation's text into an invisible bubble. The switch must drop the
+    streaming state like `done` and submit do."""
+    js = _read(CHAT_JS)
+    body = js[js.index("async function openSession") : js.index("function handleFrame")]
+    assert "_resetStreamingState()" in body
+
+
+def test_reset_finalizes_an_orphan_bubble():
+    """A stopped turn whose assistant_message never came still deserves a
+    finished bubble: highlighted code, sortable tables, mermaid, the copy/
+    actions row, chips from a completed trailer, latest-assistant marking.
+    Sources chips are deliberately absent — they render the SERVER's verdict,
+    and a turn that never finalized has none. Double-attach is impossible on
+    the normal path: after finalize the pointers are null and reset returns
+    before the tail."""
+    js = _read(CHAT_JS)
+    reset = js[js.index("function _resetStreamingState") : js.index("function appendToken")]
+    for call in (
+        "enhanceCodeBlocks(",
+        "enhanceTables(",
+        "renderMermaidBlocks(",
+        "attachMessageActions(",
+        "renderNextActions(",
+        "_markLatestAssistant(",
+        "maybeMakeCollapsible(",
+    ):
+        assert call in reset, f"orphan close-out must run the finalize tail: missing {call}"
+    assert "renderSourcesChips" not in reset, "no server verdict exists for an unfinalized turn"
+
+
+def test_reload_chips_sit_above_the_actions_row():
+    """Live order is chips-then-actions (finalize renders chips before
+    attachMessageActions appends the row). On reload, renderMessage has
+    already appended .msg-actions before loadAndRenderHistory adds the chips
+    — so renderNextActions must insert BEFORE an existing actions row, or the
+    two paths disagree about the bubble's tail."""
+    js = _read(CHAT_JS)
+    body = js[js.index("function renderNextActions") : js.index("function _clearNextActions")]
+    assert ".msg-actions" in body and "insertBefore" in body
+
+
+def test_over_cap_result_keeps_a_raw_json_route():
+    """The capped table dropped rows past _TOOL_RESULT_FULL_ROWS_MAX with no
+    route to the rest (the old JSON dump had them all). Over the cap ONLY, a
+    secondary details offers the raw JSON — filled lazily on first open so a
+    huge dump costs nothing until asked for, and via textContent so the
+    payload can never execute."""
+    js = _read(CHAT_JS)
+    body = js[js.index("function _coerceToTablePreview") : js.index("// ---------- Data-app split-pane preview")]
+    assert "Raw JSON (all " in body
+    assert '"toggle"' in body, "the dump is built lazily, on first open"
+    assert "JSON.stringify(rows" in body
+    assert "total > _TOOL_RESULT_FULL_ROWS_MAX" in body, "the raw route exists only past the cap"
+
+
 def test_transcript_export_keeps_the_raw_tool_id():
     """The export header is `tool: <label> (<raw id>)` — the humanized label
     reads well, but a transcript pasted into a bug report or another tool
@@ -342,6 +404,14 @@ def test_streaming_safe_text_executable():
         "open_sql_with_body": "Answer.\n\n```sql\nSELECT 1",
         "closed_fence": "Answer.\n\n```sql\nSELECT 1\n```\n",
         "bare_open_no_newline": "Answer.\n\n```",
+        # The instant of close: the trailer's CLOSING fence just streamed in,
+        # no trailing newline yet. Counting backticks naively reads that
+        # closer as a fresh opener, chops there, and hands the renderer an
+        # UNTERMINATED trailer — which the strip helpers deliberately keep —
+        # so the wire format flashed on screen until the next repaint.
+        "closed_trailer_instant": "Answer.\n\n```next_actions\n- x\n```",
+        "closed_sources_instant": "Answer.\n\n```sources\ntable: orders\n```",
+        "opener_after_closed_block": "```sql\nSELECT 1\n```\n\n```next_actions\n- x",
     }
     script = (
         fn
@@ -354,6 +424,14 @@ def test_streaming_safe_text_executable():
     assert "SELECT 1" in res["open_sql_with_body"], "a streaming CODE block stays visible"
     assert res["closed_fence"] == cases["closed_fence"], "closed fences pass through"
     assert res["bare_open_no_newline"] == "Answer.\n\n", "a bare open fence waits for its id"
+    assert res["closed_trailer_instant"] == cases["closed_trailer_instant"], (
+        "a JUST-CLOSED trailer passes through whole — renderAnswerMarkdown strips a complete "
+        "block; chopping at its closer leaves an unterminated one that renders raw"
+    )
+    assert res["closed_sources_instant"] == cases["closed_sources_instant"]
+    assert res["opener_after_closed_block"] == "```sql\nSELECT 1\n```\n\n", (
+        "fence parity: the withhold point is the trailer's own opener, not the last backticks"
+    )
 
 
 # ── turn-stopping events: visible in the transcript, not only the status bar ─

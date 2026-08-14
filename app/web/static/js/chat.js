@@ -525,7 +525,13 @@ function renderNextActions(bubble, actions) {
     });
     row.appendChild(btn);
   }
-  bubble.appendChild(row);
+  // Live order is chips-then-actions (finalize renders chips BEFORE
+  // attachMessageActions appends the row). On a history reload the actions
+  // row already exists when the chips arrive — insert above it so both
+  // paths agree about the bubble's tail.
+  const actionsRow = bubble.querySelector(":scope > .msg-actions");
+  if (actionsRow) bubble.insertBefore(row, actionsRow);
+  else bubble.appendChild(row);
 }
 
 function _clearNextActions() {
@@ -1199,6 +1205,11 @@ async function loadAndRenderHistory(chatId) {
  */
 async function openSession(chatId, wsUrlOverride) {
   if (ws) { ws.close(); ws = null; }
+  // The streaming pointers belong to the conversation being left: without
+  // this, a pending 150 ms tick paints into a node the wipe below detaches,
+  // and a token arriving on the new socket (no submit in between) appends
+  // the OLD conversation's accumulated text into an invisible bubble.
+  _resetStreamingState();
   // Unanswered cards belong to the conversation that raised them: this map
   // is re-drawn after every transcript reload, so carrying it across a
   // switch painted one conversation's card into another, where its buttons
@@ -1983,15 +1994,34 @@ let _streamLastRender = 0;
  *  behavior for streaming code. */
 function _streamingSafeText(text) {
   const t = text || "";
-  const lastOpen = t.lastIndexOf("```");
-  if (lastOpen === -1) return t;
-  const after = t.slice(lastOpen + 3);
-  if (after.indexOf("```") !== -1) return t; // that fence is closed
-  const newline = after.indexOf("\n");
-  if (newline === -1) return t.slice(0, lastOpen); // language id still streaming
-  const lang = after.slice(0, newline).trim().toLowerCase();
-  if (lang && ("sources".startsWith(lang) || "next_actions".startsWith(lang))) {
-    return t.slice(0, lastOpen);
+  // Walk the ``` delimiters from the START, pairing openers with closers —
+  // fence parity. Reading only the LAST ``` mistook a trailer's just-arrived
+  // CLOSING fence for a fresh opener: the chop at that point handed the
+  // renderer an UNTERMINATED trailer, which the strip helpers deliberately
+  // keep (an unterminated opener is not a block), so the wire format flashed
+  // on screen until the next repaint. With parity, a closed trailer passes
+  // through whole and renderAnswerMarkdown strips the complete block; an
+  // OPEN trailer is withheld from its own opener.
+  let i = 0;
+  let openAt = -1; // index of the currently-open fence's ```; -1 = none open
+  let openLang = null; // its language id; null = id still streaming (no newline yet)
+  for (;;) {
+    const f = t.indexOf("```", i);
+    if (f === -1) break;
+    if (openAt === -1) {
+      openAt = f;
+      const nl = t.indexOf("\n", f + 3);
+      openLang = nl === -1 ? null : t.slice(f + 3, nl).trim().toLowerCase();
+    } else {
+      openAt = -1;
+      openLang = null;
+    }
+    i = f + 3;
+  }
+  if (openAt === -1) return t; // every fence is closed
+  if (openLang === null) return t.slice(0, openAt); // language id still streaming
+  if (openLang && ("sources".startsWith(openLang) || "next_actions".startsWith(openLang))) {
+    return t.slice(0, openAt);
   }
   return t;
 }
@@ -2049,17 +2079,35 @@ function _flushStreamingTail() {
 }
 
 /** Close out a streamed bubble that never got its assistant_message — flush
- *  the tail and drop the pointers, so the NEXT turn's tokens start a fresh
- *  bubble instead of appending into this one after its stale text. Runs on
- *  `done` (the turn terminator, always after any assistant_message) and again
- *  defensively on the next submit (a hard-crashed turn may never even get a
- *  done); both are no-ops after a normal finalize. */
+ *  the tail, drop the pointers (so the NEXT turn's tokens start a fresh
+ *  bubble instead of appending into this one after its stale text), and give
+ *  the orphan the same finishing tail finalize gives a normal answer:
+ *  highlighted code, sortable tables, mermaid, chips from a completed
+ *  trailer, the copy/actions row, latest-assistant marking. Sources chips
+ *  are deliberately absent — they render the SERVER's verdict, and a turn
+ *  that never finalized has none. Runs on `done` (the turn terminator,
+ *  always after any assistant_message), on a conversation switch
+ *  (openSession), and again defensively on the next submit (a hard-crashed
+ *  turn may never even get a done); all are no-ops after a normal finalize
+ *  because the pointers are already null, so nothing double-attaches. */
 function _resetStreamingState() {
   _flushStreamingTail();
-  if (currentAssistantArticle) currentAssistantArticle.classList.remove("is-streaming");
+  const article = currentAssistantArticle;
+  const body = currentAssistantBody;
+  const text = currentAssistantText;
   currentAssistantArticle = null;
   currentAssistantBody = null;
   currentAssistantText = "";
+  if (!article || !body) return;
+  article.classList.remove("is-streaming");
+  if (!text.trim()) return; // an empty bubble has nothing to finish
+  enhanceCodeBlocks(body);
+  enhanceTables(body);
+  renderMermaidBlocks(body);
+  renderNextActions(body.closest(".msg-bubble"), extractNextActions(text).actions);
+  attachMessageActions(article, stripNextActionsFence(text));
+  _markLatestAssistant(article);
+  maybeMakeCollapsible(article);
 }
 
 function appendToken(text) {
@@ -2654,6 +2702,29 @@ function _coerceToTablePreview(result) {
     det.appendChild(fullWrap);
     wrap.appendChild(det);
     enhanceTables(det);
+
+    // Past the cap the table genuinely drops rows — keep a route to ALL of
+    // them (the old JSON dump had them; the cap must not lose data). Built
+    // lazily on first open so a huge dump costs no memory or DOM until
+    // asked for, and via textContent so the payload can never execute.
+    if (total > _TOOL_RESULT_FULL_ROWS_MAX) {
+      const rawDet = document.createElement("details");
+      rawDet.className = "cloud-chat-tool-result-full";
+      const rawSum = document.createElement("summary");
+      rawSum.textContent = `Raw JSON (all ${total} rows)`;
+      rawDet.appendChild(rawSum);
+      const rawPre = document.createElement("pre");
+      const rawCode = document.createElement("code");
+      rawPre.appendChild(rawCode);
+      rawDet.appendChild(rawPre);
+      let rawFilled = false;
+      rawDet.addEventListener("toggle", () => {
+        if (!rawDet.open || rawFilled) return;
+        rawFilled = true;
+        rawCode.textContent = JSON.stringify(rows, null, 2);
+      });
+      wrap.appendChild(rawDet);
+    }
   }
 
   enhanceTables(wrap);

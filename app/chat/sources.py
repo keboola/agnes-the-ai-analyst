@@ -160,6 +160,16 @@ def strip_next_actions_block(content: str) -> str:
     wire format. Same persistence rule as ``strip_block``: never applied
     before the database — the web client re-extracts the buttons from the
     saved content on every history reload.
+
+    Deliberately NOT applied to the agent API either — ``POST
+    /api/v1/agents/{slug}/responses`` (sync and its ``agent_response``
+    worker-job/poll form) and the AG-UI session stream return the answer
+    verbatim: a programmatic consumer is exactly the caller the
+    machine-readable trailer exists for, the same line ``strip_block``
+    draws for the sources fence. (Outbound webhooks carry a notification,
+    never the answer — see ``app/chat/webhook_delivery.py`` — so nothing
+    leaks there.) The one human-facing AG-UI client, ``agnes chat``, strips
+    at render time on its own (``cli/commands/chat.py``).
     """
     if not content:
         return content
