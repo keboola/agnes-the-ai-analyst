@@ -468,6 +468,42 @@ def test_data_app_sharing_is_owner_only(seeded_app, monkeypatch):
     assert c.put("/api/sharing/data_app/own-dash", json={"group_ids": []}, headers=other).status_code == 404
 
 
+def test_linked_app_sharing_is_admin_only_and_deliberate(seeded_app, monkeypatch):
+    """A LINKED row (synthetic `system` owner) is shareable — by an admin
+    only. This is a conscious decision, not a `_reject_linked` gap (Devin
+    Review on #1321): sharing is visibility policy, the same `(data_app,
+    <slug>)` grants `/admin/access` already lets admins write, not a
+    runtime mutation like deploy/secrets/logs. No real user matches the
+    `system` owner, so non-admins get the probe-safe 404."""
+    from src.db import get_system_db
+    from src.repositories import data_apps_repo
+    from src.repositories.resource_grants import ResourceGrantsRepository
+
+    c = seeded_app["client"]
+    monkeypatch.setenv("AGNES_DATA_APPS_ENABLED", "true")
+    data_apps_repo().create(slug="linked-dash", name="Linked Dash", owner_user_id="system", repo_mode="linked")
+
+    # Non-admin: the synthetic owner matches nobody -> probe-safe 404.
+    other = _auth(seeded_app["viewer_token"])
+    assert c.get("/api/sharing/data_app/linked-dash", headers=other).status_code == 404
+    assert c.put("/api/sharing/data_app/linked-dash", json={"group_ids": []}, headers=other).status_code == 404
+
+    # Admin: same authority /admin/access grants, friendlier surface.
+    gid = _group_with_member("viewer1", "lib-linked-share-grp")
+    r = c.put(
+        "/api/sharing/data_app/linked-dash",
+        json={"group_ids": [gid]},
+        headers=_auth(seeded_app["admin_token"]),
+    )
+    assert r.status_code == 200, r.text
+    rows = [
+        g
+        for g in ResourceGrantsRepository(get_system_db()).list_all(resource_type="data_app")
+        if g["resource_id"] == "linked-dash"
+    ]
+    assert [g["group_id"] for g in rows] == [gid]
+
+
 # ---------------------------------------------------------------------------
 # The Library page
 # ---------------------------------------------------------------------------
