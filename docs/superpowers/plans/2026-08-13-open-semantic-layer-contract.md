@@ -1449,6 +1449,7 @@ git commit -m "feat(semantic): git and upload transports with path containment"
 - Create: `app/api/semantic_models.py`
 - Modify: `app/main.py` (import ~line 405, `include_router` ~line 2430)
 - Modify: `app/resource_types.py` (`ResourceType.SEMANTIC_MODEL` + spec)
+- Modify: `tests/test_documentation_api_triple_surface.py` (`_COHORT` entry per new endpoint)
 - Test: `tests/test_semantic_models_api.py`
 
 **Interfaces:**
@@ -1597,8 +1598,13 @@ go through `cli/query_hints.py`.
 
 ```bash
 .venv/bin/pytest tests/test_cli_semantic_model.py -v
-.venv/bin/pytest tests/test_api_coverage_ratchet.py -v
+.venv/bin/pytest tests/test_documentation_api_triple_surface.py -v
 ```
+
+The triple-surface guard holds a `_COHORT` dict keyed by REST path →
+`(cli_cmd, mcp_tool)`. A new endpoint needs an entry there or an `_EXEMPT`
+one with a reason — which is why the REST, CLI and MCP work in Tasks 10–12
+lands as ONE unit: the entry cannot be written until all three names exist.
 
 - [ ] **Step 4: Commit**
 
