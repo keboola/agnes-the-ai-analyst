@@ -2183,6 +2183,26 @@ def create_app() -> FastAPI:
             "any-origin-with-credentials CORS policy. Set an explicit origin allowlist."
         )
         cors_allow_credentials = False
+        # The wildcard also OVERWRITES per-route CORS grants: with
+        # allow_all_origins the middleware stamps `Access-Control-Allow-Origin:
+        # *` (credential-less) over response headers a handler set, which
+        # breaks the data-app readiness poll's per-app credentialed grant
+        # (app/api/data_apps.py::_readiness_cors_headers) — the subdomain
+        # holding page then polls forever. Say so where the operator is
+        # already being told their CORS config is wrong.
+        try:
+            from app.instance_config import get_data_apps_config
+
+            if (get_data_apps_config().get("subdomain_base") or "").strip():
+                logger.error(
+                    "CORS_ORIGINS='*' with data_apps.subdomain_base configured: the "
+                    "readiness poll on data-app subdomains needs a credentialed "
+                    "per-app CORS grant, which the wildcard overrides — subdomain "
+                    "holding pages will not detect the app coming up until "
+                    "CORS_ORIGINS lists explicit origins."
+                )
+        except Exception:
+            pass
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,

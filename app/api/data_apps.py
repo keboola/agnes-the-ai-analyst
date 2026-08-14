@@ -1702,6 +1702,16 @@ def _readiness_cors_headers(request: Request, slug: str) -> dict[str, str]:
     with the path-prefix form. Port is deliberately ignored in the match
     (origins carry one on non-default-port deployments, as the old regex's
     ``(:\\d+)?`` acknowledged); scheme is pinned to http(s).
+
+    Known dependency: ``CORS_ORIGINS='*'`` defeats this grant. With a
+    wildcard, the app-wide middleware runs with ``allow_all_origins`` and
+    stamps ``Access-Control-Allow-Origin: *`` (credential-less — main.py
+    drops credentials for wildcards) OVER these headers, so the credentialed
+    poll response becomes unreadable and the holding page spins.
+    ``app/main.py`` logs a loud error for exactly that combination
+    (wildcard + ``subdomain_base``); the fix is an explicit origin
+    allowlist, never re-adding a subdomain grant to the middleware
+    (Devin Review on #1321).
     """
     origin = request.headers.get("origin") or ""
     if not origin:

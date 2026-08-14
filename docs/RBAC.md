@@ -36,6 +36,27 @@ To limit what an *agent* can reach, use agent scopes (an agent's effective autho
 
 `resource_type` is a string from the `app.resource_types.ResourceType` `StrEnum`. `resource_id` is a path string whose format is owned by the registering module — for `marketplace_plugin` it's `<marketplace_slug>/<plugin_name>`.
 
+### Owner-writable grants (Library sharing)
+
+Most `resource_grants` rows are admin-written (`/admin/access`), but the types
+registered with the owner-sharing service (`app/services/library_sharing.py`:
+collections, agents, corpus files, **data apps**) can also be granted by the
+resource's *owner* through the Library's Share dialog — same rows, narrower
+writer (the owner may only share what they own; admins pass for everything,
+including linked data apps whose synthetic `system` owner matches no real
+user).
+
+Governance note for `data_app`, decided deliberately (Devin Review on #1321):
+sharing a hosted app shares its **rendered output**. The app executes under
+its own service credentials regardless of who views it, so a grant — `Everyone`
+included — widens who can see whatever data the app displays, independent of
+the viewers' own table/package grants. This is the same publish-what-you-built
+model as sharing a collection or a file (those too can embed data the grantee
+could not query directly); the owner had access to the data when building the
+app, and sharing is their call to publish that view. Admins retain full
+oversight: every grant is visible and revocable in `/admin/access`, and grant
+writes are audited like any other.
+
 ---
 
 ## Authorization API
