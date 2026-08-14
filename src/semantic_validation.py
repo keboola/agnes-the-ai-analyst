@@ -51,9 +51,9 @@ LIMITATIONS (carried into every surface that wraps this module):
   like ``"value >= 0"``) — degrades to a ``post_execution_checks`` entry
   rather than a guess in either direction.
 - ``locally_executable`` only inspects whether a *used* metric declares an
-  expression for the target engine (or, for ``duckdb``, an ``ANSI_SQL``
-  fallback per the contract spec's dialect-handling rule); it says nothing
-  about whether the composed SQL is otherwise valid.
+  expression for the target engine (or an ``ANSI_SQL`` fallback -- the
+  universally accepted baseline, any target engine; see ``check_dialects``);
+  it says nothing about whether the composed SQL is otherwise valid.
 
 Constraint/expected-object payload shapes referenced above (``type``/``rule``
 on a constraint, ``{type, name}`` on an expected object) are this module's own
@@ -81,14 +81,14 @@ AGNES_VENDOR_NAME = "agnes"
 # degrades to a post_execution_checks entry -- never a guessed violation.
 _STATICALLY_CHECKABLE_CONSTRAINT_TYPES = frozenset({"required_filter"})
 
-# Dialects a target engine accepts, beyond its own name. ANSI_SQL is DuckDB
-# compatible per the contract spec's dialect-handling rule ("Read the DuckDB
-# expression when the document offers one; otherwise ANSI SQL, which DuckDB
-# accepts") -- ported here since the validator needs the same "is this metric
-# usable locally" answer the projection path uses.
-_LOCAL_DIALECT_ALIASES: dict[str, frozenset[str]] = {
-    "duckdb": frozenset({"duckdb", "ansi_sql"}),
-}
+# ANSI_SQL is executable on EVERY target engine, not just DuckDB: the
+# contract spec's dialect-handling rule states it for DuckDB ("Read the
+# DuckDB expression when the document offers one; otherwise ANSI SQL, which
+# DuckDB accepts"), and ``_mixed_dialect_warning`` already composes by the
+# same universality -- executability and composability must agree on it
+# (Devin Review on PR #1319). ``check_dialects`` unions it into every
+# target's usable set.
+_UNIVERSAL_DIALECT = "ansi_sql"
 
 
 def _word_present(text: str, ident: str) -> bool:
@@ -170,10 +170,11 @@ def detect_used_objects(sql: str, document: dict[str, Any]) -> dict[str, list[st
 
 def extract_constraints(document: dict[str, Any]) -> list[dict[str, Any]]:
     """Read constraints from ``document["custom_extensions"]`` under
-    ``AGNES_VENDOR_NAME``. Tolerates an absent/malformed extension entirely --
-    returns ``[]`` rather than raising, for every shape of bad input (missing
-    key, wrong type, non-JSON/non-string ``data``, missing/wrong-typed
-    ``constraints``).
+    ``AGNES_VENDOR_NAME``. ``data`` may be a JSON string or already-parsed
+    JSON (dict/list) -- storage layers legitimately hand back either shape.
+    Tolerates an absent/malformed extension entirely -- returns ``[]`` rather
+    than raising, for every shape of bad input (missing key, wrong type,
+    non-JSON string ``data``, missing/wrong-typed ``constraints``).
 
     Each returned constraint is normalized to
     ``{"name", "type", "rule", "severity", "metrics"}`` -- ``severity``
@@ -192,11 +193,18 @@ def extract_constraints(document: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(entry, dict) or entry.get("vendor_name") != AGNES_VENDOR_NAME:
             continue
         raw = entry.get("data")
-        if not isinstance(raw, str):
-            continue
-        try:
-            parsed = json.loads(raw)
-        except (ValueError, TypeError):
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+            except ValueError:
+                continue
+        elif isinstance(raw, (dict, list)):
+            # Already-parsed JSON: once storage keeps document_json as a
+            # parsed tree, ``data`` arrives as an object, not a stringified
+            # blob. Same payload, so read it directly rather than silently
+            # dropping the constraints (Devin Review on PR #1319).
+            parsed = raw
+        else:
             continue
 
         if isinstance(parsed, dict):
@@ -325,11 +333,13 @@ def _mixed_dialect_warning(declared: list[str], metric_dialect_lists: list[list[
     imported text and are compared case-insensitively -- ``"DUCKDB"`` and
     ``"duckdb"`` are one dialect (Devin Review on PR #1319, both points).
     """
-    constraining = [{_canonical_dialect(d) for d in dialects} - {"ansi_sql"} for dialects in metric_dialect_lists]
+    constraining = [
+        {_canonical_dialect(d) for d in dialects} - {_UNIVERSAL_DIALECT} for dialects in metric_dialect_lists
+    ]
     constraining = [s for s in constraining if s]
     if not constraining or set.intersection(*constraining):
         return None
-    non_ansi = sorted((d for d in declared if _canonical_dialect(d) != "ansi_sql"), key=str.lower)
+    non_ansi = sorted((d for d in declared if _canonical_dialect(d) != _UNIVERSAL_DIALECT), key=str.lower)
     return (
         "Used metrics declare mixed SQL dialects (" + ", ".join(non_ansi) + "); "
         "composing their expressions into one query may not run as written."
@@ -348,13 +358,14 @@ def check_dialects(
 
     ``sql_dialects`` is de-duplicated case-insensitively (first-seen display
     form wins). ``locally_executable`` is ``False`` when a used metric
-    declares expressions but none of them target ``target_engine`` (or, for
-    ``duckdb``, ``ANSI_SQL`` -- see ``_LOCAL_DIALECT_ALIASES``). A metric with
-    no expressions at all is not flagged here -- nothing to conflict with.
+    declares expressions but none of them target ``target_engine`` or
+    ``ANSI_SQL`` (usable on any target -- see ``_UNIVERSAL_DIALECT``). A
+    metric with no expressions at all is not flagged here -- nothing to
+    conflict with.
     """
     document = document if isinstance(document, dict) else {}
     target = (target_engine or "duckdb").strip().lower()
-    usable = _LOCAL_DIALECT_ALIASES.get(target, frozenset({target}))
+    usable = frozenset({target, _UNIVERSAL_DIALECT})
 
     per_metric = _used_metric_dialects(document, used_metrics)
 

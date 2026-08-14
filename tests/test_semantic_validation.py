@@ -205,9 +205,31 @@ class TestExtractConstraints:
         document = {"custom_extensions": [{"vendor_name": AGNES_VENDOR_NAME, "data": "{not json"}]}
         assert extract_constraints(document) == []
 
-    def test_tolerates_data_not_a_string(self):
-        document = {"custom_extensions": [{"vendor_name": AGNES_VENDOR_NAME, "data": {"constraints": []}}]}
+    def test_tolerates_data_of_unreadable_type(self):
+        document = {"custom_extensions": [{"vendor_name": AGNES_VENDOR_NAME, "data": 42}]}
         assert extract_constraints(document) == []
+
+    def test_accepts_data_as_parsed_json_object(self):
+        # Devin Review on PR #1319: storage may hand ``data`` back as parsed
+        # JSON rather than a stringified blob -- same payload, must be read.
+        document = {
+            "custom_extensions": [
+                {
+                    "vendor_name": AGNES_VENDOR_NAME,
+                    "data": {"constraints": [{"name": "c1", "metrics": ["revenue"], "severity": "error"}]},
+                }
+            ]
+        }
+        constraints = extract_constraints(document)
+        assert len(constraints) == 1
+        assert constraints[0]["name"] == "c1"
+        assert constraints[0]["severity"] == "error"
+
+    def test_accepts_data_as_parsed_json_list(self):
+        document = {
+            "custom_extensions": [{"vendor_name": AGNES_VENDOR_NAME, "data": [{"name": "c1", "metrics": ["revenue"]}]}]
+        }
+        assert len(extract_constraints(document)) == 1
 
     def test_tolerates_constraints_key_missing_or_wrong_type(self):
         document = {
@@ -317,6 +339,22 @@ class TestCheckDialects:
     def test_no_model_document_defaults_safe(self):
         result = check_dialects({}, ["revenue"], target_engine="duckdb")
         assert result == {"sql_dialects": [], "mixed_dialect_warning": None, "locally_executable": True}
+
+    def test_ansi_only_metric_is_executable_on_any_target_engine(self):
+        # Devin Review on PR #1319: ANSI_SQL is the universally accepted
+        # baseline -- executability must honour the same universality the
+        # mixed-dialect check composes by, whatever the target engine.
+        document = {
+            "metrics": [
+                {
+                    "name": "revenue",
+                    "expression": {"dialects": [{"dialect": "ANSI_SQL", "expression": "SUM(amount)"}]},
+                }
+            ]
+        }
+        for engine in ("duckdb", "snowflake", "bigquery"):
+            result = check_dialects(document, ["revenue"], target_engine=engine)
+            assert result["locally_executable"] is True, engine
 
     def test_no_mixed_warning_when_one_metric_declares_alternative_dialects(self):
         # Devin Review on PR #1319: a metric's dialects are ALTERNATIVES for
