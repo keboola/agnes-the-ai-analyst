@@ -7,11 +7,10 @@ Server-health checks live under `agnes diagnose system` (see the
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import typer
-
 
 # Mirrors the dual-marker convention documented in cli/commands/init.py:
 # `.claude/init-complete` is the authoritative sentinel written by every
@@ -47,13 +46,14 @@ def status(
             except (OSError, UnicodeDecodeError):
                 initialized = False
 
-    parquet_dir = workspace / "server" / "parquet"
-    parquets = list(parquet_dir.glob("*.parquet")) if parquet_dir.exists() else []
+    from cli.lib.local_tables import count_local_tables
+
+    table_count, unregistered_count = count_local_tables(workspace)
 
     db_path = workspace / "user" / "duckdb" / "analytics.duckdb"
     last_synced = None
     if db_path.exists():
-        last_synced = datetime.fromtimestamp(db_path.stat().st_mtime, tz=timezone.utc).isoformat()
+        last_synced = datetime.fromtimestamp(db_path.stat().st_mtime, tz=UTC).isoformat()
 
     # Sessions live in <projects_root>/<encoded-workspace_root>/ where Claude
     # Code writes them. Count what `agnes push` would scan — anchored on the
@@ -68,7 +68,8 @@ def status(
     info = {
         "workspace": str(workspace),
         "initialized": initialized,
-        "parquet_tables": len(parquets),
+        "parquet_tables": table_count,
+        "tables_downloaded_no_local_view": unregistered_count,
         "duckdb_exists": db_path.exists(),
         "last_synced": last_synced,
         "sessions_pending_upload": session_count,
@@ -80,11 +81,46 @@ def status(
 
     typer.echo(f"Workspace : {workspace}")
     typer.echo(f"Initialized: {'yes' if initialized else 'no'}")
-    typer.echo(f"Parquets  : {info['parquet_tables']}")
+    if unregistered_count:
+        # Two numbers, deliberately not summed: `queryable` is what
+        # `agnes query --local` can resolve, while the second counts
+        # parquets the stack sync (step 8 of `agnes pull`) put into
+        # `.claude/data/_shared/` that no DuckDB view covers. Summing them
+        # would promise local data that is not reachable; omitting the
+        # second would hide real bytes on disk.
+        typer.echo(f"Tables    : {table_count} queryable, {unregistered_count} downloaded (no local view)")
+    else:
+        typer.echo(f"Tables    : {table_count}")
     typer.echo(f"DuckDB    : {'yes' if info['duckdb_exists'] else 'no'}")
     typer.echo(f"Last sync : {last_synced or 'never'}")
     typer.echo(f"Pending uploads: {session_count} sessions")
 
     if not initialized:
         typer.echo("")
-        typer.echo("Run `agnes init --server-url <URL> --token <PAT>` to bootstrap.")
+        # Gate on EITHER count. Data delivered by the stack sync lands only in
+        # `unregistered_count`, so gating on `table_count` alone told a
+        # workspace whose data all sits in that store to "bootstrap" one line
+        # after reporting dozens of downloaded tables — reintroducing the exact
+        # contradiction this change exists to remove. Reachable in practice:
+        # `_rebuild_duckdb_views` creates `analytics.duckdb` on every pull, so a
+        # directory pulled into is workspace-shaped and gets resolved here even
+        # though `agnes init` never ran in it.
+        if table_count or unregistered_count:
+            # A workspace can hold data while carrying no init sentinel, and
+            # reporting a bare "no" next to a populated `Tables` line reads as
+            # a contradiction. The two ask different questions: `agnes pull`
+            # only needs the directory to be workspace-*shaped*
+            # (`is_workspace_shaped` in cli/lib/workspace_resolve.py accepts a
+            # bare `server/parquet/`), whereas "initialized" means `agnes init`
+            # ran HERE and installed the hooks + template. Name the half
+            # that is actually missing instead of implying the data is not there.
+            # The combined figure, not `table_count`: the point of the line is
+            # "data is present", and a workspace whose tables are all in the
+            # stack-sync store would otherwise announce "holds data (0 tables)".
+            typer.echo(
+                f"This workspace holds data ({table_count + unregistered_count} tables) but "
+                "`agnes init` never ran here — no Claude Code hooks, no workspace template."
+            )
+            typer.echo("Run `agnes init --server-url <URL> --token <PAT>` to finish setting it up.")
+        else:
+            typer.echo("Run `agnes init --server-url <URL> --token <PAT>` to bootstrap.")

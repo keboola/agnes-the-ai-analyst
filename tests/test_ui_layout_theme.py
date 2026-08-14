@@ -2560,16 +2560,17 @@ class TestChromeNavParity:
     `data-ui-layout` picks one of two hand-written navs (`_app_header.html`
     for `topnav`, `_app_rail.html` for `rail`), and a destination added to one
     is invisible on instances running the other. That is how hosted data apps
-    became unreachable: the "Apps" entry shipped in the topnav only, so a
-    `rail` instance had the feature enabled, deployed and serving with nothing
-    anywhere in the UI pointing at it.
+    were unreachable for a while: the "Apps" entry shipped in the topnav only,
+    so a `rail` instance had the feature enabled, deployed and serving with
+    nothing anywhere in the UI pointing at it.
 
-    The fix is deliberately NOT a second rail icon. Under the rail, apps live
-    in the Library alongside data packages and memory domains — "everything
-    you have" — which is the same route those already take. So the reachable-
-    from-the-rail half is proved behaviourally, by rendering the page:
-    `tests/test_web_library.py::test_library_lists_a_hosted_data_app`. What is
-    pinned here is the topnav's own entry and its gate.
+    Two routes fixed that, independently, and both are pinned. The rail
+    regained its own "Apps" nav entry (#1276; the one-directional
+    topnav-to-rail reachability sweep is `tests/test_web_nav_user_parity.py`),
+    and apps ALSO list in the Library alongside data packages and memory
+    domains — "everything you have" — proved behaviourally by rendering the
+    page: `tests/test_web_library.py::test_library_lists_a_hosted_data_app`.
+    What is pinned here is each chrome's own entry and its feature gate.
     """
 
     HEADER = "app/web/templates/_app_header.html"
@@ -2580,16 +2581,18 @@ class TestChromeNavParity:
 
         return Path(p).read_text(encoding="utf-8")
 
-    def test_topnav_keeps_its_apps_entry(self):
-        body = self._read(self.HEADER)
-        assert 'href="/apps"' in body, "topnav lost its link to the data-apps list"
+    def test_both_chromes_keep_their_apps_entry(self):
+        for tpl in (self.HEADER, self.RAIL):
+            body = self._read(tpl)
+            assert 'href="/apps"' in body, f"{tpl} lost its link to the data-apps list"
 
-    def test_topnav_apps_entry_is_feature_gated(self):
-        """Ungated, it would offer a link to a page that renders an empty
-        state explaining the feature is off."""
-        body = self._read(self.HEADER)
-        at = body.index('href="/apps"')
-        assert "data_apps_enabled()" in body[max(0, at - 700) : at]
+    def test_apps_entries_are_feature_gated_in_both_chromes(self):
+        """Ungated, either chrome would offer a link to a page that renders
+        an empty state explaining the feature is off."""
+        for tpl in (self.HEADER, self.RAIL):
+            body = self._read(tpl)
+            at = body.index('href="/apps"')
+            assert "data_apps_enabled()" in body[max(0, at - 700) : at], f"{tpl}'s /apps entry lost its gate"
 
     def test_agents_destination_is_in_both_chromes(self):
         """The sibling destination that IS a nav entry in both, pinned so the
