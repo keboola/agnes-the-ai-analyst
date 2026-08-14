@@ -1458,6 +1458,25 @@ pre.code-block-wrap code .hljs-deletion {
   outline-offset: var(--ds-focus-outline-offset);
 }
 
+/* System notes — turn-stopping events (budget stop, error, cancel) rendered
+   IN the transcript, where the reader scrolls back, not only the status bar. */
+.cloud-chat-system-note {
+  margin: 8px auto;
+  padding: 6px 14px;
+  border-radius: var(--ds-radius-md);
+  font-size: 0.85rem;
+  text-align: center;
+  max-width: 70%;
+  border: 1px solid var(--ds-accent-warn-line);
+  background: var(--ds-accent-warn-bg);
+  color: var(--ds-accent-warn-ink);
+}
+.cloud-chat-system-note.is-error {
+  border-color: var(--ds-accent-danger-line);
+  background: var(--ds-accent-danger-bg);
+  color: var(--ds-accent-danger-ink);
+}
+
 /* Next-action chips — the model's suggested follow-ups, lifted out of the
    ```next_actions trailer and rendered under the latest answer only. */
 .cloud-chat-next-actions {

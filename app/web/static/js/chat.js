@@ -204,6 +204,19 @@ function setStatus(text, kind = "info") {
   if (text) el.classList.add(`is-${kind}`);
 }
 
+/** A short, tinted line IN the transcript for events that end or interrupt a
+ *  turn. The status bar clears on the next event; the transcript is what the
+ *  reader scrolls back through — a turn that stopped early must say so where
+ *  the reader is looking. */
+function renderSystemNote(text, tone) {
+  const note = document.createElement("div");
+  note.className = `cloud-chat-system-note is-${tone === "error" ? "error" : "warn"}`;
+  note.setAttribute("role", "status");
+  note.textContent = text;
+  $("chat-messages").appendChild(note);
+  maybeScrollToBottom();
+}
+
 /** Show an ephemeral toast at the bottom-right. ``kind`` of "ok" /
  *  "warn" / "error" tints the chip. Auto-dismisses after 2.4s; can
  *  be dismissed early with a click. Multiple toasts stack. */
@@ -1352,12 +1365,30 @@ function handleFrame(frame) {
     // The three terminal frames all disarm the long-run notification nudge —
     // a turn that has stopped is no longer worth offering to be pinged about.
     case "cancelled":
+      renderSystemNote("Turn cancelled.", "warn");
       setStatus(`Cancelled tool: ${frame.tool || ""}`, "warn");
       $("cancel-btn").hidden = true;
       clearThinkingPlaceholder();
       onboardingNoteTurnEnded();
       break;
+    case "confirmation_required":
+      // The runner stopped the turn at the per-turn tool budget — no
+      // assistant_message follows, so without this note the turn just froze
+      // with zero explanation (the frame used to be silently dropped).
+      renderSystemNote(
+        `Stopped early: this turn hit its tool-call budget${frame.budget ? ` (${frame.budget})` : ""}. Send a message to continue where it left off.`,
+        "warn",
+      );
+      setStatus("Tool budget reached.", "warn");
+      $("cancel-btn").hidden = true;
+      clearThinkingPlaceholder();
+      onboardingNoteTurnEnded();
+      break;
     case "error":
+      renderSystemNote(
+        `Something went wrong: ${frame.kind || "error"}${frame.message ? ` — ${frame.message}` : ""}`,
+        "error",
+      );
       setStatus(`Error: ${frame.kind} (${frame.message || ""})`, "error");
       $("cancel-btn").hidden = true;
       clearThinkingPlaceholder();
