@@ -70,3 +70,29 @@ only surface at publish time. The one that bites is the **100-character cap on
 `description`** — short enough that an ordinary rewrite walks past it. The
 tests also fail if the URL stops being a template, since a hard-coded hostname
 would point every reader at one company's instance.
+
+---
+
+## Which AI clients can connect (CON-5)
+
+The connector picker at `/me/ai-connector` lists only clients that can complete
+an OAuth handshake against a *third-party, self-hosted* MCP server on their
+own. Gemini and Microsoft Copilot were removed from it in June 2026 for
+failing that bar. Re-checked August 2026 — the picture has moved, but not
+enough to put either back:
+
+| Client | Can it connect? | Why it is / is not in the picker |
+|---|---|---|
+| Claude (Desktop, web, Code) | Yes | Listed |
+| ChatGPT | Yes | Listed |
+| Cursor, VS Code / GitHub Copilot | Yes | Listed |
+| **Gemini app (Spark)** | Yes, with DCR | **Not listed** — needs a Gemini Spark entitlement, a *personal* Google account (explicitly unavailable on Workspace accounts), and is US-only. An enterprise reader following it would hit a wall none of the copy could usefully warn them about. |
+| **Gemini Enterprise** | Yes, but | OAuth 2.0 + optional PKCE and **no** dynamic client registration — a *team administrator* registers the server and supplies a client id/secret by hand. Not a self-service picker path. Supporting it would mean accepting a statically registered OAuth client, which Agnes does not do today. |
+| **Copilot Studio** | Yes, with DCR | A *maker* adds the server to an agent's Tools; it is an agent-building surface, not an end-user chat client, and access rides Power Platform DLP policy. |
+| **Microsoft 365 Copilot** | No | Both routes (federated connector, or BYO MCP via Agent 365) are gated on a partner submission plus tenant-admin approval, and the federated path accepts read/search tools only. |
+
+So: nothing in the UI changed. The distinction that decides it is **self-service
+versus admin-gated** — a picker entry promises "paste your URL and go", and
+only the first four keep that promise. Gemini Enterprise and Copilot Studio are
+real integration paths for an operator who wants them, which is why they are
+written down here rather than dropped.
