@@ -334,6 +334,40 @@ def trigger_incremental_transform(issue_key: str, deleted: bool = False) -> bool
         return False
 
 
+#: Staging files older than this are definitively dead: the download client
+#: itself times out at 60s, so an hour-old ``.tmp-*`` can only be the leftover
+#: of a killed process.
+STALE_STAGING_MAX_AGE_S = 3600
+
+
+def sweep_stale_attachment_staging(directory: Path, max_age_s: int = STALE_STAGING_MAX_AGE_S) -> None:
+    """Remove dead ``.tmp-*`` staging files from an attachments directory.
+
+    The atomic publishers (webhook + backfill) stage each download under a
+    ``.tmp-<pid>-<rand>-<name>`` file and unlink it in their exception
+    handler — but a handler cannot run when the process is SIGKILLed
+    mid-write (the documented gunicorn worker-timeout case). The random
+    component means a retry never reuses the orphan, the transform never
+    probes hidden names, and nothing else sweeps them — so each interrupted
+    download would leak up to ``MAX_ATTACHMENT_SIZE`` forever (Devin on
+    #1297). Called by both publishers before staging; age-gated so a
+    CONCURRENT writer's live staging file is never yanked out from under it.
+    Best-effort: a sweep failure never blocks the download.
+    """
+    cutoff = time.time() - max_age_s
+    try:
+        entries = list(directory.glob(".tmp-*"))
+    except OSError:
+        return
+    for stale in entries:
+        try:
+            if stale.stat().st_mtime < cutoff:
+                stale.unlink(missing_ok=True)
+                logger.info(f"Removed stale attachment staging file {stale.name}")
+        except OSError:
+            continue
+
+
 def _dedupe_comments_by_id(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """De-duplicate ``comments`` by ``id``, first occurrence wins, order preserved.
 
@@ -1035,6 +1069,23 @@ class JiraService:
                 downloaded = self.download_all_attachments(issue_data)
                 if downloaded:
                     logger.info(f"Downloaded {len(downloaded)} attachments for {issue_key}")
+                    # Re-transform now that the files exist: the transform above
+                    # deliberately ran BEFORE the download (worker-timeout
+                    # rationale), so it catalogued any freshly attached file
+                    # with local_path=NULL — the download endpoint would 404
+                    # (`attachment_not_stored`) the very attachments users are
+                    # most likely to fetch, until some later event happened to
+                    # re-transform the issue. Same non-fatal posture as the
+                    # download itself (Devin on #1297).
+                    #
+                    # Re-acquire the per-issue lock for JUST this call (the slow
+                    # download stays outside): transform_single_issue reads the
+                    # issue JSON before taking only the parquet month lock, so
+                    # an unlocked transform here could publish a stale snapshot
+                    # over a concurrent poll_sla read-modify-write that holds
+                    # this lock across its own write+transform (Devin on #1297).
+                    with issue_json_lock(issues_dir, issue_key):
+                        trigger_incremental_transform(issue_key, deleted=False)
             except Exception as att_err:
                 logger.warning(f"Attachment download failed for {issue_key}: {att_err}")
 
@@ -1045,14 +1096,25 @@ class JiraService:
 
     def download_attachment(self, attachment: dict[str, Any], issue_key: str) -> Path | None:
         """
-        Download a single attachment from Jira.
+        Download a single attachment from Jira. Sweeps stale staging files
+        first — see :func:`sweep_stale_attachment_staging`.
 
         Args:
             attachment: Attachment metadata from Jira API
             issue_key: Issue key for organizing files
 
         Returns:
-            Path to downloaded file or None if download failed
+            Path to the file if THIS call newly published it; ``None`` when
+            nothing new landed — download failed, skipped by policy, or the
+            file is already on disk. Jira attachment ids are immutable (a
+            re-upload mints a new id), so an existing ``<id>_<name>`` file is
+            already the right bytes; re-fetching it on every webhook event
+            both wasted bandwidth and made ``save_issue``'s post-download
+            re-transform gate fire on every event for any attachment-bearing
+            issue (Devin on #1297). Callers that need "already present" to
+            count as success (the backfill's ``--dry-run`` bookkeeping) use
+            the backfill sibling, whose exists-skip RETURNS the path — the
+            asymmetry is deliberate.
         """
         content_url = attachment.get("content")
         filename = attachment.get("filename", "unknown")
@@ -1087,6 +1149,7 @@ class JiraService:
             logger.error(f"Path traversal blocked for attachment {issue_key!r}: {e}")
             return None
         issue_attachments_dir.mkdir(parents=True, exist_ok=True)
+        sweep_stale_attachment_staging(issue_attachments_dir)
 
         # Use attachment ID in filename to avoid collisions
         safe_filename = f"{attachment_id}_{filename}"
@@ -1094,6 +1157,16 @@ class JiraService:
             file_path = safe_join_under(issue_attachments_dir, safe_filename)
         except ValueError as e:
             logger.error(f"Path traversal blocked for attachment filename {safe_filename!r}: {e}")
+            return None
+
+        # Jira attachment ids are immutable, so an existing <id>_<name> file
+        # is already the right bytes — but only if it is COMPLETE. A short
+        # file (e.g. a worker SIGKILLed mid-write by the pre-atomic writer)
+        # must be re-fetched, or the download endpoint serves the truncated
+        # bytes with a self-consistent Content-Length forever (Devin on
+        # #1297).
+        if file_path.exists() and (not size or file_path.stat().st_size == size):
+            logger.debug(f"Attachment {safe_filename} already on disk; skipping download")
             return None
 
         try:
@@ -1104,8 +1177,41 @@ class JiraService:
                 )
 
             if response.status_code == 200:
-                with open(file_path, "wb") as f:
-                    f.write(response.content)
+                # Publish atomically (per-process temp + os.replace, like the
+                # organizations publish): a reader streaming this exact path —
+                # the attachment download endpoint — must never observe a
+                # truncated in-place rewrite when a webhook re-downloads the
+                # same issue's attachments.
+                # Bounded temp name: appending to the full name could push a
+                # near-NAME_MAX (255-byte) filename over the limit and make a
+                # previously-storable attachment fail to save. 40 codepoints
+                # (<=160 UTF-8 bytes) keeps the total well under NAME_MAX and
+                # stays unique: the name starts with the attachment id.
+                # pid alone is not unique enough: two webhook events for the
+                # same issue run concurrently in one process's threadpool and
+                # would share the staging name — one os.replace() could publish
+                # the other's half-written bytes (Devin on #1297). The random
+                # component makes each writer's staging file its own.
+                tmp_path = file_path.with_name(f".tmp-{os.getpid()}-{os.urandom(4).hex()}-{file_path.name[:32]}")
+                try:
+                    with open(tmp_path, "wb") as f:
+                        f.write(response.content)
+                    # os.replace preserves the TEMP file's mode (0666 & umask),
+                    # not the previous inode's — pin it explicitly so a
+                    # restrictive deploy-time umask cannot leave the published
+                    # file unreadable to the serving process. 0o660, matching
+                    # the sibling issue-JSON writer's "Restore group rw for
+                    # ACL" pin: 0o644 would grant world-read to attachment
+                    # bytes AND collapse any named POSIX-ACL entries to
+                    # read-only (chmod resets the ACL mask from the group
+                    # bits) — a widening relative to the pre-atomic writer
+                    # under the documented 0007-umask ACL deployments (Devin
+                    # on #1297).
+                    os.chmod(tmp_path, 0o660)
+                    os.replace(tmp_path, file_path)
+                except BaseException:
+                    tmp_path.unlink(missing_ok=True)
+                    raise
                 logger.info(f"Downloaded attachment {filename} to {file_path}")
                 return file_path
             else:
@@ -1124,7 +1230,10 @@ class JiraService:
             issue_data: Complete issue data from Jira API
 
         Returns:
-            List of paths to downloaded files
+            List of paths NEWLY downloaded by this call. Files already on
+            disk are skipped and not listed (see ``download_attachment``), so
+            an empty list means "nothing new" — which is exactly what
+            ``save_issue`` gates its post-download re-transform on.
         """
         issue_key = issue_data.get("key", "unknown")
         downloaded = []

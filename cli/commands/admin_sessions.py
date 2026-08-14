@@ -223,10 +223,10 @@ def download(
     Useful when you want to feed it to another tool, grep with jq, or
     archive the conversation. Same audit-log entry as the web download.
     """
-    resp = api_get(
-        f"/api/admin/sessions/{username}/{session_file}/download",
-        stream=True,
-    )
+    # No stream=True: httpx.Client.get has no such kwarg (passing it raised
+    # TypeError before the request ever left), and api_get buffers the
+    # response body regardless. Session JSONLs are small; buffering is fine.
+    resp = api_get(f"/api/admin/sessions/{username}/{session_file}/download")
     _handle_error(resp, "sessions download")
 
     target = output or Path(session_file)
