@@ -543,7 +543,7 @@ def bq_access():
 # so pytest collection sees the names; the fixtures themselves don't run
 # until a test pulls them in.
 # ---------------------------------------------------------------------------
-from tests.fixtures.analyst_bootstrap import (  # noqa: F401
+from tests.fixtures.analyst_bootstrap import (  # noqa: E402,F401
     NONEXISTENT_TABLE,
     fastapi_test_server,
     test_pat,
