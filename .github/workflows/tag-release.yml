@@ -93,9 +93,18 @@ jobs:
             inside && /^## \[/ {exit}
             inside {print}
           ' /tmp/changelog-at-sha.md > /tmp/release-body.md
-          # A release body over ~125k chars is rejected by the API; ours are
-          # long-form but well under that. Guard anyway.
-          [ "$(wc -c < /tmp/release-body.md)" -lt 120000 ] || { echo "::error::CHANGELOG section too large for a Release body"; exit 1; }
+          # The API rejects bodies over ~125k characters, and real sections
+          # do exceed that (several historical ones run 150-350 KB) — so
+          # TRUNCATE at a line boundary and point at the CHANGELOG rather
+          # than refusing to tag the biggest releases, which is exactly when
+          # this workflow matters most.
+          if [ "$(wc -c < /tmp/release-body.md)" -ge 120000 ]; then
+            awk 'BEGIN{total=0} {total += length($0) + 1; if (total >= 118000) exit; print}' \
+              /tmp/release-body.md > /tmp/release-body-trunc.md
+            printf '\n\n… truncated — see the full `## [%s]` section in CHANGELOG.md.\n' "$VERSION" >> /tmp/release-body-trunc.md
+            mv /tmp/release-body-trunc.md /tmp/release-body.md
+            echo "::warning::CHANGELOG section exceeded the Release body limit; truncated with a pointer to CHANGELOG.md"
+          fi
 
       - name: Create tag + GitHub Release
         env:
