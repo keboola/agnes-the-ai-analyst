@@ -222,20 +222,40 @@ def test_save_issue_retransforms_after_attachment_download(svc, monkeypatch):
     actually landed files, save_issue must re-transform so the catalogue
     points at the bytes."""
     calls = []
+    lock_depth = {"n": 0}
+
+    from contextlib import contextmanager
+
+    import connectors.jira.file_lock as file_lock_mod
+
+    real_lock = file_lock_mod.issue_json_lock
+
+    @contextmanager
+    def counting_lock(*a, **kw):
+        with real_lock(*a, **kw):
+            lock_depth["n"] += 1
+            try:
+                yield
+            finally:
+                lock_depth["n"] -= 1
+
+    monkeypatch.setattr(file_lock_mod, "issue_json_lock", counting_lock)
     monkeypatch.setattr(
         "connectors.jira.service.trigger_incremental_transform",
-        lambda key, deleted=False: calls.append(key) or True,
+        lambda key, deleted=False: calls.append((key, lock_depth["n"] > 0)) or True,
     )
     monkeypatch.setattr(
         JiraService, "download_all_attachments", lambda self, data: [Path("stored.bin")]
     )
     out = svc.save_issue({"key": "PROJ-9", "fields": {}})
     assert out is not None
-    assert calls == ["PROJ-9", "PROJ-9"], "transform must run before AND after a landing download"
+    # Both transforms run, and BOTH under the per-issue lock — the second one
+    # races poll_sla's locked read-modify-write otherwise (Devin on #1297).
+    assert calls == [("PROJ-9", True), ("PROJ-9", True)]
 
     # And with nothing downloaded, no second transform.
     calls.clear()
     monkeypatch.setattr(JiraService, "download_all_attachments", lambda self, data: [])
     out = svc.save_issue({"key": "PROJ-9", "fields": {}})
     assert out is not None
-    assert calls == ["PROJ-9"]
+    assert calls == [("PROJ-9", True)]

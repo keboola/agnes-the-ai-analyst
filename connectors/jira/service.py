@@ -1043,7 +1043,15 @@ class JiraService:
                     # most likely to fetch, until some later event happened to
                     # re-transform the issue. Same non-fatal posture as the
                     # download itself (Devin on #1297).
-                    trigger_incremental_transform(issue_key, deleted=False)
+                    #
+                    # Re-acquire the per-issue lock for JUST this call (the slow
+                    # download stays outside): transform_single_issue reads the
+                    # issue JSON before taking only the parquet month lock, so
+                    # an unlocked transform here could publish a stale snapshot
+                    # over a concurrent poll_sla read-modify-write that holds
+                    # this lock across its own write+transform (Devin on #1297).
+                    with issue_json_lock(issues_dir, issue_key):
+                        trigger_incremental_transform(issue_key, deleted=False)
             except Exception as att_err:
                 logger.warning(f"Attachment download failed for {issue_key}: {att_err}")
 
