@@ -1,0 +1,492 @@
+"""Storage-independent core of the semantic-layer query validator.
+
+Design: docs/superpowers/specs/2026-08-14-semantic-layer-ui-and-agent-parity-design.md
+(section 3, "Query validator"). Mirrors the upstream vendor assistant's
+``validate_semantic_query`` tool contract — same input/output shape, same
+honesty about its limits.
+
+This module operates on a plain ``document`` dict — the parsed form of an
+Ossie-style semantic-model document (docs/superpowers/specs/
+2026-08-13-open-semantic-layer-contract-design.md), i.e. what will become a
+``semantic_models.document_json`` row once the storage slice lands. It has
+**no** DB access, no HTTP, and no import from ``app.`` or ``src.repositories``
+— every surface (REST/CLI/MCP) wraps these functions rather than duplicating
+the logic.
+
+Expected document shape (fields this module reads; anything else is ignored)::
+
+    {
+        "name": str, "description": str,
+        "datasets": [
+            {"name": str, "source": str, "primary_key": [...],
+             "ai_context": {...}, "fields": [{"name": str, ...}, ...]},
+            ...
+        ],
+        "metrics": [
+            {"name": str, "dataset": str,
+             "expression": {"dialects": [{"dialect": str, "expression": str}, ...]}},
+            ...
+        ],
+        "relationships": [
+            {"name": str, "from": <dataset name>, "to": <dataset name>, ...},
+            ...
+        ],
+        "glossary": [{"term": str, "definition": str, "seeAlso": [...]}, ...],
+        "custom_extensions": [{"vendor_name": str, "data": "<json string>"}, ...],
+    }
+
+LIMITATIONS (carried into every surface that wraps this module):
+
+- Detection (``detect_used_objects``) is best-effort, case-insensitive string
+  matching of declared names against the raw SQL text — **not SQL parsing**.
+  A dataset/metric/column whose name is a common word, or a query that
+  references objects only through an unrelated alias or a view several joins
+  removed, can produce false negatives; a name that happens to appear in a
+  comment or a string literal can produce a false positive.
+- Constraint checking (``evaluate_constraints``) can only verify rules whose
+  ``type`` this module recognizes as checkable from the raw SQL text alone
+  (currently just ``"required_filter"``, checked as text presence — see
+  ``_STATICALLY_CHECKABLE_CONSTRAINT_TYPES``). Anything else — most business
+  rules are about the query's *result*, not its text (e.g. a value-range rule
+  like ``"value >= 0"``) — degrades to a ``post_execution_checks`` entry
+  rather than a guess in either direction.
+- ``locally_executable`` only inspects whether a *used* metric declares an
+  expression for the target engine (or, for ``duckdb``, an ``ANSI_SQL``
+  fallback per the contract spec's dialect-handling rule); it says nothing
+  about whether the composed SQL is otherwise valid.
+
+Constraint/expected-object payload shapes referenced above (``type``/``rule``
+on a constraint, ``{type, name}`` on an expected object) are this module's own
+provisional convention — the contract spec deliberately leaves constraints
+homeless in the core schema (they ride ``custom_extensions``); see the
+implementation report for the exact points still open for confirmation there.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from typing import Any
+
+# Custom_extensions[].vendor_name under which Agnes-specific constraint data
+# travels (contract spec, "Background: Apache Ossie" -> custom_extensions).
+# The contract spec doesn't literally pin this string; "agnes" is this
+# module's working choice, consistent with existing lowercase source/vendor
+# tags elsewhere in the codebase (e.g. metric_definitions.source values).
+AGNES_VENDOR_NAME = "agnes"
+
+# Constraint ``type`` values this module can check directly against the raw
+# SQL text (a "requires this text to appear somewhere" rule). Everything else
+# needs the query's *result* to evaluate (e.g. a value-range rule) and always
+# degrades to a post_execution_checks entry -- never a guessed violation.
+_STATICALLY_CHECKABLE_CONSTRAINT_TYPES = frozenset({"required_filter"})
+
+# Dialects a target engine accepts, beyond its own name. ANSI_SQL is DuckDB
+# compatible per the contract spec's dialect-handling rule ("Read the DuckDB
+# expression when the document offers one; otherwise ANSI SQL, which DuckDB
+# accepts") -- ported here since the validator needs the same "is this metric
+# usable locally" answer the projection path uses.
+_LOCAL_DIALECT_ALIASES: dict[str, frozenset[str]] = {
+    "duckdb": frozenset({"duckdb", "ansi_sql"}),
+}
+
+
+def _word_present(text: str, ident: str) -> bool:
+    """Case-insensitive whole-identifier presence check.
+
+    ``ident`` comes from imported document content (untrusted), so it is
+    ``re.escape``-d before compiling -- the pattern is then a literal string
+    with two fixed-width lookarounds, which is linear-time regardless of
+    ``ident``'s content (no nested quantifiers, no backtracking blowup).
+    """
+    ident = (ident or "").strip()
+    if not ident or not text:
+        return False
+    pattern = r"(?<![A-Za-z0-9_])" + re.escape(ident) + r"(?![A-Za-z0-9_])"
+    return re.search(pattern, text, re.IGNORECASE) is not None
+
+
+def detect_used_objects(sql: str, document: dict[str, Any]) -> dict[str, list[str]]:
+    """Heuristic, case-insensitive match of dataset names/table ids/column
+    names/metric names declared in ``document`` against ``sql``'s text.
+
+    Best-effort string matching by declared contract -- not SQL parsing (see
+    the module LIMITATIONS section). Returns ``used_datasets`` (a dataset
+    counts as used if its name, its physical ``source``, or any of its
+    ``fields[]`` names is present), ``used_metrics`` (by metric name), and
+    ``matched_relationships`` (a relationship matches when both its ``from``
+    and ``to`` datasets are used).
+    """
+    text = sql or ""
+    document = document if isinstance(document, dict) else {}
+
+    used_datasets: list[str] = []
+    for dataset in document.get("datasets") or []:
+        if not isinstance(dataset, dict):
+            continue
+        name = dataset.get("name")
+        if not name:
+            continue
+        candidates: list[str] = [str(name)]
+        source = dataset.get("source")
+        if source:
+            source = str(source)
+            candidates.append(source)
+            last_segment = source.rsplit(".", 1)[-1]
+            if last_segment:
+                candidates.append(last_segment)
+
+        matched = any(_word_present(text, c) for c in candidates)
+        if not matched:
+            for field in dataset.get("fields") or []:
+                if isinstance(field, dict) and field.get("name") and _word_present(text, str(field["name"])):
+                    matched = True
+                    break
+        if matched:
+            used_datasets.append(str(name))
+
+    used_metrics: list[str] = []
+    for metric in document.get("metrics") or []:
+        if isinstance(metric, dict) and metric.get("name") and _word_present(text, str(metric["name"])):
+            used_metrics.append(str(metric["name"]))
+
+    used_dataset_set = set(used_datasets)
+    matched_relationships: list[str] = []
+    for relationship in document.get("relationships") or []:
+        if not isinstance(relationship, dict):
+            continue
+        name = relationship.get("name")
+        if not name:
+            continue
+        if relationship.get("from") in used_dataset_set and relationship.get("to") in used_dataset_set:
+            matched_relationships.append(str(name))
+
+    return {
+        "used_datasets": used_datasets,
+        "used_metrics": used_metrics,
+        "matched_relationships": matched_relationships,
+    }
+
+
+def extract_constraints(document: dict[str, Any]) -> list[dict[str, Any]]:
+    """Read constraints from ``document["custom_extensions"]`` under
+    ``AGNES_VENDOR_NAME``. Tolerates an absent/malformed extension entirely --
+    returns ``[]`` rather than raising, for every shape of bad input (missing
+    key, wrong type, non-JSON/non-string ``data``, missing/wrong-typed
+    ``constraints``).
+
+    Each returned constraint is normalized to
+    ``{"name", "type", "rule", "severity", "metrics"}`` -- ``severity``
+    defaults to ``"warning"`` unless it is exactly ``"error"`` or
+    ``"warning"``, so a malformed/absent severity can never accidentally
+    drive ``valid=False`` downstream.
+    """
+    if not isinstance(document, dict):
+        return []
+    extensions = document.get("custom_extensions")
+    if not isinstance(extensions, list):
+        return []
+
+    constraints: list[dict[str, Any]] = []
+    for entry in extensions:
+        if not isinstance(entry, dict) or entry.get("vendor_name") != AGNES_VENDOR_NAME:
+            continue
+        raw = entry.get("data")
+        if not isinstance(raw, str):
+            continue
+        try:
+            parsed = json.loads(raw)
+        except (ValueError, TypeError):
+            continue
+
+        if isinstance(parsed, dict):
+            items = parsed.get("constraints")
+        elif isinstance(parsed, list):
+            items = parsed
+        else:
+            items = None
+        if not isinstance(items, list):
+            continue
+
+        for item in items:
+            if not isinstance(item, dict) or not item.get("name"):
+                continue
+            metrics = item.get("metrics")
+            if isinstance(metrics, str):
+                metrics = [metrics]
+            elif not isinstance(metrics, list):
+                metrics = []
+            severity = item.get("severity")
+            if severity not in ("error", "warning"):
+                severity = "warning"
+            constraints.append(
+                {
+                    "name": str(item["name"]),
+                    "type": item.get("type"),
+                    "rule": item.get("rule"),
+                    "severity": severity,
+                    "metrics": [str(m) for m in metrics if m],
+                }
+            )
+    return constraints
+
+
+def evaluate_constraints(
+    constraints: list[dict[str, Any]],
+    used_metrics: list[str],
+    sql: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Evaluate ``constraints`` (as returned by ``extract_constraints``)
+    against the metrics actually detected as used and the raw SQL text.
+
+    A constraint whose ``metrics`` don't overlap ``used_metrics`` is not on a
+    used metric and is skipped entirely -- it shows up in neither list. A
+    constraint on a used metric whose ``type`` is not statically checkable
+    (see ``_STATICALLY_CHECKABLE_CONSTRAINT_TYPES``) degrades to a
+    ``post_execution_checks`` entry, never a guessed violation. Only a
+    checkable rule that actually fails becomes a ``violations`` entry;
+    ``severity == "error"`` there is what drives ``valid=False`` upstream.
+    """
+    used = set(used_metrics or [])
+    text = sql or ""
+    normalized_text = " ".join(text.split()).lower()
+
+    violations: list[dict[str, Any]] = []
+    post_execution_checks: list[dict[str, Any]] = []
+
+    for constraint in constraints or []:
+        if not isinstance(constraint, dict):
+            continue
+        applicable_metrics = [m for m in (constraint.get("metrics") or []) if m in used]
+        if not applicable_metrics:
+            continue
+
+        entry = {
+            "name": constraint.get("name"),
+            "type": constraint.get("type"),
+            "rule": constraint.get("rule"),
+            "severity": constraint.get("severity") or "warning",
+            "metrics": applicable_metrics,
+        }
+
+        rule = constraint.get("type")
+        if rule not in _STATICALLY_CHECKABLE_CONSTRAINT_TYPES or not constraint.get("rule"):
+            post_execution_checks.append({**entry, "reason": "rule cannot be checked before executing the query"})
+            continue
+
+        rule_text = " ".join(str(constraint["rule"]).split()).lower()
+        if rule_text not in normalized_text:
+            violations.append({**entry, "reason": f"required filter not found in the query: {constraint['rule']}"})
+
+    return violations, post_execution_checks
+
+
+def _declared_dialects(metric: dict[str, Any]) -> list[str]:
+    dialects = ((metric.get("expression") or {}).get("dialects")) or []
+    return [str(d["dialect"]) for d in dialects if isinstance(d, dict) and d.get("dialect")]
+
+
+def _mixed_dialect_warning(dialects: list[str]) -> str | None:
+    non_ansi = sorted({d for d in dialects if d.strip().lower() != "ansi_sql"}, key=str.lower)
+    if len(non_ansi) <= 1:
+        return None
+    return (
+        "Used metrics declare mixed SQL dialects (" + ", ".join(non_ansi) + "); "
+        "composing their expressions into one query may not run as written."
+    )
+
+
+def check_dialects(
+    document: dict[str, Any],
+    used_metrics: list[str],
+    target_engine: str = "duckdb",
+) -> dict[str, Any]:
+    """Dialects declared by the *used* metrics in ``document``, a mixed-dialect
+    warning, and whether every used metric is executable on ``target_engine``.
+
+    ``locally_executable`` is ``False`` when a used metric declares
+    expressions but none of them target ``target_engine`` (or, for
+    ``duckdb``, ``ANSI_SQL`` -- see ``_LOCAL_DIALECT_ALIASES``). A metric with
+    no expressions at all is not flagged here -- nothing to conflict with.
+    """
+    document = document if isinstance(document, dict) else {}
+    target = (target_engine or "duckdb").strip().lower()
+    usable = _LOCAL_DIALECT_ALIASES.get(target, frozenset({target}))
+    used = set(used_metrics or [])
+
+    declared: list[str] = []
+    locally_executable = True
+    for metric in document.get("metrics") or []:
+        if not isinstance(metric, dict) or metric.get("name") not in used:
+            continue
+        metric_dialects = _declared_dialects(metric)
+        for dialect in metric_dialects:
+            if dialect not in declared:
+                declared.append(dialect)
+        if metric_dialects and not any(d.strip().lower() in usable for d in metric_dialects):
+            locally_executable = False
+
+    return {
+        "sql_dialects": declared,
+        "mixed_dialect_warning": _mixed_dialect_warning(declared),
+        "locally_executable": locally_executable,
+    }
+
+
+def _build_summary(
+    *,
+    valid: bool,
+    used_datasets: list[str],
+    used_metrics: list[str],
+    violations: list[dict[str, Any]],
+    post_execution_checks: list[dict[str, Any]],
+    locally_executable: bool,
+    mixed_dialect_warning: str | None,
+) -> str:
+    parts: list[str] = []
+    if valid:
+        parts.append(
+            f"Query references {len(used_datasets)} dataset(s) and {len(used_metrics)} "
+            "metric(s) from the semantic layer; no constraint violations detected."
+        )
+    else:
+        error_count = sum(1 for v in violations if v.get("severity") == "error")
+        parts.append(f"{error_count} constraint violation(s) found -- see 'violations'.")
+    if post_execution_checks:
+        parts.append(
+            f"{len(post_execution_checks)} constraint(s) cannot be checked before execution -- "
+            "see 'post_execution_checks'."
+        )
+    if not locally_executable:
+        parts.append("One or more used metrics have no expression for the local engine and are not locally executable.")
+    if mixed_dialect_warning:
+        parts.append(mixed_dialect_warning)
+    return " ".join(parts)
+
+
+def _diff_expected(
+    expected: list[dict[str, Any]],
+    used_datasets: list[str],
+    used_metrics: list[str],
+    matched_relationships: list[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    detected_lists: dict[str, list[str]] = {
+        "dataset": used_datasets,
+        "metric": used_metrics,
+        "relationship": matched_relationships,
+    }
+    detected_sets = {etype: set(names) for etype, names in detected_lists.items()}
+    expected_names: dict[str, set[str]] = {etype: set() for etype in detected_lists}
+
+    matched: list[dict[str, Any]] = []
+    missing: list[dict[str, Any]] = []
+    for item in expected or []:
+        if not isinstance(item, dict):
+            continue
+        etype, name = item.get("type"), item.get("name")
+        if not etype or not name or etype not in detected_sets:
+            continue
+        expected_names[etype].add(name)
+        entry = {"type": etype, "name": name}
+        (matched if name in detected_sets[etype] else missing).append(entry)
+
+    unexpected: list[dict[str, Any]] = []
+    for etype, names in detected_lists.items():
+        for name in names:
+            if name not in expected_names[etype]:
+                unexpected.append({"type": etype, "name": name})
+
+    return matched, missing, unexpected
+
+
+def validate_query(
+    sql: str,
+    documents: list[dict[str, Any]],
+    expected: list[dict[str, Any]] | None = None,
+    target_engine: str = "duckdb",
+) -> dict[str, Any]:
+    """Compose the functions above into the vendor-shape validation result.
+
+    ``documents`` is a list of semantic-model documents (a query may span more
+    than one model); every list below is the union across all of them,
+    de-duplicated, in first-seen order. An empty ``documents`` list (no
+    semantic model available) degrades gracefully to an all-clear result
+    rather than raising -- the actual "only offer this when the instance has
+    >=1 valid model" gate is a wiring-level concern for the surfaces that wrap
+    this module, not this pure core.
+    """
+    documents = [d for d in (documents or []) if isinstance(d, dict)]
+
+    used_datasets: list[str] = []
+    used_metrics: list[str] = []
+    matched_relationships: list[str] = []
+    all_constraints: list[dict[str, Any]] = []
+
+    for document in documents:
+        detected = detect_used_objects(sql, document)
+        for name in detected["used_datasets"]:
+            if name not in used_datasets:
+                used_datasets.append(name)
+        for name in detected["used_metrics"]:
+            if name not in used_metrics:
+                used_metrics.append(name)
+        for name in detected["matched_relationships"]:
+            if name not in matched_relationships:
+                matched_relationships.append(name)
+        all_constraints.extend(extract_constraints(document))
+
+    declared_dialects: list[str] = []
+    locally_executable = True
+    for document in documents:
+        dialect_info = check_dialects(document, used_metrics, target_engine)
+        for dialect in dialect_info["sql_dialects"]:
+            if dialect not in declared_dialects:
+                declared_dialects.append(dialect)
+        if not dialect_info["locally_executable"]:
+            locally_executable = False
+
+    violations, post_execution_checks = evaluate_constraints(all_constraints, used_metrics, sql)
+    valid = not any(v.get("severity") == "error" for v in violations)
+    mixed_dialect_warning = _mixed_dialect_warning(declared_dialects)
+
+    summary = _build_summary(
+        valid=valid,
+        used_datasets=used_datasets,
+        used_metrics=used_metrics,
+        violations=violations,
+        post_execution_checks=post_execution_checks,
+        locally_executable=locally_executable,
+        mixed_dialect_warning=mixed_dialect_warning,
+    )
+
+    result: dict[str, Any] = {
+        "valid": valid,
+        "used_datasets": used_datasets,
+        "used_metrics": used_metrics,
+        "matched_relationships": matched_relationships,
+        "violations": violations,
+        "post_execution_checks": post_execution_checks,
+        "sql_dialects": declared_dialects,
+        "locally_executable": locally_executable,
+        "summary": summary,
+    }
+
+    if expected is not None:
+        matched_expected, missing_expected, unexpected_detected = _diff_expected(
+            expected, used_datasets, used_metrics, matched_relationships
+        )
+        result["matched_expected_objects"] = matched_expected
+        result["missing_expected_objects"] = missing_expected
+        result["unexpected_detected_objects"] = unexpected_detected
+
+    return result
+
+
+__all__ = [
+    "AGNES_VENDOR_NAME",
+    "check_dialects",
+    "detect_used_objects",
+    "evaluate_constraints",
+    "extract_constraints",
+    "validate_query",
+]
