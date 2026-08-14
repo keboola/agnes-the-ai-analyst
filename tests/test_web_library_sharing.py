@@ -393,6 +393,82 @@ def test_sharing_unknown_resource_is_404(seeded_app):
 
 
 # ---------------------------------------------------------------------------
+# Data apps — owner-shareable like collections and agents, keyed on the SLUG
+# (grants on this type are slug-keyed everywhere: `data_apps._can_view` reads
+# `can_access(uid, 'data_app', row['slug'])`). Rendering the Library row
+# share-less had left /admin/access as the only sharing surface for the one
+# kind a user builds from chat (Devin Review on #1272).
+# ---------------------------------------------------------------------------
+
+
+def _seed_data_app(monkeypatch, slug: str, name: str, owner: str) -> None:
+    monkeypatch.setenv("AGNES_DATA_APPS_ENABLED", "true")
+    from src.repositories import data_apps_repo
+
+    data_apps_repo().create(slug=slug, name=name, owner_user_id=owner)
+
+
+def test_data_app_owner_share_roundtrip_writes_the_slug_keyed_grant(seeded_app, monkeypatch):
+    """A NON-admin owner shares their own app through the same PUT every
+    other kind uses, and the grant lands on the slug — the key the proxy's
+    `_can_view` actually reads. An id-keyed grant would be read by nothing."""
+    from src.db import get_system_db
+    from src.repositories.resource_grants import ResourceGrantsRepository
+
+    c = seeded_app["client"]
+    tok = seeded_app["analyst_token"]
+    _seed_data_app(monkeypatch, "shared-dash", "Shared Dash", "analyst1")
+
+    assert c.get("/api/sharing/data_app/shared-dash", headers=_auth(tok)).json()["visibility"] == "private"
+
+    gid = _group_with_member("analyst1", "lib-app-share-grp")
+    r = c.put("/api/sharing/data_app/shared-dash", json={"group_ids": [gid]}, headers=_auth(tok))
+    assert r.status_code == 200, r.text
+    assert r.json()["visibility"] == "shared"
+
+    rows = [
+        g for g in ResourceGrantsRepository(get_system_db()).list_all(resource_type="data_app") if g["group_id"] == gid
+    ]
+    assert [g["resource_id"] for g in rows] == ["shared-dash"], "the grant must be keyed on the slug"
+
+    # The owner's own Library badge reflects the grant instead of claiming
+    # "Private" right next to the control that just shared it.
+    lib = c.get("/library", headers=_auth(tok)).text
+    row_at = lib.index('data-item-id="shared-dash"')
+    assert "Specific groups" in lib[row_at : lib.index("</tr>", row_at)]
+
+
+def test_a_shared_data_app_appears_in_the_grantees_library_read_only(seeded_app, monkeypatch):
+    """The grantee sees the app under "Shared with you" with the read-only
+    badge — only the owner (or an admin) may change who can see it."""
+    c = seeded_app["client"]
+    _seed_data_app(monkeypatch, "granted-dash", "Granted Dash", "analyst1")
+    gid = _group_with_member("analyst1", "lib-app-grantee-grp")
+    _group_with_member("viewer1", "lib-app-grantee-grp")
+    r = c.put(
+        "/api/sharing/data_app/granted-dash", json={"group_ids": [gid]}, headers=_auth(seeded_app["analyst_token"])
+    )
+    assert r.status_code == 200, r.text
+
+    lib = c.get("/library", headers=_auth(seeded_app["viewer_token"])).text
+    assert "Granted Dash" in lib, "the grantee must see the shared app in their Library"
+    row_at = lib.index('data-item-id="granted-dash"')
+    row = lib[row_at : lib.index("</tr>", row_at)]
+    assert "lib-vis--readonly" in row, "a grantee's row must not offer the Share control"
+    assert 'data-share="granted-dash"' not in row
+
+
+def test_data_app_sharing_is_owner_only(seeded_app, monkeypatch):
+    """Someone else's app is 404 — not 403 — matching the collections
+    contract, so ownership can't be probed."""
+    c = seeded_app["client"]
+    _seed_data_app(monkeypatch, "own-dash", "Own Dash", "analyst1")
+    other = _auth(seeded_app["viewer_token"])
+    assert c.get("/api/sharing/data_app/own-dash", headers=other).status_code == 404
+    assert c.put("/api/sharing/data_app/own-dash", json={"group_ids": []}, headers=other).status_code == 404
+
+
+# ---------------------------------------------------------------------------
 # The Library page
 # ---------------------------------------------------------------------------
 
@@ -787,6 +863,7 @@ def test_the_data_apps_soon_badge_is_gone_now_that_apps_ship(seeded_app):
     # The panels this replaced stay gone — markup and CSS both.
     assert "lib-soon" not in text
     assert "lib-apps" not in text
+
 
 # ---------------------------------------------------------------------------
 # The Library also lists what has been SHARED WITH the caller

@@ -95,15 +95,29 @@ def _agent_owner(resource_id: str) -> Optional[str]:
     return row.get("owner_user_id") if row else None
 
 
+def _data_app_owner(resource_id: str) -> Optional[str]:
+    """``resource_id`` is the app's SLUG, not its row id — grants on this
+    type are slug-keyed everywhere (``app.api.data_apps._can_view`` checks
+    ``can_access(uid, 'data_app', row['slug'])``, and the admin layer writes
+    the same rows), so the owner-sharing surface must key the same way or the
+    grants it writes would be read by nothing."""
+    from src.repositories import data_apps_repo
+
+    row = data_apps_repo().get_by_slug(resource_id)
+    return row.get("owner_user_id") if row else None
+
+
 _OWNER_RESOLVERS[ResourceType.COLLECTION.value] = _collection_owner
 _OWNER_RESOLVERS[ResourceType.AGENT.value] = _agent_owner
 _OWNER_RESOLVERS[ResourceType.CORPUS_FILE.value] = _corpus_file_owner
+_OWNER_RESOLVERS[ResourceType.DATA_APP.value] = _data_app_owner
 
 #: Human labels for the shareable types, used in error messages.
 SHAREABLE_TYPES: Dict[str, str] = {
     ResourceType.COLLECTION.value: "artefact",
     ResourceType.AGENT.value: "agent",
     ResourceType.CORPUS_FILE.value: "file",
+    ResourceType.DATA_APP.value: "app",
 }
 
 
