@@ -2408,6 +2408,34 @@ function _renderToolResultPreview(result) {
  *    - ``{columns: ["a","b"], rows: [[1,2],[3,4]]}`` — DuckDB-ish
  *    - ``{data: [{...}, {...}]}`` — wrapping envelope used by some tools
  */
+const _TOOL_RESULT_FULL_ROWS_MAX = 500;
+
+function _buildResultTable(columns, rows) {
+  const table = document.createElement("table");
+  const thead = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  for (const c of columns) {
+    const th = document.createElement("th");
+    th.textContent = c;
+    headRow.appendChild(th);
+  }
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+  const tbody = document.createElement("tbody");
+  for (const r of rows) {
+    const tr = document.createElement("tr");
+    for (const c of columns) {
+      const td = document.createElement("td");
+      const v = r[c];
+      td.textContent = v == null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v);
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  return table;
+}
+
 function _coerceToTablePreview(result) {
   let rows = null;
   let columns = null;
@@ -2438,36 +2466,14 @@ function _coerceToTablePreview(result) {
   const wrap = document.createElement("div");
   wrap.className = "cloud-chat-tool-result is-table";
 
-  const table = document.createElement("table");
-  const thead = document.createElement("thead");
-  const headRow = document.createElement("tr");
-  for (const c of columns) {
-    const th = document.createElement("th");
-    th.textContent = c;
-    headRow.appendChild(th);
-  }
-  thead.appendChild(headRow);
-  table.appendChild(thead);
-
-  const tbody = document.createElement("tbody");
-  for (const r of preview) {
-    const tr = document.createElement("tr");
-    for (const c of columns) {
-      const td = document.createElement("td");
-      const v = r[c];
-      td.textContent = v == null ? "" : (typeof v === "object" ? JSON.stringify(v) : String(v));
-      tr.appendChild(td);
-    }
-    tbody.appendChild(tr);
-  }
-  table.appendChild(tbody);
-
   const tableWrap = document.createElement("div");
   tableWrap.className = "cloud-chat-table-wrap";
-  tableWrap.appendChild(table);
+  tableWrap.appendChild(_buildResultTable(columns, preview));
   wrap.appendChild(tableWrap);
 
-  // "Show full result" reveals the entire JSON below.
+  // The expansion is a REAL table too — the same shape the preview showed,
+  // just all of it (capped so a huge result can't flood the DOM). It used to
+  // be a JSON dump, which contradicted the preview right above it.
   if (total > preview.length) {
     const meta = document.createElement("p");
     meta.className = "cloud-chat-tool-result-meta";
@@ -2476,15 +2482,17 @@ function _coerceToTablePreview(result) {
     const det = document.createElement("details");
     det.className = "cloud-chat-tool-result-full";
     const sum = document.createElement("summary");
-    sum.textContent = "Show all rows (JSON)";
+    const shown = Math.min(total, _TOOL_RESULT_FULL_ROWS_MAX);
+    sum.textContent = total > _TOOL_RESULT_FULL_ROWS_MAX
+      ? `Show first ${shown} of ${total} rows`
+      : `Show all ${total} rows`;
     det.appendChild(sum);
-    const pre = document.createElement("pre");
-    const code = document.createElement("code");
-    code.textContent = JSON.stringify(rows, null, 2);
-    pre.appendChild(code);
-    det.appendChild(pre);
+    const fullWrap = document.createElement("div");
+    fullWrap.className = "cloud-chat-table-wrap";
+    fullWrap.appendChild(_buildResultTable(columns, rows.slice(0, _TOOL_RESULT_FULL_ROWS_MAX)));
+    det.appendChild(fullWrap);
     wrap.appendChild(det);
-    enhanceCodeBlocks(det);
+    enhanceTables(det);
   }
 
   enhanceTables(wrap);
