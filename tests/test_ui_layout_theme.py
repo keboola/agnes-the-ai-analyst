@@ -78,6 +78,29 @@ class TestResolvers:
         monkeypatch.delenv("AGNES_INSTANCE_EXPERIENCE", raising=False)
         assert get_ui_layout() == "rail"
 
+    def test_ui_layout_topnav_value_is_inert(self, monkeypatch):
+        """`topnav` used to be a valid value; the chrome switch is retired
+        (Wave 0, 2026-08), so it no longer has any effect — rail is
+        unconditional regardless of what's configured."""
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "topnav")
+        assert get_ui_layout() == "rail"
+
+    def test_ui_layout_retired_value_warns_once(self, monkeypatch, caplog):
+        """A configured (retired) `instance.ui_layout`/`AGNES_UI_LAYOUT` value
+        logs a single warning per process, not once per resolver call — the
+        resolver runs on every page render, so a per-call warning would flood
+        the log for the lifetime of a misconfigured instance."""
+        import logging
+
+        import app.instance_config as ic
+
+        monkeypatch.setattr(ic, "_warned_once_keys", set())
+        monkeypatch.setenv("AGNES_UI_LAYOUT", "topnav")
+        with caplog.at_level(logging.WARNING, logger="app.instance_config"):
+            assert get_ui_layout() == "rail"
+            assert get_ui_layout() == "rail"
+        assert caplog.text.count("is retired") == 1
+
     def test_theme_defaults_to_paper(self, monkeypatch):
         monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
         monkeypatch.delenv("AGNES_INSTANCE_EXPERIENCE", raising=False)

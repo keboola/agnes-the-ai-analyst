@@ -2752,7 +2752,7 @@ def create_app() -> FastAPI:
         """Render error.html with the same chrome (header, theme, static_url)
         as any other web route. Reuses ``_build_context`` so the page picks up
         ConfigProxy, theme overrides, session user, and ``static_url`` /
-        ``url_for`` helpers — without these, base.html + _app_header.html
+        ``url_for`` helpers — without these, base.html + _app_rail.html
         silently render empty header/stylesheets."""
         from app.logging_config import request_id_var
         from app.web.router import templates as _web_templates, _build_context

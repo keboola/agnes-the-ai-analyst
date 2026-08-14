@@ -1,11 +1,15 @@
 """The `instance.experience` preset (spec 2026-08-07-default-chrome-ux-parity;
 `classic` retired in the Wave 0 legacy-retirement — see `app/switches.py`).
 
-`redesign` is now the only option and the default; any per-knob env/yaml
-setting still wins over the preset-implied default, and per-knob resolution
-order is unchanged (`env(knob) > yaml(knob) > preset-implied default >
-built-in default`). An absent value, or any invalid one (including the
-retired `classic`), resolves to `redesign` via `on_invalid="default"`.
+`redesign` is now the only option and the default; per-knob env/yaml still
+wins over the preset-implied default for `theme` and `stack_auto_membership`
+(resolution order unchanged: `env(knob) > yaml(knob) > preset-implied default
+> built-in default`). `ui_layout` is the one exception: Wave 0 (2026-08) also
+hard-wired the rail chrome, so `get_ui_layout()` always returns `"rail"` —
+no knob, preset, or default can produce anything else (see
+`app/instance_config.py::get_ui_layout`). An absent `experience` value, or
+any invalid one (including the retired `classic`), resolves to `redesign`
+via `on_invalid="default"`.
 """
 
 from __future__ import annotations
@@ -79,11 +83,16 @@ class TestPresetImpliedDefaults:
         assert ic.preset_flag_default("library_show_unverified_trust") is False
 
     def test_per_knob_setting_beats_the_preset(self, monkeypatch):
+        """Per-knob env/yaml still wins over the preset for `theme` and
+        `stack_auto_membership`. `ui_layout` is the one knob this no longer
+        applies to: Wave 0 (2026-08) hard-wired the rail chrome, so a
+        configured `AGNES_UI_LAYOUT=topnav` is ignored rather than honored —
+        asserted here alongside the knobs that still respect it."""
         monkeypatch.setenv("AGNES_INSTANCE_EXPERIENCE", "redesign")
         monkeypatch.setenv("AGNES_UI_LAYOUT", "topnav")
         monkeypatch.setenv("AGNES_INSTANCE_THEME", "blue")
         monkeypatch.setenv("AGNES_STACK_AUTO_MEMBERSHIP", "0")
-        assert ic.get_ui_layout() == "topnav"
+        assert ic.get_ui_layout() == "rail"
         assert ic.get_instance_theme() == "blue"
         assert ic.get_stack_auto_membership() is False
 

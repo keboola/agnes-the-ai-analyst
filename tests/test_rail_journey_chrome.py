@@ -156,8 +156,9 @@ def test_rail_admin_expands_into_area_rows_with_flyouts():
     assert 'class="rail-admin"' in html
     assert '<details class="rail-admin"' in html, "Admin must be a native <details>, not a bare link"
     assert "rail-admin-summary" in html
-    # Data-driven: the area rows and their links are declared once, as the same
-    # set the header dropdown carries (_app_header.html) — the parity contract.
+    # Data-driven: the area rows and their links are declared once — they used
+    # to mirror the retired topnav's Admin dropdown (_app_header.html); that
+    # parity contract is moot now (only the rail exists).
     assert "admin_sections" in html
     assert "rail-admin-flyout" in html, "area links must open in a flyout beside the rail"
     # The area row is a <button>, NOT a nested <details>: Chrome hides a closed

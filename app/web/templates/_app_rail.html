@@ -1,6 +1,6 @@
-{# Left-rail navigation — the "rail" ui_layout (instance.ui_layout /
-   AGNES_UI_LAYOUT=rail). Renders INSTEAD of _app_header.html via the
-   switch in base_ds.html; topnav instances never load this partial.
+{# Left-rail navigation — the only structural chrome now (the topnav chrome,
+   `_app_header.html`, was retired in Wave 0, 2026-08); `base_ds.html` and
+   `base.html` both include this partial unconditionally.
 
    IA: the rail is TWO fixed zones with the conversation list between them.
    Top — New chat, then the caller's conversations in two collapsible sections
@@ -10,8 +10,7 @@
    the very bottom. The Studio dropdown and the Marketplace entry have both
    been retired from the rail; /catalog and the Skill/Plugin builders remain
    live routes, reached from in-page surfaces (the Library header's "+ Add"
-   menu, chat suggestions, search) rather than the rail. The topnav chrome
-   keeps its flat link row — this IA applies only to the rail layout.
+   menu, chat suggestions, search) rather than the rail.
 
    TODO(#1088): My Stack is UNLINKED, not resolved. /stack is still a live,
    fully-featured surface — it is simply not a rail destination any more, and
@@ -21,12 +20,14 @@
    page's purpose over that same list. What is left is to RETIRE /stack
    (302 → /library), not to restore it here.
 
-   Mirrors _app_header.html in behavior contract:
+   Carries over from the retired topnav chrome:
      - same auth gating (session.user), chat grant gating (can_chat),
        admin gating (session.user.is_admin);
      - same destinations (as Catalog subcategories) + is-active rules;
-     - same element ids for JS wiring (#global-search, #userMenu*,
-       #themeToggle) — app.js + global_search.js work unchanged.
+     - same element ids for the JS the two chromes shared (#userMenu*,
+       #themeToggle) — app.js works unchanged. The topnav's #global-search
+       combobox did NOT carry over (global_search.js currently has nothing
+       to attach to on this chrome — see that file's header comment).
    Styles live in app/web/static/css/rail.css (.rail-* prefix),
    activated by html[data-ui-layout="rail"]. #}
 {% import "macros/_agnes_orb.html" as agnes_orb %}
@@ -317,8 +318,10 @@
        height, so `Admin` open is now always exactly seven rows tall.
 
        Data-driven so the row + flyout markup is written once; the area rows
-       and their links are the same set the header dropdown carries
-       (_app_header.html), which is the parity contract to keep in step.
+       and their links used to be the same set the retired topnav's Admin
+       mega-menu carried (`_app_header.html`) — that parity contract is now
+       moot (only the rail exists), but this is still the one place the
+       admin nav is enumerated, so keep it complete as areas are added.
        `match` is the list of path prefixes that mean "this link is the page
        you're on" — the area row picks up a quiet marker when any of its own
        links match (it is the ROUTE to the active page, not the active page
@@ -516,12 +519,11 @@
                 {# ── About you ── #}
                 <a class="app-user-menu-item {% if _path == '/me/profile' %}is-active{% endif %}" role="menuitem" href="/me/profile">Profile</a>
                 <a class="app-user-menu-item {% if _path.startswith('/me/activity') %}is-active{% endif %}" role="menuitem" href="/me/activity">My activity</a>
-                {# News — same #1159 reasoning as the topnav dropdown: /news
-                   needs a NON-admin entry point on every chrome, and the rail
-                   has no other one (the /home "What's new" strip and the
-                   command palette are both conditional). Mirrors the topnav
-                   `_app_header.html` row; label "News", not the page's
-                   "What's new" heading (tests/test_web_news_page.py). #}
+                {# News — same #1159 reasoning as the retired topnav dropdown:
+                   /news needs a NON-admin entry point, and the rail has no
+                   other one (the /home "What's new" strip and the command
+                   palette are both conditional). Label "News", not the
+                   page's "What's new" heading (tests/test_web_news_page.py). #}
                 <a class="app-user-menu-item {% if _path.startswith('/news') %}is-active{% endif %}" role="menuitem" href="/news">News</a>
 
                 {# ── Get your bearings ──────────────────────────────────────
@@ -588,8 +590,8 @@
         </div>
     </div>
 </nav>
-{# Same co-located JS as _app_header.html — id-driven, works for both
-   chromes. Defer keeps it non-blocking. #}
+{# Same co-located JS the (retired) topnav chrome shipped — id-driven.
+   Defer keeps it non-blocking. #}
 <script src="{{ static_url('app.js') }}" defer></script>
 <script src="{{ static_url('js/global_search.js') }}" defer></script>
 {# Fills the Pinned + Chats lists on every page EXCEPT /chat (where chat.js owns

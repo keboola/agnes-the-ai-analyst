@@ -3915,10 +3915,10 @@ a.slack-badge:hover {
 .app-header-logo { flex: 0 0 auto; }
 
 /* `.app-header-left` — kept for the `ds.primary_nav` macro (_components.html),
-   the scaffolded future header that groups logo + subtitle in a left cluster.
-   `_app_header.html` places the logo directly now, but the macro still wraps
-   it, so this rule keeps that cluster a sane inline flex item on the single
-   row. */
+   scaffolding for a topnav refactor that never landed before the topnav
+   chrome itself was retired (Wave 0, 2026-08); the macro has no current
+   caller. Left in place rather than deleted since it's inert CSS with no
+   render cost. */
 .app-header-left { display: inline-flex; align-items: center; gap: var(--space-3); flex: 0 0 auto; }
 
 /* Primary nav — the flexible middle. Grows to fill, shrinks toward zero

@@ -1,6 +1,9 @@
 /* Global header search — combobox over GET /api/knowledge/search (K2, #797).
-   Wires the #global-search input + #globalSearchResults listbox shipped by
-   _app_header.html. Debounces input, groups results by type (Tables /
+   Wires the #global-search input + #globalSearchResults listbox that shipped
+   with the topnav chrome (`_app_header.html`, retired Wave 0 2026-08). The
+   rail chrome doesn't carry that markup yet, so this module currently no-ops
+   everywhere (see the null-guard below) until the rail grows an equivalent.
+   Debounces input, groups results by type (Tables /
    Knowledge / Documents), and links each hit to its detail page:
      - table     -> /catalog/t/<table_id> (falls back to /catalog)
      - metric    -> /catalog/semantics#metrics   (#1108)

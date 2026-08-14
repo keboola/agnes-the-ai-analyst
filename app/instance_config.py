@@ -40,6 +40,24 @@ _last_good_config: Optional[dict] = None
 # — not wired up there yet.
 _static_config_error: Optional[str] = None
 
+# Keys already warned about once this process — see `_warn_once`. Process
+# lifetime, like `_loaded_once` above: a retired config value should log a
+# single line at boot, not spam every request that calls the resolver.
+_warned_once_keys: set[str] = set()
+
+
+def _warn_once(key: str, message: str) -> None:
+    """Log ``message`` via the module logger the first time this process
+    sees ``key``; every later call with the same ``key`` is a no-op.
+
+    Used by resolvers for retired config values (e.g. :func:`get_ui_layout`)
+    so a stale ``instance.yaml``/env setting produces one clear warning
+    instead of flooding the log on every request."""
+    if key in _warned_once_keys:
+        return
+    _warned_once_keys.add(key)
+    logger.warning(message)
+
 
 def get_static_config_error() -> Optional[str]:
     """Reason the static ``instance.yaml`` failed to load, or ``None``.
@@ -650,35 +668,15 @@ def get_instance_theme() -> str:
 
 
 def get_ui_layout() -> str:
-    """Structural chrome layout for web pages — independent of the
-    color theme so existing instances keep their exact chrome.
-
-    Values:
-      - ``topnav`` — current default: horizontal ``_app_header.html``
-                     bar above the page container. Existing instances
-                     see zero change.
-      - ``rail``   — fixed left sidebar navigation
-                     (``_app_rail.html``): logo, primary destinations,
-                     admin section, user menu at the bottom. The
-                     content shell gains ``body.layout-rail`` and a
-                     left padding equal to the rail width.
-
-    Resolution: ``AGNES_UI_LAYOUT`` env var > ``instance.ui_layout``
-    in instance.yaml > default ``"topnav"``. Unrecognised values fall
-    back to ``"topnav"`` so a typo doesn't strip the navigation.
-    """
-    # Preset-implied default (spec 2026-08-07): the `redesign` experience
-    # defaults to rail; explicit env/yaml always wins.
-    preset_default = preset_knob_default("ui_layout")
-    raw = os.environ.get("AGNES_UI_LAYOUT")
-    if raw is None:
-        raw = get_value("instance", "ui_layout", default=preset_default)
-    if not isinstance(raw, str):
-        return preset_default
-    value = raw.strip().lower()
-    if value not in ("topnav", "rail"):
-        return preset_default
-    return value
+    """Structural chrome layout — always ``"rail"`` since the classic
+    topnav chrome was retired (Wave 0, 2026-08). The function stays so
+    template context + config surface keep one source of truth; a
+    configured ``AGNES_UI_LAYOUT``/``instance.ui_layout`` is ignored
+    (warned once) rather than an error, so old instance.yaml files boot."""
+    raw = os.environ.get("AGNES_UI_LAYOUT") or get_value("instance", "ui_layout")
+    if raw and raw != "rail":
+        _warn_once("ui_layout", f"instance.ui_layout={raw!r} is retired; rail chrome is always on")
+    return "rail"
 
 
 def get_home_automode_visibility() -> bool:
@@ -821,10 +819,10 @@ def get_instance_brand_short() -> str:
 
 
 def get_instance_logo_svg() -> str:
-    """Raw inline ``<svg>`` markup rendered into the header brand slot
-    (``_app_header.html``). When non-empty, replaces the text brand in
-    the header — typical use is a lockup that already contains the
-    brand wordmark. When empty, the header falls back to
+    """Raw inline ``<svg>`` markup rendered into the nav brand slot
+    (``_app_rail.html``). When non-empty, replaces the text brand in
+    the nav — typical use is a lockup that already contains the
+    brand wordmark. When empty, the nav falls back to
     :func:`get_instance_name` as text.
 
     Resolution: ``AGNES_INSTANCE_LOGO_SVG`` env > ``instance.logo_svg``

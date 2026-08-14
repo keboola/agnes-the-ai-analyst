@@ -312,7 +312,7 @@ templates.env.globals["onboarding_steps"] = _onboarding_steps_for
 def _data_apps_nav_enabled() -> bool:
     """Whether the "Apps" primary-nav entry should render. Registered as a
     Jinja global (like `static_url` above) rather than threaded through
-    per-route context, so `_app_header.html` — shared by both `base.html`
+    per-route context, so `_app_rail.html` — shared by both `base.html`
     (built via `_build_context`) and `base_ds.html`/`base_page.html` (built
     via `_chrome_ctx`) — gates consistently regardless of which context
     builder the current page uses. Re-read on every call (not cached at
@@ -871,10 +871,10 @@ def _build_context(
         # "navy" = darker opt-in palette. Admin toggles via
         # /admin/server-config.
         "instance_theme": get_instance_theme(),
-        # Structural chrome layout — "topnav" (default, horizontal
-        # _app_header bar) or "rail" (fixed left sidebar,
-        # _app_rail.html). Independent of the color theme so existing
-        # instances keep their exact chrome.
+        # Structural chrome layout — always "rail" (fixed left sidebar,
+        # _app_rail.html); the topnav chrome was retired in Wave 0
+        # (2026-08). Kept in context so templates have one source of
+        # truth and `html[data-ui-layout="rail"]`-scoped CSS keeps working.
         "ui_layout": get_ui_layout(),
         # Whether /home renders the "Step 3 — turn on auto-accept mode"
         # install-block. Operator can hide it via AGNES_HOME_SHOW_AUTOMODE=0
@@ -3778,7 +3778,7 @@ async def artefacts_redirect():
 
 
 # Entry points: "My agents" in the user dropdown
-# (`app/web/templates/_app_header.html`) plus a Cmd/Ctrl-K palette entry — a
+# (`app/web/templates/_app_rail.html`) plus a Cmd/Ctrl-K palette entry — a
 # per-user resource list, so deliberately not primary nav and not the admin
 # mega-menu (instance-level agent authoring is Studio's /admin/studio/agent).
 # Both links are guarded by `tests/test_web_nav_agents.py`; don't drop them.
