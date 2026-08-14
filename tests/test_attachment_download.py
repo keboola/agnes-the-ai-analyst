@@ -152,6 +152,34 @@ def test_granted_fetch_streams_the_same_bytes(jira_attachment_env, analyst_user)
     assert str(len(jira_attachment_env["payload"])) in (row[4] or "")
 
 
+def test_growing_file_never_overruns_advertised_length(jira_attachment_env, analyst_user, monkeypatch):
+    """The stream is bounded at the fstat'd size: a writer growing the file
+    in place after the endpoint opened it (a non-atomic writer's append, or
+    any partial write racing the read) must not push the body past the
+    advertised Content-Length — that mismatch is an ASGI protocol error on a
+    real server, not a truncated-but-valid response."""
+    import app.api.attachments as attachments_mod
+
+    _grant_table("analyst1", "attachments", "att-grow")
+    real_open = attachments_mod._open_contained
+
+    def open_then_grow(root, stored):
+        fh, st, reason = real_open(root, stored)
+        if fh is not None:
+            # In-place growth of the very inode being streamed, after
+            # open+fstat but before the first read.
+            with open(stored, "ab") as w:
+                w.write(b"GROWN-AFTER-OPEN")
+        return fh, st, reason
+
+    monkeypatch.setattr(attachments_mod, "_open_contained", open_then_grow)
+    resp = jira_attachment_env["client"].get("/api/attachments/jira/101/download", headers=analyst_user)
+    assert resp.status_code == 200
+    payload = jira_attachment_env["payload"]
+    assert resp.headers["content-length"] == str(len(payload))
+    assert resp.content == payload, "body must stop exactly at the fstat'd size"
+
+
 def test_admin_god_mode_passes_the_table_gate(jira_attachment_env, admin_user):
     resp = jira_attachment_env["client"].get("/api/attachments/jira/101/download", headers=admin_user)
     assert resp.status_code == 200
@@ -337,7 +365,6 @@ class TestOpenContained:
         assert _open_contained(root, str(fifo)) == (None, None, "file_missing")
 
 
-
 class TestDeclarationMatchesConnector:
     """Pin the declaration to what the connector actually emits — the
     blocker class this guards against is a declaration naming a table that
@@ -368,4 +395,3 @@ class TestDeclarationMatchesConnector:
         cols = set(records[0])
         declared = {decl.id_column, decl.path_column, decl.filename_column}
         assert declared <= cols, f"declared columns {declared - cols} missing from {sorted(cols)}"
-

@@ -271,13 +271,18 @@ def download_attachment(
         else f"attachment; filename*=utf-8''{quoted}"
     )
 
-    def _stream(f: BinaryIO = fh):
-        # Streamed from the descriptor opened above: Content-Length comes
-        # from fstat of that same descriptor, and the connector publishes
-        # rewrites atomically (os.replace), so an overlapping refresh keeps
-        # serving the complete old file rather than a torn one.
+    def _stream(f: BinaryIO = fh, remaining: int = st.st_size):
+        # Streamed from the descriptor opened above, bounded at the fstat'd
+        # size: Content-Length comes from that same fstat, and the read loop
+        # stops exactly there, so the body can never exceed the advertised
+        # length (an overrun is an ASGI protocol error, not a truncated
+        # response) even if some writer grows the file under the reader.
+        # Self-consistency holds by this bound alone; the connectors'
+        # atomic publishes (os.replace) additionally keep an overlapping
+        # rewrite serving the complete old file rather than a torn one.
         try:
-            while chunk := f.read(1 << 20):
+            while remaining > 0 and (chunk := f.read(min(1 << 20, remaining))):
+                remaining -= len(chunk)
                 yield chunk
         finally:
             f.close()

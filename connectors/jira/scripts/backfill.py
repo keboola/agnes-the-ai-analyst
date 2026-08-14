@@ -260,9 +260,7 @@ class JiraBackfill:
                     headers={"Accept": "application/json"},
                 )
         except httpx.RequestError as e:
-            raise JiraFetchError(
-                f"Backfill remote-links fetch for {issue_key} failed: connection — {e}"
-            ) from e
+            raise JiraFetchError(f"Backfill remote-links fetch for {issue_key} failed: connection — {e}") from e
 
         if response.status_code == 200:
             return response.json()
@@ -280,12 +278,10 @@ class JiraBackfill:
             )
         if response.status_code >= 500:
             raise JiraFetchError(
-                f"Backfill remote-links fetch for {issue_key} failed: server error "
-                f"({response.status_code})"
+                f"Backfill remote-links fetch for {issue_key} failed: server error ({response.status_code})"
             )
         raise JiraFetchError(
-            f"Backfill remote-links fetch for {issue_key} failed: unexpected status "
-            f"{response.status_code}"
+            f"Backfill remote-links fetch for {issue_key} failed: unexpected status {response.status_code}"
         )
 
     def save_issue(self, issue_data: dict) -> Path | None:
@@ -355,8 +351,25 @@ class JiraBackfill:
                 response = client.get(content_url, auth=self.auth)
 
             if response.status_code == 200:
-                with open(file_path, "wb") as f:
-                    f.write(response.content)
+                # Publish atomically (per-process temp + os.replace), mirroring
+                # JiraService.download_attachment: the attachment download
+                # endpoint serves this very tree, and a webhook-driven
+                # incremental transform in another process can catalogue this
+                # exact path mid-backfill — a reader must never fstat a
+                # partially written file.
+                # Bounded temp name: appending to the full name could push a
+                # near-NAME_MAX (255-byte) filename over the limit and make a
+                # previously-storable attachment fail to save. 40 codepoints
+                # (<=160 UTF-8 bytes) keeps the total well under NAME_MAX and
+                # stays unique: the name starts with the attachment id.
+                tmp_path = file_path.with_name(f".tmp-{os.getpid()}-{file_path.name[:40]}")
+                try:
+                    with open(tmp_path, "wb") as f:
+                        f.write(response.content)
+                    os.replace(tmp_path, file_path)
+                except BaseException:
+                    tmp_path.unlink(missing_ok=True)
+                    raise
                 return file_path
             else:
                 logger.debug(f"Failed to download {filename}: {response.status_code}")
@@ -415,8 +428,7 @@ class JiraBackfill:
             issue_data["_remote_links"] = self.fetch_remote_links(issue_key)
         except JiraFetchError as e:
             logger.warning(
-                f"Skipping _remote_links overlay for {issue_key}: {e}. "
-                f"Existing parquet rows will be preserved."
+                f"Skipping _remote_links overlay for {issue_key}: {e}. Existing parquet rows will be preserved."
             )
 
         # Save JSON
@@ -484,7 +496,7 @@ class JiraBackfill:
                 processed += 1
 
                 try:
-                    success = future.result()
+                    future.result()
                 except Exception as e:
                     logger.error(f"Error processing {issue_key}: {e}")
                     self.stats["failed"] += 1
@@ -598,7 +610,7 @@ def main():
                     processed += 1
 
                     try:
-                        success = future.result()
+                        future.result()
                     except Exception as e:
                         logger.error(f"Error processing {issue_key}: {e}")
                         backfill.stats["failed"] += 1
