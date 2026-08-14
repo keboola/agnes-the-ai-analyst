@@ -213,10 +213,12 @@ def build_stdio_spec(
     source lands with no grants at all, so enabling it exposes nothing until
     an admin grants explicitly.
 
-    ``workspace_schema`` is passed through when the connection carries one
-    (``config.workspace_schema``). It is what makes a non-master token usable:
-    with a master token Keboola creates the workspace itself, so the setting
-    stays absent rather than being invented.
+    ``workspace_schema`` is passed through whenever the connection carries one
+    (``config.workspace_schema``) — an admin opt-in with no token-kind check;
+    the code only refuses to *invent* a value. It is what makes a non-master
+    token usable: only a master token gets a workspace created for it by
+    Keboola, so such setups normally leave the key unset — setting it anyway
+    pins ``query_data`` to that workspace instead of the auto-created one.
     """
     return {
         "id": derived_source_id(connection_id),

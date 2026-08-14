@@ -1131,9 +1131,12 @@ async def enable_chat_tools(
         connection_id=connection_id,
         connection_name=row.get("name") or connection_id,
         stack_url=stack_url,
-        # Present only on connections whose token is not a master one; see
-        # `build_stdio_spec`. Read from the connection so the admin sets it in
-        # one place rather than editing the derived MCP source by hand.
+        # Passed through whenever the connection sets `config.workspace_schema`
+        # — no token-kind check, the code only refuses to invent a value. A
+        # master-token setup normally leaves it unset (Keboola creates the
+        # workspace itself); setting it anyway pins query_data to that
+        # workspace deliberately. Read from the connection so the admin sets it
+        # in one place rather than editing the derived MCP source by hand.
         workspace_schema=_workspace_schema_of(config),
     )
     # What the vault held before this call decides how a failed write is undone.
