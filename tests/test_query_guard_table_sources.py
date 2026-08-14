@@ -98,6 +98,27 @@ def test_oracle_returns_none_so_callers_fall_back(sql):
     assert _sql_referenced_names(sql) is None
 
 
+def test_duckdb_still_reports_parse_failure_the_way_we_detect_it():
+    """Tripwire on the contract `_sql_referenced_names` reads.
+
+    It decides "DuckDB could not parse this" from the `error` field of the
+    serialized document. `duckdb` is pinned open-ended, so an upgrade that
+    changed that shape would make failures look like clean parses with no
+    tables — a silent downgrade to "references nothing", which is the unsafe
+    direction for a deny check. Fails loudly here instead.
+    """
+    import json as _json
+
+    import duckdb as _duckdb
+
+    conn = _duckdb.connect()
+    for sql in ("select * from (", "select 1; insert into t values (1)"):
+        document = _json.loads(conn.execute("select json_serialize_sql(?)", [sql]).fetchone()[0])
+        assert document.get("error") is True, f"parse-failure shape changed for {sql!r}: {document}"
+    ok = _json.loads(conn.execute("select json_serialize_sql(?)", ["select * from t"]).fetchone()[0])
+    assert ok.get("error") is False and "statements" in ok, f"success shape changed: {ok}"
+
+
 def test_oracle_parses_without_executing():
     """It must not be possible to cause a write by getting SQL parsed."""
     conn = duckdb.connect()
