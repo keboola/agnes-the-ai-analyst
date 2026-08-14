@@ -452,6 +452,36 @@ class TestServerConfigAuthProvidersValidation:
         overlay = yaml.safe_load((seeded_app["env"]["data_dir"] / "state" / "instance.yaml").read_text())
         assert overlay["auth"]["providers"] == ["password"]
 
+    def test_masking_sentinel_secret_does_not_fake_keboola_availability(self, seeded_app):
+        """The availability check must run on the SCRUBBED patch: a masking
+        sentinel (`***`) round-tripped from the GET payload for a secret leaf is
+        truthy and, on the raw patch, would falsely report keboola as available
+        and let a [keboola]-only lockout through. With no real client_secret
+        stored, the sentinel is stripped and the save is correctly rejected
+        (Devin review on #1288)."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={
+                "sections": {
+                    "auth": {
+                        "providers": ["keboola"],
+                        "keboola": {
+                            "client_id": "cid",
+                            "client_secret": "***",  # masking sentinel, not a real value
+                            "project_id": "5947",
+                            "stack_url": "https://example.com",
+                        },
+                    }
+                },
+                "confirm_danger": True,
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 422, resp.text
+        assert "no usable sign-in method" in resp.json()["detail"]
+
     def test_non_dict_keboola_block_rejected_with_422(self, seeded_app):
         """A malformed auth.keboola (not an object) must 422 with a clear
         message, not crash the availability merge with a 500."""

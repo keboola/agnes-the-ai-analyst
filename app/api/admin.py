@@ -1762,7 +1762,6 @@ async def update_server_config(
     # keboola_url, but here it covers any URL-bearing field reachable via
     # the per-section patch (e.g. data_source.keboola.stack_url).
     _validate_urls_in_patch(request.sections)
-    _validate_auth_providers_in_patch(request.sections)
 
     # Field-level constraints for sections whose values have documented ranges.
     _validate_materialize_section(request.sections)
@@ -1775,6 +1774,14 @@ async def update_server_config(
     scrubbed_sections: Dict[str, Dict[str, Any]] = {
         section: _strip_redacted_sentinels(patch, section) for section, patch in request.sections.items()
     }
+
+    # Runs on the SCRUBBED sections: the auth.providers availability check reads
+    # secret leaves (auth.keboola.client_secret), and a masking sentinel (`***`
+    # / `<empty>`) round-tripped from the GET payload is truthy — on the raw
+    # patch it would report keboola as "available" and let a lockout config
+    # through. After the scrub the sentinel key is gone, so the merge with the
+    # current overlay sees the real stored value (Devin review on #1288).
+    _validate_auth_providers_in_patch(scrubbed_sections)
 
     # Serialize read-modify-write across concurrent admin saves. Without the
     # lock, two saves would each read the same overlay snapshot, merge their
