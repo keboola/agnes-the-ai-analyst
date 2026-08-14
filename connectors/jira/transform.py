@@ -549,8 +549,41 @@ def transform_issue(raw_issue: dict) -> dict:
     return record
 
 
-def transform_comments(raw_issue: dict) -> list[dict]:
-    """Extract and transform comments from an issue."""
+def transform_comments(raw_issue: dict, *, preserve_on_incomplete: bool = True) -> list[dict] | None:
+    """Extract and transform comments from an issue.
+
+    Args:
+        raw_issue: raw Jira issue JSON.
+        preserve_on_incomplete: whether the ``_comments_incomplete`` marker
+            should suppress the (known-truncated) embedded list. Defaults to
+            True, which is the correct behaviour for the INCREMENTAL path
+            only. Full-rebuild callers pass False — see below.
+
+    Returns:
+      - list[dict]: transformed comment records. May be empty — the issue
+        legitimately has no comments.
+      - None: only when ``preserve_on_incomplete`` is True and
+        ``_comments_incomplete`` is set on ``raw_issue``, meaning
+        ``complete_issue_comments`` (connectors/jira/service.py) hit a
+        page-fetch failure mid-pagination and ``fields.comment.comments``
+        is a KNOWN-TRUNCATED subset of the full thread. This is the same
+        overlay-absent contract as ``transform_remote_links``: callers that
+        upsert onto an issue-scoped delete-then-insert store (the
+        incremental comments parquet) MUST treat ``None`` as "skip the
+        upsert, preserve existing rows" — otherwise a transient pagination
+        failure on a refetch would overwrite a previously-complete stored
+        comment thread with a known-incomplete one.
+
+    The preserve semantics only make sense where there are existing rows to
+    preserve. ``transform_all`` rebuilds the monthly parquets from scratch,
+    so suppressing there means the issue contributes ZERO comment rows —
+    strictly worse than writing the partially-fetched list the JSON already
+    carries. Batch/full-rebuild callers therefore pass
+    ``preserve_on_incomplete=False`` and get the partial list.
+    """
+    if preserve_on_incomplete and raw_issue.get("_comments_incomplete") is True:
+        return None
+
     issue_key = raw_issue.get("key")
     fields = raw_issue.get("fields", {})
     comments_data = fields.get("comment", {})
@@ -842,7 +875,14 @@ def transform_all(
             issues_by_month[month_key].append(issue_record)
 
             # Transform related data (all go to same month as parent issue)
-            comments_by_month[month_key].extend(transform_comments(raw_issue))
+            # This is a full rebuild from raw JSON — nothing is being preserved,
+            # so an issue marked `_comments_incomplete` still contributes the
+            # partially-fetched comments its JSON carries. Dropping them would
+            # write ZERO rows for that issue, which is strictly worse than a
+            # short thread; the preserve semantics belong to the incremental
+            # delete-then-insert path (incremental_transform.py) alone.
+            comment_records = transform_comments(raw_issue, preserve_on_incomplete=False) or []
+            comments_by_month[month_key].extend(comment_records)
 
             # Transform attachments with hierarchical paths
             issue_key = raw_issue.get("key", "unknown")

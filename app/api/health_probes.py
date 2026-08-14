@@ -134,9 +134,27 @@ def begin_shutdown() -> None:
     once would leave every application started after the first in the same
     process (every ``TestClient`` in a test run, any process that restarts
     the app) with a spent deadline and therefore no drain at all.
+
+    Also fires a non-blocking interrupt at any in-flight rolling-snapshot
+    ``EXPORT DATABASE`` (#1294): the checkpoint/rolling-snapshot loop is the
+    first task the lifespan cancels, and its drain would otherwise block on a
+    multi-second export — consuming the shared budget this function just
+    armed and leaving the canary/worker drains with none. The deadline is
+    armed FIRST so the refresh's own pre-EXPORT ``is_shutdown_started()``
+    gate closes the interrupt's one blind spot (landing between the export's
+    ``CHECKPOINT`` and ``EXPORT DATABASE`` statements). Local import, like
+    ``src.db``'s own function-local import of this module — the two modules
+    reference each other only at call time.
     """
     global _drain_deadline
     _drain_deadline = time.monotonic() + _drain_timeout_s()
+
+    try:
+        from src.db import interrupt_rolling_snapshot_export
+
+        interrupt_rolling_snapshot_export(caller="begin_shutdown")
+    except Exception as exc:  # pragma: no cover - defensive; never blocks shutdown
+        logger.debug("begin_shutdown: rolling-snapshot interrupt failed (%s)", exc)
 
 
 def end_shutdown() -> None:
@@ -149,6 +167,19 @@ def end_shutdown() -> None:
     """
     global _drain_deadline
     _drain_deadline = None
+
+
+def is_shutdown_started() -> bool:
+    """True once :func:`begin_shutdown` has armed the shared drain budget.
+
+    Lets a periodic background job check, before kicking off new work,
+    whether the lifespan has begun tearing down — see
+    ``src.db.refresh_rolling_snapshot`` (#1294), which must not start a
+    fresh multi-second ``EXPORT DATABASE`` once shutdown is under way: a
+    drain abandoned by :func:`to_thread_drain_on_cancel` would otherwise
+    still be executing when the lifespan reaches ``close_system_db()``.
+    """
+    return _drain_deadline is not None
 
 
 def _drain_timeout_s() -> float:
@@ -237,8 +268,7 @@ async def to_thread_drain_on_cancel(fn: Callable[..., _T], /, *args: Any, **kwar
             await asyncio.wait_for(asyncio.shield(future), timeout=budget)
         if not future.done():
             logger.warning(
-                "readiness: drain budget exhausted (%.1fs of %.0fs%s) waiting for %s; "
-                "abandoning the thread",
+                "readiness: drain budget exhausted (%.1fs of %.0fs%s) waiting for %s; abandoning the thread",
                 budget,
                 _drain_timeout_s(),
                 ", shared across shutdown" if _drain_deadline is not None else "",

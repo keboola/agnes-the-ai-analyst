@@ -459,7 +459,11 @@ def _detail_template(base: str) -> str:
 #: `semantics` — see below.
 _RAIL_DETAIL_BACK: dict[str, tuple[str, str]] = {
     "data_package": ("/library?section=data_package", "All data packages"),
-    "memory_domain": ("/library?section=memory_domain", "All memory"),
+    # Memory is a rail destination again (#1276 restored the nav entry the
+    # redesign dropped), so its browse home is somewhere a rail caller really
+    # arrives from — back keeps the same target the topnav passes. Library
+    # arrivals still override via ?source=library (memory_domain_detail.html).
+    "memory_domain": ("/corporate-memory", "All memory domains"),
     "recipe": ("/library?section=recipe", "All recipes"),
     "plugin": ("/library?section=plugin", "All plugins"),
     "skill": ("/library?section=skill", "All skills"),
@@ -3370,6 +3374,83 @@ async def library_page(
         except Exception as e:
             logger.warning("/library: could not resolve %s: %s", rt.value, e)
 
+    # Data apps — hosted apps the caller owns or has been granted. The
+    # Library is "everything you have", and an app you built from chat is as
+    # much yours as a collection you uploaded; until this row existed a
+    # `rail` instance had no way to reach one at all, since the "Apps" nav
+    # entry shipped in the topnav only.
+    #
+    # Visibility is OWNERSHIP ∪ GRANT, deliberately NOT `data_apps._can_view`.
+    # That helper short-circuits True for any admin, and this page's contract
+    # is the opposite — see this function's docstring: "Deliberately NOT admin
+    # god-mode — an admin still sees their own Library, not every item in the
+    # instance". Reusing it listed every hosted app in the instance in an
+    # admin's Library, other people's private ones included, labelled "Shared
+    # with you" with owner "Your workspace" — a claim that is simply false for
+    # an app they hold no grant on (Devin Review on this PR). Reuse was the
+    # right instinct for the *shape* and the draft rule; it was the wrong one
+    # for the scope, because the two surfaces answer different questions.
+    #
+    # The grant set is fetched ONCE rather than per row: `_can_view` costs two
+    # DB lookups per app, on every Library render.
+    #
+    # Drafts are excluded (they are iteration branches of an app, not apps)
+    # and so is `linked_hidden`, matching `/apps` exactly.
+    # Aliased imports: both names are bound locally further down this
+    # function, so referencing the module-level ones here is a use-before-
+    # assignment in the same scope.
+    from app.instance_config import feature_enabled as _feat_enabled
+    from src.repositories import data_apps_repo as _apps_repo
+
+    if _feat_enabled("data_apps", "enabled", env_var="AGNES_DATA_APPS_ENABLED", default=False):
+        try:
+            # Grants on this type are keyed by SLUG (see `_can_view`), not id.
+            _app_grants = _granted_ids(ResourceType.DATA_APP.value)
+
+            # `limit=100000` like every sibling listing in this function
+            # (`data_packages_repo`, `memory_domains_repo`, `recipes_repo`).
+            # The repo defaults to 1000 ordered `created_at DESC`, and that
+            # cap applies BEFORE the ownership/grant filter below — so on an
+            # instance with more apps than that, a caller's older apps drop
+            # off their own Library silently, and under the rail chrome this
+            # page is the only way to click through to one. Linked rows are
+            # created one-per-upstream-app by the MCP listers, so the count is
+            # not bounded by what people build by hand (Devin Review).
+            for a in _apps_repo().list(include_drafts=False, limit=100000):
+                if a.get("state") == "linked_hidden":
+                    continue
+                if a.get("owner_user_id") != uid and a.get("slug") not in _app_grants:
+                    continue
+                _mine = a.get("owner_user_id") == user["id"]
+                _created = a.get("created_at")
+                items.append(
+                    _library_row_base(
+                        item_id=a["id"],
+                        kind="data_app",
+                        title=a.get("name") or a.get("slug") or "",
+                        description=a.get("description") or "",
+                        href=f"/apps/detail/{a['slug']}",
+                        glyph="app",
+                        type_key="data_app",
+                        type_label="App",
+                        origin="mine" if _mine else "granted",
+                        origin_label="Yours" if _mine else "Shared with you",
+                        added_iso=_created.isoformat() if hasattr(_created, "isoformat") else None,
+                        owner_label="You" if _mine else "Your workspace",
+                        ownership="mine" if _mine else "shared_with_me",
+                        visibility="private" if _mine else "shared",
+                        visibility_label="Private" if _mine else "Shared with you",
+                        # The state is the one thing worth knowing at a glance:
+                        # an app can be running, sleeping, or in error, and the
+                        # row is a link you are deciding whether to click.
+                        meta_text=(a.get("state") or "").replace("_", " "),
+                        share_type=None,
+                        owner_key="me" if _mine else "workspace",
+                    )
+                )
+        except Exception as e:
+            logger.warning("/library: could not resolve data apps: %s", e)
+
     # Recipes — granted, resolved straight off the repo (no _fetch_entries
     # support for this type in StackResolver).
     try:
@@ -3658,6 +3739,7 @@ async def library_page(
     # Unlisted types fall to the end, alphabetically.
     _SECTION_ORDER = [
         "data_package",
+        "data_app",
         "plugin",
         "skill",
         "agent",
@@ -3688,6 +3770,7 @@ async def library_page(
         "agent": "Agents",
         "recipe": "Recipes",
         "data_package": "Data packages",
+        "data_app": "Apps",
         "memory_domain": "Memory",
     }
     #: One line per group, in the header beside the label — the same slot My
@@ -3703,6 +3786,7 @@ async def library_page(
         "agent": "Assistants you installed.",
         "recipe": "Prepared analyses you can run.",
         "data_package": "Governed data you can query.",
+        "data_app": "Hosted apps running next to your data.",
         "memory_domain": "Curated organizational knowledge.",
     }
     #: Marker for a kind that will land INSIDE an existing section rather than
@@ -3712,16 +3796,15 @@ async def library_page(
     #: appear; it is not worth a paragraph above the inventory the reader came
     #: for. Rendered by `group_toggle`, so the table and the grid pick it up
     #: from one place.
-    _SECTION_SOON = {
-        "files": "Data apps coming soon",
-    }
-    _SECTION_SOON_TIP = {
-        "files": (
-            "Hosted apps that run next to your data will appear here. You'll be "
-            "able to build them with Agnes or link an existing one. Nothing to "
-            "do yet."
-        ),
-    }
+    #: "<kind> coming soon" badges, keyed by the section the kind will ship
+    #: INTO. Empty because the one entry it carried — "Data apps coming soon",
+    #: on the Files band — has shipped: apps now have their own section above,
+    #: and leaving the badge would have the same page list your apps and tell
+    #: you they do not exist yet (Devin Review on this PR). The mechanism stays
+    #: for the next kind; the badge is meant to delete itself when the kind
+    #: lands, which is what this is.
+    _SECTION_SOON: dict[str, str] = {}
+    _SECTION_SOON_TIP: dict[str, str] = {}
     #: Each section wears the SAME accent its members' detail pages wear, so a
     #: type is recognizable by colour before the label is read. Values are the
     #: `--ds-kind-*` vocabulary the detail hero resolves through
@@ -3734,6 +3817,7 @@ async def library_page(
         "agent": ("agent", "agent"),
         "recipe": ("recipe", "recipes"),
         "data_package": ("data", "data"),
+        "data_app": ("app", "app"),
         "memory_domain": ("memory", "memory"),
     }
 

@@ -676,7 +676,8 @@ server-side `agnes query` resolves.
 
 Attachments (images, logs, PDFs) are stored on the server alongside parquet
 data and are **not** distributed via `agnes pull` (the manifest only
-advertises parquet tables). The `jira_attachments` table has a `local_path`
+advertises parquet tables). The `attachments` catalogue table (the
+connector's table names are unprefixed) has a `local_path`
 column with the server-side filesystem path:
 
 ```sql
@@ -685,7 +686,7 @@ SELECT
     filename,
     local_path,
     size_bytes
-FROM jira_attachments
+FROM attachments
 WHERE issue_key = 'SUPPORT-1234';
 ```
 
@@ -695,11 +696,55 @@ issue_key     | filename        | local_path                                    
 SUPPORT-1234  | screenshot.png  | /data/src_data/raw/jira/attachments/SUPPORT-1234/... | 45678
 ```
 
-To pull the actual file to a workstation, operators with SSH access to the
-host can `scp` / `rsync` from the path above. Public OSS does not ship a
-client-side attachment-fetch primitive — wire one up per deployment if
-attachment access is required (e.g. a thin admin endpoint that streams the
-file with the same RBAC gate as the parquet table).
+To pull the actual file to a workstation, fetch it by id over the
+authenticated API — no SSH to the host required:
+
+```bash
+agnes attachment get jira 56340            # writes the original filename
+agnes attachment get jira 56340 -o img.png
+```
+
+(`GET /api/attachments/jira/{attachment_id}/download` underneath.) The gate
+is read access to the `attachments` catalogue table — the same RBAC as the
+parquet download — and every fetch is audited.
+
+Setup note: the parquet pipeline itself never requires the metadata-only
+`attachments` table to be *registered*, so on many deployments it is not —
+and an unregistered table fails closed, meaning analysts get the
+table-not-in-your-stack 403 until an admin registers `attachments`
+(`POST /api/admin/register-table` or `/admin/tables`) and adds it to a data
+package granted to their group. Admins pass via god-mode either way. A 404 with code
+`attachment_not_stored` means the catalogue row exists but the server holds
+no bytes (over-50MB skip or transform-time miss): fall back to the Jira REST
+API for exactly those.
+
+Both attachment publishers pin the published file's mode to `0o660` (group
+rw, no world-read) — the same pin the connector's issue-JSON writer uses.
+That assumes the documented storage setup: the serving process shares the
+data group (`data-ops` in the recipes above, or an equivalent POSIX ACL)
+with whatever wrote the file — the webhook writer IS the API process, but
+the batch backfill runs as `root:data-ops`, so an API process outside that
+group gets `EACCES` on backfill-written files. That misconfiguration is
+deliberately loud, not a silent miss: every fetch answers 503
+`attachment_unreadable` with a server-log warning naming the path — align
+the groups (or the ACL) rather than widening the file mode; world-readable
+attachments were rejected in review.
+
+Rollout note for existing deployments: `local_path` is written at
+*transform* time, and the webhook path historically ran its transform
+BEFORE the attachment download (worker-timeout rationale) — so attachments
+first ingested via a single webhook event carry `local_path = NULL` even
+though the bytes are on disk, and the endpoint answers
+`attachment_not_stored` for them. New events heal their own issue (the
+webhook now re-transforms after a download actually lands new files), but
+history does not heal itself: after upgrading, run the one-off full
+re-transform from the backfill section above — **with `--attachments-dir`**,
+which is also mandatory for any batch invocation; omitting it rewrites the
+whole `attachments` history with `local_path = NULL` and produces a
+catalogue this endpoint can never serve from. The catalogue declaration (table, id/path columns,
+permitted root) lives in `src/attachment_sources.py`; any connector that
+stores attachments adds its own declaration there and reuses the same
+route and CLI command.
 
 ## Future Improvements
 
@@ -709,4 +754,6 @@ file with the same RBAC gate as the parquet table).
 - [x] ~~SLA polling for open tickets~~ (Implemented: jira_poll_sla.py, 15min timer)
 - [ ] Comment attachment extraction (inline images in ADF)
 - [ ] Custom field name resolution from Jira metadata API
-- [ ] Attachment binary sync to analysts (currently metadata only)
+- [x] ~~Attachment binary access for analysts~~ (Implemented: lazy per-id fetch via
+  `agnes attachment get jira <id>` / `GET /api/attachments/jira/{id}/download` —
+  deliberately not manifest sync, so no analyst carries a multi-GB mirror)
