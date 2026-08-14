@@ -9,6 +9,7 @@ network connection or a subprocess. Covers:
   bearer / basic / none / missing-env-var.
 * Unsupported transport raises ``NotImplementedError`` with a clear message.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -167,7 +168,7 @@ def _patch_stdio_everywhere(monkeypatch, params_factory, streams_cm, session_cto
     monkeypatch.setattr(mcp_client, "ClientSession", session_ctor)
     monkeypatch.setattr(session_pool, "stdio_client", streams_cm)
     monkeypatch.setattr(session_pool, "ClientSession", session_ctor)
-    monkeypatch.setattr(session_pool, "spec_key", lambda params: "test-key")
+    monkeypatch.setattr(session_pool, "spec_key", lambda params, **kw: "test-key")
 
 
 @pytest.mark.parametrize("pooled", (True, False))
@@ -186,9 +187,7 @@ def test_stdio_env_is_base_secret_overlays(monkeypatch, pooled):
 
     monkeypatch.setenv("AGNES_MCP_SESSION_POOL", "1" if pooled else "0")
     _patch_stdio_everywhere(monkeypatch, _fake_stdio_params, fake_stdio, ctor)
-    monkeypatch.setattr(
-        mcp_client, "_lookup_secret_for_source", lambda src, **kw: "tok-123"
-    )
+    monkeypatch.setattr(mcp_client, "_lookup_secret_for_source", lambda src, **kw: "tok-123")
 
     src = {
         "transport": "stdio",
@@ -247,3 +246,52 @@ def test_unknown_transport_raises_notimplemented():
 
     with pytest.raises(NotImplementedError, match="websocket"):
         asyncio.run(_drive())
+
+
+# ── per-user pool-key salting ──────────────────────────────────────────────
+
+
+class _RecordingPool:
+    """Stands in for the session pool; records the key_salt of every acquire."""
+
+    def __init__(self) -> None:
+        self.salts: list = []
+
+    @asynccontextmanager
+    async def acquire(self, params, *, key_salt=""):
+        self.salts.append(key_salt)
+        yield MagicMock(name="pooled-session")
+
+
+@pytest.mark.parametrize(
+    "scope,caller,expected",
+    [
+        ("per_user", "alice", "user:alice"),
+        ("per_user", "bob", "user:bob"),
+        ("per_user", None, ""),  # caller-less materialize: one identity, unsalted
+        ("shared", "alice", ""),
+        (None, "alice", ""),  # scope defaults to shared
+    ],
+)
+def test_stdio_pool_key_is_salted_with_the_user_for_per_user_sources(monkeypatch, scope, caller, expected):
+    """A `scope='per_user'` source must never share a warm subprocess between
+    two users, even when their resolved credentials coincide (no stored
+    secret, or an identical value): the upstream process can retain
+    per-session state. `_open_session` is the one seam that knows both the
+    scope and the caller, so it salts the pool key there."""
+    from connectors.mcp import session_pool
+
+    pool = _RecordingPool()
+    monkeypatch.setattr(session_pool, "pool_enabled", lambda: True)
+    monkeypatch.setattr(session_pool, "get_pool", lambda: pool)
+
+    src = {"transport": "stdio", "command": "crm-mcp"}
+    if scope is not None:
+        src["scope"] = scope
+
+    async def _drive():
+        async with mcp_client._open_session(src, caller_user_id=caller):
+            pass
+
+    asyncio.run(_drive())
+    assert pool.salts == [expected]

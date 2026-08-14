@@ -673,7 +673,18 @@ async def _open_session(
         from connectors.mcp import session_pool
 
         if session_pool.pool_enabled():
-            async with session_pool.get_pool().acquire(params) as session:
+            # A per_user source must never share a warm process between two
+            # users: resolved credentials are not proof of identity (two
+            # users with no stored secret — or an identical value — build
+            # the same launch spec), and the upstream process can retain
+            # per-session state. Salting the pool key with the caller makes
+            # the isolation structural. The caller-less scheduled path
+            # (materialize, ``caller_user_id=None``) is a single identity
+            # and stays unsalted.
+            key_salt = ""
+            if (source.get("scope") or "shared").lower() == "per_user" and caller_user_id:
+                key_salt = f"user:{caller_user_id}"
+            async with session_pool.get_pool().acquire(params, key_salt=key_salt) as session:
                 yield session
             return
         async with stdio_client(params) as (read, write):

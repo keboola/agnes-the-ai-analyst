@@ -28,6 +28,11 @@ class _FakeSession:
     async def initialize(self) -> None:
         self.initialized = True
 
+    async def call_tool(self, name, arguments=None, **kwargs):
+        if name == "stuck":
+            await asyncio.Event().wait()  # never returns
+        return {"name": name, "arguments": arguments}
+
 
 @pytest.fixture
 def spawns(monkeypatch):
@@ -81,6 +86,67 @@ class TestKeying:
         key = session_pool.spec_key(_params({"KBC_STORAGE_TOKEN": "super-secret-value"}))
         assert "super-secret-value" not in key
 
+    def test_the_per_user_salt_separates_identical_specs(self):
+        """A `scope='per_user'` source must not share one warm process between
+        users even when their resolved credentials coincide — no stored secret,
+        or an identical shared value — because the upstream process can retain
+        per-session state. The caller's id salts the key, so the isolation is
+        structural, not an accident of differing tokens."""
+        p = _params({"T": "same-for-everyone"})
+        alice = session_pool.spec_key(p, salt="user:alice")
+        bob = session_pool.spec_key(p, salt="user:bob")
+        assert alice != bob
+        assert session_pool.spec_key(p, salt="user:alice") == alice
+        assert session_pool.spec_key(p) != alice, "an unsalted caller must not collide with a salted one"
+
+    def test_the_salt_is_not_in_the_key_in_the_clear(self):
+        key = session_pool.spec_key(_params(), salt="user:alice@example.com")
+        assert "alice" not in key
+
+
+class TestEnvNumber:
+    """`_env_number` must be total — it runs at import, where an exception
+    takes the whole connector down (the exact outcome its docstring promises
+    to avoid)."""
+
+    @pytest.mark.parametrize("raw", ["nan", "inf", "-inf", "NaN", "Infinity"])
+    def test_a_non_finite_value_falls_back_for_a_float_tunable(self, monkeypatch, raw):
+        """`float('nan')` parses fine, and then `IDLE_TIMEOUT_S = nan` makes
+        every idle-expiry comparison false — sessions never age out."""
+        monkeypatch.setenv("AGNES_MCP_TEST_KNOB", raw)
+        assert session_pool._env_number("AGNES_MCP_TEST_KNOB", 180.0) == 180.0
+
+    @pytest.mark.parametrize("raw", ["nan", "inf", "-inf"])
+    def test_a_non_finite_value_survives_the_int_conversion(self, monkeypatch, raw):
+        """`MAX_SESSIONS` wraps `_env_number` in `int()`: `int(float('nan'))`
+        raises ValueError and `int(float('inf'))` raises OverflowError."""
+        monkeypatch.setenv("AGNES_MCP_TEST_KNOB", raw)
+        assert int(session_pool._env_number("AGNES_MCP_TEST_KNOB", 8.0)) == 8
+
+    def test_non_finite_tunables_do_not_crash_the_import(self, monkeypatch):
+        """The real thing the guard exists for: re-executing the module with
+        poisoned env must land every knob on its default, not raise."""
+        import importlib
+
+        poisoned = {
+            "AGNES_MCP_SESSION_POOL_MAX": "nan",
+            "AGNES_MCP_SESSION_IDLE_S": "inf",
+            "AGNES_MCP_SESSION_SPAWN_TIMEOUT_S": "-inf",
+            "AGNES_MCP_SESSION_CALL_TIMEOUT_S": "nan",
+        }
+        for var, raw in poisoned.items():
+            monkeypatch.setenv(var, raw)
+        try:
+            mod = importlib.reload(session_pool)
+            assert mod.MAX_SESSIONS == 8
+            assert mod.IDLE_TIMEOUT_S == 180.0
+            assert mod.SPAWN_TIMEOUT_S == 60.0
+            assert mod.CALL_TIMEOUT_S == 300.0
+        finally:
+            for var in poisoned:
+                monkeypatch.delenv(var)
+            importlib.reload(session_pool)
+
 
 class TestReuse:
     def test_the_same_spec_starts_one_process(self, spawns):
@@ -130,6 +196,20 @@ class TestReuse:
 
         asyncio.run(drive())
         assert calls["n"] == 1
+
+    def test_two_salted_users_with_identical_specs_get_separate_processes(self, spawns):
+        """The pool half of the per-user salt: same launch spec, different
+        `key_salt` — two processes, and each user's process is reused only
+        under their own salt."""
+
+        async def drive():
+            pool = session_pool.get_pool()
+            for salt in ("user:alice", "user:bob", "user:alice"):
+                async with pool.acquire(_params({"T": "x"}), key_salt=salt):
+                    pass
+
+        asyncio.run(drive())
+        assert spawns["n"] == 2, "two users shared one warm process (or reuse per user broke)"
 
 
 class TestLifecycle:
@@ -368,6 +448,183 @@ class TestCancellation:
 
         asyncio.run(drive())
         assert spawns["n"] == 2, "a session abandoned mid-call was handed to the next caller"
+
+
+class TestHungStartup:
+    """An upstream that starts but never answers `initialize` must not wedge
+    every caller of its spec forever: the spawner's wait was unbounded, and
+    concurrent callers park on the shared single-flight marker behind it."""
+
+    def _hang_first_initialize(self, monkeypatch):
+        counter = {"n": 0, "closed": 0}
+        hang = {"remaining": 1}
+
+        @asynccontextmanager
+        async def _fake_stdio_client(params):
+            counter["n"] += 1
+            try:
+                yield (object(), object())
+            finally:
+                counter["closed"] += 1
+
+        class _NeverReady:
+            async def initialize(self):
+                await asyncio.Event().wait()  # never answers
+
+        class _FakeClientSession:
+            def __init__(self, read, write):
+                if hang["remaining"] > 0:
+                    hang["remaining"] -= 1
+                    self._s = _NeverReady()
+                else:
+                    self._s = _FakeSession()
+
+            async def __aenter__(self):
+                return self._s
+
+            async def __aexit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(session_pool, "stdio_client", _fake_stdio_client)
+        monkeypatch.setattr(session_pool, "ClientSession", _FakeClientSession)
+        return counter
+
+    def test_a_spawn_that_never_initializes_times_out_and_is_cleaned_up(self, monkeypatch):
+        monkeypatch.setattr(session_pool, "SPAWN_TIMEOUT_S", 0.05)
+        counter = self._hang_first_initialize(monkeypatch)
+
+        async def drive():
+            pool = session_pool.get_pool()
+            with pytest.raises(TimeoutError, match="initializ"):
+                async with pool.acquire(_params({"T": "x"})):
+                    pass  # pragma: no cover
+            assert not pool._state().spawning, "the spawn marker was left behind"
+            # Cancelling the keeper is what unwinds the transport and kills
+            # the half-started subprocess; wait for the stand-in to close.
+            await _wait_until(lambda: counter["closed"] >= 1)
+            assert counter["closed"] == 1, "the half-spawned process was orphaned"
+            # The next acquire must attempt (and here: complete) a fresh spawn.
+            async with pool.acquire(_params({"T": "x"})):
+                pass
+
+        asyncio.run(asyncio.wait_for(drive(), timeout=5))
+        assert counter["n"] == 2
+
+    def test_a_caller_waiting_on_a_hung_spawn_recovers(self, monkeypatch):
+        """The second caller parked on the single-flight marker must not hang
+        with the spawner: when the spawn times out the marker is released, and
+        the waiter retries with a fresh spawn of its own."""
+        monkeypatch.setattr(session_pool, "SPAWN_TIMEOUT_S", 0.05)
+        counter = self._hang_first_initialize(monkeypatch)
+
+        async def drive():
+            pool = session_pool.get_pool()
+
+            async def call():
+                async with pool.acquire(_params({"T": "x"})):
+                    pass
+
+            results = await asyncio.gather(call(), call(), return_exceptions=True)
+            failures = [r for r in results if isinstance(r, BaseException)]
+            assert len(failures) == 1, f"expected exactly the spawner to fail, got {results!r}"
+            assert isinstance(failures[0], TimeoutError)
+
+        asyncio.run(asyncio.wait_for(drive(), timeout=5))
+        assert counter["n"] == 2, "the waiter did not retry with a fresh spawn"
+
+
+class TestStuckCall:
+    def test_a_call_past_the_ceiling_errors_and_evicts(self, spawns, monkeypatch):
+        """One upstream call that never returns must cost that one call, not
+        the source: the pooled `call_tool` is bounded, and the timeout rides
+        the existing eviction path so the process is closed."""
+        monkeypatch.setattr(session_pool, "CALL_TIMEOUT_S", 0.05)
+
+        async def drive():
+            pool = session_pool.get_pool()
+            with pytest.raises(TimeoutError, match="did not return"):
+                async with pool.acquire(_params({"T": "x"})) as session:
+                    await session.call_tool("stuck", {})
+            # Evicted and closed: the next acquire starts a fresh process.
+            async with pool.acquire(_params({"T": "x"})) as session:
+                result = await session.call_tool("fine", {})
+                assert result["name"] == "fine"
+
+        asyncio.run(asyncio.wait_for(drive(), timeout=5))
+        assert spawns["n"] == 2, "the session that swallowed a call was handed out again"
+        assert spawns["closed"] >= 1
+
+    def test_a_caller_supplied_read_timeout_is_not_overridden(self, monkeypatch):
+        """A caller that chose its own `read_timeout_seconds` keeps it — the
+        pool's default is a default, not a clamp."""
+        from datetime import timedelta
+
+        monkeypatch.setattr(session_pool, "CALL_TIMEOUT_S", 0.05)
+        seen = {}
+
+        class _Recording:
+            async def initialize(self):
+                pass
+
+            async def call_tool(self, name, arguments=None, read_timeout_seconds=None, **kwargs):
+                seen["read_timeout_seconds"] = read_timeout_seconds
+                return {"name": name}
+
+        @asynccontextmanager
+        async def _fake_stdio_client(params):
+            yield (object(), object())
+
+        class _FakeClientSession:
+            def __init__(self, read, write):
+                self._s = _Recording()
+
+            async def __aenter__(self):
+                return self._s
+
+            async def __aexit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(session_pool, "stdio_client", _fake_stdio_client)
+        monkeypatch.setattr(session_pool, "ClientSession", _FakeClientSession)
+
+        async def drive():
+            pool = session_pool.get_pool()
+            async with pool.acquire(_params({"T": "x"})) as session:
+                await session.call_tool("t", {}, read_timeout_seconds=timedelta(seconds=42))
+
+        asyncio.run(drive())
+        assert seen["read_timeout_seconds"] == timedelta(seconds=42)
+
+    def test_a_waiter_behind_a_stuck_call_gets_a_clear_error_not_a_hang(self, spawns, monkeypatch):
+        """Calls on one session are serialized; the wait for that lock was
+        unbounded, so one wedged call queued every later caller of the source
+        forever. The waiter must fail with a clear busy error instead."""
+        monkeypatch.setattr(session_pool, "CALL_TIMEOUT_S", 0.05)
+        monkeypatch.setattr(session_pool, "CLOSE_TIMEOUT_S", 0.0)  # lock budget = CALL + 2*CLOSE
+
+        async def drive():
+            pool = session_pool.get_pool()
+            inside = asyncio.Event()
+            release = asyncio.Event()
+
+            async def holder():
+                async with pool.acquire(_params({"T": "x"})):
+                    inside.set()
+                    await release.wait()  # holds the entry lock, no tool call
+
+            async def waiter():
+                await inside.wait()
+                with pytest.raises(TimeoutError, match="busy"):
+                    async with pool.acquire(_params({"T": "x"})):
+                        pass  # pragma: no cover
+
+            holder_task = asyncio.create_task(holder())
+            await waiter()
+            release.set()
+            await holder_task
+
+        asyncio.run(asyncio.wait_for(drive(), timeout=5))
+        assert spawns["n"] == 1, "the busy error should not have evicted the healthy holder"
 
 
 class _GatedTransport:

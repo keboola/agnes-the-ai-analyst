@@ -14,9 +14,14 @@ safe, each pinned by a test in ``tests/test_mcp_session_pool.py``:
 **The key is the whole launch spec, secret included.** Not the source id. A
 rotated token, an edited ``env``, a bumped runner version — each produces a
 different key, so the next call builds a fresh process and the stale one ages
-out on its own. There is no invalidation hook to forget to call. It also means
-a ``scope='per_user'`` source cannot hand one analyst's warm process to
-another: their resolved credentials differ, so their keys differ.
+out on its own. There is no invalidation hook to forget to call. For a
+``scope='per_user'`` source the caller's user id is folded in as well
+(``acquire``'s ``key_salt``, supplied by ``client._open_session``): resolved
+credentials alone are not proof of identity — two users with no stored
+secret, or an identical shared value, would hash to one key and share a
+process that can retain per-session state — so one analyst never gets
+another's warm process by construction, not by the accident of differing
+tokens.
 
 **A session is only ever reused on the event loop that created it.** The
 session, its keeper task, and the ``Event``/``Future`` it parks on all belong
@@ -30,7 +35,12 @@ reason.
 **Calls on one session are serialized.** The MCP session multiplexes by
 request id, but the streams underneath are not documented as safe for
 concurrent writers, and serializing costs nothing today — every caller was
-already paying a full process spawn, so nobody was concurrent.
+already paying a full process spawn, so nobody was concurrent. Serialization
+must not mean an unbounded queue: a pooled ``call_tool`` carries a default
+ceiling (``CALL_TIMEOUT_S`` — on expiry the call errors and the eviction
+path closes the process), and a caller waiting for the session gives up with
+a clear error once the call ahead of it must itself have timed out. One
+wedged upstream call is one failed call, not a permanent per-source outage.
 
 **An entry is reserved before it is handed out.** The idle sweep and the cap
 close only sessions nobody has claimed, and a caller's claim is registered
@@ -41,6 +51,11 @@ looks idle and can be closed out from under the caller that asked for it.
 must not queue every other source's tool calls behind it, so a spawn is
 serialized per key (via an in-flight marker) and the pool-wide guard covers
 only the bookkeeping. Teardown likewise runs after the guard is released.
+Startup is bounded (``SPAWN_TIMEOUT_S``): an upstream that launches but
+never answers ``initialize`` would otherwise park its spawner — and every
+same-spec caller queued on the single-flight marker — forever. On expiry the
+half-started process is cancelled, the marker is released, and the next
+caller spawns fresh.
 
 **A failed or abandoned call evicts, and never retries.** Retrying is the
 caller's decision, because a retry of a mutating tool can run it twice. The
@@ -64,9 +79,10 @@ next caller.
 
 The reuse switch is ``mcp_session_pool`` in ``app.switches`` (env
 ``AGNES_MCP_SESSION_POOL``, config ``mcp.session_pool``); off means a process
-per call. ``AGNES_MCP_SESSION_IDLE_S`` / ``AGNES_MCP_SESSION_POOL_MAX`` are
-process-level tuning read at import — see ``docs/feature-flags.md`` for why
-they are not registry switches.
+per call. ``AGNES_MCP_SESSION_IDLE_S`` / ``AGNES_MCP_SESSION_POOL_MAX`` /
+``AGNES_MCP_SESSION_SPAWN_TIMEOUT_S`` / ``AGNES_MCP_SESSION_CALL_TIMEOUT_S``
+are process-level tuning read at import — see ``docs/feature-flags.md`` for
+why they are not registry switches.
 """
 
 from __future__ import annotations
@@ -76,12 +92,13 @@ import contextlib
 import hashlib
 import json
 import logging
+import math
 import os
 import threading
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import AsyncIterator, Dict, List, Optional, Set
+from typing import Any, AsyncIterator, Dict, List, Optional, Set, cast
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -94,16 +111,24 @@ def _env_number(name: str, default: float) -> float:
 
     Deliberately total: these are read at import, and a typo'd value that
     raised here would take the whole connector down — a strictly worse
-    outcome than running on the default.
+    outcome than running on the default. That is why non-finite values are
+    rejected too: ``float("nan")`` and ``float("inf")`` parse, and then
+    ``int()`` at the ``MAX_SESSIONS`` assignment below raises (``ValueError``
+    / ``OverflowError``) at import — and a ``nan`` idle timeout makes every
+    expiry comparison false, so sessions never age out.
     """
     raw = os.environ.get(name)
     if raw is None or not raw.strip():
         return default
     try:
-        return float(raw)
+        value = float(raw)
     except ValueError:
         logger.warning("%s=%r is not a number; using %s", name, raw, default)
         return default
+    if not math.isfinite(value):
+        logger.warning("%s=%r is not finite; using %s", name, raw, default)
+        return default
+    return value
 
 
 #: How long an unused session is kept before it is closed. Long enough to
@@ -119,6 +144,20 @@ MAX_SESSIONS = int(_env_number("AGNES_MCP_SESSION_POOL_MAX", 8.0))
 
 #: How long teardown waits for a keeper task to unwind before giving up on it.
 CLOSE_TIMEOUT_S = 10.0
+
+#: How long a starting upstream may take to become ready — the subprocess
+#: spawn plus its ``initialize`` handshake. Unbounded, a server that starts
+#: but never answers ``initialize`` parks its spawner forever, and with it
+#: every same-spec caller queued on the single-flight marker. ``0`` disables.
+SPAWN_TIMEOUT_S = _env_number("AGNES_MCP_SESSION_SPAWN_TIMEOUT_S", 60.0)
+
+#: Default ceiling on one pooled tool call. Calls on a warm session are
+#: serialized, so a call that never returns would hold the session's lock —
+#: and with it the whole source, for every caller — forever. Generous,
+#: because a legitimately slow tool beats a spurious timeout; on expiry the
+#: call errors and the session is evicted so the next call starts fresh.
+#: ``0`` disables this bound and the lock-wait bound derived from it.
+CALL_TIMEOUT_S = _env_number("AGNES_MCP_SESSION_CALL_TIMEOUT_S", 300.0)
 
 
 def pool_enabled() -> bool:
@@ -139,12 +178,17 @@ def pool_enabled() -> bool:
         return raw.strip().lower() not in ("0", "false", "no", "off", "")
 
 
-def spec_key(params: StdioServerParameters) -> str:
+def spec_key(params: StdioServerParameters, *, salt: str = "") -> str:
     """Fingerprint of everything that decides what process this would be.
 
     The resolved secret is part of it *by design* — see the module docstring.
     Hashed rather than stored, so the pool's bookkeeping never holds a
     credential in plain form, and never logs one.
+
+    ``salt`` folds in an identity the launch spec alone cannot carry: a
+    ``scope='per_user'`` source passes the calling user's id, so two users
+    never share one warm process even when their resolved credentials
+    coincide (no stored secret, or an identical value).
     """
     material = json.dumps(
         {
@@ -155,10 +199,54 @@ def spec_key(params: StdioServerParameters) -> str:
             # `json` happens not to like, and the only thing being asked of
             # these values is "did they change".
             "env": {str(k): str(v) for k, v in (params.env or {}).items()},
+            "salt": str(salt),
         },
         sort_keys=True,
     )
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+class _PooledSession:
+    """What ``acquire`` hands out: the warm session, with a default bound on
+    ``call_tool``.
+
+    Calls on one session are serialized (module docstring), so a call that
+    never returns would hold the serialization lock — and with it the whole
+    source — forever. The bound turns that into a typed error; the eviction
+    path in ``acquire`` then closes the process, so the request left in
+    flight is never inherited by the next caller. A caller that passes its
+    own ``read_timeout_seconds`` keeps it (the SDK enforces it upstream).
+    Everything else proxies through to the underlying session untouched.
+    """
+
+    __slots__ = ("_session",)
+
+    def __init__(self, session: ClientSession) -> None:
+        self._session = session
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._session, name)
+
+    async def call_tool(
+        self,
+        name: str,
+        arguments: Optional[Dict[str, Any]] = None,
+        read_timeout_seconds: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        if read_timeout_seconds is not None:
+            return await self._session.call_tool(name, arguments, read_timeout_seconds=read_timeout_seconds, **kwargs)
+        timeout = CALL_TIMEOUT_S
+        if timeout <= 0:
+            return await self._session.call_tool(name, arguments, **kwargs)
+        try:
+            return await asyncio.wait_for(self._session.call_tool(name, arguments, **kwargs), timeout=timeout)
+        except TimeoutError:
+            raise TimeoutError(
+                f"MCP tool call {name!r} did not return within {timeout:g}s "
+                "(AGNES_MCP_SESSION_CALL_TIMEOUT_S); the warm session is closed, "
+                "so the next call starts on a fresh process"
+            ) from None
 
 
 @dataclass
@@ -262,7 +350,10 @@ class _Pool:
 
         task = asyncio.ensure_future(_keeper())
         try:
-            session = await ready
+            if SPAWN_TIMEOUT_S > 0:
+                session = await asyncio.wait_for(ready, timeout=SPAWN_TIMEOUT_S)
+            else:
+                session = await ready
         except asyncio.CancelledError:
             # The caller was abandoned while the server was still starting —
             # `except Exception` would miss this (CancelledError is a
@@ -278,6 +369,24 @@ class _Pool:
             self._reapers.add(task)
             task.add_done_callback(self._reapers.discard)
             raise
+        except TimeoutError:
+            # The upstream started but never became ready (a wedged
+            # `initialize`). The keeper is parked inside the handshake, so
+            # only cancelling it unwinds the transport and kills the
+            # subprocess — same reasoning as the cancellation branch above,
+            # and tracked the same way. The caller gets a typed error;
+            # `_checkout` releases the spawn marker on it, so the callers
+            # queued behind this spawn retry fresh instead of inheriting a
+            # process that never answered.
+            close.set()
+            task.cancel()
+            self._reapers.add(task)
+            task.add_done_callback(self._reapers.discard)
+            raise TimeoutError(
+                f"MCP server did not finish initializing within {SPAWN_TIMEOUT_S:g}s "
+                "(AGNES_MCP_SESSION_SPAWN_TIMEOUT_S); its process was cancelled and "
+                "the next call will spawn fresh"
+            ) from None
         except BaseException:
             close.set()
             # `suppress`, so a keeper that will not unwind cannot replace the
@@ -505,14 +614,49 @@ class _Pool:
                 raise
             return entry
 
+    @staticmethod
+    async def _take_entry_lock(entry: _Entry) -> None:
+        """Take the entry's serialization lock, bounded when it is held.
+
+        Unbounded, one wedged call held every later caller of the source in
+        a silent queue forever. An uncontended lock is taken on the fast
+        path — no suspension, which also preserves the no-await window
+        between checkout and the staleness re-check that ``aclose``'s final
+        sweep relies on. A held one is waited for with a budget: what the
+        call ahead can possibly spend before the lock must come free — its
+        own call ceiling plus the teardown the eviction path pays under the
+        lock — so a healthy slow call is never preempted, and behind a
+        wedged one the wait turns into a clear error. ``CALL_TIMEOUT_S <= 0``
+        (the operator opting out of call bounds) leaves this wait unbounded
+        too.
+        """
+        if CALL_TIMEOUT_S <= 0 or not entry.lock.locked():
+            await entry.lock.acquire()
+            return
+        budget = CALL_TIMEOUT_S + 2 * CLOSE_TIMEOUT_S
+        try:
+            await asyncio.wait_for(entry.lock.acquire(), timeout=budget)
+        except TimeoutError:
+            raise TimeoutError(
+                f"pooled MCP session is busy: the call ahead of this one has held it "
+                f"for over {budget:g}s (AGNES_MCP_SESSION_CALL_TIMEOUT_S); giving up "
+                "instead of queueing forever"
+            ) from None
+
     @asynccontextmanager
-    async def acquire(self, params: StdioServerParameters) -> AsyncIterator[ClientSession]:
-        key = spec_key(params)
+    async def acquire(self, params: StdioServerParameters, *, key_salt: str = "") -> AsyncIterator[ClientSession]:
+        """Reserve the warm session for ``params`` (spawning it if needed).
+
+        ``key_salt`` — see :func:`spec_key`: per-user sources pass the
+        caller's identity so two users never share one process.
+        """
+        key = spec_key(params, salt=key_salt)
         state = self._state()
         while True:
             entry = await self._checkout(state, key, params)
             try:
-                async with entry.lock:
+                await self._take_entry_lock(entry)
+                try:
                     if state.entries.get(key) is not entry or entry.closed.done():
                         # The caller ahead of us in the queue hit a transport
                         # error and evicted this session while we waited for
@@ -523,7 +667,7 @@ class _Pool:
                         continue
                     entry.last_used = time.monotonic()
                     try:
-                        yield entry.session
+                        yield cast(ClientSession, _PooledSession(entry.session))
                     except BaseException as exc:
                         # Do NOT retry here: re-running a mutating tool because
                         # its transport hiccuped is worse than the error. Just
@@ -541,6 +685,8 @@ class _Pool:
                         raise
                     finally:
                         entry.last_used = time.monotonic()
+                finally:
+                    entry.lock.release()
             finally:
                 entry.reserved -= 1
             return
