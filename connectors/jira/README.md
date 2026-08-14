@@ -718,6 +718,18 @@ package granted to their group. Admins pass via god-mode either way. A 404 with 
 no bytes (over-50MB skip or transform-time miss): fall back to the Jira REST
 API for exactly those.
 
+Both attachment publishers pin the published file's mode to `0o660` (group
+rw, no world-read) — the same pin the connector's issue-JSON writer uses.
+That assumes the documented storage setup: the serving process shares the
+data group (`data-ops` in the recipes above, or an equivalent POSIX ACL)
+with whatever wrote the file — the webhook writer IS the API process, but
+the batch backfill runs as `root:data-ops`, so an API process outside that
+group gets `EACCES` on backfill-written files. That misconfiguration is
+deliberately loud, not a silent miss: every fetch answers 503
+`attachment_unreadable` with a server-log warning naming the path — align
+the groups (or the ACL) rather than widening the file mode; world-readable
+attachments were rejected in review.
+
 Rollout note for existing deployments: `local_path` is written at
 *transform* time, and the webhook path historically ran its transform
 BEFORE the attachment download (worker-timeout rationale) — so attachments
