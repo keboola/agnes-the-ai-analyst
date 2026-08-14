@@ -5881,6 +5881,7 @@
     "tests/test_chat_web_route.py::TestSkillUploadDialogDestinations::test_dialog_no_longer_titled_submit_to_the_store": 0.609909704999609,
     "tests/test_chat_web_route.py::TestSkillUploadDialogDestinations::test_no_dead_store_upload_link": 0.7102349460005826,
     "tests/test_chat_web_route.py::TestSkillUploadDialogDestinations::test_three_destination_checkboxes_with_private_default": 0.628363600999819,
+    "tests/test_chat_web_route.py::test_build_context_is_a_superset_of_chrome_ctx": 0.0025547919794917107,
     "tests/test_chat_web_route.py::test_can_chat_computed_without_conn_threaded": 0.00997949599968706,
     "tests/test_chat_web_route.py::test_can_chat_hidden_for_admin_without_explicit_grant": 0.009398485000019718,
     "tests/test_chat_web_route.py::test_chat_route_html": 0.7115359159997752,
