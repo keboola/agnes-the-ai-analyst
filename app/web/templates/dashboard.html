@@ -281,12 +281,9 @@
     </main>
     {% endif %}
 
-    <footer class="footer">
-        {# Footer credit is config-driven on every chrome (INSTANCE_COPYRIGHT):
-           the public distribution carries no vendor branding — an instance puts
-           its own name here via config. #}
-        <p>&copy; {{ now().year if now is defined else 2024 }} {{ config.INSTANCE_COPYRIGHT or 'AI Harness' }}</p>
-        </footer>
+    {# Shared footer partial — see _footer.html. `footer_class` keeps this
+       chrome's own `.footer` styling on the element. #}
+    {% with footer_class = 'footer' %}{% include '_footer.html' %}{% endwith %}
     {# Setup-CTA JS (copyToClipboard, defaultTokenName, showSetupFallback,
        setupNewClaude) + the SETUP_INSTRUCTIONS_TEMPLATE renderer all live
        in the shared partial below. Both /dashboard and /home include it

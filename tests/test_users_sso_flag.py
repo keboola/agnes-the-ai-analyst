@@ -294,10 +294,15 @@ def test_admin_users_template_gates_password_buttons_on_is_sso_user(fresh_db):
     assert resp.status_code == 200
     body = resp.text
     assert "u.is_sso_user" in body, "list-view template must reference u.is_sso_user"
-    # All three gated buttons must sit inside the conditional branch.
-    assert 'data-action="reset-password"' in body
-    assert 'data-action="set-password"' in body
-    assert 'data-action="delete-user"' in body
+    # The five-control row (Detail · Tokens · Reset · Set pwd · Delete) became
+    # one `⋯` menu built per row in JS, so the gate reads `data-sso` off the
+    # button rather than branching in Jinja, and the three items carry
+    # `data-act` handles. Same contract: the password and delete actions exist
+    # ONLY in the non-SSO branch — an SSO account has no password Agnes owns.
+    assert 'data-sso="${u.is_sso_user ? "1" : ""}"' in body, "the row must publish the SSO flag"
+    gated = body.split("btn.dataset.sso ?")[1].split("`}`")[0]
+    for act in ('data-act="reset"', 'data-act="setpwd"', 'data-act="delete"'):
+        assert act in gated, f"{act} must sit inside the non-SSO branch"
 
 
 def test_admin_user_detail_template_gates_password_buttons_on_is_sso_user(fresh_db):

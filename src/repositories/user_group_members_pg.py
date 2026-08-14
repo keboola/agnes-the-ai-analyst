@@ -4,6 +4,7 @@ Mirrors ``src/repositories/user_group_members.py``. Uses PG's
 ``ON CONFLICT DO NOTHING`` for idempotent inserts instead of DuckDB's
 catch-IntegrityError pattern.
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
@@ -42,25 +43,27 @@ class UserGroupMembersPgRepository:
 
     def list_members_for_group(self, group_id: str) -> List[Dict[str, Any]]:
         with self._engine.connect() as conn:
-            rows = conn.execute(
-                sa.text(
-                    """SELECT u.id, u.email, u.name, u.active,
+            rows = (
+                conn.execute(
+                    sa.text(
+                        """SELECT u.id, u.email, u.name, u.active,
                               m.source, m.added_at, m.added_by
                        FROM user_group_members m
                        JOIN users u ON u.id = m.user_id
                        WHERE m.group_id = :g
                        ORDER BY u.email"""
-                ),
-                {"g": group_id},
-            ).mappings().all()
+                    ),
+                    {"g": group_id},
+                )
+                .mappings()
+                .all()
+            )
         return [dict(r) for r in rows]
 
     def has_membership(self, user_id: str, group_id: str) -> bool:
         with self._engine.connect() as conn:
             row = conn.execute(
-                sa.text(
-                    "SELECT 1 FROM user_group_members WHERE user_id = :u AND group_id = :g"
-                ),
+                sa.text("SELECT 1 FROM user_group_members WHERE user_id = :u AND group_id = :g"),
                 {"u": user_id, "g": group_id},
             ).first()
         return row is not None
@@ -118,10 +121,7 @@ class UserGroupMembersPgRepository:
     ) -> None:
         with self._engine.begin() as conn:
             conn.execute(
-                sa.text(
-                    "DELETE FROM user_group_members "
-                    "WHERE user_id = :u AND source = 'google_sync'"
-                ),
+                sa.text("DELETE FROM user_group_members WHERE user_id = :u AND source = 'google_sync'"),
                 {"u": user_id},
             )
             for group_id in group_ids:
@@ -138,9 +138,7 @@ class UserGroupMembersPgRepository:
     def remove_user_from_all_groups(self, user_id: str) -> int:
         with self._engine.begin() as conn:
             rows = conn.execute(
-                sa.text(
-                    "DELETE FROM user_group_members WHERE user_id = :u RETURNING 1"
-                ),
+                sa.text("DELETE FROM user_group_members WHERE user_id = :u RETURNING 1"),
                 {"u": user_id},
             ).all()
         return len(rows)
@@ -157,9 +155,7 @@ class UserGroupMembersPgRepository:
         """Drop every membership row pointing at ``group_id``."""
         with self._engine.begin() as conn:
             rows = conn.execute(
-                sa.text(
-                    "DELETE FROM user_group_members WHERE group_id = :g RETURNING 1"
-                ),
+                sa.text("DELETE FROM user_group_members WHERE group_id = :g RETURNING 1"),
                 {"g": group_id},
             ).all()
         return len(rows)
@@ -223,16 +219,22 @@ class UserGroupMembersPgRepository:
     def has_any_google_sync_membership(self, user_id: str) -> bool:
         with self._engine.connect() as conn:
             row = conn.execute(
-                sa.text(
-                    "SELECT 1 FROM user_group_members "
-                    "WHERE user_id = :u AND source = 'google_sync' LIMIT 1"
-                ),
+                sa.text("SELECT 1 FROM user_group_members WHERE user_id = :u AND source = 'google_sync' LIMIT 1"),
                 {"u": user_id},
             ).first()
         return row is not None
 
     def google_sync_summary(self, user_id: str) -> Dict[str, Any]:
-        """Mirrors ``UserGroupMembersRepository.google_sync_summary``."""
+        """Mirrors ``UserGroupMembersRepository.google_sync_summary`` — same
+        return contract, deliberately NOT the same query shape.
+
+        The DuckDB sibling folds the rows in Python instead of aggregating in
+        SQL, to dodge an optimizer crash on DuckDB 1.5.2 (see the comment on
+        that method). Postgres has no such problem, so it keeps the honest
+        ``COUNT(*) / MAX(...)``. Do not "de-drift" these into one shape: pushing
+        the aggregate back into DuckDB's SQL reintroduces the crash for installs
+        still on 1.5.2. Both backends are pinned by the same contract test.
+        """
         with self._engine.connect() as conn:
             row = conn.execute(
                 sa.text(
