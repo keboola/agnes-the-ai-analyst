@@ -1069,7 +1069,17 @@ class JiraService:
             issue_key: Issue key for organizing files
 
         Returns:
-            Path to downloaded file or None if download failed
+            Path to the file if THIS call newly published it; ``None`` when
+            nothing new landed — download failed, skipped by policy, or the
+            file is already on disk. Jira attachment ids are immutable (a
+            re-upload mints a new id), so an existing ``<id>_<name>`` file is
+            already the right bytes; re-fetching it on every webhook event
+            both wasted bandwidth and made ``save_issue``'s post-download
+            re-transform gate fire on every event for any attachment-bearing
+            issue (Devin on #1297). Callers that need "already present" to
+            count as success (the backfill's ``--dry-run`` bookkeeping) use
+            the backfill sibling, whose exists-skip RETURNS the path — the
+            asymmetry is deliberate.
         """
         content_url = attachment.get("content")
         filename = attachment.get("filename", "unknown")
@@ -1111,6 +1121,10 @@ class JiraService:
             file_path = safe_join_under(issue_attachments_dir, safe_filename)
         except ValueError as e:
             logger.error(f"Path traversal blocked for attachment filename {safe_filename!r}: {e}")
+            return None
+
+        if file_path.exists():
+            logger.debug(f"Attachment {safe_filename} already on disk; skipping download")
             return None
 
         try:
@@ -1168,7 +1182,10 @@ class JiraService:
             issue_data: Complete issue data from Jira API
 
         Returns:
-            List of paths to downloaded files
+            List of paths NEWLY downloaded by this call. Files already on
+            disk are skipped and not listed (see ``download_attachment``), so
+            an empty list means "nothing new" — which is exactly what
+            ``save_issue`` gates its post-download re-transform on.
         """
         issue_key = issue_data.get("key", "unknown")
         downloaded = []

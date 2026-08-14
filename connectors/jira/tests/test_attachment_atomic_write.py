@@ -259,3 +259,24 @@ def test_save_issue_retransforms_after_attachment_download(svc, monkeypatch):
     out = svc.save_issue({"key": "PROJ-9", "fields": {}})
     assert out is not None
     assert calls == [("PROJ-9", True)]
+
+
+def test_existing_attachment_is_not_refetched_and_not_reported_new(svc):
+    """Devin on #1297 — the webhook downloader had no already-on-disk
+    short-circuit, so every event re-fetched every attachment AND the
+    save_issue re-transform gate fired on every event for any
+    attachment-bearing issue. Jira attachment ids are immutable, so an
+    existing <id>_<name> file is already the right bytes: the second call
+    must not fetch and must not report a new publish."""
+    with patch("connectors.jira.service.httpx.Client", _fake_client(b"abc")):
+        first = svc.download_attachment(_attachment("keep.bin"), "PROJ-1")
+    assert first is not None and first.read_bytes() == b"abc"
+
+    class _MustNotFetch:
+        def __init__(self, *a, **k):
+            raise AssertionError("HTTP client constructed for an already-present attachment")
+
+    with patch("connectors.jira.service.httpx.Client", _MustNotFetch):
+        again = svc.download_attachment(_attachment("keep.bin"), "PROJ-1")
+    assert again is None, "already-present must not count as a NEW publish"
+    assert first.read_bytes() == b"abc", "existing bytes untouched"
