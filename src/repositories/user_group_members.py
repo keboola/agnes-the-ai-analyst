@@ -170,8 +170,7 @@ class UserGroupMembersRepository:
             try:
                 self.conn.execute("BEGIN")
                 self.conn.execute(
-                    "DELETE FROM user_group_members "
-                    "WHERE user_id = ? AND source = 'google_sync'",
+                    "DELETE FROM user_group_members WHERE user_id = ? AND source = 'google_sync'",
                     [user_id],
                 )
                 for group_id in group_ids:
@@ -283,8 +282,7 @@ class UserGroupMembersRepository:
         ``information_schema`` and SELECT it only if present, else NULL.
         """
         has_ext = self.conn.execute(
-            "SELECT 1 FROM information_schema.columns "
-            "WHERE table_name = 'user_groups' AND column_name = 'external_id'"
+            "SELECT 1 FROM information_schema.columns WHERE table_name = 'user_groups' AND column_name = 'external_id'"
         ).fetchone()
         select_ext = "g.external_id" if has_ext else "NULL"
         rows = self.conn.execute(
@@ -311,8 +309,7 @@ class UserGroupMembersRepository:
         flip the branch without a new query path.
         """
         row = self.conn.execute(
-            "SELECT 1 FROM user_group_members "
-            "WHERE user_id = ? AND source = 'google_sync' LIMIT 1",
+            "SELECT 1 FROM user_group_members WHERE user_id = ? AND source = 'google_sync' LIMIT 1",
             [user_id],
         ).fetchone()
         return row is not None
@@ -327,11 +324,24 @@ class UserGroupMembersRepository:
         every login, so all rows share the same ``added_at`` — but
         sufficient for that purpose.
         """
-        row = self.conn.execute(
-            """SELECT COUNT(*) AS n, MAX(added_at) AS last_at
+        # Deliberately NOT ``SELECT COUNT(*), MAX(added_at) … WHERE user_id = ?
+        # AND source = 'google_sync'``. On DuckDB 1.5.2 that exact shape —
+        # a MIN/MAX aggregate over an ART index scan on the (user_id,
+        # group_id) primary key, plus a second predicate that eliminates
+        # every row the index found — crashes in the optimizer with
+        # ``INTERNAL Error: Attempted to access index 0 within vector of
+        # size 0`` (it fails at EXPLAIN time, so it is a planning bug, not
+        # a data one). That is the COMMON case, not an edge: any user who
+        # has group memberships but none from Google sync. It took the
+        # whole /me/profile page down with a 500.
+        #
+        # Folding the rows in Python sidesteps the aggregate entirely and
+        # costs nothing — a user has a handful of memberships.
+        rows = self.conn.execute(
+            """SELECT added_at
                  FROM user_group_members
                 WHERE user_id = ? AND source = 'google_sync'""",
             [user_id],
-        ).fetchone()
-        n, last_at = row if row else (0, None)
-        return {"count": int(n or 0), "last_added_at": last_at}
+        ).fetchall()
+        stamps = [r[0] for r in rows if r[0] is not None]
+        return {"count": len(rows), "last_added_at": max(stamps) if stamps else None}

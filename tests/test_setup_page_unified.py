@@ -162,10 +162,12 @@ def test_first_time_setup_renders_all_wizard_fields(client):
         assert marker in text, f"wizard field marker missing: {marker}"
     # Design-system shell marker — the page now opts into the narrow container.
     assert "container--narrow" in text
-    # base_ds-only chrome the old base_login lacked: footer copyright marker
-    # (`&copy;` from base_ds's <footer>) confirms the page is genuinely on the
-    # design-system base, not just textually edited.
-    assert "&copy;" in text or "<footer>" in text
+    # base_ds-only chrome the old base_login lacked: the shared page footer
+    # confirms the page is genuinely on the design-system base, not just
+    # textually edited. Was keyed on `&copy;` / a bare `<footer>`, both of
+    # which the footer rewrite retired — the credit line is gone and the tag
+    # now carries a class. `site-footer` is the stable marker.
+    assert "site-footer" in text
     # The bespoke login-card chrome is gone.
     assert "max-width: 520px" not in text
 
