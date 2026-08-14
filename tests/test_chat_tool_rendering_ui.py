@@ -183,3 +183,12 @@ def test_json_fallback_is_collapsed_behind_details():
     det_pos = body.index('document.createElement("details")')
     pre_pos = body.index('document.createElement("pre")')
     assert det_pos < pre_pos, "the pre lives INSIDE the details"
+
+
+def test_show_all_rows_is_a_table_not_json():
+    js = _read(CHAT_JS)
+    assert "function _buildResultTable" in js
+    body = js[js.index("function _coerceToTablePreview") : js.index("// ---------- Data-app split-pane preview")]
+    assert "Show all rows (JSON)" not in body, "the expansion is a table now"
+    assert "_TOOL_RESULT_FULL_ROWS_MAX" in body, "a DOM cap must exist for huge results"
+    assert body.count("_buildResultTable(") == 2, "preview and expansion share one builder"
