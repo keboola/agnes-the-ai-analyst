@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import tempfile
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,36 @@ class JiraFetchError(Exception):
     skip the overlay; otherwise a transient outage silently wipes
     existing parquet rows for that issue.
     """
+
+
+# Jira's issue-embed API caps `fields.comment.comments` at this many rows.
+JIRA_COMMENT_PAGE_SIZE = 100
+
+# 429 handling for the comment-pagination loop. The batch path runs several
+# workers in parallel and adds a request per >100-comment issue, so rate
+# limiting is its likeliest failure — without a retry it would routinely leave
+# issues marked `_comments_incomplete`. Bounded, because the alternative is a
+# worker parked on an endpoint that keeps refusing.
+JIRA_COMMENT_RATE_LIMIT_RETRIES = 3
+JIRA_COMMENT_RETRY_AFTER_DEFAULT = 60
+# A `Retry-After` may legitimately be hours; a batch worker must not sit on one.
+JIRA_COMMENT_RETRY_AFTER_MAX = 300
+
+
+def _retry_after_seconds(response: Any) -> int:
+    """`Retry-After` in seconds — defaulted when absent/unparseable, capped.
+
+    The header may also carry an HTTP-date; `int()` on that raises, so parse
+    defensively and fall back rather than turning a rate limit into a crash.
+    """
+    raw = (response.headers or {}).get("Retry-After") if hasattr(response, "headers") else None
+    try:
+        seconds = int(str(raw).strip())
+    except (TypeError, ValueError):
+        seconds = JIRA_COMMENT_RETRY_AFTER_DEFAULT
+    if seconds <= 0:
+        seconds = JIRA_COMMENT_RETRY_AFTER_DEFAULT
+    return min(seconds, JIRA_COMMENT_RETRY_AFTER_MAX)
 
 
 class _JiraConfig:
@@ -303,6 +334,240 @@ def trigger_incremental_transform(issue_key: str, deleted: bool = False) -> bool
         return False
 
 
+#: Staging files older than this are definitively dead: the download client
+#: itself times out at 60s, so an hour-old ``.tmp-*`` can only be the leftover
+#: of a killed process.
+STALE_STAGING_MAX_AGE_S = 3600
+
+
+def sweep_stale_attachment_staging(directory: Path, max_age_s: int = STALE_STAGING_MAX_AGE_S) -> None:
+    """Remove dead ``.tmp-*`` staging files from an attachments directory.
+
+    The atomic publishers (webhook + backfill) stage each download under a
+    ``.tmp-<pid>-<rand>-<name>`` file and unlink it in their exception
+    handler — but a handler cannot run when the process is SIGKILLed
+    mid-write (the documented gunicorn worker-timeout case). The random
+    component means a retry never reuses the orphan, the transform never
+    probes hidden names, and nothing else sweeps them — so each interrupted
+    download would leak up to ``MAX_ATTACHMENT_SIZE`` forever (Devin on
+    #1297). Called by both publishers before staging; age-gated so a
+    CONCURRENT writer's live staging file is never yanked out from under it.
+    Best-effort: a sweep failure never blocks the download.
+    """
+    cutoff = time.time() - max_age_s
+    try:
+        entries = list(directory.glob(".tmp-*"))
+    except OSError:
+        return
+    for stale in entries:
+        try:
+            if stale.stat().st_mtime < cutoff:
+                stale.unlink(missing_ok=True)
+                logger.info(f"Removed stale attachment staging file {stale.name}")
+        except OSError:
+            continue
+
+
+def _dedupe_comments_by_id(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """De-duplicate ``comments`` by ``id``, first occurrence wins, order preserved.
+
+    The embed (``GET /issue/{key}``) and the paginated ``GET
+    .../issue/{key}/comment`` are two separate requests. ``startAt =
+    len(embedded)`` assumes the paged endpoint's ordering exactly matches the
+    embed and that nothing was deleted between the two calls; when that
+    assumption breaks (ordering drift, a comment added/removed mid-fetch) the
+    same comment id can arrive from both the embed and a page. Concatenating
+    without dedup would then store it twice. A page skipping an id instead of
+    repeating one is a different, already-covered risk (the stored-vs-total
+    shortfall WARNING below), not something dedup can fix.
+    """
+    seen: set[str] = set()
+    deduped: list[dict[str, Any]] = []
+    for comment in comments:
+        comment_id = comment.get("id")
+        if comment_id is not None:
+            if comment_id in seen:
+                continue
+            seen.add(comment_id)
+        deduped.append(comment)
+    return deduped
+
+
+def _embedded_comments_are_complete(issue_data: dict[str, Any]) -> bool:
+    """Does this payload demonstrably carry the issue's whole comment thread?
+
+    Only true when a ``fields.comment`` object is present AND the embedded
+    list is at least as long as the ``total`` it reports. A payload with no
+    comment field at all is NOT evidence that the issue has no comments —
+    treating it as such would let an issue-scoped delete-then-insert erase a
+    stored thread — so it answers False as well.
+    """
+    fields = issue_data.get("fields") or {}
+    comment_field = fields.get("comment")
+    if not isinstance(comment_field, dict):
+        return False
+    comments = comment_field.get("comments")
+    if not isinstance(comments, list):
+        return False
+    total = comment_field.get("total")
+    if not isinstance(total, int):
+        # No count to check against: a list of unknown completeness.
+        return False
+    return len(comments) >= total
+
+
+def complete_issue_comments(
+    issue_data: dict[str, Any],
+    base_url: str,
+    auth: tuple[str, str],
+    client: httpx.Client,
+    max_retries: int | None = None,
+) -> None:
+    """Fill in comments Jira's issue payload truncated at its embed page size.
+
+    ``GET /issue/{key}`` embeds ``fields.comment.comments`` capped at 100,
+    oldest-first — an issue with more than 100 comments arrives missing its
+    NEWEST comments. Because every later full-refetch (``fields=*all``)
+    re-hits the same cap, the gap never heals on its own; it only widens as
+    more comments are added.
+
+    ``fields.comment.total`` carries the true count. When it exceeds what's
+    embedded, page through ``GET /issue/{key}/comment`` (``startAt``,
+    ``maxResults=100``) for the remainder and replace the embedded list with
+    the complete, de-duplicated (by comment id) one — mutated in place on
+    ``issue_data``, using the same ``client``/``auth`` as the issue fetch that
+    produced it.
+
+    This is the single fetch-layer seam shared by both ingestion paths that
+    call it right after their issue GET: ``JiraService.fetch_issue`` (webhook
+    full-refetch) and ``JiraBackfill.fetch_issue`` (batch/full extract).
+    ``transform_issue``/``transform_comments`` stay pure — they just read
+    whatever ``fields.comment.comments`` this function already completed.
+
+    Comments can legitimately be added between the two requests, so a
+    residual shortfall after completion is only logged (WARNING), never
+    raised — this is a best-effort enrichment step, not a hard requirement.
+
+    A ``429`` is retried up to ``max_retries`` times (``JIRA_COMMENT_RATE_LIMIT_RETRIES``
+    when ``max_retries`` is ``None``), honouring ``Retry-After`` (defaulted
+    when absent or an HTTP-date, capped at ``JIRA_COMMENT_RETRY_AFTER_MAX`` so
+    one worker cannot park on an hours-long value) — the same treatment the
+    issue and remote-link fetchers give it. Rate limiting is the batch path's
+    likeliest failure, and without the retry it would routinely mark issues
+    incomplete. The caller-supplied override exists because the webhook path
+    runs on an active request: ``JiraService.fetch_issue`` passes a
+    much smaller (zero) budget there, so a 429 marks the issue incomplete
+    immediately instead of sleeping for up to
+    ``JIRA_COMMENT_RATE_LIMIT_RETRIES * JIRA_COMMENT_RETRY_AFTER_MAX`` seconds
+    — the marker plus a later backfill heal (``_needs_refetch``) recovers it
+    (Devin Review on #1283). The batch path (``JiraBackfill.fetch_issue``)
+    omits the override and keeps the generous default.
+
+    If a page request itself fails (RequestError, a non-200 status other than
+    a retryable 429, or a 429 that outlives its retries — legitimate
+    outages, not "no more comments"), the loop stops and
+    ``issue_data["_comments_incomplete"]`` is set to ``True``. This is a
+    sibling of the ``_remote_links`` overlay-absent contract
+    (``transform_remote_links``): the incremental transform performs an
+    issue-scoped delete-then-insert on the comments parquet, so overlaying a
+    known-truncated list here would let a transient fetch error wipe a
+    previously-complete stored thread down to whatever this attempt managed
+    to fetch. ``transform_comments`` reads this marker and returns ``None``
+    instead of a truncated list so the incremental caller preserves the
+    existing rows (the batch/full rebuild, which preserves nothing, opts out
+    with ``preserve_on_incomplete=False`` and keeps the partial list).
+    An empty page (200, ``comments: []``) is NOT a failure — it means the
+    paged endpoint has no more comments, so the fetched set is complete
+    relative to the endpoint even if ``total`` was stale (e.g. comments
+    deleted between the two requests).
+    """
+    issue_key = issue_data.get("key")
+    fields = issue_data.get("fields") or {}
+    comment_field = fields.get("comment") or {}
+    embedded = comment_field.get("comments") or []
+    total = comment_field.get("total", len(embedded))
+    retry_budget = JIRA_COMMENT_RATE_LIMIT_RETRIES if max_retries is None else max_retries
+
+    incomplete = False
+    if issue_key and total > len(embedded):
+        extra: list[dict[str, Any]] = []
+        start_at = len(embedded)
+        rate_limit_retries = 0
+        while len(embedded) + len(extra) < total:
+            try:
+                response = client.get(
+                    f"{base_url}/issue/{issue_key}/comment",
+                    auth=auth,
+                    params={"startAt": start_at, "maxResults": JIRA_COMMENT_PAGE_SIZE},
+                    headers={"Accept": "application/json"},
+                )
+            except httpx.RequestError as e:
+                logger.warning(
+                    "Jira issue %s: comment pagination request failed at startAt=%d: %s",
+                    issue_key,
+                    start_at,
+                    e,
+                )
+                incomplete = True
+                break
+            if response.status_code == 429:
+                if rate_limit_retries >= retry_budget:
+                    logger.warning(
+                        "Jira issue %s: comment pagination still rate limited at startAt=%d "
+                        "after %d retries — giving up",
+                        issue_key,
+                        start_at,
+                        rate_limit_retries,
+                    )
+                    incomplete = True
+                    break
+                wait = _retry_after_seconds(response)
+                rate_limit_retries += 1
+                logger.warning(
+                    "Jira issue %s: comment pagination rate limited at startAt=%d, waiting %ds (retry %d/%d)",
+                    issue_key,
+                    start_at,
+                    wait,
+                    rate_limit_retries,
+                    retry_budget,
+                )
+                time.sleep(wait)
+                continue
+            if response.status_code != 200:
+                logger.warning(
+                    "Jira issue %s: comment pagination page failed at startAt=%d (status %s)",
+                    issue_key,
+                    start_at,
+                    response.status_code,
+                )
+                incomplete = True
+                break
+            page = response.json().get("comments") or []
+            if not page:
+                break
+            extra.extend(page)
+            start_at += len(page)
+
+        if extra:
+            comment_field["comments"] = _dedupe_comments_by_id(embedded + extra)
+            fields["comment"] = comment_field
+            issue_data["fields"] = fields
+
+    if incomplete:
+        issue_data["_comments_incomplete"] = True
+
+    stored = len(comment_field.get("comments", embedded))
+    if stored < total:
+        logger.warning(
+            "Jira issue %s: stored %d comments but Jira reports comment.total=%d after "
+            "pagination completion (comments may have been added mid-fetch, or a page "
+            "request failed)",
+            issue_key,
+            stored,
+            total,
+        )
+
+
 class JiraService:
     """Service for interacting with Jira Cloud REST API."""
 
@@ -368,12 +633,17 @@ class JiraService:
         """Check if Jira service is properly configured."""
         return all([self.domain, self.email, self.api_token])
 
-    def fetch_issue(self, issue_key: str) -> dict[str, Any] | None:
+    def fetch_issue(self, issue_key: str, comment_max_retries: int | None = None) -> dict[str, Any] | None:
         """
         Fetch complete issue data from Jira.
 
         Args:
             issue_key: Issue key (e.g., "PROJ-123")
+            comment_max_retries: Forwarded to ``complete_issue_comments`` as
+                ``max_retries`` — ``None`` keeps its own (generous) default.
+                ``process_webhook_event`` passes ``0`` here: its caller is an
+                active request, so a 429 must mark the issue
+                ``_comments_incomplete`` immediately rather than sleep.
 
         Returns:
             Issue data dict or None if fetch failed
@@ -397,14 +667,18 @@ class JiraService:
                     headers={"Accept": "application/json"},
                 )
 
-            if response.status_code == 200:
-                return response.json()
-            elif response.status_code == 404:
-                logger.warning(f"Issue {issue_key} not found")
-                return None
-            else:
-                logger.error(f"Failed to fetch issue {issue_key}: {response.status_code} - {response.text[:200]}")
-                return None
+                if response.status_code == 200:
+                    issue_data = response.json()
+                    complete_issue_comments(
+                        issue_data, self.base_url, self.auth, client, max_retries=comment_max_retries
+                    )
+                    return issue_data
+                elif response.status_code == 404:
+                    logger.warning(f"Issue {issue_key} not found")
+                    return None
+                else:
+                    logger.error(f"Failed to fetch issue {issue_key}: {response.status_code} - {response.text[:200]}")
+                    return None
 
         except httpx.RequestError as e:
             logger.error(f"Request error fetching issue {issue_key}: {e}")
@@ -795,6 +1069,23 @@ class JiraService:
                 downloaded = self.download_all_attachments(issue_data)
                 if downloaded:
                     logger.info(f"Downloaded {len(downloaded)} attachments for {issue_key}")
+                    # Re-transform now that the files exist: the transform above
+                    # deliberately ran BEFORE the download (worker-timeout
+                    # rationale), so it catalogued any freshly attached file
+                    # with local_path=NULL — the download endpoint would 404
+                    # (`attachment_not_stored`) the very attachments users are
+                    # most likely to fetch, until some later event happened to
+                    # re-transform the issue. Same non-fatal posture as the
+                    # download itself (Devin on #1297).
+                    #
+                    # Re-acquire the per-issue lock for JUST this call (the slow
+                    # download stays outside): transform_single_issue reads the
+                    # issue JSON before taking only the parquet month lock, so
+                    # an unlocked transform here could publish a stale snapshot
+                    # over a concurrent poll_sla read-modify-write that holds
+                    # this lock across its own write+transform (Devin on #1297).
+                    with issue_json_lock(issues_dir, issue_key):
+                        trigger_incremental_transform(issue_key, deleted=False)
             except Exception as att_err:
                 logger.warning(f"Attachment download failed for {issue_key}: {att_err}")
 
@@ -805,14 +1096,25 @@ class JiraService:
 
     def download_attachment(self, attachment: dict[str, Any], issue_key: str) -> Path | None:
         """
-        Download a single attachment from Jira.
+        Download a single attachment from Jira. Sweeps stale staging files
+        first — see :func:`sweep_stale_attachment_staging`.
 
         Args:
             attachment: Attachment metadata from Jira API
             issue_key: Issue key for organizing files
 
         Returns:
-            Path to downloaded file or None if download failed
+            Path to the file if THIS call newly published it; ``None`` when
+            nothing new landed — download failed, skipped by policy, or the
+            file is already on disk. Jira attachment ids are immutable (a
+            re-upload mints a new id), so an existing ``<id>_<name>`` file is
+            already the right bytes; re-fetching it on every webhook event
+            both wasted bandwidth and made ``save_issue``'s post-download
+            re-transform gate fire on every event for any attachment-bearing
+            issue (Devin on #1297). Callers that need "already present" to
+            count as success (the backfill's ``--dry-run`` bookkeeping) use
+            the backfill sibling, whose exists-skip RETURNS the path — the
+            asymmetry is deliberate.
         """
         content_url = attachment.get("content")
         filename = attachment.get("filename", "unknown")
@@ -847,6 +1149,7 @@ class JiraService:
             logger.error(f"Path traversal blocked for attachment {issue_key!r}: {e}")
             return None
         issue_attachments_dir.mkdir(parents=True, exist_ok=True)
+        sweep_stale_attachment_staging(issue_attachments_dir)
 
         # Use attachment ID in filename to avoid collisions
         safe_filename = f"{attachment_id}_{filename}"
@@ -854,6 +1157,16 @@ class JiraService:
             file_path = safe_join_under(issue_attachments_dir, safe_filename)
         except ValueError as e:
             logger.error(f"Path traversal blocked for attachment filename {safe_filename!r}: {e}")
+            return None
+
+        # Jira attachment ids are immutable, so an existing <id>_<name> file
+        # is already the right bytes — but only if it is COMPLETE. A short
+        # file (e.g. a worker SIGKILLed mid-write by the pre-atomic writer)
+        # must be re-fetched, or the download endpoint serves the truncated
+        # bytes with a self-consistent Content-Length forever (Devin on
+        # #1297).
+        if file_path.exists() and (not size or file_path.stat().st_size == size):
+            logger.debug(f"Attachment {safe_filename} already on disk; skipping download")
             return None
 
         try:
@@ -864,8 +1177,41 @@ class JiraService:
                 )
 
             if response.status_code == 200:
-                with open(file_path, "wb") as f:
-                    f.write(response.content)
+                # Publish atomically (per-process temp + os.replace, like the
+                # organizations publish): a reader streaming this exact path —
+                # the attachment download endpoint — must never observe a
+                # truncated in-place rewrite when a webhook re-downloads the
+                # same issue's attachments.
+                # Bounded temp name: appending to the full name could push a
+                # near-NAME_MAX (255-byte) filename over the limit and make a
+                # previously-storable attachment fail to save. 40 codepoints
+                # (<=160 UTF-8 bytes) keeps the total well under NAME_MAX and
+                # stays unique: the name starts with the attachment id.
+                # pid alone is not unique enough: two webhook events for the
+                # same issue run concurrently in one process's threadpool and
+                # would share the staging name — one os.replace() could publish
+                # the other's half-written bytes (Devin on #1297). The random
+                # component makes each writer's staging file its own.
+                tmp_path = file_path.with_name(f".tmp-{os.getpid()}-{os.urandom(4).hex()}-{file_path.name[:32]}")
+                try:
+                    with open(tmp_path, "wb") as f:
+                        f.write(response.content)
+                    # os.replace preserves the TEMP file's mode (0666 & umask),
+                    # not the previous inode's — pin it explicitly so a
+                    # restrictive deploy-time umask cannot leave the published
+                    # file unreadable to the serving process. 0o660, matching
+                    # the sibling issue-JSON writer's "Restore group rw for
+                    # ACL" pin: 0o644 would grant world-read to attachment
+                    # bytes AND collapse any named POSIX-ACL entries to
+                    # read-only (chmod resets the ACL mask from the group
+                    # bits) — a widening relative to the pre-atomic writer
+                    # under the documented 0007-umask ACL deployments (Devin
+                    # on #1297).
+                    os.chmod(tmp_path, 0o660)
+                    os.replace(tmp_path, file_path)
+                except BaseException:
+                    tmp_path.unlink(missing_ok=True)
+                    raise
                 logger.info(f"Downloaded attachment {filename} to {file_path}")
                 return file_path
             else:
@@ -884,7 +1230,10 @@ class JiraService:
             issue_data: Complete issue data from Jira API
 
         Returns:
-            List of paths to downloaded files
+            List of paths NEWLY downloaded by this call. Files already on
+            disk are skipped and not listed (see ``download_attachment``), so
+            an empty list means "nothing new" — which is exactly what
+            ``save_issue`` gates its post-download re-transform on.
         """
         issue_key = issue_data.get("key", "unknown")
         downloaded = []
@@ -994,13 +1343,33 @@ class JiraService:
         if "deleted" in webhook_event.lower():
             return self._handle_deletion(issue_key)
 
-        # Fetch fresh data from API (webhook payload may not have all fields)
-        issue_data = self.fetch_issue(issue_key)
+        # Fetch fresh data from API (webhook payload may not have all fields).
+        # comment_max_retries=0: this runs off an active request (see
+        # app/api/jira_webhooks.py's run_in_threadpool dispatch), so a 429 on
+        # the comment-pagination endpoint must mark the issue
+        # _comments_incomplete immediately rather than sleep — the marker,
+        # plus a later backfill heal (_needs_refetch), recovers it without
+        # tying up a request thread for up to 15 minutes (Devin Review on
+        # #1283).
+        issue_data = self.fetch_issue(issue_key, comment_max_retries=0)
         if not issue_data:
             # If fetch fails, try to use embedded issue data from webhook
             if issue and issue.get("fields"):
                 logger.info(f"Using embedded issue data for {issue_key}")
                 issue_data = issue
+                # The fallback payload never went through complete_issue_comments:
+                # its `fields.comment.comments` is whatever Jira chose to embed,
+                # and the comments upsert is an issue-scoped delete-then-insert.
+                # Treat it as authoritative for comments ONLY when it demonstrably
+                # carries the whole thread; otherwise mark it incomplete so the
+                # incremental transform preserves the stored rows.
+                if not _embedded_comments_are_complete(issue_data):
+                    logger.info(
+                        "Webhook fallback payload for %s does not carry a complete comment "
+                        "thread — marking _comments_incomplete so stored comments are preserved",
+                        issue_key,
+                    )
+                    issue_data["_comments_incomplete"] = True
             else:
                 return False
 

@@ -240,10 +240,9 @@ def test_both_backends_filter_candidates_on_the_same_status_set():
 def ops_domain(k_repo, tmp_path, pg_engine, monkeypatch):
     """Seed the `ops` memory domain on whichever backend `k_repo` is.
 
-    Needed because the DuckDB repo resolves the slug through `memory_domains`
-    and raises on an unknown one, while the PG repo writes the scalar and
-    never looks — a divergence in its own right (see #1017), and one this
-    fixture papers over so the STATUS contract below can be tested on both.
+    Both repos resolve the slug through `memory_domains` and raise on an
+    unknown one (PG since #1263), so the STATUS contract below needs a real
+    domain row on either backend before it can create anything.
     """
     if hasattr(k_repo, "conn"):
         from src.repositories.memory_domains import MemoryDomainsRepository
@@ -371,10 +370,7 @@ def test_a_required_item_is_never_hidden_by_a_stale_dismissal(k_repo):
     # Required only AFTER the dismissal — that ordering is the bug's shape.
     k_repo.set_is_required("k_req", True)
 
-    visible = {
-        it["id"]
-        for it in k_repo.list_items(user_groups=[], hide_dismissed=True, dismissed_by_user="u1")
-    }
+    visible = {it["id"] for it in k_repo.list_items(user_groups=[], hide_dismissed=True, dismissed_by_user="u1")}
 
     assert "k_req" in visible, "a Required item was hidden by a dismissal that predates it"
     assert "k_norm" not in visible, "an ordinary dismissed item should stay hidden"
@@ -418,14 +414,10 @@ def test_a_dismissal_still_hides_a_legacy_item_with_null_is_required(k_repo):
     _null_out_is_required(k_repo, "k_legacy")
     k_repo.dismiss("u1", "k_legacy")
 
-    visible = {
-        it["id"]
-        for it in k_repo.list_items(user_groups=[], hide_dismissed=True, dismissed_by_user="u1")
-    }
+    visible = {it["id"] for it in k_repo.list_items(user_groups=[], hide_dismissed=True, dismissed_by_user="u1")}
 
     assert "k_legacy" not in visible, (
-        "a dismissed legacy item (is_required IS NULL) reappeared — the "
-        "Required exemption predicate is not NULL-safe"
+        "a dismissed legacy item (is_required IS NULL) reappeared — the Required exemption predicate is not NULL-safe"
     )
 
 
@@ -482,3 +474,211 @@ def test_create_with_an_unknown_domain_is_rejected_on_both_engines(k_repo):
             status="pending",
             domain="no-such-domain",
         )
+
+
+# ---------------------------------------------------------------------------
+# list_by_domain — junction parity (second half of #1017)
+#
+# DuckDB resolves the slug through `memory_domains` and EXISTS-joins
+# `knowledge_item_domains` (knowledge.py::list_by_domain). Postgres used to
+# read a scalar `knowledge_items.domain` column instead. The scalar tracked
+# the junction correctly for the single-domain create/update path (kept in
+# sync since #1263), which is why a same-domain smoke test alone would not
+# have caught this: the divergence only surfaces for multi-domain membership,
+# written via `replace_domains_for_item` (the admin edit-item `domain_ids`
+# field, app/api/memory.py) — a path that only ever touches the junction and
+# was never mirrored onto the scalar column.
+# ---------------------------------------------------------------------------
+
+
+def test_list_by_domain_matches_on_both_engines_for_a_single_domain_item(k_repo):
+    domains = _domain_repo_for(k_repo)
+    domains.create(name="Q-Team", slug="q-team", description=None, icon=None, color=None, created_by="u")
+    domains.create(name="Ops", slug="ops", description=None, icon=None, color=None, created_by="u")
+
+    k_repo.create(
+        id="ki_q_team",
+        title="Q-Team item",
+        content="knowledge",
+        category="corporate-memory",
+        status="approved",
+        domain="q-team",
+    )
+    k_repo.create(
+        id="ki_ops",
+        title="Ops item",
+        content="knowledge",
+        category="corporate-memory",
+        status="approved",
+        domain="ops",
+    )
+
+    assert {r["id"] for r in k_repo.list_by_domain("q-team")} == {"ki_q_team"}
+    assert {r["id"] for r in k_repo.list_by_domain("ops")} == {"ki_ops"}
+
+
+def test_list_by_domain_follows_the_junction_not_a_stale_scalar_column(k_repo):
+    """Re-point an item's domain membership through `replace_domains_for_item`
+    — the write path the admin multi-domain editor uses — WITHOUT going
+    through `KnowledgeRepository.create`/`update`. DuckDB has always read
+    the junction, so it already sees the move. PG's old scalar-column read
+    never got a write here and kept answering with the domain from
+    `create()` — the exact "invisible under its own (new) domain, still
+    visible under the wrong one" divergence #1017 describes.
+    """
+    domains = _domain_repo_for(k_repo)
+    domains.create(name="Q-Team", slug="q-team", description=None, icon=None, color=None, created_by="u")
+    domains.create(name="Ops", slug="ops", description=None, icon=None, color=None, created_by="u")
+
+    k_repo.create(
+        id="ki_moved",
+        title="Moved item",
+        content="knowledge",
+        category="corporate-memory",
+        status="approved",
+        domain="q-team",
+    )
+    domains.replace_domains_for_item("ki_moved", ["ops"], added_by="admin@example.com")
+
+    found_ops = {r["id"] for r in k_repo.list_by_domain("ops")}
+    found_q_team = {r["id"] for r in k_repo.list_by_domain("q-team")}
+
+    assert "ki_moved" in found_ops, "list_by_domain must follow the junction, not a stale scalar column"
+    assert "ki_moved" not in found_q_team, "the item moved off q-team — it must not still show up there"
+
+
+def test_list_by_domain_unknown_slug_is_empty_on_both_engines(k_repo):
+    assert k_repo.list_by_domain("no-such-domain") == []
+
+
+def test_list_by_domain_filters_by_status_on_both_engines(k_repo):
+    domains = _domain_repo_for(k_repo)
+    domains.create(name="Q-Team", slug="q-team", description=None, icon=None, color=None, created_by="u")
+
+    for item_id, status in (("ki_approved", "approved"), ("ki_pending", "pending"), ("ki_rejected", "rejected")):
+        k_repo.create(
+            id=item_id,
+            title=f"Item {item_id}",
+            content="content for " + item_id,
+            category="general",
+            status=status,
+            domain="q-team",
+        )
+
+    found = {r["id"] for r in k_repo.list_by_domain("q-team", statuses=["approved", "pending"])}
+    assert found == {"ki_approved", "ki_pending"}
+
+
+# ---------------------------------------------------------------------------
+# find_duplicate_candidates_by_entities — junction parity (Devin Review on
+# #1290, the other half of #1017)
+#
+# Same divergence class as `list_by_domain` above: PG filtered on the scalar
+# `knowledge_items.domain` column instead of resolving the slug and
+# EXISTS-joining `knowledge_item_domains`. An item moved between domains via
+# `replace_domains_for_item` (the admin multi-domain editor, junction-only
+# write) was still matched under its OLD domain on PG and never under its
+# new one — the entity-overlap duplicate finder disagreeing with the lexical
+# fallback finder for the exact same item.
+# ---------------------------------------------------------------------------
+
+
+def test_duplicate_candidates_follow_the_junction_not_a_stale_scalar_column(k_repo):
+    domains = _domain_repo_for(k_repo)
+    domains.create(name="Q-Team", slug="q-team", description=None, icon=None, color=None, created_by="u")
+    domains.create(name="Ops", slug="ops", description=None, icon=None, color=None, created_by="u")
+
+    k_repo.create(
+        id="seed",
+        title="Seed item",
+        content="content for seed",
+        category="general",
+        status="approved",
+        domain="ops",
+        entities=["alpha", "beta"],
+    )
+    k_repo.create(
+        id="ki_moved",
+        title="Moved item",
+        content="content for ki_moved",
+        category="general",
+        status="approved",
+        domain="q-team",
+        entities=["alpha", "beta"],
+    )
+    # Re-point ki_moved onto "ops" through the junction-only write path —
+    # the scalar `domain` column (where PG used to read from) is untouched.
+    domains.replace_domains_for_item("ki_moved", ["ops"], added_by="admin@example.com")
+
+    found_ops = {
+        r["id"]
+        for r in k_repo.find_duplicate_candidates_by_entities(
+            new_item_id="seed", entities=["alpha", "beta"], domain="ops", min_overlap=1
+        )
+    }
+    found_q_team = {
+        r["id"]
+        for r in k_repo.find_duplicate_candidates_by_entities(
+            new_item_id="seed", entities=["alpha", "beta"], domain="q-team", min_overlap=1
+        )
+    }
+
+    assert "ki_moved" in found_ops, "duplicate candidates must follow the junction, not a stale scalar column"
+    assert "ki_moved" not in found_q_team, "the item moved off q-team — it must not still show up there"
+
+
+# ---------------------------------------------------------------------------
+# list_items / search / count_items — junction parity (Devin Review on #1290,
+# third round)
+#
+# Same divergence class once more: PG's admin item list, FTS search and the
+# count variants filtered `domain` on the scalar `knowledge_items.domain`
+# column. DuckDB resolves the slug and EXISTS-joins the junction in all three
+# (and short-circuits an unknown slug to [] / 0). An item moved between
+# domains via `replace_domains_for_item` therefore kept showing under its old
+# domain — and never under its new one — in the PG list/search/count paths.
+# ---------------------------------------------------------------------------
+
+
+def _move_item_between_domains(k_repo):
+    domains = _domain_repo_for(k_repo)
+    domains.create(name="Q-Team", slug="q-team", description=None, icon=None, color=None, created_by="u")
+    domains.create(name="Ops", slug="ops", description=None, icon=None, color=None, created_by="u")
+    k_repo.create(
+        id="ki_moved",
+        title="Moved item",
+        content="unmistakable needle content",
+        category="general",
+        status="approved",
+        domain="q-team",
+    )
+    domains.replace_domains_for_item("ki_moved", ["ops"], added_by="admin@example.com")
+
+
+def test_list_items_domain_filter_follows_the_junction(k_repo):
+    _move_item_between_domains(k_repo)
+    assert {r["id"] for r in k_repo.list_items(domain="ops")} == {"ki_moved"}
+    assert {r["id"] for r in k_repo.list_items(domain="q-team")} == set()
+
+
+def test_list_items_unknown_domain_slug_is_empty_on_both_engines(k_repo):
+    _move_item_between_domains(k_repo)
+    assert k_repo.list_items(domain="no-such-domain") == []
+
+
+def test_search_domain_filter_follows_the_junction(k_repo):
+    _move_item_between_domains(k_repo)
+    assert {r["id"] for r in k_repo.search("needle", domain="ops")} == {"ki_moved"}
+    assert {r["id"] for r in k_repo.search("needle", domain="q-team")} == set()
+
+
+def test_search_unknown_domain_slug_is_empty_on_both_engines(k_repo):
+    _move_item_between_domains(k_repo)
+    assert k_repo.search("needle", domain="no-such-domain") == []
+
+
+def test_count_items_domain_filter_follows_the_junction(k_repo):
+    _move_item_between_domains(k_repo)
+    assert k_repo.count_items(domain="ops") == 1
+    assert k_repo.count_items(domain="q-team") == 0
+    assert k_repo.count_items(domain="no-such-domain") == 0
