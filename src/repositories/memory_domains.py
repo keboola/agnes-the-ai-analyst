@@ -9,6 +9,7 @@ v49 migration seeded with deterministic IDs (``md_<slug>``).
 The repo's ``create`` uses ``md_<uuid>`` for admin-authored rows; the seed
 IDs are stable so migrations + tests can rely on ``md_finance`` etc.
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
@@ -26,9 +27,17 @@ class MemoryDomainsRepository:
     # v51: column list — keep in sync after schema additions. Mirrors the
     # DataPackagesRepository pattern.
     _COLS = [
-        "id", "slug", "name", "description", "icon", "color",
-        "cover_image_url", "status",
-        "created_by", "created_at", "updated_at",
+        "id",
+        "slug",
+        "name",
+        "description",
+        "icon",
+        "color",
+        "cover_image_url",
+        "status",
+        "created_by",
+        "created_at",
+        "updated_at",
     ]
     _SELECT = ", ".join(_COLS)
 
@@ -55,8 +64,7 @@ class MemoryDomainsRepository:
             "(id, slug, name, description, icon, color, cover_image_url, "
             " status, created_by) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [domain_id, slug, name, description, icon, color,
-             cover_image_url, status or "prod", created_by],
+            [domain_id, slug, name, description, icon, color, cover_image_url, status or "prod", created_by],
         )
         return domain_id
 
@@ -211,9 +219,7 @@ class MemoryDomainsRepository:
         step after it failed (`app/api/authoring_suggestions.py`): the soft
         delete leaves the slug taking its unique constraint, so a retry would
         still collide. Otherwise reserved for admin cleanup workflows."""
-        self.conn.execute(
-            "DELETE FROM knowledge_item_domains WHERE domain_id = ?", [domain_id]
-        )
+        self.conn.execute("DELETE FROM knowledge_item_domains WHERE domain_id = ?", [domain_id])
         self.conn.execute("DELETE FROM memory_domains WHERE id = ?", [domain_id])
 
     def resolve_ids_to_slugs(self, domain_ids: List[str]) -> Dict[str, str]:
@@ -232,8 +238,7 @@ class MemoryDomainsRepository:
             return {}
         placeholders = ",".join(["?"] * len(domain_ids))
         rows = self.conn.execute(
-            f"SELECT id, slug FROM memory_domains "
-            f"WHERE id IN ({placeholders}) AND deleted_at IS NULL",
+            f"SELECT id, slug FROM memory_domains WHERE id IN ({placeholders}) AND deleted_at IS NULL",
             list(domain_ids),
         ).fetchall()
         return {r[0]: r[1] for r in rows}
@@ -249,8 +254,7 @@ class MemoryDomainsRepository:
         if before:
             return False
         self.conn.execute(
-            "INSERT INTO knowledge_item_domains(domain_id, item_id, added_by) "
-            "VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+            "INSERT INTO knowledge_item_domains(domain_id, item_id, added_by) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
             [domain_id, item_id, added_by],
         )
         return True
@@ -269,9 +273,7 @@ class MemoryDomainsRepository:
         )
         return True
 
-    def list_items_of_domain(
-        self, domain_id: str, *, limit: int = 1000
-    ) -> List[Dict[str, Any]]:
+    def list_items_of_domain(self, domain_id: str, *, limit: int = 1000) -> List[Dict[str, Any]]:
         """Items tagged with a given domain (title-ordered).
 
         Projects ``is_required`` and ``content`` so the manifest builder
@@ -300,6 +302,25 @@ class MemoryDomainsRepository:
             for r in rows
         ]
 
+    def count_items_by_domain(self) -> Dict[str, tuple]:
+        """Per-domain ``(items, required)`` counts in ONE grouped query.
+
+        The cheap sibling of ``list_items_of_domain`` for callers that only
+        need the two numbers (/library's Memory rows) — loading every item's
+        full body just to count it made the Library's render cost scale with
+        the size of the knowledge base (Devin review on PR #1278). Domains
+        with no items have no entry; callers ``.get()`` with a known-zero
+        default.
+        """
+        rows = self.conn.execute(
+            "SELECT kid.domain_id, COUNT(*), "
+            "COALESCE(SUM(CASE WHEN ki.is_required THEN 1 ELSE 0 END), 0) "
+            "FROM knowledge_item_domains kid "
+            "JOIN knowledge_items ki ON ki.id = kid.item_id "
+            "GROUP BY kid.domain_id"
+        ).fetchall()
+        return {r[0]: (int(r[1]), int(r[2])) for r in rows}
+
     def list_domains_of_item(self, item_id: str) -> List[Dict[str, Any]]:
         """Domains an item is tagged with (name-ordered)."""
         rows = self.conn.execute(
@@ -310,9 +331,7 @@ class MemoryDomainsRepository:
             [item_id],
         ).fetchall()
         return [
-            {"id": r[0], "slug": r[1], "name": r[2], "icon": r[3], "color": r[4],
-             "cover_image_url": r[5]}
-            for r in rows
+            {"id": r[0], "slug": r[1], "name": r[2], "icon": r[3], "color": r[4], "cover_image_url": r[5]} for r in rows
         ]
 
     def replace_domains_for_item(
@@ -353,9 +372,7 @@ class MemoryDomainsRepository:
             missing = [s for s in slugs if s not in resolved]
             if missing:
                 raise ValueError(f"Unknown memory domain slug(s): {missing}")
-            self.conn.execute(
-                "DELETE FROM knowledge_item_domains WHERE item_id = ?", [item_id]
-            )
+            self.conn.execute("DELETE FROM knowledge_item_domains WHERE item_id = ?", [item_id])
             for slug, did in resolved.items():
                 self.conn.execute(
                     "INSERT INTO knowledge_item_domains(item_id, domain_id, added_by) "

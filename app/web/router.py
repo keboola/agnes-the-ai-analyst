@@ -459,12 +459,16 @@ def _detail_template(base: str) -> str:
 #: `semantics` — see below.
 _RAIL_DETAIL_BACK: dict[str, tuple[str, str]] = {
     "data_package": ("/library?section=data_package", "All data packages"),
-    # Memory is a rail destination again (#1276 restored the nav entry the
-    # redesign dropped), so its browse home is somewhere a rail caller really
-    # arrives from — back keeps the same target the topnav passes. Library
-    # arrivals still override via ?source=library (memory_domain_detail.html).
-    "memory_domain": ("/corporate-memory", "All memory domains"),
+    # Memory folds into the Library under rail (spec 2026-08-12): the
+    # standalone /corporate-memory page 302s to this section, so back links
+    # point straight at the band rather than bouncing through the redirect.
+    # Library arrivals still override via ?source=library
+    # (memory_domain_detail.html).
+    "memory_domain": ("/library?section=memory_domain", "All memory"),
     "recipe": ("/library?section=recipe", "All recipes"),
+    # Same reasoning as memory_domain: /apps 302s into the Library under
+    # rail; apps live in the Files band, so back opens that section.
+    "data_app": ("/library?section=files", "Library"),
     "plugin": ("/library?section=plugin", "All plugins"),
     "skill": ("/library?section=skill", "All skills"),
     "agent": ("/library?section=agent", "All agents"),
@@ -1634,7 +1638,11 @@ async def me_connections_page(
         connect_error=CONNECT_ERROR_MESSAGES.get(error_code, CONNECT_ERROR_FALLBACK) if error_code else "",
         retry_source=retry,
     )
-    return templates.TemplateResponse(request, "me_connections.html", ctx)
+    # Rail renders the redesigned page; topnav keeps the frozen pre-redesign
+    # copy byte-for-byte (the /me/activity pattern —
+    # TestDefaultContentParity).
+    tmpl = "me_connections.html" if get_ui_layout() == "rail" else "me_connections_legacy.html"
+    return templates.TemplateResponse(request, tmpl, ctx)
 
 
 @router.get("/me/activity", response_class=HTMLResponse)
@@ -3263,8 +3271,15 @@ async def library_page(
         tags=None,
         owner_key=None,
         in_stack=True,
+        droppable=False,
     ) -> None:
-        """Append one access-granted row (never owner-shareable)."""
+        """Append one access-granted row (never owner-shareable).
+
+        ``droppable``: the membership is the caller's own subscription
+        (classic mode, optional tier) — render the REMOVE control, exactly
+        as /catalog offers for the same membership. Callers whose
+        membership is the grant itself (auto-membership, recipes, plugins)
+        leave it False and get the locked pill."""
         items.append(
             _library_row_base(
                 item_id=item_id,
@@ -3297,17 +3312,35 @@ async def library_page(
         # would label rows the agent cannot actually query (membership also
         # drives ``get_accessible_tables``). Callers whose membership
         # genuinely is the grant (recipes, plugins) omit the argument.
-        if in_stack:
+        if in_stack and droppable:
+            # Classic self-subscription: the caller added it, the caller can
+            # remove it — HERE, not just on /catalog. This row used to render
+            # the locked pill ("only an admin can remove it"), which was
+            # false for a self-subscription and read as a required mandate;
+            # /catalog offered Remove for the very same membership. The lock
+            # is driven by droppability, and this membership IS droppable.
+            import json as _json
+
             items[-1]["stack_state"] = "in_stack"
-            # Every member row says the same thing about membership — "In
-            # Stack" — and is LOCKED, because for a granted member there is
-            # no per-user membership to drop here, only a grant an admin can
-            # revoke (classic members ARE per-user, but their drop surface
-            # is the Catalog/Stack pages, not this listing). The lock is
-            # driven by *droppability*, not by the grant tier: keying it on
-            # ``requirement == 'required'`` (as this once did) left an
-            # optional grant rendering the success-tinted check that a
-            # REMOVABLE row wears at rest. The tier stays legible in the
+            items[-1]["stack_pill"] = "In Stack"
+            items[-1]["stack_removable"] = True
+            # Remove is a path-param DELETE; re-add (after a remove, without
+            # a reload) POSTs the generic subscribe endpoint with a body —
+            # the row carries both so the click handler can cycle.
+            items[-1]["stack_endpoint"] = "/api/stack/subscribe"
+            items[-1]["stack_body"] = _json.dumps({"resource_type": type_key, "resource_id": item_id})
+            items[-1]["stack_remove_endpoint"] = f"/api/stack/subscription/{type_key}/{item_id}"
+            items[-1]["stack_title"] = "Added by you — click to remove it from your Stack"
+        elif in_stack:
+            items[-1]["stack_state"] = "in_stack"
+            # Every non-droppable member row says the same thing about
+            # membership — "In Stack" — and is LOCKED: there is no per-user
+            # membership to drop, only a grant an admin can revoke (required
+            # tier, or auto-membership where the grant IS the membership).
+            # The lock is driven by *droppability*, not by the grant tier:
+            # keying it on ``requirement == 'required'`` (as this once did)
+            # left an optional grant rendering the success-tinted check that
+            # a REMOVABLE row wears at rest. The tier stays legible in the
             # tooltip and the Optional/Required facet.
             items[-1]["stack_pill"] = "In Stack"
             items[-1]["stack_locked"] = True
@@ -3319,17 +3352,18 @@ async def library_page(
             # Classic non-member: a real Add control, not a dead pill (Devin
             # Review on #1199, round 4). The generic subscribe endpoint takes
             # a JSON body, so the row carries it (`data-stack-body`) for the
-            # shared click handler; after a successful add the row is a
-            # MEMBER — locked like every other granted member (the drop
-            # surface is the Catalog/Stack pages), which
-            # `data-stack-locked-after` tells the handler to render.
+            # shared click handler. The post-add state is the REMOVABLE
+            # member above (the handler switches on data-stack-remove-endpoint),
+            # matching what a reload would render — the old locked-after
+            # contract claimed an admin mandate the caller had just created
+            # themselves.
             import json as _json
 
             items[-1]["stack_state"] = "available"
             items[-1]["stack_addable"] = True
             items[-1]["stack_endpoint"] = "/api/stack/subscribe"
             items[-1]["stack_body"] = _json.dumps({"resource_type": type_key, "resource_id": item_id})
-            items[-1]["stack_locked_after_add"] = True
+            items[-1]["stack_remove_endpoint"] = f"/api/stack/subscription/{type_key}/{item_id}"
             items[-1]["stack_title"] = "Granted to you, but not in your Stack — add it to make it queryable"
 
     # Governed data packages + memory domains — StackResolver.browse() is
@@ -3345,6 +3379,27 @@ async def library_page(
         dom_slugs = {r["id"]: r.get("slug") for r in memory_domains_repo().list(limit=100000)}
     except Exception:
         dom_slugs = {}
+    # Per-domain item/required counts — the same numbers the standalone
+    # /corporate-memory cards carry (that page 302s here under rail, so the
+    # band inherits its duties). One grouped COUNT query, not a per-domain
+    # item load: pulling every knowledge item's full body to display two
+    # numbers made the Library's render cost scale with the knowledge base
+    # (Devin review on this PR). ``None`` means the counts are UNKNOWN (the
+    # read failed) — the rows below then render without counts and, crucially,
+    # without the empty-domain hiding rule, because "we could not count" must
+    # not read as "there is nothing here" and silently drop granted knowledge.
+    dom_counts: dict[str, tuple[int, int]] | None
+    try:
+        dom_counts = memory_domains_repo().count_items_by_domain()
+    except Exception as e:
+        logger.warning("/library: could not count memory-domain items: %s", e)
+        dom_counts = None
+    # Membership mode decides droppability below: classic optional members
+    # are the caller's own subscriptions (removable here, as on /catalog);
+    # under auto-membership the grant IS the membership, nothing to drop.
+    from app.instance_config import get_stack_auto_membership
+
+    _auto_membership = get_stack_auto_membership()
     for rt, type_key, type_label, glyph in (
         (ResourceType.DATA_PACKAGE, "data_package", "Data package", "data"),
         (ResourceType.MEMORY_DOMAIN, "memory_domain", "Memory", "memory"),
@@ -3354,12 +3409,30 @@ async def library_page(
                 if type_key == "data_package":
                     slug = pkg_slugs.get(e.id)
                     href = f"/catalog/p/{slug}" if slug else "/catalog"
+                    row_meta = e.category or ""
                 else:
                     slug = dom_slugs.get(e.id)
                     # ?source=library so the drill-down's back link returns
                     # HERE instead of to the memory listing the caller never
                     # visited (also feeds the memory_domain.view event).
                     href = f"/memory/d/{slug}?source=library" if slug else f"/corporate-memory#{e.id}"
+                    if dom_counts is None:
+                        # Counts unknown — render the row WITHOUT them rather
+                        # than treating the failure as emptiness and hiding
+                        # knowledge the caller is granted.
+                        row_meta = e.category or ""
+                    else:
+                        n_items, n_required = dom_counts.get(e.id, (0, 0))
+                        # A domain with KNOWN-zero content has nothing to opt
+                        # into — same rule as the standalone page
+                        # (_has_content): hidden unless the mandate itself is
+                        # required. Admins manage empty placeholders at
+                        # /admin/corporate-memory#domains.
+                        if n_items == 0 and e.requirement != "required":
+                            continue
+                        row_meta = f"{n_items} item{'s' if n_items != 1 else ''}"
+                        if n_required:
+                            row_meta += f" · {n_required} required"
                 _add_shared_row(
                     item_id=e.id,
                     title=e.name,
@@ -3371,7 +3444,7 @@ async def library_page(
                     origin="granted",
                     origin_label="Shared with you",
                     added=None,
-                    meta_text=e.category or "",
+                    meta_text=row_meta,
                     owner_label=e.owner_name or "Your workspace",
                     # StackResolver's non-required tier is "available";
                     # collapse it into "optional" so the facet has exactly two
@@ -3381,134 +3454,10 @@ async def library_page(
                     # Mode-resolved membership: auto → always True (rendering
                     # unchanged); classic → required ∪ subscribed only.
                     in_stack=e.in_stack,
+                    droppable=(not _auto_membership and e.in_stack and e.requirement != "required"),
                 )
         except Exception as e:
             logger.warning("/library: could not resolve %s: %s", rt.value, e)
-
-    # Data apps — hosted apps the caller owns or has been granted. The
-    # Library is "everything you have", and an app you built from chat is as
-    # much yours as a collection you uploaded; until this row existed a
-    # `rail` instance had no way to reach one at all, since the "Apps" nav
-    # entry shipped in the topnav only.
-    #
-    # Visibility is OWNERSHIP ∪ GRANT, deliberately NOT `data_apps._can_view`.
-    # That helper short-circuits True for any admin, and this page's contract
-    # is the opposite — see this function's docstring: "Deliberately NOT admin
-    # god-mode — an admin still sees their own Library, not every item in the
-    # instance". Reusing it listed every hosted app in the instance in an
-    # admin's Library, other people's private ones included, labelled "Shared
-    # with you" with owner "Your workspace" — a claim that is simply false for
-    # an app they hold no grant on (Devin Review on this PR). Reuse was the
-    # right instinct for the *shape* and the draft rule; it was the wrong one
-    # for the scope, because the two surfaces answer different questions.
-    #
-    # The grant set is fetched ONCE rather than per row: `_can_view` costs two
-    # DB lookups per app, on every Library render.
-    #
-    # Drafts are excluded (they are iteration branches of an app, not apps)
-    # and so is `linked_hidden`, matching `/apps` exactly.
-    # Aliased imports: both names are bound locally further down this
-    # function, so referencing the module-level ones here is a use-before-
-    # assignment in the same scope.
-    from app.instance_config import feature_enabled as _feat_enabled
-    from src.repositories import data_apps_repo as _apps_repo
-
-    if _feat_enabled("data_apps", "enabled", env_var="AGNES_DATA_APPS_ENABLED", default=False):
-        try:
-            # Grants on this type are keyed by SLUG (see `_can_view`), not id.
-            _app_grants = _granted_ids(ResourceType.DATA_APP.value)
-
-            # ALL grants on the type (any group), slug-keyed — one query, the
-            # `file_shared_groups` idiom above. An owned row's Sharing badge
-            # must reflect the grants that actually exist on it; hardcoding
-            # "Private" showed an already-shared app as unshared right next
-            # to the control that shares it.
-            _app_shared_groups: dict = {}
-            try:
-                for g in resource_grants_repo().list_all(resource_type=ResourceType.DATA_APP.value):
-                    _app_shared_groups.setdefault(g["resource_id"], set()).add(g["group_id"])
-            except Exception as e:
-                logger.warning("/library: could not resolve data-app grants: %s", e)
-
-            def _app_visibility(slug: str) -> tuple:
-                groups = _app_shared_groups.get(slug)
-                if not groups:
-                    return "private", "Private"
-                if _everyone_id and _everyone_id in groups:
-                    return "workspace", "Everyone"
-                return "shared", "Specific groups"
-
-            # `limit=100000` like every sibling listing in this function
-            # (`data_packages_repo`, `memory_domains_repo`, `recipes_repo`).
-            # The repo defaults to 1000 ordered `created_at DESC`, and that
-            # cap applies BEFORE the ownership/grant filter below — so on an
-            # instance with more apps than that, a caller's older apps drop
-            # off their own Library silently, and under the rail chrome this
-            # page is the only way to click through to one. Linked rows are
-            # created one-per-upstream-app by the MCP listers, so the count is
-            # not bounded by what people build by hand (Devin Review).
-            _apps = _apps_repo()
-            for a in _apps.list(include_drafts=False, limit=100000):
-                if a.get("state") == "linked_hidden":
-                    continue
-                if a.get("owner_user_id") != uid and a.get("slug") not in _app_grants:
-                    continue
-                _mine = a.get("owner_user_id") == user["id"]
-                _created = a.get("created_at")
-                if _mine:
-                    _vis, _vis_label = _app_visibility(a.get("slug") or "")
-                else:
-                    _vis, _vis_label = "shared", "Shared with you"
-                items.append(
-                    _library_row_base(
-                        # The SLUG, not the row id — deliberately. Grants on
-                        # this type are slug-keyed (`_can_view`,
-                        # `resource_grants`), and the Share dialog PUTs to
-                        # `/api/sharing/{share_type}/{item_id}` reading this
-                        # very field — an id here would write grants nothing
-                        # ever reads.
-                        item_id=a["slug"],
-                        kind="data_app",
-                        title=a.get("name") or a.get("slug") or "",
-                        # Effective, not raw: a linked app carries both the
-                        # synced `description` (rewritten by the MCP lister on
-                        # every sync) and an admin's `description_override`,
-                        # and every other surface shows the override when set
-                        # (Devin Review on this PR).
-                        description=_apps.effective_description(a),
-                        href=f"/apps/detail/{a['slug']}",
-                        glyph="app",
-                        type_key="data_app",
-                        type_label="App",
-                        origin="mine" if _mine else "granted",
-                        origin_label="Yours" if _mine else "Shared with you",
-                        added_iso=_created.isoformat() if hasattr(_created, "isoformat") else None,
-                        owner_label="You" if _mine else "Your workspace",
-                        ownership=(
-                            "shared_by_me" if (_mine and _vis != "private") else ("mine" if _mine else "shared_with_me")
-                        ),
-                        visibility=_vis,
-                        visibility_label=_vis_label,
-                        # The state is the one thing worth knowing at a glance:
-                        # an app can be running, sleeping, or in error, and the
-                        # row is a link you are deciding whether to click.
-                        meta_text=(a.get("state") or "").replace("_", " "),
-                        # Data apps ARE grant-shareable (`ResourceType.DATA_APP`
-                        # is a real `resource_grants` type and `_can_view`
-                        # honours it), so an owner's row carries the same Share
-                        # control every other owner-held kind does, wired to
-                        # the slug-keyed grant. Rendering it as share-less made
-                        # /admin/access the only sharing surface for the one
-                        # kind a user builds from chat (Devin Review on this
-                        # PR). Grantee rows render the read-only badge — the
-                        # template keys that on `ownership`, and the sharing
-                        # API enforces owner-or-admin regardless.
-                        share_type=ResourceType.DATA_APP.value,
-                        owner_key="me" if _mine else "workspace",
-                    )
-                )
-        except Exception as e:
-            logger.warning("/library: could not resolve data apps: %s", e)
 
     # Recipes — granted, resolved straight off the repo (no _fetch_entries
     # support for this type in StackResolver).
@@ -3671,6 +3620,129 @@ async def library_page(
     except Exception as e:
         logger.warning("/library: could not resolve installed agents: %s", e)
 
+    # ── Hosted data apps ───────────────────────────────────────────────
+    # Same visibility set as the /apps page (data_apps_list_page): the
+    # caller's own apps plus apps granted to their groups, minus drafts and
+    # `linked_hidden` rows. No stack membership — data-app access is
+    # grant-driven, not stack-driven — and no lifecycle actions here; the
+    # detail page owns start/stop/logs. The rows group into the FILES band
+    # (_SECTION_OF below) — apps sit among the caller's artifacts — and under
+    # the rail chrome they are the ONLY way to the apps inventory (/apps 302s
+    # to that section — see data_apps_list_page), so removing them strands
+    # the surface.
+    if _data_apps_nav_enabled():
+        from app.api.data_apps import _serialize as _da_serialize
+        from src.repositories import data_apps_repo
+
+        try:
+            _da_cfg = get_data_apps_config()
+            _da_users = users_repo()
+            # Grant-scoped (OWNERSHIP ∪ explicit grant), deliberately NOT the
+            # API's ``_can_view`` (and not ``can_access`` either — both
+            # short-circuit on Admin): this page's contract (docstring above)
+            # is no admin god-mode, an admin's Library lists what THEY have,
+            # not every user's private app. The instance-wide inventory stays
+            # on the API/CLI list and the admin surfaces (Devin review on
+            # this PR). Grants on this type are keyed by SLUG (see
+            # ``_can_view``), fetched ONCE like the recipe/plugin siblings —
+            # same shape PR #1272 lands on main, so the two branches keep one
+            # definition of "what an admin sees in the Library".
+            _app_grants = _granted_ids(ResourceType.DATA_APP.value)
+            # ALL grants on the type (any group), slug-keyed — one query, the
+            # `file_shared_groups` idiom above. An owned row's Sharing badge
+            # must reflect the grants that actually exist on it; hardcoding
+            # "Private" showed an already-shared app as unshared right next
+            # to the control that shares it (Devin Review on PR #1272's
+            # follow-ups).
+            _app_shared_groups: dict = {}
+            try:
+                for g in resource_grants_repo().list_all(resource_type=ResourceType.DATA_APP.value):
+                    _app_shared_groups.setdefault(g["resource_id"], set()).add(g["group_id"])
+            except Exception as e:
+                logger.warning("/library: could not resolve data-app grants: %s", e)
+
+            def _app_visibility(slug: str) -> tuple:
+                groups = _app_shared_groups.get(slug)
+                if not groups:
+                    return "private", "Private"
+                if _everyone_id and _everyone_id in groups:
+                    return "workspace", "Everyone"
+                return "shared", "Specific groups"
+
+            # ``limit=100000`` like every sibling listing in this function:
+            # the repo defaults to 1000 newest-first, and that cap applies
+            # BEFORE the ownership/grant filter — older apps would drop off
+            # their owner's Library silently.
+            for da in data_apps_repo().list(include_drafts=False, limit=100000):
+                _da_mine = da["owner_user_id"] == uid
+                if da.get("state") == "linked_hidden" or not (_da_mine or da["slug"] in _app_grants):
+                    continue
+                _da = _da_serialize(da, _da_cfg)
+                _da_owner = _da_users.get_by_id(da["owner_user_id"]) or {}
+                _da_meta = " · ".join(
+                    b for b in (_da.get("state") or "", "linked" if _da.get("kind") == "linked" else "") if b
+                )
+                if _da_mine:
+                    _da_vis, _da_vis_label = _app_visibility(da["slug"])
+                else:
+                    _da_vis, _da_vis_label = "shared", "Shared with you"
+                _da_created = da.get("created_at")
+                items.append(
+                    _library_row_base(
+                        # `kind` only surfaces as the row's inert `data-kind`
+                        # attribute today (no CSS/JS reads it — the band
+                        # accent rides the SECTION's kind), but say what the
+                        # row is: the sibling app block on main said
+                        # "data_app", and a future consumer keying on
+                        # data-kind must not find apps filed as "library"
+                        # (Devin review on PR #1278).
+                        item_id=da["slug"],
+                        kind="data_app",
+                        title=da.get("name") or da["slug"],
+                        description=_da.get("effective_description") or "",
+                        href=f"/apps/detail/{da['slug']}",
+                        glyph="app",
+                        type_key="data_app",
+                        type_label="Data app",
+                        origin="built" if _da_mine else "granted",
+                        origin_label="Built here" if _da_mine else "Shared with you",
+                        added_iso=_da_created.isoformat() if hasattr(_da_created, "isoformat") else None,
+                        # The owner's EMAIL on a grantee's row — deliberate,
+                        # though sibling granted kinds say "Your workspace".
+                        # Every other surface a granted viewer reaches already
+                        # names the owner: /apps renders owner_email in its
+                        # Owner column and /apps/detail/<slug> (this row's
+                        # href, both chromes) shows the same field, all behind
+                        # the same `_can_view` visibility this row mirrors. An
+                        # app grant is an act by a person — hiding the email
+                        # only here would have the Library disagree with the
+                        # page it links to (Devin review on PR #1278).
+                        owner_label="You" if _da_mine else (_da_owner.get("email") or da["owner_user_id"]),
+                        ownership=(
+                            "shared_by_me"
+                            if (_da_mine and _da_vis != "private")
+                            else ("mine" if _da_mine else "shared_with_me")
+                        ),
+                        visibility=_da_vis,
+                        visibility_label=_da_vis_label,
+                        meta_text=_da_meta,
+                        # Data apps ARE grant-shareable (`ResourceType.DATA_APP`
+                        # is a real `resource_grants` type and the proxy's
+                        # `_can_view` honours it), so an owner's row carries the
+                        # same Share control every other owner-held kind does,
+                        # wired to the slug-keyed grant (Devin Review on PR
+                        # #1272's follow-ups). Grantee rows render the read-only
+                        # badge — the template keys that on `ownership`, and the
+                        # sharing API enforces owner-or-admin regardless.
+                        share_type=ResourceType.DATA_APP.value,
+                        requirement="optional",
+                        tags=[],
+                        owner_key="me" if _da_mine else (da["owner_user_id"] or "workspace"),
+                    )
+                )
+        except Exception as e:
+            logger.warning("/library: could not list data apps: %s", e)
+
     # ── Definitions — the semantic layer, as a page FOOTER ────────────────
     # Deliberately NOT rows in the list above. Metrics and glossary terms are
     # the one thing here nobody owns, shares, installs, drops or edits: they
@@ -3803,13 +3875,19 @@ async def library_page(
         "skill",
         "agent",
         "recipe",
-        # Loose files + collections-as-folders.
+        # Loose files + collections-as-folders (and hosted data apps).
         "files",
         "memory_domain",
     ]
+    #: Kinds that land INSIDE another kind's section instead of getting their
+    #: own. Data apps live among the caller's artifacts in Files — the
+    #: original "Data apps coming soon" badge on that band promised exactly
+    #: this — while their rows keep ``type_key="data_app"`` so the Type facet
+    #: and the row's own label stay honest.
+    _SECTION_OF = {"data_app": "files"}
     grouped: dict = {}
     for c in items:
-        grouped.setdefault(c["type_key"], []).append(c)
+        grouped.setdefault(_SECTION_OF.get(c["type_key"], c["type_key"]), []).append(c)
 
     def _section_rank(type_key: str) -> tuple:
         try:
@@ -3822,8 +3900,10 @@ async def library_page(
     # suffixing "s" because several are irregular (PDFs, Memory, Data files).
     _SECTION_LABELS = {
         # Documents, images and every other format share one section, with
-        # collections nested inside it as folders.
-        "files": "Files",
+        # collections nested inside it as folders — and hosted data apps as a
+        # trailing block (_SECTION_OF): everything the caller or their agent
+        # made, hence the umbrella name.
+        "files": "Artefacts",
         "skill": "Skills",
         "plugin": "Plugins",
         "agent": "Agents",
@@ -3839,7 +3919,7 @@ async def library_page(
     #: it to explain itself. Kept to a short clause; a group with no hint simply
     #: renders none.
     _SECTION_HINTS = {
-        "files": "Uploaded by you, or generated by an agent.",
+        "files": "Files you upload, outputs your agent generates, and your hosted data apps.",
         "skill": "Skills built here.",
         "plugin": "Bundles of skills and commands.",
         "agent": "Assistants you installed.",
@@ -3849,15 +3929,11 @@ async def library_page(
         "memory_domain": "Curated organizational knowledge.",
     }
     #: Marker for a kind that will land INSIDE an existing section rather than
-    #: getting its own. Data apps ship into Files first, so the schedule rides
-    #: the Files band's own label — a badge next to the heading, not a panel in
-    #: the page head. A roadmap note is worth a word where the thing will
-    #: appear; it is not worth a paragraph above the inventory the reader came
-    #: for. Rendered by `group_toggle`, so the table and the grid pick it up
-    #: from one place.
+    #: getting its own. Rendered by `group_toggle`, so the table and the grid
+    #: pick it up from one place.
     #: "<kind> coming soon" badges, keyed by the section the kind will ship
     #: INTO. Empty because the one entry it carried — "Data apps coming soon",
-    #: on the Files band — has shipped: apps now have their own section above,
+    #: on the Files band — has shipped: apps now list inside that band,
     #: and leaving the badge would have the same page list your apps and tell
     #: you they do not exist yet (Devin Review on this PR). The mechanism stays
     #: for the next kind; the badge is meant to delete itself when the kind
@@ -3890,7 +3966,13 @@ async def library_page(
         """
         if key != "files":
             return rows
-        return [r for r in rows if r.get("is_folder")] + [r for r in rows if not r.get("is_folder")]
+        # Three stable blocks: folders (containers first, drop targets in one
+        # place), then loose files, then data apps — the sub-kinds of the
+        # Artefacts umbrella stay grouped instead of interleaving by recency.
+        folders = [r for r in rows if r.get("is_folder")]
+        apps = [r for r in rows if r.get("type_key") == "data_app"]
+        loose = [r for r in rows if not r.get("is_folder") and r.get("type_key") != "data_app"]
+        return folders + loose + apps
 
     library_sections = []
     for key, rows in sorted(grouped.items(), key=lambda kv: _section_rank(kv[0])):
@@ -4771,6 +4853,34 @@ async def corporate_memory(
     from app.services.stack_resolver import StackResolver
     from app.resource_types import ResourceType
 
+    # Rail: the Library's Memory band IS this page now (counts, add-to-stack,
+    # the empty-domain rule all moved there — spec 2026-08-12). 302, not 308,
+    # so a later layout flip is not cached permanently. Topnav serves the
+    # frozen pre-redesign page below, untouched.
+    if get_ui_layout() == "rail":
+        # ...but ONLY when that band will actually contain a row for this
+        # caller. The band drops a granted domain whose known item count is
+        # zero unless the mandate is `required`, so a caller with no grants —
+        # or only empty optional ones — would land on a Library with no Memory
+        # band and nothing saying where the page went. `/apps` already guards
+        # its twin redirect this way; asymmetry there was the finding.
+        # Anything unreadable counts as "redirect" rather than stranding the
+        # caller here: the band renders rows without counts when the count
+        # read fails, so it is the surface with more to say, not less.
+        try:
+            _c = memory_domains_repo().count_items_by_domain()
+        except Exception:
+            _c = None
+        try:
+            _band_has_row = any(
+                _c is None or _c.get(e.id, (0, 0))[0] > 0 or e.requirement == "required"
+                for e in StackResolver(conn).browse(user["id"], ResourceType.MEMORY_DOMAIN)
+            )
+        except Exception:
+            _band_has_row = True
+        if _band_has_row:
+            return RedirectResponse(url="/library?section=memory_domain", status_code=302)
+
     resolver = StackResolver(conn)
     domains_repo = memory_domains_repo()
     repo = knowledge_repo()
@@ -5086,8 +5196,49 @@ async def data_apps_list_page(
     from app.api.data_apps import _can_view, _serialize
     from src.repositories import data_apps_repo, users_repo
 
-    cfg = get_data_apps_config()
     enabled = feature_enabled("data_apps", "enabled", env_var="AGNES_DATA_APPS_ENABLED", default=False)
+    # Rail: the apps inventory lives in the Library's Artefacts band now —
+    # data apps sit among the caller's artifacts (spec 2026-08-12, revised:
+    # rows keep type_key=data_app for the Type facet, but Files is their
+    # home). Redirect ONLY when the Library will actually show the caller an
+    # app row (the same grant-scoped visibility the Library band applies —
+    # owner or granted, no admin god-mode): a caller with nothing visible
+    # would land on a Library whose band never rendered, with nothing
+    # explaining where the inventory went, so they keep this page's
+    # explicit empty state instead (Devin review on this PR). Feature off →
+    # same reasoning, page renders its explanatory note. 302, not 308
+    # (layout/visibility flips must not be cached).
+    if enabled and get_ui_layout() == "rail":
+        from app.resource_types import ResourceType
+
+        # Same grant-scoped visibility as the Library band (owner or explicit
+        # grant, no admin god-mode) — the redirect must predict exactly what
+        # the band will render, or an admin with nothing of their own would
+        # bounce onto a Library with no app rows. The grant set is fetched
+        # ONCE, exactly as the band fetches it (`_granted_ids` in
+        # `library_page`) — a per-row `has_explicit_grant` call here was one
+        # grant lookup per registered app on every /apps hit (Devin review
+        # on PR #1278).
+        try:
+            _app_grants = set(
+                resource_grants_repo().list_resource_ids_for_user(user["id"], ResourceType.DATA_APP.value)
+            )
+        except Exception as e:
+            logger.warning("/apps: could not resolve data-app grants: %s", e)
+            _app_grants = set()
+        _visible_any = any(
+            r.get("state") != "linked_hidden" and (r["owner_user_id"] == user["id"] or r["slug"] in _app_grants)
+            # `limit=100000`, matching the Library band. The repo's default
+            # cap is 1000 and it is applied in SQL BEFORE the ownership/grant
+            # filter, so on a large instance an owner's older app drops out of
+            # this predicate while the band would still list it — the redirect
+            # would strand exactly the person it exists to forward.
+            for r in data_apps_repo().list(include_drafts=False, limit=100000)
+        )
+        if _visible_any:
+            return RedirectResponse(url="/library?section=files", status_code=302)
+
+    cfg = get_data_apps_config()
     apps: list[dict] = []
     if enabled:
         u_repo = users_repo()
@@ -5152,7 +5303,7 @@ async def data_app_detail_page(
 
     return templates.TemplateResponse(
         request,
-        "data_app_detail.html",
+        _detail_template("data_app_detail"),
         {
             **_chrome_ctx(request, user),
             "app": serialized,

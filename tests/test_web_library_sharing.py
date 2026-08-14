@@ -887,22 +887,21 @@ def test_more_coming_note_is_a_sibling_of_the_count_not_a_child(seeded_app):
     assert head_at < count_at
 
 
-def test_the_data_apps_soon_badge_is_gone_now_that_apps_ship(seeded_app):
-    """The badge was designed to delete itself when the kind shipped.
-
-    It read "Data apps coming soon" on the Files band, with a tooltip saying
-    hosted apps "will appear here" and there is "nothing to do yet". Apps now
-    have their own Library section, so leaving it would make one page both
-    list your apps and tell you they do not exist (Devin Review on #1272) —
-    and its claim was wrong on both counts, since they do not land in Files.
-    """
+def test_data_apps_schedule_badge_retired_when_the_kind_shipped(seeded_app):
+    """The "Data apps coming soon" badge promised the kind would land in the
+    Library — its own docstring said it "deletes itself when the kind ships."
+    The kind shipped (the Data apps band, tests/test_web_library_data_apps.py),
+    so a lingering badge would announce a roadmap the reader is looking at.
+    The `fbar-group__soon` seam itself stays (`_SECTION_SOON` in the router)
+    for the next kind on the roadmap; only the fulfilled entry is gone."""
     _create_collection(seeded_app, "Soon Badge Anchor", seeded_app["admin_token"])
     text = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"])).text
 
+    assert "Soon Badge Anchor" in text  # the Files band really rendered
     assert 'class="fbar-group__soon"' not in text
     assert "Data apps coming soon" not in text
     assert "Nothing to do yet." not in text
-    # The panels this replaced stay gone — markup and CSS both.
+    # The old pre-badge panels stay gone too — markup and CSS both.
     assert "lib-soon" not in text
     assert "lib-apps" not in text
 
@@ -919,6 +918,31 @@ def _grant(group_id: str, resource_type: str, resource_id: str) -> None:
     grants = ResourceGrantsRepository(get_system_db())
     if not grants.has_grant([group_id], resource_type, resource_id):
         grants.create(group_id=group_id, resource_type=resource_type, resource_id=resource_id, assigned_by="admin")
+
+
+def _stock_domain(domain_id: str, item_id: str) -> None:
+    """Put one approved item into a memory domain. The Library hides empty
+    optional domains (the /corporate-memory _has_content rule moved in with
+    the merge), so a domain that should LIST must have content."""
+    from src.db import get_system_db
+    from src.repositories.knowledge import KnowledgeRepository
+
+    conn = get_system_db()
+    try:
+        KnowledgeRepository(conn).create(
+            id=item_id,
+            title="Stock item",
+            content="body",
+            category="workflow",
+            status="approved",
+            source_user="contrib@example.com",
+        )
+        conn.execute(
+            "INSERT INTO knowledge_item_domains(item_id, domain_id, added_by) VALUES (?, ?, 'test')",
+            [item_id, domain_id],
+        )
+    finally:
+        conn.close()
 
 
 def test_library_lists_granted_resources_of_every_kind(seeded_app):
@@ -957,6 +981,7 @@ def test_library_lists_granted_resources_of_every_kind(seeded_app):
     _grant(gid, "data_package", pkg)
     _grant(gid, "memory_domain", dom)
     _grant(gid, "recipe", rec)
+    _stock_domain(dom, "lib_pricing_item")
 
     text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
     assert "Sales Data" in text
@@ -996,6 +1021,7 @@ def test_granted_rows_link_to_the_individual_item(seeded_app):
     )
     _grant(gid, "data_package", pkg)
     _grant(gid, "memory_domain", dom)
+    _stock_domain(dom, "lib_drill_item")
 
     text = seeded_app["client"].get("/library", headers=_auth(seeded_app["analyst_token"])).text
     assert "/catalog/p/lib-drill-data" in text
