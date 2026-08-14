@@ -10,14 +10,13 @@ from __future__ import annotations
 import pytest
 
 from tests.helpers.factories import (
-    make_skill_zip,
-    make_plugin_zip,
     make_agent_zip,
     make_bad_desc_zip,
     make_no_name_zip,
+    make_plugin_zip,
     make_security_fail_zip,
+    make_skill_zip,
 )
-
 
 pytestmark = pytest.mark.integration
 
@@ -45,6 +44,7 @@ class TestAuthSmoke:
     def test_bootstrap_returns_403_after_seeding(self, seeded_app_both):
         """Bootstrap window is closed once a user with a password exists."""
         from argon2 import PasswordHasher
+
         from src.repositories import users_repo
 
         users_repo().update(id="admin1", password_hash=PasswordHasher().hash("admin-pass"))
@@ -72,6 +72,7 @@ class TestAuthSmoke:
     def test_token_with_password_user(self, seeded_app_both):
         """POST /auth/token returns 200 + access_token for a user with a password_hash."""
         from argon2 import PasswordHasher
+
         from src.repositories import users_repo
 
         ph = PasswordHasher()
@@ -1635,6 +1636,13 @@ KNOWN_UNTESTED = {
     # tests/test_api_knowledge_artifacts.py (manifest section, 401/404/200/304,
     # RBAC fail-closed).
     "GET /api/knowledge/artifacts/{corpus_id}/download",
+    # Connector-catalogued attachment download (Jira first) — binary
+    # byte-stream by id; no new repo methods/migration (the catalogue is an
+    # analytics view, the bytes live on disk), RBAC via can_access_table like
+    # the parquet download. Behaviour covered in
+    # tests/test_attachment_download.py (403 vs miss taxonomy, byte roundtrip,
+    # path containment, audit both outcomes, second-source registration).
+    "GET /api/attachments/{source}/{attachment_id}/download",
     # K4 maintained digests (#799) — digest markdown content endpoint, RBAC
     # via require_resource_access(KNOWLEDGE_DIGEST). Behaviour covered in
     # tests/test_api_knowledge_digests_distribution.py (manifest kind:"digest"
@@ -2495,10 +2503,10 @@ def test_every_route_is_covered_or_excluded():
     ({metric_id:path} -> {metric_id}), so KNOWN_UNTESTED entries must use the
     plain {param} form.
     """
-    import json  # noqa: PLC0415
-    import os  # noqa: PLC0415
-    import subprocess  # noqa: PLC0415
-    import sys  # noqa: PLC0415
+    import json
+    import os
+    import subprocess
+    import sys
 
     repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     script = (

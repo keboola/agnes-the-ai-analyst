@@ -400,6 +400,7 @@ from app.api.me_stats import router as me_stats_router
 from app.api.admin import router as admin_router
 from app.api.admin_bigquery_test import router as admin_bigquery_test_router
 from app.api.admin_keboola_test import router as admin_keboola_test_router
+from app.api.attachments import router as attachments_router
 from app.api.jira_webhooks import router as jira_webhooks_router
 from app.api.metrics import router as metrics_router
 from app.api.glossary import router as glossary_router
@@ -2109,6 +2110,9 @@ def create_app() -> FastAPI:
         minimum_size=1024,
         skip_prefixes=(
             "/api/data/",
+            # Attachment binaries (PDF/PNG/ZIP …) are already compressed;
+            # same rationale as the parquet exclusion above.
+            "/api/attachments/",
             "/api/mcp",  # SSE stream — do not gzip
             # Chat sandbox LLM proxy: the model completion streams back as
             # text/event-stream. GZipMiddleware buffers a StreamingResponse
@@ -2481,6 +2485,7 @@ def create_app() -> FastAPI:
     app.include_router(me_access_router)
     app.include_router(me_router)
     app.include_router(me_stats_router)
+    app.include_router(attachments_router)
     app.include_router(jira_webhooks_router)
     app.include_router(metrics_router)
     app.include_router(glossary_router)

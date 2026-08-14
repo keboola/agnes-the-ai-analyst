@@ -28341,6 +28341,78 @@
         ]
       }
     },
+    "/api/attachments/{source}/{attachment_id}/download": {
+      "get": {
+        "description": "Stream one connector-catalogued attachment binary.\n\nOutcomes a client can tell apart:\n\n- 404 ``unknown_attachment_source`` \u2014 ``{source}`` has no declaration\n  (decided before any catalogue or filesystem work).\n- 403 \u2014 caller lacks read access to the source's catalogue table.\n- 404 ``attachment_not_found`` \u2014 no catalogue row with this id.\n- 404 ``attachment_not_stored`` \u2014 the row exists but the server holds\n  no bytes (over-size skip, transform-time miss, or removed since);\n  fall back to the upstream system's own API for these.\n- 503 ``attachment_unreadable`` \u2014 the row exists and points at a file\n  the server cannot OPEN (permissions/I/O) \u2014 a malfunction, logged,\n  never disguised as a miss.\n- 200 \u2014 the bytes, with the original filename in Content-Disposition.",
+        "operationId": "download_attachment_api_attachments__source___attachment_id__download_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source",
+            "required": true,
+            "schema": {
+              "title": "Source",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "attachment_id",
+            "required": true,
+            "schema": {
+              "title": "Attachment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Attachment",
+        "tags": [
+          "attachments"
+        ]
+      }
+    },
     "/api/auth/exchange-setup-token": {
       "post": {
         "description": "Exchange a one-time setup token for a regular PAT.\n\nThis endpoint requires **no prior authentication** \u2014 the setup token\nembedded in the bundle IS the authentication credential.\n\nSecurity properties:\n- Token is matched by SHA-256 hash, never stored or logged in plaintext.\n- Single-use: atomically marked used on first consumption.\n- Short-lived: 24 h TTL enforced server-side regardless of client clock.\n- On success, the setup token is consumed and cannot be replayed.",
