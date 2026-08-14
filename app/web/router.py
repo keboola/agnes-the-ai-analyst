@@ -32,6 +32,7 @@ from app.instance_config import (
     get_instance_brand,
     get_instance_brand_short,
     get_instance_copyright,
+    get_privacy_policy_url,
     get_workspace_dir_name,
     get_instance_logo_svg,
     get_instance_overview,
@@ -895,6 +896,32 @@ async def setup_wizard(request: Request):
     except Exception:
         pass  # No users table yet — show setup
     return templates.TemplateResponse(request, "setup.html", _build_context(request))
+
+
+@router.get("/privacy", response_class=HTMLResponse)
+async def privacy_page(request: Request):
+    """What this instance does with data — deliberately UNAUTHENTICATED.
+
+    Every connector directory asks for a privacy policy URL and fetches it
+    without credentials; an unreachable one is an automatic rejection. The
+    same content already existed as ``/how-it-works#privacy``, but that route
+    is behind ``get_current_user``, so handing out that anchor produced a
+    login redirect rather than a policy.
+
+    Two shapes, one URL. When the operator has published their own policy
+    (``instance.privacy_policy_url``) this redirects there, because on a
+    self-hosted deployment *they* are the data controller and their document
+    is the authoritative one. Otherwise it renders the built-in page, which
+    states that plainly and describes only what the software itself does —
+    the honest limit of what a vendor can say about someone else's instance.
+
+    No auth, no DB read: it must answer for a reviewer, a crawler, and a
+    logged-out user on an instance whose database is down.
+    """
+    policy_url = get_privacy_policy_url()
+    if policy_url:
+        return RedirectResponse(url=policy_url, status_code=302)
+    return templates.TemplateResponse(request, "privacy.html", _build_context(request))
 
 
 @router.get("/login", response_class=HTMLResponse)

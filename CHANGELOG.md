@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Added
+
+- **A public `/privacy` page, and an operator setting that overrides it.** The same four guarantees already sat at `/how-it-works#privacy`, but that route is behind sign-in — so the URL answered a signed-out fetch with a login redirect, which is exactly how a connector directory reads it, and both the Anthropic and the OpenAI submissions treat an unreachable privacy policy as an automatic rejection. `/privacy` answers unauthenticated. It also says what a vendor page honestly can: Agnes is self-hosted, so the data controller is the organization running the instance, and this describes what the *software* does, not their policy. An operator who has their own sets `instance.privacy_policy_url` (env: `AGNES_PRIVACY_POLICY_URL`) and the route redirects there — so `https://<instance>/privacy` is the right URL to register either way.
+
 ### Changed
 
 - **Agents can be used, not just configured.** Every agent card carries a **Chat** button that opens a session running *as* that agent — its role, its instructions, its scope. The runtime was never the missing part: `ChatManager.create_session(agent_id=…)` is surface-agnostic and is what the agent API already called; web chat was simply never wired to it, so a browser session always ran as your default agent no matter which one you had built. `POST /api/chat/sessions` now accepts `agent_slug`, resolved against your own agents only — someone else's slug 404s rather than 403s, so the endpoint does not confirm that another user's agent exists. Scope is not re-implemented: the id goes through the same broker seam as the agent API, so a `'selected'`-scoped agent is restricted identically whichever door the session came in through. The "Work in progress — actually running them is the next step" notice is gone, because that step is this one. Switching persona mid-conversation stays out of scope; a new session per agent is the model.
