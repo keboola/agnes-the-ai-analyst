@@ -1051,6 +1051,36 @@ def test_readiness_cors_is_pinned_to_the_apps_own_origin(
         )
         assert r.status_code == 200, r.text
         assert "access-control-allow-origin" not in r.headers, f"origin {origin} must not be CORS-readable"
+        # Refusals still declare the answer varies by Origin: without it, a
+        # URL-keyed cache could store THIS header-less variant and replay it
+        # to the app's own origin, wedging the holding page (Devin on #1321).
+        # Substring: GZipMiddleware folds its own "Accept-Encoding" into Vary.
+        assert "Origin" in r.headers.get("vary", ""), f"origin {origin} refusal must still carry Vary: Origin"
+
+
+def test_readiness_cors_grant_is_withheld_under_wildcard_cors(
+    proxy_client, proxy_env, fake_runner, running_app, mint_preview, monkeypatch
+):
+    """With CORS_ORIGINS='*' the app-wide middleware stamps a credential-less
+    `ACAO: *` over handler headers while a handler-set `Allow-Credentials`
+    would survive — a browser-invalid pair. The helper withholds the grant
+    entirely (the poll is broken under the wildcard either way; main.py logs
+    a dedicated error), leaving only `Vary: Origin` (Devin on #1321)."""
+    _set_data_apps_config(proxy_env["data_dir"], subdomain_base="apps.example.com")
+    monkeypatch.setenv("CORS_ORIGINS", "https://ok.example.com,*")
+    tok = mint_preview("s", ttl_s=1800)
+    r = proxy_client.get(
+        "/api/data-apps/s/readiness",
+        headers={"cookie": tok.cookie, "origin": "https://s.apps.example.com"},
+    )
+    assert r.status_code == 200, r.text
+    # The grant marker is Allow-ORIGIN: the app-wide middleware contributes a
+    # bare Allow-Credentials on every Origin-carrying response under an
+    # explicit-origins config (Starlette puts it in simple_headers), which is
+    # inert without a matching Allow-Origin — what must NOT appear is the
+    # helper's per-app origin echo.
+    assert "access-control-allow-origin" not in r.headers
+    assert "Origin" in r.headers.get("vary", "")
 
 
 def test_data_app_subdomains_get_no_app_wide_cors(proxy_env):

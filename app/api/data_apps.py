@@ -1726,22 +1726,38 @@ def _readiness_cors_headers(request: Request, slug: str) -> dict[str, str]:
     allowlist, never re-adding a subdomain grant to the middleware
     (Devin Review on #1321).
     """
+    # `Vary: Origin` on EVERY path, refusals included: the response's headers
+    # differ by Origin, and a cache keyed only on the URL could store the
+    # header-less refusal variant and replay it to the app's own origin —
+    # the browser then refuses the read, the holding page's `catch` swallows
+    # it, and the poll spins forever with the app up (Devin Review on this
+    # PR). Starlette's own CORSMiddleware emits it unconditionally for
+    # explicit-origin policies for the same reason.
+    vary_only = {"Vary": "Origin"}
     origin = request.headers.get("origin") or ""
     if not origin:
-        return {}
+        return vary_only
     base = (get_data_apps_config().get("subdomain_base") or "").strip().strip(".")
     if not base:
-        return {}
+        return vary_only
+    # With CORS_ORIGINS='*' the app-wide middleware stamps a credential-less
+    # `Access-Control-Allow-Origin: *` OVER whatever this returns, while a
+    # handler-set `Allow-Credentials: true` would survive — shipping the
+    # browser-invalid `*`+credentials pair. The poll is broken under the
+    # wildcard either way (main.py logs a dedicated error for wildcard +
+    # subdomain_base); don't emit half a grant into that response.
+    if "*" in (o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",")):
+        return vary_only
     try:
         from urllib.parse import urlsplit
 
         parts = urlsplit(origin)
     except ValueError:
-        return {}
+        return vary_only
     if parts.scheme not in ("http", "https"):
-        return {}
+        return vary_only
     if (parts.hostname or "") != f"{slug}.{base}".lower():
-        return {}
+        return vary_only
     return {
         "Access-Control-Allow-Origin": origin,
         "Access-Control-Allow-Credentials": "true",
