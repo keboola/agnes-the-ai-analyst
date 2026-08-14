@@ -12,6 +12,7 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 import re
@@ -171,7 +172,13 @@ async def receive_jira_webhook(request: Request) -> Response:
             status_code=503,
         )
 
-    success = jira_service.process_webhook_event(event_data)
+    # process_webhook_event's call chain is entirely synchronous (httpx,
+    # file writes, parquet transform) and — since the 429 handling added for
+    # comment pagination — can call time.sleep(). Running it directly here
+    # would block the asyncio event loop for the whole app (chat, admin,
+    # every other API), not just this request. Dispatch to the threadpool
+    # instead (Devin Review on #1283).
+    success = await run_in_threadpool(jira_service.process_webhook_event, event_data)
 
     if success:
         return JSONResponse({"status": "ok", "event": webhook_event, "issue": issue_key})

@@ -13,7 +13,8 @@ import logging
 import os
 import re
 import tempfile
-from datetime import datetime, timezone
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -34,6 +35,36 @@ class JiraFetchError(Exception):
     """
 
 
+# Jira's issue-embed API caps `fields.comment.comments` at this many rows.
+JIRA_COMMENT_PAGE_SIZE = 100
+
+# 429 handling for the comment-pagination loop. The batch path runs several
+# workers in parallel and adds a request per >100-comment issue, so rate
+# limiting is its likeliest failure — without a retry it would routinely leave
+# issues marked `_comments_incomplete`. Bounded, because the alternative is a
+# worker parked on an endpoint that keeps refusing.
+JIRA_COMMENT_RATE_LIMIT_RETRIES = 3
+JIRA_COMMENT_RETRY_AFTER_DEFAULT = 60
+# A `Retry-After` may legitimately be hours; a batch worker must not sit on one.
+JIRA_COMMENT_RETRY_AFTER_MAX = 300
+
+
+def _retry_after_seconds(response: Any) -> int:
+    """`Retry-After` in seconds — defaulted when absent/unparseable, capped.
+
+    The header may also carry an HTTP-date; `int()` on that raises, so parse
+    defensively and fall back rather than turning a rate limit into a crash.
+    """
+    raw = (response.headers or {}).get("Retry-After") if hasattr(response, "headers") else None
+    try:
+        seconds = int(str(raw).strip())
+    except (TypeError, ValueError):
+        seconds = JIRA_COMMENT_RETRY_AFTER_DEFAULT
+    if seconds <= 0:
+        seconds = JIRA_COMMENT_RETRY_AFTER_DEFAULT
+    return min(seconds, JIRA_COMMENT_RETRY_AFTER_MAX)
+
+
 class _JiraConfig:
     """Jira configuration from environment variables."""
 
@@ -49,7 +80,60 @@ class _JiraConfig:
 Config = _JiraConfig
 
 
+def reload_config_from_env() -> None:
+    """Re-read ``Config`` from ``os.environ`` and drop the service singleton.
+
+    ``_JiraConfig`` evaluates every value in its **class body**, so the credentials
+    freeze when this module is imported. A CLI that calls ``load_dotenv()`` in
+    ``main()`` therefore populates ``os.environ`` far too late: the module was
+    already imported at the top of the file, ``Config.JIRA_DOMAIN`` is still empty,
+    and ``JiraService`` copies those empty values — so the command reports "Jira is
+    not configured" and exits 0 having done nothing (Devin Review on #1274).
+
+    Scripts that load a ``.env`` at runtime must call this immediately afterwards.
+    Deliberately not solved by making ``_JiraConfig`` lazy: its attributes are
+    monkeypatched directly across the test suite, and properties would break every
+    one of those call sites for no gain on the deployed paths, where the values are
+    exported into the environment before the process starts.
+    """
+    global _jira_service
+
+    Config.JIRA_DOMAIN = os.environ.get("JIRA_DOMAIN", "")
+    Config.JIRA_EMAIL = os.environ.get("JIRA_EMAIL", "")
+    Config.JIRA_API_TOKEN = os.environ.get("JIRA_API_TOKEN", "")
+    Config.JIRA_CLOUD_ID = os.environ.get("JIRA_CLOUD_ID", "")
+    Config.JIRA_WEBHOOK_SECRET = os.environ.get("JIRA_WEBHOOK_SECRET", "")
+    Config.JIRA_DATA_DIR = Path(os.environ.get("JIRA_DATA_DIR", "/data/src_data/raw/jira"))
+
+    # The singleton captured the stale values in __init__; rebuild it on next use.
+    _jira_service = None
+
+
 _VALID_COLUMN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _parse_field_spec(raw: str) -> list[tuple[str, str]]:
+    """Parse a comma-separated ``id`` / ``id:column`` spec into ``[(id, alias), ...]``.
+
+    Shared by ``refresh_fields`` (issue custom fields) and
+    ``organization_detail_fields`` (JSM organization details) so the two specs can
+    never drift in how they tokenize. Returns the *raw* alias — an empty string when
+    the entry named no column — and leaves validation to the caller, because the two
+    consumers fall back differently (issue fields to the field id, organization
+    details to a prefixed name, since a detail id like ``38`` is not a legal column).
+    """
+    out: list[tuple[str, str]] = []
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        field_id, _, alias = entry.partition(":")
+        field_id = field_id.strip()
+        alias = alias.strip()
+        if not field_id:
+            continue
+        out.append((field_id, alias))
+    return out
 
 
 def refresh_fields() -> list[tuple[str, str]]:
@@ -64,17 +148,104 @@ def refresh_fields() -> list[tuple[str, str]]:
     ``verify_sla_access --list-fields``.
     """
     out: list[tuple[str, str]] = []
-    for entry in os.environ.get("JIRA_REFRESH_FIELDS", "").split(","):
-        entry = entry.strip()
-        if not entry:
-            continue
-        field_id, _, alias = entry.partition(":")
-        field_id = field_id.strip()
-        alias = alias.strip()
-        if not field_id:
-            continue
+    for field_id, alias in _parse_field_spec(os.environ.get("JIRA_REFRESH_FIELDS", "")):
         column = alias if alias and _VALID_COLUMN.match(alias) else field_id
         out.append((field_id, column))
+    return out
+
+
+ORGANIZATION_DETAIL_PREFIX = "detail_"
+
+
+def _organization_json(response: httpx.Response, what: str) -> dict:
+    """Decode a 200 body into the JSON object it must be, or ``JiraFetchError``.
+
+    ``response.json()`` raises a plain ``ValueError`` on a body that is not JSON —
+    an HTML error page from an intermediary answering 200, say. That escapes the
+    per-organization ``except JiraFetchError`` in the refresh sweep, so one bad
+    response would abort the whole run before anything was written instead of
+    preserving that organization's previous row.
+
+    A body that decodes to something other than an object is rejected the same
+    way: every caller reads keys off the payload, so ``null`` would surface as
+    ``fetch_organization``'s 404 ``None`` — read by the sweep as "deleted, drop
+    the row" — and a list or string would raise ``AttributeError`` outside the
+    same boundary (Devin Review on #1274).
+    """
+    try:
+        payload = response.json()
+    except ValueError as e:
+        raise JiraFetchError(f"{what} failed: malformed JSON in a {response.status_code} response — {e}") from e
+    if not isinstance(payload, dict):
+        raise JiraFetchError(
+            f"{what} failed: a {response.status_code} response decoded to {type(payload).__name__}, not a JSON object"
+        )
+    return payload
+
+
+def _organization_reserved_columns() -> frozenset[str]:
+    """Built-in `organizations` columns a configured detail must never overwrite.
+
+    Derived from ``ORGANIZATIONS_SCHEMA`` rather than restated, so a column added
+    there is protected without a second edit here. The import is function-local
+    because ``transform`` imports this module at top level — the same reason
+    ``trigger_incremental_transform`` defers its ``incremental_transform`` import.
+    """
+    from connectors.jira.transform import ORGANIZATIONS_SCHEMA
+
+    return frozenset(ORGANIZATIONS_SCHEMA)
+
+
+def organization_detail_fields() -> list[tuple[str, str]]:
+    """``[(detail_key, column_name), ...]`` parsed from ``JIRA_ORG_DETAIL_FIELDS``.
+
+    Format mirrors ``JIRA_REFRESH_FIELDS``: comma-separated ``detail_key`` or
+    ``detail_key:column_name``. ``detail_key`` is matched against a JSM organization
+    detail's ``id`` first and its ``name`` second (see
+    ``transform.extract_organization_details``), so an operator can configure either
+    the stable numeric id or the human label.
+
+    No defaults: detail ids are per-instance, so any hard-coded value would be wrong
+    on another deployment. Unlike issue fields, the key cannot double as the column —
+    a detail id such as ``38`` is not a legal SQL/parquet identifier — so an entry
+    with no usable alias becomes ``detail_<key>``. An alias colliding with a built-in
+    column is prefixed the same way rather than silently shadowing it, and a column
+    already claimed by an earlier entry is skipped. Read at call time so scripts that
+    ``load_dotenv()`` at runtime see the value.
+    """
+    reserved = _organization_reserved_columns()
+    seen: set[str] = set()
+    out: list[tuple[str, str]] = []
+    for detail_key, alias in _parse_field_spec(os.environ.get("JIRA_ORG_DETAIL_FIELDS", "")):
+        if alias and _VALID_COLUMN.match(alias):
+            column = alias
+            if column in reserved:
+                column = f"{ORGANIZATION_DETAIL_PREFIX}{column}"
+                logger.warning(
+                    "Jira org detail %s: column %r collides with a built-in organizations column; using %r instead",
+                    detail_key,
+                    alias,
+                    column,
+                )
+        else:
+            # Either no alias, or one that is not a legal identifier. The key itself
+            # is usually a bare number, so prefix it into something addressable.
+            column = f"{ORGANIZATION_DETAIL_PREFIX}{detail_key}"
+            if not _VALID_COLUMN.match(column):
+                logger.warning(
+                    "Jira org detail %s: cannot derive a valid column name; skipping",
+                    detail_key,
+                )
+                continue
+        if column in seen:
+            logger.warning(
+                "Jira org detail %s: column %r already used by another entry; skipping",
+                detail_key,
+                column,
+            )
+            continue
+        seen.add(column)
+        out.append((detail_key, column))
     return out
 
 
@@ -163,6 +334,206 @@ def trigger_incremental_transform(issue_key: str, deleted: bool = False) -> bool
         return False
 
 
+def _dedupe_comments_by_id(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """De-duplicate ``comments`` by ``id``, first occurrence wins, order preserved.
+
+    The embed (``GET /issue/{key}``) and the paginated ``GET
+    .../issue/{key}/comment`` are two separate requests. ``startAt =
+    len(embedded)`` assumes the paged endpoint's ordering exactly matches the
+    embed and that nothing was deleted between the two calls; when that
+    assumption breaks (ordering drift, a comment added/removed mid-fetch) the
+    same comment id can arrive from both the embed and a page. Concatenating
+    without dedup would then store it twice. A page skipping an id instead of
+    repeating one is a different, already-covered risk (the stored-vs-total
+    shortfall WARNING below), not something dedup can fix.
+    """
+    seen: set[str] = set()
+    deduped: list[dict[str, Any]] = []
+    for comment in comments:
+        comment_id = comment.get("id")
+        if comment_id is not None:
+            if comment_id in seen:
+                continue
+            seen.add(comment_id)
+        deduped.append(comment)
+    return deduped
+
+
+def _embedded_comments_are_complete(issue_data: dict[str, Any]) -> bool:
+    """Does this payload demonstrably carry the issue's whole comment thread?
+
+    Only true when a ``fields.comment`` object is present AND the embedded
+    list is at least as long as the ``total`` it reports. A payload with no
+    comment field at all is NOT evidence that the issue has no comments —
+    treating it as such would let an issue-scoped delete-then-insert erase a
+    stored thread — so it answers False as well.
+    """
+    fields = issue_data.get("fields") or {}
+    comment_field = fields.get("comment")
+    if not isinstance(comment_field, dict):
+        return False
+    comments = comment_field.get("comments")
+    if not isinstance(comments, list):
+        return False
+    total = comment_field.get("total")
+    if not isinstance(total, int):
+        # No count to check against: a list of unknown completeness.
+        return False
+    return len(comments) >= total
+
+
+def complete_issue_comments(
+    issue_data: dict[str, Any],
+    base_url: str,
+    auth: tuple[str, str],
+    client: httpx.Client,
+    max_retries: int | None = None,
+) -> None:
+    """Fill in comments Jira's issue payload truncated at its embed page size.
+
+    ``GET /issue/{key}`` embeds ``fields.comment.comments`` capped at 100,
+    oldest-first — an issue with more than 100 comments arrives missing its
+    NEWEST comments. Because every later full-refetch (``fields=*all``)
+    re-hits the same cap, the gap never heals on its own; it only widens as
+    more comments are added.
+
+    ``fields.comment.total`` carries the true count. When it exceeds what's
+    embedded, page through ``GET /issue/{key}/comment`` (``startAt``,
+    ``maxResults=100``) for the remainder and replace the embedded list with
+    the complete, de-duplicated (by comment id) one — mutated in place on
+    ``issue_data``, using the same ``client``/``auth`` as the issue fetch that
+    produced it.
+
+    This is the single fetch-layer seam shared by both ingestion paths that
+    call it right after their issue GET: ``JiraService.fetch_issue`` (webhook
+    full-refetch) and ``JiraBackfill.fetch_issue`` (batch/full extract).
+    ``transform_issue``/``transform_comments`` stay pure — they just read
+    whatever ``fields.comment.comments`` this function already completed.
+
+    Comments can legitimately be added between the two requests, so a
+    residual shortfall after completion is only logged (WARNING), never
+    raised — this is a best-effort enrichment step, not a hard requirement.
+
+    A ``429`` is retried up to ``max_retries`` times (``JIRA_COMMENT_RATE_LIMIT_RETRIES``
+    when ``max_retries`` is ``None``), honouring ``Retry-After`` (defaulted
+    when absent or an HTTP-date, capped at ``JIRA_COMMENT_RETRY_AFTER_MAX`` so
+    one worker cannot park on an hours-long value) — the same treatment the
+    issue and remote-link fetchers give it. Rate limiting is the batch path's
+    likeliest failure, and without the retry it would routinely mark issues
+    incomplete. The caller-supplied override exists because the webhook path
+    runs on an active request: ``JiraService.fetch_issue`` passes a
+    much smaller (zero) budget there, so a 429 marks the issue incomplete
+    immediately instead of sleeping for up to
+    ``JIRA_COMMENT_RATE_LIMIT_RETRIES * JIRA_COMMENT_RETRY_AFTER_MAX`` seconds
+    — the marker plus a later backfill heal (``_needs_refetch``) recovers it
+    (Devin Review on #1283). The batch path (``JiraBackfill.fetch_issue``)
+    omits the override and keeps the generous default.
+
+    If a page request itself fails (RequestError, a non-200 status other than
+    a retryable 429, or a 429 that outlives its retries — legitimate
+    outages, not "no more comments"), the loop stops and
+    ``issue_data["_comments_incomplete"]`` is set to ``True``. This is a
+    sibling of the ``_remote_links`` overlay-absent contract
+    (``transform_remote_links``): the incremental transform performs an
+    issue-scoped delete-then-insert on the comments parquet, so overlaying a
+    known-truncated list here would let a transient fetch error wipe a
+    previously-complete stored thread down to whatever this attempt managed
+    to fetch. ``transform_comments`` reads this marker and returns ``None``
+    instead of a truncated list so the incremental caller preserves the
+    existing rows (the batch/full rebuild, which preserves nothing, opts out
+    with ``preserve_on_incomplete=False`` and keeps the partial list).
+    An empty page (200, ``comments: []``) is NOT a failure — it means the
+    paged endpoint has no more comments, so the fetched set is complete
+    relative to the endpoint even if ``total`` was stale (e.g. comments
+    deleted between the two requests).
+    """
+    issue_key = issue_data.get("key")
+    fields = issue_data.get("fields") or {}
+    comment_field = fields.get("comment") or {}
+    embedded = comment_field.get("comments") or []
+    total = comment_field.get("total", len(embedded))
+    retry_budget = JIRA_COMMENT_RATE_LIMIT_RETRIES if max_retries is None else max_retries
+
+    incomplete = False
+    if issue_key and total > len(embedded):
+        extra: list[dict[str, Any]] = []
+        start_at = len(embedded)
+        rate_limit_retries = 0
+        while len(embedded) + len(extra) < total:
+            try:
+                response = client.get(
+                    f"{base_url}/issue/{issue_key}/comment",
+                    auth=auth,
+                    params={"startAt": start_at, "maxResults": JIRA_COMMENT_PAGE_SIZE},
+                    headers={"Accept": "application/json"},
+                )
+            except httpx.RequestError as e:
+                logger.warning(
+                    "Jira issue %s: comment pagination request failed at startAt=%d: %s",
+                    issue_key,
+                    start_at,
+                    e,
+                )
+                incomplete = True
+                break
+            if response.status_code == 429:
+                if rate_limit_retries >= retry_budget:
+                    logger.warning(
+                        "Jira issue %s: comment pagination still rate limited at startAt=%d "
+                        "after %d retries — giving up",
+                        issue_key,
+                        start_at,
+                        rate_limit_retries,
+                    )
+                    incomplete = True
+                    break
+                wait = _retry_after_seconds(response)
+                rate_limit_retries += 1
+                logger.warning(
+                    "Jira issue %s: comment pagination rate limited at startAt=%d, waiting %ds (retry %d/%d)",
+                    issue_key,
+                    start_at,
+                    wait,
+                    rate_limit_retries,
+                    retry_budget,
+                )
+                time.sleep(wait)
+                continue
+            if response.status_code != 200:
+                logger.warning(
+                    "Jira issue %s: comment pagination page failed at startAt=%d (status %s)",
+                    issue_key,
+                    start_at,
+                    response.status_code,
+                )
+                incomplete = True
+                break
+            page = response.json().get("comments") or []
+            if not page:
+                break
+            extra.extend(page)
+            start_at += len(page)
+
+        if extra:
+            comment_field["comments"] = _dedupe_comments_by_id(embedded + extra)
+            fields["comment"] = comment_field
+            issue_data["fields"] = fields
+
+    if incomplete:
+        issue_data["_comments_incomplete"] = True
+
+    stored = len(comment_field.get("comments", embedded))
+    if stored < total:
+        logger.warning(
+            "Jira issue %s: stored %d comments but Jira reports comment.total=%d after "
+            "pagination completion (comments may have been added mid-fetch, or a page "
+            "request failed)",
+            issue_key,
+            stored,
+            total,
+        )
+
+
 class JiraService:
     """Service for interacting with Jira Cloud REST API."""
 
@@ -176,6 +547,9 @@ class JiraService:
         self.api_token = Config.JIRA_API_TOKEN
         self.data_dir = Config.JIRA_DATA_DIR
         self.attachments_dir = self.data_dir / "attachments"
+        # Memoized tenant_info lookup — see resolve_cloud_id(). Per-instance, so a
+        # long-lived service reuses it while tests get a fresh one each time.
+        self._cloud_id: str | None = None
 
         if not all([self.domain, self.email, self.api_token]):
             logger.warning("Jira credentials not fully configured")
@@ -225,12 +599,17 @@ class JiraService:
         """Check if Jira service is properly configured."""
         return all([self.domain, self.email, self.api_token])
 
-    def fetch_issue(self, issue_key: str) -> dict[str, Any] | None:
+    def fetch_issue(self, issue_key: str, comment_max_retries: int | None = None) -> dict[str, Any] | None:
         """
         Fetch complete issue data from Jira.
 
         Args:
             issue_key: Issue key (e.g., "PROJ-123")
+            comment_max_retries: Forwarded to ``complete_issue_comments`` as
+                ``max_retries`` — ``None`` keeps its own (generous) default.
+                ``process_webhook_event`` passes ``0`` here: its caller is an
+                active request, so a 429 must mark the issue
+                ``_comments_incomplete`` immediately rather than sleep.
 
         Returns:
             Issue data dict or None if fetch failed
@@ -254,14 +633,18 @@ class JiraService:
                     headers={"Accept": "application/json"},
                 )
 
-            if response.status_code == 200:
-                return response.json()
-            elif response.status_code == 404:
-                logger.warning(f"Issue {issue_key} not found")
-                return None
-            else:
-                logger.error(f"Failed to fetch issue {issue_key}: {response.status_code} - {response.text[:200]}")
-                return None
+                if response.status_code == 200:
+                    issue_data = response.json()
+                    complete_issue_comments(
+                        issue_data, self.base_url, self.auth, client, max_retries=comment_max_retries
+                    )
+                    return issue_data
+                elif response.status_code == 404:
+                    logger.warning(f"Issue {issue_key} not found")
+                    return None
+                else:
+                    logger.error(f"Failed to fetch issue {issue_key}: {response.status_code} - {response.text[:200]}")
+                    return None
 
         except httpx.RequestError as e:
             logger.error(f"Request error fetching issue {issue_key}: {e}")
@@ -375,6 +758,179 @@ class JiraService:
             raise JiraFetchError(f"Remote-links fetch for {issue_key} failed: server error ({response.status_code})")
         raise JiraFetchError(f"Remote-links fetch for {issue_key} failed: unexpected status {response.status_code}")
 
+    def resolve_cloud_id(self) -> str:
+        """The site's cloud id, needed to address the Customer Service Management API.
+
+        ``JIRA_CLOUD_ID`` wins when set (it is already the documented switch for a
+        *scoped* API token). Otherwise it is read from the site's public
+        ``/_edge/tenant_info`` document, which needs no authentication. Unlike the
+        issue REST API, the CSM API is only reachable through the
+        ``api.atlassian.com`` gateway and therefore *always* needs a cloud id — so
+        this cannot simply fall back to the site domain the way
+        ``fetch_refresh_fields`` does.
+
+        Memoized per service instance: a site's cloud id is immutable, and the
+        organization refresh would otherwise re-request it for every organization.
+
+        Raises:
+            JiraFetchError: if the id is unset and tenant_info cannot be read.
+        """
+        configured = Config.JIRA_CLOUD_ID
+        if configured:
+            return configured
+        if self._cloud_id:
+            return self._cloud_id
+        if not self.domain:
+            raise JiraFetchError("Cannot resolve cloud id: JIRA_DOMAIN is not set and JIRA_CLOUD_ID is empty")
+
+        url = f"https://{self.domain}/_edge/tenant_info"
+        try:
+            with httpx.Client(timeout=30) as client:
+                response = client.get(url, headers={"Accept": "application/json"})
+        except httpx.RequestError as e:
+            raise JiraFetchError(f"tenant_info lookup for {self.domain} failed: connection — {e}") from e
+
+        if response.status_code != 200:
+            raise JiraFetchError(
+                f"tenant_info lookup for {self.domain} failed: status {response.status_code}. "
+                "Set JIRA_CLOUD_ID explicitly to skip this lookup."
+            )
+        cloud_id = _organization_json(response, f"tenant_info lookup for {self.domain}").get("cloudId")
+        if not cloud_id:
+            raise JiraFetchError(f"tenant_info for {self.domain} returned no cloudId")
+        self._cloud_id = cloud_id
+        return cloud_id
+
+    @property
+    def _servicedesk_url(self) -> str:
+        """Base URL for the Service Desk API (a sibling of ``/rest/api/3``).
+
+        Switches to the ``api.atlassian.com`` gateway when ``JIRA_CLOUD_ID`` is set,
+        mirroring ``fetch_refresh_fields``: a *scoped* API token cannot authenticate
+        against the site domain at all. Without this, an instance on a scoped token
+        could read an organization through the CSM API (which is gateway-only) but
+        not enumerate them here, so the whole refresh aborted on the first call
+        (Devin Review on #1274).
+        """
+        cloud_id = Config.JIRA_CLOUD_ID
+        if cloud_id:
+            return f"https://api.atlassian.com/ex/jira/{cloud_id}/rest/servicedeskapi"
+        return f"https://{self.domain}/rest/servicedeskapi"
+
+    def fetch_organization_ids(self) -> list[str]:
+        """Every JSM organization id on the site, following pagination.
+
+        Uses the Service Desk API rather than the CSM API deliberately: CSM exposes
+        no list/search operation for organizations (``GET /organization`` answers 405
+        — ``POST`` there *creates* one), whereas this endpoint pages through them.
+        Only ids are needed; the details come from ``fetch_organization``.
+
+        Raises:
+            JiraFetchError: on any non-200, so a partial enumeration can never be
+                mistaken for "the site has fewer organizations now" and quietly
+                delete rows from the organizations table.
+        """
+        if not self.is_configured():
+            raise JiraFetchError("Organization enumeration failed: Jira service not configured")
+
+        ids: list[str] = []
+        seen: set[str] = set()
+        start = 0
+        limit = 50
+        url = f"{self._servicedesk_url}/organization"
+
+        with httpx.Client(timeout=30) as client:
+            while True:
+                try:
+                    response = client.get(
+                        url,
+                        auth=self.auth,
+                        params={"start": start, "limit": limit},
+                        headers={"Accept": "application/json"},
+                    )
+                except httpx.RequestError as e:
+                    raise JiraFetchError(f"Organization enumeration failed: connection — {e}") from e
+
+                if response.status_code != 200:
+                    raise JiraFetchError(
+                        f"Organization enumeration failed at start={start}: status {response.status_code}"
+                    )
+
+                payload = _organization_json(response, f"Organization enumeration at start={start}")
+                values = payload.get("values") or []
+                for org in values:
+                    org_id = org.get("id")
+                    # De-duplicated because offset pagination over a mutating
+                    # collection can serve the same organization on two consecutive
+                    # pages; a repeated id would become a duplicate row in the
+                    # lookup table and fan out every ticket joined to it (Devin
+                    # Review on #1274). Pagination still advances by the raw page
+                    # length — the duplicate occupied a slot upstream either way.
+                    if org_id is not None and str(org_id) not in seen:
+                        seen.add(str(org_id))
+                        ids.append(str(org_id))
+
+                if payload.get("isLastPage") or not values:
+                    break
+                start += len(values)
+
+        logger.info("Enumerated %d Jira organizations", len(ids))
+        return ids
+
+    def fetch_organization(self, org_id: str, client: httpx.Client | None = None) -> dict[str, Any] | None:
+        """One organization with its detail fields, from the CSM API.
+
+        ``GET /organization/{id}`` is the only CSM operation that returns each
+        detail's ``id`` alongside its ``name``; the batched
+        ``POST /organization/profile/fetch`` and ``GET /organization/details`` both
+        omit it. Matching on the id is what makes the mapping survive a detail-field
+        rename, so the per-organization call is worth the extra requests — the
+        refresh is a low-frequency job, not a per-ticket one.
+
+        Args:
+            org_id: JSM organization id.
+            client: Optional client to reuse. A caller sweeping every organization
+                should pass one — a per-request client pays a fresh TLS handshake
+                each time, which dominates the sweep. Omitted, one is created and
+                closed around this single request.
+
+        Returns:
+            The organization dict, or ``None`` when it no longer exists (404).
+
+        Raises:
+            JiraFetchError: on auth, rate-limit, or server errors — the caller must
+                keep the previous row rather than blank a real value.
+        """
+        if not self.is_configured():
+            raise JiraFetchError(f"Organization fetch for {org_id} failed: Jira service not configured")
+
+        cloud_id = self.resolve_cloud_id()
+        url = f"https://api.atlassian.com/jsm/csm/cloudid/{cloud_id}/api/v1/organization/{org_id}"
+
+        try:
+            if client is not None:
+                response = client.get(url, auth=self.auth, headers={"Accept": "application/json"})
+            else:
+                with httpx.Client(timeout=30) as own_client:
+                    response = own_client.get(url, auth=self.auth, headers={"Accept": "application/json"})
+        except httpx.RequestError as e:
+            raise JiraFetchError(f"Organization fetch for {org_id} failed: connection — {e}") from e
+
+        if response.status_code == 200:
+            return _organization_json(response, f"Organization fetch for {org_id}")
+        if response.status_code == 404:
+            return None
+        if response.status_code in (401, 403):
+            raise JiraFetchError(
+                f"Organization fetch for {org_id} failed: auth error ({response.status_code}) — "
+                "the account needs Jira Service Management access for the CSM API"
+            )
+        if response.status_code == 429:
+            raise JiraFetchError(f"Organization fetch for {org_id} failed: rate limited (429) — retry later")
+        if response.status_code >= 500:
+            raise JiraFetchError(f"Organization fetch for {org_id} failed: server error ({response.status_code})")
+        raise JiraFetchError(f"Organization fetch for {org_id} failed: unexpected status {response.status_code}")
+
     def save_issue(self, issue_data: dict[str, Any]) -> Path | None:
         """
         Save issue data to JSON file.
@@ -407,7 +963,7 @@ class JiraService:
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
         # Add metadata
-        issue_data["_synced_at"] = datetime.now(timezone.utc).isoformat()
+        issue_data["_synced_at"] = datetime.now(UTC).isoformat()
 
         # Overlay-skip guard: if fetch_remote_links raises (auth/server failure),
         # leave the _remote_links key ABSENT. transform_remote_links treats absent key
@@ -678,13 +1234,33 @@ class JiraService:
         if "deleted" in webhook_event.lower():
             return self._handle_deletion(issue_key)
 
-        # Fetch fresh data from API (webhook payload may not have all fields)
-        issue_data = self.fetch_issue(issue_key)
+        # Fetch fresh data from API (webhook payload may not have all fields).
+        # comment_max_retries=0: this runs off an active request (see
+        # app/api/jira_webhooks.py's run_in_threadpool dispatch), so a 429 on
+        # the comment-pagination endpoint must mark the issue
+        # _comments_incomplete immediately rather than sleep — the marker,
+        # plus a later backfill heal (_needs_refetch), recovers it without
+        # tying up a request thread for up to 15 minutes (Devin Review on
+        # #1283).
+        issue_data = self.fetch_issue(issue_key, comment_max_retries=0)
         if not issue_data:
             # If fetch fails, try to use embedded issue data from webhook
             if issue and issue.get("fields"):
                 logger.info(f"Using embedded issue data for {issue_key}")
                 issue_data = issue
+                # The fallback payload never went through complete_issue_comments:
+                # its `fields.comment.comments` is whatever Jira chose to embed,
+                # and the comments upsert is an issue-scoped delete-then-insert.
+                # Treat it as authoritative for comments ONLY when it demonstrably
+                # carries the whole thread; otherwise mark it incomplete so the
+                # incremental transform preserves the stored rows.
+                if not _embedded_comments_are_complete(issue_data):
+                    logger.info(
+                        "Webhook fallback payload for %s does not carry a complete comment "
+                        "thread — marking _comments_incomplete so stored comments are preserved",
+                        issue_key,
+                    )
+                    issue_data["_comments_incomplete"] = True
             else:
                 return False
 
@@ -721,7 +1297,7 @@ class JiraService:
                 with issue_json_lock(issues_dir, issue_key):
                     with open(file_path) as f:
                         data = json.load(f)
-                    data["_deleted_at"] = datetime.now(timezone.utc).isoformat()
+                    data["_deleted_at"] = datetime.now(UTC).isoformat()
 
                     # Atomic write: temp file + replace
                     fd, tmp_path = tempfile.mkstemp(dir=str(file_path.parent), suffix=".tmp")

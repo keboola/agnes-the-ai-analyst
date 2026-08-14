@@ -8,6 +8,7 @@ Updates only the affected monthly Parquet file for efficient rsync.
 import json
 import logging
 import os
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -38,6 +39,10 @@ from .transform import (
 logger = logging.getLogger(__name__)
 
 # Default paths (can be overridden via environment)
+# A month partition key: exactly `YYYY-MM`. Used to tell a real month partition
+# from any other parquet sitting directly under a table directory.
+_MONTH_KEY_PATTERN = re.compile(r"^\d{4}-\d{2}$")
+
 DEFAULT_RAW_DIR = Path(os.environ.get("DATA_DIR", "/data")) / "extracts" / "jira" / "raw"
 DEFAULT_OUTPUT_DIR = Path(os.environ.get("DATA_DIR", "/data")) / "extracts" / "jira" / "data"
 
@@ -167,11 +172,26 @@ def migrate_flat_to_hive(table_dir: Path) -> list[str]:
     This is called during ``init_extract`` and after a batch transform run so
     that existing instances transparently transition to the new layout on the
     first webhook or scheduled sync after upgrade.
+
+    Only files whose name really is a month are touched. The glob would otherwise
+    treat any parquet directly under *table_dir* as a month and rename it to
+    ``month=<stem>/data.parquet`` — so an unpartitioned dimension table
+    (``organizations/data.parquet``) would become ``month=data/data.parquet`` and
+    disappear from its own view, silently reporting zero rows. Callers are
+    expected to skip such tables, but the contract stated above is enforced here
+    so that a future caller cannot destroy one by omission.
     """
     migrated: list[str] = []
 
     for flat_file in sorted(table_dir.glob("*.parquet")):
         month_key = flat_file.stem  # e.g. "2026-01"
+        if not _MONTH_KEY_PATTERN.match(month_key):
+            logger.debug(
+                "Skipping %s during flat->hive migration: %r is not a YYYY-MM month key",
+                flat_file,
+                month_key,
+            )
+            continue
         # Per-file fault isolation: a single file that can't be migrated must
         # not abort the whole pass (otherwise the months after it stay flat and
         # invisible to the hive-only view). Hold parquet_month_lock so a
@@ -263,11 +283,18 @@ def transform_single_issue(
         issue_record["_raw_file"] = json_path.name
 
         # Determine month
-        month_key = get_month_key(issue_record.get("created_at"))
+        created_at = issue_record.get("created_at")
+        month_key = get_month_key(created_at)
         logger.info(f"Updating {issue_key} in month {month_key}")
 
         # Transform related data
         comments_records = transform_comments(raw_issue)
+        # The partially-fetched list behind a `_comments_incomplete` marker. It is
+        # only written when there are no stored rows for this issue to preserve
+        # (see below) — otherwise the marker wins and the stored thread stands.
+        partial_comments_records = (
+            transform_comments(raw_issue, preserve_on_incomplete=False) if comments_records is None else None
+        )
         attachments_records = transform_attachments(raw_issue, attachments_dir)
         changelog_records = transform_changelog(raw_issue)
 
@@ -288,10 +315,59 @@ def transform_single_issue(
             updated_paths.append(path)
 
             # Comments
-            existing_comments = load_parquet_month(output_dir / "comments", month_key)
-            updated_comments = upsert_dataframe(existing_comments, comments_records, "issue_key", issue_key)
-            path = save_parquet_month(updated_comments, COMMENTS_SCHEMA, output_dir / "comments", month_key)
-            updated_paths.append(path)
+            if comments_records is not None:
+                existing_comments = load_parquet_month(output_dir / "comments", month_key)
+                updated_comments = upsert_dataframe(existing_comments, comments_records, "issue_key", issue_key)
+                path = save_parquet_month(updated_comments, COMMENTS_SCHEMA, output_dir / "comments", month_key)
+                updated_paths.append(path)
+            else:
+                # complete_issue_comments (service.py) hit a page-fetch failure
+                # mid-pagination and marked the issue `_comments_incomplete`.
+                # This upsert is an issue-scoped delete-then-insert, so writing
+                # the known-truncated list would overwrite a previously-complete
+                # stored comment thread with a shorter one. Preserve existing
+                # rows instead — the same contract as the remote_links skip below.
+                #
+                # Unless there is nothing to preserve: on an issue's FIRST fetch
+                # the marker would otherwise mean no comment row is ever written
+                # (the JSON keeps the marker, so every later re-transform reads it
+                # again). With no stored rows for this issue, the partial list
+                # cannot regress anything and is strictly better than none.
+                existing_comments = load_parquet_month(output_dir / "comments", month_key)
+                has_stored_comments = (
+                    existing_comments is not None
+                    and not existing_comments.empty
+                    and "issue_key" in existing_comments.columns
+                    and bool((existing_comments["issue_key"] == issue_key).any())
+                )
+                # `month_key` above is only a genuine signal when `created_at`
+                # parsed; get_month_key(None) falls back to the CURRENT
+                # month, which is not necessarily where this issue's
+                # comments really live (realistic via the webhook fallback
+                # path — see _embedded_comments_are_complete). Probing an
+                # unrelated (empty) month would read "nothing stored" and
+                # write the partial list THERE, while the genuine thread
+                # sits in the true creation month — same issue_key with
+                # comment rows in two partitions; views glob month=*, so
+                # they'd double-count. Without a reliable month to probe,
+                # treat it the same as "something is stored" and preserve
+                # (Devin Review on #1283).
+                if created_at is None or has_stored_comments or not partial_comments_records:
+                    logger.warning(
+                        f"Skipping comments upsert for {issue_key}: pagination incomplete "
+                        f"(fetch failure). Existing rows preserved."
+                    )
+                else:
+                    logger.warning(
+                        f"Writing {len(partial_comments_records)} partially-fetched comments for "
+                        f"{issue_key}: pagination incomplete (fetch failure), but no stored rows "
+                        f"to preserve."
+                    )
+                    updated_comments = upsert_dataframe(
+                        existing_comments, partial_comments_records, "issue_key", issue_key
+                    )
+                    path = save_parquet_month(updated_comments, COMMENTS_SCHEMA, output_dir / "comments", month_key)
+                    updated_paths.append(path)
 
             # Attachments
             existing_attachments = load_parquet_month(output_dir / "attachments", month_key)
