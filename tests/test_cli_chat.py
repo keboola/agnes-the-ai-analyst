@@ -68,6 +68,44 @@ EVENTS_ERROR = [
     {"type": "RUN_ERROR", "message": "tool exploded", "code": "tool_failed"},
 ]
 
+#: A turn with NO `TEXT_MESSAGE_CONTENT` deltas — only the trailing
+#: `TEXT_MESSAGE_END` carries the answer. Real shape whenever the backend
+#: doesn't stream incrementally (the `AGNES_RUNNER_FAKE_AGENT=1` test/dev
+#: runner's `echo:` reply, or the real runner's idle-watchdog partial-save)
+#: — see `tests/test_agent_stream_end_to_end.py` for the frame-level proof
+#: this is what the server actually emits, not a hand-invented shape.
+EVENTS_NO_DELTA = [
+    {"type": "RUN_STARTED"},
+    {"type": "TEXT_MESSAGE_END", "content": "echo: hi"},
+    {"type": "RUN_FINISHED"},
+]
+
+#: Like `EVENTS_NO_DELTA`, but the stream emits `TEXT_MESSAGE_CONTENT`
+#: deltas that are all blank/whitespace (`app/api/agent_sse.py` maps a
+#: `token` frame's `text` straight to `delta`, empty string included)
+#: before the trailing `TEXT_MESSAGE_END` with the real answer. Nothing
+#: visible ever streamed, so the fallback print must still fire — the
+#: non-empty `answer_parts` list alone must not suppress it.
+EVENTS_BLANK_DELTAS_ONLY = [
+    {"type": "RUN_STARTED"},
+    {"type": "TEXT_MESSAGE_CONTENT", "delta": ""},
+    {"type": "TEXT_MESSAGE_CONTENT", "delta": " \n"},
+    {"type": "TEXT_MESSAGE_END", "content": "echo: hi"},
+    {"type": "RUN_FINISHED"},
+]
+
+#: The real runner's idle-watchdog partial-save emits the `error` frame
+#: FIRST (`app/chat/runner.py` — `turn_idle_timeout`) and only THEN the
+#: partial `assistant_message` + `done`, which the SSE mapper turns into
+#: RUN_ERROR → TEXT_MESSAGE_END → RUN_FINISHED. A client that treats
+#: RUN_ERROR as end-of-stream never sees the partial text.
+EVENTS_ERROR_THEN_PARTIAL = [
+    {"type": "RUN_STARTED"},
+    {"type": "RUN_ERROR", "message": "no agent activity for 300s; interrupting the turn"},
+    {"type": "TEXT_MESSAGE_END", "content": "partial answer so far"},
+    {"type": "RUN_FINISHED"},
+]
+
 
 class TestOnce:
     def test_once_prints_assembled_answer_and_exits_zero(self):
@@ -88,6 +126,55 @@ class TestOnce:
         assert mock_sse.call_args.kwargs["json"] == {"input": "hi"}
         # /exit-equivalent cleanup: --once best-effort deletes the session too.
         assert mock_delete.call_args.args[0] == "/api/v1/sessions/sess-1"
+
+    def test_once_prints_the_answer_even_when_nothing_streamed_incrementally(self):
+        """HIGH: `--once` against a backend that answers without
+        incremental streaming (only a trailing `TEXT_MESSAGE_END`, no
+        `TEXT_MESSAGE_CONTENT` deltas — see `EVENTS_NO_DELTA`) must still
+        print the real answer, not "(no answer)"."""
+        with (
+            patch("cli.commands.chat.api_post", return_value=_resp(201, {"session_id": "sess-1"})),
+            patch("cli.commands.chat.api_post_sse", return_value=iter(EVENTS_NO_DELTA)),
+            patch("cli.commands.chat.api_delete", return_value=_resp(204)),
+        ):
+            result = runner.invoke(app, ["chat", "myagent", "--once", "hi"])
+
+        assert result.exit_code == 0
+        assert "echo: hi" in result.output
+        assert "(no answer)" not in result.output
+
+    def test_once_prints_the_answer_when_only_blank_deltas_streamed(self):
+        """Devin regression: blank/whitespace-only `TEXT_MESSAGE_CONTENT`
+        deltas before the `TEXT_MESSAGE_END` must not suppress the
+        fallback print — otherwise the turn exits 0 with the answer
+        swallowed silently (neither the answer nor "(no answer)")."""
+        with (
+            patch("cli.commands.chat.api_post", return_value=_resp(201, {"session_id": "sess-1"})),
+            patch("cli.commands.chat.api_post_sse", return_value=iter(EVENTS_BLANK_DELTAS_ONLY)),
+            patch("cli.commands.chat.api_delete", return_value=_resp(204)),
+        ):
+            result = runner.invoke(app, ["chat", "myagent", "--once", "hi"])
+
+        assert result.exit_code == 0
+        assert "echo: hi" in result.output
+        assert "(no answer)" not in result.output
+
+    def test_watchdog_partial_after_run_error_is_still_shown(self):
+        """The idle-watchdog partial-save arrives AFTER the error frame
+        (runner emits `error` → partial `assistant_message` → `done`, i.e.
+        RUN_ERROR → TEXT_MESSAGE_END → RUN_FINISHED on the wire). The
+        client must drain the stream past RUN_ERROR so the partial text
+        the user already earned is shown next to the error, not dropped."""
+        with (
+            patch("cli.commands.chat.api_post", return_value=_resp(201, {"session_id": "sess-1"})),
+            patch("cli.commands.chat.api_post_sse", return_value=iter(EVENTS_ERROR_THEN_PARTIAL)),
+            patch("cli.commands.chat.api_delete", return_value=_resp(204)),
+        ):
+            result = runner.invoke(app, ["chat", "myagent", "--once", "hi"])
+
+        assert "partial answer so far" in result.output
+        assert "no agent activity" in result.output
+        assert result.exit_code != 0
 
     def test_run_error_event_exits_nonzero_with_rendered_message(self):
         with (
@@ -147,6 +234,30 @@ class TestInteractive:
         assert mock_sse.call_args.kwargs["json"] == {"input": "hello"}
         # /exit best-effort deletes the session.
         assert mock_delete.call_args.args[0] == "/api/v1/sessions/sess-1"
+
+    def test_interactive_prints_the_answer_even_when_nothing_streamed_incrementally(self):
+        with (
+            patch("cli.commands.chat.api_post", return_value=_resp(201, {"session_id": "sess-1"})),
+            patch("cli.commands.chat.api_post_sse", return_value=iter(EVENTS_NO_DELTA)),
+            patch("cli.commands.chat.api_delete", return_value=_resp(204)),
+        ):
+            result = runner.invoke(app, ["chat", "myagent"], input="hi\n/exit\n")
+
+        assert result.exit_code == 0
+        assert "echo: hi" in result.output
+        assert "(no answer)" not in result.output
+
+    def test_interactive_prints_the_answer_when_only_blank_deltas_streamed(self):
+        with (
+            patch("cli.commands.chat.api_post", return_value=_resp(201, {"session_id": "sess-1"})),
+            patch("cli.commands.chat.api_post_sse", return_value=iter(EVENTS_BLANK_DELTAS_ONLY)),
+            patch("cli.commands.chat.api_delete", return_value=_resp(204)),
+        ):
+            result = runner.invoke(app, ["chat", "myagent"], input="hi\n/exit\n")
+
+        assert result.exit_code == 0
+        assert "echo: hi" in result.output
+        assert "(no answer)" not in result.output
 
     def test_eof_also_quits_and_cleans_up(self):
         with (

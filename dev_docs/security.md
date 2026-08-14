@@ -568,6 +568,8 @@ Desktop app JWT tokens have 30-day expiry with a 7-day grace period for refresh 
 
 **Recommendation:** Implement secret rotation mechanism. Consider shorter token expiry (7 days) with automatic refresh.
 
+> **Status note (2026-08):** the token-minting and refresh flow described here was removed with the legacy webapp and never ported — nothing in-repo mints or refreshes these tokens anymore. The notifications WebSocket still validates `DESKTOP_JWT_SECRET`-signed tokens (fail-closed when unset); how clients obtain one is tracked in issue #412.
+
 ### M3: Notification Image Endpoint May Allow Path Traversal
 
 **Severity:** MEDIUM-HIGH (needs code review of `webapp/notification_images.py`)
