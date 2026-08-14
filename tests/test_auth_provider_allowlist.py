@@ -36,8 +36,12 @@ class TestRegistry:
 
     def test_set_narrows(self, monkeypatch):
         monkeypatch.setenv("AGNES_AUTH_PROVIDERS", "google")
+        from app.auth import provider_registry
         from app.auth.provider_registry import provider_allowed
 
+        # Narrowing is what's under test, not availability — make the named
+        # provider count as configured so the lockout rescue stays out of it.
+        monkeypatch.setattr(provider_registry, "_provider_available", lambda name: True)
         assert provider_allowed("google") is True
         assert provider_allowed("password") is False
 
@@ -48,9 +52,46 @@ class TestRegistry:
         assert configured_allowlist() is None  # fail-open, loudly logged
 
 
+class TestLockoutRescue:
+    """An allowlist naming only *unconfigured* providers admits nobody; the
+    reader treats it as unset (all providers), so the env/static-file path —
+    which the admin API's write-time guard never sees — cannot lock the
+    instance out (Devin Review on PR #1288)."""
+
+    def test_all_named_providers_unconfigured_treated_as_unset(self, monkeypatch):
+        monkeypatch.setenv("AGNES_AUTH_PROVIDERS", "keboola")
+        from app.auth import provider_registry
+        from app.auth.provider_registry import configured_allowlist, provider_allowed
+
+        monkeypatch.setattr(provider_registry, "_provider_available", lambda name: False)
+        assert configured_allowlist() is None
+        assert provider_allowed("password") is True
+
+    def test_allowlist_stands_when_any_named_provider_is_configured(self, monkeypatch):
+        monkeypatch.setenv("AGNES_AUTH_PROVIDERS", "keboola,google")
+        from app.auth import provider_registry
+        from app.auth.provider_registry import configured_allowlist, provider_allowed
+
+        monkeypatch.setattr(provider_registry, "_provider_available", lambda name: name == "google")
+        assert configured_allowlist() == ["keboola", "google"]
+        assert provider_allowed("password") is False
+
+    def test_web_lockout_config_still_offers_usable_logins(self, make_client):
+        # End-to-end: keboola named alone with no stack configured — exactly
+        # the lockout scenario. Login page must still offer usable methods and
+        # the shared-router password grant must answer.
+        client = make_client("keboola")
+        html = client.get("/login").text
+        assert "Sign in with Email Link" in html
+        resp = client.post("/auth/token", data={"email": "nobody@example.com", "password": "x"})
+        assert resp.status_code != 404
+
+
 class TestEndpointGating:
     def test_password_endpoints_404_when_excluded(self, make_client):
-        client = make_client("google")
+        # `email` is configured by the fixture (SMTP_HOST), so the allowlist
+        # stands on its own and the lockout rescue never enters the picture.
+        client = make_client("email")
         # Router-level dependency: any matched route under /auth/password 404s.
         # (POST — the login form route; a GET would 405 before dependencies run.)
         assert client.post("/auth/password/login/web", data={}).status_code == 404

@@ -5,9 +5,15 @@ comma-separated) narrows which login methods this instance offers. Unset =
 every available provider — byte-for-byte the pre-allowlist behavior. An
 explicitly empty (or all-unknown) list is a misconfiguration: rejected at
 the admin API, and treated here as unset with a loud error log so one
-overlay write can never lock every user out of the instance.
+overlay write can never lock every user out of the instance. The same
+fail-open applies at read time when the list names only *unconfigured*
+providers (e.g. ``keboola`` with no stack configured): an allowlist that
+would leave zero usable login methods is treated as unset, so the env /
+static-file path — which the admin API's lockout guard never sees — cannot
+lock the instance out either.
 """
 
+import importlib
 import logging
 import os
 from typing import Callable, Optional
@@ -24,6 +30,32 @@ KNOWN_PROVIDERS: tuple[str, ...] = ("google", "email", "password", "keboola")
 # See configured_allowlist() for why parsing + misconfig logging must not re-run
 # per request.
 _ALLOWLIST_CACHE: Optional[tuple[tuple, Optional[list[str]]]] = None
+
+# Providers whose usability depends on instance configuration; ``password``
+# needs none and is always usable. Mirrors the login page's per-provider
+# ``is_available()`` probes.
+_AVAILABILITY_PROBES: dict[str, str] = {
+    "google": "app.auth.providers.google",
+    "email": "app.auth.providers.email",
+    "keboola": "app.auth.providers.keboola",
+}
+
+# One-shot marker so the lockout rescue logs once per distinct configuration,
+# not on every request (same rationale as the parse cache above).
+_LOCKOUT_RESCUE_LOGGED: Optional[tuple] = None
+
+
+def _provider_available(name: str) -> bool:
+    """Config-completeness of one provider (``password``: nothing to
+    configure). Probes lazily and treats a raising probe as unavailable,
+    matching the login page's try/except around the same calls."""
+    module_path = _AVAILABILITY_PROBES.get(name)
+    if module_path is None:
+        return True
+    try:
+        return bool(importlib.import_module(module_path).is_available())
+    except Exception:
+        return False
 
 
 def configured_allowlist() -> Optional[list[str]]:
@@ -45,11 +77,37 @@ def configured_allowlist() -> Optional[list[str]]:
     # Same pattern as `_LOCAL_DEV_GROUPS_CACHE` in app.auth.dependencies.
     global _ALLOWLIST_CACHE
     if _ALLOWLIST_CACHE is not None and _ALLOWLIST_CACHE[0] == cache_key:
-        return _ALLOWLIST_CACHE[1]
+        return _rescue_if_unusable(cache_key, _ALLOWLIST_CACHE[1])
 
     result = _parse_allowlist(source)
     _ALLOWLIST_CACHE = (cache_key, result)
-    return result
+    return _rescue_if_unusable(cache_key, result)
+
+
+def _rescue_if_unusable(cache_key: tuple, allowlist: Optional[list[str]]) -> Optional[list[str]]:
+    """Treat an allowlist naming only unconfigured providers as unset.
+
+    ``auth.providers: [keboola]`` with no stack configured would render zero
+    login buttons and 404 every ``/auth/*`` route — an unrecoverable lockout
+    reachable via env/instance.yaml, which the admin API's write-time guard
+    never sees (Devin Review on PR #1288). Availability is re-probed per call
+    (NOT folded into the parse cache) because provider configuration can
+    change at runtime via the settings overlay; the probes are cheap config
+    reads and short-circuit on the first available provider. The error log is
+    once per distinct configuration, like the parse diagnostics."""
+    if allowlist is None or any(_provider_available(name) for name in allowlist):
+        return allowlist
+    global _LOCKOUT_RESCUE_LOGGED
+    state = (cache_key, tuple(allowlist))
+    if _LOCKOUT_RESCUE_LOGGED != state:
+        _LOCKOUT_RESCUE_LOGGED = state
+        logger.error(
+            "auth.providers names only unconfigured providers (%s) — no login method "
+            "would be usable; treating as unset (all providers) so the instance stays "
+            "reachable; fix the configuration",
+            ", ".join(allowlist),
+        )
+    return None
 
 
 def _parse_allowlist(source: Optional[object]) -> Optional[list[str]]:
