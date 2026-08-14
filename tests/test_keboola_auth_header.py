@@ -348,3 +348,51 @@ class TestStatePruning:
         assert not any(k.startswith("ip:stale") for k in kh._failure_windows)
         assert "ip:live" in kh._failure_state
         assert kh._GLOBAL_KEY in kh._failure_windows
+
+
+class TestCachePruning:
+    """The positive-verify cache must stay bounded even when every entry is
+    inside the TTL — a burst of distinct valid tokens within one 60 s window
+    used to grow it past the cap with nothing evictable (Devin Review on
+    PR #1288). TTL eviction still runs first; only then does oldest-first
+    eviction trim the excess."""
+
+    def test_fresh_entries_beyond_the_cap_evict_oldest_first(self):
+        from app.auth import keboola_header as kh
+
+        kh.reset_state_for_tests()
+        try:
+            now = 1_000.0
+            overflow = 7
+            total = kh._CACHE_MAX_ENTRIES + overflow
+            for i in range(total):
+                # Strictly increasing timestamps, all comfortably inside the
+                # TTL window at prune time — nothing for TTL eviction to do.
+                kh._cache[f"tok{i}"] = (now + i * 0.001, object())
+            kh._prune_cache(now + total * 0.001)
+            assert len(kh._cache) == kh._CACHE_MAX_ENTRIES
+            # The oldest `overflow` entries went; the newest survived.
+            assert "tok0" not in kh._cache
+            assert f"tok{overflow - 1}" not in kh._cache
+            assert f"tok{overflow}" in kh._cache
+            assert f"tok{total - 1}" in kh._cache
+        finally:
+            kh.reset_state_for_tests()
+
+    def test_expired_entries_still_evicted_over_cap(self):
+        from app.auth import keboola_header as kh
+
+        kh.reset_state_for_tests()
+        try:
+            now = 1_000.0
+            stale = 40
+            for i in range(kh._CACHE_MAX_ENTRIES + stale):
+                age_out = i < stale  # first `stale` entries are past the TTL
+                ts = now - (kh.VERIFY_CACHE_TTL_SECONDS + 1 if age_out else 1)
+                kh._cache[f"tok{i}"] = (ts, object())
+            kh._prune_cache(now)
+            assert len(kh._cache) == kh._CACHE_MAX_ENTRIES
+            assert "tok0" not in kh._cache  # TTL-evicted
+            assert f"tok{stale}" in kh._cache  # fresh, under cap after sweep
+        finally:
+            kh.reset_state_for_tests()

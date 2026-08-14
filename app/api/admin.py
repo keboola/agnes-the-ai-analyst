@@ -275,13 +275,23 @@ def _normalize_provider_names(value: Any) -> "list[str] | None":
 
 
 def _validate_auth_providers_in_patch(sections: Dict[str, Dict[str, Any]]) -> None:
-    """Validate an auth-section overlay write so it can never leave the instance
-    with no usable sign-in method (Devin review on #1288). Rejects an empty or
-    all-unknown ``auth.providers``, and — whenever the auth section is patched
-    at all — an effective allowlist whose named providers are none of them
-    actually available (e.g. ``[keboola]`` after its stack config was cleared in
-    a separate save), which would render zero login buttons with no runtime
-    fail-open."""
+    """Refuse an auth-section overlay write that would name no usable sign-in
+    method (Devin review on #1288): an empty or all-unknown ``auth.providers``,
+    and — whenever the auth section is patched at all — an effective allowlist
+    whose named providers are none of them actually available (e.g.
+    ``[keboola]`` after its stack config was cleared in a separate save).
+
+    This is NOT the lockout backstop. The runtime fails open on exactly this
+    shape: ``provider_registry._rescue_if_unusable`` treats an allowlist with
+    zero usable providers as unset (all sign-in methods) with a loud error
+    log, so a config that slips past this validator does not lock anyone out
+    — it silently means "all providers", the opposite of what the operator
+    wrote. The 422 exists so the operator learns that at save time instead of
+    shipping it. Known blind spot, caught by that runtime rescue rather than
+    here: a patch that never touches ``auth`` (e.g. clearing
+    ``data_source.keboola.stack_url``, which ``auth.keboola.stack_url`` falls
+    back to) skips this validator entirely, as does the env /
+    static-instance.yaml path."""
     auth = sections.get("auth")
     if not isinstance(auth, dict):
         return
@@ -341,14 +351,26 @@ def _validate_auth_providers_in_patch(sections: Dict[str, Dict[str, Any]]) -> No
         # all providers at runtime — not a lockout — so don't block this save.
         return
     if not any(_provider_available_after_save(n, auth, sections) for n in known):
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "auth.providers would leave no usable sign-in method: none of the named "
-                "providers is configured/available on this instance. Configure one (e.g. add "
-                "the Google or Keboola OAuth credentials), or include a method that is."
-            ),
+        detail = (
+            "auth.providers would leave no usable sign-in method: none of the named "
+            "providers is configured/available on this instance. Saved anyway it would "
+            "not lock anyone out — the runtime treats such a list as unset (ALL sign-in "
+            "methods) with a loud error — but that silently means the opposite of what "
+            "was written, so it is refused here instead. Configure one of the named "
+            "providers (e.g. add the Google or Keboola OAuth credentials), or include a "
+            "method that is."
         )
+        if "google" in known:
+            # Google's availability probe reads env vars captured at process
+            # start (see _provider_available_after_save) — without this note,
+            # an operator who just filled Google settings into instance.yaml
+            # has no way to understand the refusal (Devin Review on PR #1288).
+            detail += (
+                " Note: Google availability is read from the GOOGLE_CLIENT_ID / "
+                "GOOGLE_CLIENT_SECRET environment variables at process start — a Google "
+                "OAuth client configured only in instance.yaml is not detected."
+            )
+        raise HTTPException(status_code=422, detail=detail)
 
 
 def _provider_available_after_save(name: str, auth_patch: Dict[str, Any], sections: Dict[str, Dict[str, Any]]) -> bool:
@@ -366,6 +388,9 @@ def _provider_available_after_save(name: str, auth_patch: Dict[str, Any], sectio
     if name == "google":
         from app.auth.providers.google import is_available as google_available
 
+        # Env-only, captured at module import (GOOGLE_CLIENT_ID/SECRET) — a
+        # yaml-only Google config reads unavailable here; the 422 detail in
+        # _validate_auth_providers_in_patch explains that to the operator.
         return google_available()
     if name == "email":
         from app.auth.providers.email import is_available as email_available
@@ -497,8 +522,16 @@ def _flag_default(section: str, key: str, fallback: bool) -> bool:
     covers a declared field with no registry entry — a plain config boolean
     rather than a switch.
     """
+    return _flag_default_path((section, key), fallback)
+
+
+def _flag_default_path(config_keys: tuple[str, ...], fallback: bool) -> bool:
+    """`_flag_default` for a switch whose config path is deeper than
+    `section.key` (e.g. `auth.keboola.allow_token_header`). Same no-second-copy
+    rationale; matched on the full path so a nested declaration can't silently
+    miss the registry entry and fall back to a hand-typed default."""
     for s in SWITCHES:
-        if s.config_keys == (section, key):
+        if s.config_keys == config_keys:
             return bool(s.default)
     return fallback
 
@@ -825,6 +858,82 @@ _KNOWN_FIELDS: dict[str, dict[str, dict]] = {
                 "'acme.com,acme-internal.com'). Single domain works too. Empty → no "
                 "domain restriction (any verified Google identity can sign in)."
             ),
+        },
+        # Keboola sign-in + token-header API auth. Declared so the panel
+        # renders structured fields with hints — in particular the
+        # `allow_token_header` boolean as a toggle rather than a free-text
+        # box (Devin Review on PR #1288; same failure shape as `mcp` in
+        # #1183). Read by app/auth/providers/keboola_verify.py.
+        "keboola": {
+            "kind": "object",
+            "hint": (
+                "Sign in with Keboola (OAuth) + optional X-StorageApi-Token "
+                "API auth. Membership in project_id is the trust boundary — "
+                "see config/instance.yaml.example for the full notes."
+            ),
+            "fields": {
+                "stack_url": {
+                    "kind": "string",
+                    "hint": (
+                        "Keboola stack URL tokens are verified against, e.g. "
+                        "https://connection.keboola.com. https only. Empty → falls "
+                        "back to data_source.keboola.stack_url."
+                    ),
+                },
+                "oauth_host": {
+                    "kind": "string",
+                    "hint": (
+                        "Host serving /oauth/authorize + /oauth/token. https only. "
+                        "Empty → falls back to stack_url (OAuth lives on the "
+                        "connection host)."
+                    ),
+                },
+                "project_id": {
+                    "kind": "string",
+                    "required": True,
+                    "hint": (
+                        "Keboola project this instance is bound to — tokens from any "
+                        "other project are rejected. Required for both the OAuth "
+                        "login and the token-header auth."
+                    ),
+                },
+                "client_id": {
+                    "kind": "string",
+                    "hint": (
+                        "OAuth client id issued by Keboola for your stack (not "
+                        "self-service — ask your Keboola contact). Only the OAuth "
+                        "login needs it; token-header auth works without one."
+                    ),
+                },
+                "client_secret": {
+                    "kind": "secret",
+                    "hint": (
+                        "OAuth client secret. Use a ${KEBOOLA_OAUTH_CLIENT_SECRET} "
+                        "env-var reference (don't paste the secret directly)."
+                    ),
+                },
+                "allowed_roles": {
+                    "kind": "array",
+                    "item_kind": "string",
+                    "hint": (
+                        "Keboola project roles permitted to sign in (e.g. admin, "
+                        "share). Empty/unset → any role the project admits, "
+                        "guest/readOnly included."
+                    ),
+                },
+                "allow_token_header": {
+                    "kind": "bool",
+                    "default": _flag_default_path(("auth", "keboola", "allow_token_header"), False),
+                    "hint": (
+                        "Accept a Keboola Storage API master token in the "
+                        "X-StorageApi-Token header as API authentication (existing "
+                        "users only, never provisions). Off by default: a plain "
+                        "Storage token carries no interactive factor, so this "
+                        "bypasses any MFA/SSO enforced on web logins. See "
+                        "docs/feature-flags.md."
+                    ),
+                },
+            },
         },
     },
     "ai": {

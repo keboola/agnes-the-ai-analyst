@@ -724,6 +724,23 @@ class TestUnauthenticatedHtmlRedirects:
         assert resp.status_code == 303
         assert resp.headers["location"] == "/login?error=email_not_configured"
 
+    def test_sent_page_expiry_copy_is_computed_from_the_token_ttl(self, web_client, monkeypatch):
+        """The sent-page's expiry sentence must be rendered from
+        MAGIC_LINK_EXPIRY, not hand-copied — the template said "15 minutes"
+        while the token actually lived an hour (Devin Review on PR #1288).
+        The expectation is derived from the constant so a TTL change cannot
+        re-split the copy from the behavior."""
+        from app.auth.providers.email import MAGIC_LINK_EXPIRY
+
+        monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
+        monkeypatch.delenv("LOCAL_DEV_MODE", raising=False)
+        resp = web_client.post(
+            "/auth/email/send-link/web",
+            data={"email": "someone@example.com"},
+        )
+        assert resp.status_code == 200
+        assert f"The link expires in {MAGIC_LINK_EXPIRY // 60} minutes." in resp.text
+
     def test_google_login_stashes_safe_next_in_session(self, web_client, monkeypatch):
         """google_login() must stash the sanitized next_path in the session.
 

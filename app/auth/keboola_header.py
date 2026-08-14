@@ -4,9 +4,12 @@ A non-interactive, PAT-like credential: verified per request against the
 Keboola stack (60 s positive cache), mapped to an EXISTING user only, pinned
 to credential_surface='stack'. Never provisions accounts, never mints
 sessions. The in-module flood guard exists because the slowapi route
-decorator cannot wrap a dependency — distinct-invalid-token floods must
-neither amplify traffic against the customer's stack nor exhaust the
-threadpool.
+decorator cannot wrap a dependency; it throttles SUSTAINED
+distinct-invalid-token floods against the customer's stack. It is
+failure-driven, not admission-counting: failures are recorded only after
+the upstream verify returns, so a FIRST concurrent burst of distinct
+tokens is admitted in full before any failure lands — the guard bounds
+every window after that, not the initial spike (see ``_admit_miss``).
 """
 
 import hashlib
@@ -106,14 +109,22 @@ def _admit_miss(ip: str, now: float) -> Optional[str]:
     """None to admit the upstream verify attempt; 'rate_limited' to refuse
     it before ever contacting the stack.
 
-    Admission is gated ONLY on prior FAILURES (backoff arming + the two
-    failure-window counters) — never on the volume of cache misses itself.
-    A successful upstream verify records nothing here (see
-    ``resolve_header_user``), so a burst of distinct legitimate callers
-    (bounded only by distinct valid master tokens × the 60 s positive
-    cache) can never trip this guard; only a failure flood — genuine
-    invalid-token abuse, whether concentrated on one IP or spread across
-    many under the per-IP cap — does. Callers must hold ``_lock``.
+    Admission is gated ONLY on prior RECORDED failures (backoff arming +
+    the two failure-window counters) — never on the volume of cache misses
+    itself, and never on requests still in flight. Two consequences:
+
+    - A successful upstream verify records nothing here (see
+      ``resolve_header_user``), so a burst of distinct legitimate callers
+      (bounded only by distinct valid master tokens × the 60 s positive
+      cache) can never trip this guard.
+    - Failures are recorded only AFTER the upstream verify returns, so the
+      FIRST concurrent burst of distinct invalid tokens passes this gate in
+      full before any failure lands — that spike reaches the stack (and the
+      threadpool) unthrottled. Once its failures record, subsequent windows
+      are throttled by the per-IP/global caps and backoff. The guard bounds
+      sustained abuse, not the initial concurrent spike.
+
+    Callers must hold ``_lock``.
     """
     backoff_until, failures = _failure_state.get(ip, (0.0, 0))
     if failures >= _FAILURES_BEFORE_BACKOFF:
@@ -163,9 +174,21 @@ def _prune_state(now: float) -> None:
 
 
 def _prune_cache(now: float) -> None:
+    """Bound the positive-verify cache. TTL-expired entries go first; if the
+    cache is still over the cap — every entry fresh, e.g. a burst of distinct
+    valid tokens inside one 60 s window — the oldest entries are evicted until
+    the cap holds, so memory stays bounded regardless of traffic shape (Devin
+    Review on PR #1288). Evicting a fresh entry only costs that token one
+    re-verify. Callers must hold ``_lock``.
+    """
     if len(_cache) <= _CACHE_MAX_ENTRIES:
         return
     for key in [k for k, (ts, _) in _cache.items() if now - ts >= VERIFY_CACHE_TTL_SECONDS]:
+        _cache.pop(key, None)
+    excess = len(_cache) - _CACHE_MAX_ENTRIES
+    if excess <= 0:
+        return
+    for key, _entry in sorted(_cache.items(), key=lambda item: item[1][0])[:excess]:
         _cache.pop(key, None)
 
 

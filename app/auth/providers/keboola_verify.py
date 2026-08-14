@@ -20,6 +20,12 @@ Facts this encodes (verified against the platform, 2026-08-12):
   can sign in" design: a human's interactive Keboola login/OAuth token IS a
   master token (the OAuth flow cannot issue a restricted API token), so this
   gate only ever rejects restricted tokens presented to the header path.
+  That "IS a master token" claim is itself a platform assumption we could
+  not verify against documentation — which is precisely why the login path
+  raises its own ``oauth_not_master_token`` reason instead of the header
+  path's ``not_master_token``: if the assumption is ever wrong, the failure
+  names the broken assumption (and surfaces as its own error code on the
+  login page) rather than masquerading as a restricted-token rejection.
   Project-role filtering for humans (guest, readOnly, etc.) is a separate
   concern, handled below by ``admin.role`` + ``allowed_roles()``.
 """
@@ -137,8 +143,21 @@ def _fetch_verify(base_url: str, headers: Dict[str, str]) -> Dict[str, Any]:
         raise KeboolaVerifyError("verify_failed", "Keboola verify returned a non-JSON response")
 
 
-def _identity_from_payload(payload: Dict[str, Any]) -> VerifiedKeboolaIdentity:
+def _identity_from_payload(payload: Dict[str, Any], *, source: str = "header") -> VerifiedKeboolaIdentity:
+    """``source`` is which verify path produced ``payload`` — ``"header"``
+    (plain Storage token) or ``"oauth"`` (login flow). It only picks the
+    master-token failure's reason: the login path self-describes with
+    ``oauth_not_master_token`` because hitting it means the platform
+    assumption in the module docstring broke, not that a restricted token
+    was presented."""
     if not payload.get("isMasterToken"):
+        if source == "oauth":
+            raise KeboolaVerifyError(
+                "oauth_not_master_token",
+                "The OAuth access token did not verify as a master token — this "
+                "contradicts the assumption that an interactive Keboola login always "
+                "yields one (see module docstring); please report it",
+            )
         raise KeboolaVerifyError(
             "not_master_token",
             "Only a master (admin) Storage API token can authenticate — restricted tokens are rejected",
@@ -194,7 +213,7 @@ def verify_storage_token(token: str) -> VerifiedKeboolaIdentity:
     """Verify a plain Storage API token (X-StorageApi-Token header path)."""
     base = _configured_base_url()
     payload = _fetch_verify(base, {"X-StorageApi-Token": token})
-    return _identity_from_payload(payload)
+    return _identity_from_payload(payload, source="header")
 
 
 def verify_oauth_access_token(access_token: str) -> VerifiedKeboolaIdentity:
@@ -205,4 +224,4 @@ def verify_oauth_access_token(access_token: str) -> VerifiedKeboolaIdentity:
     """
     base = _configured_base_url()
     payload = _fetch_verify(base, {"Authorization": f"Bearer {access_token}"})
-    return _identity_from_payload(payload)
+    return _identity_from_payload(payload, source="oauth")

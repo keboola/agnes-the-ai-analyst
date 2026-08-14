@@ -70,14 +70,19 @@ class TestGates:
             kv.verify_storage_token("tok")
         assert exc.value.reason == "role_forbidden"
 
-    def test_oauth_path_non_master_token_rejected(self, configured, monkeypatch):
+    def test_oauth_path_non_master_token_rejected_with_distinct_reason(self, configured, monkeypatch):
         # The login path (verify_oauth_access_token) shares
         # _identity_from_payload with the header path — the master-token
-        # gate must apply there too, not just to verify_storage_token.
+        # gate must apply there too, not just to verify_storage_token. Its
+        # reason is DISTINCT (`oauth_not_master_token`): the platform
+        # assumption that interactive OAuth tokens are always master tokens
+        # is unverified, so if it ever fails the failure must name itself
+        # instead of masquerading as a restricted-token rejection
+        # (Devin Review on PR #1288).
         monkeypatch.setattr(kv, "_fetch_verify", lambda url, headers: _payload(isMasterToken=False))
         with pytest.raises(kv.KeboolaVerifyError) as exc:
             kv.verify_oauth_access_token("oauth-tok")
-        assert exc.value.reason == "not_master_token"
+        assert exc.value.reason == "oauth_not_master_token"
 
     def test_oauth_path_readonly_master_token_allowed(self, configured, monkeypatch):
         # Role != master-ness: a readOnly *master* token logs in fine when

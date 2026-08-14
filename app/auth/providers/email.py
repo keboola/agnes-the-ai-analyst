@@ -208,6 +208,10 @@ async def send_magic_link_web(
         console_mode=console_mode,
         magic_url=link if console_mode else None,
         next_path=next_path,
+        # The sent-page expiry sentence renders from the real token TTL — a
+        # hand-copied number in the template drifted to "15 minutes" while
+        # the token lived an hour (Devin Review on PR #1288).
+        expires_minutes=MAGIC_LINK_EXPIRY // 60,
     )
     return templates.TemplateResponse(request, "login_magic_link_sent.html", ctx)
 

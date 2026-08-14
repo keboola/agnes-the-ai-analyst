@@ -387,8 +387,10 @@ class TestServerConfigAuthProvidersValidation:
 
     def test_all_unavailable_providers_rejected_with_422(self, seeded_app):
         """Known but unconfigured providers (no Google OAuth, no Keboola stack
-        in the test env) would render zero sign-in buttons — an unrecoverable
-        lockout the runtime has no fail-open for. The admin API rejects it."""
+        in the test env) admit nobody as written; the runtime's rescue would
+        treat the list as unset — ALL sign-in methods — with a loud error, the
+        opposite of the operator's intent. The admin API refuses at save time
+        so the operator learns now instead of shipping that."""
         c = seeded_app["client"]
         token = seeded_app["admin_token"]
         resp = c.post(
@@ -398,6 +400,24 @@ class TestServerConfigAuthProvidersValidation:
         )
         assert resp.status_code == 422, resp.text
         assert "no usable sign-in method" in resp.json()["detail"]
+
+    def test_google_only_refusal_explains_the_env_var_probe(self, seeded_app):
+        """`providers: [google]` with a yaml-only Google config 422s here
+        because google.is_available() reads GOOGLE_CLIENT_ID/SECRET captured
+        at import time — the refusal is inexplicable to an operator who just
+        filled Google settings into instance.yaml unless the detail says so
+        (Devin Review on PR #1288)."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={"sections": {"auth": {"providers": ["google"]}}, "confirm_danger": True},
+            headers=_auth(token),
+        )
+        assert resp.status_code == 422, resp.text
+        detail = resp.json()["detail"]
+        assert "no usable sign-in method" in detail
+        assert "GOOGLE_CLIENT_ID" in detail and "GOOGLE_CLIENT_SECRET" in detail
 
     def test_http_auth_keboola_stack_url_is_refused(self, seeded_app):
         """auth.keboola URLs are held to the source-connection bar
@@ -1043,6 +1063,33 @@ class TestDocumentedServerConfigKeysAreWritable:
         assert not undeclared, (
             "editable via /admin/server-config but no _KNOWN_FIELDS entry, so the panel "
             f"cannot render it and its booleans escape the mask carve-out: {undeclared}"
+        )
+
+    def test_every_editable_bool_switch_is_declared_as_a_bool_field(self):
+        """Editable bool switch ⇒ a `kind: "bool"` declaration at its exact
+        config path, nested object levels included. The section-level guard
+        above cannot see this: `auth` had a `_KNOWN_FIELDS` entry, yet
+        `auth.keboola.allow_token_header` (config path three levels deep) had
+        no field declaration, so /admin/server-config rendered a free-text box
+        instead of a toggle for the switch (Devin Review on PR #1288)."""
+        from app.api.admin import _KNOWN_FIELDS
+        from app.switches import SWITCHES
+
+        missing = []
+        for s in SWITCHES:
+            if not (s.editable and s.config_keys and s.kind == "bool"):
+                continue
+            node = _KNOWN_FIELDS.get(s.config_keys[0], {})
+            # Walk intermediate levels through their object declarations
+            # (e.g. auth → keboola.fields) down to the leaf's parent.
+            for key in s.config_keys[1:-1]:
+                node = ((node.get(key) or {}).get("fields")) or {}
+            spec = node.get(s.config_keys[-1]) or {}
+            if spec.get("kind") != "bool":
+                missing.append(".".join(s.config_keys))
+        assert not missing, (
+            "editable bool switch with no kind='bool' _KNOWN_FIELDS declaration at its "
+            f"config path — the panel renders a text box instead of a toggle: {missing}"
         )
 
     def test_the_chat_and_studio_flags_render_as_booleans(self):

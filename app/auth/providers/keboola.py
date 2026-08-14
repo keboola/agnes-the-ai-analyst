@@ -31,11 +31,21 @@ router = APIRouter(
 
 oauth = OAuth()
 
+# Config the current "keboola" registration was built from —
+# (client_id, client_secret, oauth_host). See _oauth_client.
+_client_fingerprint: tuple[str, str, str | None] | None = None
+
 # KeboolaVerifyError.reason → /login?error=<code>. Every code has copy in
 # login.html; anything unmapped falls back to the generic failure.
 _ERROR_CODE_BY_REASON = {
     "project_mismatch": "keboola_project_mismatch",
     "not_master_token": "keboola_not_permitted",
+    # The login path's own master-token failure: the assumption that an
+    # interactive OAuth token always verifies as a master token is
+    # platform-unverified (see keboola_verify's module docstring), so if it
+    # ever fails it gets a self-describing code instead of the generic
+    # not-permitted banner.
+    "oauth_not_master_token": "keboola_oauth_not_master",
     "role_forbidden": "keboola_not_permitted",
     "no_admin_identity": "keboola_not_permitted",
     "invalid_token": "keboola_oauth_failed",
@@ -50,20 +60,36 @@ def is_available() -> bool:
 
 
 def _oauth_client():
-    """Lazily register the authlib client (config is instance.yaml, read at
-    first use, unlike Google's import-time env vars). Safe to call repeatedly."""
+    """Register (or re-register) the authlib client for the CURRENT config.
+
+    Config is instance.yaml, read at first use — unlike Google's import-time
+    env vars it can change at runtime (server-config overlay save: secret
+    rotation, oauth_host/stack_url move). authlib's registry caches the
+    client object per name forever, so a register-once client would keep
+    signing with the stale credentials until restart while is_available()
+    reads live (Devin Review on PR #1288). A fingerprint of the effective
+    config is compared on every call; on change the cached client is dropped
+    and re-registered. Safe to call repeatedly."""
+    global _client_fingerprint
+    fingerprint = (kv.client_id(), kv.client_secret(), kv.oauth_host())
     client = oauth.create_client("keboola")
-    if client is not None:
+    if client is not None and fingerprint == _client_fingerprint:
         return client
-    host = kv.oauth_host()
+    # First use, or the config changed since registration: rebuild. authlib
+    # keeps instantiated clients in `oauth._clients` (create_client returns
+    # the cached instance before ever consulting the registry), so the stale
+    # instance must be evicted for a fresh `register` to take effect.
+    oauth._clients.pop("keboola", None)
+    host = fingerprint[2]
     oauth.register(
         name="keboola",
-        client_id=kv.client_id(),
-        client_secret=kv.client_secret(),
+        client_id=fingerprint[0],
+        client_secret=fingerprint[1],
         authorize_url=f"{host}/oauth/authorize",
         access_token_url=f"{host}/oauth/token",
         client_kwargs={"scope": "email"},
     )
+    _client_fingerprint = fingerprint
     return oauth.create_client("keboola")
 
 
