@@ -1,0 +1,102 @@
+name: Tag release
+
+# Create the semver tag + GitHub Release for a release-cut that has already
+# merged to main. docs/RELEASING.md's post-merge step ("tag vX.Y.Z on the
+# merge commit + create the GitHub Release") normally runs from an
+# operator's clone — but remote/CI-managed operator environments commonly
+# allow branch pushes while refusing tag pushes, so this makes the step
+# dispatchable from anywhere the Actions API is reachable. Server-side it
+# verifies what a local operator would eyeball: the target commit is on
+# main, the tag matches pyproject.toml's version at that commit, and the
+# CHANGELOG section for the version exists (it becomes the Release body).
+#
+# Semver tags deliberately do NOT trigger release.yml (its `on:` has no tag
+# events — the stable-* image build rides the main-branch push), so
+# creating the tag here queues no duplicate build. keboola-deploy.yml
+# reacts to infra tags only, not vX.Y.Z.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Semver tag to create (e.g. v0.83.14)"
+        type: string
+        required: true
+      target:
+        description: "Commit SHA to tag. Must be reachable from main. Defaults to main's HEAD."
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: write # create the tag ref + the Release
+
+jobs:
+  tag-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # ancestry check needs history
+
+      - name: Validate inputs against main
+        id: validate
+        env:
+          TAG: ${{ inputs.tag }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::tag must look like vX.Y.Z, got '$TAG'"; exit 1; }
+          SHA="${TARGET:-$(git rev-parse origin/main)}"
+          SHA=$(git rev-parse --verify "${SHA}^{commit}") || { echo "::error::target '$TARGET' is not a commit"; exit 1; }
+          git merge-base --is-ancestor "$SHA" origin/main || { echo "::error::$SHA is not reachable from main"; exit 1; }
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            EXISTING=$(git rev-parse "refs/tags/$TAG^{commit}")
+            if [ "$EXISTING" = "$SHA" ]; then
+              echo "tag $TAG already points at $SHA — nothing to do"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::error::$TAG already exists at $EXISTING (wanted $SHA) — refusing to move a release tag"
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          PYVER=$(git show "$SHA:pyproject.toml" | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)
+          [ "$PYVER" = "$VERSION" ] || { echo "::error::pyproject.toml at $SHA says $PYVER, tag wants $VERSION — tag the release-cut commit"; exit 1; }
+          git show "$SHA:CHANGELOG.md" | grep -q "^## \[$VERSION\]" || { echo "::error::CHANGELOG.md at $SHA has no ## [$VERSION] section"; exit 1; }
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Extract CHANGELOG section for the Release body
+        if: steps.validate.outputs.skip != 'true'
+        env:
+          TAG: ${{ inputs.tag }}
+          SHA: ${{ steps.validate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          git show "$SHA:CHANGELOG.md" | awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" {inside=1; next}
+            inside && /^## \[/ {exit}
+            inside {print}
+          ' > /tmp/release-body.md
+          # A release body over ~125k chars is rejected by the API; ours are
+          # long-form but well under that. Guard anyway.
+          [ "$(wc -c < /tmp/release-body.md)" -lt 120000 ] || { echo "::error::CHANGELOG section too large for a Release body"; exit 1; }
+
+      - name: Create tag + GitHub Release
+        if: steps.validate.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          SHA: ${{ steps.validate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # gh release create makes the tag ref server-side when it does not
+          # exist yet — no git push, so it works regardless of who dispatched.
+          gh release create "$TAG" \
+            --target "$SHA" \
+            --title "$TAG" \
+            --notes-file /tmp/release-body.md
+          echo "created $TAG at $SHA"

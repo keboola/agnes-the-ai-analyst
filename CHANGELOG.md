@@ -10,6 +10,9 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Internal
+- New `tag-release.yml` workflow (`workflow_dispatch`): creates the semver tag + GitHub Release for a release-cut already merged to main, entirely server-side (`gh release create` makes the tag ref — no git tag push). Validates before acting: tag shape, target reachable from main, `pyproject.toml` version at the target matches, `## [X.Y.Z]` CHANGELOG section exists (it becomes the Release body); an existing identical tag is a no-op, a mismatched one refuses. Exists because remote/CI-managed operator environments commonly allow branch pushes but refuse tag pushes, leaving `docs/RELEASING.md`'s post-merge step undoable from there.
+
 ## [0.83.14] - 2026-08-14
 
 ### Added
