@@ -1814,6 +1814,16 @@ async def lifespan(app):
             usage_accumulator.flush()
         except Exception:
             logger.exception("llm_usage accumulator flush failed during shutdown (non-fatal)")
+        # Warm stdio MCP sessions are child processes owned by keeper tasks on
+        # THIS loop. Closing them here lets each anyio task group unwind and
+        # terminate its subprocess while the loop is still running, instead of
+        # leaving them to be reaped when this process dies.
+        try:
+            from connectors.mcp.session_pool import close_all as close_mcp_sessions
+
+            await close_mcp_sessions()
+        except Exception:
+            logger.exception("MCP session pool close failed during shutdown (non-fatal)")
         from src.db import close_analytics_db, close_operational_db, close_system_db
 
         close_system_db()
