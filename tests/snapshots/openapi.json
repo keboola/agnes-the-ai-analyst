@@ -18512,6 +18512,146 @@
         ]
       }
     },
+    "/api/admin/mcp-sources/{source_id}/grants": {
+      "post": {
+        "description": "Grant a user group every tool registered under one source.\n\nThe per-tool grant is the right granularity for curating an upstream a\nhandful of tools at a time. It is the wrong one for a source that arrives\nwith its whole toolset at once \u2014 a connected Keboola project registers\naround forty, and granting them one page at a time is the friction the\nchat-tools switch exists to remove. This grants the set.\n\nIdempotent per tool, and it does NOT widen anything the source did not\nregister: the set is exactly ``tool_registry`` rows for this source, so a\ntool that arrives later needs another call rather than being granted in\nadvance. Returns what changed and what was already granted, because\n\"granted 0 of 37\" and \"granted 37 of 37\" mean very different things to an\nadmin and both look like success otherwise.",
+        "operationId": "add_mcp_source_grant_api_admin_mcp_sources__source_id__grants_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "title": "Source Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddGrantRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Mcp Source Grant",
+        "tags": [
+          "admin-mcp"
+        ]
+      }
+    },
+    "/api/admin/mcp-sources/{source_id}/grants/{group_id}": {
+      "delete": {
+        "description": "Revoke a group's access to every tool of one source (idempotent).\n\nThe counterpart matters more than the convenience: an admin who granted a\nwhole project in one action must be able to take it back in one action,\nrather than revoking forty tools by hand while access stays live.",
+        "operationId": "remove_mcp_source_grant_api_admin_mcp_sources__source_id__grants__group_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source_id",
+            "required": true,
+            "schema": {
+              "title": "Source Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "group_id",
+            "required": true,
+            "schema": {
+              "title": "Group Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove Mcp Source Grant",
+        "tags": [
+          "admin-mcp"
+        ]
+      }
+    },
     "/api/admin/mcp-sources/{source_id}/introspect": {
       "post": {
         "description": "Live-connect to the source and list its tools verbatim.",
