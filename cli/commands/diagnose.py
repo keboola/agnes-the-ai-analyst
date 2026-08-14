@@ -9,6 +9,7 @@ from cli.client import RedirectHardStop, api_get
 from cli.config import get_sync_state, get_workspace_root
 from cli.lib.jira_partition_check import detect_jira_partition_layout
 from cli.lib.session_health import session_upload_health
+from cli.lib.workspace_resolve import resolve_data_workspace
 
 diagnose_app = typer.Typer(help="System diagnostics")
 
@@ -115,15 +116,23 @@ def _local_delivery_check() -> dict:
     """
     check: dict = {"name": "local-data", "audience": "analyst"}
     try:
-        root = get_workspace_root()
-        if not root or not Path(root).exists():
+        # Resolved the way the DATA commands resolve it (`agnes pull`,
+        # `agnes query`, `agnes status`: `AGNES_LOCAL_DIR` override → cwd if
+        # workspace-shaped → `workspace_root` anchor), not via the
+        # push/session anchor alone — `agnes query` reads wherever
+        # `resolve_data_workspace()` points, and inspecting any other
+        # directory reports a false shortfall (or a false "run `agnes
+        # init`") the moment the two differ: override set, analyst standing
+        # in another workspace, stale or unset anchor.
+        root = resolve_data_workspace()
+        if root is None or not root.exists():
             check.update(
                 status="info",
                 detail="No workspace on this machine — run `agnes init` first.",
             )
             return check
 
-        local = _local_table_names(Path(root) / "server" / "parquet")
+        local = _local_table_names(root / "server" / "parquet")
 
         try:
             resp = api_get("/api/sync/manifest")

@@ -261,7 +261,10 @@ class TestLocalDeliveryCheck:
         for name in on_disk:
             (parquet_dir / f"{name}.parquet").write_bytes(b"")
 
-        monkeypatch.setattr(mod, "get_workspace_root", lambda: str(tmp_path))
+        # The check resolves the workspace the way the data commands do
+        # (`cli/lib/workspace_resolve.resolve_data_workspace`); the env
+        # override is that resolver's first branch and wins over cwd/anchor.
+        monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
         resp = MagicMock()
         resp.json.return_value = manifest
         monkeypatch.setattr(mod, "api_get", lambda *a, **k: resp)
@@ -360,12 +363,72 @@ class TestLocalDeliveryCheck:
         assert c["status"] == "ok", c
         assert c["tables_offered"] == 1
 
-    def test_no_workspace_says_run_init(self, monkeypatch):
-        """A machine with no workspace at all is a benign first-run state —
-        `info`, so it never drives the headline."""
+    def test_resolves_the_workspace_like_the_data_commands_not_the_push_anchor(self, monkeypatch, tmp_path):
+        """The check must inspect the workspace `agnes query` reads, which is
+        `resolve_data_workspace()`'s answer (`AGNES_LOCAL_DIR` override → cwd
+        if workspace-shaped → anchor) — NOT the `workspace_root` config anchor
+        that push/session-upload use. Resolving via the anchor while the
+        parquets live where the override points reported a false shortfall
+        about data the analyst can query fine."""
+        from unittest.mock import MagicMock
+
         import cli.commands.diagnose as mod
 
+        data_ws = tmp_path / "data-ws"
+        (data_ws / "server" / "parquet").mkdir(parents=True)
+        (data_ws / "server" / "parquet" / "t0.parquet").write_bytes(b"")
+
+        anchor = tmp_path / "push-anchor"  # exists, holds no parquets
+        anchor.mkdir()
+
+        monkeypatch.setenv("AGNES_LOCAL_DIR", str(data_ws))
+        monkeypatch.setattr(mod, "get_workspace_root", lambda: str(anchor))
+        monkeypatch.setattr("cli.lib.workspace_resolve.get_workspace_root", lambda: str(anchor))
+
+        resp = MagicMock()
+        resp.json.return_value = {"tables": {"t0": {"query_mode": "local"}}}
+        monkeypatch.setattr(mod, "api_get", lambda *a, **k: resp)
+
+        c = mod._local_delivery_check()
+        assert c["status"] == "ok", c
+        assert c["tables_local"] == 1 and c["tables_offered"] == 1
+
+    def test_env_override_counts_even_when_the_anchor_is_unset(self, monkeypatch, tmp_path):
+        """The other face of the same defect: no anchor at all used to read
+        as "run `agnes init`" even though `AGNES_LOCAL_DIR` points at a
+        workspace full of parquets that every data command would use."""
+        from unittest.mock import MagicMock
+
+        import cli.commands.diagnose as mod
+
+        data_ws = tmp_path / "data-ws"
+        (data_ws / "server" / "parquet").mkdir(parents=True)
+        (data_ws / "server" / "parquet" / "t0.parquet").write_bytes(b"")
+
+        monkeypatch.setenv("AGNES_LOCAL_DIR", str(data_ws))
         monkeypatch.setattr(mod, "get_workspace_root", lambda: None)
+        monkeypatch.setattr("cli.lib.workspace_resolve.get_workspace_root", lambda: None)
+
+        resp = MagicMock()
+        resp.json.return_value = {"tables": {"t0": {"query_mode": "local"}}}
+        monkeypatch.setattr(mod, "api_get", lambda *a, **k: resp)
+
+        c = mod._local_delivery_check()
+        assert c["status"] == "ok", c
+        assert c["tables_local"] == 1
+
+    def test_no_workspace_says_run_init(self, monkeypatch, tmp_path):
+        """A machine with no workspace at all is a benign first-run state —
+        `info`, so it never drives the headline. "No workspace" means the
+        data resolver finds nothing anywhere: no env override, an unshaped
+        cwd, no anchor."""
+        import cli.commands.diagnose as mod
+
+        monkeypatch.delenv("AGNES_LOCAL_DIR", raising=False)
+        monkeypatch.setattr("cli.lib.workspace_resolve.get_workspace_root", lambda: None)
+        plain = tmp_path / "not-a-workspace"
+        plain.mkdir()
+        monkeypatch.chdir(plain)
         c = mod._local_delivery_check()
         assert c["status"] == "info"
         assert "agnes init" in c["detail"]
@@ -378,7 +441,7 @@ class TestLocalDeliveryCheck:
         def _boom(*a, **k):
             raise RuntimeError("manifest unreachable")
 
-        monkeypatch.setattr(mod, "get_workspace_root", lambda: str(tmp_path))
+        monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
         monkeypatch.setattr(mod, "api_get", _boom)
         c = mod._local_delivery_check()
         assert c["status"] == "info", c
@@ -397,7 +460,7 @@ class TestLocalDeliveryCheck:
         import cli.commands.diagnose as mod
 
         (tmp_path / "server" / "parquet").mkdir(parents=True)
-        monkeypatch.setattr(mod, "get_workspace_root", lambda: str(tmp_path))
+        monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
 
         resp = MagicMock()
         resp.json.return_value = {"detail": "Not authenticated"}
@@ -420,7 +483,7 @@ class TestLocalDeliveryCheck:
         from cli.client import RedirectHardStop
 
         (tmp_path / "server" / "parquet").mkdir(parents=True)
-        monkeypatch.setattr(mod, "get_workspace_root", lambda: str(tmp_path))
+        monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
 
         def _redirect(*a, **k):
             raise RedirectHardStop("server moved to https://example.com")
@@ -438,7 +501,7 @@ class TestLocalDeliveryCheck:
         import cli.commands.diagnose as mod
 
         (tmp_path / "server" / "parquet").mkdir(parents=True)
-        monkeypatch.setattr(mod, "get_workspace_root", lambda: str(tmp_path))
+        monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
 
         def _api_get(path, *a, **k):
             if "manifest" in path:
