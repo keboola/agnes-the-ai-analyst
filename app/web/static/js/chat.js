@@ -456,6 +456,46 @@ function renderSourcesChips(bubble, verdict) {
   bubble.appendChild(wrap);
 }
 
+// ---------- Next-actions block ---------------------------------------------
+// The workspace prompt asks the agent to end each answer with a fenced
+// ```next_actions block — one short follow-up prompt per "- " line. Unlike
+// the sources fence above, this trailer IS chrome: it is stripped from the
+// clipboard too, and re-rendered as one-click buttons under the answer.
+// Same loop shape as stripSourcesFence: global, unterminated-safe, indexOf
+// for the close (a non-greedy pattern rescans to end-of-string per opener).
+const _NEXT_ACTIONS_OPEN_RE = /```next_actions[ \t]*\r?\n/i;
+const _NEXT_ACTIONS_CLOSE = "```";
+const _NEXT_ACTIONS_MAX = 3;
+
+function extractNextActions(markdown) {
+  let out = markdown || "";
+  const actions = [];
+  for (;;) {
+    const open = _NEXT_ACTIONS_OPEN_RE.exec(out);
+    if (!open) break;
+    const bodyStart = open.index + open[0].length;
+    const close = out.indexOf(_NEXT_ACTIONS_CLOSE, bodyStart);
+    if (close === -1) break;
+    for (const line of out.slice(bodyStart, close).split("\n")) {
+      const m = /^\s*[-*]\s+(.+?)\s*$/.exec(line);
+      if (m) actions.push(m[1]);
+    }
+    out = out.slice(0, open.index) + out.slice(close + _NEXT_ACTIONS_CLOSE.length);
+  }
+  return { text: out.trimEnd(), actions: actions.slice(0, _NEXT_ACTIONS_MAX) };
+}
+
+function stripNextActionsFence(markdown) {
+  return extractNextActions(markdown).text;
+}
+
+/** The one way answer markdown reaches the DOM: both wire-format trailers
+ *  removed, then sanitized. Streaming and both final render paths go through
+ *  here so a fence can never reach the screen from one path and not another. */
+function renderAnswerMarkdown(content) {
+  return renderMarkdownSafe(stripNextActionsFence(stripSourcesFence(content)));
+}
+
 // ---------- Copy transcript ----------------------------------------------
 // A chat session is owner-only by design: GET /api/chat/sessions/{id}/messages
 // 404s for everyone else, admins included, and /admin/sessions browses the
@@ -504,7 +544,7 @@ async function fetchTranscriptMarkdown(chatId, title) {
   const out = [`# ${title}`, "", `Session: \`${chatId}\``, `Exported: ${new Date().toISOString()}`, ""];
   for (const m of msgs) {
     const who = m.role === "user" ? "You" : m.role === "assistant" ? "Agnes" : m.role;
-    out.push(`## ${who} · ${m.created_at}`, "", (m.content || "").trim(), "");
+    out.push(`## ${who} · ${m.created_at}`, "", stripNextActionsFence((m.content || "").trim()), "");
     for (const tc of m.tool_calls || []) {
       const call = formatToolCall(tc);
       if (!call) continue;
@@ -1541,7 +1581,7 @@ function renderMessage(m) {
   const article = createMessageShell({ role: m.role, createdAt: m.created_at });
   const bubble = article.querySelector(".msg-bubble");
   const body = bubble.querySelector(".msg-body");
-  body.innerHTML = renderMarkdownSafe(stripSourcesFence(m.content));
+  body.innerHTML = renderAnswerMarkdown(m.content);
   enhanceCodeBlocks(body);
   enhanceTables(body);
   renderMermaidBlocks(body);
@@ -1587,7 +1627,7 @@ function renderMessage(m) {
 
   // Copy carries the ORIGINAL content, fence and all — see the note on
   // stripSourcesFence. The fence is hidden from the eye, not from the record.
-  attachMessageActions(article, m.content || "");
+  attachMessageActions(article, stripNextActionsFence(m.content || ""));
   $("chat-messages").appendChild(article);
   if (m.role === "assistant") _markLatestAssistant(article);
   maybeMakeCollapsible(article);
@@ -1858,7 +1898,7 @@ function finalizeAssistantMessage(frame) {
   const content = (frame && frame.content) || currentAssistantText;
   if (currentAssistantArticle && currentAssistantBody) {
     currentAssistantArticle.classList.remove("is-streaming");
-    currentAssistantBody.innerHTML = renderMarkdownSafe(stripSourcesFence(content));
+    currentAssistantBody.innerHTML = renderAnswerMarkdown(content);
     enhanceCodeBlocks(currentAssistantBody);
     enhanceTables(currentAssistantBody);
     renderMermaidBlocks(currentAssistantBody);
@@ -1866,7 +1906,7 @@ function finalizeAssistantMessage(frame) {
     // verdict — stamped onto this frame before the fan-out and recomputed
     // identically by GET /sessions/{id}/messages.
     renderSourcesChips(currentAssistantBody.closest(".msg-bubble"), frame && frame.sources);
-    attachMessageActions(currentAssistantArticle, content);
+    attachMessageActions(currentAssistantArticle, stripNextActionsFence(content));
     _markLatestAssistant(currentAssistantArticle);
     maybeMakeCollapsible(currentAssistantArticle);
     currentAssistantArticle = null;
