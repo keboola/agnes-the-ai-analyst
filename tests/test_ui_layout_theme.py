@@ -64,9 +64,10 @@ def admin_cookie(web_client):
 
 
 class TestResolvers:
-    def test_ui_layout_defaults_to_topnav(self, monkeypatch):
+    def test_ui_layout_defaults_to_rail(self, monkeypatch):
         monkeypatch.delenv("AGNES_UI_LAYOUT", raising=False)
-        assert get_ui_layout() == "topnav"
+        monkeypatch.delenv("AGNES_INSTANCE_EXPERIENCE", raising=False)
+        assert get_ui_layout() == "rail"
 
     def test_ui_layout_env_rail(self, monkeypatch):
         monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
@@ -74,15 +75,32 @@ class TestResolvers:
 
     def test_ui_layout_typo_falls_back(self, monkeypatch):
         monkeypatch.setenv("AGNES_UI_LAYOUT", "sidebar")
-        assert get_ui_layout() == "topnav"
+        monkeypatch.delenv("AGNES_INSTANCE_EXPERIENCE", raising=False)
+        assert get_ui_layout() == "rail"
+
+    def test_theme_defaults_to_paper(self, monkeypatch):
+        monkeypatch.delenv("AGNES_INSTANCE_THEME", raising=False)
+        monkeypatch.delenv("AGNES_INSTANCE_EXPERIENCE", raising=False)
+        assert get_instance_theme() == "paper"
 
     def test_theme_accepts_paper(self, monkeypatch):
         monkeypatch.setenv("AGNES_INSTANCE_THEME", "paper")
         assert get_instance_theme() == "paper"
 
-    def test_theme_typo_falls_back_to_blue(self, monkeypatch):
+    def test_theme_typo_falls_back_to_paper(self, monkeypatch):
         monkeypatch.setenv("AGNES_INSTANCE_THEME", "papier")
+        monkeypatch.delenv("AGNES_INSTANCE_EXPERIENCE", raising=False)
+        assert get_instance_theme() == "paper"
+
+    def test_explicit_blue_theme_still_wins(self, monkeypatch):
+        monkeypatch.setenv("AGNES_INSTANCE_THEME", "blue")
         assert get_instance_theme() == "blue"
+
+    def test_classic_experience_falls_back_to_redesign(self, monkeypatch):
+        monkeypatch.setenv("AGNES_INSTANCE_EXPERIENCE", "classic")
+        from app.instance_config import get_experience
+
+        assert get_experience() == "redesign"
 
 
 class TestDefaultChromeUnchanged:
