@@ -2163,6 +2163,12 @@ def create_app() -> FastAPI:
         if o.strip()
     ]
     cors_allow_credentials = True
+    # Captured HERE, from the same read the middleware is configured with:
+    # the readiness handler's per-app CORS grant must agree with the
+    # middleware about whether a wildcard is in force, and `create_app`
+    # loads overlay env AFTER this point — a request-time env re-read could
+    # see a different value than the middleware did (Devin on #1321).
+    app.state.cors_has_wildcard = "*" in cors_origins
     # Data-app subdomains are deliberately NOT allowed here. The holding
     # page's readiness poll (data_app_waking.html on `<slug>.<base>`) does
     # need a credentialed cross-origin read of ONE response — but this

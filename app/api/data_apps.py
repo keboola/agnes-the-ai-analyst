@@ -1746,7 +1746,16 @@ def _readiness_cors_headers(request: Request, slug: str) -> dict[str, str]:
     # browser-invalid `*`+credentials pair. The poll is broken under the
     # wildcard either way (main.py logs a dedicated error for wildcard +
     # subdomain_base); don't emit half a grant into that response.
-    if "*" in (o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",")):
+    # The wildcard verdict is captured on app.state at build time, from the
+    # SAME read the middleware was configured with — a request-time env
+    # re-read could diverge on overlay-configured instances, where
+    # create_app loads overlay env after the middleware is registered
+    # (Devin on #1321). Env is only the fallback for app objects built
+    # outside create_app (unit-test shims).
+    wildcard = getattr(request.app.state, "cors_has_wildcard", None)
+    if wildcard is None:
+        wildcard = "*" in (o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(","))
+    if wildcard:
         return vary_only
     try:
         from urllib.parse import urlsplit

@@ -112,7 +112,7 @@ def proxy_env(e2e_env, monkeypatch):
     from fastapi.testclient import TestClient
 
     client = TestClient(app)
-    return {"client": client, "owner_pat": pats["owner1"], "other_pat": pats["other1"], "data_dir": data_dir}
+    return {"client": client, "app": app, "owner_pat": pats["owner1"], "other_pat": pats["other1"], "data_dir": data_dir}
 
 
 def _set_data_apps_config(data_dir, **overrides) -> None:
@@ -1067,7 +1067,10 @@ def test_readiness_cors_grant_is_withheld_under_wildcard_cors(
     entirely (the poll is broken under the wildcard either way; main.py logs
     a dedicated error), leaving only `Vary: Origin` (Devin on #1321)."""
     _set_data_apps_config(proxy_env["data_dir"], subdomain_base="apps.example.com")
-    monkeypatch.setenv("CORS_ORIGINS", "https://ok.example.com,*")
+    # The verdict is captured on app.state at build time (same read the
+    # middleware sees); flip it there — a request-time env change must NOT
+    # move the helper, that divergence is the bug this pins.
+    proxy_env["app"].state.cors_has_wildcard = True
     tok = mint_preview("s", ttl_s=1800)
     r = proxy_client.get(
         "/api/data-apps/s/readiness",
