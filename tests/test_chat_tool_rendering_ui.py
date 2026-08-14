@@ -1,0 +1,86 @@
+"""Wave-1 tool-rendering guards: the reader sees labels, tables and buttons —
+never raw JSON or raw markdown source — and JSON stays one click away.
+
+Follows the pattern of tests/test_chat_sources_ui.py: content assertions pin
+the call shapes that are easy to undo by accident; node-executed tests run the
+shipped functions, not copies.
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+CHAT_JS = Path("app/web/static/js/chat.js")
+CHAT_CSS = Path("app/web/static/css/chat.css")
+WORKSPACE_CLAUDE_MD = Path("app/initial_workspace_default/CLAUDE.md")
+
+
+def _read(p: Path) -> str:
+    return p.read_text(encoding="utf-8")
+
+
+def _node_run(script: str) -> str:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available")
+    out = subprocess.run([node, "-e", script], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    return out.stdout
+
+
+# ── next_actions: the trailer is chrome, not content ─────────────────────────
+
+
+def test_next_actions_helper_exists_and_both_paths_use_it():
+    js = _read(CHAT_JS)
+    assert "function renderAnswerMarkdown" in js
+    assert "stripNextActionsFence(stripSourcesFence(" in js, (
+        "renderAnswerMarkdown must strip both trailers, sources first"
+    )
+    assert js.count("renderAnswerMarkdown(") >= 3, "renderMessage, finalizeAssistantMessage and the helper definition"
+    assert "renderMarkdownSafe(stripSourcesFence(" not in js, "render paths must go through renderAnswerMarkdown now"
+
+
+def test_clipboard_strips_next_actions_but_keeps_sources():
+    """Suggestions are chrome — a copied transcript without them loses nothing.
+    Provenance is not chrome; the sources fence stays (see
+    tests/test_chat_sources_ui.py for the full rationale)."""
+    js = _read(CHAT_JS)
+    assert "attachMessageActions(currentAssistantArticle, stripNextActionsFence(content))" in js
+    assert 'attachMessageActions(article, stripNextActionsFence(m.content || ""))' in js
+    assert "attachMessageActions(currentAssistantArticle, stripSourcesFence" not in js
+    assert "attachMessageActions(article, stripSourcesFence" not in js
+
+
+def test_extract_next_actions_executable():
+    js = _read(CHAT_JS)
+    fn = js[js.index("const _NEXT_ACTIONS_OPEN_RE") : js.index("function renderAnswerMarkdown")]
+    cases = {
+        "with_block": "Done.\n\n```next_actions\n- Break it down by country\n- Chart the trend\n```\n",
+        "no_block": "Done.",
+        "unterminated_kept": "Done.\n\n```next_actions\n- Break it down",
+        "two_blocks": "a\n\n```next_actions\n- x\n```\n\nb\n\n```next_actions\n- y\n```\n",
+        "code_block_kept": "See:\n\n```sql\nSELECT 1\n```\n\n```next_actions\n- Next\n```\n",
+        "caps_capped": "t\n\n```next_actions\n- a\n- b\n- c\n- d\n- e\n```\n",
+    }
+    script = (
+        fn
+        + f"\nprocess.stdout.write(JSON.stringify(Object.fromEntries(Object.entries({json.dumps(cases)}).map(([k, v]) => [k, extractNextActions(v)]))));\n"
+    )
+    res = json.loads(_node_run(script))
+    assert res["with_block"]["text"] == "Done."
+    assert res["with_block"]["actions"] == ["Break it down by country", "Chart the trend"]
+    assert res["no_block"] == {"text": "Done.", "actions": []}
+    assert res["unterminated_kept"]["text"] == "Done.\n\n```next_actions\n- Break it down", (
+        "an unterminated opener is not a block — stripping it would eat the answer"
+    )
+    assert res["unterminated_kept"]["actions"] == []
+    assert "```next_actions" not in res["two_blocks"]["text"], "the pattern must be global"
+    assert res["two_blocks"]["actions"] == ["x", "y"]
+    assert "```sql" in res["code_block_kept"]["text"], "an ordinary code block must survive"
+    assert len(res["caps_capped"]["actions"]) == 3, "at most 3 buttons"
