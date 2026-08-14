@@ -390,15 +390,44 @@ class TestAdminRoleGuards:
         resp = web_client.get("/admin/tables", cookies=admin_cookie)
         assert resp.status_code == 200
 
-    def test_analyst_cannot_access_admin_access_page(self, web_client, analyst_cookie):
-        """The unified /admin/access page replaces the dropped
-        /admin/permissions page. Non-admin must still be blocked."""
-        resp = web_client.get("/admin/access", cookies=analyst_cookie)
+    def test_analyst_cannot_access_admin_groups_page(self, web_client, analyst_cookie):
+        """Grants moved onto the group detail page's Access tab; /admin/groups
+        is the entry point. Non-admin must still be blocked."""
+        resp = web_client.get("/admin/groups", cookies=analyst_cookie)
         assert resp.status_code == 403
 
-    def test_admin_can_access_admin_access_page(self, web_client, admin_cookie):
+    def test_admin_can_access_admin_groups_page(self, web_client, admin_cookie):
+        resp = web_client.get("/admin/groups", cookies=admin_cookie)
+        assert resp.status_code == 200
+
+    def test_access_page_renders(self, web_client, admin_cookie):
+        """/admin/access is a real page again — the cross-group Access
+        workspace plus Simulate. It was a standalone matrix, was retired into
+        the group detail page's Access tab (grants key on `group_id`), and
+        came back as the surface that tab cannot be: one place to move between
+        groups, and to answer "why can't this person see X?"."""
         resp = web_client.get("/admin/access", cookies=admin_cookie)
         assert resp.status_code == 200
+        assert "Simulate a person" in resp.text
+
+    def test_legacy_grants_url_redirects_to_access(self, web_client, admin_cookie):
+        """The page's oldest URL 308s onto it rather than 404ing, carrying
+        ?group= through so an old deep link still preselects that group."""
+        resp = web_client.get("/admin/grants", cookies=admin_cookie, follow_redirects=False)
+        assert resp.status_code == 308
+        assert resp.headers["location"] == "/admin/access"
+
+        resp = web_client.get("/admin/grants?group=grp-123", cookies=admin_cookie, follow_redirects=False)
+        assert resp.status_code == 308
+        assert resp.headers["location"] == "/admin/access?group=grp-123"
+
+    def test_access_urls_keep_their_admin_gate(self, web_client, analyst_cookie):
+        """Both the page and the legacy redirect refuse a non-admin — the
+        redirect must not answer 308 naming an internal URL where the page
+        answers 403."""
+        for url in ("/admin/access", "/admin/grants"):
+            resp = web_client.get(url, cookies=analyst_cookie, follow_redirects=False)
+            assert resp.status_code == 403, url
 
     def test_analyst_cannot_access_corporate_memory_admin(self, web_client, admin_cookie, analyst_cookie):
         resp = web_client.get("/admin/corporate-memory", cookies=analyst_cookie)

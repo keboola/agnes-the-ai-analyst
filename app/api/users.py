@@ -93,6 +93,25 @@ class UserResponse(BaseModel):
     deactivated_at: Optional[str] = None
     invite_url: Optional[str] = None
     invite_email_sent: Optional[bool] = None
+    # ── Outcome fields (admin People lens). Both answer the question an
+    # admin actually has about a row — "does this person get data, and is it
+    # reaching them?" — which account plumbing (created/deactivated) cannot.
+    #
+    # `data_package_count` is the number of DISTINCT data packages reachable
+    # through this user's groups. Derived, never stored: the grant graph is
+    # the source of truth and a cached count would drift the moment a grant
+    # moved. Admin-group members are NOT given a synthetic total here — they
+    # reach everything at runtime by god-mode, and inflating the column would
+    # hide whether the explicit grants an admin is auditing actually work
+    # (the same reason `/users/{id}/effective-access` stopped short-circuiting
+    # for admins).
+    #
+    # `last_pull_at` is the existing `users.last_pull_at` column, stamped by
+    # `GET /api/sync/manifest` — every `agnes pull` fetches the manifest even
+    # when nothing changed, so it is the honest "did the data reach them"
+    # signal, and a browser-driven manifest peek is the only false positive.
+    data_package_count: int = 0
+    last_pull_at: Optional[str] = None
 
 
 def _resolve_role(u: dict, conn: Optional[duckdb.DuckDBPyConnection] = None) -> str:
@@ -185,13 +204,36 @@ def _is_sso_user(user_id: str, conn: Optional[duckdb.DuckDBPyConnection] = None)
     return False
 
 
+def _data_package_grants_by_group() -> dict[str, set]:
+    """``{group_id: {package_id, …}}`` over live data-package grants.
+
+    Read once per request and passed down, so listing N users costs ONE grant
+    query rather than N — the list endpoint is bounded at 10 000 rows and a
+    per-row query would make the People page quadratic in the grant table.
+    """
+    from src.repositories import resource_grants_repo
+
+    out: dict[str, set] = {}
+    for g in resource_grants_repo().list_all(resource_type="data_package"):
+        out.setdefault(g["group_id"], set()).add(g["resource_id"])
+    return out
+
+
 def _to_response(
     u: dict,
     conn: Optional[duckdb.DuckDBPyConnection] = None,
     invite_url: Optional[str] = None,
     invite_email_sent: Optional[bool] = None,
+    pkg_grants: Optional[dict] = None,
 ) -> UserResponse:
     groups = _user_groups(u["id"])
+    # See UserResponse for why this is derived rather than stored, and why an
+    # admin gets their explicit count rather than a synthetic total.
+    if pkg_grants is None:
+        pkg_grants = _data_package_grants_by_group()
+    reachable: set = set()
+    for g in groups:
+        reachable |= pkg_grants.get(g.id, set())
     return UserResponse(
         id=u["id"],
         email=u["email"],
@@ -205,6 +247,8 @@ def _to_response(
         deactivated_at=str(u["deactivated_at"]) if u.get("deactivated_at") else None,
         invite_url=invite_url,
         invite_email_sent=invite_email_sent,
+        data_package_count=len(reachable),
+        last_pull_at=str(u["last_pull_at"]) if u.get("last_pull_at") else None,
     )
 
 
@@ -241,7 +285,9 @@ async def list_users(
     list-users`` CLI, the setup health check) keep their prior reach; only
     the ordering changed (recency-first instead of email-sorted)."""
     rows = users_repo().search_recent(limit=limit, search=search, group_id=group_id)
-    return [_to_response(u) for u in rows]
+    # One grant read for the whole page — see `_data_package_grants_by_group`.
+    pkg_grants = _data_package_grants_by_group()
+    return [_to_response(u, pkg_grants=pkg_grants) for u in rows]
 
 
 @router.get("/{user_id}", response_model=UserResponse)

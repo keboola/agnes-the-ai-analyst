@@ -16,7 +16,7 @@ def test_applier_unit_runs_as_non_root_with_docker_as_supplementary():
     process's primary group entirely, leaving the applier with
     egid=docker only. systemd does NOT add the user's other groups
     from /etc/group as supplementary unless explicitly listed.
-    Verified live on foundryai-dev-zsrotyr 2026-06-01: that wiring
+    Verified live on a dev instance 2026-06-01: that wiring
     blocked the applier from reading /opt/agnes/.env
     (group=agnes-applier, mode 0640).
 
@@ -45,7 +45,7 @@ def test_applier_unit_ordered_after_bootstrap():
     loads the User= directive, the agnes-applier user exists.
 
     An earlier attempt put the user-creation in ``ExecStartPre=+`` of
-    the main unit. Verified live on foundryai-dev-zsrotyr 2026-05-29:
+    the main unit. Verified live on a dev instance 2026-05-29:
     systemd validates ``User=`` at unit LOAD time, not at ExecStartPre
     run time — the unit refused to start with
     ``Failed to determine user credentials: No such process`` before
@@ -66,7 +66,8 @@ def test_bootstrap_unit_creates_user_and_state_dir():
     root (no User=) and creates the agnes-applier user + chowns
     /data/state. Customer infras that don't ship matching
     provisioning logic (e.g. forks of the OSS customer-instance
-    module, the Groupon FoundryAI infra repo) get the bootstrap for
+    module, or an infra repo that provisions its VMs on its own)
+    get the bootstrap for
     free via the systemd unit ordering."""
     from pathlib import Path
 
@@ -94,6 +95,34 @@ def test_bootstrap_unit_creates_user_and_state_dir():
     )
     assert "Before=" in unit and "agnes-state-applier.service" in unit, (
         "bootstrap unit must order Before=agnes-state-applier.service"
+    )
+
+
+def test_bootstrap_unit_pins_the_applier_uid():
+    """#1217 — the bootstrap unit is the ONLY user-creation path for infras
+    that don't run the OSS customer-instance module's own startup-script
+    (e.g. a fork with its own provisioning). Before this fix, only the
+    startup-script pinned `agnes-applier` to uid 999 (`test_the_applier_uid_
+    is_pinned_not_allocated` in test_startup_instance_yaml_perms.py); this
+    unit's own `useradd` had no `--uid`, so on such an infra `agnes-applier`
+    could still land on a different uid than the app container's — the
+    exact silent-desync bug class #1217 exists to close, just reached
+    through a different provisioning path.
+
+    Falls back to an unpinned form if 999 is taken (same posture as the
+    startup-script: a hard failure here would brick provisioning), and a
+    separate ExecStart= reads the uid back and warns loudly — but does not
+    fail the unit — on a mismatch.
+    """
+    from pathlib import Path
+
+    unit = Path("scripts/ops/agnes-state-applier-bootstrap.service").read_text()
+    assert "--uid 999" in unit, (
+        "the bootstrap unit's useradd must pin uid 999 — this is the only user-creation "
+        "path on infras that don't run the module's own startup-script"
+    )
+    assert "id -u agnes-applier" in unit and "999" in unit.split("id -u agnes-applier", 1)[1], (
+        "the bootstrap unit must read the uid back and report a mismatch — otherwise a fallen-through pin is silent"
     )
 
 
@@ -272,4 +301,23 @@ def test_compose_postgres_migrate_services_carry_prebuilt_image():
             f"{svc} must declare a prebuilt image: so sourceless prod VMs use "
             f"the pulled image instead of attempting a build (got "
             f"image={spec.get('image')!r})"
+        )
+
+
+def test_bootstrap_readback_dollars_are_escaped_from_systemd():
+    """Devin on #1298 — systemd expands `$VAR` in ExecStart at unit-parse
+    time (undefined vars become empty), so an unescaped `$APPLIER_UID`
+    reaches bash as "" and the uid-mismatch warning fires on every boot,
+    healthy machines included. A literal `$` for bash must be written `$$`.
+    Guard: every `$` in the unit's ExecStart lines is either `$$` or part
+    of one."""
+    from pathlib import Path
+
+    text = Path("scripts/ops/agnes-state-applier-bootstrap.service").read_text()
+    for line in text.splitlines():
+        if not line.startswith("ExecStart"):
+            continue
+        stripped = line.replace("$$", "")
+        assert "$" not in stripped, (
+            f"unescaped $ reaches systemd expansion in: {line!r} — write it as $$ so bash receives a literal dollar"
         )

@@ -107,6 +107,15 @@
     --ds-shadow-md: 0 4px 16px rgba(15, 27, 58, .08);
     --ds-shadow-lg: 0 8px 24px rgba(15, 27, 58, .14);
 
+    /* Side-cast elevation, for a full-height panel that overlays the page
+       from its left edge (today: the rail peeking open over the content).
+       The three shadows above all cast straight DOWN, which is invisible
+       along a vertical edge — a 240px panel over a page then separates from
+       what it covers by nothing but a 1px hairline, so the content reads as
+       sliced off rather than overlaid. Same tint as the stack, offset
+       sideways instead. */
+    --ds-shadow-side: 10px 0 28px rgba(15, 27, 58, .13);
+
     /* Hero box-shadow tint — used by `.page-header--hero`,
        `.stack-hero`, `.env-setup-cta`. Flipped per theme so the
        drop-shadow colour follows the gradient. */
@@ -589,6 +598,10 @@
     --ds-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05);
     --ds-shadow-md: 0 8px 20px rgba(0, 0, 0, 0.06);
     --ds-shadow-lg: 0 12px 34px rgba(37, 99, 235, 0.08);
+    /* Side-cast (see the base :root note). Slate rather than this theme's
+       blue-tinted `-lg`: a 240px panel casting a blue wash across the page
+       it covers reads as a colour bleed, not as depth. */
+    --ds-shadow-side: 10px 0 28px rgba(15, 23, 42, 0.10);
 
     /* Typography — Inter-first. Falls back to the system stack when
        Inter isn't installed; operators can serve it via the theme
@@ -770,6 +783,9 @@
     --ds-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35), 0 1px 3px rgba(0, 0, 0, 0.25);
     --ds-shadow-md: 0 4px 16px rgba(0, 0, 0, 0.45);
     --ds-shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.55);
+    /* Side-cast (see the base :root note), carrying the same extra weight
+       the rest of this stack needs to register on a dark surface. */
+    --ds-shadow-side: 10px 0 28px rgba(0, 0, 0, 0.5);
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35), 0 1px 3px rgba(0, 0, 0, 0.25);
     --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.45);
     --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.45);

@@ -58,7 +58,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import duckdb
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from starlette.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -718,6 +718,16 @@ def preview_cookie_name(slug: str) -> str:
 _COOKIE_NAME_SAFE_RE = _re.compile(r"^[A-Za-z0-9_-]+$")
 
 
+class SlugNotCookieSafeError(ValueError):
+    """The mint's deliberate header-safety refusal — and ONLY that.
+
+    A dedicated type so the preview-grant handler can map exactly this
+    refusal to 400 ``slug_not_cookie_safe``; a blanket ``except ValueError``
+    also swallowed unrelated ``ValueError``s from ``create_access_token`` or
+    the repo insert, presenting a 5xx-class backend fault as a bad app name
+    (Devin Review on #1321)."""
+
+
 # Q4 (spec §7/§11): 30-minute default TTL, renewed on every
 # `agnes_data_app_preview` call, hard-capped by SessionEnd's best-effort
 # revoke (`revoke_preview_tokens_for_user`, called from `app/chat/manager.py`).
@@ -750,6 +760,17 @@ def _mint_preview_token(row: dict, requester: dict, *, ttl_s: int = _PREVIEW_TOK
     plain top-level-adjacent GET, not a cross-site POST.
     """
     slug = row["slug"]
+    # BEFORE any side effect. The slug is interpolated into the `Set-Cookie`
+    # NAME below, so it is re-checked at mint rather than trusted: every row
+    # reaches this through a validated create, and a header built from an
+    # unvalidated name is exactly the shape a CRLF injection needs. The check
+    # sat after the mint at first, which made the refusal side-effectful — a
+    # rejected slug still left a live, unrevoked 30-minute credential row in
+    # `access_tokens` that nothing would ever hand out or clean up (Devin
+    # Review on this PR). Validate-first makes the refusal free of both the
+    # JWT and the row.
+    if not _COOKIE_NAME_SAFE_RE.match(slug or ""):
+        raise SlugNotCookieSafeError(f"data app slug is not safe in a cookie name: {slug!r}")
     token_id = str(uuid.uuid4())
     ttl = timedelta(seconds=ttl_s)
     expires_at = datetime.now(timezone.utc) + ttl
@@ -785,17 +806,13 @@ def _mint_preview_token(row: dict, requester: dict, *, ttl_s: int = _PREVIEW_TOK
     #
     # What the path WAS silently doing is keeping two apps' cookies apart, so
     # the per-app scoping moves to the cookie NAME instead — see
-    # `preview_cookie_name`. The name is interpolated into a response header,
-    # so the slug is re-checked here rather than trusted: every row reaches
-    # this through a validated create, and a header built from an unvalidated
-    # name is exactly the shape a CRLF injection needs.
+    # `preview_cookie_name`. The name embeds the slug, which is why the
+    # header-safety check at the top of this function exists.
     #
     # Still path-prefix ingress only (the verified default; `subdomain_base`
     # unset). In subdomain mode the app is served on a different origin whose
     # paths start at `/`, so subdomain-mode preview remains a follow-up — it
     # needs a cross-origin cookie the same-origin fetch cannot set.
-    if not _COOKIE_NAME_SAFE_RE.match(slug or ""):
-        raise ValueError(f"data app slug is not safe in a cookie name: {slug!r}")
     cookie = f"{preview_cookie_name(slug)}={jwt_token}; Max-Age={max(ttl_s, 0)}; Path=/; SameSite=Lax; HttpOnly"
     return jwt_token, cookie
 
@@ -1313,7 +1330,16 @@ async def create_preview_grant(
     if not _can_view(user, row):
         raise HTTPException(status_code=403, detail="forbidden")
     _reject_linked(row)
-    _token, cookie = _mint_preview_token(row, user)
+    try:
+        _token, cookie = _mint_preview_token(row, user)
+    except SlugNotCookieSafeError:
+        # The mint's own header-safety refusal (slug unsafe in a cookie name)
+        # is deliberate and side-effect-free — surface it as a clean 400, not
+        # an unhandled 500. Caught by its dedicated type only: a blanket
+        # ValueError catch also relabelled unrelated backend faults
+        # (create_access_token claims, repo validation) as a bad app name;
+        # those must keep surfacing as 500s (Devin Review on this PR).
+        raise HTTPException(status_code=400, detail="slug_not_cookie_safe")
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=_PREVIEW_TOKEN_TTL_S)
     _audit(conn, user["id"], "data_app.preview_grant", f"data_app:{slug}", {})
     # Install the cookie via a real Set-Cookie response header, not just the JSON
@@ -1660,8 +1686,96 @@ async def get_data_app_logs(slug: str, tail: int = 200, user: dict = Depends(get
     return {"logs": logs}
 
 
+def _readiness_cors_headers(request: Request, slug: str) -> dict[str, str]:
+    """CORS response headers for ``slug``'s OWN subdomain origin, or ``{}``.
+
+    On a subdomain-served instance the holding page is rendered on
+    ``https://<slug>.<subdomain_base>`` and its readiness poll goes to the
+    main host (`_readiness_poll_url`) with ``credentials: "include"`` — a
+    cross-origin GET whose *response* the page's JS must be allowed to read.
+
+    That allowance is deliberately NOT the app-wide ``CORSMiddleware``'s job.
+    A first cut added an ``allow_origin_regex`` over every data-app subdomain
+    there, paired with ``allow_credentials=True`` — but those subdomains serve
+    USER-AUTHORED app code, and the session cookie already rides to the main
+    host from them (``Domain=.<parent>``, and subdomains are same-site so
+    ``SameSite`` does not block the send). An app-wide credentialed allowance
+    therefore let any hosted app's JS read every authenticated Agnes endpoint
+    as whoever is viewing it; CORS was the one barrier left, and the regex
+    removed it (Devin Review on this PR). So the grant is scoped twice
+    instead: to THIS route only (headers attached by the handler, no
+    middleware policy), and to THIS app's own origin only — ``a.<base>``
+    cannot read ``b``'s readiness, let alone anything else.
+
+    The poll is a "simple" CORS request (GET, no custom headers), so no
+    preflight ever fires and response headers are the entire surface needed.
+    Only the success path attaches them: an unreadable cross-origin error
+    response behaves exactly like a readable non-ready one — the page's
+    ``catch`` swallows it and the poll continues — so errors stay uniform
+    with the path-prefix form. Port is deliberately ignored in the match
+    (origins carry one on non-default-port deployments, as the old regex's
+    ``(:\\d+)?`` acknowledged); scheme is pinned to http(s).
+
+    Known dependency: ``CORS_ORIGINS='*'`` defeats this grant. With a
+    wildcard, the app-wide middleware runs with ``allow_all_origins`` and
+    stamps ``Access-Control-Allow-Origin: *`` (credential-less — main.py
+    drops credentials for wildcards) OVER these headers, so the credentialed
+    poll response becomes unreadable and the holding page spins.
+    ``app/main.py`` logs a loud error for exactly that combination
+    (wildcard + ``subdomain_base``); the fix is an explicit origin
+    allowlist, never re-adding a subdomain grant to the middleware
+    (Devin Review on #1321).
+    """
+    # `Vary: Origin` on EVERY path, refusals included: the response's headers
+    # differ by Origin, and a cache keyed only on the URL could store the
+    # header-less refusal variant and replay it to the app's own origin —
+    # the browser then refuses the read, the holding page's `catch` swallows
+    # it, and the poll spins forever with the app up (Devin Review on this
+    # PR). Starlette's own CORSMiddleware emits it unconditionally for
+    # explicit-origin policies for the same reason.
+    vary_only = {"Vary": "Origin"}
+    origin = request.headers.get("origin") or ""
+    if not origin:
+        return vary_only
+    base = (get_data_apps_config().get("subdomain_base") or "").strip().strip(".")
+    if not base:
+        return vary_only
+    # With CORS_ORIGINS='*' the app-wide middleware stamps a credential-less
+    # `Access-Control-Allow-Origin: *` OVER whatever this returns, while a
+    # handler-set `Allow-Credentials: true` would survive — shipping the
+    # browser-invalid `*`+credentials pair. The poll is broken under the
+    # wildcard either way (main.py logs a dedicated error for wildcard +
+    # subdomain_base); don't emit half a grant into that response.
+    # The wildcard verdict is captured on app.state at build time, from the
+    # SAME read the middleware was configured with — a request-time env
+    # re-read could diverge on overlay-configured instances, where
+    # create_app loads overlay env after the middleware is registered
+    # (Devin on #1321). Env is only the fallback for app objects built
+    # outside create_app (unit-test shims).
+    wildcard = getattr(request.app.state, "cors_has_wildcard", None)
+    if wildcard is None:
+        wildcard = "*" in (o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(","))
+    if wildcard:
+        return vary_only
+    try:
+        from urllib.parse import urlsplit
+
+        parts = urlsplit(origin)
+    except ValueError:
+        return vary_only
+    if parts.scheme not in ("http", "https"):
+        return vary_only
+    if (parts.hostname or "") != f"{slug}.{base}".lower():
+        return vary_only
+    return {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Credentials": "true",
+        "Vary": "Origin",
+    }
+
+
 @router.get("/{slug}/readiness")
-async def get_data_app_readiness(slug: str, request: Request):
+async def get_data_app_readiness(slug: str, request: Request, response: Response):
     """Runner-backed readiness probe. Doubles as the wake-completion flip:
     when a `deploying` app's runner reports `ready`, this call itself
     transitions the row to `running` — the ingress proxy's holding page
@@ -1681,21 +1795,31 @@ async def get_data_app_readiness(slug: str, request: Request):
     branches, but the starting-app branch added here reaches it far more
     often). Serving the page and refusing its only poll is half a fix.
 
+    Resolved BEFORE the registry read: with auth moved out of the ``Depends``
+    chain into the handler body, a lookup-first ordering answered anonymous
+    probes 404 for a made-up slug and 401 for a real one — letting a caller
+    with no credentials at all enumerate which hosted apps exist (Devin
+    Review on this PR). Anonymous now gets a uniform 401 either way, the
+    same shape the old ``Depends(get_current_user)`` signature enforced.
+
     Imported inside the function: `data_apps_proxy` imports this module, so a
     module-level import would be circular.
     """
     from app.api.data_apps_proxy import _resolve_proxy_caller
 
     _feature_gate()
-    row = _get_row_or_404(slug)
     user, via_preview = await run_in_threadpool(_resolve_proxy_caller, request, slug, None)
     if user is None:
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+    row = _get_row_or_404(slug)
     # `via_preview` is already pinned to THIS slug by the resolver's scope
     # check, which is what makes skipping the grant check safe here.
     if not via_preview and not _can_view(user, row):
         raise HTTPException(status_code=403, detail="forbidden")
     _reject_linked(row)
+
+    # Subdomain-mode poll: let THIS app's own origin read the answer.
+    response.headers.update(_readiness_cors_headers(request, slug))
 
     state = row["state"]
     ready = False
