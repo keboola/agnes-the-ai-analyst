@@ -1,4 +1,5 @@
-"""Operator alerting when a scheduled sync fails.
+"""Sync-completion notifications: operator alert on failure, analyst desktop
+notification on success.
 
 Channel-agnostic webhook: when ``notifications.alert_webhook_url`` is set in
 instance.yaml, a concise ``{"text": ...}`` payload is POSTed to it on sync
@@ -15,11 +16,34 @@ wrapped defensively as a second line of defence.
 ``httpx`` is imported at module scope (not only inside ``post_webhook``) so
 tests can monkeypatch ``sync_notifier.httpx.post`` — the same module object the
 shared sender references — to assert on the outbound payload without a network.
+
+``notify_sync_completed`` (#412: ``agnes watch``) rides the same best-effort
+contract for the COMPLETION path (full or partial — a run that actually
+synced ≥1 table fires it either way, with the outcome in the payload; a run
+that synced nothing this tick — e.g. nothing was due — is a no-op), but a
+different transport: the desktop notification channel
+(``app.notifications.publish_notification`` → ``notify:{user}`` pub/sub →
+``app/api/notifications_ws.py``), not the webhook. The delivery layer wraps
+every frame as ``{"type": "notification", **payload}`` with the payload
+splatted AFTER the envelope key, so the payload must never carry a ``type``
+of its own; the event kind rides in ``kind``.
+That channel only ever addresses one user at a time — there is no
+instance-wide broadcast primitive — and the only two existing producers
+(the Telegram bot's script-run result, ``app.api.store._notify_author``)
+address a single already-known user (the requester / the entity owner). A
+sync has no such single owner, so this fans out by calling the same per-user
+primitive once per active user; delivery still degrades to a silent no-op
+for anyone with no live desktop socket, exactly like a single-user call
+would. ``publish_notification`` and ``users_repo`` are imported at module
+scope for the same reason ``httpx`` is: so tests can monkeypatch them here.
 """
 
 import logging
 
 import httpx  # noqa: F401  — re-exported so tests patch sync_notifier.httpx.post
+
+from app.notifications import publish_notification  # noqa: F401  — re-exported for monkeypatching
+from src.repositories import users_repo  # noqa: F401  — re-exported for monkeypatching
 
 logger = logging.getLogger(__name__)
 
@@ -94,3 +118,91 @@ def notify_sync_failure(
         # building the message or resolving config must not bubble into the
         # sync error handler.
         logger.exception("sync-failure webhook notification failed")
+
+
+def notify_sync_completed(synced_tables: dict[str, list[str]], *, error_count: int = 0) -> None:
+    """Best-effort desktop notification when a sync run lands fresh data.
+
+    ``synced_tables`` is ``{source_name: [table_names]}`` restricted to the
+    tables THIS run actually attempted and synced — NOT the orchestrator's
+    full rebuild result (``src.orchestrator.SyncOrchestrator.rebuild``
+    re-attaches every extract on disk, covering every table from every prior
+    sync too). The caller (``app.api.sync._run_sync``) narrows the rebuild
+    result down to this run's own extractor/materialized-pass output before
+    calling here — passing the raw rebuild result fired a "tables refreshed"
+    notification on every scheduler tick, even ticks where nothing was due
+    (review finding: notification spam).
+    ``error_count`` is the run's per-table failure total: a run with
+    failures that still synced some tables DID land fresh data, so the event
+    fires anyway but announces ``status="partial"`` + the count instead of
+    an unqualified success. No-op when nothing was synced this run (nothing
+    to report). Otherwise publishes one ``sync_completed`` event per source
+    to every active user's desktop notification channel (see the module
+    docstring for why "every active user" rather than a narrower
+    RBAC-scoped audience: today's ``publish_notification`` has no reverse
+    "who can see this table" lookup, and the payload itself carries only a
+    source name + table count, never table names or data).
+
+    Never raises — a dropped desktop notification is an acceptable
+    degradation (the analyst still gets fresh data on their next ``agnes
+    pull``), so a coordination-backend outage or a bad user row must not
+    fail the sync that triggered it.
+    """
+    try:
+        if not synced_tables:
+            return
+        status = "ok" if error_count == 0 else "partial"
+        for user in users_repo().list_all():
+            if not user.get("active", True):
+                continue
+            for source_name, table_names in synced_tables.items():
+                message = f"{source_name}: {len(table_names)} table(s) refreshed"
+                if error_count:
+                    message += f" ({error_count} table(s) failed this run)"
+                try:
+                    # Channel key: `user["id"]` — the `users` table UUID.
+                    # This is the SAME key `app.api.store._notify_author`
+                    # publishes on (`entity["owner_user_id"]`, itself set
+                    # from `user["id"]` at creation — see app/api/store.py),
+                    # and the key the desktop WS consumer will need to
+                    # `sub`-claim in its JWT to receive this (see
+                    # `notifications_ws.notifications_ws`: it subscribes
+                    # `notify:{payload["sub"]}`). We can't confirm that
+                    # against the minting side today — the interactive
+                    # desktop-app pairing flow that would issue a
+                    # DESKTOP_JWT_SECRET-signed token doesn't exist in this
+                    # repo yet (CHANGELOG: #412 is a partial step, CLI/pairing
+                    # not shipped) — so `users.id` is the best-aligned choice
+                    # available, not a verified one. The Telegram producer
+                    # (`services/telegram_bot/dispatch.py`) diverges — it
+                    # keys by Telegram `username`, not `users.id` — a known,
+                    # pre-existing inconsistency left untouched here.
+                    publish_notification(
+                        user["id"],
+                        {
+                            # "type" is RESERVED by the delivery envelope:
+                            # notifications_ws sends
+                            # {"type": "notification", **payload}, splatting
+                            # the payload AFTER the envelope key, so setting
+                            # it here would overwrite the marker and clients
+                            # dispatching on frame type would drop the event.
+                            # The event kind rides in "kind" instead — the
+                            # same field app.api.store's verification
+                            # notifications use.
+                            "kind": "sync_completed",
+                            "title": "Sync completed" if status == "ok" else "Sync completed with errors",
+                            "message": message,
+                            "source": source_name,
+                            "table_count": len(table_names),
+                            "status": status,
+                            "error_count": error_count,
+                        },
+                    )
+                except Exception:
+                    logger.warning(
+                        "sync-completed notification dropped for user %s, source %s",
+                        user.get("id"),
+                        source_name,
+                    )
+    except Exception:
+        logger.exception("sync-completed notifier failed")
