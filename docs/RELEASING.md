@@ -113,7 +113,7 @@ cd agnes-<topic> && git checkout -b zs/<branch-name>
 
 # 8. After auto-merge fires (poll or `Monitor`):
 #    git fetch origin --tags
-#    git tag vX.Y.Z <merge-sha>
+#    git tag vX.Y.Z <release-cut-sha>
 #    git push origin vX.Y.Z
 #    gh release create vX.Y.Z --repo keboola/agnes-the-ai-analyst \
 #      --title "vX.Y.Z — <...>" --notes "<copy-paste from CHANGELOG>"
@@ -121,7 +121,7 @@ cd agnes-<topic> && git checkout -b zs/<branch-name>
 #    OR, from an environment that cannot push tags (remote/CI-managed
 #    operator sessions commonly allow branch pushes but refuse
 #    refs/tags/*): dispatch the `Tag release` workflow instead —
-#    gh workflow run tag-release.yml -f tag=vX.Y.Z -f target=<merge-sha>
+#    gh workflow run tag-release.yml -f tag=vX.Y.Z -f target=<release-cut-sha>   # the commit that bumped pyproject: the squash/merge commit normally; for an unsquashed cut, the branch's cut commit itself, not the merge
 #    It validates server-side (tag shape, target on main, tag ==
 #    pyproject.toml version at the target, CHANGELOG section present),
 #    creates the tag ref via the API, and publishes the Release with the

@@ -55,7 +55,7 @@ The release-cut is never a standalone follow-up PR.
 
 After the PR with the release-cut is merged to `main`:
 
-1. `git tag vX.Y.Z <merge-sha>`
+1. `git tag vX.Y.Z <release-cut-sha>`
 2. `git push origin vX.Y.Z`
 3. `gh release create vX.Y.Z --title "vX.Y.Z" --notes "<CHANGELOG body for [X.Y.Z]>"`
 
@@ -67,7 +67,7 @@ creates the tag ref via the API, and publishes the Release with the
 CHANGELOG section as its body; re-dispatching is idempotent/repairing:
 
 ```
-gh workflow run tag-release.yml -f tag=vX.Y.Z -f target=<merge-sha>
+gh workflow run tag-release.yml -f tag=vX.Y.Z -f target=<release-cut-sha>  # the commit that bumped pyproject (squash/merge commit; for an unsquashed cut, the cut commit itself)
 ```
 
 Never tag or release before merge.

@@ -89,7 +89,7 @@ jobs:
           PARENT=$(git rev-parse -q --verify "$SHA^" || true)
           if [ -n "$PARENT" ] && git show "$PARENT:CHANGELOG.md" > /tmp/changelog-at-parent.md 2>/dev/null; then
             if grep -q "^## \[$VERSION\]" /tmp/changelog-at-parent.md; then
-              echo "::error::$SHA is not the release-cut commit for $VERSION — its parent already carries ## [$VERSION]. Pass target=<the merge commit that introduced the cut>."
+              echo "::error::$SHA is not the release-cut commit for $VERSION — its parent already carries ## [$VERSION]. Pass target=<the release-cut commit: the commit that bumped pyproject to $VERSION — the squash/merge commit on a squash-merged train, the branch's own cut commit when the cut merged unsquashed>."
               exit 1
             fi
           fi
