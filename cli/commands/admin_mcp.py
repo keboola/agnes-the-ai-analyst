@@ -379,6 +379,48 @@ def source_delete(
     typer.echo(f"Deleted MCP source {name_or_id} (id={src_id})")
 
 
+@source_app.command("grant")
+def source_grant(
+    name_or_id: str = typer.Argument(..., help="Source name or id (src_*)"),
+    group: str = typer.Option(..., "--group", help="User group id to grant (or revoke with --revoke)"),
+    revoke: bool = typer.Option(False, "--revoke", help="Revoke instead of grant"),
+):
+    """Grant (or revoke) a group EVERY tool registered under one source.
+
+    Per-tool grants suit an upstream curated a few tools at a time; a source
+    that arrives with its whole toolset — a connected Keboola project brings
+    around forty — is why this exists.
+    """
+    src_id = _resolve_source_id(name_or_id)
+    if revoke:
+        resp = api_delete(f"/api/admin/mcp-sources/{src_id}/grants/{group}")
+        if resp.status_code not in (200, 204):
+            _fail(resp)
+        typer.echo(f"Revoked group {group} from every tool of {name_or_id}")
+        return
+    resp = api_post(f"/api/admin/mcp-sources/{src_id}/grants", json={"group_id": group})
+    if resp.status_code not in (200, 201):
+        _fail(resp)
+    body = resp.json() if resp.content else {}
+    # "granted 0 of 37" and "granted 37 of 37" both read as success otherwise.
+    typer.echo(
+        f"Granted {body.get('granted', 0)} of {body.get('total', 0)} tools to {group}"
+        + (f" ({body['already_granted']} already granted)" if body.get("already_granted") else "")
+    )
+    # A grant does not reach a mutating tool: the passthrough gate refuses
+    # those for every non-admin anyway. Saying so beats the group finding out.
+    if body.get("skipped_disabled"):
+        typer.echo(
+            f"{body['skipped_disabled']} disabled tools were skipped — a grant on a "
+            "switched-off tool would take effect the moment someone re-enables it."
+        )
+    if body.get("admin_only"):
+        typer.echo(
+            f"{body['admin_only']} of them are mutating and stay admin-only — a grant "
+            "does not make those reachable for analysts."
+        )
+
+
 @source_app.command("set-secret")
 def source_set_secret(
     name_or_id: str = typer.Argument(..., help="Source name or id (src_*)"),
