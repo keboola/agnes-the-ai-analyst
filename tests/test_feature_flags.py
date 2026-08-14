@@ -96,6 +96,7 @@ class TestFeatureFlagsRegistry:
             "mcp_query_param_token",
             "mcp_session_pool",
             "mcp_source_url_strict",
+            "mcp_connector_ui",
             "agent_profiles",
         }
 
@@ -239,6 +240,7 @@ class TestServerConfigFeatureFlagsInventory:
             "mcp_query_param_token",
             "mcp_session_pool",
             "mcp_source_url_strict",
+            "mcp_connector_ui",
             "agent_profiles",
         }
         # The experience preset leads as a string-valued informational row.

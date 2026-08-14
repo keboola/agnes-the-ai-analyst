@@ -227,7 +227,7 @@ bash server/scripts/sync_data.sh
 ```
 
 This syncs:
-- `server/parquet/jira/` - Parquet tables (issues, comments, attachments metadata, changelog, issuelinks, remote_links)
+- `server/parquet/jira/` - Parquet tables (issues, comments, attachments metadata, changelog, issuelinks, remote_links, organizations)
 
 For attachment files, see [Attachment Access](#attachment-access) section below.
 
@@ -493,7 +493,103 @@ python -m connectors.jira.transform \
 
 # Copy to distribution directory
 cp -r /data/src_data/parquet/jira/* ~/server/parquet/jira/
+
+# The organizations dimension is not produced by the batch transform — the daily
+# refresh writes it to the extract tree. Copy it too, or analysts on the legacy
+# path get no jira_organizations view (sync_jira.sh skips an empty glob):
+cp -r /data/extracts/jira/data/organizations ~/server/parquet/jira/
 ```
+
+## Organizations Table (Daily Refresh)
+
+Tickets carry organization **ids** in `issues.organization_ids` (a JSON array — the Jira field is multi-valued). The `organizations` table resolves those ids to the organization's current name plus one column per organization detail field named in `JIRA_ORG_DETAIL_FIELDS`.
+
+**File:** `connectors/jira/organizations.py` · **Job kind:** `jira-org-refresh` · **Cadence:** `daily 05:00`
+
+**Why ids and not names.** `issues.organizations` holds names captured at ingest. Rename an organization and its existing tickets keep the old name, so a name join silently splits one customer into several. Ids do not change on rename.
+
+**Why a table and not a column on `issues`.** A detail value belongs to the organization, not the ticket. Denormalizing it would freeze a copy per ticket, so correcting a detail later would leave all history wrong until a full re-transform. One row here fixes every ticket retroactively.
+
+**Configuration** (no defaults — detail ids are per-instance):
+
+```bash
+JIRA_ORG_DETAIL_FIELDS=38:crm_account_id,41:region
+```
+
+Each key is matched against a detail's `id` first, then its `name`. Prefer the id: it survives a rename of the detail field. An alias colliding with a built-in column (`org_id`, `name`) is prefixed `detail_`, as is an entry with no usable alias.
+
+**Discovering detail ids.** Only the per-organization endpoint returns them:
+
+```
+GET https://api.atlassian.com/jsm/csm/cloudid/{cloudId}/api/v1/organization/{orgId}
+  -> {"id": "...", "name": "...", "details": [{"id": "38", "name": "CRM ID", "values": ["..."]}]}
+```
+
+`GET /organization/details` and `POST /organization/profile/fetch` return detail **names only**, which is why the refresh makes one request per organization instead of batching 25 at a time — batching would force matching on the label. At a daily cadence the extra requests do not matter. Enumeration uses `GET /rest/servicedeskapi/organization` (paginated) because CSM exposes no list operation: `GET /organization` answers 405, and `POST` there *creates* an organization.
+
+**Failure semantics.** Enumeration failure aborts before any write — a partial list is indistinguishable from organizations having been deleted. A per-organization fetch failure carries the previous row forward, so a transient 429 or 5xx costs freshness but never data. Only a 404 (organization gone) drops a row.
+
+A sweep that would drop more than half the existing rows is refused rather than published, and logs what to check. Rows disappear in two ways that never show up in the failure count: an enumerated organization 404ing on the CSM read — which means enumerated-but-unreadable (a wrong `JIRA_CLOUD_ID`, or an account without Customer Service Management access), since a genuinely deleted organization is simply absent from enumeration — and a short enumeration losing organizations by omission. The guard does not clear itself: if the removals are real, re-run with `--force`.
+
+**When the refresh refuses.** Five outcomes leave the existing rows standing rather than publishing, and each one fails the job (visible in job history) instead of finishing green:
+
+| `skipped_reason` | Meaning | Clears itself? |
+|---|---|---|
+| `existing_unreadable` | the current table could not be read, so there is no baseline | yes, once the parquet reads |
+| `cloud_id_unresolved` | the site's cloud id could not be resolved, so nothing can be read | yes, once reachable |
+| `all_fetches_failed` | nothing fresh resolved | yes, once the API recovers |
+| `enumeration_empty` | enumeration returned nothing while the table holds rows | **no** — `--force` |
+| `mass_removal_guard` | the sweep would drop more than half the rows | **no** — `--force` |
+
+The last two do not clear themselves: they deliberately leave the rows in place, so the next run sees the same state and refuses again. `--force` publishes anyway — including publishing an *empty* table when every organization really was deleted, which is the recovery on a site that has legitimately removed all of them. `jira_not_configured` is not in this list: an instance without Jira ingest skips the job rather than failing it.
+
+**Layout.** Unpartitioned: a single `data/organizations/data.parquet`, written temp-then-`os.replace()` so a reader never sees a truncated file. The extract view uses `union_by_name=true` but no `hive_partitioning` — there is no partition key, because an organization has one current state rather than a history.
+
+```bash
+# Manual run
+python -m connectors.jira.organizations
+
+# Enumerate only, no fetch or write
+python -m connectors.jira.organizations --dry-run
+
+# Publish anyway when the mass-removal guard fires and the removals are real
+python -m connectors.jira.organizations --force
+```
+
+### Backfilling `issues.organization_ids` on an existing install
+
+The `organizations` table needs no backfill — it is current-state, so the first refresh populates it completely. `issues.organization_ids` is different: it is written by the transform, so partitions produced before this shipped read NULL and those tickets will not join. Nothing errors; the join just silently covers recent tickets only.
+
+The ids are already in the stored raw issue JSON, so no re-fetch from Jira is needed. Re-running the batch transform over the existing raw files is enough. Note this is a **full re-transform of all six partitioned tables**, not an `issues`-only operation — omitting `--attachments-dir` would rewrite all of `attachments` history with `local_path = NULL`:
+
+```bash
+python -m connectors.jira.transform \
+  --raw-dir /data/src_data/raw/jira \
+  --output-dir /data/extracts/jira/data \
+  --attachments-dir /data/src_data/raw/jira/attachments
+```
+
+Then check the backfilled history reaches as far back as `issues` itself does — the `FILTER` on `min`/`max` is what makes this catch an incomplete backfill (unfiltered, they always report the full range of `issues`, backfilled or not):
+
+```sql
+SELECT min(month) FILTER (WHERE organization_ids IS NOT NULL) AS earliest_backfilled,
+       max(month) FILTER (WHERE organization_ids IS NOT NULL) AS latest_backfilled,
+       count(*) FILTER (WHERE organization_ids IS NOT NULL) AS with_ids
+FROM issues;
+```
+
+`earliest_backfilled` should be the earliest month in `issues` (compare `SELECT min(month) FROM issues`), not the month this was deployed. A re-transformed row always carries a non-NULL value — `'[]'` when the ticket has no organizations — so NULL means the partition has not been re-transformed yet.
+
+Joining a ticket to its organizations, keeping tickets that have none. The `LEFT JOIN LATERAL … ON true` is load-bearing: a bare `FROM issues i, UNNEST(…)` is an *inner* lateral join, so a ticket whose `organization_ids` is `'[]'` or NULL produces zero unnest rows and silently disappears no matter what the later join says:
+
+```sql
+SELECT i.issue_key, o.name, o.crm_account_id
+FROM issues i
+LEFT JOIN LATERAL UNNEST(from_json(i.organization_ids, '["VARCHAR"]')) AS t(org_id) ON true
+LEFT JOIN organizations o ON o.org_id = t.org_id;
+```
+
+Use the comma form only when you deliberately want organization-bearing tickets alone.
 
 ## Field Refresh Polling (Open Tickets)
 
@@ -544,24 +640,44 @@ WHERE first_response IS NOT NULL
 ## Analyst Sync Configuration
 
 Whether an analyst sees Jira tables locally is decided server-side: an admin
-must register the Jira tables and grant the analyst's group access via
-`resource_grants(resource_type='table')`. Once granted, the manifest
-advertises the tables and `agnes pull` downloads the parquets to the
-analyst's workspace on the next session.
+must register the Jira tables, add them to a data package, and grant the
+package to one of the analyst's groups (per-table
+`resource_grants(resource_type='table')` rows are no longer consulted for
+analyst visibility — see `src/rbac.py`). Once the package is in the analyst's
+stack — automatically when the grant is marked required, otherwise after the
+analyst subscribes via `agnes stack add data_package <id>` — the manifest advertises the tables
+and `agnes pull` downloads the parquets to the analyst's workspace on the
+next session.
 
-DuckDB views for Jira tables are created automatically if data exists:
-- `jira_issues` — main issues table
-- `jira_comments` — issue comments
-- `jira_attachments` — attachment metadata (filenames, sizes, URLs)
-- `jira_changelog` — field change history
-- `jira_issuelinks` — links between issues (blocks, duplicates, relates to)
-- `jira_remote_links` — external links (Confluence, Slack, etc.)
+Views are created automatically for whichever tables have data. **They are named
+after the table, with no `jira_` prefix** — the master view is claimed on the bare
+`_meta` table name (`src/orchestrator.py`, `CREATE OR REPLACE VIEW <table_name>`),
+so this is what to query:
+
+- `issues` — main issues table
+- `comments` — issue comments
+- `attachments` — attachment metadata (filenames, sizes, URLs)
+- `changelog` — field change history
+- `issuelinks` — links between issues (blocks, duplicates, relates to)
+- `remote_links` — external links (Confluence, Slack, etc.)
+- `organizations` — one row per JSM organization: id, current name, and any
+  configured detail fields (see "Organizations Table" above)
+
+```bash
+agnes query "SELECT count(*) FROM issues"
+```
+
+The `jira_`-prefixed names (`jira_issues`, `jira_comments`, …) belong to the legacy
+Data Broker path only: `connectors/jira/scripts/sync_jira.sh` creates them in an
+analyst's local `user/duckdb/analytics.duckdb` after an rsync. They are not what a
+server-side `agnes query` resolves.
 
 ## Attachment Access
 
 Attachments (images, logs, PDFs) are stored on the server alongside parquet
 data and are **not** distributed via `agnes pull` (the manifest only
-advertises parquet tables). The `jira_attachments` table has a `local_path`
+advertises parquet tables). The `attachments` catalogue table (the
+connector's table names are unprefixed) has a `local_path`
 column with the server-side filesystem path:
 
 ```sql
@@ -570,7 +686,7 @@ SELECT
     filename,
     local_path,
     size_bytes
-FROM jira_attachments
+FROM attachments
 WHERE issue_key = 'SUPPORT-1234';
 ```
 
@@ -580,11 +696,55 @@ issue_key     | filename        | local_path                                    
 SUPPORT-1234  | screenshot.png  | /data/src_data/raw/jira/attachments/SUPPORT-1234/... | 45678
 ```
 
-To pull the actual file to a workstation, operators with SSH access to the
-host can `scp` / `rsync` from the path above. Public OSS does not ship a
-client-side attachment-fetch primitive — wire one up per deployment if
-attachment access is required (e.g. a thin admin endpoint that streams the
-file with the same RBAC gate as the parquet table).
+To pull the actual file to a workstation, fetch it by id over the
+authenticated API — no SSH to the host required:
+
+```bash
+agnes attachment get jira 56340            # writes the original filename
+agnes attachment get jira 56340 -o img.png
+```
+
+(`GET /api/attachments/jira/{attachment_id}/download` underneath.) The gate
+is read access to the `attachments` catalogue table — the same RBAC as the
+parquet download — and every fetch is audited.
+
+Setup note: the parquet pipeline itself never requires the metadata-only
+`attachments` table to be *registered*, so on many deployments it is not —
+and an unregistered table fails closed, meaning analysts get the
+table-not-in-your-stack 403 until an admin registers `attachments`
+(`POST /api/admin/register-table` or `/admin/tables`) and adds it to a data
+package granted to their group. Admins pass via god-mode either way. A 404 with code
+`attachment_not_stored` means the catalogue row exists but the server holds
+no bytes (over-50MB skip or transform-time miss): fall back to the Jira REST
+API for exactly those.
+
+Both attachment publishers pin the published file's mode to `0o660` (group
+rw, no world-read) — the same pin the connector's issue-JSON writer uses.
+That assumes the documented storage setup: the serving process shares the
+data group (`data-ops` in the recipes above, or an equivalent POSIX ACL)
+with whatever wrote the file — the webhook writer IS the API process, but
+the batch backfill runs as `root:data-ops`, so an API process outside that
+group gets `EACCES` on backfill-written files. That misconfiguration is
+deliberately loud, not a silent miss: every fetch answers 503
+`attachment_unreadable` with a server-log warning naming the path — align
+the groups (or the ACL) rather than widening the file mode; world-readable
+attachments were rejected in review.
+
+Rollout note for existing deployments: `local_path` is written at
+*transform* time, and the webhook path historically ran its transform
+BEFORE the attachment download (worker-timeout rationale) — so attachments
+first ingested via a single webhook event carry `local_path = NULL` even
+though the bytes are on disk, and the endpoint answers
+`attachment_not_stored` for them. New events heal their own issue (the
+webhook now re-transforms after a download actually lands new files), but
+history does not heal itself: after upgrading, run the one-off full
+re-transform from the backfill section above — **with `--attachments-dir`**,
+which is also mandatory for any batch invocation; omitting it rewrites the
+whole `attachments` history with `local_path = NULL` and produces a
+catalogue this endpoint can never serve from. The catalogue declaration (table, id/path columns,
+permitted root) lives in `src/attachment_sources.py`; any connector that
+stores attachments adds its own declaration there and reuses the same
+route and CLI command.
 
 ## Future Improvements
 
@@ -594,4 +754,6 @@ file with the same RBAC gate as the parquet table).
 - [x] ~~SLA polling for open tickets~~ (Implemented: jira_poll_sla.py, 15min timer)
 - [ ] Comment attachment extraction (inline images in ADF)
 - [ ] Custom field name resolution from Jira metadata API
-- [ ] Attachment binary sync to analysts (currently metadata only)
+- [x] ~~Attachment binary access for analysts~~ (Implemented: lazy per-id fetch via
+  `agnes attachment get jira <id>` / `GET /api/attachments/jira/{id}/download` —
+  deliberately not manifest sync, so no analyst carries a multi-GB mirror)

@@ -15,9 +15,9 @@ import math
 import os
 import re
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import duckdb
 import yaml
@@ -100,7 +100,7 @@ METRICS_DIR = DOCS_DIR / "metrics"
 DATA_DESCRIPTION_PATH = DOCS_DIR / "data_description.md"
 
 
-def _load_metrics_from_db() -> Dict[str, List[str]]:
+def _load_metrics_from_db() -> dict[str, list[str]]:
     """Load metrics table map from DuckDB. Returns empty dict on failure."""
     try:
         # Backend-aware: metric definitions live in the active backend
@@ -115,70 +115,96 @@ def _load_metrics_from_db() -> Dict[str, List[str]]:
 
 # Jira tables - loaded dynamically if Jira connector is enabled
 # The Jira connector stores partitioned parquet files in PARQUET_DIR/jira/
+# Module-level so layout metadata is testable without the parquet directory
+# existing; _load_jira_tables() serves it only when the connector dir is present.
+_JIRA_TABLE_DEFS: list = [
+    {
+        "name": "jira_issues",
+        "subdir": "issues",
+        "description": "Jira issues. Key fields: issue_key, summary, description, status, priority, assignee, created_at, resolved_at.",
+        "primary_key": "issue_key",
+        "foreign_keys": [
+            {
+                "column": "organization_ids",
+                "references": "jira_organizations.org_id",
+                "description": (
+                    "Organizations on the ticket, as a JSON array of ids because the "
+                    "field is multi-valued — UNNEST before joining. Join on these rather "
+                    "than on the names in `organizations`, which are captured at ingest "
+                    "and drift whenever an organization is renamed."
+                ),
+            }
+        ],
+    },
+    {
+        "name": "jira_comments",
+        "subdir": "comments",
+        "description": "Comments on Jira issues. Key fields: comment_id, issue_key, author_email, body, created_at.",
+        "primary_key": "comment_id",
+        "foreign_keys": [{"column": "issue_key", "references": "jira_issues.issue_key", "description": "Parent issue"}],
+    },
+    {
+        "name": "jira_attachments",
+        "subdir": "attachments",
+        "description": "Attachment metadata with local file paths. Key fields: attachment_id, issue_key, filename, local_path, size_bytes, mime_type.",
+        "primary_key": "attachment_id",
+        "foreign_keys": [{"column": "issue_key", "references": "jira_issues.issue_key", "description": "Parent issue"}],
+    },
+    {
+        "name": "jira_changelog",
+        "subdir": "changelog",
+        "description": "History of all field changes on issues. Key fields: change_id, issue_key, field_name, from_value, to_value, changed_at.",
+        "primary_key": "change_id",
+        "foreign_keys": [{"column": "issue_key", "references": "jira_issues.issue_key", "description": "Parent issue"}],
+    },
+    {
+        "name": "jira_issuelinks",
+        "subdir": "issuelinks",
+        "description": "Links between Jira issues (blocks, duplicates, relates to). Key fields: issue_key, link_id, link_type, direction, linked_issue_key.",
+        "primary_key": "link_id",
+        "foreign_keys": [
+            {"column": "issue_key", "references": "jira_issues.issue_key", "description": "Source issue"},
+            {
+                "column": "linked_issue_key",
+                "references": "jira_issues.issue_key",
+                "description": "Target linked issue",
+            },
+        ],
+    },
+    {
+        "name": "jira_remote_links",
+        "subdir": "remote_links",
+        "description": "External links attached to issues (Confluence pages, Slack threads, etc.). Key fields: issue_key, remote_link_id, url, title.",
+        "primary_key": "remote_link_id",
+        "foreign_keys": [{"column": "issue_key", "references": "jira_issues.issue_key", "description": "Parent issue"}],
+    },
+    {
+        "name": "jira_organizations",
+        "subdir": "organizations",
+        # Current state, not an event stream: one row per organization, unpartitioned,
+        # refreshed from the organization API rather than derived from issue JSON.
+        "description": (
+            "JSM organizations, current state — one row each, refreshed daily from the "
+            "organization API. Key fields: org_id, name, plus one column per organization "
+            "detail field the operator configured (JIRA_ORG_DETAIL_FIELDS), e.g. an account "
+            "id in a CRM or billing system. This is the join target for "
+            "jira_issues.organization_ids."
+        ),
+        "primary_key": "org_id",
+        "foreign_keys": [],
+        # Single unpartitioned data.parquet, rewritten wholesale each refresh —
+        # no created_at column and no month= directories to advertise.
+        "partitioned": False,
+    },
+]
+
+
 def _load_jira_tables() -> tuple:
     """Load Jira table definitions if the connector directory exists."""
     jira_dir = PARQUET_DIR / "jira"
     if not jira_dir.exists():
         return jira_dir, []
-    return jira_dir, [
-        {
-            "name": "jira_issues",
-            "subdir": "issues",
-            "description": "Jira issues. Key fields: issue_key, summary, description, status, priority, assignee, created_at, resolved_at.",
-            "primary_key": "issue_key",
-            "foreign_keys": [],
-        },
-        {
-            "name": "jira_comments",
-            "subdir": "comments",
-            "description": "Comments on Jira issues. Key fields: comment_id, issue_key, author_email, body, created_at.",
-            "primary_key": "comment_id",
-            "foreign_keys": [
-                {"column": "issue_key", "references": "jira_issues.issue_key", "description": "Parent issue"}
-            ],
-        },
-        {
-            "name": "jira_attachments",
-            "subdir": "attachments",
-            "description": "Attachment metadata with local file paths. Key fields: attachment_id, issue_key, filename, local_path, size_bytes, mime_type.",
-            "primary_key": "attachment_id",
-            "foreign_keys": [
-                {"column": "issue_key", "references": "jira_issues.issue_key", "description": "Parent issue"}
-            ],
-        },
-        {
-            "name": "jira_changelog",
-            "subdir": "changelog",
-            "description": "History of all field changes on issues. Key fields: change_id, issue_key, field_name, from_value, to_value, changed_at.",
-            "primary_key": "change_id",
-            "foreign_keys": [
-                {"column": "issue_key", "references": "jira_issues.issue_key", "description": "Parent issue"}
-            ],
-        },
-        {
-            "name": "jira_issuelinks",
-            "subdir": "issuelinks",
-            "description": "Links between Jira issues (blocks, duplicates, relates to). Key fields: issue_key, link_id, link_type, direction, linked_issue_key.",
-            "primary_key": "link_id",
-            "foreign_keys": [
-                {"column": "issue_key", "references": "jira_issues.issue_key", "description": "Source issue"},
-                {
-                    "column": "linked_issue_key",
-                    "references": "jira_issues.issue_key",
-                    "description": "Target linked issue",
-                },
-            ],
-        },
-        {
-            "name": "jira_remote_links",
-            "subdir": "remote_links",
-            "description": "External links attached to issues (Confluence pages, Slack threads, etc.). Key fields: issue_key, remote_link_id, url, title.",
-            "primary_key": "remote_link_id",
-            "foreign_keys": [
-                {"column": "issue_key", "references": "jira_issues.issue_key", "description": "Parent issue"}
-            ],
-        },
-    ]
+    return jira_dir, _JIRA_TABLE_DEFS
 
 
 JIRA_PARQUET_DIR, JIRA_TABLES = _load_jira_tables()
@@ -190,7 +216,7 @@ JIRA_PARQUET_DIR, JIRA_TABLES = _load_jira_tables()
 class ForeignKeyInfo:
     """Foreign key definition from data_description.md."""
 
-    def __init__(self, column: str, references: str, description: Optional[str] = None):
+    def __init__(self, column: str, references: str, description: str | None = None):
         self.column = column
         self.references = references
         self.description = description
@@ -206,9 +232,9 @@ class TableInfo:
         description: str = "",
         primary_key: str = "",
         sync_strategy: str = "none",
-        foreign_keys: Optional[List[ForeignKeyInfo]] = None,
-        partition_by: Optional[str] = None,
-        partition_granularity: Optional[str] = None,
+        foreign_keys: list[ForeignKeyInfo] | None = None,
+        partition_by: str | None = None,
+        partition_granularity: str | None = None,
     ):
         self.id = table_id
         self.name = name
@@ -219,7 +245,7 @@ class TableInfo:
         self.partition_by = partition_by
         self.partition_granularity = partition_granularity
 
-    def get_primary_key_columns(self) -> List[str]:
+    def get_primary_key_columns(self) -> list[str]:
         if not self.primary_key:
             return []
         return [col.strip() for col in self.primary_key.split(",")]
@@ -230,6 +256,36 @@ class TableInfo:
         if self.sync_strategy == "incremental" and self.partition_by:
             return True
         return False
+
+
+def _jira_table_info(jt: dict) -> TableInfo:
+    """TableInfo for one ``_load_jira_tables()`` entry, honoring its layout.
+
+    Most Jira tables are month-partitioned event streams; an entry carrying
+    ``partitioned: False`` is a current-state dimension stored as a single
+    unpartitioned parquet, rewritten wholesale each refresh. Stamping every
+    entry with the same partition metadata advertised a monthly history and a
+    ``created_at`` column the flat table does not have (Devin Review on #1274).
+    """
+    partitioned = jt.get("partitioned", True)
+    fk_list = [
+        ForeignKeyInfo(
+            column=fk["column"],
+            references=fk["references"],
+            description=fk.get("description"),
+        )
+        for fk in jt.get("foreign_keys", [])
+    ]
+    return TableInfo(
+        table_id=f"jira.{jt['name']}",
+        name=jt["name"],
+        description=jt["description"],
+        primary_key=jt["primary_key"],
+        sync_strategy="partitioned" if partitioned else "full_refresh",
+        foreign_keys=fk_list,
+        partition_by="created_at" if partitioned else None,
+        partition_granularity="month" if partitioned else None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -325,7 +381,7 @@ def write_json_atomic(path: Path, data: Any) -> None:
 # ---------------------------------------------------------------------------
 # Metadata loading
 # ---------------------------------------------------------------------------
-def parse_data_description(path: Path) -> Tuple[List[TableInfo], Dict[str, str]]:
+def parse_data_description(path: Path) -> tuple[list[TableInfo], dict[str, str]]:
     """Parse data_description.md and return (tables, folder_mapping)."""
     if not path.exists():
         logger.warning("data_description.md not found at %s", path)
@@ -335,8 +391,8 @@ def parse_data_description(path: Path) -> Tuple[List[TableInfo], Dict[str, str]]
     yaml_pattern = r"```yaml\n(.*?)```"
     yaml_matches = re.findall(yaml_pattern, content, re.DOTALL)
 
-    all_tables: List[TableInfo] = []
-    folder_mapping: Dict[str, str] = {}
+    all_tables: list[TableInfo] = []
+    folder_mapping: dict[str, str] = {}
 
     for block in yaml_matches:
         try:
@@ -375,7 +431,7 @@ def parse_data_description(path: Path) -> Tuple[List[TableInfo], Dict[str, str]]
     return all_tables, folder_mapping
 
 
-def load_sync_state(path: Path) -> Dict[str, Any]:
+def load_sync_state(path: Path) -> dict[str, Any]:
     """Load sync_state.json and return dict keyed by table_id."""
     if not path.exists():
         logger.warning("sync_state.json not found at %s", path)
@@ -388,13 +444,13 @@ def load_sync_state(path: Path) -> Dict[str, Any]:
         return {}
 
 
-def load_metrics(path: Path) -> Dict[str, List[str]]:
+def load_metrics(path: Path) -> dict[str, list[str]]:
     """Scan individual metric YAML files and return {table_name: [metric_name, ...]}.
 
     Scans individual category YAML files in docs/metrics/*/*.yml for table references.
     The path argument can be either docs/metrics.yml (legacy) or docs/metrics/ directory.
     """
-    table_metrics: Dict[str, List[str]] = {}
+    table_metrics: dict[str, list[str]] = {}
 
     # Resolve to the metrics directory (docs/metrics/)
     if path.is_file() or path.name == "metrics.yml":
@@ -435,9 +491,9 @@ def load_metrics(path: Path) -> Dict[str, List[str]]:
     return table_metrics
 
 
-def load_metric_file_map(path: Path) -> Dict[str, str]:
+def load_metric_file_map(path: Path) -> dict[str, str]:
     """Return {metric_name: 'category/file.yml'} for linking metrics in the UI."""
-    metric_files: Dict[str, str] = {}
+    metric_files: dict[str, str] = {}
     if path.is_file() or path.name == "metrics.yml":
         metrics_dir = path.parent / "metrics"
     else:
@@ -462,7 +518,7 @@ def load_metric_file_map(path: Path) -> Dict[str, str]:
     return metric_files
 
 
-def get_parquet_path(table: TableInfo, folder_mapping: Dict[str, str]) -> Path:
+def get_parquet_path(table: TableInfo, folder_mapping: dict[str, str]) -> Path:
     """Compute the Parquet file/directory path for a table.
 
     Tries subfolder path first (Keboola-style: parquet/<folder>/<table>.parquet),
@@ -489,9 +545,9 @@ def get_parquet_path(table: TableInfo, folder_mapping: Dict[str, str]) -> Path:
 # ---------------------------------------------------------------------------
 # Related tables enrichment
 # ---------------------------------------------------------------------------
-def compute_related_tables(table: TableInfo, all_tables: List[TableInfo]) -> List[Dict[str, str]]:
+def compute_related_tables(table: TableInfo, all_tables: list[TableInfo]) -> list[dict[str, str]]:
     """Build related_tables list from foreign key metadata (both directions)."""
-    related: List[Dict[str, str]] = []
+    related: list[dict[str, str]] = []
 
     # Outgoing: this table's foreign keys
     for fk in table.foreign_keys:
@@ -533,7 +589,7 @@ def compute_related_tables(table: TableInfo, all_tables: List[TableInfo]) -> Lis
 # ---------------------------------------------------------------------------
 # Metrics referencing a table
 # ---------------------------------------------------------------------------
-def get_metrics_for_table(table_name: str, metrics_map: Dict[str, List[str]]) -> List[str]:
+def get_metrics_for_table(table_name: str, metrics_map: dict[str, list[str]]) -> list[str]:
     """Return list of metric names that reference a given table."""
     return sorted(set(metrics_map.get(table_name, [])))
 
@@ -544,8 +600,8 @@ def get_metrics_for_table(table_name: str, metrics_map: Dict[str, List[str]]) ->
 def _batch_base_stats(
     con: duckdb.DuckDBPyConnection,
     view_name: str,
-    columns: List[str],
-) -> Dict[str, Tuple[int, int]]:
+    columns: list[str],
+) -> dict[str, tuple[int, int]]:
     """Get non_null and unique counts for all columns in a single query.
 
     Returns: {col_name: (non_null_count, unique_count)}
@@ -562,7 +618,7 @@ def _batch_base_stats(
     sql = f"SELECT {', '.join(parts)} FROM {view_name}"
     row = con.execute(sql).fetchone()
 
-    result: Dict[str, Tuple[int, int]] = {}
+    result: dict[str, tuple[int, int]] = {}
     idx = 0
     for col_name in columns:
         result[col_name] = (row[idx], row[idx + 1])
@@ -573,8 +629,8 @@ def _batch_base_stats(
 def _batch_numeric_stats(
     con: duckdb.DuckDBPyConnection,
     view_name: str,
-    numeric_cols: List[str],
-) -> Dict[str, Dict[str, Any]]:
+    numeric_cols: list[str],
+) -> dict[str, dict[str, Any]]:
     """Get aggregate statistics for all numeric columns in a single query.
 
     DuckDB aggregations ignore NULLs, so no WHERE filter needed.
@@ -604,7 +660,7 @@ def _batch_numeric_stats(
     sql = f"SELECT {', '.join(parts)} FROM {view_name}"
     row = con.execute(sql).fetchone()
 
-    result: Dict[str, Dict[str, Any]] = {}
+    result: dict[str, dict[str, Any]] = {}
     idx = 0
     for col_name in numeric_cols:
         result[col_name] = {
@@ -627,8 +683,8 @@ def _batch_numeric_stats(
 def _batch_string_stats(
     con: duckdb.DuckDBPyConnection,
     view_name: str,
-    string_cols: List[str],
-) -> Dict[str, Dict[str, Any]]:
+    string_cols: list[str],
+) -> dict[str, dict[str, Any]]:
     """Get string length statistics for all string columns in a single query.
 
     LENGTH(NULL) returns NULL which aggregations skip automatically.
@@ -650,7 +706,7 @@ def _batch_string_stats(
     sql = f"SELECT {', '.join(parts)} FROM {view_name}"
     row = con.execute(sql).fetchone()
 
-    result: Dict[str, Dict[str, Any]] = {}
+    result: dict[str, dict[str, Any]] = {}
     idx = 0
     for col_name in string_cols:
         result[col_name] = {
@@ -665,9 +721,9 @@ def _batch_string_stats(
 def _batch_date_stats(
     con: duckdb.DuckDBPyConnection,
     view_name: str,
-    date_cols: List[str],
-    category_map: Dict[str, str],
-) -> Dict[str, Dict[str, Any]]:
+    date_cols: list[str],
+    category_map: dict[str, str],
+) -> dict[str, dict[str, Any]]:
     """Get date range statistics for all date/timestamp columns in a single query."""
     if not date_cols:
         return {}
@@ -686,7 +742,7 @@ def _batch_date_stats(
     sql = f"SELECT {', '.join(parts)} FROM {view_name}"
     row = con.execute(sql).fetchone()
 
-    result: Dict[str, Dict[str, Any]] = {}
+    result: dict[str, dict[str, Any]] = {}
     idx = 0
     for col_name in date_cols:
         earliest = row[idx]
@@ -710,8 +766,8 @@ def _batch_date_stats(
 def _batch_boolean_stats(
     con: duckdb.DuckDBPyConnection,
     view_name: str,
-    bool_cols: List[str],
-) -> Dict[str, Dict[str, Any]]:
+    bool_cols: list[str],
+) -> dict[str, dict[str, Any]]:
     """Get boolean true/false counts for all boolean columns in a single query."""
     if not bool_cols:
         return {}
@@ -729,7 +785,7 @@ def _batch_boolean_stats(
     sql = f"SELECT {', '.join(parts)} FROM {view_name}"
     row = con.execute(sql).fetchone()
 
-    result: Dict[str, Dict[str, Any]] = {}
+    result: dict[str, dict[str, Any]] = {}
     idx = 0
     for col_name in bool_cols:
         true_count = int(row[idx]) if row[idx] is not None else 0
@@ -750,11 +806,11 @@ def _batch_boolean_stats(
 def profile_table(
     table: TableInfo,
     parquet_path: Path,
-    all_tables: List[TableInfo],
-    sync_state: Dict[str, Any],
-    metrics_map: Dict[str, List[str]],
-    metric_file_map: Optional[Dict[str, str]] = None,
-) -> Dict[str, Any]:
+    all_tables: list[TableInfo],
+    sync_state: dict[str, Any],
+    metrics_map: dict[str, list[str]],
+    metric_file_map: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """Profile a single table and return its complete profile dict.
 
     Optimized flow:
@@ -812,13 +868,13 @@ def profile_table(
     pk_columns = table.get_primary_key_columns()
 
     # Classify columns by type
-    all_col_names: List[str] = []
-    type_map: Dict[str, str] = {}
-    category_map: Dict[str, str] = {}
-    numeric_cols: List[str] = []
-    string_cols: List[str] = []
-    date_cols: List[str] = []
-    bool_cols: List[str] = []
+    all_col_names: list[str] = []
+    type_map: dict[str, str] = {}
+    category_map: dict[str, str] = {}
+    numeric_cols: list[str] = []
+    string_cols: list[str] = []
+    date_cols: list[str] = []
+    bool_cols: list[str] = []
 
     for col_row in col_info:
         col_name = col_row[0]
@@ -839,36 +895,36 @@ def profile_table(
     # ---- Batch queries (one scan per type category) ----
     base_stats = _batch_base_stats(con, view_name, all_col_names)
 
-    numeric_batch: Dict[str, Dict[str, Any]] = {}
+    numeric_batch: dict[str, dict[str, Any]] = {}
     try:
         numeric_batch = _batch_numeric_stats(con, view_name, numeric_cols)
     except Exception as exc:
         logger.warning("Batch numeric stats failed: %s", exc)
 
-    string_batch: Dict[str, Dict[str, Any]] = {}
+    string_batch: dict[str, dict[str, Any]] = {}
     try:
         string_batch = _batch_string_stats(con, view_name, string_cols)
     except Exception as exc:
         logger.warning("Batch string stats failed: %s", exc)
 
-    date_batch: Dict[str, Dict[str, Any]] = {}
+    date_batch: dict[str, dict[str, Any]] = {}
     try:
         date_batch = _batch_date_stats(con, view_name, date_cols, category_map)
     except Exception as exc:
         logger.warning("Batch date stats failed: %s", exc)
 
-    boolean_batch: Dict[str, Dict[str, Any]] = {}
+    boolean_batch: dict[str, dict[str, Any]] = {}
     try:
         boolean_batch = _batch_boolean_stats(con, view_name, bool_cols)
     except Exception as exc:
         logger.warning("Batch boolean stats failed: %s", exc)
 
     # ---- Build column profiles ----
-    columns: List[Dict[str, Any]] = []
-    variable_types: Dict[str, int] = {}
+    columns: list[dict[str, Any]] = []
+    variable_types: dict[str, int] = {}
     total_null_count = 0
     total_cells = working_rows * len(col_info) if col_info else 0
-    first_date_col: Optional[Dict[str, Any]] = None
+    first_date_col: dict[str, Any] | None = None
 
     for col_name in all_col_names:
         col_type = type_map[col_name]
@@ -885,7 +941,7 @@ def profile_table(
         is_pk = col_name in pk_columns
 
         # Sample values (per-column, fast on materialized table)
-        sample_values: List[str] = []
+        sample_values: list[str] = []
         try:
             rows = con.execute(
                 f"""
@@ -900,7 +956,7 @@ def profile_table(
             pass
 
         # Alerts
-        alerts: List[str] = []
+        alerts: list[str] = []
         if unique_count == 1 and null_count == 0:
             alerts.append("constant")
         if unique_pct == 100.0 and null_count == 0 and non_null > 0:
@@ -910,7 +966,7 @@ def profile_table(
         elif missing_pct > ALERT_MISSING_PCT:
             alerts.append("missing")
 
-        col_profile: Dict[str, Any] = {
+        col_profile: dict[str, Any] = {
             "name": col_name,
             "type": col_type,
             "type_category": category,
@@ -938,7 +994,7 @@ def profile_table(
                     alerts.append("zeros")
 
                 # Histogram (per-column — each has different width_bucket ranges)
-                histogram: Dict[str, Any] = {"bins": [], "counts": []}
+                histogram: dict[str, Any] = {"bins": [], "counts": []}
                 if min_val is not None and max_val is not None and min_val != max_val:
                     try:
                         bucket_rows = con.execute(
@@ -959,8 +1015,8 @@ def profile_table(
                         ).fetchall()
 
                         bin_width = (float(max_val) - float(min_val)) / HISTOGRAM_BINS
-                        bin_labels: List[str] = []
-                        bin_counts: List[int] = []
+                        bin_labels: list[str] = []
+                        bin_counts: list[int] = []
                         bucket_dict = {int(r[0]): int(r[1]) for r in bucket_rows if r[0] is not None}
                         for i in range(1, HISTOGRAM_BINS + 1):
                             lo = float(min_val) + (i - 1) * bin_width
@@ -992,7 +1048,7 @@ def profile_table(
                 sl = string_batch[col_name]
                 is_categorical = unique_count <= MAX_CATEGORICAL_DISTINCT
 
-                top_values: List[Dict[str, Any]] = []
+                top_values: list[dict[str, Any]] = []
                 if is_categorical and non_null > 0:
                     rows = con.execute(
                         f"""
@@ -1082,7 +1138,7 @@ def profile_table(
             logger.debug("Duplicate check failed for %s: %s", table.name, exc)
 
     # Sample rows
-    sample_rows: List[Dict[str, Any]] = []
+    sample_rows: list[dict[str, Any]] = []
     try:
         sample_result = con.execute(f"SELECT * FROM {view_name} LIMIT {SAMPLE_ROWS_LIMIT}")
         sample_col_names = [desc[0] for desc in sample_result.description]
@@ -1092,7 +1148,7 @@ def profile_table(
         logger.debug("Sample rows failed for %s: %s", table.name, exc)
 
     # Aggregate column alerts to table level (detailed objects for UI)
-    table_alerts: List[Dict[str, str]] = []
+    table_alerts: list[dict[str, str]] = []
     alert_messages = {
         "constant": "{col} is constant (single value)",
         "unique": "{col} has all unique values",
@@ -1211,7 +1267,7 @@ def profile_changed_tables(table_names: list[str]) -> dict:
         return {"success": 0, "errors": 0, "skipped": len(table_names)}
 
     # Build lookup by table name
-    table_by_name: Dict[str, TableInfo] = {t.name: t for t in tables}
+    table_by_name: dict[str, TableInfo] = {t.name: t for t in tables}
 
     # Load sync state and metrics
     sync_state = load_sync_state(SYNC_STATE_PATH)
@@ -1222,7 +1278,7 @@ def profile_changed_tables(table_names: list[str]) -> dict:
     metric_file_map = load_metric_file_map(METRICS_YML_PATH)
 
     # Load existing profiles.json to preserve untouched tables
-    existing_profiles: Dict[str, Any] = {}
+    existing_profiles: dict[str, Any] = {}
     try:
         if PROFILES_OUTPUT_PATH.exists():
             with open(PROFILES_OUTPUT_PATH) as f:
@@ -1232,7 +1288,7 @@ def profile_changed_tables(table_names: list[str]) -> dict:
         logger.warning("profile_changed_tables: could not load existing profiles: %s", exc)
 
     # Profile each requested table
-    new_profiles: Dict[str, Any] = {}
+    new_profiles: dict[str, Any] = {}
     for name in table_names:
         table = table_by_name.get(name)
         if table is None:
@@ -1275,7 +1331,7 @@ def profile_changed_tables(table_names: list[str]) -> dict:
 
     # Write atomically
     output = {
-        "generated_at": datetime.now(timezone.utc).isoformat() + "Z",
+        "generated_at": datetime.now(UTC).isoformat() + "Z",
         "version": "1.0",
         "tables": merged,
     }
@@ -1319,7 +1375,7 @@ def main() -> None:
     metric_file_map = load_metric_file_map(METRICS_YML_PATH)
 
     # Load existing profiles for fallback (preserve data for tables that fail)
-    existing_profiles: Dict[str, Any] = {}
+    existing_profiles: dict[str, Any] = {}
     try:
         if PROFILES_OUTPUT_PATH.exists():
             with open(PROFILES_OUTPUT_PATH) as f:
@@ -1330,36 +1386,16 @@ def main() -> None:
         logger.warning("Could not load existing profiles: %s", exc)
 
     # Build Jira TableInfo objects for relationship computation
-    jira_table_infos: List[TableInfo] = []
+    jira_table_infos: list[TableInfo] = []
     if JIRA_PARQUET_DIR.is_dir():
         for jt in JIRA_TABLES:
-            fk_list = []
-            for fk in jt.get("foreign_keys", []):
-                fk_list.append(
-                    ForeignKeyInfo(
-                        column=fk["column"],
-                        references=fk["references"],
-                        description=fk.get("description"),
-                    )
-                )
-            jira_table_infos.append(
-                TableInfo(
-                    table_id=f"jira.{jt['name']}",
-                    name=jt["name"],
-                    description=jt["description"],
-                    primary_key=jt["primary_key"],
-                    sync_strategy="partitioned",
-                    foreign_keys=fk_list,
-                    partition_by="created_at",
-                    partition_granularity="month",
-                )
-            )
+            jira_table_infos.append(_jira_table_info(jt))
 
     # Combined table list for relationship computation (data_description + Jira)
     all_tables_combined = list(tables) + jira_table_infos
 
     # Profile each table
-    profiles: Dict[str, Any] = {}
+    profiles: dict[str, Any] = {}
     success_count = 0
     skip_count = 0
     error_count = 0
@@ -1448,7 +1484,7 @@ def main() -> None:
 
     # Build output
     output = {
-        "generated_at": datetime.now(timezone.utc).isoformat() + "Z",
+        "generated_at": datetime.now(UTC).isoformat() + "Z",
         "version": "1.0",
         "tables": profiles,
     }
