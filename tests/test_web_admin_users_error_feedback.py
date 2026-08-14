@@ -91,11 +91,13 @@ def test_no_handler_dumps_the_raw_response_body(web_client, admin_cookie):
 
 
 def test_every_failure_path_routes_through_the_shared_helper(web_client, admin_cookie):
-    """Five call sites, one helper. Counting them is the point — the original
+    """Six call sites, one helper. Counting them is the point — the original
     bug was that four siblings had been fixed and the fifth (create-user, the
-    one users actually hit) had not."""
+    one users actually hit) had not. The sixth is the invite drawer's inline
+    *new group*; raise this number when a path is added, never delete the
+    assertion."""
     html = web_client.get("/admin/users", cookies=admin_cookie).text
-    assert html.count("await errorText(r)") == 5
+    assert html.count("await errorText(r)") == 6
 
 
 def test_modal_newline_preservation_is_opt_in(web_client):
@@ -117,10 +119,16 @@ def test_the_dialogs_that_need_newlines_opt_in(web_client):
 
 
 def test_static_modal_copy_no_longer_depends_on_source_wrapping(web_client, admin_cookie):
-    """The Add-user helper paragraph is still written across several template
-    lines — which is fine now, and was the whole bug before."""
+    """The invite flow's helper paragraph is still written across several
+    template lines — which is fine now, and was the whole bug before.
+
+    Anchored on the group step's lede: the paragraph this used to check
+    ("New users start with no group memberships — assign them on the user
+    detail page") was the copy the invite drawer removed by MAKING the
+    membership step part of the flow.
+    """
     html = web_client.get("/admin/users", cookies=admin_cookie).text
-    assert "New users start with no group memberships" in html
+    assert "Groups are the only way anything reaches a" in html
     assert "data-preserve-newlines" not in html, (
         "a static admin modal opted into newline preservation — its line breaks are source formatting, not content"
     )

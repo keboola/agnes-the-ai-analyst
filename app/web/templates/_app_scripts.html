@@ -247,10 +247,13 @@
         if (!document.getElementById('adminMenu')) return;
         const MAP = {
           't': '/admin/tables',          // (data packages)
-          'a': '/admin/access',           // resource access
+          // `g a` and `g g` are the same destination on purpose: groups
+          // and what they can use are one workspace, so "access" and
+          // "groups" are two names for the page you want.
+          'a': '/admin/access',           // (access)
           'm': '/admin/corporate-memory', // (memory)
           'u': '/admin/users',
-          'g': '/admin/groups',
+          'g': '/admin/access',
           's': '/admin/server-config',
           'l': '/admin/activity',         // (log)
           'c': '/admin/marketplaces',     // (curated)
@@ -324,14 +327,13 @@
         if (!document.getElementById('adminMenu')) return;
         const ITEMS = [
           { label: 'Tables / Data packages',      hint: 'admin · g t',  href: '/admin/tables' },
-          { label: 'Resource access',             hint: 'admin · g a',  href: '/admin/access' },
           { label: 'Corporate Memory',            hint: 'admin · g m',  href: '/admin/corporate-memory' },
           { label: 'Memory · Review queue',       hint: 'admin',        href: '/admin/corporate-memory#review' },
           { label: 'Memory · All items',          hint: 'admin',        href: '/admin/corporate-memory#all' },
           { label: 'Memory · Domains',            hint: 'admin',        href: '/admin/corporate-memory#domains' },
           { label: 'Memory · Audit log',          hint: 'admin',        href: '/admin/corporate-memory#audit' },
-          { label: 'Users',                       hint: 'admin · g u',  href: '/admin/users' },
-          { label: 'Groups',                      hint: 'admin · g g',  href: '/admin/groups' },
+          { label: 'People',                      hint: 'admin · g u',  href: '/admin/users' },
+          { label: 'Groups & resource access',    hint: 'admin · g g',  href: '/admin/access' },
           { label: 'Server config',               hint: 'admin · g s',  href: '/admin/server-config' },
           { label: 'Database backend',            hint: 'admin · g d',  href: '/admin/database' },
           { label: 'Activity / Audit log',        hint: 'admin · g l',  href: '/admin/activity' },

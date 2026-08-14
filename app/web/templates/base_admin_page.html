@@ -1,0 +1,53 @@
+{#
+  Admin layout for pages that ride the `base_page.html` hero + toolbar + page
+  convention (`page_hero_title` etc., `{% block toolbar %}`, `{% block page %}`).
+
+  Usage (leaf template) — literally a one-line `{% extends %}` swap, nothing
+  else changes:
+
+      {% extends "base_admin_page.html" %}
+      {% set page_hero_title = "Users & Access" %}
+      {% block toolbar %}...{% endblock %}
+      {% block page %}...{% endblock %}
+
+  Wraps `base_page.html`'s own `content` block (hero + toolbar + page, via
+  `{{ super() }}`) in the two-column `.admin-split` grid from the issue #896
+  sidebar mock — same `_admin_nav.html` sidebar as `base_admin.html`, whose
+  docstring covers the shared mechanics (active-state source, the ~820px
+  responsive collapse, why the stylesheet link lives inside `content` rather
+  than `head_extra`).
+#}
+{% extends "base_page.html" %}
+
+{# The admin sidebar is CHROME, not page content: it is the second tier of the
+   navigation and it belongs against the rail, not inside the page's centred
+   gutter. In the default `.container` it sat 84px off the rail on a 1440px
+   screen — 32px of page padding plus 52px of auto-centring — and that gap GREW
+   with the viewport, so on a wide monitor the column drifted away from the strip
+   it continues. `container--full` drops the max-width and the centring; the
+   column then starts one small inset after the rail, and `.admin-main` takes its
+   own comfortable max-width from admin-nav.css instead of inheriting the
+   container's. #}
+{% block container_modifier %}container--full{% endblock %}
+
+
+
+{% block content %}
+<link rel="stylesheet" href="{{ static_url('css/admin-nav.css') }}">
+{# The page vocabulary inside that column — context strip, section head,
+   toolbar placement. See admin_page.css. #}
+<link rel="stylesheet" href="{{ static_url('css/admin_page.css') }}">
+<div class="admin-split">
+    {% include "_admin_nav.html" %}
+    <div class="admin-main">
+        {{ super() }}
+        {# Inside the content column, not below the split — same reason as
+           base_admin.html, whose `page_footer` comment carries the full
+           explanation: a footer outside the sticky column's containing block
+           is scroll the column cannot stick through. #}
+        {% include '_footer.html' %}
+    </div>
+</div>
+{% endblock %}
+
+{% block page_footer %}{% endblock %}

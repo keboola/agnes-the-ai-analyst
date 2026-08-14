@@ -8,9 +8,21 @@
    `eyebrow` + `subtitle` are optional; `title` is required (the block is
    a no-op without one). Optional `page_hero_class` adds a page-specific
    class to the section. CSS lives at `.page-header--hero` in
-   style-custom.css. #}
+   style-custom.css.
+
+   `page_hero_plain = True` swaps the hero card for the PLAIN index-page
+   head — the same title + lede /library, /agents and /chats render, with
+   nothing drawn around it. Same variables, same markup, one class:
+
+       {% set page_hero_title = "People" %}
+       {% set page_hero_subtitle = "Every account on this instance…" %}
+       {% set page_hero_plain = True %}
+
+   Reach for it on a workspace page (a list, a table, a two-pane editor);
+   keep the hero where a page has to introduce itself. See
+   `.page-header--plain` in style-custom.css for the full rationale. #}
 {% if page_hero_title %}
-<section class="page-header page-header--hero{% if page_hero_class %} {{ page_hero_class }}{% endif %}">
+<section class="page-header page-header--{{ 'plain' if page_hero_plain else 'hero' }}{% if page_hero_class %} {{ page_hero_class }}{% endif %}">
     <div class="page-header__main">
         {% if page_hero_eyebrow %}<div class="page-header__eyebrow">{{ page_hero_eyebrow }}</div>{% endif %}
         <h1 class="page-header__title">{{ page_hero_title }}</h1>

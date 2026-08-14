@@ -1,4 +1,4 @@
-{% extends "base_ds.html" %}
+{% extends "base_admin.html" %}
 
 {% block title %}Admin · News — {{ instance_name or "AI Harness" }}{% endblock %}
 
@@ -219,7 +219,7 @@ document.addEventListener('DOMContentLoaded', function () {
 </script>
 {% endblock %}
 
-{% block content %}
+{% block admin_content %}
 {# Design-system component macros — Save draft / Publish / Unpublish
    buttons render via `ds.button`. Page-local `body.news-admin
    button.primary` / `button.ghost` rules are no longer matched
