@@ -16,7 +16,7 @@ def test_applier_unit_runs_as_non_root_with_docker_as_supplementary():
     process's primary group entirely, leaving the applier with
     egid=docker only. systemd does NOT add the user's other groups
     from /etc/group as supplementary unless explicitly listed.
-    Verified live on foundryai-dev-zsrotyr 2026-06-01: that wiring
+    Verified live on a dev instance 2026-06-01: that wiring
     blocked the applier from reading /opt/agnes/.env
     (group=agnes-applier, mode 0640).
 
@@ -45,7 +45,7 @@ def test_applier_unit_ordered_after_bootstrap():
     loads the User= directive, the agnes-applier user exists.
 
     An earlier attempt put the user-creation in ``ExecStartPre=+`` of
-    the main unit. Verified live on foundryai-dev-zsrotyr 2026-05-29:
+    the main unit. Verified live on a dev instance 2026-05-29:
     systemd validates ``User=`` at unit LOAD time, not at ExecStartPre
     run time — the unit refused to start with
     ``Failed to determine user credentials: No such process`` before

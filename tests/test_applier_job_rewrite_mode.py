@@ -16,8 +16,9 @@ two job-file writers, which is where the H2 finding originally landed. The
 applier's own ``instance.yaml`` rewrite also lives in this script and shares
 the chmod-the-temp-first ordering, but its mode is computed
 (``_instance_yaml_target_mode`` — 0600 only where the file rests on the app
-container's uid, otherwise the mode the file already had), so the literal
-0600 pin applies to the job-file writers alone.
+container's uid, otherwise 0640 with the app's gid where the host lets the
+applier grant it, 0644 where it does not), so the literal 0600 pin applies
+to the job-file writers alone.
 """
 
 from __future__ import annotations
@@ -44,8 +45,8 @@ def test_job_rewrites_chmod_the_temp_before_the_rename() -> None:
             misses.append(lineno)
         # Job-file writers serialize with json.dump and must pin the literal
         # 0600. The instance.yaml rewrite (yaml.safe_dump) carries a computed
-        # mode so it cannot tighten an overlay it does not own; its
-        # 0600-on-app-uid case is pinned in test_startup_instance_yaml_perms.
+        # mode so it never lands an owner-only mode on an uid the app is not;
+        # the full mode policy is pinned in test_startup_instance_yaml_perms.
         elif "json.dump" in window and not re.search(r"os\.chmod\(\s*tmp\s*,[^)]*0o600", window):
             unpinned_job_sites.append(lineno)
 

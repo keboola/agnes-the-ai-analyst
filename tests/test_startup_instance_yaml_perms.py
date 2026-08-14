@@ -743,9 +743,10 @@ def test_the_applier_honours_the_migrator_no_revert_decision():
 
 # ---------------------------------------------------------------------------
 # The applier's own writer must honour the same precondition the provisioning
-# script gates its `chmod 600` on. Behavioural, not static: the function is
-# extracted from the shell script and driven in a sandbox with a stubbed `id`,
-# so the assertions are about the mode instance.yaml actually ends up with.
+# script gates its `chmod 600` on. Behavioural, not static: the functions are
+# extracted from the shell script and driven in a sandbox with stubbed `id`
+# and `chown`, so the assertions are about the mode instance.yaml actually
+# ends up with and the group grant it was handed.
 # ---------------------------------------------------------------------------
 
 APP_UID = 999  # Dockerfile: `useradd --system --uid 999 … agnes`, `USER agnes`
@@ -770,14 +771,19 @@ def _write_instance_yaml_sandbox(
     *,
     process_uid: int,
     applier_uid: int | None,
-    seed_mode: int,
+    seed_mode: int | None,
     force_bash_fallback: bool = False,
+    chown_works: bool = True,
 ) -> int:
     """Run the applier's `write_instance_yaml` against a sandboxed overlay.
 
     Returns the mode `/data/state/instance.yaml` is left at. `id` is stubbed
     so the test can put the process and the agnes-applier account on any uid;
-    `chown` is stubbed because a test process cannot give a file away.
+    `chown` is stubbed because a test process cannot give a file away —
+    `chown_works` drives whether the gid-999 grant probe (and the post-rename
+    re-assert) reports success, and every invocation is appended to
+    ``chown.log`` so tests can assert WHAT was granted. ``seed_mode=None``
+    starts with no overlay at all (the fresh-provision case).
     """
     import shutil
     import stat as stat_mod
@@ -786,8 +792,9 @@ def _write_instance_yaml_sandbox(
 
     tmp_path.mkdir(parents=True, exist_ok=True)
     overlay = tmp_path / "instance.yaml"
-    overlay.write_text("logging:\n  level: debug\ndatabase:\n  backend: duckdb\n")
-    os.chmod(overlay, seed_mode)
+    if seed_mode is not None:
+        overlay.write_text("logging:\n  level: debug\ndatabase:\n  backend: duckdb\n")
+        os.chmod(overlay, seed_mode)
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -801,9 +808,12 @@ def _write_instance_yaml_sandbox(
     )
     # journald is not reachable from a test; swallow the warning.
     (fake_bin / "logger").write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$LOGGER_LOG"\nexit 0\n')
-    # A non-root process cannot chown a file away — no-op, as in production
-    # where this call is a belt-and-braces re-assert.
-    (fake_bin / "chown").write_text("#!/usr/bin/env bash\nexit 0\n")
+    # A non-root process cannot really give a file away, so `chown` is a stub
+    # either way; its exit code decides whether the host can hand the overlay
+    # to the app's gid (the probe + the post-rename re-assert both ride it).
+    (fake_bin / "chown").write_text(
+        '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$CHOWN_LOG"\nexit ' + ("0" if chown_works else "1") + "\n"
+    )
     if force_bash_fallback:
         # Drives the PyYAML-less branch: `python3 -c 'import yaml'` must fail.
         (fake_bin / "python3").write_text("#!/usr/bin/env bash\nexit 1\n")
@@ -815,7 +825,9 @@ def _write_instance_yaml_sandbox(
         os.chmod(f, 0o755)
 
     body = APPLIER.read_text().replace("/data/state/instance.yaml", str(overlay))
-    funcs = _extract_shell_functions(body, "_instance_yaml_target_mode", "write_instance_yaml")
+    funcs = _extract_shell_functions(
+        body, "_instance_yaml_target_mode", "_instance_yaml_reassert_owner", "write_instance_yaml"
+    )
     script = (
         "set -euo pipefail\n"
         + funcs
@@ -825,6 +837,7 @@ def _write_instance_yaml_sandbox(
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "LOGGER_LOG": str(tmp_path / "logger.log"),
+        "CHOWN_LOG": str(tmp_path / "chown.log"),
     }
     proc = subprocess.run(
         [shutil.which("bash") or "/bin/bash", "-c", script],
@@ -838,22 +851,25 @@ def _write_instance_yaml_sandbox(
 
 
 @pytest.mark.parametrize("force_bash_fallback", [False, True], ids=["pyyaml", "bash-fallback"])
-def test_the_applier_does_not_tighten_the_overlay_it_will_not_own(tmp_path, force_bash_fallback):
-    """The documented degraded state must stay survivable.
+def test_a_mismatched_host_writes_the_overlay_group_readable_not_0600(tmp_path, force_bash_fallback):
+    """The documented degraded state must stay survivable — via the app's gid.
 
     When uid 999 is already taken, provisioning falls back to an allocated id
     and deliberately skips `chmod 600` (`test_the_chmod_is_conditional_on_the_
     pin_having_taken`) — the runbook and the bootstrap unit both promise the
-    overlay simply keeps its looser mode and everything keeps working.
+    overlay stays readable by the app and everything keeps working.
 
-    The applier's own writer ignored that: it chmodded the temp 0600
+    The applier's writer originally ignored that: it chmodded the temp 0600
     unconditionally and renamed it over the overlay, which re-owns the file to
     whoever wrote it. On a host where agnes-applier is not uid 999 the app
     container then owns neither the file nor a readable bit of it, and
     `app/main.py`'s fail-closed strict read refuses to start the instance —
     turning an availability-safe degradation into an outage, triggered by
     ordinary admin activity (every backend flip, cancel and stuck-job recovery
-    rewrites this file). Found by Devin Review on #1298.
+    rewrites this file). Found by Devin Review on #1298. The policy on such a
+    host is 0640 with the app's gid (999) as the group — read granted through
+    the group bit, never through an owner the app is not — with the
+    post-rename ownership re-assert landing on `agnes-applier:999`.
     """
     mode = _write_instance_yaml_sandbox(
         tmp_path,
@@ -862,10 +878,97 @@ def test_the_applier_does_not_tighten_the_overlay_it_will_not_own(tmp_path, forc
         seed_mode=0o644,
         force_bash_fallback=force_bash_fallback,
     )
-    assert mode == 0o644, (
-        f"the applier tightened the overlay to {mode:04o} on a host where it does not resolve to "
-        f"uid {APP_UID} — the app container can read neither its owner nor its mode, so the next "
-        f"boot refuses to start. Carry the existing mode across the rename instead."
+    assert mode == 0o640, (
+        f"expected 0640 (the app reads via group {APP_UID}) on a host where the applier does not "
+        f"resolve to uid {APP_UID}, got {mode:04o} — 0600 there locks the app out of its own "
+        f"config and the next boot refuses to start"
+    )
+    chown_calls = (tmp_path / "chown.log").read_text()
+    assert f"agnes-applier:{APP_UID}" in chown_calls, (
+        "at 0640 the read grant IS the group — the post-rename ownership re-assert must land on "
+        f"the app's gid, but chown was invoked with: {chown_calls!r}"
+    )
+    warnings = (tmp_path / "logger.log").read_text()
+    assert "0640" in warnings, "the degraded rewrite must say which mode it chose and why"
+
+
+@pytest.mark.parametrize("force_bash_fallback", [False, True], ids=["pyyaml", "bash-fallback"])
+def test_an_app_written_0600_overlay_is_not_preserved_across_the_reown(tmp_path, force_bash_fallback):
+    """Preserving an existing 0600 re-creates the exact outage, one tick later.
+
+    On a mismatched host the overlay is routinely 0600-owned-by-999 *before*
+    the applier touches it: every admin-triggered migration first calls
+    `write_backend_state()` from inside the app container (uid 999), and that
+    writer — like the admin config editors — chmods its temp 0600
+    unconditionally, which is correct where it runs. The applier's next
+    rewrite then re-owns the file to agnes-applier; carrying the 0600 across
+    that rename leaves it owner-only under a uid the app is not, and the next
+    boot fails closed (`load_instance_config(strict=True)`). So the first
+    fix's "preserve, never widen" was exactly wrong here: the mode must be
+    recomputed for the account the file will come to REST on. Found by Devin
+    Review on #1298 (second round).
+    """
+    mode = _write_instance_yaml_sandbox(
+        tmp_path,
+        process_uid=997,
+        applier_uid=997,
+        seed_mode=0o600,
+        force_bash_fallback=force_bash_fallback,
+    )
+    assert mode == 0o640, (
+        f"a 0600 overlay rewritten by a mismatched-uid applier came out {mode:04o}; 0600 under a "
+        f"non-{APP_UID} owner is unreadable by the app, and preserving the existing mode is how it happens"
+    )
+
+
+def test_the_group_grant_fallback_is_0644_and_says_so(tmp_path):
+    """Where the gid-999 grant is impossible, availability still wins.
+
+    The common mismatched host runs the applier as a non-root agnes-applier
+    on an allocated uid with no gid-999 membership — `chown :999` fails
+    there, and a 0640 whose group grant never landed is the same lockout
+    0600 was. The fallback is 0644: the same degradation provisioning
+    documents for this host state, but as a conscious decision with a logged
+    warning naming the exposure (the database url with its password inline),
+    not something falling out of a stat default. Never 0600, never silent.
+    """
+    mode = _write_instance_yaml_sandbox(
+        tmp_path,
+        process_uid=997,
+        applier_uid=997,
+        seed_mode=0o600,
+        chown_works=False,
+    )
+    assert mode == 0o644, f"expected the documented 0644 fallback, got {mode:04o}"
+    warnings = (tmp_path / "logger.log").read_text()
+    assert "0644" in warnings and "world-readable" in warnings, (
+        "the 0644 fallback must be announced with its exposure — it is a deliberate "
+        f"availability-over-hardening trade, not a default; got: {warnings!r}"
+    )
+
+
+def test_a_fresh_overlay_is_created_by_policy_not_by_stat_default(tmp_path):
+    """No file yet is a decision point, not a stat failure.
+
+    The first policy read the existing mode with a `|| existing=644` fallback,
+    so on a mismatched host the applier CREATED the overlay world-readable —
+    database url and password inline — because there was nothing to preserve.
+    Found by Devin Review on #1298 (second round). A fresh overlay follows the
+    same policy as a rewrite: 0640 + group 999 where the grant lands, the
+    logged 0644 degradation where it cannot.
+    """
+    grantable = _write_instance_yaml_sandbox(tmp_path / "a", process_uid=997, applier_uid=997, seed_mode=None)
+    assert grantable == 0o640, (
+        f"a fresh overlay on a mismatched host came out {grantable:04o}, not 0640 — "
+        "world-readable-by-default is the finding this test pins"
+    )
+
+    degraded = _write_instance_yaml_sandbox(
+        tmp_path / "b", process_uid=997, applier_uid=997, seed_mode=None, chown_works=False
+    )
+    assert degraded == 0o644
+    assert "0644" in (tmp_path / "b" / "logger.log").read_text(), (
+        "even the 0644 fallback on a fresh overlay must be logged, not silent"
     )
 
 
@@ -904,20 +1007,7 @@ def test_the_applier_reads_the_owner_the_rename_will_leave_not_its_own_uid(tmp_p
     )
 
     loose = _write_instance_yaml_sandbox(tmp_path / "b", process_uid=0, applier_uid=997, seed_mode=0o644)
-    assert loose == 0o644, f"root + agnes-applier on uid 997 hands the file to a uid the app is not (got {loose:04o})"
-
-
-def test_the_applier_never_widens_the_overlay_either(tmp_path):
-    """Preserve is not the same as "make it readable".
-
-    A background daemon loosening a file that holds the database password is
-    not a trade this fix makes: where the precondition fails we carry the mode
-    across unchanged, which is never worse than what the file already had. An
-    overlay that is ALREADY 0600 under a mismatched uid was unreadable before
-    the applier touched it — repairing that is the operator's remediation
-    (docs/postgres-cutover-runbook.md), not an automatic chmod o+r.
-    """
-    mode = _write_instance_yaml_sandbox(
-        tmp_path, process_uid=997, applier_uid=997, seed_mode=0o600, force_bash_fallback=True
+    assert loose == 0o640, (
+        f"root + agnes-applier on uid 997 hands the file to a uid the app is not — and root can "
+        f"always grant group {APP_UID}, so the policy mode there is 0640 (got {loose:04o})"
     )
-    assert mode == 0o600, f"the applier widened an already-tight overlay to {mode:04o}"

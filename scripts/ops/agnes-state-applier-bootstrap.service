@@ -40,17 +40,19 @@ ExecStart=/bin/bash -c 'id -u agnes-applier >/dev/null 2>&1 || useradd --system 
 # agnes-applier that already existed from before this unit pinned anything
 # (an in-place upgrade). Logged via `logger` (journald), not just stdout,
 # so it survives `RemainAfterExit` collapsing the unit's own log window.
-# Deliberately does not fail the unit: instance.yaml simply keeps its
-# current, looser mode until an operator frees uid 999 or realigns
-# agnes-applier — see docs/postgres-cutover-runbook.md for the remediation
-# commands. Warn-only is only defensible because that claim is enforced on
-# BOTH writers of the file: the startup-script gates its `chmod 600` on the
-# same readback, and the applier's write_instance_yaml computes the mode
-# from the uid the file will come to rest on
+# Deliberately does not fail the unit: instance.yaml is simply kept
+# app-readable at a looser mode (0640 with the app's gid where the host
+# lets the applier grant it, 0644 otherwise) until an operator frees uid
+# 999 or realigns agnes-applier — see docs/postgres-cutover-runbook.md for
+# the remediation commands. Warn-only is only defensible because that claim
+# is enforced on BOTH writers of the file: the startup-script gates its
+# `chmod 600` on the same readback, and the applier's write_instance_yaml
+# computes the mode from the uid the file will come to rest on — never an
+# owner-only mode, preserved or fresh, under a uid the app is not
 # (scripts/ops/agnes-state-applier.sh::_instance_yaml_target_mode). Until
 # the latter existed, this comment was false — the applier tightened to 0600
 # regardless and the app then refused to start.
-ExecStart=/bin/bash -c 'APPLIER_UID=$$(id -u agnes-applier 2>/dev/null || echo ""); if [ "$$APPLIER_UID" != "999" ]; then logger -t agnes-state-applier-bootstrap -p user.warning "agnes-applier is uid $$APPLIER_UID, not 999 -- /data/state/instance.yaml (0600) is unreadable by the app container (uid 999) whenever agnes-applier owns it. Free uid 999 (check what holds it: getent passwd 999) or realign agnes-applier onto it, then re-run this unit; see docs/postgres-cutover-runbook.md."; fi'
+ExecStart=/bin/bash -c 'APPLIER_UID=$$(id -u agnes-applier 2>/dev/null || echo ""); if [ "$$APPLIER_UID" != "999" ]; then logger -t agnes-state-applier-bootstrap -p user.warning "agnes-applier is uid $$APPLIER_UID, not 999 -- the state applier keeps /data/state/instance.yaml readable by the app container (mode 0640 with group 999 where it can grant that, 0644 otherwise) instead of the owner-only 0600 an aligned host gets. Free uid 999 (check what holds it: getent passwd 999) or realign agnes-applier onto it, then re-run this unit; see docs/postgres-cutover-runbook.md."; fi'
 ExecStart=/usr/sbin/usermod -aG docker agnes-applier
 ExecStart=/bin/mkdir -p /data/state /data/postgres
 ExecStart=/bin/chown -R agnes-applier:agnes-applier /data/state

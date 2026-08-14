@@ -37,14 +37,22 @@ id -u agnes-applier   # must print 999
 
 If `useradd` above fails with "UID '999' is not unique", uid 999 already
 belongs to a different account on this VM (`getent passwd 999` shows which
-one). Either free it and re-run the command above, or accept that
-`instance.yaml` stays at whatever mode it already has — the applier and the
-app keep working either way, just without the 0600 tightening until the
-uids agree. That is enforced, not merely intended: both writers of the file
-skip the tightening when the uids disagree (provisioning's `chmod 600` and
-the applier's own `write_instance_yaml`), so an ordinary backend flip,
-cancel or stuck-job recovery cannot leave the overlay owner-only under a uid
-the app container is not.
+one). Either free it and re-run the command above, or accept the degraded
+mode policy for such hosts: provisioning skips its `chmod 600`, and the
+applier's own `write_instance_yaml` rewrites the overlay at `0640` with the
+app's gid (999) as the group wherever it can actually grant that — running
+as root, or agnes-applier holding gid-999 membership — falling back to
+`0644` otherwise, with a warning logged at every rewrite either way. The
+applier and the app keep working; what the mismatch costs is the owner-only
+tightening, until the uids agree. Preserving the file's existing mode is
+deliberately NOT what happens: the app's own writers (`write_backend_state`
+and the admin config editors) run as uid 999 inside the container — where
+owner-only is exactly right — and chmod the file `0600` unconditionally, so
+carrying that mode across the applier's rewrite (whose rename re-owns the
+file to agnes-applier) would strand it owner-only under a uid the app is
+not, and the fail-closed boot read would take the instance down. An
+ordinary backend flip, cancel or stuck-job recovery therefore can never
+leave the overlay unreadable to the app container.
 
 **Treat this as a state to leave, not to live in.** `instance.yaml` holds
 the database url with its password inline plus any connector credentials an
@@ -220,9 +228,9 @@ deliberate (it stops the copy's bare `ON CONFLICT DO NOTHING` from keeping
 stale rows out of a prior attempt), **not** data loss. The docker-compose
 `data-migrate` one-shot is a separate path and is never reset this way.
 
-### Manual smoke (agnes-dev)
+### Manual smoke (dev instance)
 
-After deploying this release to agnes-dev, run the following on the VM
+After deploying this release to a dev instance, run the following on the VM
 to confirm the flow end-to-end:
 
 1. Baseline:
