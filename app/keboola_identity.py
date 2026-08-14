@@ -28,7 +28,7 @@ def project_matches(expected: Any, payload: Optional[Dict[str, Any]]) -> bool:
     """True iff the payload's owner id equals ``expected``.
 
     Compared as strings — the id round-trips through YAML/env config and JSON
-    columns on two backends, so 5947 vs "5947" must not read as a mismatch.
+    columns on two backends, so 12345 vs "12345" must not read as a mismatch.
     ``None`` on either side is an explicit reject, never a match.
     """
     if expected is None:

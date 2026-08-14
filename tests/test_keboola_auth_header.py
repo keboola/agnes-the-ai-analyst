@@ -23,7 +23,7 @@ from app.auth.providers import keboola_verify as kv
 def _identity(email="jane@example.com"):
     return kv.VerifiedKeboolaIdentity(
         token_id="204",
-        project_id="5947",
+        project_id="12345",
         project_name="Acme DWH",
         email=email,
         name="Jane",
@@ -37,7 +37,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-32chars-minimum!!!!!")
     monkeypatch.setenv("AGNES_KEBOOLA_ALLOW_TOKEN_HEADER", "1")
     monkeypatch.setattr(kv, "stack_url", lambda: "https://connection.example.com")
-    monkeypatch.setattr(kv, "configured_project_id", lambda: "5947")
+    monkeypatch.setattr(kv, "configured_project_id", lambda: "12345")
     from app.auth import keboola_header
 
     keboola_header.reset_state_for_tests()

@@ -304,10 +304,16 @@ def _validate_auth_providers_in_patch(sections: Dict[str, Dict[str, Any]]) -> No
             )
         effective = names
     else:
-        # providers isn't in THIS patch — re-check the EXISTING effective
-        # allowlist so a save that clears a sole provider's config (e.g.
-        # auth.keboola) can't produce the same lockout. A malformed or unset
-        # existing value must not block an unrelated auth save.
+        # providers isn't in THIS patch. Only a change to auth.keboola config
+        # can newly break a currently-available provider via server-config —
+        # google/email availability is env-only and no config save can change
+        # it. So re-check the EXISTING allowlist ONLY when the patch touches
+        # keboola: that catches "clear auth.keboola while providers=[keboola]",
+        # without 422-ing an unrelated auth save (e.g. allowed_domain) against a
+        # pre-existing env-provider allowlist that has no server-config field to
+        # fix (Devin review on #1288).
+        if "keboola" not in auth:
+            return
         from app.instance_config import get_value
 
         current_raw = get_value("auth", "providers")

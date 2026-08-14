@@ -72,7 +72,7 @@ from app.keboola_identity import project_identity, project_matches
 
 class TestProjectIdentity:
     def test_reads_owner_id_and_name(self):
-        assert project_identity({"owner": {"id": 5947, "name": "Acme"}}) == (5947, "Acme")
+        assert project_identity({"owner": {"id": 12345, "name": "Acme"}}) == (12345, "Acme")
 
     def test_missing_owner_id_returns_none(self):
         assert project_identity({"owner": {"name": "x"}}) == (None, "")
@@ -83,16 +83,16 @@ class TestProjectIdentity:
 class TestProjectMatches:
     def test_int_vs_str_coercion(self):
         # config from ${ENV} interpolation is a string; verify returns int (or str).
-        assert project_matches("5947", {"owner": {"id": 5947}}) is True
-        assert project_matches(5947, {"owner": {"id": "5947"}}) is True
+        assert project_matches("12345", {"owner": {"id": 12345}}) is True
+        assert project_matches(12345, {"owner": {"id": "12345"}}) is True
 
     def test_mismatch(self):
-        assert project_matches("5947", {"owner": {"id": 1}}) is False
+        assert project_matches("12345", {"owner": {"id": 1}}) is False
 
     def test_none_holes_never_match(self):
         # An unreadable identity must never compare equal (spec: explicit None reject).
-        assert project_matches("5947", {}) is False
-        assert project_matches(None, {"owner": {"id": 5947}}) is False
+        assert project_matches("12345", {}) is False
+        assert project_matches(None, {"owner": {"id": 12345}}) is False
         assert project_matches(None, {}) is False
 ```
 
@@ -135,7 +135,7 @@ def project_matches(expected: Any, payload: Optional[Dict[str, Any]]) -> bool:
     """True iff the payload's owner id equals ``expected``.
 
     Compared as strings — the id round-trips through YAML/env config and JSON
-    columns on two backends, so 5947 vs "5947" must not read as a mismatch.
+    columns on two backends, so 12345 vs "12345" must not read as a mismatch.
     ``None`` on either side is an explicit reject, never a match.
     """
     if expected is None:
@@ -779,7 +779,7 @@ def _payload(**overrides):
     base = {
         "id": "204",
         "isMasterToken": True,
-        "owner": {"id": 5947, "name": "Acme DWH"},
+        "owner": {"id": 12345, "name": "Acme DWH"},
         "admin": {"id": 42, "name": "Jane", "role": "admin"},
         "adminOwner": {"id": 42, "email": "jane@example.com", "name": "Jane"},
     }
@@ -790,7 +790,7 @@ def _payload(**overrides):
 @pytest.fixture
 def configured(monkeypatch):
     monkeypatch.setattr(kv, "stack_url", lambda: "https://connection.example.com")
-    monkeypatch.setattr(kv, "configured_project_id", lambda: "5947")
+    monkeypatch.setattr(kv, "configured_project_id", lambda: "12345")
     monkeypatch.setattr(kv, "allowed_roles", lambda: None)
 
 
@@ -799,7 +799,7 @@ class TestGates:
         monkeypatch.setattr(kv, "_fetch_verify", lambda url, headers: _payload())
         identity = kv.verify_storage_token("tok")
         assert identity.email == "jane@example.com"
-        assert identity.project_id == "5947"
+        assert identity.project_id == "12345"
         assert identity.role == "admin"
 
     def test_non_master_token_rejected_even_with_adminowner(self, configured, monkeypatch):
@@ -1089,7 +1089,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-32chars-minimum!!!!!")
     monkeypatch.setattr(kv, "stack_url", lambda: "https://connection.example.com")
-    monkeypatch.setattr(kv, "configured_project_id", lambda: "5947")
+    monkeypatch.setattr(kv, "configured_project_id", lambda: "12345")
     monkeypatch.setattr(kv, "client_id", lambda: "cid")
     monkeypatch.setattr(kv, "client_secret", lambda: "csecret")
     from app.main import create_app
@@ -1099,7 +1099,7 @@ def client(tmp_path, monkeypatch):
 
 def _identity(email="jane@example.com"):
     return kv.VerifiedKeboolaIdentity(
-        token_id="204", project_id="5947", project_name="Acme DWH",
+        token_id="204", project_id="12345", project_name="Acme DWH",
         email=email, name="Jane", role="admin",
     )
 
@@ -1430,7 +1430,7 @@ from app.auth.providers import keboola_verify as kv
 
 def _identity(email="jane@example.com"):
     return kv.VerifiedKeboolaIdentity(
-        token_id="204", project_id="5947", project_name="Acme DWH",
+        token_id="204", project_id="12345", project_name="Acme DWH",
         email=email, name="Jane", role="admin",
     )
 
@@ -1441,7 +1441,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-32chars-minimum!!!!!")
     monkeypatch.setenv("AGNES_KEBOOLA_ALLOW_TOKEN_HEADER", "1")
     monkeypatch.setattr(kv, "stack_url", lambda: "https://connection.example.com")
-    monkeypatch.setattr(kv, "configured_project_id", lambda: "5947")
+    monkeypatch.setattr(kv, "configured_project_id", lambda: "12345")
     from app.auth import keboola_header
 
     keboola_header.reset_state_for_tests()

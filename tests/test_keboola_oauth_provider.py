@@ -11,7 +11,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-32chars-minimum!!!!!")
     monkeypatch.setattr(kv, "stack_url", lambda: "https://connection.example.com")
-    monkeypatch.setattr(kv, "configured_project_id", lambda: "5947")
+    monkeypatch.setattr(kv, "configured_project_id", lambda: "12345")
     monkeypatch.setattr(kv, "client_id", lambda: "cid")
     monkeypatch.setattr(kv, "client_secret", lambda: "csecret")
     from app.main import create_app
@@ -22,7 +22,7 @@ def client(tmp_path, monkeypatch):
 def _identity(email="jane@example.com"):
     return kv.VerifiedKeboolaIdentity(
         token_id="204",
-        project_id="5947",
+        project_id="12345",
         project_name="Acme DWH",
         email=email,
         name="Jane",

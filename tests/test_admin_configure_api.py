@@ -414,7 +414,7 @@ class TestServerConfigAuthProvidersValidation:
                         "keboola": {
                             "client_id": "cid",
                             "client_secret": "csecret",
-                            "project_id": "5947",
+                            "project_id": "12345",
                             "stack_url": "https://example.com",
                         },
                     }
@@ -470,7 +470,7 @@ class TestServerConfigAuthProvidersValidation:
                         "keboola": {
                             "client_id": "cid",
                             "client_secret": "***",  # masking sentinel, not a real value
-                            "project_id": "5947",
+                            "project_id": "12345",
                             "stack_url": "https://example.com",
                         },
                     }
@@ -522,6 +522,25 @@ class TestServerConfigAuthProvidersValidation:
 
         monkeypatch.setattr("app.instance_config.get_value", lambda *k, default=None: default)
         # Must not raise.
+        admin._validate_auth_providers_in_patch({"auth": {"allowed_domain": "example.com"}})
+
+    def test_unrelated_auth_save_not_blocked_for_env_provider_allowlist(self, monkeypatch):
+        """An env-configured provider's availability (google/email) can't be
+        changed by any server-config save, so an unrelated auth save (e.g.
+        allowed_domain) against a pre-existing [google] allowlist must NOT be
+        re-validated — only a patch that touches auth.keboola re-checks, since
+        that is the only availability a config save can break (Devin #1288).
+        Otherwise the admin would be dead-ended with no config field to fix it."""
+        import app.api.admin as admin
+
+        def fake_get_value(*keys, default=None):
+            if keys == ("auth", "providers"):
+                return ["google"]  # env-configured, unavailable in the API process
+            return default
+
+        monkeypatch.setattr("app.instance_config.get_value", fake_get_value)
+        # Patch does NOT touch auth.keboola → must not raise despite google
+        # being unavailable.
         admin._validate_auth_providers_in_patch({"auth": {"allowed_domain": "example.com"}})
 
     def test_null_providers_accepted_as_clear_override(self, seeded_app):

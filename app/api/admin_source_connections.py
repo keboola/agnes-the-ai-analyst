@@ -295,8 +295,8 @@ def project_mismatch_message(row: Dict[str, Any], payload: Dict[str, Any], *, wh
         return None
     token_id, token_name = project_identity(payload)
     # Compared as strings: the id round-trips through a JSON config column on
-    # two different backends (DuckDB JSON, PG JSONB), and a 5947 that comes
-    # back as "5947" would otherwise read as a permanent, unfixable mismatch
+    # two different backends (DuckDB JSON, PG JSONB), and a 12345 that comes
+    # back as "12345" would otherwise read as a permanent, unfixable mismatch
     # on a correctly-configured connection. Devin Review on #1242 raised the
     # same risk across endpoints.
     if token_id is None or str(token_id) == str(known_id):

@@ -10,7 +10,7 @@ def _payload(**overrides):
     base = {
         "id": "204",
         "isMasterToken": True,
-        "owner": {"id": 5947, "name": "Acme DWH"},
+        "owner": {"id": 12345, "name": "Acme DWH"},
         "admin": {"id": 42, "name": "Jane", "role": "admin"},
         "adminOwner": {"id": 42, "email": "jane@example.com", "name": "Jane"},
     }
@@ -21,7 +21,7 @@ def _payload(**overrides):
 @pytest.fixture
 def configured(monkeypatch):
     monkeypatch.setattr(kv, "stack_url", lambda: "https://connection.example.com")
-    monkeypatch.setattr(kv, "configured_project_id", lambda: "5947")
+    monkeypatch.setattr(kv, "configured_project_id", lambda: "12345")
     monkeypatch.setattr(kv, "allowed_roles", lambda: None)
 
 
@@ -30,7 +30,7 @@ class TestGates:
         monkeypatch.setattr(kv, "_fetch_verify", lambda url, headers: _payload())
         identity = kv.verify_storage_token("tok")
         assert identity.email == "jane@example.com"
-        assert identity.project_id == "5947"
+        assert identity.project_id == "12345"
         assert identity.role == "admin"
 
     def test_non_master_token_rejected_even_with_adminowner(self, configured, monkeypatch):
