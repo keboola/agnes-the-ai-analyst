@@ -56,6 +56,20 @@ def test_band_absent_when_feature_disabled(seeded_app, monkeypatch):
     assert 'href="/apps/detail/hidden-app"' not in resp.text
 
 
+def test_each_app_renders_exactly_one_library_row(seeded_app, monkeypatch):
+    """One app, one row. Two listing blocks in ``library_page`` each appended
+    a row for the same apps (one id-keyed, one slug-keyed, both
+    ``type_key="data_app"``), so every visible app rendered twice in the same
+    band with doubled counts (Devin review on PR #1278). ``data-href`` is
+    emitted exactly once per row, so its count is the row count."""
+    monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+    monkeypatch.setenv("AGNES_DATA_APPS_ENABLED", "1")
+    _seed_app(slug="once-app", name="Once App")
+    c = seeded_app["client"]
+    body = c.get("/library", headers=_auth(seeded_app["admin_token"])).text
+    assert body.count('data-href="/apps/detail/once-app"') == 1
+
+
 def test_non_owner_without_grant_sees_no_app_row(seeded_app, monkeypatch):
     monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
     monkeypatch.setenv("AGNES_DATA_APPS_ENABLED", "1")

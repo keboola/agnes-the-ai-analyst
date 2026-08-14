@@ -88,6 +88,38 @@ def test_apps_redirects_to_library_under_rail_when_caller_sees_an_app(seeded_app
     assert resp.headers["location"] == "/library?section=files"
 
 
+def test_apps_redirects_under_rail_when_caller_is_granted_not_owner(seeded_app, monkeypatch):
+    """The redirect's predicate is owner OR granted — the granted half rides
+    the same fetched-once grant set the Library band uses (one lookup per
+    request, not one per registered app; Devin review on PR #1278)."""
+    import uuid
+
+    monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
+    monkeypatch.setenv("AGNES_DATA_APPS_ENABLED", "1")
+    _seed_app_for("admin1", slug="rt-granted-app")
+
+    from src.db import get_system_db
+    from src.repositories.user_group_members import UserGroupMembersRepository
+
+    conn = get_system_db()
+    try:
+        group_id = conn.execute("SELECT id FROM user_groups WHERE name = 'Everyone'").fetchone()[0]
+        UserGroupMembersRepository(conn).add_member("analyst1", group_id, source="test")
+        conn.execute(
+            "INSERT INTO resource_grants(id, group_id, resource_type, resource_id, "
+            "requirement, assigned_at, assigned_by) "
+            "VALUES (?, ?, 'data_app', 'rt-granted-app', 'available', CURRENT_TIMESTAMP, 'test')",
+            [str(uuid.uuid4()), group_id],
+        )
+    finally:
+        conn.close()
+
+    c = seeded_app["client"]
+    resp = c.get("/apps", headers=_auth(seeded_app["analyst_token"]), follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/library?section=files"
+
+
 def test_apps_keeps_empty_state_under_rail_when_caller_sees_none(seeded_app, monkeypatch):
     """A caller the Library would show NO app row must keep this page's
     explicit empty state — redirecting them lands on a Library whose

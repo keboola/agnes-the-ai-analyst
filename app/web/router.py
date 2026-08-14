@@ -5129,19 +5129,25 @@ async def data_apps_list_page(
     # same reasoning, page renders its explanatory note. 302, not 308
     # (layout/visibility flips must not be cached).
     if enabled and get_ui_layout() == "rail":
-        from app.auth.access import has_explicit_grant
         from app.resource_types import ResourceType
 
         # Same grant-scoped visibility as the Library band (owner or explicit
         # grant, no admin god-mode) — the redirect must predict exactly what
         # the band will render, or an admin with nothing of their own would
-        # bounce onto a Library with no app rows.
-        _visible_any = any(
-            r.get("state") != "linked_hidden"
-            and (
-                r["owner_user_id"] == user["id"]
-                or has_explicit_grant(user["id"], ResourceType.DATA_APP.value, r["slug"])
+        # bounce onto a Library with no app rows. The grant set is fetched
+        # ONCE, exactly as the band fetches it (`_granted_ids` in
+        # `library_page`) — a per-row `has_explicit_grant` call here was one
+        # grant lookup per registered app on every /apps hit (Devin review
+        # on PR #1278).
+        try:
+            _app_grants = set(
+                resource_grants_repo().list_resource_ids_for_user(user["id"], ResourceType.DATA_APP.value)
             )
+        except Exception as e:
+            logger.warning("/apps: could not resolve data-app grants: %s", e)
+            _app_grants = set()
+        _visible_any = any(
+            r.get("state") != "linked_hidden" and (r["owner_user_id"] == user["id"] or r["slug"] in _app_grants)
             # `limit=100000`, matching the Library band. The repo's default
             # cap is 1000 and it is applied in SQL BEFORE the ownership/grant
             # filter, so on a large instance an owner's older app drops out of
