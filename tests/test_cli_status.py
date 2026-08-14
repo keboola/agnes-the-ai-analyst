@@ -149,6 +149,38 @@ def test_same_table_in_both_trees_counts_once(tmp_path, monkeypatch):
     assert _count(tmp_path, monkeypatch) == 1
 
 
+def test_non_slug_name_in_both_trees_counts_once(tmp_path, monkeypatch):
+    """The two trees are keyed differently: the legacy tree's stem is the
+    flat manifest key (`sync_state.table_id` == `table_registry.name`), while
+    `_shared/` uses `table_registry.id`, which registration derives by
+    slugifying the name. A table named `Agnes Audit Log` therefore lands as
+    two different stems and was counted twice, inflating the total for any
+    workspace whose names carry spaces or capitals."""
+    _init(tmp_path)
+    legacy = tmp_path / "server" / "parquet"
+    legacy.mkdir(parents=True)
+    (legacy / "Agnes Audit Log.parquet").touch()  # stem = registry name
+    shared = tmp_path / ".claude" / "data" / "_shared"
+    shared.mkdir(parents=True)
+    (shared / "agnes_audit_log.parquet").touch()  # stem = registry id
+
+    assert _count(tmp_path, monkeypatch) == 1
+
+
+def test_non_slug_partitioned_dir_matches_shared_stem(tmp_path, monkeypatch):
+    """Same keying mismatch, partitioned layout: the legacy side is a
+    directory named after the registry name."""
+    _init(tmp_path)
+    parts = tmp_path / "server" / "parquet" / "Jira Issues"
+    (parts / "month=2026-01").mkdir(parents=True)
+    (parts / "month=2026-01" / "data.parquet").touch()
+    shared = tmp_path / ".claude" / "data" / "_shared"
+    shared.mkdir(parents=True)
+    (shared / "jira_issues.parquet").touch()
+
+    assert _count(tmp_path, monkeypatch) == 1
+
+
 def test_staging_and_empty_dirs_are_not_counted(tmp_path, monkeypatch):
     """An interrupted partitioned sync leaves a `.staging-<tid>` scratch dir
     and can leave an empty `<tid>/`; neither is queryable."""

@@ -26,6 +26,19 @@ _INIT_SENTINEL = Path(".claude") / "init-complete"
 _INIT_MARKER = "AI Data Analyst"
 
 
+def _table_key(stem: str) -> str:
+    """Normalize a parquet stem to the registry-id form, so the same table
+    counts once no matter which tree it came from.
+
+    Mirrors how `POST /api/admin/register-table` derives the id from the
+    name (`app/api/admin.py`): strip, lowercase, spaces to underscores.
+    Two distinct tables cannot collide under this mapping — registration
+    slugifies to the id, and ids are unique — so normalizing can only
+    merge the two spellings of ONE table, never two different ones.
+    """
+    return stem.strip().lower().replace(" ", "_")
+
+
 def _count_local_tables(workspace: Path) -> int:
     """Distinct tables queryable from this workspace's parquet trees.
 
@@ -39,12 +52,29 @@ def _count_local_tables(workspace: Path) -> int:
       a partitioned table no matter how many parts were on disk, so a
       workspace of Jira tables reported ``Parquets: 0`` while holding
       hundreds of part files.
-    - ``.claude/data/_shared/<tid>.parquet`` is the v49 stack sync's
+    - ``.claude/data/_shared/<id>.parquet`` is the v49 stack sync's
       canonical store, which the old count ignored entirely. Its
       ``_direct/`` and ``<package_slug>/`` siblings are reference links
       back into ``_shared`` (see ``cli/lib/pull_sync.py``), so counting
       ``_shared`` alone is what avoids counting one table once per package
       that ships it.
+
+    The two trees are keyed DIFFERENTLY, which is why the stems are
+    normalized before de-duplication rather than compared raw:
+
+    - legacy: ``<tid>.parquet`` where the flat manifest key is
+      ``sync_state.table_id`` (`app/api/sync.py`), which is
+      ``table_registry.name`` by convention (stated at
+      `app/api/admin.py`).
+    - shared: ``<id>.parquet`` from ``table["id"]``
+      (`cli/lib/pull_sync.py`), i.e. ``table_registry.id``.
+
+    Registration derives the id by slugifying the name, so a table named
+    ``Agnes Audit Log`` lands as ``Agnes Audit Log.parquet`` in the legacy
+    tree and ``agnes_audit_log.parquet`` in ``_shared``. Comparing raw
+    stems counted that table twice and roughly doubled the total for any
+    workspace whose table names carry spaces or capitals; only names that
+    are already slugs de-duplicated correctly.
 
     A directory with no parquet under it does not count: an interrupted
     partitioned sync leaves an empty ``<tid>/`` behind, and there is
@@ -61,14 +91,14 @@ def _count_local_tables(workspace: Path) -> int:
                 continue
             if entry.is_dir():
                 if any(entry.rglob("*.parquet")):
-                    table_ids.add(entry.name)
+                    table_ids.add(_table_key(entry.name))
             elif entry.suffix == ".parquet":
-                table_ids.add(entry.stem)
+                table_ids.add(_table_key(entry.stem))
 
     shared_dir = workspace / ".claude" / "data" / "_shared"
     if shared_dir.is_dir():
         for parquet in shared_dir.glob("*.parquet"):
-            table_ids.add(parquet.stem)
+            table_ids.add(_table_key(parquet.stem))
 
     return len(table_ids)
 
