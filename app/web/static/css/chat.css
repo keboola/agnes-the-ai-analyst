@@ -1463,7 +1463,10 @@ pre.code-block-wrap code .hljs-deletion {
 .cloud-chat-system-note {
   margin: 8px auto;
   padding: 6px 14px;
-  border-radius: var(--ds-radius-md);
+  /* --radius-md (style-custom.css), like the toast sibling below:
+     --ds-radius-md does not exist in the token set, and a var() to an
+     undefined property with no fallback voids the declaration (radius 0). */
+  border-radius: var(--radius-md);
   font-size: 0.85rem;
   text-align: center;
   max-width: 70%;
