@@ -99,6 +99,23 @@ def test_chat_route_html(api_client: TestClient, logged_in_user):
     assert 'class="chat-page-body"' in r.text
 
 
+def test_chat_route_composer_renders_without_legacy_welcome_cards(api_client: TestClient, logged_in_user):
+    """chat.html is single-surface now (no more ``ui_layout`` branching): the
+    composer form always renders, and the frozen pre-redesign capability
+    cards (``_chat_welcome_cards_legacy.html``, deleted alongside the
+    topnav chrome) never do."""
+    r = api_client.get("/chat")
+    assert r.status_code == 200
+    assert 'id="chat-form"' in r.text
+    # Markers unique to the deleted legacy partial — proves it isn't reachable
+    # by any remaining code path, not just that the literal filename is gone.
+    assert "cloud-chat-cap-card" not in r.text
+    assert "What can I help you with?" not in r.text
+    # The dashboard empty state (its replacement) is what actually renders.
+    assert 'id="chat-capabilities"' in r.text
+    assert "Ask" in r.text and "anything" in r.text
+
+
 def test_chat_route_redirects_when_disabled(api_client_chat_disabled: TestClient, logged_in_user):
     r = api_client_chat_disabled.get("/chat", follow_redirects=False)
     assert r.status_code in (302, 307)
