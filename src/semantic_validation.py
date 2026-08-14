@@ -315,11 +315,20 @@ def evaluate_constraints(
         if not applicable_metrics:
             continue
 
+        # ``severity``, like ``type`` below, may come from a hand-built
+        # constraint and is compared casefolded downstream (``valid`` keys off
+        # exactly "error") -- normalize it the same way extract_constraints
+        # does, or a hand-built "ERROR" silently degrades to advisory.
+        severity = constraint.get("severity")
+        severity = severity.casefold() if isinstance(severity, str) else ""
+        if severity not in ("error", "warning"):
+            severity = "warning"
+
         entry = {
             "name": constraint.get("name"),
             "type": constraint.get("type"),
             "rule": constraint.get("rule"),
-            "severity": constraint.get("severity") or "warning",
+            "severity": severity,
             "metrics": applicable_metrics,
         }
 

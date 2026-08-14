@@ -842,6 +842,35 @@ class TestConstraintCaseNormalization:
         assert [v["name"] for v in violations] == ["eu_only"]
         assert post_checks == []
 
+    def test_severity_case_variant_still_blocks_when_hand_built(self):
+        # Hand-built constraint with "ERROR": the violation entry must carry
+        # the casefolded severity, or ``valid`` (which keys off exactly
+        # "error") silently downgrades a blocking rule to advisory.
+        constraints = [
+            {
+                "name": "eu_only",
+                "type": "required_filter",
+                "rule": "region = 'EU'",
+                "severity": "ERROR",
+                "metrics": ["revenue"],
+            }
+        ]
+        violations, _ = evaluate_constraints(constraints, ["revenue"], "SELECT revenue FROM orders")
+        assert [v["severity"] for v in violations] == ["error"]
+
+    def test_severity_unknown_value_defaults_to_warning_when_hand_built(self):
+        constraints = [
+            {
+                "name": "eu_only",
+                "type": "required_filter",
+                "rule": "region = 'EU'",
+                "severity": "critical",
+                "metrics": ["revenue"],
+            }
+        ]
+        violations, _ = evaluate_constraints(constraints, ["revenue"], "SELECT revenue FROM orders")
+        assert [v["severity"] for v in violations] == ["warning"]
+
 
 class TestDialectJoinCallerCase:
     """Devin Review on PR #1319 (round 6): ``check_dialects`` is public API
