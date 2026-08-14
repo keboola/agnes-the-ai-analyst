@@ -10,6 +10,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Internal
+
+- Semantic-layer groundwork: `src/semantic_validation.py` — pure validator core over semantic-model documents (used-object detection, constraint evaluation with static/post-execution split, dialect checks incl. `locally_executable`). No user-visible surface yet; REST/CLI/MCP wiring and the UI land with the storage slice per `docs/superpowers/specs/2026-08-14-semantic-layer-ui-and-agent-parity-design.md`.
+
 ### Fixed
 
 - **A redirect no longer kills `agnes diagnose` — the command whose whole job is to tell you what is wrong.** Measured against a real relocated deployment: an unreachable server produces exit 0 and the full JSON checklist with an `api: error` row, while a server answering `308` produced exit 2, empty stdout and not a single check. The shared HTTP client refuses a redirect from an httpx *response event hook* and ended the process right there with `sys.exit(2)`, deep inside somebody else's `api_get(...)`. `SystemExit` derives from `BaseException`, so it walks straight through `except Exception` — which is how it voided the two callers built precisely to survive a failed request: `diagnose`, which records a row per failed check, and `agnes update`, whose `_run_step` exists so one bad step cannot abort a convergence run and which therefore died before writing its report. Both now handle it, and it is delivered as `RedirectHardStop` rather than a process exit.
