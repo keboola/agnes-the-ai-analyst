@@ -6,14 +6,13 @@ whichever side is wrong (DuckDB is the contract authority).
 
 Follows the pattern established in ``test_data_packages_contract.py``
 (Task 1D.1). Both backends are seeded with ``knowledge_items`` rows
-(``ki_1``, ``ki_2``) so the ``knowledge_item_domains`` bridge tests
-have valid item_ids to point at.
-
-Schema-drift note (Task 1B.2): the PG ``knowledge_items`` table doesn't
-have an ``is_required`` column yet; the PG repo's
-``list_items_of_domain`` projects ``FALSE AS is_required`` for shape
-parity. DuckDB seeds default ``is_required = FALSE`` too, so both sides
-naturally return False here — no special-casing needed.
+(``ki_1``, ``ki_2``, and the REQUIRED ``ki_req``) so the
+``knowledge_item_domains`` bridge tests have valid item_ids to point at.
+``ki_req`` exists to make the required-count halves comparable: both
+schemas carry ``knowledge_items.is_required`` (DuckDB since the v49
+cutover, PG since ``0012_duckdb_v59_parity``), and a fixture set that
+leaves every row at FALSE lets a backend that hardcodes 0 pass by
+coincidence.
 """
 
 from __future__ import annotations
@@ -32,20 +31,29 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # ---------------------------------------------------------------------------
 
 
+_SEED_ITEMS = (
+    ("ki_1", "First fact", False),
+    ("ki_2", "Second fact", False),
+    # A governance-Required item: the required half of every count below must
+    # come from the real ``is_required`` column on BOTH backends.
+    ("ki_req", "Third fact (required)", True),
+)
+
+
 def _seed_knowledge_items_duckdb(conn) -> None:
-    for kid, title in (("ki_1", "First fact"), ("ki_2", "Second fact")):
+    for kid, title, required in _SEED_ITEMS:
         conn.execute(
-            "INSERT INTO knowledge_items (id, title) VALUES (?, ?)",
-            [kid, title],
+            "INSERT INTO knowledge_items (id, title, is_required) VALUES (?, ?, ?)",
+            [kid, title, required],
         )
 
 
 def _seed_knowledge_items_pg(engine) -> None:
     with engine.begin() as conn:
-        for kid, title in (("ki_1", "First fact"), ("ki_2", "Second fact")):
+        for kid, title, required in _SEED_ITEMS:
             conn.execute(
-                sa.text("INSERT INTO knowledge_items (id, title) VALUES (:id, :title)"),
-                {"id": kid, "title": title},
+                sa.text("INSERT INTO knowledge_items (id, title, is_required) VALUES (:id, :title, :req)"),
+                {"id": kid, "title": title, "req": required},
             )
 
 
@@ -224,17 +232,14 @@ def test_count_items_by_domain_consistent(repo):
     Exists so /library can show the per-domain counts without loading every
     knowledge item's full body (Devin review on PR #1278).
 
-    SCOPE OF WHAT THIS ASSERTS — read before trusting it as parity. Only the
-    ITEM count is verified across engines. The required half agrees here at
-    ``0`` because both sides happen to produce 0 for these fixtures, NOT
-    because the two backends compute it the same way: DuckDB reads a real
-    ``knowledge_items.is_required`` column that these items leave at its
-    ``FALSE`` default, while PG hardcodes the literal ``0`` since the column
-    does not exist in that schema at all. Seed a REQUIRED item and the two
-    diverge — DuckDB counts it, PG cannot. So this test pins the shape and
-    the item count; it does not, and today cannot, catch required-count
-    drift. Closing that needs a schema migration on both ladders (see
-    ``count_items_by_domain`` in ``memory_domains_pg.py``).
+    BOTH halves are verified across engines. The fixture set deliberately
+    includes a REQUIRED item (``ki_req``): with only-FALSE fixtures the
+    required half agreed at ``0`` by coincidence, so a backend that
+    hardcodes the literal 0 — as the PG repo did while its docstrings still
+    claimed the column was missing from that schema — passed a test that
+    existed to catch exactly that drift (Devin review on PR #1278). A
+    PG-backed instance rendered "3 items" where DuckDB rendered
+    "3 items · 1 required", so a governance mandate was invisible there.
     """
     a = repo.create(
         name="A",
@@ -254,11 +259,31 @@ def test_count_items_by_domain_consistent(repo):
     )
     repo.add_item(a, "ki_1", added_by="u")
     repo.add_item(a, "ki_2", added_by="u")
+    repo.add_item(a, "ki_req", added_by="u")
     counts = repo.count_items_by_domain()
-    assert counts[a] == (2, 0)
+    assert counts[a] == (3, 1)
     # A domain with no items has no row at all — callers .get() with a
     # known-zero default rather than expecting an entry.
     assert b not in counts
+
+
+def test_list_items_of_domain_projects_the_real_required_flag(repo):
+    """``list_items_of_domain`` must read ``knowledge_items.is_required``,
+    not project a literal — the manifest builder counts required items and
+    hashes content off this projection, so a hardcoded ``FALSE`` on one
+    backend hides every mandate from analysts on that backend."""
+    did = repo.create(
+        name="Req",
+        slug="req-proj",
+        description=None,
+        icon=None,
+        color=None,
+        created_by="u",
+    )
+    repo.add_item(did, "ki_1", added_by="u")
+    repo.add_item(did, "ki_req", added_by="u")
+    items = {r["id"]: r["is_required"] for r in repo.list_items_of_domain(did)}
+    assert items == {"ki_1": False, "ki_req": True}
 
 
 def test_list_domains_of_item_joins_correctly(repo):

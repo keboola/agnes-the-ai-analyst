@@ -3626,8 +3626,15 @@ async def library_page(
                 _da_created = da.get("created_at")
                 items.append(
                     _library_row_base(
+                        # `kind` only surfaces as the row's inert `data-kind`
+                        # attribute today (no CSS/JS reads it — the band
+                        # accent rides the SECTION's kind), but say what the
+                        # row is: the sibling app block on main said
+                        # "data_app", and a future consumer keying on
+                        # data-kind must not find apps filed as "library"
+                        # (Devin review on PR #1278).
                         item_id=da["slug"],
-                        kind="library",
+                        kind="data_app",
                         title=da.get("name") or da["slug"],
                         description=_da.get("effective_description") or "",
                         href=f"/apps/detail/{da['slug']}",
@@ -3637,6 +3644,16 @@ async def library_page(
                         origin="built" if _da_mine else "granted",
                         origin_label="Built here" if _da_mine else "Shared with you",
                         added_iso=_da_created.isoformat() if hasattr(_da_created, "isoformat") else None,
+                        # The owner's EMAIL on a grantee's row — deliberate,
+                        # though sibling granted kinds say "Your workspace".
+                        # Every other surface a granted viewer reaches already
+                        # names the owner: /apps renders owner_email in its
+                        # Owner column and /apps/detail/<slug> (this row's
+                        # href, both chromes) shows the same field, all behind
+                        # the same `_can_view` visibility this row mirrors. An
+                        # app grant is an act by a person — hiding the email
+                        # only here would have the Library disagree with the
+                        # page it links to (Devin review on PR #1278).
                         owner_label="You" if _da_mine else (_da_owner.get("email") or da["owner_user_id"]),
                         ownership=(
                             "shared_by_me"

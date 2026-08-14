@@ -15,14 +15,17 @@ Implementation differences vs. DuckDB:
   the PG side (Task 1A.3 decision); ``hard_delete`` keeps the explicit
   junction wipe as belt-and-braces parity with the DuckDB sibling.
 
-Schema drift note: the DuckDB ``knowledge_items`` table has an
-``is_required`` column (v55) that the PG model does NOT replicate (Task
-1A.3 scope was the v49+ Memory Domains entities, not the v55 column on
-the pre-existing knowledge_items table). The DuckDB sibling's
-``list_items_of_domain`` projects ``ki.is_required`` and ``ki.content``;
-the PG mirror surfaces a literal ``False`` for ``is_required`` so the
-return-shape stays parity-compatible. Closing this drift is plan-Task
-followup — see commit body.
+Schema drift note, RESOLVED: this module was written while the PG
+``knowledge_items`` table still lacked the ``is_required`` column, so
+``list_items_of_domain`` projected a literal ``FALSE`` and
+``count_items_by_domain`` a literal ``0``. The column has existed on the
+PG ladder since ``0012_duckdb_v59_parity`` (nullable Boolean, mirrored in
+``src/models/knowledge.py`` and persisted by ``knowledge_pg.py``), which
+made both literals silent parity bugs — a PG-backed Library rendered
+"3 items" where DuckDB rendered "3 items · 1 required" (Devin review on
+PR #1278). Both reads now use the real column; ``NULL`` (rows written
+before the column, or by writers that omit it) counts as not-required,
+matching DuckDB's ``DEFAULT FALSE`` semantics.
 """
 
 from __future__ import annotations
@@ -317,9 +320,12 @@ class MemoryDomainsPgRepository:
         """Items tagged with a given domain (title-ordered).
 
         Projects ``id, title, status, is_required, content`` for parity
-        with the DuckDB sibling. ``knowledge_items.is_required`` does
-        NOT exist in the PG schema yet (see module docstring); surfaces
-        as a literal ``False`` so the return shape matches.
+        with the DuckDB sibling — ``is_required`` is the REAL column
+        (present since ``0012_duckdb_v59_parity``; a stale literal
+        ``FALSE`` here hid every governance mandate on this backend, see
+        module docstring). The column is nullable on PG; the ``bool()``
+        in the row mapping folds ``NULL`` to ``False``, matching
+        DuckDB's ``DEFAULT FALSE``.
         """
         with self._engine.connect() as conn:
             rows = (
@@ -327,7 +333,7 @@ class MemoryDomainsPgRepository:
                     sa.text(
                         """
                     SELECT ki.id, ki.title, ki.status,
-                           FALSE AS is_required,
+                           ki.is_required,
                            ki.content
                     FROM knowledge_item_domains kid
                     JOIN knowledge_items ki ON ki.id = kid.item_id
@@ -355,29 +361,22 @@ class MemoryDomainsPgRepository:
     def count_items_by_domain(self) -> Dict[str, tuple]:
         """Per-domain ``(items, required)`` counts in ONE grouped query.
 
-        Parity sibling of the DuckDB method — for the ITEM count. The
-        required half is a literal 0 because ``knowledge_items.is_required``
-        does not exist in the PG schema at all (see module docstring), the
-        same posture as ``list_items_of_domain``'s ``FALSE AS is_required``.
-
-        Stated in product terms, because "missing column" understates it: on
-        a Postgres-backed instance the Library renders "3 items" where DuckDB
-        renders "3 items · 1 required", so a required MANDATE is invisible on
-        this backend. The cross-engine contract test pins ``(2, 0)``, which
-        certifies the gap rather than catching it — it is documented there too.
-
-        Bounded, though: `requirement == "required"` on the GRANT lives in
-        ``resource_grants``, not here, so the Library's empty-domain rule and
-        the "required" chip are unaffected. What is lost is the `· N required`
-        suffix. Closing it is a schema change — an Alembic step plus the
-        matching ``_vN_to_v(N+1)`` rung in ``src/db.py``, a backfill, and
-        reworking every PG read that hardcodes the column away.
+        Parity sibling of the DuckDB method, for BOTH halves — the same
+        ``SUM(CASE ...)`` over the real ``knowledge_items.is_required``
+        column (a stale literal ``0`` here made a Postgres-backed Library
+        render "3 items" where DuckDB rendered "3 items · 1 required", so a
+        governance mandate was invisible on this backend; see module
+        docstring — Devin review on PR #1278). ``NULL`` falls to the
+        ``ELSE 0`` arm, matching DuckDB's ``DEFAULT FALSE`` semantics. The
+        cross-engine contract test seeds a required item so the two
+        backends must agree on ``(3, 1)``.
         """
         with self._engine.connect() as conn:
             rows = conn.execute(
                 sa.text(
                     """
-                    SELECT kid.domain_id, COUNT(*) AS n, 0 AS required
+                    SELECT kid.domain_id, COUNT(*) AS n,
+                           COALESCE(SUM(CASE WHEN ki.is_required THEN 1 ELSE 0 END), 0) AS required
                     FROM knowledge_item_domains kid
                     JOIN knowledge_items ki ON ki.id = kid.item_id
                     GROUP BY kid.domain_id
