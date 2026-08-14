@@ -697,3 +697,83 @@ def test_library_own_artefact_keeps_a_real_stack_toggle(seeded_app):
     assert "data-remove-from-stack" in row  # …and removable once added
     assert "lib-instack--fixed" not in row
     assert "lib-instack--locked" not in row
+
+
+# ── Hosted data apps ────────────────────────────────────────────────────────
+#
+# The Library is "everything you have", and an app built from chat is as much
+# yours as a collection you uploaded. Until it was listed here a `rail`
+# instance could not reach one at all: the "Apps" nav entry shipped in the
+# topnav template only, so the feature ran, served, and had nothing anywhere
+# in the UI pointing at it.
+
+_APP_GLYPH = "M3.5 9h17"  # browser window with a title bar — a thing you open
+
+
+def _seed_app(seeded_app, slug: str, name: str, monkeypatch):
+    monkeypatch.setenv("AGNES_DATA_APPS_ENABLED", "true")
+    from src.repositories import data_apps_repo
+
+    data_apps_repo().create(slug=slug, name=name, owner_user_id="admin1")
+
+
+def test_library_lists_a_hosted_data_app(seeded_app, monkeypatch):
+    _seed_app(seeded_app, "libapp", "Library App Demo", monkeypatch)
+    r = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"]))
+    assert r.status_code == 200
+    assert "Library App Demo" in r.text, "an owned data app must appear in the Library"
+    assert "/apps/detail/libapp" in r.text, "the row must link to the app's detail page"
+
+
+def test_library_data_app_row_carries_the_app_glyph(seeded_app, monkeypatch):
+    _seed_app(seeded_app, "glyphapp", "Glyph App", monkeypatch)
+    r = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"]))
+    assert _APP_GLYPH in r.text, "data-app rows should not borrow the doc/plugin glyph"
+
+
+def test_library_hides_data_apps_when_the_feature_is_off(seeded_app, monkeypatch):
+    """A row linking to a 404 is worse than no row."""
+    _seed_app(seeded_app, "offapp", "Disabled App", monkeypatch)
+    monkeypatch.setenv("AGNES_DATA_APPS_ENABLED", "false")
+    r = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"]))
+    assert "Disabled App" not in r.text
+
+
+def test_library_excludes_drafts(seeded_app, monkeypatch):
+    """A draft is an iteration branch of an app, not an app — the same
+    exclusion `/apps` makes."""
+    _seed_app(seeded_app, "parentapp", "Parent App", monkeypatch)
+    from src.repositories import data_apps_repo
+
+    repo = data_apps_repo()
+    parent = repo.get_by_slug("parentapp")
+    repo.create_draft(
+        parent_app_id=parent["id"],
+        slug="parentapp--wip",
+        branch="wip",
+        owner_user_id="admin1",
+    )
+    r = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"]))
+    assert "Parent App" in r.text
+    assert "parentapp--wip" not in r.text
+
+
+def test_library_does_not_give_an_admin_every_app_in_the_instance(seeded_app, monkeypatch):
+    """The Library is "what you have", NOT an audit view.
+
+    `library_page`'s own docstring says so: "Deliberately NOT admin god-mode
+    — an admin still sees their own Library, not every item in the instance
+    (the audit view is /admin/access)". Reusing `data_apps._can_view` here
+    broke that, because it short-circuits True for any admin — so an admin's
+    Library listed every hosted app including other people's private ones,
+    labelled "Shared with you" (Devin Review on this PR).
+    """
+    monkeypatch.setenv("AGNES_DATA_APPS_ENABLED", "true")
+    from src.repositories import data_apps_repo, users_repo
+
+    users_repo().create(id="someone_else", email="someone.else@test.com", name="Someone Else")
+    data_apps_repo().create(slug="notyours", name="Not Your App", owner_user_id="someone_else")
+
+    r = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"]))
+    assert r.status_code == 200
+    assert "Not Your App" not in r.text, "an admin must not see another user's app in their own Library"

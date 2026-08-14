@@ -24,6 +24,7 @@ if sys.platform == "win32":
     except (AttributeError, OSError):
         pass
 
+from cli.commands.attachment import attachment_app
 from cli.commands.auth import auth_app
 from cli.commands.chat import chat_app
 from cli.commands.init import init_app
@@ -289,6 +290,7 @@ def _maybe_warn_token_expiry() -> None:
 
 
 # Register subcommands
+app.add_typer(attachment_app, name="attachment")
 app.add_typer(auth_app, name="auth")
 app.add_typer(chat_app, name="chat")
 app.add_typer(init_app, name="init")

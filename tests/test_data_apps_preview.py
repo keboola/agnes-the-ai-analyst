@@ -89,6 +89,9 @@ def preview_api_env(e2e_env, monkeypatch):
 
         apps_repo = DataAppsRepository(conn)
         apps_repo.create(slug="dash", name="DASH", owner_user_id="owner1")
+        # Second app owned by the same user — two apps previewed by one browser
+        # is the collision case (`test_two_apps_previews_coexist`).
+        apps_repo.create(slug="dash-two", name="DASH TWO", owner_user_id="owner1")
 
         from src.repositories.resource_grants import ResourceGrantsRepository
 
@@ -111,15 +114,72 @@ class TestPreviewGrantEndpoint:
         body = r.json()
         assert "preview_cookie" in body and "expires_at" in body
         cookie = body["preview_cookie"]
-        assert "Path=/apps/dash/" in cookie
+        # `Path=/`, NOT `/apps/dash/`. The holding page polls
+        # `/api/data-apps/dash/readiness`, which the narrower path does not
+        # cover — a browser would never attach the credential, so the poll
+        # 401'd forever and the preview spun while the app was up. The
+        # per-app pin lives in the token scope (`data-app-preview:dash`),
+        # never in the cookie path, so the wider path grants nothing extra.
+        assert "Path=/;" in cookie
+        assert "Path=/apps/" not in cookie
         assert "SameSite=Lax" in cookie
         assert "HttpOnly" in cookie
+        # …and the per-app scoping the path used to provide implicitly now sits
+        # in the NAME, so two apps' credentials still occupy two jar slots.
+        assert cookie.startswith("adp_preview_dash=")
         # The cookie must ALSO ride a real Set-Cookie response header — an
         # HttpOnly cookie can only be installed by the browser via the server's
         # Set-Cookie (the frontend fetches this endpoint same-origin), never
         # through document.cookie, which silently discards HttpOnly cookies.
         set_cookie = r.headers.get("set-cookie", "")
-        assert set_cookie.startswith("adp_preview=") and "HttpOnly" in set_cookie
+        assert set_cookie.startswith("adp_preview_dash=") and "HttpOnly" in set_cookie
+
+    def test_two_apps_previews_coexist(self, preview_api_env):
+        """Previewing a second app must not knock out the first one's preview.
+
+        A browser keys a cookie on `(name, domain, path)`. With `Path=/` — which
+        the readiness poll needs — one shared cookie NAME means the second app's
+        grant lands in the same jar slot and evicts the first's, and since the
+        slug pin lives in the token scope, the survivor resolves to `(None,
+        False)` for the other app: its poll 401s forever while the app is
+        healthy. Two chat tabs previewing two apps is the ordinary case.
+
+        The readiness poll goes out with NO `Authorization` header on purpose —
+        that is exactly how the holding page's `fetch(..., {credentials: ...})`
+        calls it, so the cookie jar is the only credential under test.
+        """
+        env = preview_api_env
+        client = env["client"]
+
+        assert client.post("/api/data-apps/dash/preview-grant", headers=_auth(env["owner_pat"])).status_code == 200
+        assert client.post("/api/data-apps/dash-two/preview-grant", headers=_auth(env["owner_pat"])).status_code == 200
+
+        first = client.get("/api/data-apps/dash/readiness")
+        assert first.status_code == 200, f"the first app's preview was evicted by the second: {first.text}"
+        second = client.get("/api/data-apps/dash-two/readiness")
+        assert second.status_code == 200, second.text
+
+        # Minting in the other order must be symmetric — neither app is special.
+        client.cookies.clear()
+        assert client.post("/api/data-apps/dash-two/preview-grant", headers=_auth(env["owner_pat"])).status_code == 200
+        assert client.post("/api/data-apps/dash/preview-grant", headers=_auth(env["owner_pat"])).status_code == 200
+        assert client.get("/api/data-apps/dash-two/readiness").status_code == 200
+        assert client.get("/api/data-apps/dash/readiness").status_code == 200
+
+    def test_a_preview_cookie_does_not_authorize_another_app(self, preview_api_env):
+        """Per-app cookie naming must not become a way to reach a second app.
+
+        The slug pin lives in the token's `data-app-preview:<slug>` scope, and
+        that check is what a widened `Path` (and now a per-app name) leans on.
+        A jar holding ONLY `dash`'s credential must still be refused on
+        `dash-two`.
+        """
+        env = preview_api_env
+        client = env["client"]
+
+        assert client.post("/api/data-apps/dash/preview-grant", headers=_auth(env["owner_pat"])).status_code == 200
+        assert client.get("/api/data-apps/dash/readiness").status_code == 200
+        assert client.get("/api/data-apps/dash-two/readiness").status_code == 401
 
     def test_grantee_can_request_a_grant(self, preview_api_env):
         """Unlike git-credential, preview-grant is view-access, not
