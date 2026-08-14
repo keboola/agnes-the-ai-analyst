@@ -573,7 +573,20 @@ def _sql_referenced_names(sql: str) -> set[str] | None:
     """
     if len(sql) > _MAX_ORACLE_SQL_CHARS or not _oracle_answers_as_expected():
         return None
-    return _sql_referenced_names_unguarded(sql)
+    try:
+        return _sql_referenced_names_unguarded(sql)
+    except Exception:
+        # The walk can raise on a serialized shape the probe's SELECT never
+        # exercises (a future DuckDB handing back a non-string table_name,
+        # say). An access question must degrade to the text scan, not surface
+        # as a request error. The probe keeps calling the unguarded form, so
+        # a breakage still gets diagnosed there.
+        _warn_probe_failure(
+            "DuckDB parse oracle raised while walking a query's parse tree; "
+            "falling back to the text scan for this query.",
+            exc_info=True,
+        )
+        return None
 
 
 def _sql_referenced_names_unguarded(sql: str) -> set[str] | None:

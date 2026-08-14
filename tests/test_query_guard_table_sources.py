@@ -216,6 +216,20 @@ def test_oracle_retries_after_a_raised_probe(monkeypatch):
     assert query_module._ORACLE_HEALTHY is None, "a transient failure must not latch"
 
 
+def test_walk_exception_on_a_real_query_degrades_to_the_text_scan(monkeypatch):
+    """A healthy-latched oracle can still raise on a real query's tree — a
+    serialized shape the probe's plain SELECT never exercises. An access
+    question must degrade to the text scan, not surface as a request error."""
+
+    def boom(sql):
+        raise RuntimeError("unexpected serialized shape")
+
+    monkeypatch.setattr(query_module, "_ORACLE_HEALTHY", True)
+    monkeypatch.setattr(query_module, "_oracle_probe_warned_at", None)
+    monkeypatch.setattr(query_module, "_sql_referenced_names_unguarded", boom)
+    assert query_module._sql_referenced_names("select * from t") is None
+
+
 def test_oracle_declines_oversized_sql(monkeypatch):
     """The parse tree costs ~6 MB of Python objects for a 16k-char statement
     and grows linearly, on a field with no length limit, so past the ceiling
