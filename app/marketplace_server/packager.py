@@ -50,6 +50,34 @@ MARKETPLACE_NAME = "agnes"
 _ETAG_CACHE_TTL = int(os.environ.get("AGNES_MARKETPLACE_ETAG_TTL", "120"))
 _ETAG_CACHE: Optional[TTLCache] = TTLCache(maxsize=512, ttl=_ETAG_CACHE_TTL) if _ETAG_CACHE_TTL > 0 else None
 _ETAG_CACHE_LOCK = threading.Lock()
+
+# Per-etag build locks. The router handlers run in the anyio thread pool
+# (event-loop offload), so identical /marketplace.zip builds — e.g. a
+# morning burst of Claude Code SessionStarts sharing one marketplace view —
+# could otherwise run concurrently, each holding the full uncompressed
+# content in memory at once. The result is NOT cached (the ZIP embeds a
+# per-request .agnes/version.json), so this only serializes same-view
+# builds; distinct views still build in parallel. Etags churn (nightly sync
+# bumps versions), hence the unheld-lock prune that keeps the registry from
+# growing forever.
+_ZIP_BUILD_LOCKS: Dict[str, threading.Lock] = {}
+_ZIP_BUILD_LOCKS_GUARD = threading.Lock()
+
+
+def _zip_build_lock(etag: str) -> threading.Lock:
+    with _ZIP_BUILD_LOCKS_GUARD:
+        lock = _ZIP_BUILD_LOCKS.get(etag)
+        if lock is None:
+            if len(_ZIP_BUILD_LOCKS) > 128:
+                # Drop only unheld locks: every in-flight build stays
+                # serialized; a rare re-creation for a just-dropped key at
+                # worst allows one duplicate concurrent build.
+                for stale in [k for k, v in _ZIP_BUILD_LOCKS.items() if not v.locked()]:
+                    del _ZIP_BUILD_LOCKS[stale]
+            lock = _ZIP_BUILD_LOCKS[etag] = threading.Lock()
+        return lock
+
+
 MARKETPLACE_OWNER = {"name": "Agnes"}
 MARKETPLACE_DESCRIPTION = "Aggregated per-user Claude Code marketplace — served by Agnes"
 DETERMINISTIC_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
@@ -119,7 +147,11 @@ def build_info(conn: duckdb.DuckDBPyConnection, user: dict) -> Dict[str, Any]:
     marketplace view is admin-curated, Store-installed, or both.
     """
     plugins = marketplace_filter.resolve_user_marketplace(conn, user)
-    etag = marketplace_filter.compute_etag(plugins)
+    # Cached: /marketplace/info backs the AI-Connector page's package list,
+    # so an uncached compute_etag here re-hashed every plugin byte on every
+    # page view — on an instance with a large plugin that stalled the list
+    # ("Loading your packages…") for the full hash each time.
+    etag = _etag_for_plugins(plugins)
 
     def _entry(p: dict) -> Dict[str, Any]:
         return {
@@ -321,6 +353,29 @@ def _etag_cache_key(plugins: List[dict]) -> tuple:
     return tuple(sorted((p["prefixed_name"], p.get("version") or "", str(p["plugin_dir"])) for p in plugins))
 
 
+def _etag_for_plugins(plugins: List[dict]) -> str:
+    """Content-addressed ETag for a resolved plugin set, through the TTL cache.
+
+    The expensive part of ``compute_etag`` is a SHA-256 over every plugin
+    file on disk; the cache (keyed on the resolved set) makes repeat calls
+    within the TTL free. Shared by ``compute_etag_for_user`` (the
+    ``/marketplace.zip`` hot path) and ``build_info`` (``/marketplace/info``,
+    which the AI-Connector package list polls) so neither path re-hashes a
+    stable marketplace per request.
+    """
+    if _ETAG_CACHE is None:
+        return marketplace_filter.compute_etag(plugins)
+    cache_key = _etag_cache_key(plugins)
+    with _ETAG_CACHE_LOCK:
+        cached = _ETAG_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    etag = marketplace_filter.compute_etag(plugins)
+    with _ETAG_CACHE_LOCK:
+        _ETAG_CACHE[cache_key] = etag
+    return etag
+
+
 def compute_etag_for_user(conn: duckdb.DuckDBPyConnection, user: dict) -> Tuple[str, List[dict]]:
     """Resolve the user's served plugin set (admin grants minus opt-outs,
     plus Store installs) and compute its content-addressed ETag.
@@ -329,17 +384,7 @@ def compute_etag_for_user(conn: duckdb.DuckDBPyConnection, user: dict) -> Tuple[
     the resolved plugin set and skip the second DB query.
     """
     plugins = marketplace_filter.resolve_user_marketplace(conn, user)
-    if _ETAG_CACHE is None:
-        return marketplace_filter.compute_etag(plugins), plugins
-    cache_key = _etag_cache_key(plugins)
-    with _ETAG_CACHE_LOCK:
-        cached = _ETAG_CACHE.get(cache_key)
-    if cached is not None:
-        return cached, plugins
-    etag = marketplace_filter.compute_etag(plugins)
-    with _ETAG_CACHE_LOCK:
-        _ETAG_CACHE[cache_key] = etag
-    return etag, plugins
+    return _etag_for_plugins(plugins), plugins
 
 
 def invalidate_etag_cache() -> None:
@@ -369,10 +414,24 @@ def build_zip(
 
     Callers that already resolved plugins + etag (e.g. the router after an
     If-None-Match miss) pass them as kwargs so we don't redo the work.
+
+    Builds for the same etag are serialized (see ``_zip_build_lock``) so
+    concurrent identical requests from the thread pool don't each hold the
+    full uncompressed content in memory at once.
     """
     if plugins is None or etag is None:
         etag, plugins = compute_etag_for_user(conn, user)
 
+    with _zip_build_lock(etag):
+        return _build_zip_locked(conn, user, plugins, etag)
+
+
+def _build_zip_locked(
+    conn: duckdb.DuckDBPyConnection,
+    user: dict,
+    plugins: List[dict],
+    etag: str,
+) -> Tuple[bytes, str]:
     members = _collect_members(plugins, etag)
 
     diag_user_id, diag_email = _diag_identity(user)

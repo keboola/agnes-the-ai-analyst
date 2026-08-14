@@ -97,6 +97,25 @@ _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---", re.DOTALL)
 _ZIP_CACHE: TTLCache = TTLCache(maxsize=16, ttl=300)
 _ZIP_CACHE_LOCK = threading.Lock()
 
+# Single-flight build locks, keyed on prefixed_name (bounded by the plugin
+# count; a version bump reuses its plugin's lock, which at worst serializes
+# two builds that would each cache under their own key). The router handler
+# runs in the anyio thread pool, so concurrent downloads of the same plugin
+# would otherwise each walk + transform + deflate the full content — N× CPU
+# and N× the uncompressed bytes in memory for one artifact. With the lock,
+# the first thread builds and caches; the rest wait and serve the cached
+# result via the double-check in get_cowork_zip.
+_BUILD_LOCKS: Dict[str, threading.Lock] = {}
+_BUILD_LOCKS_GUARD = threading.Lock()
+
+
+def _build_lock(prefixed_name: str) -> threading.Lock:
+    with _BUILD_LOCKS_GUARD:
+        lock = _BUILD_LOCKS.get(prefixed_name)
+        if lock is None:
+            lock = _BUILD_LOCKS[prefixed_name] = threading.Lock()
+        return lock
+
 
 # ─────────────────────────── content transforms ────────────────────────────
 
@@ -570,7 +589,7 @@ def invalidate_cache() -> None:
 
 
 def get_cowork_zip(plugin: dict) -> Tuple[bytes, str]:
-    """Cached single-collect entry point. Returns (zip_bytes, etag).
+    """Cached, single-flight entry point. Returns (zip_bytes, etag).
 
     Builds at most once per ``(prefixed_name, version)`` within the cache TTL
     — so a download plus its If-None-Match revalidations don't each re-walk
@@ -580,15 +599,30 @@ def get_cowork_zip(plugin: dict) -> Tuple[bytes, str]:
     the key because per-user bundles (e.g. ``flea``) share one
     ``prefixed_name`` across users but differ in content — keying on
     ``prefixed_name`` alone would serve User A's bundle to User B on a TTL hit.
+
+    Concurrent misses for the same plugin are single-flighted through a
+    per-plugin lock: one thread builds, the rest block briefly and then hit
+    the cache on the re-check. Without this, a user double-clicking a slow
+    download (or several users grabbing the same package) would run the full
+    walk + deflate once per request in parallel threads. A failed build
+    (``CoworkZipError``) is deliberately not negative-cached — the next
+    request re-attempts against current on-disk content.
     """
     key = (plugin.get("prefixed_name") or "", plugin.get("version") or "")
-    if key[0]:
+    if not key[0]:
+        return build_cowork_zip(plugin)  # no identity to key a cache/lock on
+    with _ZIP_CACHE_LOCK:
+        hit = _ZIP_CACHE.get(key)
+    if hit is not None:
+        return hit
+    with _build_lock(key[0]):
+        # Re-check under the build lock: the thread that held it before us
+        # may have already built and cached this exact key.
         with _ZIP_CACHE_LOCK:
             hit = _ZIP_CACHE.get(key)
         if hit is not None:
             return hit
-    result = build_cowork_zip(plugin)
-    if key[0]:
+        result = build_cowork_zip(plugin)
         with _ZIP_CACHE_LOCK:
             _ZIP_CACHE[key] = result
-    return result
+        return result
