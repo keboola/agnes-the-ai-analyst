@@ -14,6 +14,8 @@ a construct turns a deny check into a bypass, which is exactly what the
 
 from __future__ import annotations
 
+import logging
+
 import duckdb
 import pytest
 from fastapi import HTTPException
@@ -165,6 +167,39 @@ def test_oracle_retries_when_the_probe_returns_no_answer(monkeypatch):
     monkeypatch.undo()
     monkeypatch.setattr(query_module, "_ORACLE_HEALTHY", None)
     assert query_module._sql_referenced_names("select * from t") == {"t"}, "must recover once the engine does"
+
+
+def test_permanent_probe_failure_does_not_log_per_request(monkeypatch, caplog):
+    """Re-probing forever is the right call for a transient, but if the
+    condition is permanent the same warning would land on every request and
+    bury the log it needs to appear in. First occurrence logs; the rest are
+    throttled, while every request still re-probes and still falls back."""
+
+    def broken_connection():
+        raise RuntimeError("permanent: parse connection unavailable")
+
+    monkeypatch.setattr(query_module, "_ORACLE_HEALTHY", None)
+    monkeypatch.setattr(query_module, "_oracle_probe_warned_at", None)
+    monkeypatch.setattr(query_module, "_parse_connection", broken_connection)
+
+    with caplog.at_level(logging.WARNING, logger=query_module.logger.name):
+        for _ in range(25):
+            assert query_module._sql_referenced_names("select * from t") is None
+
+    warnings = [r for r in caplog.records if "parse oracle self-check" in r.message]
+    assert len(warnings) == 1, f"expected one throttled warning across 25 requests, got {len(warnings)}"
+
+    # The throttle must not become a mute: once the interval passes, a still
+    # broken engine says so again.
+    monkeypatch.setattr(
+        query_module,
+        "_oracle_probe_warned_at",
+        query_module._oracle_probe_warned_at - query_module._ORACLE_PROBE_WARN_INTERVAL_S - 1,
+    )
+    with caplog.at_level(logging.WARNING, logger=query_module.logger.name):
+        assert query_module._sql_referenced_names("select * from t") is None
+    warnings = [r for r in caplog.records if "parse oracle self-check" in r.message]
+    assert len(warnings) == 2, "the throttle must expire, not silence the condition"
 
 
 def test_oracle_retries_after_a_raised_probe(monkeypatch):

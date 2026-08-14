@@ -449,6 +449,31 @@ def _parse_connection():
 _ORACLE_HEALTHY: bool | None = None
 _ORACLE_PROBE_LOCK = threading.Lock()
 
+# The "no answer" branch of the self-check deliberately re-probes rather than
+# latching, so a permanent failure (a parse connection that can never open, a
+# build without `json_serialize_sql`) would otherwise emit one warning per
+# request, forever, and drown the log it is trying to appear in. Throttled to
+# one line a minute: the first occurrence is always logged, and a condition
+# this sticky needs saying once, not once per query. Callers are unaffected —
+# every request still re-probes and still falls back safely.
+_ORACLE_PROBE_WARN_INTERVAL_S = 60.0
+_oracle_probe_warned_at: float | None = None
+
+
+def _warn_probe_failure(message: str, **kwargs) -> None:
+    """Emit a probe-failure warning at most once per interval.
+
+    Callers hold ``_ORACLE_PROBE_LOCK``, so the timestamp needs no lock of
+    its own.
+    """
+    global _oracle_probe_warned_at
+    now = time.monotonic()
+    if _oracle_probe_warned_at is not None and now - _oracle_probe_warned_at < _ORACLE_PROBE_WARN_INTERVAL_S:
+        return
+    _oracle_probe_warned_at = now
+    logger.warning(message, **kwargs)
+
+
 # Above this many characters the SQL goes to the text scan instead of the
 # parser. Measured expansion for a wide statement: 16k chars -> 1.3 MB of
 # serialized JSON -> 6 MB of Python objects, growing linearly (64k chars ->
@@ -494,7 +519,10 @@ def _oracle_answers_as_expected() -> bool:
     for a caller-supplied helper that does raise, but ``None`` is the branch
     that fires. Neither retry is rate-limited: a permanently broken engine
     costs one failed parse (~90 us) per request, which is a better trade than
-    one blip disabling the precise matcher for the process lifetime.
+    one blip disabling the precise matcher for the process lifetime. Its other
+    per-request cost — a warning line each time — is throttled by
+    ``_warn_probe_failure``, so a permanent failure says so once a minute
+    rather than once a query.
     """
     global _ORACLE_HEALTHY
     # Its own lock, NOT _PARSE_CONN_LOCK: the probe opens the parse connection,
@@ -504,14 +532,14 @@ def _oracle_answers_as_expected() -> bool:
             try:
                 probe = _sql_referenced_names_unguarded("SELECT 1 FROM __agnes_oracle_probe__")
             except Exception:
-                logger.warning(
+                _warn_probe_failure(
                     "DuckDB parse oracle self-check raised; retrying on the next query. "
                     "SQL name guards fall back to text scanning until it succeeds.",
                     exc_info=True,
                 )
                 return False
             if probe is None:
-                logger.warning(
+                _warn_probe_failure(
                     "DuckDB parse oracle self-check returned no answer; retrying on the next "
                     "query. SQL name guards fall back to text scanning until it succeeds."
                 )
