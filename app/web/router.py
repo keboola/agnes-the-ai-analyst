@@ -3355,6 +3355,26 @@ async def library_page(
             # Grants on this type are keyed by SLUG (see `_can_view`), not id.
             _app_grants = _granted_ids(ResourceType.DATA_APP.value)
 
+            # ALL grants on the type (any group), slug-keyed — one query, the
+            # `file_shared_groups` idiom above. An owned row's Sharing badge
+            # must reflect the grants that actually exist on it; hardcoding
+            # "Private" showed an already-shared app as unshared right next
+            # to the control that shares it.
+            _app_shared_groups: dict = {}
+            try:
+                for g in resource_grants_repo().list_all(resource_type=ResourceType.DATA_APP.value):
+                    _app_shared_groups.setdefault(g["resource_id"], set()).add(g["group_id"])
+            except Exception as e:
+                logger.warning("/library: could not resolve data-app grants: %s", e)
+
+            def _app_visibility(slug: str) -> tuple:
+                groups = _app_shared_groups.get(slug)
+                if not groups:
+                    return "private", "Private"
+                if _everyone_id and _everyone_id in groups:
+                    return "workspace", "Everyone"
+                return "shared", "Specific groups"
+
             # `limit=100000` like every sibling listing in this function
             # (`data_packages_repo`, `memory_domains_repo`, `recipes_repo`).
             # The repo defaults to 1000 ordered `created_at DESC`, and that
@@ -3364,19 +3384,35 @@ async def library_page(
             # page is the only way to click through to one. Linked rows are
             # created one-per-upstream-app by the MCP listers, so the count is
             # not bounded by what people build by hand (Devin Review).
-            for a in _apps_repo().list(include_drafts=False, limit=100000):
+            _apps = _apps_repo()
+            for a in _apps.list(include_drafts=False, limit=100000):
                 if a.get("state") == "linked_hidden":
                     continue
                 if a.get("owner_user_id") != uid and a.get("slug") not in _app_grants:
                     continue
                 _mine = a.get("owner_user_id") == user["id"]
                 _created = a.get("created_at")
+                if _mine:
+                    _vis, _vis_label = _app_visibility(a.get("slug") or "")
+                else:
+                    _vis, _vis_label = "shared", "Shared with you"
                 items.append(
                     _library_row_base(
-                        item_id=a["id"],
+                        # The SLUG, not the row id — deliberately. Grants on
+                        # this type are slug-keyed (`_can_view`,
+                        # `resource_grants`), and the Share dialog PUTs to
+                        # `/api/sharing/{share_type}/{item_id}` reading this
+                        # very field — an id here would write grants nothing
+                        # ever reads.
+                        item_id=a["slug"],
                         kind="data_app",
                         title=a.get("name") or a.get("slug") or "",
-                        description=a.get("description") or "",
+                        # Effective, not raw: a linked app carries both the
+                        # synced `description` (rewritten by the MCP lister on
+                        # every sync) and an admin's `description_override`,
+                        # and every other surface shows the override when set
+                        # (Devin Review on this PR).
+                        description=_apps.effective_description(a),
                         href=f"/apps/detail/{a['slug']}",
                         glyph="app",
                         type_key="data_app",
@@ -3385,14 +3421,26 @@ async def library_page(
                         origin_label="Yours" if _mine else "Shared with you",
                         added_iso=_created.isoformat() if hasattr(_created, "isoformat") else None,
                         owner_label="You" if _mine else "Your workspace",
-                        ownership="mine" if _mine else "shared_with_me",
-                        visibility="private" if _mine else "shared",
-                        visibility_label="Private" if _mine else "Shared with you",
+                        ownership=(
+                            "shared_by_me" if (_mine and _vis != "private") else ("mine" if _mine else "shared_with_me")
+                        ),
+                        visibility=_vis,
+                        visibility_label=_vis_label,
                         # The state is the one thing worth knowing at a glance:
                         # an app can be running, sleeping, or in error, and the
                         # row is a link you are deciding whether to click.
                         meta_text=(a.get("state") or "").replace("_", " "),
-                        share_type=None,
+                        # Data apps ARE grant-shareable (`ResourceType.DATA_APP`
+                        # is a real `resource_grants` type and `_can_view`
+                        # honours it), so an owner's row carries the same Share
+                        # control every other owner-held kind does, wired to
+                        # the slug-keyed grant. Rendering it as share-less made
+                        # /admin/access the only sharing surface for the one
+                        # kind a user builds from chat (Devin Review on this
+                        # PR). Grantee rows render the read-only badge — the
+                        # template keys that on `ownership`, and the sharing
+                        # API enforces owner-or-admin regardless.
+                        share_type=ResourceType.DATA_APP.value,
                         owner_key="me" if _mine else "workspace",
                     )
                 )

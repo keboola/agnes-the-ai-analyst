@@ -777,3 +777,46 @@ def test_library_does_not_give_an_admin_every_app_in_the_instance(seeded_app, mo
     r = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"]))
     assert r.status_code == 200
     assert "Not Your App" not in r.text, "an admin must not see another user's app in their own Library"
+
+
+def test_library_data_app_row_shows_the_admins_description_override(seeded_app, monkeypatch):
+    """Effective description, not the raw column.
+
+    A linked app carries both `description` (rewritten by the MCP lister on
+    every sync) and `description_override` (an admin's edit); every other
+    surface shows the override when set. Reading `a["description"]` here
+    showed the stale synced wording right next to a detail page saying
+    something else (Devin Review on this PR).
+    """
+    _seed_app(seeded_app, "overapp", "Override App", monkeypatch)
+    from src.repositories import data_apps_repo
+
+    repo = data_apps_repo()
+    repo.update(repo.get_by_slug("overapp")["id"], description="Synced upstream text")
+    repo.set_description_override("overapp", "The wording the admin chose")
+
+    r = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"]))
+    assert r.status_code == 200
+    assert "The wording the admin chose" in r.text
+    assert "Synced upstream text" not in r.text
+
+
+def test_library_own_data_app_row_carries_the_share_control(seeded_app, monkeypatch):
+    """Data apps are a grantable resource type (`resource_grants` on the
+    slug is what `_can_view` honours), so an owner's row must offer the same
+    Share control every other owner-held kind does — rendering it share-less
+    left /admin/access as the only sharing surface for the one kind a user
+    builds from chat (Devin Review on this PR).
+
+    The share id must be the SLUG: the dialog PUTs to
+    `/api/sharing/{share_type}/{item_id}`, and a grant keyed on the row id
+    would be read by nothing.
+    """
+    _seed_app(seeded_app, "shareapp", "Shareable App", monkeypatch)
+    r = seeded_app["client"].get("/library", headers=_auth(seeded_app["admin_token"]))
+    assert r.status_code == 200
+
+    row_at = r.text.index('data-item-id="shareapp"')
+    row = r.text[row_at : r.text.index("</tr>", row_at)]
+    assert 'data-share-type="data_app"' in row, "an owned app row must be shareable"
+    assert 'data-share="shareapp"' in row, "the Sharing badge must be the editable control, keyed on the slug"
