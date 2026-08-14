@@ -10517,7 +10517,7 @@
   "info": {
     "description": "Self-hosted AI harness: governed data access, skills marketplace, corporate memory, and agent workspaces",
     "title": "AI Harness",
-    "version": "0.83.7"
+    "version": "0.83.13"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -28359,6 +28359,78 @@
         ]
       }
     },
+    "/api/attachments/{source}/{attachment_id}/download": {
+      "get": {
+        "description": "Stream one connector-catalogued attachment binary.\n\nOutcomes a client can tell apart:\n\n- 404 ``unknown_attachment_source`` \u2014 ``{source}`` has no declaration\n  (decided before any catalogue or filesystem work).\n- 403 \u2014 caller lacks read access to the source's catalogue table.\n- 404 ``attachment_not_found`` \u2014 no catalogue row with this id.\n- 404 ``attachment_not_stored`` \u2014 the row exists but the server holds\n  no bytes (over-size skip, transform-time miss, or removed since);\n  fall back to the upstream system's own API for these.\n- 503 ``attachment_unreadable`` \u2014 the row exists and points at a file\n  the server cannot OPEN (permissions/I/O) \u2014 a malfunction, logged,\n  never disguised as a miss.\n- 200 \u2014 the bytes, with the original filename in Content-Disposition.",
+        "operationId": "download_attachment_api_attachments__source___attachment_id__download_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "source",
+            "required": true,
+            "schema": {
+              "title": "Source",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "attachment_id",
+            "required": true,
+            "schema": {
+              "title": "Attachment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Insufficient permissions"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Attachment",
+        "tags": [
+          "attachments"
+        ]
+      }
+    },
     "/api/auth/exchange-setup-token": {
       "post": {
         "description": "Exchange a one-time setup token for a regular PAT.\n\nThis endpoint requires **no prior authentication** \u2014 the setup token\nembedded in the bundle IS the authentication credential.\n\nSecurity properties:\n- Token is matched by SHA-256 hash, never stored or logged in plaintext.\n- Single-use: atomically marked used on first consumption.\n- Short-lived: 24 h TTL enforced server-side regardless of client clock.\n- On success, the setup token is consumed and cannot be replayed.",
@@ -31777,7 +31849,7 @@
     },
     "/api/data-apps/{slug}/readiness": {
       "get": {
-        "description": "Runner-backed readiness probe. Doubles as the wake-completion flip:\nwhen a `deploying` app's runner reports `ready`, this call itself\ntransitions the row to `running` \u2014 the ingress proxy's holding page\n(`app/api/data_apps_proxy.py``, ``data_app_waking.html``'s poll loop)\nis the only caller that hits this endpoint on a cadence, so the flip\nhappening here (rather than a dedicated poller) is what actually\nsurfaces \"the app is up\" back to the browser tab that triggered the\nwake. See that module's docstring for the other half of this contract.",
+        "description": "Runner-backed readiness probe. Doubles as the wake-completion flip:\nwhen a `deploying` app's runner reports `ready`, this call itself\ntransitions the row to `running` \u2014 the ingress proxy's holding page\n(`app/api/data_apps_proxy.py``, ``data_app_waking.html``'s poll loop)\nis the only caller that hits this endpoint on a cadence, so the flip\nhappening here (rather than a dedicated poller) is what actually\nsurfaces \"the app is up\" back to the browser tab that triggered the\nwake. See that module's docstring for the other half of this contract.\n\nThe caller is resolved through the PROXY's chain, not a plain\n``Depends(get_current_user)``. The holding page this serves is rendered\nby the proxy, which accepts a ``data-app-preview:<slug>`` scoped token \u2014\nthe credential the in-chat preview iframe carries \u2014 while\n``get_current_user`` rejects it outright. So a preview iframe used to get\na holding page whose poll 401'd forever and never noticed the app come\nup (Devin Review on this PR; pre-existing for the `sleeping`/`deploying`\nbranches, but the starting-app branch added here reaches it far more\noften). Serving the page and refusing its only poll is half a fix.\n\nImported inside the function: `data_apps_proxy` imports this module, so a\nmodule-level import would be circular.",
         "operationId": "get_data_app_readiness_api_data_apps__slug__readiness_get",
         "parameters": [
           {
@@ -31787,22 +31859,6 @@
             "schema": {
               "title": "Slug",
               "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
             }
           }
         ],

@@ -58,7 +58,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import duckdb
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from starlette.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import exc as sa_exc
@@ -681,10 +682,41 @@ def _clone_url_with_credential(base: str, jwt_token: str, slug: str) -> str:
 
 
 # Cookie carrying a `data-app-preview:<slug>` token — see `_mint_preview_token`.
-# One name reused across every app: `Path=/apps/<slug>/` (set per-mint) keeps
-# two different apps' cookies from ever colliding in the browser jar, since
-# their paths never overlap.
+# Name PREFIX only: the real name is per-app (`preview_cookie_name`), which is
+# what keeps two apps' credentials from colliding in the browser jar now that
+# the cookie is `Path=/`. Kept as a module constant because the proxy also
+# accepts the bare legacy name during a rollout.
 _PREVIEW_COOKIE_NAME = "adp_preview"
+
+
+def preview_cookie_name(slug: str) -> str:
+    """Browser cookie name carrying ``slug``'s preview credential.
+
+    Per-app, and that is load-bearing: a browser keys a cookie on
+    ``(name, domain, path)``, and the cookie must be ``Path=/`` to reach the
+    readiness poll (see `_mint_preview_token`). One shared name at that path
+    is therefore ONE jar slot for the whole instance — minting a preview for a
+    second app evicts the first app's credential, and because the slug pin
+    lives in the token scope the survivor resolves to nothing for the other
+    app: its poll 401s forever while the app is healthy. Two chat tabs
+    previewing two apps is the ordinary case, not a corner (Devin Review on
+    this PR).
+
+    Read-side helper too (`_resolve_proxy_caller`), so it is deliberately
+    total — an unknown/malformed slug just yields a name no cookie carries.
+    Header-safety is enforced where the header is actually built, at mint.
+    """
+    return f"{_PREVIEW_COOKIE_NAME}_{slug}"
+
+
+# What a slug may contain before it is interpolated into a `Set-Cookie` NAME.
+# Deliberately a character class and not `SLUG_RE`: the only question at that
+# point is header safety (no CR/LF, `;`, `=`, space, quote), and `SLUG_RE` also
+# imposes a length/shape that legitimately-created rows need not satisfy —
+# `keboola_adapter._sanitize` can yield a single character, and refusing to
+# serve those apps' previews would be a bug of this fix's own making.
+_COOKIE_NAME_SAFE_RE = _re.compile(r"^[A-Za-z0-9_-]+$")
+
 
 # Q4 (spec §7/§11): 30-minute default TTL, renewed on every
 # `agnes_data_app_preview` call, hard-capped by SessionEnd's best-effort
@@ -711,11 +743,11 @@ def _mint_preview_token(row: dict, requester: dict, *, ttl_s: int = _PREVIEW_TOK
     `app.auth.pat_resolver.resolve_token_to_user`).
 
     The cookie is delivered to the browser, never a URL query parameter (an
-    iframe `src`'s history/referrer would leak it) — `Path=/apps/<slug>/`
-    scopes it to exactly the app it authorizes; `HttpOnly` keeps it out of
-    the hosted app's own (less-trusted) JS; `SameSite=Lax` is enough since
-    the iframe navigation that sends it is a plain top-level-adjacent GET,
-    not a cross-site POST.
+    iframe `src`'s history/referrer would leak it) — a per-app NAME
+    (`preview_cookie_name`) scopes it to exactly the app it authorizes;
+    `HttpOnly` keeps it out of the hosted app's own (less-trusted) JS;
+    `SameSite=Lax` is enough since the iframe navigation that sends it is a
+    plain top-level-adjacent GET, not a cross-site POST.
     """
     slug = row["slug"]
     token_id = str(uuid.uuid4())
@@ -737,13 +769,34 @@ def _mint_preview_token(row: dict, requester: dict, *, ttl_s: int = _PREVIEW_TOK
         prefix=token_id.replace("-", "")[:8],
         expires_at=expires_at,
     )
-    # `Path=/apps/<slug>/` assumes path-prefix ingress (the verified default;
-    # `data_apps.subdomain_base` unset). In subdomain mode the app is served at
-    # `<slug>.<subdomain_base>/` — a different origin whose paths start at `/` —
-    # so the preview loop (same-origin fetch + this cookie) is path-prefix-only
-    # for now; subdomain-mode preview is a follow-up (needs a cross-origin
-    # cookie set on the subdomain, which the same-origin fetch can't do).
-    cookie = f"{_PREVIEW_COOKIE_NAME}={jwt_token}; Max-Age={max(ttl_s, 0)}; Path=/apps/{slug}/; SameSite=Lax; HttpOnly"
+    # `Path=/` rather than `/apps/<slug>/`, and the reason is load-bearing: the
+    # holding page polls `/api/data-apps/<slug>/readiness`, which is NOT under
+    # `/apps/<slug>/`. A browser only attaches a cookie whose `Path` is a prefix
+    # of the request path, so the narrower scoping meant the poll went out
+    # unauthenticated, 401'd, was swallowed by the template's `catch`, and the
+    # preview spun forever while the app was up — the very failure this loop
+    # exists to fix (Devin Review on this PR).
+    #
+    # Widening the path does NOT widen authority: the slug pin lives in the
+    # token's own scope (`data-app-preview:<slug>`, checked by
+    # `_resolve_proxy_caller`), never in the cookie path, so a cookie sent on
+    # more routes still authorizes exactly one app's preview. It stays HttpOnly
+    # + SameSite=Lax.
+    #
+    # What the path WAS silently doing is keeping two apps' cookies apart, so
+    # the per-app scoping moves to the cookie NAME instead — see
+    # `preview_cookie_name`. The name is interpolated into a response header,
+    # so the slug is re-checked here rather than trusted: every row reaches
+    # this through a validated create, and a header built from an unvalidated
+    # name is exactly the shape a CRLF injection needs.
+    #
+    # Still path-prefix ingress only (the verified default; `subdomain_base`
+    # unset). In subdomain mode the app is served on a different origin whose
+    # paths start at `/`, so subdomain-mode preview remains a follow-up — it
+    # needs a cross-origin cookie the same-origin fetch cannot set.
+    if not _COOKIE_NAME_SAFE_RE.match(slug or ""):
+        raise ValueError(f"data app slug is not safe in a cookie name: {slug!r}")
+    cookie = f"{preview_cookie_name(slug)}={jwt_token}; Max-Age={max(ttl_s, 0)}; Path=/; SameSite=Lax; HttpOnly"
     return jwt_token, cookie
 
 
@@ -1608,7 +1661,7 @@ async def get_data_app_logs(slug: str, tail: int = 200, user: dict = Depends(get
 
 
 @router.get("/{slug}/readiness")
-async def get_data_app_readiness(slug: str, user: dict = Depends(get_current_user)):
+async def get_data_app_readiness(slug: str, request: Request):
     """Runner-backed readiness probe. Doubles as the wake-completion flip:
     when a `deploying` app's runner reports `ready`, this call itself
     transitions the row to `running` — the ingress proxy's holding page
@@ -1617,10 +1670,30 @@ async def get_data_app_readiness(slug: str, user: dict = Depends(get_current_use
     happening here (rather than a dedicated poller) is what actually
     surfaces "the app is up" back to the browser tab that triggered the
     wake. See that module's docstring for the other half of this contract.
+
+    The caller is resolved through the PROXY's chain, not a plain
+    ``Depends(get_current_user)``. The holding page this serves is rendered
+    by the proxy, which accepts a ``data-app-preview:<slug>`` scoped token —
+    the credential the in-chat preview iframe carries — while
+    ``get_current_user`` rejects it outright. So a preview iframe used to get
+    a holding page whose poll 401'd forever and never noticed the app come
+    up (Devin Review on this PR; pre-existing for the `sleeping`/`deploying`
+    branches, but the starting-app branch added here reaches it far more
+    often). Serving the page and refusing its only poll is half a fix.
+
+    Imported inside the function: `data_apps_proxy` imports this module, so a
+    module-level import would be circular.
     """
+    from app.api.data_apps_proxy import _resolve_proxy_caller
+
     _feature_gate()
     row = _get_row_or_404(slug)
-    if not _can_view(user, row):
+    user, via_preview = await run_in_threadpool(_resolve_proxy_caller, request, slug, None)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+    # `via_preview` is already pinned to THIS slug by the resolver's scope
+    # check, which is what makes skipping the grant check safe here.
+    if not via_preview and not _can_view(user, row):
         raise HTTPException(status_code=403, detail="forbidden")
     _reject_linked(row)
 
