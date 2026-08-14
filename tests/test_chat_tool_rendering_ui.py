@@ -112,3 +112,11 @@ def test_next_action_chip_styles_use_ds_tokens():
     css = _read(CHAT_CSS)
     assert ".cloud-chat-next-actions" in css
     assert ".cloud-chat-next-action" in css
+
+
+def test_the_prompt_mandates_the_next_actions_trailer():
+    md = _read(WORKSPACE_CLAUDE_MD)
+    flat = re.sub(r"\s+", " ", md)
+    assert "```next_actions" in md
+    assert "one-click buttons" in flat
+    assert "Skip the block" in flat, "the prompt must say when NOT to emit it"
