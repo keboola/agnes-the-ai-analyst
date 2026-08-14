@@ -169,8 +169,8 @@ def test_published_mode_is_pinned_regardless_of_umask(svc):
     """Devin on #1297 — os.replace publishes the TEMP file's mode (0666 &
     umask), not the previous inode's. Under a restrictive deploy-time umask
     the published attachment would be unreadable to the download endpoint's
-    process; the publish pins 0o644 explicitly, like the organizations
-    publish (#203).
+    process; the publish pins 0o660 — group rw for the connector's ACL
+    deployments, no world-read, matching the sibling issue-JSON writer.
     """
     old_umask = os.umask(0o077)
     try:
@@ -179,7 +179,7 @@ def test_published_mode_is_pinned_regardless_of_umask(svc):
     finally:
         os.umask(old_umask)
     assert out is not None
-    assert (out.stat().st_mode & 0o777) == 0o644
+    assert (out.stat().st_mode & 0o777) == 0o660
 
 
 def test_backfill_published_mode_is_pinned_regardless_of_umask(backfill):
@@ -191,7 +191,7 @@ def test_backfill_published_mode_is_pinned_regardless_of_umask(backfill):
     finally:
         os.umask(old_umask)
     assert out is not None
-    assert (out.stat().st_mode & 0o777) == 0o644
+    assert (out.stat().st_mode & 0o777) == 0o660
 
 
 def test_staging_names_are_unique_per_download(backfill, monkeypatch):
@@ -244,9 +244,7 @@ def test_save_issue_retransforms_after_attachment_download(svc, monkeypatch):
         "connectors.jira.service.trigger_incremental_transform",
         lambda key, deleted=False: calls.append((key, lock_depth["n"] > 0)) or True,
     )
-    monkeypatch.setattr(
-        JiraService, "download_all_attachments", lambda self, data: [Path("stored.bin")]
-    )
+    monkeypatch.setattr(JiraService, "download_all_attachments", lambda self, data: [Path("stored.bin")])
     out = svc.save_issue({"key": "PROJ-9", "fields": {}})
     assert out is not None
     # Both transforms run, and BOTH under the per-issue lock — the second one

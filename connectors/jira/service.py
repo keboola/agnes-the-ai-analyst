@@ -1197,11 +1197,17 @@ class JiraService:
                     with open(tmp_path, "wb") as f:
                         f.write(response.content)
                     # os.replace preserves the TEMP file's mode (0666 & umask),
-                    # not the previous inode's — pin it explicitly like the
-                    # organizations publish does (#203): a restrictive
-                    # deploy-time umask must not leave the published file
-                    # unreadable to the download endpoint's process.
-                    os.chmod(tmp_path, 0o644)
+                    # not the previous inode's — pin it explicitly so a
+                    # restrictive deploy-time umask cannot leave the published
+                    # file unreadable to the serving process. 0o660, matching
+                    # the sibling issue-JSON writer's "Restore group rw for
+                    # ACL" pin: 0o644 would grant world-read to attachment
+                    # bytes AND collapse any named POSIX-ACL entries to
+                    # read-only (chmod resets the ACL mask from the group
+                    # bits) — a widening relative to the pre-atomic writer
+                    # under the documented 0007-umask ACL deployments (Devin
+                    # on #1297).
+                    os.chmod(tmp_path, 0o660)
                     os.replace(tmp_path, file_path)
                 except BaseException:
                     tmp_path.unlink(missing_ok=True)
