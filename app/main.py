@@ -33,6 +33,7 @@ import asyncio
 import contextlib
 import logging
 import math
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote
@@ -2158,6 +2159,27 @@ def create_app() -> FastAPI:
         if o.strip()
     ]
     cors_allow_credentials = True
+    # Data-app subdomains also make credentialed cross-origin requests to the
+    # main host (the readiness poll in data_app_waking.html). Allow any host
+    # under data_apps.subdomain_base when that is configured; the session
+    # cookie is already scoped to the shared parent domain.
+    cors_origin_regex: str | None = None
+    try:
+        from app.instance_config import get_data_apps_config
+
+        # `.strip(".")` matches DataAppSubdomainMiddleware's own normalisation:
+        # a value written `.apps.example.com` would otherwise escape to a
+        # doubled dot and match NOTHING, so the middleware would serve the
+        # subdomain while the readiness poll was CORS-blocked.
+        data_app_base = (get_data_apps_config().get("subdomain_base") or "").strip().strip(".")
+        if data_app_base:
+            escaped = re.escape(data_app_base)
+            # A SINGLE label, not `[^:\s/]+` — the middleware only routes
+            # single-label slugs, so accepting `a.b.<base>` would widen the
+            # credentialed-CORS surface past anything that can be served.
+            cors_origin_regex = rf"^https?://[^.:\s/]+\.{escaped}(:\d+)?$"
+    except Exception:
+        logger.exception("Failed to compute data-app CORS origin regex")
     if "*" in cors_origins:
         # SECURITY: Starlette's CORSMiddleware, when allow_origins contains "*"
         # AND allow_credentials=True, reflects the caller's Origin into
@@ -2176,6 +2198,7 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
+        allow_origin_regex=cors_origin_regex,
         allow_credentials=cors_allow_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
