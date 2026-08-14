@@ -94,14 +94,26 @@ def test_redirected_entries_really_redirect(seeded_app, monkeypatch):
     actually 302 into its Library section under rail."""
     monkeypatch.setenv("AGNES_UI_LAYOUT", "rail")
     monkeypatch.setenv("AGNES_DATA_APPS_ENABLED", "1")
-    # /apps only redirects when the Library will actually show the caller an
-    # app row — seed one owned by the analyst so the claim is testable.
+    # Both redirects fire only when the Library will actually show the caller
+    # a row in the target band — seed an app owned by the analyst and a
+    # required memory-domain grant so each claim is testable.
+    import uuid
+
     from src.db import get_system_db
     from src.repositories.data_apps import DataAppsRepository
+    from src.repositories.user_group_members import UserGroupMembersRepository
 
     conn = get_system_db()
     try:
         DataAppsRepository(conn).create(slug="parity-app", name="parity-app", owner_user_id="analyst1", description="")
+        group_id = conn.execute("SELECT id FROM user_groups WHERE name = 'Everyone'").fetchone()[0]
+        UserGroupMembersRepository(conn).add_member("analyst1", group_id, source="test")
+        conn.execute(
+            "INSERT INTO resource_grants(id, group_id, resource_type, resource_id, "
+            "requirement, assigned_at, assigned_by) "
+            "VALUES (?, ?, 'memory_domain', 'md_data', 'required', CURRENT_TIMESTAMP, 'test')",
+            [str(uuid.uuid4()), group_id],
+        )
     finally:
         conn.close()
     c = seeded_app["client"]
