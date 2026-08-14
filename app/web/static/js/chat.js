@@ -1916,6 +1916,66 @@ let currentAssistantArticle = null;
 let currentAssistantBody = null;
 let currentAssistantText = "";
 
+// ---------- Streaming markdown ---------------------------------------------
+// Tokens used to append as plain textContent, so the reader watched raw
+// `**bold**` and `|table|` source until turn end. Now the accumulated text is
+// re-rendered through renderAnswerMarkdown at most once per _STREAM_RENDER_MS.
+// Cheap by construction: marked on a few KB of text; the heavy enhancement
+// passes (highlight.js, mermaid, sort, copy buttons) still run only at
+// finalize, on the final content.
+const _STREAM_RENDER_MS = 150;
+let _streamRenderTimer = null;
+let _streamLastRender = 0;
+
+/** What of the accumulated text is safe to paint mid-stream. A trailing fence
+ *  that is still open is hidden while (a) its language id is still being
+ *  typed (no newline yet), or (b) the id is a prefix of a wire trailer
+ *  (`sources` / `next_actions`) — those are lifted out at finalize and must
+ *  never flash on screen. An open fence with a real language and a body keeps
+ *  rendering: marked shows it as a growing code block, which is the desired
+ *  behavior for streaming code. */
+function _streamingSafeText(text) {
+  const t = text || "";
+  const lastOpen = t.lastIndexOf("```");
+  if (lastOpen === -1) return t;
+  const after = t.slice(lastOpen + 3);
+  if (after.indexOf("```") !== -1) return t; // that fence is closed
+  const newline = after.indexOf("\n");
+  if (newline === -1) return t.slice(0, lastOpen); // language id still streaming
+  const lang = after.slice(0, newline).trim().toLowerCase();
+  if (lang && ("sources".startsWith(lang) || "next_actions".startsWith(lang))) {
+    return t.slice(0, lastOpen);
+  }
+  return t;
+}
+
+function _scheduleStreamRender() {
+  const now = performance.now();
+  const since = now - _streamLastRender;
+  if (since >= _STREAM_RENDER_MS) {
+    _renderStreamingMarkdown();
+    return;
+  }
+  if (_streamRenderTimer) return;
+  _streamRenderTimer = setTimeout(_renderStreamingMarkdown, _STREAM_RENDER_MS - since);
+}
+
+function _renderStreamingMarkdown() {
+  if (_streamRenderTimer) {
+    clearTimeout(_streamRenderTimer);
+    _streamRenderTimer = null;
+  }
+  _streamLastRender = performance.now();
+  if (!currentAssistantBody) return; // finalized (or never started) — nothing to paint
+  const visible = _streamingSafeText(currentAssistantText);
+  try {
+    currentAssistantBody.innerHTML = renderAnswerMarkdown(visible);
+  } catch (_e) {
+    currentAssistantBody.textContent = visible;
+  }
+  maybeScrollToBottom();
+}
+
 function appendToken(text) {
   clearThinkingPlaceholder();
   if (!currentAssistantArticle) {
@@ -1926,11 +1986,17 @@ function appendToken(text) {
     $("chat-messages").appendChild(currentAssistantArticle);
   }
   currentAssistantText += text;
-  currentAssistantBody.textContent = currentAssistantText;
-  maybeScrollToBottom();
+  _scheduleStreamRender();
 }
 
 function finalizeAssistantMessage(frame) {
+  // A tick scheduled mid-stream must not fire after the final render below —
+  // clear it first; _renderStreamingMarkdown's currentAssistantBody guard is
+  // the second line of defense.
+  if (_streamRenderTimer) {
+    clearTimeout(_streamRenderTimer);
+    _streamRenderTimer = null;
+  }
   clearThinkingPlaceholder();
   // A completed assistant message is a successful answer — advance the
   // journey counter (errors arrive on the separate "error" frame).
