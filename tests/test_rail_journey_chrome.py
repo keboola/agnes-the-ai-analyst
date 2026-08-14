@@ -312,13 +312,37 @@ def test_every_chrome_context_builder_supplies_the_brand_the_rail_renders():
     the chat entry on /admin/studio. A page built by a builder that forgets the
     key renders "How  works" — a hole in the middle of a sentence, with nothing
     raising. Cheaper to pin than to re-audit every route.
+
+    Since #996 `_chrome_ctx` is the single owner of every chrome-level key and
+    `_build_context` composes it, rather than hand-copying the key into its own
+    source — so the static-source half of this check only makes sense against
+    `_chrome_ctx`; `_build_context` is verified dynamically (a real request
+    must carry the value through the composition), which is a stronger
+    guarantee than a source-substring match.
     """
     import inspect
+    from types import SimpleNamespace as _NS
+
+    from starlette.requests import Request
 
     from app.web import router as _router
 
-    for builder in (_router._build_context, _router._chrome_ctx):
-        src = inspect.getsource(builder)
-        assert '"instance_brand_short"' in src, (
-            f"{builder.__name__} must supply instance_brand_short — the rail renders it on every page"
-        )
+    assert '"instance_brand_short"' in inspect.getsource(_router._chrome_ctx), (
+        "_chrome_ctx must supply instance_brand_short — the rail renders it on every page"
+    )
+
+    app = _NS(state=_NS(chat_config=_NS(enabled=False)))
+    scope = {
+        "type": "http",
+        "app": app,
+        "method": "GET",
+        "path": "/",
+        "query_string": b"",
+        "headers": [],
+        "server": ("test", 80),
+        "scheme": "http",
+        "client": ("1.2.3.4", 9),
+    }
+    request = Request(scope)
+    ctx = _router._build_context(request)
+    assert ctx.get("instance_brand_short"), "_build_context must carry instance_brand_short through from _chrome_ctx"

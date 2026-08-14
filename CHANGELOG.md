@@ -133,6 +133,10 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **The user detail page's Account section no longer sits on "Loading…".** `renderHeader()` writes the Active/Deactivated pill into `#status-pill`, but that element was lost when the page's header became the shared `_page_hero.html` include — so the lookup returned `null`, `renderHeader()` threw, and `renderAccountStatus()` (the very next call) never ran, leaving the section's status line permanently on its placeholder. The pill is back, next to the Account heading rather than in the hero, since Account is the state it describes.
 
 - **Sections on the user detail page no longer race the timestamp helper.** `datetime.js` is loaded `defer`, so `window.AgnesTime` does not exist until parsing finishes, while the page's inline script starts its fetches during parse: a fast endpoint resolving first threw inside `fmtDate` and aborted that section's render mid-loop, leaving a populated header over an empty table with nothing in the console. The page now starts its loads on `DOMContentLoaded` (after deferred scripts run) and `fmtDate` falls back to the raw timestamp rather than taking a section down.
+
+### Internal
+- **`_build_context` now composes `_chrome_ctx` instead of hand-copying its keys.** The two web-template-context builders in `app/web/router.py` each maintained their own list of chrome-level keys (nav, branding, theme, feature toggles) by hand, so every new chrome key gave its author a chance to forget one — the failure was silent because Jinja renders undefined as empty. This bug class had already fired three times (`can_chat`, `can_studio`, and `config`/`can_chat` again in #993/#995). `_chrome_ctx` is now the single owner of every chrome-level key; `_build_context` starts from it and layers only its own heavier, page-specific payloads (the setup-prompt clipboard script, `server_url`). A new chrome key now only needs to be added once. No behavior change: a drift-guard test (`test_build_context_is_a_superset_of_chrome_ctx`) pins that the two stay in lockstep going forward. Closes #996.
+
 ## [0.83.15] - 2026-08-14
 
 ### Added

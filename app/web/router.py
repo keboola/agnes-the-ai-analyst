@@ -805,13 +805,19 @@ def _build_context(
 ) -> dict:
     """Build template context with config, user, and theme.
 
+    Composes `_chrome_ctx` — the single owner of every chrome-level key (nav,
+    branding, theme, feature toggles, …; see its docstring) — then layers on
+    the heavier, page-specific payloads only `_build_context` callers need:
+    the setup-prompt clipboard script and `server_url`. A chrome key added to
+    `_chrome_ctx` therefore reaches both builders automatically; add a key
+    HERE only if it is genuinely specific to the heavy payload, not shared
+    chrome (#996).
+
     `conn` is optional: when supplied alongside a logged-in `user`, the
     setup-prompt preview/clipboard payload is rendered with that user's
     RBAC-allowed Claude Code marketplace plugins inlined as install
     commands. Routes that don't render the env-setup-cta block can omit it.
     """
-    ConfigProxy = _config_proxy()
-
     ctx_server_url = str(request.base_url).rstrip("/")
 
     # Lines for the "Setup a new Claude Code" preview/clipboard partial.
@@ -876,69 +882,11 @@ def _build_context(
         )
 
     ctx = {
-        "request": request,
-        "config": ConfigProxy,
-        "user": _flex(user) if user else _FlexDict(),
-        "now": datetime.now,
+        **_chrome_ctx(request, user),
         "static_url": _static_url,
-        # Flask compatibility shims for templates
-        "get_flashed_messages": lambda **kwargs: [],
-        "url_for": lambda endpoint, **kw: _url_for_shim(endpoint, **kw),
-        "session": _FlexDict({"user": user}) if user else _FlexDict(),
         "setup_instructions_lines": setup_instructions_lines,
         "server_url": ctx_server_url,
-        # Resolved per AGNES_HOME_ROUTE env > instance.home_route YAML >
-        # /dashboard. The shared navbar's "Dashboard" link uses this so a
-        # single env flip routes the primary nav target between /home
-        # (state-aware landing) and /dashboard (legacy table inventory).
-        "home_route": _resolved_home_route(),
-        # Branding: `instance_name` is the deploying org's display name
-        # (page titles); `instance_brand` is the product name used in body
-        # copy and CTAs ("Setup {brand}", "{brand} runs SELECT…");
-        # `instance_brand_short` is the mid-sentence short form (defaults to
-        # the full brand); `workspace_dir` is the filesystem-safe folder name
-        # shown in `~/<workspace_dir>` and baked into the clipboard setup
-        # script. All default to the Agnes-flavored values out of the box;
-        # Terraform can flip them via env vars (AGNES_INSTANCE_BRAND /
-        # AGNES_INSTANCE_BRAND_SHORT / AGNES_WORKSPACE_DIR_NAME).
-        "instance_name": get_instance_name(),
-        "instance_brand": get_instance_brand(),
-        "instance_brand_short": get_instance_brand_short(),
-        "workspace_dir": get_workspace_dir_name(),
-        # Active palette — drives `<html data-theme="...">` in
-        # base.html so `--ds-*` tokens flip via CSS without
-        # touching markup. "blue" (default) = brand-blue palette;
-        # "navy" = darker opt-in palette. Admin toggles via
-        # /admin/server-config.
-        "instance_theme": get_instance_theme(),
-        # Structural chrome layout — "topnav" (default, horizontal
-        # _app_header bar) or "rail" (fixed left sidebar,
-        # _app_rail.html). Independent of the color theme so existing
-        # instances keep their exact chrome.
-        "ui_layout": get_ui_layout(),
-        # Whether /home renders the "Step 3 — turn on auto-accept mode"
-        # install-block. Operator can hide it via AGNES_HOME_SHOW_AUTOMODE=0
-        # for cautious rollouts; same content stays on /setup-advanced.
-        "home_automode": {"show": get_home_automode_visibility()},
-        # Operator-injected HTML/JS blocks rendered into base.html at
-        # head_start / head_end / body_end. Admin-only (instance.yaml,
-        # gated by require_admin) — used for feedback widgets
-        # (Marker.io), analytics, error capture. Empty default keeps
-        # the OSS vendor-neutral.
-        "custom_scripts": get_custom_scripts(),
     }
-    ctx["can_chat"] = _compute_can_chat(request, user)
-    # Studio nav visibility. Pure instance-level toggle (no per-user grant,
-    # unlike can_chat) — the enclosing `{% if session.user %}` already scopes
-    # the nav to signed-in users. The hard gate lives on the routes.
-    ctx["can_studio"] = get_studio_enabled()
-    # "My agents" nav entry visibility — instance-level toggle, mirrors
-    # can_studio. The hard gate lives on the /agents route + the API routers.
-    ctx["can_agent_profiles"] = get_agent_profiles_enabled()
-    # MCP connector surface visibility (#1024) — instance-level toggle, same
-    # pattern. The hard gate lives on /me/ai-connector, /mcp-connect and the
-    # MCP tab of /how-it-works#connect; this only hides the entry points.
-    ctx["can_mcp_connector_ui"] = get_mcp_connector_ui_enabled()
     # Flex all extra context values for template compatibility
     # (but skip ones we just populated — extras with the same key win)
     for k, v in extra.items():
@@ -4915,17 +4863,26 @@ async def memory_domain_detail(
 
 
 def _chrome_ctx(request: Request, user: Optional[dict]) -> dict:
-    """Base context every base_ds page needs for the shared nav + footer chrome.
+    """Single owner of every chrome-level template-context key (#996).
 
-    Routes that render ``base_ds.html`` MUST spread this in — otherwise the
-    navbar, theme, branding, and url helpers render empty (the studio pages
-    regressed on exactly this: no top menu, no styling). Mirrors the canonical
-    context the home/setup routes build.
+    Routes that render ``base_ds.html``/``base_page.html`` MUST spread this
+    in — otherwise the navbar, theme, branding, and url helpers render empty
+    (the studio pages regressed on exactly this: no top menu, no styling).
+    ``_build_context`` composes this same dict for its (heavier) pages, so a
+    chrome key only ever needs to be added HERE to reach both — see its
+    docstring. ``is_admin`` is deliberately NOT a chrome key: unlike the keys
+    below, it isn't needed by the shared header/rail (which reads
+    ``session.user.is_admin`` instead) and most ``_build_context`` callers
+    compute it themselves (often reusing a request-scoped ``conn``); adding
+    it here would silently grant it to every page and cost an extra,
+    cache-less ``is_user_admin()`` lookup none of them asked for. The one
+    ``_chrome_ctx`` page whose *own* template reads top-level ``is_admin``
+    (``/admin/studio/{domain}``) sets it explicitly, the same way
+    ``_build_context`` callers do.
     """
     return {
         "request": request,
         "user": _flex(user) if user else _FlexDict(),
-        "is_admin": bool(user) and is_user_admin(user.get("id")),
         "now": datetime.now,
         "get_flashed_messages": lambda **kw: [],
         "url_for": lambda endpoint, **kw: _url_for_shim(endpoint, **kw),
@@ -5218,7 +5175,14 @@ async def studio(
     return templates.TemplateResponse(
         request,
         "admin_studio.html",
-        {**_chrome_ctx(request, user), "domain": spec, "profile_slug": spec.profile},
+        {
+            **_chrome_ctx(request, user),
+            "domain": spec,
+            "profile_slug": spec.profile,
+            # Not a chrome key (see _chrome_ctx's docstring) — this page's own
+            # template is the one place that needs it, so it's set here.
+            "is_admin": is_user_admin(user["id"]),
+        },
     )
 
 
