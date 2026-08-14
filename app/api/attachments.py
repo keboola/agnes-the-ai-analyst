@@ -59,6 +59,21 @@ def _audit(user: dict, source: str, attachment_id: str, result: str, **params) -
     )
 
 
+class _CatalogueUnavailable(Exception):
+    """The catalogue view could not be QUERIED — distinct from "no row".
+
+    Raised by :func:`_lookup_stored_path` when the failure is not the one
+    benign case (view absent because the source was declared but never
+    synced). Mapping these onto 404 ``attachment_not_found`` would send the
+    client to the upstream API for rows that exist — the exact confusion the
+    module docstring's "misses must stay distinguishable" rule forbids.
+    """
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
 def _lookup_stored_path(
     decl: AttachmentSource, view_name: str, attachment_id: str
 ) -> tuple[bool, str | None, str | None]:
@@ -69,8 +84,16 @@ def _lookup_stored_path(
     name the upstream system shows, e.g. Jira's ``filename``) and is ``None``
     when the source declares none. The id column is compared as VARCHAR so a
     BIGINT-typed catalogue column never throws on a non-numeric path
-    parameter. A missing view (source declared but never synced) reads as
-    "no row".
+    parameter.
+
+    Only a genuinely ABSENT view (source declared but never synced) reads as
+    "no row". Any other failure raises :class:`_CatalogueUnavailable`:
+    ``get_analytics_db_readonly`` deliberately swallows its own re-ATTACH
+    errors, so a broken analytics DB also surfaces here as a
+    ``CatalogException`` — the view's absence is therefore verified against
+    the catalog instead of trusted from the exception — and a declaration
+    whose columns drifted from the connector's output raises a
+    ``BinderException``, which is a server misconfiguration, not a miss.
     """
     cols = quote_ident(decl.path_column)
     if decl.filename_column:
@@ -80,9 +103,23 @@ def _lookup_stored_path(
     )
     analytics = get_analytics_db_readonly()
     try:
-        row = analytics.execute(sql, [attachment_id]).fetchone()
-    except duckdb.CatalogException:
-        return False, None, None
+        try:
+            row = analytics.execute(sql, [attachment_id]).fetchone()
+        except duckdb.CatalogException as exc:
+            try:
+                present = analytics.execute(
+                    "SELECT 1 FROM information_schema.tables WHERE table_name = ?",
+                    [view_name],
+                ).fetchone()
+            except Exception:
+                raise _CatalogueUnavailable("catalog_probe_failed") from exc
+            if present is None:
+                return False, None, None  # declared but never synced
+            raise _CatalogueUnavailable("catalog_query_failed") from exc
+        except duckdb.Error as exc:
+            # BinderException (declaration/connector column drift) and any
+            # other engine error: never "not found".
+            raise _CatalogueUnavailable("catalog_query_failed") from exc
     finally:
         analytics.close()
     if row is None:
@@ -238,7 +275,20 @@ def download_attachment(
             },
         )
 
-    row_exists, stored, original_name = _lookup_stored_path(decl, view_name, attachment_id)
+    try:
+        row_exists, stored, original_name = _lookup_stored_path(decl, view_name, attachment_id)
+    except _CatalogueUnavailable as exc:
+        # Same posture as `registry_unavailable` above: a catalogue that
+        # cannot be queried must refuse loudly, not masquerade as a miss —
+        # 404 here sends the client to the upstream API for rows that exist.
+        _audit(user, source, attachment_id, "error.503", error="catalogue_unavailable", reason=exc.reason)
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "catalogue_unavailable",
+                "hint": "the attachment catalogue could not be queried; retry",
+            },
+        ) from exc
     if not row_exists:
         _audit(user, source, attachment_id, "error.404", error="attachment_not_found")
         raise HTTPException(

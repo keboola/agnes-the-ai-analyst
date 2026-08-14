@@ -417,3 +417,64 @@ def test_registry_read_failure_fails_closed_not_open(jira_attachment_env, admin_
     row = _last_audit_row()
     assert row is not None
     assert row[3] == "error.503"
+
+
+def test_broken_catalogue_is_503_not_a_miss(jira_attachment_env, admin_user, monkeypatch):
+    """Devin on #1297 — only a genuinely absent view (declared but never
+    synced) may read as "no row". A broken analytics DB (re-ATTACH failure
+    swallowed upstream) also surfaces as CatalogException, and declaration/
+    connector column drift surfaces as BinderException; reporting either as
+    404 attachment_not_found sends the client to the upstream API for rows
+    that exist. Both must 503 catalogue_unavailable instead."""
+    import duckdb as duckdb_mod
+
+    import app.api.attachments as attachments_mod
+
+    c = jira_attachment_env["client"]
+
+    class _Conn:
+        def __init__(self, main_exc, probe_result=None, probe_exc=None):
+            self._main_exc = main_exc
+            self._probe_result = probe_result
+            self._probe_exc = probe_exc
+            self._first = True
+
+        def execute(self, sql, params=None):
+            if self._first:
+                self._first = False
+                raise self._main_exc
+            if self._probe_exc is not None:
+                raise self._probe_exc
+
+            class _R:
+                def __init__(self, row):
+                    self._row = row
+
+                def fetchone(self):
+                    return self._row
+
+            return _R(self._probe_result)
+
+        def close(self):
+            pass
+
+    cases = [
+        # broken DB: catalog error AND the probe itself fails
+        _Conn(duckdb_mod.CatalogException("x"), probe_exc=RuntimeError("attach failed")),
+        # view registered but the query still failed
+        _Conn(duckdb_mod.CatalogException("x"), probe_result=(1,)),
+        # declaration/connector column drift
+        _Conn(duckdb_mod.BinderException("no column local_path")),
+    ]
+    for conn in cases:
+        monkeypatch.setattr(attachments_mod, "get_analytics_db_readonly", lambda conn=conn: conn)
+        resp = c.get("/api/attachments/jira/101/download", headers=admin_user)
+        assert resp.status_code == 503, resp.text
+        assert resp.json()["detail"]["code"] == "catalogue_unavailable"
+
+    # The one benign case: view genuinely absent -> still a distinguishable 404.
+    absent = _Conn(duckdb_mod.CatalogException("x"), probe_result=None)
+    monkeypatch.setattr(attachments_mod, "get_analytics_db_readonly", lambda: absent)
+    resp = c.get("/api/attachments/jira/101/download", headers=admin_user)
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "attachment_not_found"
