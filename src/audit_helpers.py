@@ -1,6 +1,27 @@
 """Shared helpers for audit logging."""
 
+import logging
+
 from app.auth.scheduler_token import SCHEDULER_USER_EMAIL
+
+logger = logging.getLogger(__name__)
+
+
+def log_safe(**kwargs) -> None:
+    """``audit_repo().log(**kwargs)``, never raising.
+
+    The audit trail is best-effort by policy: a failed audit write must not
+    fail the request it describes. That try/except idiom is open-coded at
+    dozens of call sites (e.g. ``app/api/data.py``); new code should call
+    this instead of adding another copy, so the failure policy lives in one
+    place.
+    """
+    from src.repositories import audit_repo
+
+    try:
+        audit_repo().log(**kwargs)
+    except Exception:
+        logger.exception("audit_log write failed for %s; continuing", kwargs.get("action", "<unknown action>"))
 
 
 # One scheduler rule for the whole codebase — the same predicate

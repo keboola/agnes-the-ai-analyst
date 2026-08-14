@@ -734,6 +734,22 @@ catalog:
 materialize:
   lock_ttl_seconds: 86400
 
+# --- Rolling state-DB recovery snapshot (optional) ---
+# system.duckdb.pre-migrate is captured once per migration transition and
+# never refreshed afterwards, so it goes stale within hours of normal
+# operation (#379/#380). This section controls a SEPARATE, rolling-refreshed
+# recovery aid: system.duckdb.rolling-snapshot/, a logical EXPORT DATABASE
+# (Parquet + schema.sql) taken over the app's own system.duckdb connection —
+# never a second connection to the file. Runs on the same in-process tick as
+# the periodic CHECKPOINT (app/main.py's _state_checkpoint_loop). DuckDB-
+# backend only; a no-op when app-state lives in Postgres (its own backup
+# story applies there). See docs/runbooks/wal-recovery.md for how to use it.
+#
+# backups:
+#   # Hours between refreshes; 0 disables the rolling snapshot entirely.
+#   # Default 6.
+#   rolling_snapshot_interval_hours: 6
+
 # --- Cloud-hosted Claude Code (optional) ---
 # Cloud-hosted Claude Code (web /chat + Slack adapter). Off by default;
 # turn on per-instance once you've built the E2B sandbox template and

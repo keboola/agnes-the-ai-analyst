@@ -1218,6 +1218,26 @@ analogue) drive the in-chat split-pane preview iframe on top of this grant.
 - /api/data/{table_id}/check-access
 - /api/data/{table_id}/download
 
+### `/api/attachments` — Connector-catalogued attachment binaries
+
+- /api/attachments/{source}/{attachment_id}/download — streams one attachment
+  file a connector stored on the server, looked up by id in the source's
+  declared catalogue table (`src/attachment_sources.py`; `jira` is the first
+  source: the `attachments` catalogue's `local_path`). RBAC is table-level — read access to
+  the catalogue table via `can_access_table`, the same gate as the parquet
+  download; a catalogue table marked `server_only` refuses with 403
+  `attachment_table_server_only`, keeping its binaries on the server just as
+  it keeps its parquet. Misses stay distinguishable from denials: 404
+  `attachment_not_found` (no such row) / `attachment_not_stored` (row exists,
+  no bytes on the server — over-size skip, transform-time miss, or removed
+  since; fall back to the upstream system for these) vs the RBAC 403 — and
+  both stay distinguishable from malfunctions: a catalogued file the server
+  cannot OPEN (permissions/I-O) answers 503 `attachment_unreadable`, never a
+  404 that would send callers upstream while the outage looks normal. Every
+  fetch, granted or denied, is audited as `attachment.download`. Consumed by
+  `agnes attachment get <source> <id>`; no MCP analogue (binary byte-stream,
+  mirrors the `/api/data/{table_id}/download` channel).
+
 ### `/api/debug` — Debug utilities
 
 - /api/debug/throw

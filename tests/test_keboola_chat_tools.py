@@ -2164,11 +2164,11 @@ class TestWorkspaceSchemaFollowsTheConnection(TestChatToolsEndpoint):
         )
         repo.upsert(
             **{k: row[k] for k in writable if k in row},
-            env={**row["env"], "HTTPS_PROXY": "http://proxy.internal:3128"},
+            env={**row["env"], "HTTPS_PROXY": "http://proxy.example.com:3128"},
         )
 
         self._set_config(c, token, conn_id, {"stack_url": "https://connection.example.com/"})
-        assert self._env(conn_id)["HTTPS_PROXY"] == "http://proxy.internal:3128"
+        assert self._env(conn_id)["HTTPS_PROXY"] == "http://proxy.example.com:3128"
 
 
 class TestBulkGrantSkipsDisabledTools(TestChatToolsEndpoint):
