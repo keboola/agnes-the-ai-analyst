@@ -204,15 +204,53 @@ podle té stránky **open-source vůbec nezmiňují** — místo toho:
   + `mcpToolDescription` soubor) + `intro.md` + ikony + privacy/terms linky
 - **Auth**: `authorization.type: "AzureKeyVault"` — client id/secret/token URL
   se čtou z **Azure Key Vault** referencí v manifestu, ne z dynamic
-  registration. **Nová nesrovnalost k prověření**: nejasné, jak/jestli tohle
-  spolupracuje s Agnes's OAuth 2.1 + PKCE + RFC 8414 dynamic discovery model
-  — vypadá to na statickou registraci per-submission, podobně jako Gemini
-  Enterprise (CON-5). Netestováno, jen zjištěno z dokumentace.
-- Proces: automated validation → functional/safety review → publish do
-  Copilot Studio **i Azure Foundry** současně.
+  registration. Statická registrace per-submission, podobně jako Gemini
+  Enterprise (CON-5) — na tuhle část to není nesrovnalost, Agnes umí jak DCR
+  (RFC 7591, `app/auth/mcp_oauth.py:155` `register_client`) tak vydat jeden
+  konkrétní client_id/client_secret pár manuálně (stejným endpointem), takže
+  Key Vault dostane co potřebuje.
 
-**Doporučení**: cílit na tuhle MCP-specific cestu, ne na starší Power
-Platform connector certification — je to ten skutečný, dnešní MCP ekvivalent
-Claude/OpenAI directory review, a nemá open-source podmínku. Zbývá ověřit
-Key Vault/DCR nesrovnalost a Partner Center business-verification bariéru
-(otázka 3 výše).
+### Nevyřešeno: PKCE — reálné riziko, ne administrativní nesrovnalost (research 14.8.)
+
+Skutečná nesrovnalost je jinde, a je konkrétnější, než "static vs. dynamic
+registration" napovídalo:
+
+- Agnes běží na oficiálním MCP Python SDK a jeho `/token` handler má
+  `code_verifier` jako **povinné** pole (`Field(..., ...)`, ne `Optional`) —
+  `mcp/server/auth/handlers/token.py:26` v závislosti. Žádný registrovaný
+  klient nemůže obejít PKCE; token exchange bez `code_verifier` padá na
+  validaci požadavku, ne až na kontrole shody s `code_challenge`.
+- Podle komunitního vlákna k Power Apps custom connectorům
+  (`community.powerplatform.com`, vlákno "Custom connector - Help with PKCE
+  flow") jejich **Generic OAuth 2** identity provider — ten, co manuální
+  Client ID/Secret/Authorization URL/Token URL konfiguraci vůbec nabízí —
+  **nemá pole pro `code_challenge`/`code_verifier` a PKCE flow nepodporuje**:
+  "There is no update on the feature page" k tomu otevřenému feature
+  requestu. (Jeden marketingový článek tvrdil PKCE support od "March 2026
+  update", ale komunitní vlákno s konkrétním chybovým hlášením je
+  důvěryhodnější zdroj konkrétního chování než blogový souhrn.)
+- MCP-certifikační manifest používá **stejnou secret vokabuláři**
+  (ClientId/ClientSecret/AuthorizationUrl/TokenUrl/RefreshUrl/Scopes) jako
+  tenhle Generic OAuth 2 provider — silný náznak, že běží na stejném
+  OAuth-klientském enginu, ne na nové, MCP-spec-native implementaci s PKCE.
+
+**Důsledek, pokud se náznak potvrdí:** Microsoftova strana token-exchange
+requestu nikdy nepošle `code_verifier`, Agnes ho ale vyžaduje bezpodmínečně →
+handshake by spadl přesně na tomhle kroku, bez ohledu na to, že jinak
+manifest/auth-config sedí.
+
+**Co s tím (bez zásahu do kódu teď):**
+1. Před submission ověřit živým testem (test prostředí v certifikačním
+   procesu, `Product overview` → preview environment) — dokumentace samotná
+   otázku nerozhoduje.
+2. Pokud se PKCE-gap potvrdí, jde o **bezpečnostní rozhodnutí** (výjimka z
+   PKCE pro jeden staticky registrovaný klient), ne implementační detail —
+   vyžaduje explicitní rozhodnutí, ne tichou úpravu `mcp_oauth.py`.
+3. Fallback bez kódové změny: MCP-cert cesta bez GitHub Copilot je nezávislá
+   (Fáze B výše) a nemá tenhle problém — `mcp-publisher`/GitHub OAuth flow
+   nejede přes tenhle manuální OAuth2 engine vůbec.
+
+**Doporučení**: cílit na MCP-specific certifikační cestu (žádná open-source
+podmínka), ale **naplánovat živé PKCE ověření jako blocking krok před
+submission**, ne až jako reakci na selhání handshaku uprostřed review.
+Zbývá i Partner Center business-verification bariéra (otázka 3 výše).
