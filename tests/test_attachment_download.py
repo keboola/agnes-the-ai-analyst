@@ -395,3 +395,25 @@ class TestDeclarationMatchesConnector:
         cols = set(records[0])
         declared = {decl.id_column, decl.path_column, decl.filename_column}
         assert declared <= cols, f"declared columns {declared - cols} missing from {sorted(cols)}"
+
+
+def test_registry_read_failure_fails_closed_not_open(jira_attachment_env, admin_user, monkeypatch):
+    """Devin on #1297 — a transient registry read failure used to fall
+    through with reg_row=None, silently skipping the `server_only` gate:
+    bytes released by a gate that never ran. Like the parquet route's
+    `distribution_check_unavailable`, the download must 503 instead —
+    including for admin god-mode, whose RBAC short-circuit never touches
+    the registry and so would sail past the broken gate."""
+    import app.api.attachments as attachments_mod
+
+    def _boom():
+        raise RuntimeError("system.duckdb lock lost")
+
+    monkeypatch.setattr("src.repositories.table_registry_repo", _boom)
+
+    resp = jira_attachment_env["client"].get("/api/attachments/jira/101/download", headers=admin_user)
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["code"] == "registry_unavailable"
+    row = _last_audit_row()
+    assert row is not None
+    assert row[3] == "error.503"

@@ -189,7 +189,22 @@ def download_attachment(
             rbac_key = reg_row["id"]
             view_name = reg_row["name"]
     except Exception:
-        logger.exception("attachment.download: registry resolution failed for %s; using declared name", decl.table)
+        logger.exception("attachment.download: registry resolution failed for %s", decl.table)
+        # Never fall through: `reg_row=None` would silently skip the
+        # `server_only` gate below, releasing bytes a gate that never ran
+        # was supposed to hold back — the parquet route 503s for exactly
+        # this failure (`_distribution_refusal` in app/api/data.py). An
+        # UNREGISTERED table is a different case and still flows past here
+        # (reg_row stays None without raising): there is no policy row to
+        # fail to read, and RBAC fails it closed for analysts.
+        _audit(user, source, attachment_id, "error.503", error="registry_unavailable")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "registry_unavailable",
+                "hint": "could not read the table registry to check this table's policy; retry",
+            },
+        )
 
     # RBAC first, before any lookup or filesystem work — an unauthorized
     # caller learns nothing beyond the refusal. Written as `denied`, not an
