@@ -1,11 +1,14 @@
-{% extends "base_ds.html" %}
+{% extends "base_admin.html" %}
 {% block title %}Sync — {{ config.INSTANCE_NAME }}{% endblock %}
 
 {% block head_extra %}
+{# The Data section's control chrome. This lens renders the Data tab strip and
+   sits in the Data section of the sidebar, but it had grown its own toolbar
+   (`.sync-toolbar` + a `.search-input` whose magnifier was a data-URI SVG with
+   a hardcoded grey in it, so it stayed light-grey on the dark theme) beside
+   four sibling lenses that had all moved to `.fbar`. #}
+<link rel="stylesheet" href="{{ static_url('css/filter_toolbar.css') }}">
 <style>
-  .sync-toolbar {
-    display: flex; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap;
-  }
   .sync-status-badge {
     display: inline-flex; align-items: center; gap: 6px;
     padding: 4px 12px; border-radius: 999px; font-size: 12px; font-weight: 600;
@@ -24,15 +27,27 @@
   }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
 
+  /* Four counts over the list they summarise. Every colour is a `--ds-*` token
+     now — the fills and the ink used to be `var(--surface, #fff)` and friends,
+     legacy names with a raw-hex fallback, which is a card that resolves to a
+     white box with near-black text whatever the theme decides. The label rides
+     the same muted-uppercase voice the table header below it takes under the
+     paper skin, so the two read as one block. */
   .sync-summary {
-    display: flex; gap: 16px; margin-bottom: 24px; flex-wrap: wrap;
+    display: flex; gap: 14px; margin-bottom: 20px; flex-wrap: wrap;
   }
   .summary-card {
-    background: var(--surface, #fff); border: 1px solid var(--border, #e5e7eb);
-    border-radius: 10px; padding: 16px 20px; min-width: 140px; flex: 1;
+    background: var(--ds-surface); border: 1px solid var(--ds-border);
+    border-radius: var(--ds-radius-btn); padding: 14px 18px; min-width: 140px; flex: 1;
   }
-  .summary-card .label { font-size: 11px; color: var(--text-secondary, #6b7280); font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; }
-  .summary-card .value { font-size: 22px; font-weight: 700; color: var(--text-primary, #111827); margin-top: 4px; }
+  .summary-card .label {
+    font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--ds-text-muted);
+  }
+  .summary-card .value {
+    font-size: 22px; font-weight: 700; color: var(--ds-text-primary); margin-top: 4px;
+    font-variant-numeric: tabular-nums;
+  }
   .summary-card .value.error { color: var(--ds-accent-danger-ink); }
   .summary-card .value.warn  { color: var(--ds-accent-warn-ink); }
 
@@ -41,46 +56,81 @@
   }
   .status-ok      { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
   .status-error   { background: var(--ds-accent-danger-bg); color: var(--ds-accent-danger-ink); }
-  .status-pending { background: var(--ds-surface-dim, #f3f4f6); color: var(--ds-text-secondary, #6b7280); }
+  .status-pending { background: var(--ds-surface-dim); color: var(--ds-text-secondary); }
   .status-running { background: var(--ds-accent-warn-bg); color: var(--ds-accent-warn-ink); }
   .status-skipped { background: var(--ds-accent-info-bg); color: var(--ds-accent-info-ink); }
 
   .zero-explain {
-    font-size: 12px; color: var(--text-secondary, #6b7280); margin: -12px 0 20px;
+    font-size: 12.5px; color: var(--ds-text-secondary); margin: -8px 0 18px;
   }
 
   .error-cell { font-size: 11px; color: var(--ds-accent-danger-ink); max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-  .search-input {
-    padding: 8px 12px 8px 32px; min-width: 260px;
-    border: 1px solid var(--border, #e5e7eb); border-radius: 8px; font-size: 13px;
-    background: var(--ds-surface) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2'><circle cx='11' cy='11' r='8'/><path d='m21 21-4.35-4.35'/></svg>") no-repeat 10px center;
-  }
+  /* The row's cells. Named rather than inline-styled per cell, so a theme flip
+     reaches them: every one of these used to be a `style="…var(--legacy,#hex)"`
+     attribute on the generated `<td>`. */
+  .sync-name { font-weight: 600; color: var(--ds-text-primary); text-decoration: none; }
+  a.sync-name:hover { color: var(--ds-primary); }
+  .sync-sub { font-size: 12px; color: var(--ds-text-secondary); }
+  .sync-num { font-size: 12px; font-variant-numeric: tabular-nums; }
+  .sync-blank { text-align: center; padding: 34px 16px; font-size: 13px; color: var(--ds-text-secondary); }
+
+  /* The list's own count + the poll's freshness, both metadata about the
+     table rather than controls, so they take the toolbar's quiet register. */
+  .sync-count { flex: 0 0 auto; font-size: 13px; color: var(--ds-text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .sync-fresh { flex: 0 0 auto; font-size: 12px; color: var(--ds-text-muted); white-space: nowrap; }
 
   .toast-stack { position: fixed; bottom: 24px; right: 24px; z-index: 2000; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
-  .toast { background: #111827; color: #fff; padding: 10px 16px; border-radius: 8px; font-size: 13px; box-shadow: 0 10px 30px rgba(0,0,0,.25); opacity: 0; transform: translateY(8px); transition: opacity .2s, transform .2s; pointer-events: auto; max-width: 380px; }
+  /* Tokenized: the pill used to be a raw `#111827` with `#047857` / `#b91c1c`
+     variants, three hexes that no theme could reach — on the paper skin a
+     success toast came up in a green from a different palette than every other
+     success surface in the product. */
+  .toast {
+    background: var(--ds-text-primary); color: var(--ds-text-inverse);
+    padding: 10px 16px; border-radius: var(--ds-radius-pill); font-size: 13px;
+    box-shadow: var(--ds-shadow-md);
+    opacity: 0; transform: translateY(8px); transition: opacity .2s, transform .2s;
+    pointer-events: auto; max-width: 380px;
+  }
   .toast.show { opacity: 1; transform: translateY(0); }
-  .toast.success { background: #047857; }
-  .toast.error   { background: #b91c1c; }
+  .toast.success { background: var(--ds-accent-success-ink); }
+  .toast.error   { background: var(--ds-accent-danger-ink); }
+  @media (prefers-reduced-motion: reduce) { .toast { transition: none; } }
 </style>
 {% endblock %}
 
-{% block content %}
+{% block admin_content %}
 <div>
-  {% set page_hero_eyebrow = "Data Pipeline" %}
-  {% set page_hero_title = "Sync" %}
-  {% set page_hero_subtitle = "Monitor extraction status and trigger manual syncs." %}
+  {# The SAME head every Data lens renders — "Data", plain, with the lens named
+     by the tab strip under it. This page carried a gradient hero card with a
+     "DATA PIPELINE" eyebrow over a "Sync" title, which is the treatment the
+     Tables lens dropped for the same reason: standing on Sources you saw one
+     heading, and one click later a taller, differently-coloured one, so a lens
+     of the Data section read as a page of its own. #}
+  {% set page_hero_title = "Data" %}
+  {% set page_hero_subtitle = "Extraction status for every registered table, and the manual trigger. Registration lives at <a href=\"/admin/tables\">Tables</a>." %}
+  {% set page_hero_plain = True %}
   {% include "_page_hero.html" %}
+  {% include "_admin_tabs.html" %}
 
-  <!-- Toolbar -->
-  <div class="sync-toolbar">
+  {# The shared toolbar, in the reading order every Data lens uses: search,
+     then what the list amounts to, then — pinned right — the page's own status
+     and the one action that changes it. `Trigger sync` used to sit SECOND, left
+     of the search box, which put the page's only irreversible verb in the slot
+     the eye lands on first. #}
+  <div class="fbar apg-bar" role="group" aria-label="Filter tables and trigger a sync">
+    <div class="fbar__search" role="search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M21 21l-4.3-4.3"></path></svg>
+      <input id="table-search" type="search" placeholder="Filter tables…" aria-label="Filter tables" autocomplete="off">
+    </div>
+    <span class="sync-count" id="sync-count" role="status" aria-live="polite"></span>
+    <span class="apg-bar__gap" aria-hidden="true"></span>
+    <span class="sync-fresh" id="last-refresh"></span>
     <span id="status-badge" class="sync-status-badge idle">
       <span class="dot"></span>
       <span id="status-label">Idle</span>
     </span>
     {{ ds.button('Trigger sync', variant='primary', id='trigger-btn') }}
-    <input id="table-search" type="search" class="search-input" placeholder="Filter tables…" autocomplete="off">
-    <span id="last-refresh" style="font-size:12px; color:var(--text-secondary,#6b7280); margin-left:auto;"></span>
   </div>
 
   <!-- Summary cards -->
@@ -95,11 +145,11 @@
     </div>
     <div class="summary-card">
       <div class="label">Never synced</div>
-      <div class="value warn" id="stat-never">—</div>
+      <div class="value" id="stat-never">—</div>
     </div>
     <div class="summary-card">
       <div class="label">Errors</div>
-      <div class="value error" id="stat-errors">—</div>
+      <div class="value" id="stat-errors">—</div>
     </div>
   </div>
   <div class="zero-explain" id="zero-explain"></div>
@@ -119,7 +169,7 @@
         </tr>
       </thead>
       <tbody id="sync-tbody">
-        <tr><td colspan="7" style="text-align:center; padding:32px; color:var(--text-secondary,#6b7280);">Loading…</td></tr>
+        <tr><td colspan="7" class="sync-blank">Loading…</td></tr>
       </tbody>
     </table>
   </div>
@@ -174,8 +224,18 @@ function renderTable() {
     ? allRows.filter(r => (r.id || "").toLowerCase().includes(ft) || (r.source_type || "").toLowerCase().includes(ft) || (r.bucket || "").toLowerCase().includes(ft))
     : allRows;
 
+  // The count says how narrowed the list is, in the toolbar, the way every
+  // other Data lens says it.
+  const countEl = document.getElementById("sync-count");
+  if (countEl) {
+    const noun = " table" + (allRows.length === 1 ? "" : "s");
+    countEl.textContent = ft
+      ? filtered.length + " of " + allRows.length + noun
+      : allRows.length + noun;
+  }
+
   if (filtered.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:32px;color:var(--text-secondary,#6b7280);">${ft ? "No matches." : "No tables registered."}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" class="sync-blank">${ft ? "No matches." : "No tables registered."}</td></tr>`;
     return;
   }
 
@@ -184,13 +244,16 @@ function renderTable() {
     const status = r.last_sync_status || (r.last_sync ? "ok" : "pending");
     const pillClass = status === "ok" ? "status-ok" : status === "error" ? "status-error" : status === "running" ? "status-running" : status === "skipped" ? "status-skipped" : "status-pending";
     const tr = document.createElement("tr");
+    // Classes, not inline `var(--legacy, #hex)` styles: every one of those
+    // carried a raw hex fallback, so a cell that failed to resolve its token
+    // fell back to the light theme's ink on whatever surface it sat on.
     tr.innerHTML = `
-      <td><a href="/admin/tables" style="font-weight:500;color:var(--text-primary,#111827);text-decoration:none;">${esc(r.id)}</a></td>
-      <td style="font-size:12px;color:var(--text-secondary,#6b7280);">${esc(r.source_type || "—")}${r.bucket ? " · " + esc(r.bucket) : ""}</td>
+      <td><a class="sync-name" href="/admin/tables">${esc(r.id)}</a></td>
+      <td class="sync-sub">${esc(r.source_type || "—")}${r.bucket ? " · " + esc(r.bucket) : ""}</td>
       <td><span class="status-pill ${pillClass}">${esc(status)}</span></td>
-      <td style="font-size:12px;color:var(--text-secondary,#6b7280);">${fmtDate(r.last_sync)}</td>
-      <td style="font-size:12px;">${r.rows != null ? Number(r.rows).toLocaleString() : "—"}</td>
-      <td style="font-size:12px;">${fmtSize(r.file_size_bytes)}</td>
+      <td class="sync-sub">${fmtDate(r.last_sync)}</td>
+      <td class="sync-num">${r.rows != null ? Number(r.rows).toLocaleString() : "—"}</td>
+      <td class="sync-num">${fmtSize(r.file_size_bytes)}</td>
       <td>${r.last_sync_error ? `<span class="error-cell" title="${esc(r.last_sync_error)}">${esc(r.last_sync_error)}</span>` : ""}</td>
     `;
     tbody.appendChild(tr);
@@ -206,6 +269,13 @@ function updateSummary() {
   document.getElementById("stat-synced").textContent = synced;
   document.getElementById("stat-never").textContent = never;
   document.getElementById("stat-errors").textContent = errors;
+  // A tint means "worth acting on" — so a ZERO never takes one. The two cards
+  // carried their colour in the markup, which put "0" for errors on screen in
+  // alarm red and "0 never synced" in warning amber: an operator who sees red
+  // when nothing is wrong learns to read the row as decoration, and then misses
+  // the day it means something.
+  document.getElementById("stat-never").classList.toggle("warn", never > 0);
+  document.getElementById("stat-errors").classList.toggle("error", errors > 0);
   renderZeroExplain(total, synced);
 }
 

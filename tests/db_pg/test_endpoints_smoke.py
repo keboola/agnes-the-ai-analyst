@@ -1528,6 +1528,42 @@ class TestMarketplacesSmoke:
 
 
 # ---------------------------------------------------------------------------
+# Admin dashboard signals (the /admin "Needs fixing" zone)
+# ---------------------------------------------------------------------------
+
+
+class TestAdminDashboardSmoke:
+    COVERED_ROUTES = {
+        "GET /api/admin/dashboard/signals",
+    }
+
+    def test_signals_shape(self, seeded_app_both):
+        from app.services.admin_dashboard import invalidate_cache
+
+        # The zone-2 TTL cache is process-global, so the duckdb leg of this
+        # parametrised fixture would otherwise serve its rollup to the pg leg.
+        invalidate_cache()
+        r = seeded_app_both["client"].get(
+            "/api/admin/dashboard/signals",
+            headers=_admin_headers(seeded_app_both),
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["zone"] == "needs_fixing"
+        assert isinstance(body["signals"], list)
+        # Clear signals are omitted, never returned at zero — an empty list is
+        # the healthy state and the page renders it as such.
+        for sig in body["signals"]:
+            assert sig["count"] > 0 or sig["failed"] is True
+            assert set(sig) >= {"key", "title", "zone", "severity", "failed", "count", "href", "blurb"}
+        invalidate_cache()
+
+    def test_signals_requires_admin(self, seeded_app_both):
+        r = seeded_app_both["client"].get("/api/admin/dashboard/signals")
+        assert r.status_code in (401, 403)
+
+
+# ---------------------------------------------------------------------------
 # Reports (marketplace usage digest)
 # ---------------------------------------------------------------------------
 
@@ -1950,6 +1986,9 @@ KNOWN_UNTESTED = {
     # Admin audit view over all Data Packages / Memory Domains (catalog
     # reshape) — rendering covered by tests/test_web_catalog_reshape.py.
     "GET /admin/data-packages",
+    # A data package's own page (tables · sharing · at a glance) — rendering
+    # covered by tests/test_web_admin_package_detail.py.
+    "GET /admin/data-packages/{package_id}",
     # Agent builder (rail-layout WIP surface) — rendering covered by
     # tests/test_ui_layout_theme.py::TestRailOptIn.
     "GET /agents",
@@ -2087,6 +2126,9 @@ KNOWN_UNTESTED = {
     "DELETE /api/admin/mcp-sources/{source_id}/secret",
     "DELETE /api/admin/mcp-tools/{tool_id}",
     "DELETE /api/admin/mcp-tools/{tool_id}/grants/{group_id}",
+    # Grant/revoke a whole MCP source at once — tested in test_keboola_chat_tools.py
+    "POST /api/admin/mcp-sources/{source_id}/grants",
+    "DELETE /api/admin/mcp-sources/{source_id}/grants/{group_id}",
     "GET /api/admin/mcp-sources",
     "GET /api/admin/mcp-sources/{source_id}",
     "GET /api/admin/mcp-tools",

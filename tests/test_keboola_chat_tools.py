@@ -1898,3 +1898,361 @@ class TestUvCacheLocation:
         # Without this the first tool call after every auto-upgrade re-downloads
         # the package, and a HOME-less container may not resolve a cache at all.
         assert spec["env"]["UV_CACHE_DIR"] == "/data/cache/uv"
+
+
+class TestBulkSourceGrant(TestChatToolsEndpoint):
+    """Granting a whole source at once.
+
+    Per-tool grants are the right granularity for an upstream curated a few
+    tools at a time. A connected Keboola project registers around forty in one
+    go, and granting them one page at a time is the same friction the switch
+    was built to remove — solving registration and leaving the admin forty
+    clicks later just moves it.
+    """
+
+    GRANTS = "/api/admin/mcp-sources"
+
+    def _enabled_source(self, c, token, name):
+        conn_id = self._create_keboola(c, token, name=name)
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+        return conn_id, derived_source_id(conn_id)
+
+    def _group(self):
+        from src.repositories import user_groups_repo
+
+        return user_groups_repo().get_by_name("Everyone")["id"]
+
+    def test_grant_covers_every_registered_tool(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        _, source_id = self._enabled_source(c, token, "kbc-bulk-grant")
+        gid = self._group()
+
+        resp = c.post(f"{self.GRANTS}/{source_id}/grants", json={"group_id": gid}, headers=_auth(token))
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["granted"] == len(FAKE_TOOLS)
+
+        from src.repositories import tool_registry_repo
+
+        repo = tool_registry_repo()
+        assert all(gid in repo.grants_for_tool(t["tool_id"]) for t in repo.list_for_source(source_id))
+
+    def test_grant_is_idempotent_and_says_what_changed(self, seeded_app):
+        """ "granted 0 of 37" and "granted 37 of 37" both read as success
+        unless the counts are reported separately."""
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        _, source_id = self._enabled_source(c, token, "kbc-bulk-idem")
+        gid = self._group()
+
+        c.post(f"{self.GRANTS}/{source_id}/grants", json={"group_id": gid}, headers=_auth(token))
+        again = c.post(f"{self.GRANTS}/{source_id}/grants", json={"group_id": gid}, headers=_auth(token)).json()
+
+        assert again["granted"] == 0
+        assert again["already_granted"] == len(FAKE_TOOLS)
+        assert again["total"] == len(FAKE_TOOLS)
+
+    def test_revoke_takes_the_whole_source_back(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        _, source_id = self._enabled_source(c, token, "kbc-bulk-revoke")
+        gid = self._group()
+        c.post(f"{self.GRANTS}/{source_id}/grants", json={"group_id": gid}, headers=_auth(token))
+
+        assert c.delete(f"{self.GRANTS}/{source_id}/grants/{gid}", headers=_auth(token)).status_code == 204
+
+        from src.repositories import tool_registry_repo
+
+        repo = tool_registry_repo()
+        assert not any(gid in repo.grants_for_tool(t["tool_id"]) for t in repo.list_for_source(source_id))
+
+    def test_granting_a_source_with_no_tools_is_refused(self, seeded_app):
+        """Reporting success over an empty set is how "it says it worked and
+        the agent sees nothing" happens."""
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        _, source_id = self._enabled_source(c, token, "kbc-bulk-empty")
+
+        from src.repositories import tool_registry_repo
+
+        tool_registry_repo().delete_for_source(source_id)
+        resp = c.post(f"{self.GRANTS}/{source_id}/grants", json={"group_id": self._group()}, headers=_auth(token))
+        assert resp.status_code == 409
+        assert "no_tools_registered" in resp.text
+
+    def test_grant_requires_a_real_group_and_source(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        _, source_id = self._enabled_source(c, token, "kbc-bulk-404")
+
+        assert (
+            c.post(f"{self.GRANTS}/nope/grants", json={"group_id": self._group()}, headers=_auth(token)).status_code
+            == 404
+        )
+        assert (
+            c.post(f"{self.GRANTS}/{source_id}/grants", json={"group_id": "nope"}, headers=_auth(token)).status_code
+            == 404
+        )
+
+    def test_grant_requires_admin(self, seeded_app):
+        c = seeded_app["client"]
+        _, source_id = self._enabled_source(c, seeded_app["admin_token"], "kbc-bulk-rbac")
+        resp = c.post(
+            f"{self.GRANTS}/{source_id}/grants",
+            json={"group_id": self._group()},
+            headers=_auth(seeded_app["analyst_token"]),
+        )
+        assert resp.status_code == 403
+
+
+class TestWorkspaceSchemaPassthrough:
+    """A read-only (non-master) token needs a workspace to run SQL in.
+
+    Only a master token gets one created behind the scenes, so without this an
+    admin who narrowed the token to read-only got a source where every tool
+    worked except `query_data` — the one they most wanted.
+    """
+
+    def test_absent_when_the_connection_carries_none(self):
+        spec = build_stdio_spec(
+            connection_id="c1",
+            connection_name="Demo",
+            stack_url="https://connection.example.com",
+        )
+        # Not invented: with a master token Keboola creates the workspace.
+        assert "KBC_WORKSPACE_SCHEMA" not in spec["env"]
+
+    def test_passed_through_when_set(self):
+        spec = build_stdio_spec(
+            connection_id="c1",
+            connection_name="Demo",
+            stack_url="https://connection.example.com",
+            workspace_schema="WORKSPACE_123",
+        )
+        assert spec["env"]["KBC_WORKSPACE_SCHEMA"] == "WORKSPACE_123"
+
+
+class TestWorkspaceSchemaReachesTheSource(TestChatToolsEndpoint):
+    def test_connection_config_reaches_the_derived_source(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-ws-schema")
+        assert (
+            c.put(
+                f"{BASE}/{conn_id}",
+                json={"config": {"stack_url": "https://connection.example.com", "workspace_schema": "WS_9"}},
+                headers=_auth(token),
+            ).status_code
+            == 200
+        )
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.repositories import mcp_sources_repo
+
+        env = mcp_sources_repo().get(derived_source_id(conn_id))["env"]
+        assert env["KBC_WORKSPACE_SCHEMA"] == "WS_9"
+
+    def test_a_non_string_workspace_schema_is_treated_as_unset(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-ws-schema-junk")
+        assert (
+            c.put(
+                f"{BASE}/{conn_id}",
+                json={"config": {"stack_url": "https://connection.example.com", "workspace_schema": 12345}},
+                headers=_auth(token),
+            ).status_code
+            == 200
+        )
+        # config is free-form admin JSON — a wrong-typed value must not be
+        # able to crash enable, and a schema is never invented from it.
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.repositories import mcp_sources_repo
+
+        env = mcp_sources_repo().get(derived_source_id(conn_id))["env"]
+        assert "KBC_WORKSPACE_SCHEMA" not in env
+
+
+class TestBulkGrantReportsWhatAGrantCannotReach(TestChatToolsEndpoint):
+    """A grant does not make a mutating tool reachable.
+
+    The passthrough policy gate refuses `mutating=True` for every non-admin
+    regardless of grants, and on an upstream that annotates nothing that is
+    every tool. Reporting only "granted N of N" would promise the group an
+    access it does not have — the same false promise `tools_admin_only`
+    exists to prevent on the enable side.
+    """
+
+    def test_grant_reports_the_admin_only_count(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-grant-gated")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.repositories import user_groups_repo
+
+        gid = user_groups_repo().get_by_name("Everyone")["id"]
+        body = c.post(
+            f"/api/admin/mcp-sources/{derived_source_id(conn_id)}/grants",
+            json={"group_id": gid},
+            headers=_auth(token),
+        ).json()
+
+        # FAKE_TOOLS: query_data is read-only; run_job and the unannotated
+        # "mystery" are both recorded as mutating.
+        expected = sum(1 for t in FAKE_TOOLS if t.read_only is not True)
+        assert body["admin_only"] == expected
+        assert body["granted"] == len(FAKE_TOOLS)
+
+
+class TestWorkspaceSchemaFollowsTheConnection(TestChatToolsEndpoint):
+    """A derived env key must track the connection in BOTH directions.
+
+    Adding a workspace schema to an already-enabled connection used to do
+    nothing until the admin toggled chat tools off and on. Removing one did
+    nothing at all — the merge was `existing | derived`, which cannot delete,
+    so the agent kept running SQL against a workspace the admin had removed.
+    """
+
+    def _set_config(self, c, token, conn_id, config):
+        assert c.put(f"{BASE}/{conn_id}", json={"config": config}, headers=_auth(token)).status_code == 200
+
+    def _env(self, conn_id):
+        from src.repositories import mcp_sources_repo
+
+        return mcp_sources_repo().get(derived_source_id(conn_id))["env"]
+
+    def test_added_after_enabling_reaches_the_source(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-ws-added")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+        assert "KBC_WORKSPACE_SCHEMA" not in self._env(conn_id)
+
+        self._set_config(
+            c, token, conn_id, {"stack_url": "https://connection.example.com", "workspace_schema": "WS_LATE"}
+        )
+        assert self._env(conn_id)["KBC_WORKSPACE_SCHEMA"] == "WS_LATE"
+
+    def test_removed_from_the_connection_is_removed_from_the_source(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-ws-removed")
+        self._set_config(
+            c, token, conn_id, {"stack_url": "https://connection.example.com", "workspace_schema": "WS_GONE"}
+        )
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+        assert self._env(conn_id)["KBC_WORKSPACE_SCHEMA"] == "WS_GONE"
+
+        self._set_config(c, token, conn_id, {"stack_url": "https://connection.example.com"})
+        assert "KBC_WORKSPACE_SCHEMA" not in self._env(conn_id), "a removed workspace schema must not survive"
+
+    def test_an_admins_own_env_key_survives_the_merge(self, seeded_app):
+        """Only the keys this module derives are authoritative — anything the
+        admin added to the derived source stays."""
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        conn_id = self._create_keboola(c, token, name="kbc-ws-adminenv")
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+
+        from src.repositories import mcp_sources_repo
+
+        repo = mcp_sources_repo()
+        row = repo.get(derived_source_id(conn_id))
+        writable = (
+            "id",
+            "name",
+            "transport",
+            "command",
+            "args",
+            "url",
+            "auth_method",
+            "auth_secret_env",
+            "enabled",
+            "scope",
+            "connect_hint",
+        )
+        repo.upsert(
+            **{k: row[k] for k in writable if k in row},
+            env={**row["env"], "HTTPS_PROXY": "http://proxy.example.com:3128"},
+        )
+
+        self._set_config(c, token, conn_id, {"stack_url": "https://connection.example.com/"})
+        assert self._env(conn_id)["HTTPS_PROXY"] == "http://proxy.example.com:3128"
+
+
+class TestBulkGrantSkipsDisabledTools(TestChatToolsEndpoint):
+    """A grant must not reach a switched-off tool.
+
+    A disabled row is invisible to the agent today — the passthrough surface is
+    `list_by_mode(..., enabled_only=True)` — so granting it records an access
+    decision with no visible effect, and re-enabling the tool later makes it
+    reachable for that group without anyone granting again. (Devin Review.)
+    """
+
+    GRANTS = "/api/admin/mcp-sources"
+
+    def _enabled_source_with_one_disabled(self, c, token, name):
+        conn_id = self._create_keboola(c, token, name=name)
+        assert c.post(f"{BASE}/{conn_id}/chat-tools", headers=_auth(token)).status_code == 201
+        source_id = derived_source_id(conn_id)
+
+        from src.repositories import tool_registry_repo
+
+        repo = tool_registry_repo()
+        rows = repo.list_for_source(source_id)
+        off = rows[0]
+        repo.upsert(
+            tool_id=off["tool_id"],
+            source_id=source_id,
+            original_name=off["original_name"],
+            exposed_name=off["exposed_name"],
+            mode=off["mode"],
+            enabled=False,
+        )
+        return conn_id, source_id, off["tool_id"]
+
+    def _group(self):
+        from src.repositories import user_groups_repo
+
+        return user_groups_repo().get_by_name("Everyone")["id"]
+
+    def test_a_disabled_tool_is_not_granted(self, seeded_app):
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        _, source_id, off_id = self._enabled_source_with_one_disabled(c, token, "kbc-grant-off")
+        gid = self._group()
+
+        body = c.post(f"{self.GRANTS}/{source_id}/grants", json={"group_id": gid}, headers=_auth(token)).json()
+
+        from src.repositories import tool_registry_repo
+
+        assert gid not in tool_registry_repo().grants_for_tool(off_id)
+        assert body["granted"] == len(FAKE_TOOLS) - 1
+        assert body["skipped_disabled"] == 1
+
+    def test_re_enabling_does_not_hand_it_over_silently(self, seeded_app):
+        """The whole point: the grant must not be waiting for the switch."""
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        _, source_id, off_id = self._enabled_source_with_one_disabled(c, token, "kbc-grant-off-then-on")
+        gid = self._group()
+        c.post(f"{self.GRANTS}/{source_id}/grants", json={"group_id": gid}, headers=_auth(token))
+
+        from src.repositories import tool_registry_repo
+
+        repo = tool_registry_repo()
+        row = repo.get(off_id)
+        repo.upsert(
+            tool_id=row["tool_id"],
+            source_id=row["source_id"],
+            original_name=row["original_name"],
+            exposed_name=row["exposed_name"],
+            mode=row["mode"],
+            enabled=True,
+        )
+        assert gid not in repo.grants_for_tool(off_id), "re-enabling handed the group a tool nobody granted"
+
+    def test_revoke_still_reaches_a_disabled_tool(self, seeded_app):
+        """Grant narrow, revoke wide — taking access away must not skip a row
+        because it happens to be switched off."""
+        c, token = seeded_app["client"], seeded_app["admin_token"]
+        _, source_id, off_id = self._enabled_source_with_one_disabled(c, token, "kbc-revoke-off")
+        gid = self._group()
+
+        from src.repositories import tool_registry_repo
+
+        repo = tool_registry_repo()
+        repo.add_grant(off_id, gid)  # however it got there — a prior release, a hand edit
+        assert repo.grants_for_tool(off_id) == [gid]
+
+        assert c.delete(f"{self.GRANTS}/{source_id}/grants/{gid}", headers=_auth(token)).status_code == 204
+        assert repo.grants_for_tool(off_id) == []

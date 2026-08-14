@@ -15,7 +15,7 @@
 # explicit conn.close() + close_singleton_connections() + gc.collect()
 # inside the uvicorn worker do not deterministically release that lock
 # (Python keeps the file descriptor pinned until the process exits).
-# Verified live on agnes-dev: ``lsof`` shows the lock outlives every
+# Verified live on a dev instance: ``lsof`` shows the lock outlives every
 # in-process release we tried. Running the migrator from the host with
 # the app container fully stopped is the only path that's reliable.
 #
@@ -71,7 +71,7 @@ export AGNES_TAG
 
 # Compose chain reused for every invocation. Mirrors the layering in
 # agnes-auto-upgrade.sh so this daemon plays well with the existing -f
-# argument style on agnes-dev/agnes-prod (no COMPOSE_FILE env coupling).
+# argument style on provisioned VMs (no COMPOSE_FILE env coupling).
 COMPOSE_FILES=( -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.host-mount.yml )
 # gcplogs overlay — ships container logs to GCP Cloud Logging on GCE VMs.
 # Guarded on file presence so a legacy VM whose image predates the overlay
@@ -202,6 +202,111 @@ os.replace(tmp, p)
 PY
 }
 
+_instance_yaml_target_mode() {
+    # Echo the mode (octal, no leading zero) this host may give the overlay.
+    #
+    # 0600 has a precondition, and it is the SAME one the provisioning script
+    # gates its own `chmod 600` on (#1217,
+    # infra/modules/customer-instance/startup-script.sh.tpl): the file must
+    # come to rest owned by the app container's uid, because 0600 grants
+    # nothing to anyone else. `os.replace`/`mv` re-owns the file to whoever
+    # writes it — this process — or to agnes-applier, when we run as root and
+    # the chown after the rename can still move it. So the mode has to follow
+    # the account the file lands on, not the process doing the writing.
+    #
+    # Tightening unconditionally is what turned #1217's documented,
+    # availability-safe degradation into an outage: on a host where
+    # agnes-applier did not get the app's uid, the first rewrite left the
+    # overlay 0600 under an uid the app is not, and the app's fail-closed
+    # strict read (app/main.py) then refuses to start the instance.
+    # PRESERVING the existing mode — this fix's first shape — fails the same
+    # way one rewrite later: the app's own writers
+    # (src/db_state_machine.py::write_backend_state, the admin config
+    # editors) run as uid 999 INSIDE the container, where owner-only is
+    # exactly right, and chmod their temp 0600 unconditionally — so on a
+    # mismatched host the overlay is routinely 0600-owned-by-999 before this
+    # daemon touches it, and carrying that mode across a rename that re-owns
+    # the file strands it all over again. And on a fresh overlay "preserve"
+    # bottomed out in a stat-fallback of 644 that CREATED the file
+    # world-readable with the database url inline. Both halves found by
+    # Devin Review on #1298.
+    #
+    # So on a mismatched host the mode is never owner-only and never carried
+    # over. The app's read is granted through its GROUP instead: 0640 with
+    # gid 999 — the app container's primary group, same number as the uid
+    # (Dockerfile `useradd --system --uid 999 … agnes` + `USER agnes`;
+    # provisioning's `chown 999:999` leans on the same pair) — wherever this
+    # process can actually hand the file to that group. That is probed on a
+    # scratch file, because the group re-assert after the rename is
+    # best-effort and a 0640 whose grant never landed is the same lockout
+    # 0600 was. Where the grant is not possible (the common shape: a
+    # non-root applier on an allocated uid with no gid-999 membership) the
+    # mode falls back to 0644 — the same availability-first degradation
+    # provisioning documents for this host state
+    # (docs/postgres-cutover-runbook.md), now a conscious, logged decision
+    # instead of a stat default.
+    local path=$1
+    # The app container's uid (and primary gid — see above). Kept next to
+    # its consumers; the provisioning side has its own AGNES_APPLIER_UID for
+    # the same number.
+    local app_uid=999
+    local me applier_uid final_uid probe
+    me=$(id -u)
+    applier_uid=$(id -u agnes-applier 2>/dev/null || echo "")
+    if [ "$me" = "0" ] && [ -n "$applier_uid" ]; then
+        final_uid=$applier_uid
+    else
+        final_uid=$me
+    fi
+    if [ "$final_uid" = "$app_uid" ]; then
+        echo 600
+        return 0
+    fi
+    probe=$(mktemp "${path}.gidprobe.XXXXXX" 2>/dev/null || echo "")
+    if [ -n "$probe" ] && chown ":${app_uid}" "$probe" 2>/dev/null; then
+        rm -f "$probe" 2>/dev/null || true
+        logger -t agnes-state-applier -p user.warning \
+            "agnes-applier resolves to uid ${final_uid}, not ${app_uid} (the app container's) — writing ${path} at mode 0640 with group ${app_uid} instead of owner-only 0600, so the app can still read its own config through its gid. The database url and any connector credentials in that file stay readable beyond their owner until the two uids agree; see docs/postgres-cutover-runbook.md for the remediation." 2>/dev/null || true
+        echo 640
+        return 0
+    fi
+    rm -f "$probe" 2>/dev/null || true
+    logger -t agnes-state-applier -p user.warning \
+        "agnes-applier resolves to uid ${final_uid}, not ${app_uid} (the app container's), and this process cannot hand ${path} to group ${app_uid} — writing it at mode 0644 so the app can still read its own config. The database url and any connector credentials in that file are world-readable until the two uids agree; see docs/postgres-cutover-runbook.md for the remediation." 2>/dev/null || true
+    echo 644
+}
+
+_instance_yaml_reassert_owner() {
+    # The post-rename ownership re-assert, one implementation for both
+    # writer routes below so they cannot drift. Normally a no-op — the
+    # atomic rename already carries the temp file's ownership (this
+    # process's own uid, since the script runs as User=agnes-applier) onto
+    # the overlay. By NAME rather than a hardcoded uid on purpose — it
+    # self-corrects to whatever agnes-applier resolves to on this host
+    # instead of baking in a number that could drift from the provisioning
+    # pin (#1217, see infra/modules/customer-instance/startup-script.sh.tpl).
+    #
+    # At mode 0640 the app's read grant IS the group, so the re-assert must
+    # land on the app's gid (999 — the uid/gid pair _instance_yaml_target_mode
+    # documents): resetting the group to agnes-applier here would re-lock
+    # the app out one line after the mode unlocked it. Owner+group first
+    # (covers root, and agnes-applier itself when it holds gid-999
+    # membership); group-only as the fallback for a custom-infra process
+    # that cannot change the owner. The grant was probed in
+    # _instance_yaml_target_mode, so on the 640 path one of these lands.
+    # Doing the group change after the rename is safe where the H2
+    # destination-chmod was not: the interim group is the writer's own,
+    # which only ever grants LESS than the final state — nothing becomes
+    # observable during the window.
+    local path=$1 mode=$2
+    if [ "$mode" = "640" ]; then
+        chown "agnes-applier:999" "$path" 2>/dev/null \
+            || chown ":999" "$path" 2>/dev/null || true
+    else
+        chown agnes-applier:agnes-applier "$path" 2>/dev/null || true
+    fi
+}
+
 write_instance_yaml() {
     # Preserve all non-database top-level keys (logging, auth_providers,
     # feature_flags, etc. the operator may have set via the admin UI).
@@ -214,12 +319,17 @@ write_instance_yaml() {
     # missing dependency.
     local backend=$1 url=${2:-}
     local path="/data/state/instance.yaml"
+    # Computed once, in bash, and handed to BOTH writers below — the PyYAML
+    # route and the pure-bash fallback have to agree on this, and a second
+    # implementation inside the heredoc is a drift waiting to happen.
+    local mode
+    mode=$(_instance_yaml_target_mode "$path")
     # Try PyYAML route first — preserves any non-database top-level keys
     # the operator set (logging, auth providers, feature flags).
     if python3 -c 'import yaml' 2>/dev/null; then
-        python3 - "$path" "$backend" "$url" <<'PY'
+        python3 - "$path" "$backend" "$url" "$mode" <<'PY'
 import os, sys, yaml
-path, backend, url = sys.argv[1], sys.argv[2], sys.argv[3]
+path, backend, url, mode = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 existing = {}
 if os.path.exists(path):
     # A read that fails must NOT fall through to `existing = {}`: the whole
@@ -259,11 +369,18 @@ existing["database"] = db
 tmp = path + ".tmp"
 with open(tmp, "w") as f:
     yaml.safe_dump(existing, f, default_flow_style=False, sort_keys=True)
-# 0600 on the TEMP file, before the rename — os.replace is atomic and
-# carries the temp's mode, so the real path is never observable at the
+# The mode goes on the TEMP file, before the rename — os.replace is atomic
+# and carries the temp's mode, so the real path is never observable at the
 # umask default. Chmodding the destination afterwards leaves a window on
 # a file that holds the database url with its password inline.
-os.chmod(tmp, 0o600)
+#
+# `mode` is 0600 only where the file will come to rest on the app
+# container's uid; otherwise 0640 (the app reads via group 999, which the
+# caller re-asserts after the rename) or 0644 — never an owner-only mode
+# under an uid the app is not, so this rewrite cannot make the overlay
+# unreadable to the app. Decided by _instance_yaml_target_mode in the
+# calling script — see its comment.
+os.chmod(tmp, int(mode, 8))
 os.replace(tmp, path)
 PY
         # Propagate the writer's exit status instead of `return` (which would
@@ -276,7 +393,7 @@ PY
             logger -t agnes-state-applier "write_instance_yaml: refused to rewrite $path (rc=$rc) — see stderr"
             return "$rc"
         fi
-        chown agnes-applier:agnes-applier "$path" 2>/dev/null || true
+        _instance_yaml_reassert_owner "$path" "$mode"
         return 0
     fi
     # Pure-bash fallback. H4-NEW — preserves the database section only;
@@ -301,9 +418,12 @@ PY
             printf '  url: "%s"\n' "$url_escaped"
         fi
     } > "$tmp"
-    chmod 0600 "$tmp"
+    # Same gate as the PyYAML route above, from the same computed value:
+    # 0600 only where the app container will own the result, 0640/0644
+    # otherwise.
+    chmod "$mode" "$tmp"
     mv -f "$tmp" "$path"
-    chown agnes-applier:agnes-applier "$path" 2>/dev/null || true
+    _instance_yaml_reassert_owner "$path" "$mode"
 }
 
 # --- Stuck-running recovery (B5 + H5-NEW) ------------------------------------

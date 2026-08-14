@@ -1,0 +1,74 @@
+{#
+  Admin layout for pages that own their whole `content` block directly
+  (extend `base_ds.html` today — no shared hero/toolbar convention).
+
+  Usage (leaf template):
+
+      {% extends "base_admin.html" %}
+      {% block admin_content %}
+        ...whatever used to live in {% block content %}...
+      {% endblock %}
+
+  Wraps the page's own body in the two-column `.admin-split` grid from the
+  issue #896 sidebar mock: `_admin_nav.html` (grouped section links, active
+  state derived from `request.url.path` via `app/web/admin_nav.py`) on the
+  left, the page's content in `.admin-main` on the right. Below ~820px the
+  sidebar hides (admin-nav.css) — pages stay usable via their own
+  hero/tabs, unaffected by this wrapper.
+
+  See `base_admin_page.html` for the sibling base used by pages that extend
+  `base_page.html` (hero + toolbar + page blocks) instead.
+#}
+{% extends "base_ds.html" %}
+
+{# The admin sidebar is CHROME, not page content: it is the second tier of the
+   navigation and it belongs against the rail, not inside the page's centred
+   gutter. In the default `.container` it sat 84px off the rail on a 1440px
+   screen — 32px of page padding plus 52px of auto-centring — and that gap GREW
+   with the viewport, so on a wide monitor the column drifted away from the strip
+   it continues. `container--full` drops the max-width and the centring; the
+   column then starts one small inset after the rail, and `.admin-main` takes its
+   own comfortable max-width from admin-nav.css instead of inheriting the
+   container's. #}
+{% block container_modifier %}container--full{% endblock %}
+
+
+
+{# NOT loaded via {% block head_extra %}: leaf templates below this base
+   routinely override that block for their own page-local <style> WITHOUT
+   calling {{ super() }} (that's the pre-existing pattern across
+   admin_tables.html, admin_server_config.html, etc.), which would silently
+   drop this stylesheet. `content` is exclusively owned by this base (leaf
+   templates fill `admin_content` instead), so a <link> here always renders —
+   valid HTML5 wherever it sits, and admin-nav.css has no page-load-order
+   dependency to protect. #}
+{% block content %}
+<link rel="stylesheet" href="{{ static_url('css/admin-nav.css') }}">
+{# The page vocabulary inside that column — context strip, section head,
+   toolbar placement. Same reason as admin-nav.css above for living here
+   rather than in `head_extra`. #}
+<link rel="stylesheet" href="{{ static_url('css/admin_page.css') }}">
+<div class="admin-split">
+    {% include "_admin_nav.html" %}
+    <div class="admin-main">
+        {% block admin_content %}{% endblock %}
+        {# The footer belongs to the CONTENT COLUMN here, not to the page below
+           the split — see `page_footer` below for why that is structural and
+           not a preference. #}
+        {% include '_footer.html' %}
+    </div>
+</div>
+{% endblock %}
+
+{# The sidebar is `position: sticky` at a full `100vh - 32px`, so its slide
+   room is whatever its containing block — its grid area in `.admin-split` —
+   has left over. The base parks the footer AFTER `<main>`, i.e. outside that
+   grid, which makes the document taller than the block the column can stick
+   within: over the last ~160px of scroll the column had nowhere left to stick
+   and was dragged up with the page, taking its title and the Overview row off
+   the top of the screen. It read as "the sidebar scrolls".
+   Moving the footer inside `.admin-main` makes the split span the whole
+   scrollable height, so the column stays pinned to the end of the page. It is
+   also where the footer belongs visually: aligned with the content it closes,
+   rather than as a band running under a full-height rail. #}
+{% block page_footer %}{% endblock %}

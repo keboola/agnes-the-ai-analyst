@@ -6,9 +6,11 @@ Smoke-level: render the page as admin and assert that:
 - The POST target is /api/admin/memory-domains.
 - The follow-up RBAC step modal is present (per spec Section 7.4).
 
-The parallel /admin/tables Create Data Package modal already shipped in
-Task 8.10a; this test pins the symmetric Memory-Domain variant on the
-admin corporate-memory page.
+The parallel Data Package flow shipped first (Task 8.10a) and has since left
+this page's shape behind: it is the shared right-side drawer
+(`js/components/package_drawer.js`), opened by both Data lenses, and the one
+test here that covered it reads the component instead of `/admin/tables`. The
+Memory-Domain variant is still the modal described above.
 """
 
 from __future__ import annotations
@@ -72,22 +74,32 @@ def test_admin_memory_renders_create_domain_rbac_step(seeded_app):
     assert "required" in body
 
 
-def test_admin_tables_renders_create_data_package_rbac_step(seeded_app):
-    """Mirror coverage for /admin/tables — same inline-matrix migration
-    as the Memory Domain modal."""
-    c = seeded_app["client"]
-    token = seeded_app["admin_token"]
-    resp = c.get("/admin/tables", headers=_auth(token))
-    assert resp.status_code == 200
-    body = resp.text
+def test_create_data_package_keeps_its_inline_group_access_step():
+    """The Data Package side of the same migration, at its new address.
 
-    # Inline matrix container + lazy-load helper.
-    assert 'id="cdp-rbac-details"' in body
-    assert "_cdpHydrateRbacMatrix" in body
-    assert "_submitCdpGrantsInline" in body
-    # Removed step-2 modal should NOT be present.
-    assert 'id="createDataPackageRbacModal"' not in body
+    This used to read `/admin/tables` for `#cdp-rbac-details` and the two
+    `_cdp*` helpers, because the create form was that page's markup. The form
+    is now the shared drawer component — a package is created from the
+    Packages lens as well, and neither lens should own the only copy — so the
+    capability this test exists for (grant per-group access WITHOUT a second
+    modal, groups fetched lazily) is pinned there instead.
+    """
+    from pathlib import Path
+
+    src = Path("app/web/static/js/components/package_drawer.js").read_text(encoding="utf-8")
+
+    # The inline section, still collapsed-and-lazy: one request, and only if
+    # the admin opens it.
+    assert 'id="pdw-access"' in src
+    assert "function hydrateGroups()" in src
+    assert "st.groupsLoaded" in src
+    # …and no modal-on-modal came back.
+    assert "createDataPackageRbacModal" not in src
     # Backend wiring unchanged.
-    assert "/api/admin/groups" in body
-    assert "/api/admin/grants" in body
-    assert "data_package" in body
+    assert "/api/admin/groups" in src
+    assert "/api/admin/grants" in src
+    assert "'data_package'" in src
+    # Both tiers are still writable from the create flow; the drawer says
+    # Optional/Automatic and sends the system words.
+    assert 'data-tier="available"' in src
+    assert 'data-tier="required"' in src

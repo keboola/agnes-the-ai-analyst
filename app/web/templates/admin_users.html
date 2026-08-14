@@ -1,84 +1,98 @@
-{% extends "base_page.html" %}
+{% extends "base_admin_page.html" %}
 {% block title %}Users — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% set page_hero_eyebrow = "Users & Access" %}
-{% set page_hero_title = "Users" %}
-{% set page_hero_subtitle = "Manage analyst accounts and group membership." %}
+{# One head for the whole section — the tab strip below identifies the
+   sub-view, so People and Tokens read as one place rather than two sibling
+   pages. (Groups used to be the third: it is Access's now, because a group is
+   what a grant is written against, not a kind of person. See admin_nav.py.)
+
+   PLAIN, not the hero card: this page is a workspace an admin stands in and
+   filters, exactly as /library is, and it now wears /library's head — the
+   name, one sentence, and nothing drawn around them. The eyebrow went with
+   the card: "Administration" restated the sidebar the reader used to get
+   here, one line above a tab strip that names the lens. See
+   `.page-header--plain` in style-custom.css. #}
+{% set page_hero_title = "People" %}
+{% set page_hero_subtitle = "Every account on this instance, whether the data is reaching it, and the credentials issued to it. The groups themselves — and what each one can use — live in <a href=\"/admin/access\">Access</a>." %}
+{% set page_hero_plain = True %}
 
 {% block head_extra %}
 <link rel="stylesheet" href="{{ static_url('css/ds_dropdown.css') }}">
+{# The Library's control chrome, imported rather than reimplemented: this page
+   is a searchable inventory of rows exactly as /library is, and every instance
+   where an admin surface grew its own search box + its own filter select is an
+   instance of the same control looking slightly different for no reason. We
+   take the STYLES only — `.fbar`, `.fbar__search`, `.fbar-select` — not
+   filter_toolbar.js, because People's search is server-side (see loadUsers:
+   the list is a capped window and search reaches past it), and the engine
+   filters DOM rows that are already present. Same anatomy, different data
+   path. #}
+<link rel="stylesheet" href="{{ static_url('css/filter_toolbar.css') }}">
+{# Inviting a person is TWO decisions — who they are, and which groups they
+   belong to — and the second one is a list of rows, not a field. That is the
+   line drawer.css draws: a centred card is sized for one decision, so the
+   invite flow rides the shared right-side drawer instead, with the People
+   table it is adding to still visible behind it. #}
+<link rel="stylesheet" href="{{ static_url('css/drawer.css') }}">
 <style>
-  .users-toolbar {
-    display: flex; justify-content: space-between; align-items: center;
-    gap: 16px; margin-bottom: 20px; flex-wrap: wrap;
+  /* Section head, context strip and toolbar placement are the SHARED admin
+     page vocabulary now (`.apg-sechead` / `.apg-strip` / `.apg-bar` in
+     css/admin_page.css, loaded by the admin bases) — People, Data and Access
+     each carried a private copy of the same three objects, a few pixels and
+     one type size apart. What is left in this block is only what belongs to
+     this page: the people table and its rows. */
+
+  /* `table-layout: fixed` is what makes the <colgroup> below binding — without
+     it the colgroup is only a hint and the browser still sizes from content,
+     so one long Workspace group name or a long email widens the table past its
+     container. `.data-table` clips its own overflow (that is how it keeps its
+     rounded corners), so the columns that lose are the last ones: the actions
+     an admin came here to reach. */
+  #users-table { table-layout: fixed; }
+
+  /* The Actions column header carries no visible word — the column is 56px of
+     ⋯ buttons and a label would be wider than the column. It still has to say
+     what it is to a screen reader, so the text is present and clipped. */
+  .pp-sr {
+    position: absolute; width: 1px; height: 1px;
+    padding: 0; margin: -1px; overflow: hidden;
+    clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
   }
 
-  /* Total-users metric — server-rendered snapshot at first paint. */
-  .users-metric {
-    display: inline-flex; flex-direction: column; gap: 4px;
-    background: var(--ds-surface, #fff); border: 1px solid var(--ds-border, #e4e7ee);
-    border-radius: 10px; padding: 14px 20px; margin-bottom: 20px; min-width: 140px;
-  }
-  .users-metric-label {
-    font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;
-    color: var(--ds-text-secondary, #6b7280);
-  }
-  .users-metric-value {
-    font-size: 24px; font-weight: 700; color: var(--ds-text-primary, #111827);
-    font-variant-numeric: tabular-nums;
-  }
-
-  /* Footnote under the table: tells the user the list is a capped window
-     and the search reaches accounts beyond it. */
-  .users-hint {
-    margin: 12px 2px 0; font-size: 12px; color: var(--ds-text-secondary, #6b7280);
-  }
-
-  /* Search + group filter share the toolbar's left side; the Add-user
-     button stays pinned right via the toolbar's space-between. The select
-     mirrors the canonical `.search-input` control box (height 36px + the
-     same design tokens) so it sits flush beside the search field instead
-     of at a mismatched height. */
-  .users-filters { display: flex; align-items: center; gap: var(--space-2, 8px); flex-wrap: wrap; }
-  .group-filter {
-    height: 36px; padding: 0 var(--space-3, 12px);
-    font-family: var(--font-primary); font-size: var(--text-sm, 13px);
-    color: var(--ds-text-primary, #111827); background: var(--ds-surface, #fff);
-    border: 1px solid var(--ds-border, #e4e7ee); border-radius: var(--radius-md, 8px);
-    cursor: pointer; max-width: 220px;
-    transition: border-color var(--transition-fast, 0.15s), box-shadow var(--transition-fast, 0.15s);
-  }
-  .group-filter:focus {
-    outline: none; border-color: var(--ds-primary, #6366f1);
-    box-shadow: var(--focus-ring, 0 0 0 3px rgba(99, 102, 241, 0.25));
-  }
-
-
-  /* Whole user-info cell is the click target for the detail page —
-     anchor wraps avatar + name + email so the entire block lights up
-     on hover, not just one line. Defaults to inheriting text color so
-     the cell doesn't render in browser link blue; .name turns primary
-     blue on hover as the affordance cue. */
+  /* ── Name cell — `.lib-namecell`'s two-line anatomy (strong title over
+     muted secondary line), plus the avatar this page has always had. The
+     whole cell is the link to the detail page, so the entire block lights up
+     on hover rather than one line of it. */
   .user-cell {
     display: flex; align-items: center; gap: 10px;
     color: inherit; text-decoration: none;
-    cursor: pointer;
+    cursor: pointer; min-width: 0;
   }
   .user-cell:hover .user-meta .name,
-  .user-cell.no-name:hover .email { color: var(--ds-primary, #4338ca); }
+  .user-cell.no-name:hover .email { color: var(--ds-primary); }
+  .user-cell:focus-visible .user-meta .name { text-decoration: underline; text-underline-offset: 2px; }
   .user-avatar {
     width: 32px; height: 32px; border-radius: 50%;
     display: flex; align-items: center; justify-content: center;
     font-size: 12px; font-weight: 600; color: #fff;
     flex-shrink: 0;
   }
-  .user-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-  .user-meta .name { font-weight: 500; color: var(--ds-text-primary, #111827); }
-  .user-meta .email { font-size: 11px; color: var(--ds-text-secondary, #6b7280); }
+  /* Matching `.lib-name-title` / `.lib-name-desc` — 14px/600 over 12.5px
+     secondary, not the 13px/500 over 11px this page used to run. A person's
+     row and a skill's row are the same kind of row. */
+  .user-meta { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .user-meta .name {
+    font-size: 14px; font-weight: 600; color: var(--ds-text-primary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .user-meta .email {
+    font-size: 12.5px; color: var(--ds-text-secondary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
   .user-cell.no-name .name { display: none; }
-  .user-cell.no-name .email { font-size: 13px; color: var(--ds-text-primary, #111827); font-weight: 500; }
+  .user-cell.no-name .email { font-size: 14px; color: var(--ds-text-primary); font-weight: 600; }
 
-  /* Membership chips — colors match the /admin/groups origin pills so a
+  /* Membership chips — colors match the /admin/access origin pills so a
      user's group cell tells the same story at a glance:
        Admin            → yellow  (seeded admin role)
        Everyone         → gray    (seeded default group, low signal)
@@ -90,6 +104,17 @@
     display: flex; flex-wrap: wrap; gap: 4px;
     max-width: 320px;
   }
+  /* Outcome cells — a state worth acting on is tinted; an accurate zero is
+     merely quiet. Never a red badge: none of these is an error, they are
+     gaps, and the /admin Overview already counts them. */
+  .outcome-warn {
+    color: var(--ds-accent-warn-ink);
+    font-weight: 600;
+    text-decoration: none;
+  }
+  a.outcome-warn:hover { text-decoration: underline; }
+  .outcome-muted { color: var(--ds-text-muted); }
+
   .group-chip {
     display: inline-block;
     padding: 3px 8px; border-radius: 999px;
@@ -124,22 +149,65 @@
 
   .date-cell { color: var(--ds-text-secondary, #6b7280); font-size: 12px; white-space: nowrap; }
 
-  .row-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: nowrap; white-space: nowrap; }
-  .icon-btn {
-    background: transparent; border: 1px solid var(--ds-border, #e4e7ee); border-radius: 6px;
-    padding: 5px 10px; font-size: 12px; cursor: pointer;
-    color: var(--ds-text-secondary, #6b7280); transition: all 0.15s;
-    text-decoration: none; line-height: 1.4;
-    white-space: nowrap;
-  }
-  .icon-btn:hover { color: var(--ds-text-primary, #111827); border-color: var(--ds-border, #e4e7ee); background: var(--ds-surface-dim, #f9fafb); }
-  .icon-btn.danger:hover { color: var(--ds-accent-danger-ink, #b91c1c); border-color: var(--ds-accent-danger-bg, #fecaca); background: var(--ds-accent-danger-bg, #fef2f2); }
+  /* ── Row actions ──────────────────────────────────────────────────────
+     ONE affordance per row, the way a Library row carries one. Every row used
+     to end in five controls — Detail · Tokens · Reset · Set pwd · Delete —
+     which is ~230px of button on every line for operations an admin performs
+     on one account a month, and it put an irreversible Delete permanently one
+     stray click from an Active toggle. The row's own job (open this person) is
+     the name cell; everything else lives behind the overflow.
 
-  .users-empty, .users-loading {
-    text-align: center; padding: 48px 16px;
-    color: var(--ds-text-secondary, #6b7280); font-size: 13px;
+     Anatomy and tokens are `.lib-new__menu`'s — same radius, shadow, item
+     height, hover wash — because it is the same object: a menu hung off a
+     button at the right edge of a bar. */
+  .row-actions { display: flex; justify-content: flex-end; }
+  .pp-more__btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 28px; height: 28px; padding: 0;
+    background: transparent; border: 1px solid transparent; border-radius: 8px;
+    color: var(--ds-text-secondary); cursor: pointer; line-height: 1;
+    font-size: 16px; font-weight: 700; letter-spacing: 1px;
   }
-  .users-empty .big { font-size: 15px; color: var(--ds-text-primary, #111827); margin-bottom: 6px; font-weight: 500; }
+  .pp-more__btn:hover,
+  .pp-more__btn[aria-expanded="true"] {
+    background: color-mix(in srgb, var(--ds-text-primary) 6%, transparent);
+    border-color: var(--ds-border); color: var(--ds-text-primary);
+  }
+  .pp-more__btn:focus-visible { outline: 2px solid var(--ds-primary); outline-offset: 1px; }
+  /* FIXED, not absolute: it is a portal parked outside the table, positioned
+     against the ⋯ button's viewport rect (see toggleRowMenu). z-index clears
+     the sticky table head; the modals it can open are 1000 and stay above. */
+  .pp-more__menu {
+    position: fixed; top: 0; left: 0; z-index: 90;
+    min-width: 200px; padding: 6px;
+    background: var(--ds-surface); border: 1px solid var(--ds-border);
+    border-radius: 12px; box-shadow: var(--ds-shadow-md);
+  }
+  .pp-more__menu[hidden] { display: none; }
+  .pp-more__item {
+    display: flex; align-items: center; gap: 10px; width: 100%;
+    padding: 9px 10px; border: none; background: none; border-radius: 8px;
+    font: inherit; font-size: 13.5px; font-weight: 500;
+    color: var(--ds-text-primary); text-align: left; text-decoration: none;
+    cursor: pointer; white-space: nowrap;
+  }
+  .pp-more__item:hover { background: color-mix(in srgb, var(--ds-text-primary) 6%, transparent); color: var(--ds-primary); }
+  /* Delete is the one item that cannot be undone, so it is separated by a rule
+     and coloured — it must not be reachable by momentum from the item above. */
+  .pp-more__item--danger { color: var(--ds-accent-danger-ink); }
+  .pp-more__item--danger:hover { background: var(--ds-accent-danger-bg); color: var(--ds-accent-danger-ink); }
+  .pp-more__sep { height: 1px; margin: 5px 6px; background: var(--ds-border); }
+
+  /* Empty + loading states — `.lib-empty`'s dashed frame and type scale. */
+  .users-loading {
+    text-align: center; padding: 40px 20px;
+    color: var(--ds-text-secondary); font-size: 13px;
+  }
+  .users-empty {
+    text-align: center; padding: 40px 20px; color: var(--ds-text-secondary);
+    border: 1px dashed var(--ds-border); border-radius: 14px;
+  }
+  .users-empty .big { margin: 0 0 6px; color: var(--ds-text-primary); font-size: 15px; font-weight: 600; }
 
   .skeleton-row td { padding: 12px 16px; }
   .skeleton-row .bar {
@@ -148,6 +216,103 @@
     height: 10px; border-radius: 4px;
   }
   @keyframes skeleton { 0% { background-position: 100% 50% } 100% { background-position: 0 50% } }
+
+  /* ── Invite drawer: what this page adds INSIDE the shared drawer chrome ──
+     Everything structural — head, steps strip, body, foot, field rows — is
+     css/drawer.css. What is local is the one object drawer.css does not have:
+     a pick-list row for a group. Its anatomy is the Add-data wizard's share
+     row (`.ds-wshare-row` in admin_data_sources.html) — checkbox, name over a
+     muted sub-line — because it is the same act on the other side of the same
+     pair of tables: there you choose which groups get a package, here which
+     groups a person joins. */
+  .cdw-optional { font-weight: 400; color: var(--ds-text-muted); }
+  .cdw-check {
+    display: flex; align-items: flex-start; gap: 9px;
+    font-size: 13px; font-weight: 500; color: var(--ds-text-primary);
+    line-height: 1.5;
+  }
+  .cdw-check input[type="checkbox"] {
+    width: 15px; height: 15px; margin-top: 1px;
+    accent-color: var(--ds-primary); flex: 0 0 auto;
+  }
+
+  /* A statement of fact about the flow, not a warning — the Everyone
+     membership the API writes at creation, and the fact that groups stay
+     editable afterwards. Info tint, matching `.gdw-locked` in the group
+     drawer so the two drawers explain themselves in the same voice. */
+  .cdw-note {
+    margin: 0 0 14px;
+    padding: 9px 12px;
+    border-radius: var(--ds-radius-btn);
+    background: var(--ds-accent-info-bg);
+    color: var(--ds-accent-info-ink);
+    font-size: 12.5px; line-height: 1.5;
+  }
+  .cdw-note a { color: inherit; }
+
+  .cdw-grow {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 2px;
+    border-bottom: 1px solid var(--ds-border-light);
+    font-size: 13px;
+  }
+  .cdw-grow:last-child { border-bottom: none; }
+  .cdw-grow input[type="checkbox"] {
+    width: 15px; height: 15px; accent-color: var(--ds-primary); flex: 0 0 auto;
+  }
+  /* Column, not a bare span: the two lines are flex items of the row, so
+     without this they sit side by side instead of name-over-sub. */
+  .cdw-grow .g-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .cdw-grow .g-name {
+    font-weight: 600; color: var(--ds-text-primary);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .cdw-grow .g-sub { font-size: 11.5px; color: var(--ds-text-muted); }
+  /* The Admin row is the one pick on this list that cannot be undone by
+     removing a grant — it hands over the whole instance — so it says what it
+     does in the row's own colour rather than in a paragraph below the list. */
+  .cdw-grow.is-admin .g-sub { color: var(--ds-accent-warn-ink); font-weight: 600; }
+  /* What a group actually carries, right-aligned: a person joins a group to
+     reach the things it has, so the count of them belongs on the row. */
+  .cdw-grow .g-carry {
+    margin-left: auto; flex: 0 0 auto;
+    font-size: 11.5px; color: var(--ds-text-secondary);
+    white-space: nowrap;
+  }
+
+  /* ── New group, from inside the invite ────────────────────────────────────
+     The group someone should be in often does not exist until you are staring
+     at the list it is missing from, and the only way to make it used to be to
+     abandon the invite, go to Access, come back and start again. This is the
+     same POST the group drawer makes — not a second editor: it names a group
+     and nothing else, which is all that drawer does now either. */
+  /* The add row itself is the shared `.apg-addrow`; what is this list's own is
+     only the size of its leading tile. The rows above lead with a 15px
+     checkbox, so the `+` takes that column and "New group" starts where the
+     group names start — the whole reason it is a row and not a button. */
+  .cdw-new { padding: 8px 0 2px; }
+  .cdw-new .apg-addrow { --tile: 15px; padding: 9px 2px; }
+  .cdw-new .apg-addrow__plus { font-size: 13px; border-radius: 4px; }
+  .cdw-newform { display: flex; gap: 8px; align-items: flex-start; }
+  .cdw-newform input[type="text"] {
+    flex: 1 1 auto; min-width: 0;
+    padding: 7px 11px; font: inherit; font-size: 13px;
+    border: 1px solid var(--ds-border); border-radius: var(--ds-radius-btn);
+    background: var(--ds-surface); color: var(--ds-text-primary);
+  }
+  .cdw-newform input:focus-visible {
+    outline: var(--ds-focus-outline);
+    outline-offset: var(--ds-focus-outline-offset);
+  }
+  .cdw-newform[hidden] { display: none; }
+  /* A group created here carries no grants yet, so joining it still reaches
+     nothing — said once, on the row that just appeared, rather than left for
+     the admin to discover from an empty resource count. */
+  .cdw-newnote {
+    margin: 10px 0 0; font-size: 11.5px; line-height: 1.5;
+    color: var(--ds-accent-info-ink);
+  }
+  .cdw-newnote[hidden] { display: none; }
 
   /* Modal */
   .modal-backdrop {
@@ -215,26 +380,72 @@
 </style>
 {% endblock %}
 
+
+
 {% block page %}
-{# Design-system component macros — toolbar "+ Add user" + 9 modal action
-   buttons across 5 modals render via `ds.button` (auto-imported by base_ds).
-   JS-generated per-row table actions stay page-local. #}
+{% include "_admin_tabs.html" %}
+{# Design-system component macros — the toolbar's "+ Invite person", the invite
+   drawer's four foot buttons and the action buttons in the four remaining
+   modals all render via `ds.button` (auto-imported by base_ds). JS-generated
+   per-row table actions stay page-local. #}
 <div class="users-page">
 
-  <div class="users-metric">
-    <span class="users-metric-label">Total users</span>
-    <span class="users-metric-value">{{ total_users }}</span>
+  {# Identity provider — where these accounts come from. Google Workspace is
+     not a data source (it produces people, not tables), so its status lives
+     here, above the people it produces: an admin asking "why isn't Maria in
+     Finance yet?" is already looking at this page. Renders only when
+     Workspace sign-in is configured; its credentials stay in Instance
+     secrets, which is where "Settings" points. #}
+  {% if idp_domains %}
+  <div class="apg-strip">
+    <span class="apg-strip__mark" aria-hidden="true">G</span>
+    <span>
+      <b>Google Workspace</b> is the identity provider — people sign in with
+      {% for d in idp_domains %}<b>@{{ d }}</b>{% if not loop.last %}, {% endif %}{% endfor %},
+      {% if google_group_count %}
+      and <b>{{ google_group_count }}</b> group{{ '' if google_group_count == 1 else 's' }} {{ 'is' if google_group_count == 1 else 'are' }} synced from it.
+      {% else %}
+      and no groups are synced from it yet.
+      {% endif %}
+    </span>
+    <span class="apg-strip__end">
+      <a href="/admin/datasource-credentials">Credentials →</a>
+      {# Groups moved to Access. The link follows it rather than 308-ing, so
+         the strip names the section it now lands in. #}
+      <a href="/admin/access">Groups →</a>
+    </span>
+  </div>
+  {% endif %}
+
+  {# The count, the Library's `.lib-section-head` shape — and ONLY the count:
+     the h1 one row up already says People, and a section heading that repeats
+     the page title is a level of hierarchy with nothing under it.
+
+     The number is the honest one: `shown` is what the capped window actually
+     returned and `total` is what the instance has, so a page listing 25 of 300
+     says so instead of presenting a window as an inventory. Filled by JS on
+     every load — it changes with the search and the group filter, which a
+     server-rendered number could not. #}
+  <div class="apg-sechead">
+    <span class="apg-sechead__count" id="users-count" role="status" aria-live="polite">{{ total_users }} {{ 'person' if total_users == 1 else 'people' }}</span>
   </div>
 
-  <div class="users-toolbar">
-    <div class="users-filters">
-      <input id="user-search" type="search" class="search-input" placeholder="Search by email or name…" autocomplete="off">
-      {# Real <select> stays the control the JS above reads/listens on
-         (currentGroup / loadUsers()) — untouched. The custom dropdown
-         alongside it is a visual replacement only: which one is visible is
-         a theme decision (paper-skin.css), not a template one. See
-         _components.html's `dropdown` macro / stack_unified.html's
-         `stk-sort` for the pattern. #}
+  {# The shared filter bar (`.fbar`), same component and same control sizes as
+     the Library's. Search left, the narrowing control beside it, the one
+     filled button — the only thing here that changes People rather than the
+     view of them — pinned right. #}
+  <div class="fbar apg-bar" role="group" aria-label="Search and filter people">
+    <div class="fbar__search" role="search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M21 21l-4.3-4.3"></path></svg>
+      <input id="user-search" type="search" placeholder="Search people…" autocomplete="off" aria-label="Search people">
+    </div>
+
+    {# Real <select> stays the control the JS reads/listens on (currentGroup /
+       loadUsers()) — untouched. The custom dropdown alongside it is a visual
+       replacement only: which one is visible is a theme decision
+       (paper-skin.css), not a template one. See _components.html's `dropdown`
+       macro / stack_unified.html's `stk-sort` for the pattern. #}
+    <div class="fbar-select">
       <select id="group-filter" class="group-filter ds-dropdown-native" aria-label="Filter by group">
         <option value="">All groups</option>
         {% for g in groups %}
@@ -247,55 +458,167 @@
         options=group_filter_options,
       ) }}
     </div>
-    {{ ds.button('+ Add user', variant='primary', id='open-create-btn') }}
+
+    {# Search grows to 420px and stops (the shared component's cap), so on a
+       wide admin column the filled button would otherwise sit mid-bar with
+       dead space to its right. This pushes it to the edge — the reading order
+       the Library's dock gets for free from its own width. #}
+    <span class="apg-bar__gap" aria-hidden="true"></span>
+    {{ ds.button('+ Invite person', variant='primary', id='open-create-btn') }}
   </div>
 
   <div class="data-table-wrap">
+    {# Explicit column widths, as on the Library table: without them the
+       browser sizes from content, and one long Workspace group name pushes
+       the outcome columns into two lines while Actions keeps 90px it has no
+       use for. #}
     <table class="data-table" id="users-table">
+      {# All eight in percent, summing to exactly 100. A px width mixed in here
+         is not a small inconsistency: under `table-layout: fixed` it is ADDED
+         to the percentages rather than taken out of them, so 100% + 56px
+         overflowed the container by 56px and the last column — Deactivated —
+         was clipped, with the actions sitting on top of Created. #}
+      <colgroup>
+        <col style="width: 28%">
+        <col style="width: 19%">
+        <col style="width: 11%">
+        <col style="width: 10%">
+        <col style="width: 7%">
+        <col style="width: 10%">
+        <col style="width: 10%">
+        <col style="width: 5%">
+      </colgroup>
       <thead>
+        {# Outcome columns before plumbing: "does this person get data, and is
+           it reaching them?" is the question an admin has about a row, where
+           Created/Deactivated is account bookkeeping. Both outcome columns are
+           derived from existing storage — see UserResponse in
+           app/api/users.py. #}
         <tr>
-          <th>User</th>
+          <th>Person</th>
           <th>Groups</th>
+          <th title="Distinct data packages reachable through this person's groups">Data access</th>
+          <th title="Last time this person fetched the sync manifest — every `agnes pull` does">Last pull</th>
           <th>Active</th>
           <th>Created</th>
           <th>Deactivated</th>
-          <th style="text-align:right">Actions</th>
+          <th><span class="pp-sr">Actions</span></th>
         </tr>
       </thead>
       <tbody id="users-tbody"></tbody>
     </table>
-    <div id="users-loading" class="users-loading">Loading users…</div>
+    <div id="users-loading" class="users-loading">Loading people…</div>
     <div id="users-empty" class="users-empty" style="display:none;">
-      <div class="big">No users yet</div>
-      <div>Click <strong>Add user</strong> to invite the first one.</div>
+      <div class="big">No people yet</div>
+      <div>Click <strong>+ Invite person</strong> to add the first one.</div>
     </div>
   </div>
 
-  <p class="users-hint" id="users-hint" role="status" aria-live="polite"></p>
+  {# The row-actions menu, ONE node for the whole table, parked outside it —
+     see the row markup for why it cannot live in the cell. Fixed-positioned
+     against the ⋯ button's rect on open. #}
+  <div class="pp-more__menu" id="pp-menu" role="menu" hidden></div>
 </div>
 
-<!-- Create user modal -->
-<div class="modal-backdrop" id="create-modal" role="dialog" aria-modal="true" aria-labelledby="create-modal-title">
-  <div class="modal-card">
-    <h3 id="create-modal-title">Add user</h3>
-    <p class="sub">Invites a new account. When "Send invitation link" is ticked we generate a setup link the user can follow to pick their own password.</p>
-    <label for="new-email">Email</label>
-    <input id="new-email" type="email" required autocomplete="off">
-    <label for="new-name">Name (optional)</label>
-    <input id="new-name" type="text" autocomplete="off">
-    <p class="sub" style="margin-top: 12px; font-size: 12px;">
-      New users start with no group memberships — assign them on the user
-      detail page after creating. They are auto-added to the <code>Everyone</code>
-      group at creation.
-    </p>
-    <label style="display:flex; align-items:center; gap:8px; margin-top:12px; font-size:13px; color: var(--ds-text-primary, #111827); font-weight:500;">
-      <input id="new-send-invite" type="checkbox" checked>
-      Send invitation link (generates setup token, emails it if transport is configured)
-    </label>
-    <div class="modal-actions">
-      {{ ds.button('Cancel', variant='secondary',
-                   attrs='data-close-modal="create-modal"') }}
-      {{ ds.button('Create', variant='primary', id='confirm-create-btn') }}
+{# ── Invite-person drawer ───────────────────────────────────────────────────
+   Was a centred card that asked for an email and then told the reader to go
+   and find the detail page to do the half of the job that matters: "New users
+   start with no group memberships — assign them on the user detail page after
+   creating." An account in no group reaches nothing, so that card shipped a
+   person who cannot work and a chore to remember. The membership step is now
+   IN the flow, which is what makes this a drawer: two decisions, the second
+   one a list.
+
+   Nothing here is a new endpoint — POST /api/users creates the account and
+   POST /api/admin/users/{id}/memberships is the same call the detail page's
+   add-to-group row makes, so the group step has no second writer of its own. #}
+<div class="ds-drawer" id="create-drawer" hidden data-no-esc-close="1">
+  <div class="ds-drawer__backdrop" data-cdw-close></div>
+  <div class="ds-drawer__panel" role="dialog" aria-modal="true" aria-labelledby="cdw-title">
+    <div class="ds-drawer__head">
+      <div class="ds-drawer__head-main">
+        <h2 class="ds-drawer__title" id="cdw-title">Invite a person</h2>
+        <p class="ds-drawer__sub">An account, and the groups that decide what reaches it.</p>
+      </div>
+      <button type="button" class="ds-drawer__x" data-cdw-close aria-label="Close">&times;</button>
+    </div>
+
+    {# Step 2 is a button only once there is an email to invite — "you cannot
+       go there yet" is carried by the control's state, per drawer.css. #}
+    <div class="ds-drawer__steps" role="group" aria-label="Invite steps">
+      <button type="button" class="ds-drawer__step is-now" data-cdw-step="1">
+        <span class="n">1</span><span class="lbl">Person</span>
+      </button>
+      <button type="button" class="ds-drawer__step" data-cdw-step="2" disabled>
+        <span class="n">2</span><span class="lbl">Groups</span>
+      </button>
+    </div>
+
+    <div class="ds-drawer__body" id="cdw-body">
+      <section class="ds-drawer__pane is-on" data-cdw-pane="1">
+        <p class="ds-drawer__lede">The email is the identity — it is what they
+          sign in with, and what a Workspace sync matches an account on.</p>
+        <div class="ds-drawer__field">
+          <label for="new-email">Email</label>
+          <input id="new-email" type="email" required autocomplete="off" placeholder="person@example.com">
+        </div>
+        <div class="ds-drawer__field">
+          <label for="new-name">Name <span class="cdw-optional">(optional)</span></label>
+          <input id="new-name" type="text" autocomplete="off" placeholder="Defaults to the part before the @">
+        </div>
+        <label class="cdw-check">
+          <input id="new-send-invite" type="checkbox" checked>
+          <span>Send an invitation link — generates a setup token they follow to
+            pick their own password, emailed if transport is configured.</span>
+        </label>
+        <div class="ds-drawer__err" id="cdw-err1" hidden></div>
+      </section>
+
+      <section class="ds-drawer__pane" data-cdw-pane="2">
+        <p class="ds-drawer__lede">Groups are the only way anything reaches a
+          person — nothing is granted to an account directly. Pick the ones
+          they belong to; what each group can use is set in
+          <a href="/admin/access">Access</a>.</p>
+        <p class="cdw-note">
+          Everyone is automatic — every account joins it at creation. Memberships
+          are editable afterwards on this person's own page, so nothing here is final.
+        </p>
+        <div id="cdw-groups"></div>
+
+        {# The group you need may not exist until you are looking at the list it
+           is missing from. Creating it here writes the same POST /api/admin/groups
+           the group drawer does — a name, nothing else — and the new row arrives
+           already ticked. #}
+        <div class="cdw-new">
+          {# The shared add-row (`.apg-addrow`, admin_page.css) — the same
+             affordance the Access group selector ends on, because it is the
+             same act at the end of the same kind of list. NOT a secondary
+             button: a filled control here reads as chrome sitting on top of
+             the list instead of the list's own last row. `--tile` matches
+             this list's leading element (a 15px checkbox), so "New group"
+             starts in the same column as the group names above it. #}
+          <button type="button" class="apg-addrow" id="cdw-new-btn">
+            <span class="apg-addrow__plus" aria-hidden="true">+</span> New group
+          </button>
+          <div class="cdw-newform" id="cdw-new-form" hidden>
+            <input id="cdw-new-name" type="text" autocomplete="off"
+                   placeholder="data-team" aria-label="Name for the new group">
+            {{ ds.button('Create', variant='primary', size='sm', id='cdw-new-save') }}
+            {{ ds.button('Cancel', variant='secondary', size='sm', id='cdw-new-cancel') }}
+          </div>
+          <p class="ds-drawer__err" id="cdw-new-err" hidden></p>
+          <p class="cdw-newnote" id="cdw-new-note" hidden></p>
+        </div>
+
+        <div class="ds-drawer__err" id="cdw-err2" hidden></div>
+      </section>
+    </div>
+
+    <div class="ds-drawer__foot">
+      {{ ds.button('Back', variant='secondary', id='cdw-back', attrs='hidden') }}
+      <span class="ds-drawer__foot-gap"></span>
+      {{ ds.button('Cancel', variant='secondary', attrs='data-cdw-close') }}
+      {{ ds.button('Continue', variant='primary', id='cdw-next') }}
     </div>
   </div>
 </div>
@@ -369,7 +692,7 @@ const API = "/api/users";
 // Server-injected env: empty string = no prefix configured. Used to
 // shorten google-sync group chips (e.g. "grp_acme_legal@workspace.example.com"
 // → "Legal") so the membership cell stays readable. Same shape used on
-// /admin/groups; keeping the surface identical.
+// /admin/access; keeping the surface identical.
 const GOOGLE_GROUP_PREFIX = {{ config.AGNES_GOOGLE_GROUP_PREFIX | tojson }};
 // Server-rendered snapshot of the total user count — drives the "showing 10
 // of N" footnote. A snapshot (not live), same as the metric card.
@@ -397,7 +720,46 @@ function deriveDisplayName(fullEmail) {
   if (!s) return local;
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
-function fmtDate(s) { return s ? (window.AgnesTime.formatDateTime(s) || "—") : "—"; }
+// Day, not day-and-minute. Created and Deactivated are two full timestamps on
+// one row — ~300px of the table spent on the minute an account was made, which
+// nobody scans a list for. The exact time is on the person's own page, and
+// `title` keeps it one hover away here. `Last pull` stays relative ("2 h ago")
+// because for that column recency IS the reading.
+function fmtDate(s) { return s ? (window.AgnesTime.formatDate(s) || "—") : "—"; }
+function fmtDateFull(s) { return s ? (window.AgnesTime.formatDateTime(s) || "") : ""; }
+
+// ── Outcome cells ─────────────────────────────────────────────────────────
+// "Data access" and "Last pull" answer the question an admin has about a row.
+// Both warn rather than print a bare number when the answer is a problem: a
+// person in no group with a package grant is the People gap the /admin
+// Overview counts, and a pull that has not happened means shared data has
+// not actually arrived. An ADMIN with zero explicit grants is not warned —
+// they reach everything by god-mode, so the zero is accurate and harmless
+// (see UserResponse.data_package_count for why it isn't inflated).
+function accessCell(u) {
+  const n = u.data_package_count ?? 0;
+  if (n > 0) return `${n} package${n === 1 ? "" : "s"}`;
+  if (u.is_admin) return `<span class="outcome-muted" title="Admins reach every resource regardless of grants">— (admin)</span>`;
+  if (!u.active) return "—";
+  return `<a class="outcome-warn" href="/admin/access" title="This person is in no group with a data-package grant, so no shared data reaches them">No data access</a>`;
+}
+
+function pullCell(u) {
+  if (!u.last_pull_at) {
+    // Never pulled is only worth flagging for someone who HAS data to pull.
+    const cls = (u.data_package_count ?? 0) > 0 ? "outcome-warn" : "outcome-muted";
+    return `<span class="${cls}" title="No sync manifest fetch recorded — the data has never reached this person's machine">Never</span>`;
+  }
+  const days = (Date.now() - new Date(u.last_pull_at).getTime()) / 86400000;
+  const rel = window.AgnesTime.formatRelative
+    ? window.AgnesTime.formatRelative(u.last_pull_at)
+    : fmtDate(u.last_pull_at);
+  // Seven days: a working analyst pulls at session start, so a week of
+  // silence means either they stopped working or their sync is broken.
+  return days > 7
+    ? `<span class="outcome-warn" title="Last manifest fetch ${fmtDate(u.last_pull_at)}">${rel}</span>`
+    : `<span title="Last manifest fetch ${fmtDate(u.last_pull_at)}">${rel}</span>`;
+}
 // Avatar initials + stable color come from the shared AgnesIdentity helper
 // (app/web/static/js/identity.js) so the circle matches /admin/adoption.
 function initials(u) { return AgnesIdentity.initials(u.name || u.email); }
@@ -454,12 +816,34 @@ function confirmModal(text) {
 }
 
 // ── State ──
-// Backend-filtered window: the table never holds the whole user
-// table. Every search / group change refetches a ≤10-row recency slice from
-// GET /api/users, so these just track the active filter for the request +
-// the empty-state copy.
+// Backend-filtered window: the table never holds the whole user table. Every
+// search / group change refetches a recency slice from GET /api/users, so
+// these just track the active filter for the request + the count copy.
+//
+// PAGE_SIZE was 10, which is smaller than most instances and smaller than a
+// screen — the page rendered a tenth of a 90-person org and said "Total users
+// 90" in a box above it. 100 is past the point where an admin scrolls rather
+// than searches, and still one bounded request. Anyone past it is reachable by
+// the search, which the count now says out loud.
+const PAGE_SIZE = 100;
 let currentSearch = "";
 let currentGroup = "";
+
+function renderCount(shown) {
+  const elc = document.getElementById("users-count");
+  const noun = (n) => `${n} ${n === 1 ? "person" : "people"}`;
+  if (currentSearch.trim() || currentGroup) {
+    elc.innerHTML = shown >= PAGE_SIZE
+      ? `<b>${PAGE_SIZE}+</b> matches — narrow the search to see fewer`
+      : `${noun(shown)} match${shown === 1 ? "es" : ""}`;
+    return;
+  }
+  // No filter: `shown` is the window, TOTAL_USERS is the instance. Say both
+  // whenever they differ, so the list is never mistaken for the inventory.
+  elc.innerHTML = shown < TOTAL_USERS
+    ? `${noun(shown)} of <b>${TOTAL_USERS}</b> — most recent first; search to find the rest`
+    : noun(shown);
+}
 
 function renderUsers(users) {
   const tbody = document.getElementById("users-tbody");
@@ -469,20 +853,10 @@ function renderUsers(users) {
 
   const hasFilter = !!(currentSearch.trim() || currentGroup);
 
-  // Footnote: explain the capped window + point at the search. Hidden when
-  // it adds nothing (everyone already fits, or a filter returned nothing).
-  const hint = document.getElementById("users-hint");
-  if (hasFilter) {
-    hint.textContent = users.length >= 10
-      ? "Showing the first 10 matches — refine your search to narrow it down."
-      : "";
-  } else if (TOTAL_USERS > 10) {
-    hint.textContent = `Showing the 10 most recently registered of ${TOTAL_USERS} users. `
-      + "Use the search above to find anyone who isn't listed here.";
-  } else {
-    hint.textContent = "";
-  }
-  hint.style.display = hint.textContent ? "block" : "none";
+  // The window caveat now rides the count beside the heading — a fact about
+  // the number, stated where the number is, rather than a footnote below the
+  // table that the reader reaches after already believing the list.
+  renderCount(users.length);
 
   if (users.length === 0) {
     tbody.innerHTML = "";
@@ -490,7 +864,7 @@ function renderUsers(users) {
       // Filter active but no rows → "no matches", not "no users yet".
       empty.style.display = "none";
       const q = currentSearch.trim();
-      tbody.innerHTML = `<tr><td colspan="6" class="users-loading">No matches${q ? ` for "${esc(q)}"` : ""}</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="8" class="users-loading">No matches${q ? ` for "${esc(q)}"` : ""}</td></tr>`;
     } else {
       empty.style.display = "block";
     }
@@ -534,23 +908,28 @@ function renderUsers(users) {
         </a>
       </td>
       <td>${chipsHtml}</td>
+      <td>${accessCell(u)}</td>
+      <td>${pullCell(u)}</td>
       <td>
         <label class="toggle">
           <input type="checkbox" ${u.active ? "checked" : ""} data-action="toggle-active" data-user-id="${esc(u.id)}">
           <span class="toggle-slider"></span>
         </label>
       </td>
-      <td class="date-cell">${fmtDate(u.created_at)}</td>
-      <td class="date-cell">${u.deactivated_at ? fmtDate(u.deactivated_at) : "—"}</td>
+      <td class="date-cell" title="${esc(fmtDateFull(u.created_at))}">${fmtDate(u.created_at)}</td>
+      <td class="date-cell" title="${esc(fmtDateFull(u.deactivated_at))}">${u.deactivated_at ? fmtDate(u.deactivated_at) : "—"}</td>
       <td>
+        {# The button only — its menu is built into the ONE portal node below
+           the table. `.data-table` carries `overflow: hidden` (it is how the
+           primitive keeps its rounded corners), so a menu absolutely
+           positioned inside a cell is clipped at the table's edge, and the
+           last row's — the one most likely to be a stray account someone is
+           cleaning up — would be cut off entirely. #}
         <div class="row-actions">
-          <a class="icon-btn" href="/admin/users/${encodeURIComponent(u.id)}" title="Open detail view: memberships + effective access">Detail</a>
-          <a class="icon-btn" href="/admin/tokens?user=${encodeURIComponent(u.email || "")}" title="View this user's personal access tokens">Tokens</a>
-          ${u.is_sso_user ? "" : `
-          <button class="icon-btn" data-action="reset-password" data-user-id="${esc(u.id)}" data-user-email="${esc(u.email)}" title="Generate a reset link (user picks their own new password)">Reset</button>
-          <button class="icon-btn" data-action="set-password" data-user-id="${esc(u.id)}" data-user-email="${esc(u.email)}" title="Assign a password directly">Set pwd</button>
-          <button class="icon-btn danger" data-action="delete-user" data-user-id="${esc(u.id)}" data-user-email="${esc(u.email)}">Delete</button>
-          `}
+          <button type="button" class="pp-more__btn" data-more="${esc(u.id)}"
+                  data-user-email="${esc(u.email)}" data-sso="${u.is_sso_user ? "1" : ""}"
+                  aria-haspopup="menu" aria-expanded="false"
+                  aria-label="Actions for ${esc(u.email)}">⋯</button>
         </div>
       </td>`;
     tbody.appendChild(tr);
@@ -559,27 +938,113 @@ function renderUsers(users) {
   // Wire up actions via delegation-like loop
   tbody.querySelectorAll('[data-action="toggle-active"]').forEach(el =>
     el.addEventListener("change", () => toggleActive(el.dataset.userId, el.checked)));
-  tbody.querySelectorAll('[data-action="reset-password"]').forEach(el =>
-    el.addEventListener("click", () => resetPassword(el.dataset.userId, el.dataset.userEmail)));
-  tbody.querySelectorAll('[data-action="set-password"]').forEach(el =>
-    el.addEventListener("click", () => openSetPassword(el.dataset.userId, el.dataset.userEmail)));
-  tbody.querySelectorAll('[data-action="delete-user"]').forEach(el =>
-    el.addEventListener("click", () => delUser(el.dataset.userId, el.dataset.userEmail)));
+  tbody.querySelectorAll("[data-more]").forEach(btn =>
+    btn.addEventListener("click", (e) => { e.stopPropagation(); toggleRowMenu(btn); }));
 }
+
+/* ── Row overflow menu ────────────────────────────────────────────────────
+   ONE menu node for the whole table (`#pp-menu`), refilled and repositioned
+   per row. Two reasons it is a portal rather than a menu per cell: the table
+   clips absolute children (`.data-table { overflow: hidden }`), and a hundred
+   rows would otherwise carry a hundred hidden menus and their handlers.
+
+   Dismissal is deliberately broad — outside click, Escape, scroll, resize —
+   because the menu is `position: fixed` and therefore does NOT travel with
+   the row it belongs to. A menu that stays put while the table scrolls under
+   it is pointing at the wrong person, which on a Delete item is the one
+   mistake this control must not make. */
+const rowMenu = () => document.getElementById("pp-menu");
+
+function closeRowMenus() {
+  const menu = rowMenu();
+  if (!menu || menu.hidden) return;
+  menu.hidden = true;
+  menu.innerHTML = "";
+  document.querySelectorAll("[data-more][aria-expanded='true']")
+    .forEach(b => b.setAttribute("aria-expanded", "false"));
+}
+
+function toggleRowMenu(btn) {
+  const wasOpen = btn.getAttribute("aria-expanded") === "true";
+  closeRowMenus();
+  if (wasOpen) return;
+
+  const menu = rowMenu();
+  const id = btn.dataset.more;
+  const email = btn.dataset.userEmail || "";
+  const href = `/admin/users/${encodeURIComponent(id)}`;
+  // An SSO account has no password Agnes owns, so the two password items are
+  // absent rather than disabled — the same rule the old button row applied.
+  menu.setAttribute("aria-label", `Actions for ${email}`);
+  menu.innerHTML = `
+    <a class="pp-more__item" role="menuitem" href="${href}">Open profile</a>
+    <a class="pp-more__item" role="menuitem" href="${href}#tokens">Access tokens</a>
+    ${btn.dataset.sso ? "" : `
+    <button type="button" class="pp-more__item" role="menuitem" data-act="reset">Send reset link</button>
+    <button type="button" class="pp-more__item" role="menuitem" data-act="setpwd">Set a password</button>
+    <div class="pp-more__sep" role="separator"></div>
+    <button type="button" class="pp-more__item pp-more__item--danger" role="menuitem" data-act="delete">Delete account</button>
+    `}`;
+
+  menu.querySelectorAll("[data-act]").forEach(item =>
+    item.addEventListener("click", () => {
+      const act = item.dataset.act;
+      closeRowMenus();
+      if (act === "reset") resetPassword(id, email);
+      else if (act === "setpwd") openSetPassword(id, email);
+      else if (act === "delete") delUser(id, email);
+    }));
+
+  btn.setAttribute("aria-expanded", "true");
+  menu.hidden = false;
+
+  // Right-aligned under the button, then pulled back inside the viewport on
+  // whichever axis it overflows — the last row's menu flips above the button
+  // rather than hanging off the bottom of the window.
+  //
+  // The clamps are conditional because a zero viewport is a real reading in
+  // some embedded contexts, and clamping against zero is far worse than not
+  // clamping: `min(x, 0 - width - 8)` is always negative, so the menu snapped
+  // to the left edge of the page, nowhere near the row it belongs to.
+  const r = btn.getBoundingClientRect();
+  const m = menu.getBoundingClientRect();
+  const vw = window.innerWidth || document.documentElement.clientWidth || 0;
+  const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+
+  let left = r.right - m.width;
+  if (vw) left = Math.min(left, vw - m.width - 8);
+  let top = r.bottom + 6;
+  if (vh && top + m.height > vh - 8) top = r.top - m.height - 6;
+
+  menu.style.left = `${Math.max(8, left)}px`;
+  menu.style.top = `${Math.max(8, top)}px`;
+
+  // `preventScroll` is load-bearing, not a nicety: a plain focus() scrolls the
+  // item into view, and the scroll listener below reads that as "the table
+  // moved under the menu" and closes it — the menu opened and vanished in the
+  // same frame.
+  const first = menu.querySelector(".pp-more__item");
+  if (first) first.focus({ preventScroll: true });
+}
+
+document.addEventListener("click", closeRowMenus);
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeRowMenus(); });
+window.addEventListener("scroll", closeRowMenus, true);
+window.addEventListener("resize", closeRowMenus);
 
 async function loadUsers() {
   const loading = document.getElementById("users-loading");
-  loading.textContent = "Loading users…";
+  loading.textContent = "Loading people…";
   loading.style.display = "block";
   try {
-    const params = new URLSearchParams({ limit: "10" });
+    const params = new URLSearchParams({ limit: String(PAGE_SIZE) });
     if (currentSearch.trim()) params.set("search", currentSearch.trim());
     if (currentGroup) params.set("group_id", currentGroup);
     const r = await fetch(`${API}?${params.toString()}`, { credentials: "include" });
     if (!r.ok) throw new Error("HTTP " + r.status);
     renderUsers(await r.json());
   } catch (e) {
-    loading.textContent = "Failed to load users: " + e.message;
+    loading.textContent = "Failed to load people: " + e.message;
     loading.style.display = "block";
     toast("Failed to load users", "error");
   }
@@ -716,29 +1181,315 @@ async function delUser(id, email) {
   loadUsers();
 }
 
-// ── Create ──
-document.getElementById("open-create-btn").addEventListener("click", () => {
-  document.getElementById("new-email").value = "";
-  document.getElementById("new-name").value = "";
-  document.getElementById("new-send-invite").checked = true;
-  openModal("create-modal");
-});
-document.getElementById("confirm-create-btn").addEventListener("click", async () => {
-  const email = document.getElementById("new-email").value.trim();
-  const name = document.getElementById("new-name").value.trim();
-  const sendInvite = document.getElementById("new-send-invite").checked;
-  if (!email) { toast("Email is required", "error"); return; }
-  const r = await fetch(API, {
-    method: "POST", credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, name: name || email.split("@")[0], send_invite: sendInvite }),
+/* ── Invite a person: the drawer ───────────────────────────────────────────
+   Two steps, one write. The account and its memberships are created together
+   at the END of the flow, not step by step: cancelling on the group step is a
+   change of mind, and a half-finished flow must not leave an orphan account
+   behind — the exact state (a person in no group) that this drawer exists to
+   stop the product from shipping.
+
+   Storage is the two endpoints the rest of the admin already uses:
+     POST /api/users                              → the account
+     POST /api/admin/users/{id}/memberships       → each picked group
+   No new writer, so the group step cannot disagree with the detail page's. */
+const GROUPS_API = "/api/admin/groups";
+const cdw = {
+  root: document.getElementById("create-drawer"),
+  body: document.getElementById("cdw-body"),
+  groups: document.getElementById("cdw-groups"),
+  back: document.getElementById("cdw-back"),
+  next: document.getElementById("cdw-next"),
+  err1: document.getElementById("cdw-err1"),
+  err2: document.getElementById("cdw-err2"),
+  newBtn: document.getElementById("cdw-new-btn"),
+  newForm: document.getElementById("cdw-new-form"),
+  newName: document.getElementById("cdw-new-name"),
+  newSave: document.getElementById("cdw-new-save"),
+  newErr: document.getElementById("cdw-new-err"),
+  newNote: document.getElementById("cdw-new-note"),
+  email: document.getElementById("new-email"),
+  name: document.getElementById("new-name"),
+  invite: document.getElementById("new-send-invite"),
+};
+let cdwStep = 1;
+let cdwGroups = null;          // group list for the picker, fetched per open
+let cdwPicked = new Set();     // group ids to join after the account exists
+let cdwRestoreFocus = null;
+
+function cdwOpen() {
+  cdw.email.value = "";
+  cdw.name.value = "";
+  cdw.invite.checked = true;
+  cdw.err1.hidden = true;
+  cdw.err2.hidden = true;
+  cdwPicked = new Set();
+  cdwNewGroupReset();
+  cdwRestoreFocus = document.activeElement;
+  cdw.root.hidden = false;
+  cdw.root.classList.add("is-open");
+  document.body.style.overflow = "hidden";
+  cdwGo(1);
+  setTimeout(() => cdw.email.focus(), 60);
+  // Fetched on open rather than on entering step 2, so the list is already
+  // there when the reader arrives — and refetched each time, because a group
+  // created in Access in the meantime has to be pickable here.
+  cdwLoadGroups();
+}
+
+function cdwClose() {
+  cdw.root.classList.remove("is-open");
+  cdw.root.hidden = true;
+  document.body.style.overflow = "";
+  if (cdwRestoreFocus && cdwRestoreFocus.focus) cdwRestoreFocus.focus();
+  cdwRestoreFocus = null;
+}
+
+function cdwGo(step) {
+  cdwStep = step;
+  cdw.root.querySelectorAll("[data-cdw-pane]").forEach(p =>
+    p.classList.toggle("is-on", p.dataset.cdwPane === String(step)));
+  cdw.root.querySelectorAll("[data-cdw-step]").forEach(b => {
+    const n = Number(b.dataset.cdwStep);
+    b.classList.toggle("is-now", n === step);
+    b.classList.toggle("is-done", n < step);
   });
-  if (!r.ok) { toast("Failed: " + (await errorText(r)), "error"); return; }
-  const data = await r.json().catch(() => ({}));
-  closeModal("create-modal");
-  toast("User created", "success");
-  loadUsers();
-  if (data.invite_url) showInviteLink(email, data.invite_url, data.invite_email_sent);
+  cdw.back.hidden = step === 1;
+  cdw.next.textContent = step === 1 ? "Continue" : "Invite person";
+  cdw.body.scrollTop = 0;
+}
+
+// Step 2 is only reachable once there is an email to invite — the strip's
+// button state says so, rather than a click that silently does nothing.
+function cdwSyncStepReach() {
+  const ok = !!cdw.email.value.trim();
+  cdw.root.querySelector('[data-cdw-step="2"]').disabled = !ok;
+}
+cdw.email.addEventListener("input", cdwSyncStepReach);
+
+async function cdwLoadGroups() {
+  cdw.groups.innerHTML = `<div class="ds-drawer__empty">Loading groups…</div>`;
+  try {
+    const r = await fetch(GROUPS_API, { credentials: "include" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    cdwGroups = await r.json();
+  } catch (e) {
+    cdwGroups = [];
+    cdw.groups.innerHTML = `<div class="ds-drawer__empty">Could not load groups — invite the person now and add them on their page.</div>`;
+    return;
+  }
+  cdwRenderGroups();
+}
+
+function cdwRenderGroups() {
+  // Two kinds of group are absent rather than disabled, for the same reason
+  // the detail page's picker omits them: the membership POST would be
+  // rejected, so offering the row would be a lie.
+  //   Everyone      → every account is already in it at creation (409)
+  //   Google-synced → membership belongs to admin.google.com (409)
+  const managed = (cdwGroups || []).filter(g => g.is_google_managed).length;
+  const pickable = (cdwGroups || []).filter(
+    g => !g.is_google_managed && g.name !== "Everyone");
+
+  // Both empty states point at the button below rather than sending the reader
+  // to Access mid-invite: the flow can make the missing group itself.
+  if (!pickable.length) {
+    cdw.groups.innerHTML = managed
+      ? `<div class="ds-drawer__empty">Every group here is managed by Google Workspace — membership flows from <code>admin.google.com</code>. To decide access from Agnes, make a group of your own below.</div>`
+      : `<div class="ds-drawer__empty">No groups to join yet — make the first one below, and this person starts in it.</div>`;
+    return;
+  }
+
+  // aria-label on the box, not just the wrapping <label>: the row's two lines
+  // are spans, and a screen reader announced the checkbox by its VALUE — a bare
+  // group uuid. The label names the act instead.
+  cdw.groups.innerHTML = pickable.map(g => {
+    const admin = g.name === "Admin";
+    const members = g.member_count ?? 0;
+    const grants = g.grant_count ?? 0;
+    const sub = admin
+      ? "everything on this instance, no grant required"
+      : (g.description || `${members} member${members === 1 ? "" : "s"}`);
+    return `
+      <label class="cdw-grow ${admin ? "is-admin" : ""}">
+        <input type="checkbox" value="${esc(g.id)}" ${cdwPicked.has(g.id) ? "checked" : ""}
+               aria-label="Join ${esc(g.name)}">
+        <span class="g-main">
+          <span class="g-name">${esc(g.name)}</span>
+          <span class="g-sub">${esc(sub)}</span>
+        </span>
+        <span class="g-carry">${admin ? "" : `${grants} resource${grants === 1 ? "" : "s"}`}</span>
+      </label>`;
+  }).join("");
+
+  cdw.groups.querySelectorAll('input[type="checkbox"]').forEach(cb =>
+    cb.addEventListener("change", () => {
+      if (cb.checked) cdwPicked.add(cb.value);
+      else cdwPicked.delete(cb.value);
+    }));
+}
+
+/* ── New group, inline ─────────────────────────────────────────────────────
+   Creating the group here writes it immediately (POST /api/admin/groups),
+   unlike the memberships, which wait for the end of the flow. That asymmetry
+   is deliberate: a group is an object other people will use and cancelling an
+   invite is no reason to delete it, whereas a membership only means anything
+   once the account it belongs to exists. It is the same one-field create the
+   group drawer performs — naming a group is all that drawer does now — so
+   there is no second group editor here either. */
+function cdwNewGroupReset() {
+  cdw.newForm.hidden = true;
+  cdw.newBtn.hidden = false;
+  cdw.newName.value = "";
+  cdw.newErr.hidden = true;
+  cdw.newNote.hidden = true;
+}
+
+function cdwNewGroupOpen() {
+  cdw.newBtn.hidden = true;
+  cdw.newForm.hidden = false;
+  cdw.newErr.hidden = true;
+  cdw.newName.focus();
+}
+
+async function cdwNewGroupSave() {
+  const name = cdw.newName.value.trim();
+  cdw.newErr.hidden = true;
+  if (!name) {
+    cdw.newErr.textContent = "A name is required — it is what every grant is written against.";
+    cdw.newErr.hidden = false;
+    cdw.newName.focus();
+    return;
+  }
+  cdw.newSave.disabled = true;
+  try {
+    const r = await fetch(GROUPS_API, {
+      method: "POST", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, description: null }),
+    });
+    if (!r.ok) {
+      cdw.newErr.textContent = "Could not create the group: " + (await errorText(r));
+      cdw.newErr.hidden = false;
+      return;
+    }
+    const g = await r.json();
+    // Ticked on arrival: you made it in order to put this person in it.
+    cdwGroups = (cdwGroups || []).concat([g]);
+    cdwPicked.add(g.id);
+    cdwRenderGroups();
+    cdwNewGroupReset();
+    // A new group grants nothing, so the membership alone still reaches
+    // nothing — said here, once, instead of left to a "0 resources" cell.
+    cdw.newNote.innerHTML =
+      `<b>${esc(g.name)}</b> created and ticked. It carries nothing yet — ` +
+      `give it something to use in <a href="/admin/access">Access</a>.`;
+    cdw.newNote.hidden = false;
+  } finally {
+    cdw.newSave.disabled = false;
+  }
+}
+
+async function cdwSubmit() {
+  const email = cdw.email.value.trim();
+  const name = cdw.name.value.trim();
+  const sendInvite = cdw.invite.checked;
+  cdw.err2.hidden = true;
+  cdw.next.disabled = true;
+  try {
+    const r = await fetch(API, {
+      method: "POST", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, name: name || email.split("@")[0], send_invite: sendInvite }),
+    });
+    if (!r.ok) {
+      cdw.err2.textContent = "Could not invite " + email + ": " + (await errorText(r));
+      cdw.err2.hidden = false;
+      return;
+    }
+    const data = await r.json().catch(() => ({}));
+
+    // The account exists from here on, so a failed membership is reported
+    // rather than rolled back — the person is real and reachable on their
+    // own page, and silently dropping a group they were meant to be in is
+    // the failure mode that matters.
+    const failed = [];
+    for (const gid of cdwPicked) {
+      const g = (cdwGroups || []).find(x => x.id === gid);
+      try {
+        const mr = await fetch(`/api/admin/users/${encodeURIComponent(data.id)}/memberships`, {
+          method: "POST", credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ group_id: gid }),
+        });
+        if (!mr.ok) failed.push((g && g.name) || gid);
+      } catch (e) {
+        failed.push((g && g.name) || gid);
+      }
+    }
+
+    cdwClose();
+    const joined = cdwPicked.size - failed.length;
+    toast(
+      joined > 0
+        ? `${email} invited — in ${joined} group${joined === 1 ? "" : "s"}`
+        : `${email} invited`,
+      "success",
+    );
+    if (failed.length) {
+      toast(`Not added to ${failed.join(", ")} — do it on their page`, "error");
+    }
+    loadUsers();
+    if (data.invite_url) showInviteLink(email, data.invite_url, data.invite_email_sent);
+  } finally {
+    cdw.next.disabled = false;
+  }
+}
+
+document.getElementById("open-create-btn").addEventListener("click", cdwOpen);
+cdw.root.addEventListener("click", e => {
+  if (e.target.closest("[data-cdw-close]")) cdwClose();
+  const stepBtn = e.target.closest("[data-cdw-step]");
+  if (stepBtn && !stepBtn.disabled) cdwGo(Number(stepBtn.dataset.cdwStep));
+});
+cdw.back.addEventListener("click", () => cdwGo(1));
+cdw.next.addEventListener("click", () => {
+  if (cdwStep === 1) {
+    const email = cdw.email.value.trim();
+    if (!email) {
+      cdw.err1.textContent = "An email is required — it is the account's identity.";
+      cdw.err1.hidden = false;
+      cdw.email.focus();
+      return;
+    }
+    cdw.err1.hidden = true;
+    cdwSyncStepReach();
+    cdwGo(2);
+    return;
+  }
+  cdwSubmit();
+});
+cdw.email.addEventListener("keydown", e => {
+  if (e.key === "Enter") { e.preventDefault(); cdw.next.click(); }
+});
+cdw.newBtn.addEventListener("click", cdwNewGroupOpen);
+cdw.newSave.addEventListener("click", cdwNewGroupSave);
+document.getElementById("cdw-new-cancel").addEventListener("click", cdwNewGroupReset);
+// Enter creates; Escape backs out of the field rather than the whole drawer —
+// see the handler below, which gives the open form first refusal on the key.
+cdw.newName.addEventListener("keydown", e => {
+  if (e.key === "Enter") { e.preventDefault(); cdwNewGroupSave(); }
+});
+// The drawer opts out of the global overlay Escape handler (see
+// data-no-esc-close) because that one hides overlays with an inline
+// display:none, which would leave this flow's state half-open.
+document.addEventListener("keydown", e => {
+  if (e.key !== "Escape" || cdw.root.hidden) return;
+  e.stopPropagation();
+  // Innermost thing first: an open new-group field is what Escape means when
+  // it is the thing you are typing in. Losing the whole invite to it would be
+  // the one keystroke this flow must not punish.
+  if (!cdw.newForm.hidden) { cdwNewGroupReset(); return; }
+  cdwClose();
 });
 
 function showInviteLink(email, url, emailSent) {
