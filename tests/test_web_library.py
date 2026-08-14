@@ -468,12 +468,14 @@ def test_library_available_grant_classic_is_not_claimed_in_stack(seeded_app, mon
         "a non-member must not wear the member pill"
     )
     # A real Add control wired to the generic subscribe endpoint (JSON body
-    # in data-stack-body), with the post-add state pinned to the LOCKED
-    # member pill (Devin Review on #1199, round 4).
+    # in data-stack-body), carrying the remove direction too — the post-add
+    # state is the REMOVABLE member (a self-subscription is the caller's to
+    # drop; the old locked-after contract claimed an admin mandate the
+    # caller had just created).
     assert 'data-add-to-stack="' in row
     assert 'data-stack-endpoint="/api/stack/subscribe"' in row
     assert "data-stack-body=" in row and "data_package" in row
-    assert 'data-stack-locked-after="1"' in row
+    assert 'data-stack-remove-endpoint="/api/stack/subscription/data_package/' in row
 
     # Subscribing joins the stack — the row becomes a member.
     conn = get_system_db()

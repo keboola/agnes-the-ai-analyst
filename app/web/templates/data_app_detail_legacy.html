@@ -1,112 +1,53 @@
-{% extends "base_ds.html" %}
-{# Data app detail — the RAIL/paper redesign (the kind-hero anatomy the other
-   detail pages wear). Topnav serves the frozen pre-redesign copy
-   (data_app_detail_legacy.html) via the shared `_detail_template()` switch —
-   the /catalog detail pattern, guarded by
-   tests/test_ui_layout_theme.py::TestDetailPageParity.
-
-   Every id and script of the legacy page is kept verbatim (dda-state-badge,
-   dda-description, dda-deploy-btn, dda-stop-btn, dda-logs, dda-desc-form,
-   dda-desc-input, dda-desc-save) — the scripts below ARE the legacy
-   scripts. #}
-
+{% extends "base_page.html" %}
 {% block title %}{{ app.name }} — Data apps — {{ config.INSTANCE_NAME }}{% endblock %}
 
-{% block body_attrs %}class="detail-page"{% endblock %}
+{% set page_hero_eyebrow = "Data Apps" %}
+{% set page_hero_title = app.name %}
+{% set page_hero_subtitle = app.slug %}
 
 {% block head_extra %}
-{% import "macros/_detail.html" as detail with context %}
-{{ detail.styles() }}
 <style>
-  /* ── Page-local: the facts card, actions row, logs pane ── */
-  .dda-facts {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 14px 18px;
-    border: 1px solid var(--ds-border); border-radius: var(--ds-radius-md, 10px);
-    background: var(--ds-surface); padding: 16px 18px; margin-bottom: 18px;
-  }
-  .dda-fact .label {
-    display: block; font-size: 11.5px; font-weight: 700; letter-spacing: 0.04em;
-    text-transform: uppercase; color: var(--ds-text-muted); margin-bottom: 3px;
-  }
-  .dda-fact .value { font-size: 14px; overflow-wrap: anywhere; }
-  .dda-fact .value code { font-size: 13px; background: var(--ds-surface-sunken); padding: 1px 6px; border-radius: 5px; }
-  .dda-badge {
-    display: inline-block; padding: 2px 10px; border-radius: 999px;
-    font-size: 12px; font-weight: 600;
-    background: var(--ds-surface-sunken); color: var(--ds-text-secondary);
-  }
-  .dda-badge--running { background: var(--ds-accent-success-bg); color: var(--ds-accent-success-ink); }
-  .dda-actions { display: flex; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; }
-  .dda-section h3 { font-size: 15px; margin: 0 0 8px; }
-  .dda-logs {
-    max-height: 480px; overflow: auto; font-size: 12.5px; line-height: 1.5;
-    border: 1px solid var(--ds-border); border-radius: var(--ds-radius-md, 10px);
-    background: var(--ds-surface-sunken); padding: 12px 14px; margin: 0 0 18px;
-    white-space: pre-wrap;
-  }
-  .dda-desc-form { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 18px; }
-  .dda-desc-form input {
-    flex: 1; min-width: 280px;
-    border: 1px solid var(--ds-border); border-radius: 8px;
-    padding: 7px 10px; font-size: 13px;
-    background: var(--ds-surface); color: var(--ds-text-primary);
-  }
-  .dda-desc-form input:focus-visible { outline: 2px solid var(--ds-primary); outline-offset: 1px; }
-  .dda-grant-note { color: var(--ds-text-secondary); font-size: 13px; }
-  .dda-grant-note code { background: var(--ds-surface-sunken); padding: 1px 6px; border-radius: 5px; }
+  .dda-page .info-grid { margin-bottom: var(--space-6); }
+  .dda-page .info-item .value code { font-size: var(--text-sm); }
+  .dda-actions { display: flex; gap: 8px; margin-bottom: var(--space-6); flex-wrap: wrap; }
+  .dda-logs-section h3 { margin-bottom: var(--space-2); }
+  .dda-logs { max-height: 480px; overflow-y: auto; }
+  .dda-grant-note { margin-top: var(--space-6); color: var(--ds-text-secondary); font-size: var(--text-sm); }
 </style>
 {% endblock %}
 
-{% block content %}
-{% import "macros/_detail.html" as detail with context %}
-
-{# Back goes to the Library's Files band under rail (where the app row the
-   visitor clicked lives — /apps itself 302s there); topnav never renders
-   this template, and a paper-on-topnav instance keeps the live /apps page
-   detail_back passes through. #}
-{% set _back = detail_back('data_app', '/apps', 'All data apps') %}
-{% set _meta = [{'icon': 'link', 'text': ('linked' if app.kind == 'linked' else app.state)}] %}
-
-{% call detail.hero(
-     kind='library', name=app.name, glyph='app',
-     type_label='Data app',
-     description=(app.effective_description or ''),
-     meta=_meta,
-     back_href=_back.href, back_label=_back.label) %}
-{% endcall %}
-
-<div class="detail-body container">
-  <div class="dda-facts">
-    <div class="dda-fact">
+{% block page %}
+<div class="dda-page">
+  <div class="info-grid ds-card">
+    <div class="info-item">
       <span class="label">Slug</span>
       <span class="value"><code>{{ app.slug }}</code></span>
     </div>
-    <div class="dda-fact">
+    <div class="info-item">
       <span class="label">State</span>
       <span class="value">
         {% if app.kind == 'linked' %}
-        <span class="dda-badge" id="dda-state-badge">linked</span>
+        <span class="badge" id="dda-state-badge">linked</span>
         {% else %}
-        <span class="dda-badge {% if app.state == 'running' %}dda-badge--running{% endif %}" id="dda-state-badge">{{ app.state }}</span>
+        <span class="badge {{ app.badge_class }}" id="dda-state-badge">{{ app.state }}</span>
         {% endif %}
       </span>
     </div>
-    <div class="dda-fact">
+    <div class="info-item">
       <span class="label">{% if app.kind == 'linked' %}Source{% else %}Owner{% endif %}</span>
       <span class="value">{% if app.kind == 'linked' %}Keboola{% else %}{{ app.owner_email }}{% endif %}</span>
     </div>
-    <div class="dda-fact">
+    <div class="info-item">
       <span class="label">Description</span>
       <span class="value" id="dda-description">{{ app.effective_description or "—" }}</span>
     </div>
     {% if app.kind != 'linked' %}
-    <div class="dda-fact">
+    <div class="info-item">
       <span class="label">Deployed SHA</span>
       <span class="value"><code>{{ (app.deployed_sha or "—")[:12] }}</code></span>
     </div>
     {% endif %}
-    <div class="dda-fact">
+    <div class="info-item">
       <span class="label">URL</span>
       <span class="value">
         {% if app.kind == 'linked' or app.state == 'running' %}
@@ -124,18 +65,18 @@
     {{ ds.button('Stop', variant='secondary', id='dda-stop-btn') }}
   </div>
 
-  <div class="dda-section">
+  <div class="dda-logs-section">
     <h3>Logs</h3>
     <pre class="dda-logs" id="dda-logs">Loading…</pre>
   </div>
   {% endif %}
 
   {% if can_manage and app.kind == 'linked' %}
-  <div class="dda-section">
+  <div class="dda-desc-section">
     <h3>Description override</h3>
     <p class="dda-grant-note">The ingest sync refreshes this app's description; a value here pins your own and won't be clobbered.</p>
-    <form id="dda-desc-form" class="dda-desc-form">
-      <input type="text" id="dda-desc-input" value="{{ app.description_override or '' }}" placeholder="Custom description…" />
+    <form id="dda-desc-form" class="dda-actions">
+      <input type="text" id="dda-desc-input" value="{{ app.description_override or '' }}" placeholder="Custom description…" style="flex:1;min-width:280px;" />
       {{ ds.button('Save', variant='primary', id='dda-desc-save', type='submit') }}
     </form>
   </div>
@@ -146,14 +87,9 @@
     <code>data_app:{{ app.slug }}</code> in the <a href="/admin/access">Access workspace</a>.
   </p>
 </div>
-{# Closes the `.detail` wrapper `detail.hero()` opens — the macro only closes
-   `.detail-hero` itself, so every migrated detail template emits this (see
-   memory_domain_detail.html, library_detail.html). Without it the browser
-   implicitly closed it at the end of the block, leaving the trailing scripts
-   and anything base_ds renders inside `content` scoped under `.detail`'s
-   `--kind` / `detail--panels` rules. #}
-</div>
+{% endblock %}
 
+{% block scripts %}
 {% if can_manage and app.kind == 'linked' %}
 <script>
 (function () {
