@@ -47,7 +47,20 @@ caller's decision, because a retry of a mutating tool can run it twice. The
 pool only guarantees that the *next* acquire does not inherit a broken
 process. Cancellation counts as abandoned: a caller whose ``asyncio.wait_for``
 fired leaves a request in flight upstream, so that session is evicted too
-rather than handed to the next caller in an unverified state.
+rather than handed to the next caller in an unverified state. Abandonment
+inside the pool's own machinery is covered the same way: a caller cancelled
+during startup takes the starting process down with it, and one cancelled
+during checkout releases its reservation and its spawn marker instead of
+pinning them forever.
+
+**Idle sessions age out on a timer, not only on the next call.** A sweeper
+task per loop (started when the first entry lands, gone when the pool
+empties) runs the same guarded stale-collection the next acquire would — so
+a quiet instance actually releases its warm subprocesses after
+``IDLE_TIMEOUT_S`` instead of holding them until the next tool call happens
+to arrive. A session whose upstream exited on its own is detached by the
+same sweep (``closed`` resolved counts as stale) rather than handed to the
+next caller.
 
 The reuse switch is ``mcp_session_pool`` in ``app.switches`` (env
 ``AGNES_MCP_SESSION_POOL``, config ``mcp.session_pool``); off means a process
@@ -171,8 +184,12 @@ class _LoopState:
     #: key -> future completed when the in-flight spawn for that key finishes
     #: (successfully or not). The per-key single-flight: it keeps two callers
     #: for one spec from starting two processes, without a pool-wide lock held
-    #: across the ~6 s startup.
+    #: across the ~6 s startup. Released only once the entry is REGISTERED
+    #: (or the spawn is abandoned), so "no marker and no entry" always means
+    #: "no subprocess" — the invariant ``aclose`` shuts down against.
     spawning: Dict[str, asyncio.Future] = field(default_factory=dict)
+    #: The idle sweeper for this loop; ``None`` when the pool is empty.
+    sweeper: Optional[asyncio.Task] = None
 
 
 class _Pool:
@@ -246,7 +263,22 @@ class _Pool:
         task = asyncio.ensure_future(_keeper())
         try:
             session = await ready
-        except Exception:
+        except asyncio.CancelledError:
+            # The caller was abandoned while the server was still starting —
+            # `except Exception` would miss this (CancelledError is a
+            # BaseException), leaving the keeper parked with a live subprocess
+            # nothing could ever reach: the entry was never registered, so no
+            # sweep and no `close_all` finds it. We ARE the cancelled task, so
+            # the unwind cannot be awaited here; cancelling the keeper is what
+            # unwinds the transport context managers and kills the subprocess
+            # (it also covers an upstream HUNG in startup, which `close` alone
+            # would not). Tracked like a reaper so it is not a stray task.
+            close.set()
+            task.cancel()
+            self._reapers.add(task)
+            task.add_done_callback(self._reapers.discard)
+            raise
+        except BaseException:
             close.set()
             # `suppress`, so a keeper that will not unwind cannot replace the
             # startup error the caller needs to see with a bare timeout.
@@ -290,14 +322,53 @@ class _Pool:
     def _reap(self, entry: _Entry) -> None:
         """Close a detached entry in the background.
 
-        Used on the cancellation path only: the caller's task is already
+        Used on the cancellation paths only: the caller's task is already
         cancelled, so awaiting teardown inline would either re-raise or stall
-        the unwind. `close.set()` has already been called by then, so the
-        keeper is on its way out regardless of when this task gets to run.
+        the unwind. `_shutdown` sets `close` itself, so an entry handed here
+        is on its way out regardless of when this task gets to run.
         """
         task = asyncio.ensure_future(self._shutdown(entry))
         self._reapers.add(task)
         task.add_done_callback(self._reapers.discard)
+
+    # -- the idle sweeper -----------------------------------------------------
+
+    def _ensure_sweeper(self, state: _LoopState) -> None:
+        """Keep one sweeper task per non-empty loop-state. Called under the
+        guard wherever an entry is registered or reused, so the invariant is
+        simply: entries present ⇒ a sweeper is running."""
+        if state.sweeper is None or state.sweeper.done():
+            state.sweeper = asyncio.ensure_future(self._sweep_loop(state))
+
+    async def _sweep_loop(self, state: _LoopState) -> None:
+        """Age idle sessions out on a timer, not only on the next call.
+
+        Without this, `IDLE_TIMEOUT_S` fired only from `_checkout` — so an
+        instance whose last tool call had passed kept up to `MAX_SESSIONS`
+        warm subprocesses alive until the next call or process exit, the
+        opposite of what the switch text and the operator docs promise. The
+        task exits when the pool empties (the next insert starts a new one)
+        and is cancelled by `aclose` and by its loop closing.
+        """
+        try:
+            while True:
+                await asyncio.sleep(max(0.05, min(IDLE_TIMEOUT_S, 60.0)))
+                async with state.guard:
+                    victims = self._collect_stale(state)
+                    done = not state.entries and not state.spawning
+                    if done:
+                        state.sweeper = None
+                try:
+                    await self._shutdown_all(victims)
+                except BaseException:
+                    for victim in victims:
+                        self._reap(victim)
+                    raise
+                if done:
+                    return
+        finally:
+            if state.sweeper is asyncio.current_task():
+                state.sweeper = None
 
     # -- sweeps (called under the guard; they DETACH, they never close) ------
 
@@ -307,7 +378,10 @@ class _Pool:
         for key, entry in list(state.entries.items()):
             if self._in_use(entry):
                 continue
-            if now - entry.last_used > IDLE_TIMEOUT_S:
+            # An entry whose keeper already exited (`closed` resolved — the
+            # upstream died or shut down on its own) is stale immediately:
+            # handing it out would fail the next call on a dead transport.
+            if entry.closed.done() or now - entry.last_used > IDLE_TIMEOUT_S:
                 del state.entries[key]
                 victims.append(entry)
         return victims
@@ -332,14 +406,40 @@ class _Pool:
         entry.reserved += 1
         entry.last_used = time.monotonic()
 
+    @staticmethod
+    def _release_spawn_marker(state: _LoopState, key: str, pending: Optional[asyncio.Future]) -> None:
+        """Resolve and drop this caller's in-flight spawn marker.
+
+        Deliberately awaits nothing — it runs on the cancellation paths too,
+        and a marker left behind there would wedge every later caller for
+        this spec on a spawn that nobody is doing.
+        """
+        if pending is None:
+            return
+        if state.spawning.get(key) is pending:
+            del state.spawning[key]
+        if not pending.done():
+            pending.set_result(None)
+
     async def _checkout(self, state: _LoopState, key: str, params: StdioServerParameters) -> _Entry:
-        """Return a reserved entry for ``key``, starting one if needed."""
+        """Return a reserved entry for ``key``, starting one if needed.
+
+        Every await between taking something under the guard (a reservation,
+        the spawn marker, a fresh entry) and returning is wrapped so that
+        cancellation — a caller's ``asyncio.wait_for`` firing while we pay for
+        somebody else's teardown — gives the claim back instead of pinning it
+        forever. Only ``acquire``'s finally releases a reservation otherwise,
+        and it is unreachable until this method returns; a permanently
+        reserved entry is permanently in-use, which no sweep can ever close,
+        and once enough pile up the cap stops bounding the pool at all.
+        """
         while True:
             async with state.guard:
                 victims = self._collect_stale(state)
                 entry = state.entries.get(key)
                 if entry is not None:
                     self._reserve(entry)
+                    self._ensure_sweeper(state)
                     pending: Optional[asyncio.Future] = None
                     mine = False
                 else:
@@ -348,7 +448,18 @@ class _Pool:
                     if mine:
                         pending = state.loop.create_future()
                         state.spawning[key] = pending
-            await self._shutdown_all(victims)
+            try:
+                await self._shutdown_all(victims)
+            except BaseException:
+                if entry is not None:
+                    entry.reserved -= 1
+                if mine:
+                    self._release_spawn_marker(state, key, pending)
+                for victim in victims:
+                    # The gather may have been cancelled before a victim's
+                    # shutdown set `close`; reap so each still goes down.
+                    self._reap(victim)
+                raise
             if entry is not None:
                 return entry
             if not mine:
@@ -360,22 +471,38 @@ class _Pool:
                 continue
             try:
                 entry = await self._spawn(params)
-            finally:
-                # Resolved either way: on failure the waiters simply take
-                # another turn, and one of them tries the spawn itself.
-                # Deliberately awaits nothing — this runs on the cancellation
-                # path too, and a marker left behind there would wedge every
-                # later caller for this spec on a spawn that never finishes.
-                if state.spawning.get(key) is pending:
-                    del state.spawning[key]
-                assert pending is not None
-                if not pending.done():
-                    pending.set_result(None)
+            except BaseException:
+                # On failure the waiters simply take another turn, and one of
+                # them tries the spawn itself.
+                self._release_spawn_marker(state, key, pending)
+                raise
             entry.reserved = 1
-            async with state.guard:
-                state.entries[key] = entry
-                over_cap = self._collect_over_cap(state)
-            await self._shutdown_all(over_cap)
+            try:
+                async with state.guard:
+                    state.entries[key] = entry
+                    self._ensure_sweeper(state)
+                    over_cap = self._collect_over_cap(state)
+                    # Released only now, with the entry registered: a waiter
+                    # woken by the marker always finds the entry (no window in
+                    # which it would start a duplicate process), and `aclose`
+                    # can never observe "no marker, no entry" while the
+                    # subprocess lives.
+                    self._release_spawn_marker(state, key, pending)
+            except BaseException:
+                # Cancelled before the entry was published: nothing else can
+                # ever reach it, so close it ourselves or it outlives every
+                # sweep.
+                self._release_spawn_marker(state, key, pending)
+                entry.close.set()
+                self._reap(entry)
+                raise
+            try:
+                await self._shutdown_all(over_cap)
+            except BaseException:
+                entry.reserved -= 1
+                for victim in over_cap:
+                    self._reap(victim)
+                raise
             return entry
 
     @asynccontextmanager
@@ -386,11 +513,13 @@ class _Pool:
             entry = await self._checkout(state, key, params)
             try:
                 async with entry.lock:
-                    if state.entries.get(key) is not entry:
+                    if state.entries.get(key) is not entry or entry.closed.done():
                         # The caller ahead of us in the queue hit a transport
                         # error and evicted this session while we waited for
-                        # its lock. Its process is gone, so start over rather
-                        # than run this call on it.
+                        # its lock — or the upstream died on its own in that
+                        # window (`closed` resolved). Either way its process
+                        # is gone, so start over rather than run this call on
+                        # it; the next checkout's sweep detaches the corpse.
                         continue
                     entry.last_used = time.monotonic()
                     try:
@@ -417,12 +546,32 @@ class _Pool:
             return
 
     async def aclose(self) -> None:
-        """Close every session this loop owns."""
+        """Close every session this loop owns, waiting out in-flight spawns.
+
+        A spawn racing shutdown would otherwise re-register its entry after
+        the sweep and the subprocess would outlive the "graceful" stop. The
+        marker is only released once the entry is registered (see
+        `_LoopState.spawning`), so sweeping again after each round of markers
+        is guaranteed to see whatever those spawns produced.
+        """
         state = self._state()
-        async with state.guard:
-            victims = list(state.entries.values())
-            state.entries.clear()
-        await self._shutdown_all(victims)
+        while True:
+            async with state.guard:
+                victims = list(state.entries.values())
+                state.entries.clear()
+                spawning = [f for f in state.spawning.values() if not f.done()]
+                if not spawning and state.sweeper is not None:
+                    state.sweeper.cancel()
+                    state.sweeper = None
+            await self._shutdown_all(victims)
+            if not spawning:
+                break
+            for marker in spawning:
+                with contextlib.suppress(Exception):
+                    await asyncio.shield(marker)
+        reapers = [t for t in self._reapers if not t.done() and t.get_loop() is state.loop]
+        if reapers:
+            await asyncio.gather(*reapers, return_exceptions=True)
         with self._states_guard:
             if self._states.get(id(state.loop)) is state and not state.entries and not state.spawning:
                 del self._states[id(state.loop)]

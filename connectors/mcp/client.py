@@ -2,8 +2,10 @@
 
 Wraps the official ``mcp`` Python SDK with a small uniform interface used by
 ``extractor.py`` (materialize) and ``app/api/mcp/passthrough.py`` (live).
-Per-call connect/disconnect for POC simplicity — a connection pool can be
-layered later for high-frequency passthrough.
+``stdio`` sessions are pooled by default — a warm subprocess is reused across
+calls (see ``connectors/mcp/session_pool.py``; switch ``mcp_session_pool`` to
+go back to a process per call). ``http``/``sse`` stay per-call connect/
+disconnect — they have no spawn to amortize.
 
 Supports three transports:
 

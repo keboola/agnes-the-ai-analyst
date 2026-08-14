@@ -370,6 +370,228 @@ class TestCancellation:
         assert spawns["n"] == 2, "a session abandoned mid-call was handed to the next caller"
 
 
+class _GatedTransport:
+    """Test double whose startup and/or teardown block on test-owned gates.
+
+    A spec whose env carries ``T='slow-start'`` blocks inside the transport's
+    entry until ``gates['start']`` is set; ``T='slow-close'`` blocks the
+    teardown on ``gates['close']``. Gates are created by the test inside the
+    running loop.
+    """
+
+    def __init__(self, monkeypatch) -> None:
+        self.counter = {"n": 0, "closed": 0}
+        self.gates: dict = {}
+        counter, gates = self.counter, self.gates
+
+        @asynccontextmanager
+        async def _fake_stdio_client(params):
+            counter["n"] += 1
+            tag = (params.env or {}).get("T", "")
+            try:
+                if tag == "slow-start":
+                    await gates["start"].wait()
+                yield (object(), object())
+            finally:
+                if tag == "slow-close":
+                    await gates["close"].wait()
+                counter["closed"] += 1
+
+        class _FakeClientSession:
+            def __init__(self, read, write):
+                self._s = _FakeSession()
+
+            async def __aenter__(self):
+                return self._s
+
+            async def __aexit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(session_pool, "stdio_client", _fake_stdio_client)
+        monkeypatch.setattr(session_pool, "ClientSession", _FakeClientSession)
+
+
+async def _wait_until(predicate, timeout: float = 2.0) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not predicate() and loop.time() < deadline:
+        await asyncio.sleep(0.005)
+
+
+class TestIdleReaper:
+    def test_an_idle_session_is_closed_with_no_further_traffic(self, spawns, monkeypatch):
+        """The idle timeout must fire on its own. Sweeping only from the next
+        acquire means a quiet instance holds warm subprocesses (each with the
+        upstream's whole import tree resident) until the process exits — the
+        opposite of what the switch text and the operator docs promise."""
+        monkeypatch.setattr(session_pool, "IDLE_TIMEOUT_S", 0.0)
+
+        async def drive():
+            pool = session_pool.get_pool()
+            async with pool.acquire(_params({"T": "x"})):
+                pass
+            await _wait_until(lambda: spawns["closed"] >= 1)
+            return len(pool._entries)
+
+        assert asyncio.run(drive()) == 0, "an idle session outlived its timeout with no traffic"
+        assert spawns["closed"] == 1
+
+
+class TestSelfDeath:
+    def test_a_session_whose_upstream_died_is_not_handed_out(self, spawns):
+        """When the keeper exits on its own (upstream crashed or exited while
+        idle), the entry must be detached rather than left registered —
+        otherwise the next tool call runs on a dead transport and fails before
+        a healthy replacement is started."""
+
+        async def drive():
+            pool = session_pool.get_pool()
+            params = _params({"T": "x"})
+            async with pool.acquire(params):
+                pass
+            entry = pool._entries[session_pool.spec_key(params)]
+            # The upstream going away on its own: the keeper unwinds and
+            # resolves `closed`, with the entry still registered.
+            entry.close.set()
+            await asyncio.wait_for(asyncio.shield(entry.closed), timeout=1)
+            async with pool.acquire(params):
+                pass
+
+        asyncio.run(drive())
+        assert spawns["n"] == 2, "the dead session was handed to the next caller"
+
+
+class TestAbandonedCheckout:
+    def test_a_cancelled_checkout_releases_its_reservation(self, monkeypatch):
+        """`_checkout` reserves the entry, then pays for stale teardown before
+        returning; only `acquire`'s finally releases the claim, and it is
+        unreachable until `_checkout` returns. A caller cancelled inside that
+        teardown wait (its `asyncio.wait_for` firing — the admin connect probe
+        does exactly this) must not leave the reservation behind: a permanently
+        reserved entry is permanently in-use, so no sweep can ever close it,
+        and once enough pile up the cap stops bounding the pool."""
+        transport = _GatedTransport(monkeypatch)
+
+        async def drive():
+            pool = session_pool.get_pool()
+            transport.gates["close"] = asyncio.Event()
+            slow, fast = _params({"T": "slow-close"}), _params({"T": "fast"})
+            async with pool.acquire(slow):
+                pass
+            async with pool.acquire(fast):
+                pass
+            # Backdate the slow-closing entry so the next checkout sweeps it.
+            pool._entries[session_pool.spec_key(slow)].last_used -= 10_000.0
+
+            async def caller():
+                async with pool.acquire(fast):
+                    pass
+
+            task = asyncio.create_task(caller())
+            fresh = pool._entries[session_pool.spec_key(fast)]
+            await _wait_until(lambda: fresh.reserved == 1)
+            assert fresh.reserved == 1, "test setup: the caller should be inside the teardown wait"
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            reserved = fresh.reserved
+            transport.gates["close"].set()
+            await asyncio.sleep(0.01)
+            return reserved
+
+        assert asyncio.run(drive()) == 0, "an abandoned checkout left its reservation behind"
+
+
+class TestAbandonedStartup:
+    def test_a_call_abandoned_mid_spawn_kills_the_starting_process(self, monkeypatch):
+        """`await ready` was guarded by `except Exception`; CancelledError is a
+        BaseException, so a caller that gave up during the ~6 s startup (an
+        `asyncio.wait_for`, an HTTP disconnect) left the keeper parked forever
+        with a live subprocess nothing could ever reach — not the sweeps (the
+        entry was never registered) and not `close_all`."""
+        transport = _GatedTransport(monkeypatch)
+
+        async def drive():
+            pool = session_pool.get_pool()
+            transport.gates["start"] = asyncio.Event()
+
+            async def caller():
+                async with pool.acquire(_params({"T": "slow-start"})):
+                    pass
+
+            task = asyncio.create_task(caller())
+            await _wait_until(lambda: transport.counter["n"] >= 1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            # The start gate is never opened: only cancelling the keeper can
+            # unwind the transport. Wait for the subprocess stand-in to close.
+            await _wait_until(lambda: transport.counter["closed"] >= 1)
+            assert transport.counter["closed"] == 1, "the starting subprocess was orphaned"
+            assert not pool._state().spawning, "the spawn marker was left behind"
+
+        asyncio.run(drive())
+
+    def test_a_cancellation_between_spawn_and_registration_closes_the_entry(self, monkeypatch):
+        """Between `_spawn` returning and the entry landing in the pool there
+        is one more await (the pool guard). A cancellation delivered exactly
+        there orphaned the fresh entry: registered nowhere, `close` never
+        set, subprocess alive until process exit."""
+        transport = _GatedTransport(monkeypatch)
+
+        async def drive():
+            pool = session_pool.get_pool()
+            state = pool._state()
+            transport.gates["start"] = asyncio.Event()
+
+            async def caller():
+                async with pool.acquire(_params({"T": "slow-start"})):
+                    pass
+
+            task = asyncio.create_task(caller())
+            await _wait_until(lambda: transport.counter["n"] >= 1)
+            await state.guard.acquire()  # hold the pool guard...
+            transport.gates["start"].set()  # ...and only then let the spawn finish
+            await asyncio.sleep(0.05)  # caller is now blocked on the guard
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            state.guard.release()
+            await _wait_until(lambda: transport.counter["closed"] >= 1)
+            assert transport.counter["closed"] == 1, "the just-spawned entry was orphaned"
+            assert not state.entries and not state.spawning
+
+        asyncio.run(drive())
+
+
+class TestCloseRace:
+    def test_close_all_waits_out_an_in_flight_spawn(self, monkeypatch):
+        """`aclose` snapshotted `entries` only: a spawn completing after the
+        sweep re-inserted its entry, so a shutdown racing a starting session
+        left that subprocess unclosed and a stale loop-state behind."""
+        transport = _GatedTransport(monkeypatch)
+
+        async def drive():
+            pool = session_pool.get_pool()
+            transport.gates["start"] = asyncio.Event()
+
+            async def caller():
+                async with pool.acquire(_params({"T": "slow-start"})):
+                    pass
+
+            task = asyncio.create_task(caller())
+            await _wait_until(lambda: transport.counter["n"] >= 1)
+            closer = asyncio.create_task(session_pool.close_all())
+            await asyncio.sleep(0.01)  # closer is now waiting on the spawn
+            transport.gates["start"].set()
+            await task
+            await closer
+            return len(pool._entries)
+
+        assert asyncio.run(drive()) == 0, "a spawn racing shutdown re-registered its entry"
+        assert transport.counter["closed"] == transport.counter["n"] == 1
+
+
 class TestShutdownWiring:
     def test_the_app_lifespan_closes_the_pool(self):
         """`close_all` is documented for process shutdown; nothing but tests
