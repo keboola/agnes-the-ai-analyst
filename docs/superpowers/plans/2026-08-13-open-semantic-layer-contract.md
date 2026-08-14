@@ -14,7 +14,7 @@
 - **Dual-backend parity is non-negotiable.** A method added to `src/repositories/X.py` gets its `X_pg.py` sibling in the SAME task, plus a factory dispatch entry and a cross-engine contract test.
 - **Reach repos through the factory**, never instantiate a repo class at a callsite. Import `semantic_model_repo()` / `semantic_source_repo()` from `src.repositories`.
 - **Migration ladders move together.** A DuckDB `_vN_to_v(N+1)` step gets a matching Alembic revision in the same task.
-- **`SCHEMA_VERSION` is 115 as of this plan's writing, so the new step is v115→v116 and the Alembic revision is `0062`. CONFIRM BOTH IMMEDIATELY BEFORE TASK 2** — several branches are open against the ladder concurrently. If `SCHEMA_VERSION` has moved, renumber every reference in this plan.
+- **`SCHEMA_VERSION` is 115, so the DuckDB step is v115→v116. The Alembic revision is `0063` — `0062_knowledge_domains_backfill` is already taken on `origin/main` (a data-only backfill, which is why it does not move `SCHEMA_VERSION`). CONFIRM BOTH AGAINST `origin/main`, NOT against this branch, IMMEDIATELY BEFORE TASK 2.** Checking the local branch is what hid this collision: a feature branch that forked before the colliding revision landed shows a clean `0061` tip and looks safe.
 - **Alembic revision ids are `VARCHAR(32)`** — keep them short.
 - **Vendor-agnostic repo.** No customer names, internal hostnames, cloud project ids, or private-repo references in code, comments, docs, commit messages or PR text. The Keboola connector is an existing OSS connector and may be named as such.
 - **No AI attribution** in commits or PR text.
@@ -214,7 +214,7 @@ git commit -m "feat(semantic): vendored Ossie schema and document validator"
 
 **Files:**
 - Modify: `src/db.py` (`SCHEMA_VERSION`, `_SYSTEM_SCHEMA` DDL, new `_v115_to_v116`, both wiring branches)
-- Create: `migrations/versions/0062_sem_models_v116.py`
+- Create: `migrations/versions/0063_sem_models_v116.py`
 - Test: `tests/test_db_schema_version.py` (existing gate), `tests/test_semantic_schema.py` (new)
 
 **Interfaces:**
@@ -228,9 +228,22 @@ git commit -m "feat(semantic): vendored Ossie schema and document validator"
 grep -n "^SCHEMA_VERSION" src/db.py && ls migrations/versions | tail -3
 ```
 
-If `SCHEMA_VERSION` is not 115 or the last revision is not `0061_*`, renumber
-this task's `_v115_to_v116` / `0062_*` to follow whatever is actually there,
-and carry the new numbers through the rest of the plan.
+Run it against `origin/main`, not against your branch:
+
+```bash
+git fetch origin main
+git show origin/main:src/db.py | grep -m1 "^SCHEMA_VERSION"
+git ls-tree --name-only origin/main migrations/versions/ | grep -v __init__ | tail -3
+```
+
+Expected as of this plan: `SCHEMA_VERSION = 115`, last revision
+`0062_knowledge_domains_backfill`. If either has moved, renumber this task's
+`_v115_to_v116` / `0063_*` and its `down_revision` to follow what is actually
+there, and carry the new numbers through the rest of the plan.
+
+Checking your own branch instead is not a shortcut — it is how the first
+version of this plan ended up claiming `0062` was free. A branch that forked
+before a revision landed shows a clean tip and looks safe.
 
 - [ ] **Step 2: Write the failing test**
 
@@ -352,13 +365,13 @@ Then bump `SCHEMA_VERSION = 116`.
 - [ ] **Step 6: Write the Alembic revision**
 
 ```python
-# migrations/versions/0062_sem_models_v116.py
+# migrations/versions/0063_sem_models_v116.py
 """semantic_models, semantic_sources, data_package_semantic_models
 
 Mirrors DuckDB ``_v115_to_v116``. Pure additive DDL, no backfill.
 
-Revision ID: 0062_sem_models_v116
-Revises: 0061_agent_status_backfill_v115
+Revision ID: 0063_sem_models_v116
+Revises: 0062_knowledge_domains_backfill
 Create Date: 2026-08-13
 """
 
@@ -369,8 +382,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0062_sem_models_v116"
-down_revision: Union[str, None] = "0061_agent_status_backfill_v115"
+revision: str = "0063_sem_models_v116"
+down_revision: Union[str, None] = "0062_knowledge_domains_backfill"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -439,7 +452,7 @@ Expected: PASS — this is what catches a ladder that reaches two different endp
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/db.py migrations/versions/0062_sem_models_v116.py tests/test_semantic_schema.py
+git add src/db.py migrations/versions/0063_sem_models_v116.py tests/test_semantic_schema.py
 git commit -m "feat(db): semantic_models, semantic_sources and package junction (v116)"
 ```
 
@@ -1078,16 +1091,35 @@ _PREFERRED = ("DUCKDB", "ANSI_SQL")
 
 def resolve_expression(expression: dict) -> Tuple[Optional[str], Optional[str]]:
     dialects = (expression or {}).get("dialects") or []
-    by_name = {d.get("dialect"): d.get("expression") for d in dialects if d.get("expression")}
+    # An entry with no dialect NAME is dropped, not kept under a None key:
+    # this function's whole contract is to return a reason rather than raise,
+    # and a None key blows up the `sorted()` join below. Adapter-composed
+    # documents really do produce these when the upstream model declares no
+    # dialect at all.
+    by_name = {
+        d.get("dialect"): d.get("expression")
+        for d in dialects
+        if d.get("expression") and isinstance(d.get("dialect"), str)
+    }
 
     for name in _PREFERRED:
         if by_name.get(name):
             return by_name[name], None
 
     if not by_name:
-        return None, "no expression in any dialect"
+        return None, "no expression in any usable dialect"
     offered = ", ".join(sorted(by_name))
     return None, f"only warehouse-specific dialects offered ({offered}); no DUCKDB or ANSI_SQL"
+```
+
+Add a fifth test — the four in the plan all pass against a version that raises
+on this input, which is exactly the kind of green that asserts nothing:
+
+```python
+def test_dialect_entry_without_a_name_is_ignored_not_a_crash():
+    sql, reason = resolve_expression({"dialects": [{"dialect": None, "expression": "SUM(a)"}]})
+    assert sql is None
+    assert reason
 ```
 
 - [ ] **Step 3: Run and commit**
