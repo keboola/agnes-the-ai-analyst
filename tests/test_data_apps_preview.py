@@ -229,6 +229,43 @@ class TestPreviewGrantEndpoint:
         r = env["client"].post("/api/data-apps/does-not-exist/preview-grant", headers=_auth(env["owner_pat"]))
         assert r.status_code == 404
 
+    def test_mint_refusal_is_a_clean_400_not_a_500(self, preview_api_env, monkeypatch):
+        """`_mint_preview_token` refuses (SlugNotCookieSafeError) a slug that
+        is unsafe in a cookie name — a deliberate, now side-effect-free
+        refusal, which the endpoint must surface as a 400 with a stable
+        machine token rather than an unhandled 500 (Devin Review on this PR).
+        Patched rather than seeded: every create path validates slugs, so a
+        DB row that trips the check cannot be built through the API."""
+        import app.api.data_apps as data_apps_api
+
+        def _refuse(row, requester, **kw):
+            raise data_apps_api.SlugNotCookieSafeError("data app slug is not safe in a cookie name")
+
+        monkeypatch.setattr(data_apps_api, "_mint_preview_token", _refuse)
+        env = preview_api_env
+        r = env["client"].post("/api/data-apps/dash/preview-grant", headers=_auth(env["owner_pat"]))
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"] == "slug_not_cookie_safe"
+
+    def test_an_unrelated_mint_failure_is_not_relabelled_a_bad_slug(self, preview_api_env, monkeypatch):
+        """A plain ValueError from the mint's internals (token claims, repo
+        validation) is a backend fault, not a naming problem — it must
+        surface as a 500, not don the `slug_not_cookie_safe` costume that
+        sends users chasing a non-existent naming issue (Devin Review on
+        this PR)."""
+        import app.api.data_apps as data_apps_api
+
+        def _backend_fault(row, requester, **kw):
+            raise ValueError("access_tokens insert: expires_at out of range")
+
+        monkeypatch.setattr(data_apps_api, "_mint_preview_token", _backend_fault)
+        env = preview_api_env
+        try:
+            r = env["client"].post("/api/data-apps/dash/preview-grant", headers=_auth(env["owner_pat"]))
+        except ValueError:
+            return  # TestClient re-raises unhandled server exceptions: same verdict — not a 400
+        assert r.status_code == 500, r.text
+
     def test_disabled_feature_404s(self, preview_api_env, monkeypatch):
         import app.api.data_apps as data_apps_api
 

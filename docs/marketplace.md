@@ -73,18 +73,18 @@ grant/group join runs, a plugin an admin disables via the `/admin/marketplaces`
 Details modal (`marketplace_plugins.admin_disabled = TRUE`) is removed
 instance-wide for everyone, regardless of grants: it disappears from the served
 feed, the browse page, every user's my-stack, the synthetic served marketplace,
-the `/admin/access` grant UI, and the v2 `/skills` endpoint. The only surface
+the group Access tab's grant UI, and the v2 `/skills` endpoint. The only surface
 that still shows a disabled plugin is the Details modal, where it can be
 re-enabled. Disabling also clears `is_system` (re-enabling does **not** restore
 it), and the disabled state survives nightly sync and the built-in re-seed on
 boot (the `replace_for_marketplace` upsert never resets `admin_disabled`), so a
 disabled plugin stays disabled across restarts.
 
-Because a disabled plugin is also hidden from the `/admin/access` grant UI, its
+Because a disabled plugin is also hidden from the group Access tab's grant UI, its
 existing `resource_grants` rows are preserved but not editable there while it is
 disabled — they are inert (the plugin is filtered out of every served surface
 regardless of grants) and are restored intact on re-enable. To revoke them
-permanently, re-enable the plugin, revoke on `/admin/access`, then disable again
+permanently, re-enable the plugin, revoke on the group's Access tab, then disable again
 if still wanted. This is deliberate: "disabled" means invisible everywhere
 except the re-enable control, not "grants deleted".
 

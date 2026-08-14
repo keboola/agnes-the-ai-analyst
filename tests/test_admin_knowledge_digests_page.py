@@ -57,7 +57,7 @@ class TestKnowledgeDigestsPageAuth:
         # client-side via JS, not present in the initial HTML).
         assert "/api/admin/knowledge-digests" in body
 
-        # Pointer to the Resource access page for grants.
+        # Pointer to where grants are managed — the Access workspace.
         assert "/admin/access" in body
         assert "grants" in body.lower()
 

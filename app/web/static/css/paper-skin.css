@@ -139,7 +139,19 @@
         box-shadow var(--ds-motion-fast) var(--ds-ease-standard);
 }
 
-[data-theme="paper"] .ds-card:hover,
+/* The lift is OPT-IN, on `.ds-card` as everywhere else. The default theme
+   documents the contract in style-custom.css — "cards stay still by default
+   — calm", with the hover gated on `[data-clickable]` — and this skin was
+   applying it to every card, so a static container (an "At a glance" panel,
+   a form section) rose 2px and grew a shadow when the pointer crossed it.
+   That is elevation promising an interaction the card does not have.
+
+   `.stack-card` and `.card` keep the ungated rule: neither uses the
+   `[data-clickable]` attribute, and both are genuinely clickable where they
+   are used (the catalog's stack cards carry their own drilldown), so gating
+   them on an attribute they never set would remove hover from the cards that
+   have earned it. */
+[data-theme="paper"] .ds-card[data-clickable]:hover,
 [data-theme="paper"] .stack-card:hover,
 [data-theme="paper"] .card:hover {
     border-color: var(--ds-border);
@@ -154,7 +166,7 @@
         transition: none;
     }
 
-    [data-theme="paper"] .ds-card:hover,
+    [data-theme="paper"] .ds-card[data-clickable]:hover,
     [data-theme="paper"] .stack-card:hover,
     [data-theme="paper"] .card:hover {
         transform: none;

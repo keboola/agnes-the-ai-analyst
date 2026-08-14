@@ -68,7 +68,8 @@ class TestTableBlocks:
         blocks = _table_blocks()
         item = blocks[0]["items"][0]
 
-        # Fields that admin_access.html renderResources reads:
+        # Fields the grant matrix's renderAccess() reads (it moved from the
+        # retired admin_access.html to admin_group_detail.html's Access tab):
         assert item["resource_id"] == "shape_test"
         assert item["name"] == "shape_test"
         assert item["category"] == "remote"  # query_mode → badge

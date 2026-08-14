@@ -33,7 +33,6 @@ import asyncio
 import contextlib
 import logging
 import math
-import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote
@@ -487,6 +486,7 @@ from app.api.admin_sessions import router as admin_sessions_router
 from app.api.admin_usage import router as admin_usage_router
 from app.api.admin_usage_summary import router as admin_usage_summary_router
 from app.api.admin_reports import router as admin_reports_router
+from app.api.admin_dashboard import router as admin_dashboard_router
 from app.api.admin_adoption import router as admin_adoption_router
 from app.api.db_state import router as db_state_router
 from app.api.admin_analytics import router as admin_analytics_router
@@ -2173,27 +2173,22 @@ def create_app() -> FastAPI:
         if o.strip()
     ]
     cors_allow_credentials = True
-    # Data-app subdomains also make credentialed cross-origin requests to the
-    # main host (the readiness poll in data_app_waking.html). Allow any host
-    # under data_apps.subdomain_base when that is configured; the session
-    # cookie is already scoped to the shared parent domain.
-    cors_origin_regex: str | None = None
-    try:
-        from app.instance_config import get_data_apps_config
-
-        # `.strip(".")` matches DataAppSubdomainMiddleware's own normalisation:
-        # a value written `.apps.example.com` would otherwise escape to a
-        # doubled dot and match NOTHING, so the middleware would serve the
-        # subdomain while the readiness poll was CORS-blocked.
-        data_app_base = (get_data_apps_config().get("subdomain_base") or "").strip().strip(".")
-        if data_app_base:
-            escaped = re.escape(data_app_base)
-            # A SINGLE label, not `[^:\s/]+` — the middleware only routes
-            # single-label slugs, so accepting `a.b.<base>` would widen the
-            # credentialed-CORS surface past anything that can be served.
-            cors_origin_regex = rf"^https?://[^.:\s/]+\.{escaped}(:\d+)?$"
-    except Exception:
-        logger.exception("Failed to compute data-app CORS origin regex")
+    # Captured HERE, from the same read the middleware is configured with:
+    # the readiness handler's per-app CORS grant must agree with the
+    # middleware about whether a wildcard is in force, and `create_app`
+    # loads overlay env AFTER this point — a request-time env re-read could
+    # see a different value than the middleware did (Devin on #1321).
+    app.state.cors_has_wildcard = "*" in cors_origins
+    # Data-app subdomains are deliberately NOT allowed here. The holding
+    # page's readiness poll (data_app_waking.html on `<slug>.<base>`) does
+    # need a credentialed cross-origin read of ONE response — but this
+    # middleware is app-wide, those subdomains serve user-authored app code,
+    # and the session cookie already rides to the main host from them
+    # (`Domain=.<parent>`, same-site). A subdomain `allow_origin_regex`
+    # paired with `allow_credentials=True` therefore let any hosted app's JS
+    # read every authenticated endpoint as its viewer. The poll's allowance
+    # lives route-scoped and per-app instead:
+    # `app.api.data_apps._readiness_cors_headers` (Devin Review on this PR).
     if "*" in cors_origins:
         # SECURITY: Starlette's CORSMiddleware, when allow_origins contains "*"
         # AND allow_credentials=True, reflects the caller's Origin into
@@ -2209,10 +2204,29 @@ def create_app() -> FastAPI:
             "any-origin-with-credentials CORS policy. Set an explicit origin allowlist."
         )
         cors_allow_credentials = False
+        # The wildcard also OVERWRITES per-route CORS grants: with
+        # allow_all_origins the middleware stamps `Access-Control-Allow-Origin:
+        # *` (credential-less) over response headers a handler set, which
+        # breaks the data-app readiness poll's per-app credentialed grant
+        # (app/api/data_apps.py::_readiness_cors_headers) — the subdomain
+        # holding page then polls forever. Say so where the operator is
+        # already being told their CORS config is wrong.
+        try:
+            from app.instance_config import get_data_apps_config
+
+            if (get_data_apps_config().get("subdomain_base") or "").strip():
+                logger.error(
+                    "CORS_ORIGINS='*' with data_apps.subdomain_base configured: the "
+                    "readiness poll on data-app subdomains needs a credentialed "
+                    "per-app CORS grant, which the wildcard overrides — subdomain "
+                    "holding pages will not detect the app coming up until "
+                    "CORS_ORIGINS lists explicit origins."
+                )
+        except Exception:
+            pass
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
-        allow_origin_regex=cors_origin_regex,
         allow_credentials=cors_allow_credentials,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -2618,6 +2632,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_usage_router)
     app.include_router(admin_usage_summary_router)
     app.include_router(admin_reports_router)
+    app.include_router(admin_dashboard_router)
     app.include_router(admin_adoption_router)
     app.include_router(admin_contributed_skills_router)
     app.include_router(db_state_router)

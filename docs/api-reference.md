@@ -813,6 +813,19 @@ authoring-suggestions queue (never an admin-direct write).
 - /api/admin/adoption/users/{user_id}/top-skills
 - /api/admin/adoption/users/{user_id}/top-tools
 
+### `/api/admin/dashboard` — Admin dashboard signals (admin)
+
+- /api/admin/dashboard/signals
+
+  The "Needs fixing" zone of the `/admin` dashboard — failed syncs, broken
+  marketplace syncs, and tools erroring above threshold. Fetched by the page
+  after first paint rather than rendered inline, because these read the
+  unbounded `sync_history` / `usage_events` tables;
+  memoised behind a short process-local TTL. Clear signals are OMITTED rather
+  than returned at `count: 0`, so an empty `signals` array is the healthy
+  state. A signal whose resolver raised comes back with `failed: true` so a
+  broken check never reads as all-clear. Admin-only.
+
 ### `/api/admin/reports` — Marketplace usage digest (admin)
 
 - /api/admin/reports/marketplace-digest
@@ -1653,5 +1666,5 @@ CLI: `agnes agent webhooks list|add|delete <slug> ...` (`add` takes `--url` and 
 
 - /api/admin/config-surface — read this instance's complete configurable surface: every config knob with its resolved value + source (env/yaml/default), the registered Initial Workspace Template, the registered marketplaces, and `infra_repo_url`. Also exposed as `agnes admin config-surface` and an MCP tool.
 - /api/marketplaces/{marketplace_id}/plugins — admin-only: list a marketplace's plugins. Each row includes `admin_disabled`, which drives the `/admin/marketplaces` Details-modal switch and the DISABLED pill.
-- /api/marketplaces/{marketplace_id}/plugins/{plugin_name}/disable — admin-only: disable any registered plugin (not just built-ins) instance-wide. The plugin is then hidden from every served and admin surface for all callers — served feed, browse page, my-stack, synthetic served marketplace, the `/admin/access` grant UI, and v2 `/skills` — except the Details modal, where it can be re-enabled. Disabling also clears `is_system`.
+- /api/marketplaces/{marketplace_id}/plugins/{plugin_name}/disable — admin-only: disable any registered plugin (not just built-ins) instance-wide. The plugin is then hidden from every served and admin surface for all callers — served feed, browse page, my-stack, synthetic served marketplace, the group Access tab's grant UI, and v2 `/skills` — except the Details modal, where it can be re-enabled. Disabling also clears `is_system`.
 - /api/marketplaces/{marketplace_id}/plugins/{plugin_name}/enable — admin-only: re-enable a previously disabled plugin. Does **not** restore a previously-cleared `is_system`. The disabled state persists across restarts / sync re-seed until explicitly re-enabled.
