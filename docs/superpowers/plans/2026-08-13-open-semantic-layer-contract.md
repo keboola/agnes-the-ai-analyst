@@ -1196,14 +1196,24 @@ def test_unusable_metric_is_reported_not_written(system_db):
     assert "SNOWFLAKE" in skipped[0]["reason"]
 
 
+def _stub_dataset(name="orders"):
+    # The real schema sets `minItems: 1` on `datasets` and requires
+    # ["name", "datasets"] on a model, so `"datasets": []` is NOT a valid
+    # document even though project_document never validates. Keep fixtures
+    # schema-legal or they become a trap the moment anything validates them.
+    return {"name": name, "source": f"db.public.{name}", "fields": []}
+
+
 def test_reprojection_prunes_only_this_origin(system_db):
     project_document(DOC, source="git", source_ref="repo-a")
-    other = {"semantic_model": [{"name": "fin", "datasets": [], "metrics": [
+    other = {"semantic_model": [{"name": "fin", "datasets": [_stub_dataset("costs")],
+                                 "metrics": [
         {"name": "cost", "expression": {"dialects": [
             {"dialect": "ANSI_SQL", "expression": "SUM(c)"}]}}]}]}
     project_document(other, source="git", source_ref="repo-b")
 
-    shrunk = {"semantic_model": [{"name": "retail", "datasets": [], "metrics": []}]}
+    shrunk = {"semantic_model": [{"name": "retail", "datasets": [_stub_dataset()],
+                                  "metrics": []}]}
     project_document(shrunk, source="git", source_ref="repo-a")
 
     from src.repositories import metric_repo
@@ -1230,7 +1240,11 @@ Projection rules, all of them explicit:
   metrics of that dataset (preserving today's behavior).
 - Glossary: only if the document carries glossary entries in
   `custom_extensions`; core Ossie has no glossary object, so an empty
-  projection here is correct, not a bug.
+  projection here is correct, not a bug. Note the schema's shape —
+  `custom_extensions` entries require `vendor_name` plus a `data` field that
+  is a **JSON-encoded string**, not a nested mapping. Read it with
+  `json.loads(entry["data"])`, and write it with `json.dumps(...)`; an inline
+  YAML mapping there fails validation.
 - Prune: after writing, delete rows with this `(source, source_ref)` whose ids
   are not in the just-written set — never a global delete.
 
