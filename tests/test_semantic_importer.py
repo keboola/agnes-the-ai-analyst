@@ -71,3 +71,19 @@ def test_document_dropped_upstream_is_pruned(system_db):
     assert report.models_pruned == [dropped]
     assert semantic_model_repo().get_by_slug("finance") is None
     assert semantic_model_repo().get_by_slug("retail") is not None
+
+
+def test_two_documents_in_one_import_keep_both_their_metrics(system_db):
+    """Projection prunes per (source, source_ref), so projecting document by
+    document under one origin makes each call delete the previous one's rows.
+
+    The pipeline must project all valid documents of a call together. This
+    asserts projected CONTENT — a count- or model-row-only assertion passes
+    even when the data loss is happening.
+    """
+    from src.repositories import metric_repo
+
+    import_documents(SOURCE, [_doc("retail", "revenue"), _doc("finance", "cost")])
+
+    names = {m["name"] for m in metric_repo().list()}
+    assert names >= {"revenue", "cost"}

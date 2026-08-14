@@ -1359,11 +1359,32 @@ Pipeline order, and the reasoning behind each step:
    errors, so an admin surface can show what broke instead of the row silently
    vanishing.
 4. `delete_missing(source=…, source_ref=…, keep_slugs=<slugs of valid docs seen>)`.
-5. `project_document` for each valid document.
+5. Project ONCE per import call, over all valid documents together — **not once
+   per document.**
 
-Steps 3–5 must be one unit of work: a prune that lands while a projection
+That last point is not a style preference. `project_document` prunes its own
+output scoped to `(source, source_ref)` on every call, so projecting documents
+one at a time under a shared origin makes each call delete the previous one's
+rows. Two documents from the same git repo would leave only the last one's
+metrics behind, and no test that checks only counts or model rows would notice.
+Proven against the real implementation: projecting `retail` then `finance` under
+`source_ref="repo-a"` leaves `{'cost'}` — `revenue` is gone.
+
+Steps 3–5 must also be one unit of work: a prune that lands while a projection
 failure aborts the run leaves the instance with rows deleted and nothing
 written back.
+
+Pin it with a test that reads projected CONTENT, not counts:
+
+```python
+def test_two_documents_in_one_import_keep_both_their_metrics(system_db):
+    from src.repositories import metric_repo
+
+    import_documents(SOURCE, [_doc("retail", "revenue"), _doc("finance", "cost")])
+
+    names = {m["name"] for m in metric_repo().list()}
+    assert names >= {"revenue", "cost"}
+```
 
 - [ ] **Step 3: Run and commit**
 
