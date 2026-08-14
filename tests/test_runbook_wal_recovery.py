@@ -77,6 +77,10 @@ def test_function_move_to_broken_exists():
     assert "_move_to_broken" in _defined_names_in_db_py()
 
 
+def test_function_refresh_rolling_snapshot_exists():
+    assert "refresh_rolling_snapshot" in _defined_names_in_db_py()
+
+
 def test_function_peek_schema_version_exists():
     assert "_peek_schema_version" in _defined_names_in_db_py()
 
@@ -202,6 +206,11 @@ def test_pre_migrate_snapshot_name_in_db_py():
     assert "system.duckdb.pre-migrate" in _db_source()
 
 
+def test_rolling_snapshot_dirname_in_db_py():
+    """src/db.py must reference the rolling-snapshot artifact name (#380)."""
+    assert "system.duckdb.rolling-snapshot" in _db_source()
+
+
 # ---------------------------------------------------------------------------
 # schema_version table shape cited in the runbook
 # ---------------------------------------------------------------------------
@@ -228,6 +237,7 @@ RUNBOOK_CROSS_REF_FUNCTIONS = [
     "_ensure_schema",
     "SCHEMA_VERSION",
     "get_schema_version",
+    "refresh_rolling_snapshot",
 ]
 
 
