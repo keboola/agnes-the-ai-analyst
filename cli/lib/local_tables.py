@@ -27,6 +27,7 @@ either hides real bytes on disk or promises data `--local` cannot reach.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 _SHARED_SUBPATH = (".claude", "data", "_shared")
@@ -72,13 +73,51 @@ def table_key(stem: str) -> str:
     from the name by lowercasing and turning spaces into underscores
     (`app/api/admin.py`), so this mirrors that derivation.
 
-    It is a heuristic, not the authoritative mapping: Keboola auto-discovery
-    builds the id from the *fully-qualified* source id (bucket included), so
-    `id != slug(name)` there. That is why the two counts below are reported
-    separately instead of being summed — an unmatched `_shared` stem is
-    reported as "no local view" rather than silently merged or double-counted.
+    It is a heuristic and only a FALLBACK: Keboola auto-discovery builds the id
+    from the *fully-qualified* source id (bucket included), so `id != slug(name)`
+    there and this mapping cannot bridge it. `shared_id_to_name` reads the real
+    relation from local state and is consulted first; this runs only when that
+    state is missing or does not cover a stem.
     """
     return stem.strip().lower().replace(" ", "_")
+
+
+def shared_id_to_name(workspace: Path) -> dict[str, str]:
+    """``{table_id: table_name}`` from ``<workspace>/.claude/sync_state.json``.
+
+    The authoritative relation, not a guess at it. The stack sync records one
+    entry per synced table keyed by NAME, each carrying its registry
+    ``table_id`` (`cli/lib/pull_sync.py`) — which is exactly the pair needed to
+    match a `_shared/<id>.parquet` stem against a `server/parquet/<name>` entry.
+    Necessary because slugifying the name does not reproduce the id for
+    auto-discovered tables, where the id includes the source bucket.
+
+    Missing, unreadable or malformed state yields an empty mapping, and callers
+    fall back to `table_key`. That degrades to the old heuristic rather than
+    failing, which matters because a workspace synced by an older CLI has no
+    such file.
+    """
+    state_file = workspace / ".claude" / "sync_state.json"
+    try:
+        state = json.loads(state_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(state, dict):
+        return {}
+
+    mapping: dict[str, str] = {}
+
+    def _record(name: object, entry: object) -> None:
+        if isinstance(entry, dict) and entry.get("table_id") and isinstance(name, str):
+            mapping[str(entry["table_id"])] = name
+
+    for name, entry in (state.get("direct_tables") or {}).items():
+        _record(name, entry)
+    for package in (state.get("data_packages") or {}).values():
+        if isinstance(package, dict):
+            for name, entry in package.items():
+                _record(name, entry)
+    return mapping
 
 
 def shared_store_stems(workspace: Path) -> set[str]:
@@ -104,5 +143,13 @@ def count_local_tables(workspace: Path) -> tuple[int, int]:
     """
     queryable = local_table_names(workspace / "server" / "parquet")
     queryable_keys = {table_key(n) for n in queryable}
-    unregistered = {s for s in shared_store_stems(workspace) if table_key(s) not in queryable_keys}
+    id_to_name = shared_id_to_name(workspace)
+
+    unregistered = set()
+    for stem in shared_store_stems(workspace):
+        # Prefer the recorded id→name relation; `table_key` is the fallback for
+        # workspaces whose state predates it or does not list this table.
+        name = id_to_name.get(stem)
+        if table_key(name if name is not None else stem) not in queryable_keys:
+            unregistered.add(stem)
     return len(queryable), len(unregistered)

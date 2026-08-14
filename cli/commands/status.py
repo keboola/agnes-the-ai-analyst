@@ -97,7 +97,15 @@ def status(
 
     if not initialized:
         typer.echo("")
-        if table_count:
+        # Gate on EITHER count. Data delivered by the stack sync lands only in
+        # `unregistered_count`, so gating on `table_count` alone told a
+        # workspace whose data all sits in that store to "bootstrap" one line
+        # after reporting dozens of downloaded tables — reintroducing the exact
+        # contradiction this change exists to remove. Reachable in practice:
+        # `_rebuild_duckdb_views` creates `analytics.duckdb` on every pull, so a
+        # directory pulled into is workspace-shaped and gets resolved here even
+        # though `agnes init` never ran in it.
+        if table_count or unregistered_count:
             # A workspace can hold data while carrying no init sentinel, and
             # reporting a bare "no" next to a populated `Tables` line reads as
             # a contradiction. The two ask different questions: `agnes pull`
@@ -106,9 +114,12 @@ def status(
             # bare `server/parquet/`), whereas "initialized" means `agnes init`
             # ran HERE and installed the hooks + template. Name the half
             # that is actually missing instead of implying the data is not there.
+            # The combined figure, not `table_count`: the point of the line is
+            # "data is present", and a workspace whose tables are all in the
+            # stack-sync store would otherwise announce "holds data (0 tables)".
             typer.echo(
-                f"This workspace holds data ({table_count} tables) but `agnes init` "
-                "never ran here — no Claude Code hooks, no workspace template."
+                f"This workspace holds data ({table_count + unregistered_count} tables) but "
+                "`agnes init` never ran here — no Claude Code hooks, no workspace template."
             )
             typer.echo("Run `agnes init --server-url <URL> --token <PAT>` to finish setting it up.")
         else:

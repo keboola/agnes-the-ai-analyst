@@ -246,3 +246,76 @@ def test_populated_but_uninitialized_workspace_explains_itself(tmp_path, monkeyp
     assert "Tables    : 1" in out
     assert "Initialized: no" in out
     assert "holds data" in out and "never ran here" in out
+
+
+def test_shared_only_data_gets_the_explanation_not_bootstrap(tmp_path, monkeypatch):
+    """A workspace whose data all sits in the stack-sync store has
+    queryable == 0, so gating the hint on the queryable count alone told it to
+    "bootstrap" one line after reporting dozens of downloaded tables. Reachable
+    in practice: every pull creates `analytics.duckdb`, so a directory pulled
+    into is workspace-shaped even though `agnes init` never ran in it."""
+    (tmp_path / "user" / "duckdb").mkdir(parents=True)
+    (tmp_path / "user" / "duckdb" / "analytics.duckdb").touch()  # what pull leaves behind
+    shared = tmp_path / ".claude" / "data" / "_shared"
+    shared.mkdir(parents=True)
+    for i in range(37):
+        (shared / f"t{i}.parquet").touch()
+
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
+    out = _clean(runner.invoke(status_app).output)
+    assert "Tables    : 0 queryable, 37 downloaded (no local view)" in out
+    assert "Initialized: no" in out
+    assert "holds data (37 tables)" in out, out
+    assert "to bootstrap" not in out, out
+
+
+def test_auto_discovered_id_resolves_via_sync_state(tmp_path, monkeypatch):
+    """Keboola auto-discovery derives the registry id from the fully-qualified
+    source id (bucket included), so `id != slug(name)` and stem normalization
+    cannot match the trees. The recorded id->name relation in
+    `.claude/sync_state.json` can, and without it the same table is counted
+    once as queryable AND once as downloaded-without-view."""
+    _init(tmp_path)
+    legacy = tmp_path / "server" / "parquet"
+    legacy.mkdir(parents=True)
+    (legacy / "orders.parquet").touch()  # keyed by registry NAME
+    shared = tmp_path / ".claude" / "data" / "_shared"
+    shared.mkdir(parents=True)
+    (shared / "in_c-main_orders.parquet").touch()  # keyed by registry ID
+
+    (tmp_path / ".claude" / "sync_state.json").write_text(
+        json.dumps(
+            {
+                "data_packages": {"pkg": {"orders": {"table_id": "in_c-main_orders", "md5": "x"}}},
+                "direct_tables": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert _counts(tmp_path, monkeypatch) == (1, 0)
+
+
+def test_missing_sync_state_falls_back_to_slug_matching(tmp_path, monkeypatch):
+    """No state file (older CLI) must degrade to the stem heuristic, not fail."""
+    _init(tmp_path)
+    legacy = tmp_path / "server" / "parquet"
+    legacy.mkdir(parents=True)
+    (legacy / "Agnes Audit Log.parquet").touch()
+    shared = tmp_path / ".claude" / "data" / "_shared"
+    shared.mkdir(parents=True)
+    (shared / "agnes_audit_log.parquet").touch()
+
+    assert not (tmp_path / ".claude" / "sync_state.json").exists()
+    assert _counts(tmp_path, monkeypatch) == (1, 0)
+
+
+def test_malformed_sync_state_does_not_crash_status(tmp_path, monkeypatch):
+    """Unreadable state degrades to the heuristic rather than raising."""
+    _init(tmp_path)
+    (tmp_path / ".claude" / "sync_state.json").write_text("{not json", encoding="utf-8")
+    shared = tmp_path / ".claude" / "data" / "_shared"
+    shared.mkdir(parents=True)
+    (shared / "orders.parquet").touch()
+
+    assert _counts(tmp_path, monkeypatch) == (0, 1)
