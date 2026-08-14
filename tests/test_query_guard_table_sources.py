@@ -51,10 +51,20 @@ def test_oracle_reports_exactly_the_referenced_tables(sql, expected):
     assert _sql_referenced_names(sql) == expected
 
 
-def test_oracle_reports_qualified_forms():
-    names = _sql_referenced_names("select * from main.orders")
-    assert names is not None
-    assert {"orders", "main.orders"} <= names
+@pytest.mark.parametrize(
+    "sql, expected",
+    [
+        ("select * from main.orders", "orders"),
+        ("select * from memory.main.orders", "orders"),
+        ('select * from "a.b"', "a.b"),  # a name that really contains a dot
+    ],
+)
+def test_oracle_reduces_a_qualified_reference_to_its_bare_name(sql, expected):
+    """Callers compare unqualified identifiers — information_schema view
+    names and registry ids, which `[a-z_][a-z0-9_]*` keeps dot-free — so the
+    bare name is what has to come out. Catalog-qualified refs into un-granted
+    catalogs are a separate layer's job."""
+    assert _sql_referenced_names(sql) == {expected}
 
 
 def test_oracle_covers_every_statement_of_a_multi_statement_string():
@@ -120,11 +130,33 @@ def test_duckdb_still_reports_parse_failure_the_way_we_detect_it():
 
 
 def test_oracle_parses_without_executing():
-    """It must not be possible to cause a write by getting SQL parsed."""
-    conn = duckdb.connect()
-    conn.execute("create table sentinel(x int)")
-    assert _sql_referenced_names("insert into sentinel values (1)") is None
-    assert conn.execute("select count(*) from sentinel").fetchone()[0] == 0
+    """A hostile statement must not run by virtue of being parsed.
+
+    The canary is created through the PARSE connection, so a statement that
+    escaped into execution would land in this very database and move the
+    count. A canary on any other connection makes the assertion
+    unfalsifiable — the parser would have nowhere to write even if it did
+    execute — which is why this reaches for the singleton.
+    """
+    from app.api.query import _parse_connection
+
+    conn = _parse_connection()
+    conn.execute("CREATE TABLE IF NOT EXISTS parse_canary (x INTEGER)")
+    try:
+        for hostile in (
+            "insert into parse_canary values (1)",
+            "select 1; insert into parse_canary values (2)",
+            "drop table parse_canary",
+            "update parse_canary set x = 9",
+        ):
+            assert _sql_referenced_names(hostile) is None, hostile
+        assert conn.execute("select count(*) from parse_canary").fetchone()[0] == 0, "a parsed statement wrote rows"
+        still_there = conn.execute("select count(*) from duckdb_tables() where table_name = 'parse_canary'").fetchone()[
+            0
+        ]
+        assert still_there == 1, "a parsed statement dropped the table"
+    finally:
+        conn.execute("DROP TABLE IF EXISTS parse_canary")
 
 
 def test_oracle_survives_deeply_nested_sql():

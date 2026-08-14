@@ -1,7 +1,6 @@
 """Query endpoint — execute SQL against server DuckDB."""
 
 import contextlib
-import functools
 import json
 import logging
 import os
@@ -33,7 +32,7 @@ from connectors.internal.access import (
     is_internal_table,
 )
 from src.audit_helpers import client_kind_from_user
-from src.db import get_analytics_db_readonly
+from src.db import _open_duckdb, get_analytics_db_readonly
 from src.rbac import get_accessible_tables
 from src.remote_query import _strip_leading_sql_comments
 from src.repositories import (
@@ -427,17 +426,12 @@ def _parse_connection():
     itself is ~70 us).
     """
     global _PARSE_CONN
-    if _PARSE_CONN is None:
-        from src.db import _open_duckdb
-
-        with _PARSE_CONN_LOCK:
-            if _PARSE_CONN is None:
-                # Via the shared helper, not a bare duckdb.connect: every
-                # connection in the codebase pins its session to UTC through
-                # it (guarded by tests/test_duckdb_session_tz.py). Parsing
-                # reads no timestamps, but staying on the one path costs
-                # nothing and keeps the invariant exceptionless.
-                _PARSE_CONN = _open_duckdb(":memory:")
+    with _PARSE_CONN_LOCK:
+        if _PARSE_CONN is None:
+            # Through the shared helper rather than a bare duckdb.connect:
+            # every connection in the codebase pins its session to UTC that
+            # way (guarded by tests/test_duckdb_session_tz.py).
+            _PARSE_CONN = _open_duckdb(":memory:")
     return _PARSE_CONN
 
 
@@ -489,49 +483,50 @@ def _sql_referenced_names(sql: str) -> set[str] | None:
         node = stack.pop()
         if isinstance(node, dict):
             if node.get("type") == "BASE_TABLE":
+                # The bare name only: every caller compares an unqualified
+                # identifier (an information_schema view name, or a registry
+                # id, which `[a-z_][a-z0-9_]*` validation keeps dot-free), and
+                # a qualified `main.orders` still yields `orders` here. Refs
+                # into un-granted catalogs are layer (a)'s job, not this one's.
                 table = (node.get("table_name") or "").lower()
-                schema = (node.get("schema_name") or "").lower()
-                catalog = (node.get("catalog_name") or "").lower()
                 if table:
                     names.add(table)
-                    if schema:
-                        names.add(f"{schema}.{table}")
-                        if catalog:
-                            names.add(f"{catalog}.{schema}.{table}")
             stack.extend(node.values())
         elif isinstance(node, list):
             stack.extend(node)
     return names
 
 
-@functools.lru_cache(maxsize=8192)
-def _name_reference_re(name: str) -> "re.Pattern":
-    """Compiled fallback pattern for one table/view name.
+def _sql_reference_test(sql: str):
+    """Return ``predicate(name) -> bool``: does ``sql`` reference that table?
 
-    Memoized because the denylist asks for one pattern per non-granted view,
-    in a stable order: past ~512 distinct names that sequence is the worst
-    case for `re`'s internal LRU, which evicts each entry just before it comes
-    round again. Keys are catalog names (bounded by the instance's view +
-    registry count), never free-form user input; the cap is a backstop.
-
-    A name immediately followed by ``BY`` is skipped: that is the keyword half
-    of a two-word clause (ORDER BY, GROUP BY, PARTITION BY — the only ones
-    DuckDB has), never a reference, because DuckDB rejects a bare ``by`` as a
-    table alias. Without it, an ungranted view named ``order`` would deny
-    every sorted query that lands on this fallback path.
+    Parses once and answers every name from the result, falling back to the
+    conservative text scan when DuckDB won't parse the SQL. Both guards go
+    through here so the "oracle, else text scan" decision — and the shape of
+    the string each hands the parser — cannot drift apart.
     """
-    return re.compile(rf"\b{re.escape(name)}\b(?!\s+by\b)")
+    referenced = _sql_referenced_names(sql)
+    if referenced is not None:
+        return referenced.__contains__
+    masked = _mask_backticks(sql.lower())
+    return lambda name: _sql_text_references_name(masked, name)
 
 
 def _sql_text_references_name(sql_masked_lower: str, name: str) -> bool:
     """Conservative word-boundary fallback for when DuckDB won't parse the SQL.
 
     Over-matches by design — a column or alias spelled like a denied view
-    trips it — because on this path we know nothing about the SQL's structure
-    and a missed reference in a deny check leaks data. It runs on a
+    trips it — because on this path nothing is known about the statement's
+    structure and a missed reference in a deny check leaks data. Runs on a
     backtick-masked copy (issue #201).
+
+    The one position it skips is a name immediately followed by ``BY``: the
+    keyword half of a two-word clause (ORDER BY, GROUP BY, PARTITION BY — the
+    only ones DuckDB has), which no reference can occupy because DuckDB
+    rejects a bare ``by`` as a table alias. Without it, an ungranted view
+    named ``order`` would deny every sorted query reaching this path.
     """
-    return _name_reference_re(name).search(sql_masked_lower) is not None
+    return re.search(rf"\b{re.escape(name)}\b(?!\s+by\b)", sql_masked_lower) is not None
 
 
 def _enforce_non_admin_sql_rbac(analytics, sql_lower: str, allowed) -> None:
@@ -561,14 +556,7 @@ def _enforce_non_admin_sql_rbac(analytics, sql_lower: str, allowed) -> None:
     from src.rbac import table_not_in_stack_message
 
     sql_lower_masked = _mask_backticks(sql_lower)
-    # DuckDB's own reading of the SQL, or None when it won't parse it — in
-    # which case (b) and (c) fall back to scanning `sql_lower_masked`.
-    referenced = _sql_referenced_names(sql_lower)
-
-    def _references(name: str) -> bool:
-        if referenced is not None:
-            return name in referenced
-        return _sql_text_references_name(sql_lower_masked, name)
+    references = _sql_reference_test(sql_lower)
 
     # (a) #868 catalog gate
     _assert_no_ungranted_catalog_ref(sql_lower_masked, analytics)
@@ -587,13 +575,13 @@ def _enforce_non_admin_sql_rbac(analytics, sql_lower: str, allowed) -> None:
     registry_rows = table_registry_repo().list_all()
     allowed_view_names = {r["name"] for r in registry_rows if r.get("name") and r.get("id") in allowed_ids}
     for table in all_views - allowed_view_names:
-        if _references(table.lower()):
+        if references(table.lower()):
             raise HTTPException(status_code=403, detail=table_not_in_stack_message(table))
 
     # (c) internal extract metadata tables (audit M1) — see
     # _assert_no_ungranted_catalog_ref for why base tables slip the view denylist.
     for internal in _INTERNAL_EXTRACT_TABLES:
-        if _references(internal):
+        if references(internal):
             raise HTTPException(
                 status_code=403,
                 detail="query references an internal extract metadata table (_meta/_remote_attach/_remote_links)",
@@ -1225,19 +1213,13 @@ def execute_query(
         # against the tables DuckDB says are referenced, so a registered table
         # named for a SQL keyword (`order`) no longer collides with every
         # ORDER BY; text-scan fallback when DuckDB won't parse the SQL.
-        referenced_names = _sql_referenced_names(request.sql)
-        sql_lower_masked = _mask_backticks(sql_lower)
+        references = _sql_reference_test(sql_lower)
         registry_rows = table_registry_repo().list_all()
         for r in registry_rows:
             rid = r.get("id") or ""
             if not rid or is_internal_table(rid):
                 continue
-            referenced = (
-                rid.lower() in referenced_names
-                if referenced_names is not None
-                else _sql_text_references_name(sql_lower_masked, rid.lower())
-            )
-            if referenced:
+            if references(rid.lower()):
                 raise HTTPException(
                     status_code=400,
                     detail=f"Internal tables can't be joined with registered "
