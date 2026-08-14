@@ -12,12 +12,14 @@ Two trees hold parquets, and only ONE of them is locally queryable:
 - ``<workspace>/server/parquet/`` — the legacy flat flow. The DuckDB view
   rebuild (`cli/lib/pull.py::_rebuild_duckdb_views`) walks exactly this
   directory, so a table here is what `agnes query --local` can resolve.
-- ``<workspace>/.claude/data/_shared/`` — the v49 stack sync's canonical
-  store. Nothing in the tree registers views over it, so a table present
-  only here is on disk but NOT locally queryable (verified against a live
-  workspace: 37 parquets in `_shared`, zero corresponding views, and
-  `agnes query --local` on one of them fails with a DuckDB catalog error
-  while the default server-side scope answers fine).
+- ``<workspace>/.claude/data/_shared/`` — the canonical store written by
+  the per-type stack sync, i.e. step 8 of ``agnes pull`` (called the
+  ``v49 unified stack`` in older code comments). Nothing in the tree
+  registers views over it, so a table present only here is on disk but NOT
+  locally queryable — verified against a live workspace: 37 parquets in
+  `_shared`, zero corresponding views, and `agnes query --local` on one of
+  them failing with a DuckDB catalog error while the default server-side
+  scope answered fine.
 
 Keep the two counts distinct rather than summing them — a single number
 either hides real bytes on disk or promises data `--local` cannot reach.
@@ -80,7 +82,7 @@ def table_key(stem: str) -> str:
 
 
 def shared_store_stems(workspace: Path) -> set[str]:
-    """Table stems in the v49 canonical store, `.claude/data/_shared/`.
+    """Table stems in the stack sync's canonical store, `.claude/data/_shared/`.
 
     Only `_shared/` is read: its `_direct/` and `<package_slug>/` siblings are
     reference links back into it (`cli/lib/pull_sync.py`), so reading those too
@@ -97,8 +99,8 @@ def count_local_tables(workspace: Path) -> tuple[int, int]:
 
     ``queryable`` counts tables the DuckDB view rebuild exposes, so it is what
     `agnes query --local` can resolve. ``downloaded_without_view`` counts
-    tables sitting in the v49 store with no counterpart in the queryable set —
-    real bytes on disk that `--local` cannot reach today.
+    tables sitting in the stack-sync store with no counterpart in the
+    queryable set — real bytes on disk that `--local` cannot reach today.
     """
     queryable = local_table_names(workspace / "server" / "parquet")
     queryable_keys = {table_key(n) for n in queryable}

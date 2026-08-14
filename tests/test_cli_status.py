@@ -82,7 +82,7 @@ def test_status_json(tmp_path, monkeypatch):
 # Table counting. Two numbers, deliberately not summed:
 #   queryable  -> tables the DuckDB view rebuild exposes (server/parquet/),
 #                 i.e. what `agnes query --local` can resolve
-#   no-view    -> parquets the v49 stack sync put in .claude/data/_shared/
+#   no-view    -> parquets the stack sync (step 8) put in .claude/data/_shared/
 #                 that no view covers: real bytes on disk, unreachable locally
 # Verified against a live workspace: 6 partitioned legacy tables (331 part
 # files, which the old top-level glob counted as 0) alongside 37 `_shared`

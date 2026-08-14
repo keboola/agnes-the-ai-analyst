@@ -84,7 +84,7 @@ def status(
     if unregistered_count:
         # Two numbers, deliberately not summed: `queryable` is what
         # `agnes query --local` can resolve, while the second counts
-        # parquets the v49 stack sync downloaded into
+        # parquets the stack sync (step 8 of `agnes pull`) put into
         # `.claude/data/_shared/` that no DuckDB view covers. Summing them
         # would promise local data that is not reachable; omitting the
         # second would hide real bytes on disk.
