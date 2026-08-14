@@ -94,6 +94,7 @@ class TestFeatureFlagsRegistry:
             "experience",
             "stack_auto_membership",
             "mcp_query_param_token",
+            "mcp_session_pool",
             "mcp_source_url_strict",
             "agent_profiles",
         }
@@ -236,6 +237,7 @@ class TestServerConfigFeatureFlagsInventory:
             "library_show_unverified_trust",
             "stack_auto_membership",
             "mcp_query_param_token",
+            "mcp_session_pool",
             "mcp_source_url_strict",
             "agent_profiles",
         }
