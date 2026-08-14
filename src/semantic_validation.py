@@ -333,10 +333,12 @@ def _mixed_dialect_warning(declared: list[str], metric_dialect_lists: list[list[
     imported text and are compared case-insensitively -- ``"DUCKDB"`` and
     ``"duckdb"`` are one dialect (Devin Review on PR #1319, both points).
     """
-    constraining = [
-        {_canonical_dialect(d) for d in dialects} - {_UNIVERSAL_DIALECT} for dialects in metric_dialect_lists
-    ]
-    constraining = [s for s in constraining if s]
+    # A metric whose alternatives INCLUDE the universal dialect composes with
+    # anything through that variant, so it constrains nothing — dropping only
+    # the universal member while keeping the rest would falsely lock it to
+    # its engine-specific variants (Devin Review on PR #1319, round 3).
+    canonical_sets = [{_canonical_dialect(d) for d in dialects} for dialects in metric_dialect_lists]
+    constraining = [s for s in canonical_sets if s and _UNIVERSAL_DIALECT not in s]
     if not constraining or set.intersection(*constraining):
         return None
     non_ansi = sorted((d for d in declared if _canonical_dialect(d) != _UNIVERSAL_DIALECT), key=str.lower)
@@ -546,6 +548,10 @@ def validate_query(
         "violations": violations,
         "post_execution_checks": post_execution_checks,
         "sql_dialects": declared_dialects,
+        # Machine-readable twin of the summary's dialect sentence — the spec's
+        # output contract lists the warning next to sql_dialects, and agents
+        # should not have to parse prose (Devin Review on PR #1319, round 3).
+        "mixed_dialect_warning": mixed_dialect_warning,
         "locally_executable": locally_executable,
         "summary": summary,
     }

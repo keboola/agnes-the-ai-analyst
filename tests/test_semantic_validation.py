@@ -627,3 +627,36 @@ class TestCrossModelConstraintScoping:
         result = validate_query(sql, [model_b])
         assert [v["name"] for v in result["violations"]] == ["must_filter_region"]
         assert result["valid"] is False
+
+
+class TestUniversalDialectDoesNotConstrain:
+    """Devin Review on PR #1319 (round 3): a metric offering the universal
+    ANSI_SQL variant ALONGSIDE an engine-specific one is composable with
+    anything -- it must not constrain the mix at all, and the warning must be
+    a machine-readable result field, not just summary prose."""
+
+    def _two_metric_document(self, dialects_a: list[str], dialects_b: list[str]) -> dict:
+        def expr(dialects: list[str]) -> dict:
+            return {"dialects": [{"dialect": d, "expression": "SUM(x)"} for d in dialects]}
+
+        return {
+            "name": "m",
+            "datasets": [{"name": "orders", "source": "analytics.orders"}],
+            "metrics": [
+                {"name": "revenue", "expression": expr(dialects_a)},
+                {"name": "margin", "expression": expr(dialects_b)},
+            ],
+        }
+
+    def test_universal_alongside_specific_never_warns(self):
+        document = self._two_metric_document(["SNOWFLAKE", "ANSI_SQL"], ["DUCKDB"])
+        result = validate_query("SELECT revenue, margin FROM orders", [document])
+        assert result["mixed_dialect_warning"] is None
+        assert "mixed SQL dialects" not in result["summary"]
+
+    def test_genuine_mix_warns_in_a_result_field(self):
+        document = self._two_metric_document(["SNOWFLAKE"], ["BIGQUERY"])
+        result = validate_query("SELECT revenue, margin FROM orders", [document])
+        assert result["mixed_dialect_warning"] is not None
+        assert "BIGQUERY" in result["mixed_dialect_warning"]
+        assert "SNOWFLAKE" in result["mixed_dialect_warning"]
