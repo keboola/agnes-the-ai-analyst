@@ -2,6 +2,7 @@
 
 import json
 
+import pytest
 from typer.testing import CliRunner
 
 # CI-safety: Typer/rich emits ANSI escapes in --help output. Strip before asserts.
@@ -319,3 +320,39 @@ def test_malformed_sync_state_does_not_crash_status(tmp_path, monkeypatch):
     (shared / "orders.parquet").touch()
 
     assert _counts(tmp_path, monkeypatch) == (0, 1)
+
+
+@pytest.mark.parametrize(
+    "bad_state",
+    [
+        # The SERVER manifest shape: `direct_tables` / `data_packages` as arrays
+        # under the same key names (app/api/sync.py). A state file carrying it
+        # used to crash `agnes status` outright.
+        {"direct_tables": [{"name": "orders", "table_id": "orders"}], "data_packages": []},
+        {"direct_tables": {}, "data_packages": [{"slug": "pkg", "tables": []}]},
+        # A package whose value is a list rather than {name: entry}.
+        {"data_packages": {"pkg": [{"name": "orders", "table_id": "orders"}]}},
+        # Scalars where mappings belong.
+        {"direct_tables": "nope", "data_packages": 7},
+        # Valid JSON, wrong top-level type.
+        [],
+    ],
+    ids=["manifest-shaped-direct", "manifest-shaped-packages", "list-package", "scalars", "top-level-list"],
+)
+def test_unexpected_sync_state_shapes_degrade_not_crash(tmp_path, monkeypatch, bad_state):
+    """`shared_id_to_name` promises that malformed state yields an empty mapping.
+    `agnes status` does not guard the call, so any shape it fails to check
+    surfaces as a traceback with exit 1 and NO output — strictly worse than an
+    imprecise count for the command an analyst runs to ask what is wrong."""
+    _init(tmp_path)
+    shared = tmp_path / ".claude" / "data" / "_shared"
+    shared.mkdir(parents=True)
+    (shared / "orders.parquet").touch()
+    (tmp_path / ".claude" / "sync_state.json").write_text(json.dumps(bad_state), encoding="utf-8")
+
+    monkeypatch.setenv("AGNES_LOCAL_DIR", str(tmp_path))
+    result = runner.invoke(status_app)
+    assert result.exception is None, f"crashed: {result.exception!r}"
+    assert result.exit_code == 0, result.output
+    # Falls back to the slug heuristic: the table is still reported.
+    assert "1 downloaded (no local view)" in _clean(result.output), result.output

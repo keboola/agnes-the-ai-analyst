@@ -111,12 +111,25 @@ def shared_id_to_name(workspace: Path) -> dict[str, str]:
         if isinstance(entry, dict) and entry.get("table_id") and isinstance(name, str):
             mapping[str(entry["table_id"])] = name
 
-    for name, entry in (state.get("direct_tables") or {}).items():
-        _record(name, entry)
-    for package in (state.get("data_packages") or {}).values():
-        if isinstance(package, dict):
-            for name, entry in package.items():
-                _record(name, entry)
+    # Every level is shape-checked before being walked. The state file keys
+    # these by name (`{name: entry}` / `{slug: {name: entry}}`), but the SERVER
+    # manifest emits `direct_tables` / `data_packages` as ARRAYS under the same
+    # names (`app/api/sync.py`), so a file carrying the manifest shape — or any
+    # hand-edited or half-written one — would otherwise hit `.items()` on a list
+    # and raise. `agnes status` does not guard this call, so that surfaced as
+    # `AttributeError` with exit 1 and no output at all: strictly worse than a
+    # wrong count, and the opposite of what this docstring promises.
+    direct = state.get("direct_tables")
+    if isinstance(direct, dict):
+        for name, entry in direct.items():
+            _record(name, entry)
+
+    packages = state.get("data_packages")
+    if isinstance(packages, dict):
+        for package in packages.values():
+            if isinstance(package, dict):
+                for name, entry in package.items():
+                    _record(name, entry)
     return mapping
 
 
