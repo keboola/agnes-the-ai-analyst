@@ -10,6 +10,14 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ## [Unreleased]
 
+### Fixed
+
+- **A table named for a SQL keyword poisoned ordinary queries — `ORDER BY` on an internal table was rejected as a join with it.** Both `/api/query` name guards decided "does this SQL reference table N?" by scanning the SQL text for N as a word, so a registry row called `order` matched the `ORDER BY` of any query: the internal mixed-plane guard 400'd every sorted query against `agnes_sessions`/`agnes_telemetry`/`agnes_audit` ("can't be joined with registered table 'order'"), and the non-admin master-view denylist 403'd with a not-in-stack error whenever such a view was outside the caller's stack. The collision was never limited to `order` — a view named `limit`, `filter`, `date` or `list` broke `LIMIT 5`, `count(*) FILTER (…)`, `CAST(x AS date)` and `list(x)` the same way, since the scan cannot tell a table reference from a keyword, a type, a function, a column or an alias.
+
+  Both guards now ask **DuckDB itself** which tables a statement references, via `json_serialize_sql` — the engine's own parser, which parses without binding or executing (an unknown table serializes fine, a non-SELECT is refused outright, and serializing an `INSERT` inserts nothing). The SQL is passed as a bound parameter and parsed on a dedicated in-memory connection with nothing attached, so parsing touches no data, no catalog and no locks. Using the engine that will run the query is the point of the design, not an implementation detail: a third-party SQL parser can disagree with DuckDB about what a construct means, and for a deny check every such disagreement is a bypass. sqlglot, the obvious alternative, reads DuckDB's `(TABLE v)` shorthand as a *column* named `table` and lexes `values` as a keyword, so `SELECT * FROM (TABLE values) t` reads a view while appearing to reference nothing — those constructs are now regression tests. DuckDB cannot disagree with itself, and an engine upgrade moves the guard with it.
+
+  The word-boundary scan survives only as the fallback for SQL DuckDB will not serialize (a `PIVOT` subquery, a backtick-quoted BigQuery path, anything malformed), where it stays deliberately over-matching because nothing is known about the statement's structure; it also skips the `BY` of a two-word clause, so the reported symptom does not come back on that path. Known and unchanged: a table macro hides its body from the parser, but equally from a text scan — neither can see a name the SQL does not contain — and SQL smuggled through a string-taking table function or `EXECUTE` never reaches these guards, being blocked by `_assert_select_only` first.
+
 ## [0.83.15] - 2026-08-14
 
 ### Added

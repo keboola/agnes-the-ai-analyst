@@ -1,11 +1,13 @@
 """Query endpoint — execute SQL against server DuckDB."""
 
 import contextlib
+import functools
+import json
 import logging
 import os
 import re
+import threading
 import time
-from typing import Optional
 
 import duckdb
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -166,7 +168,7 @@ def _looks_like_bq_rewrite_parse_error(exc: BaseException) -> bool:
 _SQL_LOG_PREVIEW_CHARS = 200
 
 
-def _bq_error_offset(message: str, sql: str) -> Optional[int]:
+def _bq_error_offset(message: str, sql: str) -> int | None:
     """Absolute offset into ``sql`` for a BigQuery ``at [line:col]`` suffix.
 
     BigQuery reports where it stopped parsing, and for the ROLLUP rejection this
@@ -202,7 +204,7 @@ def _bq_error_offset(message: str, sql: str) -> Optional[int]:
     return offset if offset <= len(raw) else None
 
 
-def _sql_log_preview(sql: str, *, around: Optional[int] = None) -> str:
+def _sql_log_preview(sql: str, *, around: int | None = None) -> str:
     """Truncate SQL for logging. Query literals can carry sensitive values,
     so the log must never become the one place a full query body lands
     unbounded.
@@ -409,14 +411,132 @@ def _identity_for_audit(user) -> tuple:
     return user.get("id"), user.get("email")
 
 
+# Parse-only DuckDB connection (see _parse_connection).
+_PARSE_CONN: "duckdb.DuckDBPyConnection | None" = None
+_PARSE_CONN_LOCK = threading.Lock()
+
+
+def _parse_connection():
+    """Lazily-created in-memory DuckDB used ONLY to parse user SQL.
+
+    Deliberately not the analytics or system connection: parsing needs no
+    catalog (an unknown table serializes fine), so a connection with nothing
+    attached — no data, no secrets, no locks to contend for — is the smallest
+    thing that can answer the question. Callers take a ``cursor()`` per call,
+    which is what makes this safe from the request threads (~4 us; the parse
+    itself is ~70 us).
+    """
+    global _PARSE_CONN
+    if _PARSE_CONN is None:
+        with _PARSE_CONN_LOCK:
+            if _PARSE_CONN is None:
+                _PARSE_CONN = duckdb.connect(":memory:")
+    return _PARSE_CONN
+
+
+def _sql_referenced_names(sql: str) -> set[str] | None:
+    """Lowercased names of every table ``sql`` references, according to DuckDB.
+
+    ``json_serialize_sql`` hands back DuckDB's own parse tree, in which every
+    table reference is a ``BASE_TABLE`` node. Using the engine that will run
+    the query as the oracle is the point: a third-party SQL parser can
+    disagree with DuckDB about what a construct means, and when it does, the
+    disagreement is a security hole. sqlglot, for instance, reads DuckDB's
+    ``(TABLE v)`` shorthand as a column named ``table`` and lexes ``values``
+    as a keyword, so ``SELECT * FROM (TABLE values) t`` reads a view while
+    naming nothing. DuckDB cannot disagree with itself, and a DuckDB upgrade
+    moves both together.
+
+    It parses; it does not bind or execute. An unknown table serializes
+    happily, a non-SELECT statement is refused, and a serialized INSERT
+    inserts nothing. The SQL is passed as a bound parameter — never
+    interpolated. All statements of a multi-statement string are covered.
+
+    Returns ``None`` when DuckDB will not serialize the SQL (a ``PIVOT``
+    subquery, a backtick-quoted BQ path, anything malformed, or a non-SELECT
+    statement anywhere in it), so callers fall back to the conservative text
+    scan. Every name this reports is a real reference, and every reference
+    DuckDB will resolve at bind time is reported — with two exceptions that
+    are blocked upstream by ``_assert_select_only`` and therefore cannot
+    reach a caller: SQL smuggled through a string-taking table function
+    (``query('…')``), and ``EXECUTE`` of a prepared statement. A table macro
+    hides its body from this too, but equally from the text scan — neither
+    can see a name the SQL does not contain.
+    """
+    try:
+        cursor = _parse_connection().cursor()
+        try:
+            row = cursor.execute("SELECT json_serialize_sql(?)", [sql]).fetchone()
+        finally:
+            cursor.close()
+        document = json.loads(row[0]) if row and row[0] else None
+    except Exception:
+        return None
+    if not isinstance(document, dict) or document.get("error"):
+        return None
+    names: set = set()
+    # Iterative walk: a deeply nested statement parses fine but would blow
+    # Python's recursion limit, and that must not decide an access question.
+    stack = [document]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            if node.get("type") == "BASE_TABLE":
+                table = (node.get("table_name") or "").lower()
+                schema = (node.get("schema_name") or "").lower()
+                catalog = (node.get("catalog_name") or "").lower()
+                if table:
+                    names.add(table)
+                    if schema:
+                        names.add(f"{schema}.{table}")
+                        if catalog:
+                            names.add(f"{catalog}.{schema}.{table}")
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+    return names
+
+
+@functools.lru_cache(maxsize=8192)
+def _name_reference_re(name: str) -> "re.Pattern":
+    """Compiled fallback pattern for one table/view name.
+
+    Memoized because the denylist asks for one pattern per non-granted view,
+    in a stable order: past ~512 distinct names that sequence is the worst
+    case for `re`'s internal LRU, which evicts each entry just before it comes
+    round again. Keys are catalog names (bounded by the instance's view +
+    registry count), never free-form user input; the cap is a backstop.
+
+    A name immediately followed by ``BY`` is skipped: that is the keyword half
+    of a two-word clause (ORDER BY, GROUP BY, PARTITION BY — the only ones
+    DuckDB has), never a reference, because DuckDB rejects a bare ``by`` as a
+    table alias. Without it, an ungranted view named ``order`` would deny
+    every sorted query that lands on this fallback path.
+    """
+    return re.compile(rf"\b{re.escape(name)}\b(?!\s+by\b)")
+
+
+def _sql_text_references_name(sql_masked_lower: str, name: str) -> bool:
+    """Conservative word-boundary fallback for when DuckDB won't parse the SQL.
+
+    Over-matches by design — a column or alias spelled like a denied view
+    trips it — because on this path we know nothing about the SQL's structure
+    and a missed reference in a deny check leaks data. It runs on a
+    backtick-masked copy (issue #201).
+    """
+    return _name_reference_re(name).search(sql_masked_lower) is not None
+
+
 def _enforce_non_admin_sql_rbac(analytics, sql_lower: str, allowed) -> None:
     """Non-admin SQL RBAC deny checks shared by ``/api/query`` (``execute_query``)
     and the snapshot ``run_remote_select_to_arrow`` path — previously duplicated
     verbatim in both.
 
     ``allowed`` is ``get_accessible_tables(user, conn)``; ``None`` means admin →
-    no checks. Three layers, all word-boundary matched on a backtick-masked copy
-    (``_mask_backticks``, issue #201):
+    no checks. Layers (b) and (c) match against the tables DuckDB says the SQL
+    references (``_sql_referenced_names``), falling back to a word-boundary
+    scan of a backtick-masked copy (``_mask_backticks``, issue #201) when
+    DuckDB will not parse it. Three layers:
 
       (a) #868 — block catalog-qualified refs into un-granted local extract
           catalogs (``<source>.main.x``);
@@ -434,6 +554,14 @@ def _enforce_non_admin_sql_rbac(analytics, sql_lower: str, allowed) -> None:
     from src.rbac import table_not_in_stack_message
 
     sql_lower_masked = _mask_backticks(sql_lower)
+    # DuckDB's own reading of the SQL, or None when it won't parse it — in
+    # which case (b) and (c) fall back to scanning `sql_lower_masked`.
+    referenced = _sql_referenced_names(sql_lower)
+
+    def _references(name: str) -> bool:
+        if referenced is not None:
+            return name in referenced
+        return _sql_text_references_name(sql_lower_masked, name)
 
     # (a) #868 catalog gate
     _assert_no_ungranted_catalog_ref(sql_lower_masked, analytics)
@@ -452,13 +580,13 @@ def _enforce_non_admin_sql_rbac(analytics, sql_lower: str, allowed) -> None:
     registry_rows = table_registry_repo().list_all()
     allowed_view_names = {r["name"] for r in registry_rows if r.get("name") and r.get("id") in allowed_ids}
     for table in all_views - allowed_view_names:
-        if re.search(r"\b" + re.escape(table.lower()) + r"\b", sql_lower_masked):
+        if _references(table.lower()):
             raise HTTPException(status_code=403, detail=table_not_in_stack_message(table))
 
     # (c) internal extract metadata tables (audit M1) — see
     # _assert_no_ungranted_catalog_ref for why base tables slip the view denylist.
     for internal in _INTERNAL_EXTRACT_TABLES:
-        if re.search(r"\b" + re.escape(internal) + r"\b", sql_lower_masked):
+        if _references(internal):
             raise HTTPException(
                 status_code=403,
                 detail="query references an internal extract metadata table (_meta/_remote_attach/_remote_links)",
@@ -511,7 +639,7 @@ class QueryResponse(BaseModel):
     truncated: bool = False
     # BigQuery dry-run scan estimate (bytes) for `query_mode='remote'`
     # queries; ``None`` for local DuckDB queries (no BQ tables involved).
-    bytes_scanned: Optional[int] = None
+    bytes_scanned: int | None = None
 
 
 def _run_internal_query(
@@ -700,7 +828,7 @@ def _next_nonspace(s: str, idx: int) -> str:
     return s[idx] if idx < n else ""
 
 
-def _normalize_table_path(raw: str) -> Optional[str]:
+def _normalize_table_path(raw: str) -> str | None:
     """Reduce a matched identifier path to the table id used for tagging.
 
     Quotes are stripped per segment and the segments are re-joined with dots,
@@ -731,7 +859,7 @@ def _normalize_table_path(raw: str) -> Optional[str]:
     return ".".join(parts)
 
 
-def _first_table_from_sql(sql: str) -> Optional[str]:
+def _first_table_from_sql(sql: str) -> str | None:
     """Extract the first table reference after FROM or JOIN, for audit tagging.
 
     Regex-based and still best-effort, but the result is the group-by key of
@@ -1085,14 +1213,24 @@ def execute_query(
                 status_code=400,
                 detail="Internal tables can't be combined with `bq.*` paths in a single SELECT (v1 limitation).",
             )
-        # Reject if user SQL also mentions any non-internal registry id —
-        # that would be a mixed query against analytics.duckdb views.
+        # Reject if user SQL also references any non-internal registry id —
+        # that would be a mixed query against analytics.duckdb views. Matched
+        # against the tables DuckDB says are referenced, so a registered table
+        # named for a SQL keyword (`order`) no longer collides with every
+        # ORDER BY; text-scan fallback when DuckDB won't parse the SQL.
+        referenced_names = _sql_referenced_names(request.sql)
+        sql_lower_masked = _mask_backticks(sql_lower)
         registry_rows = table_registry_repo().list_all()
         for r in registry_rows:
             rid = r.get("id") or ""
             if not rid or is_internal_table(rid):
                 continue
-            if re.search(rf"\b{re.escape(rid)}\b", sql_lower):
+            referenced = (
+                rid.lower() in referenced_names
+                if referenced_names is not None
+                else _sql_text_references_name(sql_lower_masked, rid.lower())
+            )
+            if referenced:
                 raise HTTPException(
                     status_code=400,
                     detail=f"Internal tables can't be joined with registered "
@@ -1345,7 +1483,7 @@ def _materialized_hint_for_query_error(
     conn: duckdb.DuckDBPyConnection,
     sql: str,
     error_msg: str,
-) -> Optional[str]:
+) -> str | None:
     """Return a materialize-aware error message if the failed query
     references a registry row whose `query_mode='materialized'` and which
     has no master view in analytics.duckdb yet, OR ``None`` to fall back
@@ -1421,7 +1559,7 @@ def _build_materialized_hint(row: dict) -> str:
     )
 
 
-def _bq_row_target(row: dict) -> tuple[str, str, Optional[str]]:
+def _bq_row_target(row: dict) -> tuple[str, str, str | None]:
     """Resolve a BQ registry row to ``(dataset, table, project_override)``.
 
     ``bq_fqn`` (v51, issue #343) pins a row's own ``project.dataset.table``
@@ -1461,7 +1599,7 @@ def _bq_guardrail_inputs(
     sql_lower: str,
     sys_conn: duckdb.DuckDBPyConnection,
     user: dict,
-    allowed: Optional[list],
+    allowed: list | None,
 ):
     """Two-pass scan over user SQL for the upcoming BQ guardrail + RBAC patch.
 
