@@ -43,6 +43,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # ancestry check needs history
+          fetch-tags: true # the existing-tag guard must see server-side tags
 
       - name: Validate inputs against main
         id: validate

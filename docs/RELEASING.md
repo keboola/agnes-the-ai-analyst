@@ -117,6 +117,17 @@ cd agnes-<topic> && git checkout -b zs/<branch-name>
 #    git push origin vX.Y.Z
 #    gh release create vX.Y.Z --repo keboola/agnes-the-ai-analyst \
 #      --title "vX.Y.Z — <...>" --notes "<copy-paste from CHANGELOG>"
+#
+#    OR, from an environment that cannot push tags (remote/CI-managed
+#    operator sessions commonly allow branch pushes but refuse
+#    refs/tags/*): dispatch the `Tag release` workflow instead —
+#    gh workflow run tag-release.yml -f tag=vX.Y.Z -f target=<merge-sha>
+#    It validates server-side (tag shape, target on main, tag ==
+#    pyproject.toml version at the target, CHANGELOG section present),
+#    creates the tag ref via the API, and publishes the Release with the
+#    CHANGELOG section as its body. Re-dispatching is safe: an
+#    already-tagged-and-released version no-ops, a tag missing its
+#    Release gets the Release created, a tag pointing elsewhere refuses.
 ```
 
 ### Picking the next version
@@ -134,7 +145,12 @@ break operator-facing APIs:
 
 Always check `git tag -l "v0.X*"` before naming — if `v0.54.0` is already
 tagged, the next one is `v0.54.1`, even if `pyproject.toml` still says `0.54.0`
-from a stale post-cut commit (we've shipped that race before).
+from a stale post-cut commit (we've shipped that race before). Note that this
+stale-pyproject fallback is a local-tag-push path only: the dispatchable
+`tag-release.yml` deliberately refuses a tag that doesn't match
+`pyproject.toml` at the target commit, so in that (rare, already-off-process)
+state, first land a commit that fixes the version, or push the tag from a
+clone that can.
 
 ### Authoring expectations on the PR
 
