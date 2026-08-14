@@ -238,3 +238,27 @@ def test_streaming_safe_text_executable():
     assert "SELECT 1" in res["open_sql_with_body"], "a streaming CODE block stays visible"
     assert res["closed_fence"] == cases["closed_fence"], "closed fences pass through"
     assert res["bare_open_no_newline"] == "Answer.\n\n", "a bare open fence waits for its id"
+
+
+# ── turn-stopping events: visible in the transcript, not only the status bar ─
+
+
+def test_confirmation_required_is_handled():
+    js = _read(CHAT_JS)
+    sw = js[js.index("switch (frame.type)") : js.index("function applySessionRename")]
+    assert 'case "confirmation_required":' in sw, (
+        "the tool-budget stop used to be silently dropped — the turn just froze"
+    )
+
+
+def test_errors_and_cancels_reach_the_transcript():
+    js = _read(CHAT_JS)
+    sw = js[js.index("switch (frame.type)") : js.index("function applySessionRename")]
+    assert sw.count("renderSystemNote(") >= 3, "confirmation_required, error, cancelled"
+    body = js[js.index("function renderSystemNote") : js.index("function renderSystemNote") + 800]
+    assert "textContent" in body and ".innerHTML" not in body
+
+
+def test_system_note_styles_exist():
+    css = _read(CHAT_CSS)
+    assert ".cloud-chat-system-note" in css
