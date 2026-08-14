@@ -694,3 +694,67 @@ class TestCaseInsensitiveNameJoins:
         }
         detected = detect_used_objects("SELECT * FROM orders JOIN customers USING (id)", document)
         assert detected["matched_relationships"] == ["orders_customers"]
+
+
+class TestExpectedObjectsCaseInsensitive:
+    """Devin Review on PR #1319 (round 5): expected-object names come from an
+    agent's tool call and are compared against imported document names -- the
+    join must ignore capitalisation like every other name join, or one object
+    is reported both missing and unexpected."""
+
+    def test_expected_matches_across_case_difference(self):
+        document = {
+            "name": "m",
+            "datasets": [{"name": "orders", "source": "analytics.orders"}],
+            "metrics": [{"name": "revenue", "expression": {"dialects": [{"dialect": "DUCKDB"}]}}],
+        }
+        result = validate_query(
+            "SELECT revenue FROM orders",
+            [document],
+            expected=[{"type": "metric", "name": "Revenue"}],
+        )
+        assert result["matched_expected_objects"] == [{"type": "metric", "name": "Revenue"}]
+        assert result["missing_expected_objects"] == []
+        assert {"type": "metric", "name": "revenue"} not in result["unexpected_detected_objects"]
+
+
+class TestRequiredFilterTolerantMatch:
+    """Devin Review on PR #1319 (round 5): the required_filter presence check
+    must tolerate spacing and quote-style differences -- a query that
+    genuinely applies the filter must not be flagged as an error-severity
+    violation over `region='EU'` vs `region = 'EU'`."""
+
+    def _constraints(self, rule: str) -> list[dict]:
+        return [
+            {
+                "name": "eu_only",
+                "type": "required_filter",
+                "rule": rule,
+                "severity": "error",
+                "metrics": ["revenue"],
+            }
+        ]
+
+    def test_spacing_difference_is_not_a_violation(self):
+        violations, _ = evaluate_constraints(
+            self._constraints("region = 'EU'"),
+            ["revenue"],
+            "SELECT revenue FROM orders WHERE region='EU'",
+        )
+        assert violations == []
+
+    def test_quote_style_difference_is_not_a_violation(self):
+        violations, _ = evaluate_constraints(
+            self._constraints('region = "EU"'),
+            ["revenue"],
+            "SELECT revenue FROM orders WHERE region = 'EU'",
+        )
+        assert violations == []
+
+    def test_genuinely_absent_filter_still_violates(self):
+        violations, _ = evaluate_constraints(
+            self._constraints("region = 'EU'"),
+            ["revenue"],
+            "SELECT revenue FROM orders",
+        )
+        assert [v["name"] for v in violations] == ["eu_only"]

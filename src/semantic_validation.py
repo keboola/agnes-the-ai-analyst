@@ -91,6 +91,20 @@ _STATICALLY_CHECKABLE_CONSTRAINT_TYPES = frozenset({"required_filter"})
 _UNIVERSAL_DIALECT = "ansi_sql"
 
 
+def _normalize_for_presence(text: str) -> str:
+    """Normalize SQL-ish text for the required_filter presence check:
+    lowercase, unify double quotes to single, drop ALL whitespace.
+
+    The check asks "does the rule's text appear in the query?", and spacing
+    (`region='EU'` vs `region = 'EU'`) or quote style must not turn a query
+    that genuinely applies the filter into an error-severity violation
+    (Devin Review on PR #1319, round 5). Dropping whitespace entirely is safe
+    here because both sides get the same treatment and the rule's characters
+    must still appear in order.
+    """
+    return "".join(text.split()).lower().replace('"', "'")
+
+
 def _word_present(text: str, ident: str) -> bool:
     """Case-insensitive whole-identifier presence check.
 
@@ -268,8 +282,7 @@ def evaluate_constraints(
     # error-severity constraint whose metrics[] spelling differs from the
     # metric declaration — fail-open (Devin Review on PR #1319, round 4).
     used = {str(m).casefold() for m in (used_metrics or [])}
-    text = sql or ""
-    normalized_text = " ".join(text.split()).lower()
+    normalized_text = _normalize_for_presence(sql or "")
 
     violations: list[dict[str, Any]] = []
     post_execution_checks: list[dict[str, Any]] = []
@@ -294,7 +307,7 @@ def evaluate_constraints(
             post_execution_checks.append({**entry, "reason": "rule cannot be checked before executing the query"})
             continue
 
-        rule_text = " ".join(str(constraint["rule"]).split()).lower()
+        rule_text = _normalize_for_presence(str(constraint["rule"]))
         if rule_text not in normalized_text:
             violations.append({**entry, "reason": f"required filter not found in the query: {constraint['rule']}"})
 
@@ -450,7 +463,12 @@ def _diff_expected(
         "metric": used_metrics,
         "relationship": matched_relationships,
     }
-    detected_sets = {etype: set(names) for etype, names in detected_lists.items()}
+    # Case-insensitive join, same rationale as every other name join in this
+    # module: expected names come from an agent's tool call, detected names
+    # from imported text, and a capitalisation difference must not report one
+    # object as both missing and unexpected (Devin Review on PR #1319,
+    # round 5). Output entries keep each side's original spelling.
+    detected_sets = {etype: {str(n).casefold() for n in names} for etype, names in detected_lists.items()}
     expected_names: dict[str, set[str]] = {etype: set() for etype in detected_lists}
 
     matched: list[dict[str, Any]] = []
@@ -461,14 +479,14 @@ def _diff_expected(
         etype, name = item.get("type"), item.get("name")
         if not etype or not name or etype not in detected_sets:
             continue
-        expected_names[etype].add(name)
+        expected_names[etype].add(str(name).casefold())
         entry = {"type": etype, "name": name}
-        (matched if name in detected_sets[etype] else missing).append(entry)
+        (matched if str(name).casefold() in detected_sets[etype] else missing).append(entry)
 
     unexpected: list[dict[str, Any]] = []
     for etype, names in detected_lists.items():
         for name in names:
-            if name not in expected_names[etype]:
+            if str(name).casefold() not in expected_names[etype]:
                 unexpected.append({"type": etype, "name": name})
 
     return matched, missing, unexpected
