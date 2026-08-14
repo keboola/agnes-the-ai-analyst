@@ -482,6 +482,30 @@ class TestServerConfigAuthProvidersValidation:
         assert resp.status_code == 422, resp.text
         assert "no usable sign-in method" in resp.json()["detail"]
 
+    def test_keboola_login_and_datasource_stack_in_one_save_accepted(self, seeded_app):
+        """keboola's stack_url falls back to data_source.keboola.stack_url; an
+        admin who configures the login AND the data-source address in one save
+        (auth.keboola has no stack_url of its own) must not be refused — the
+        fallback is evaluated against this patch's data_source, not only the
+        stored config (Devin review on #1288)."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        resp = c.post(
+            "/api/admin/server-config",
+            json={
+                "sections": {
+                    "auth": {
+                        "providers": ["keboola"],
+                        "keboola": {"client_id": "cid", "client_secret": "csecret", "project_id": "12345"},
+                    },
+                    "data_source": {"keboola": {"stack_url": "https://example.com"}},
+                },
+                "confirm_danger": True,
+            },
+            headers=_auth(token),
+        )
+        assert resp.status_code == 200, resp.text
+
     def test_non_dict_keboola_block_rejected_with_422(self, seeded_app):
         """A malformed auth.keboola (not an object) must 422 with a clear
         message, not crash the availability merge with a 500."""

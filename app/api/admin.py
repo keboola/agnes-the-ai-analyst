@@ -331,7 +331,7 @@ def _validate_auth_providers_in_patch(sections: Dict[str, Dict[str, Any]]) -> No
         # An all-unknown EXISTING value (not being edited here) fails open to
         # all providers at runtime — not a lockout — so don't block this save.
         return
-    if not any(_provider_available_after_save(n, auth) for n in known):
+    if not any(_provider_available_after_save(n, auth, sections) for n in known):
         raise HTTPException(
             status_code=422,
             detail=(
@@ -342,14 +342,16 @@ def _validate_auth_providers_in_patch(sections: Dict[str, Dict[str, Any]]) -> No
         )
 
 
-def _provider_available_after_save(name: str, auth_patch: Dict[str, Any]) -> bool:
+def _provider_available_after_save(name: str, auth_patch: Dict[str, Any], sections: Dict[str, Dict[str, Any]]) -> bool:
     """Whether ``name`` would be an offerable login method once this
     server-config save lands. ``password`` is always available; ``google`` /
     ``email`` are env-configured (untouched by an auth.providers patch), so
     their live ``is_available()`` is authoritative; ``keboola`` is configured
-    under ``auth.keboola``, which can be set in the SAME patch — so it is
-    evaluated against the current config merged with the patch, or an admin
-    enabling + configuring Keboola in one save would be wrongly rejected."""
+    under ``auth.keboola`` and can be set in the SAME patch, so it is evaluated
+    against the current config merged with the patch — including its stack_url
+    fallback to ``data_source.keboola.stack_url``, which the admin may also be
+    supplying in this same save (or enabling + configuring in one step would be
+    wrongly rejected)."""
     if name == "password":
         return True
     if name == "google":
@@ -364,7 +366,14 @@ def _provider_available_after_save(name: str, auth_patch: Dict[str, Any]) -> boo
         from app.instance_config import get_value
 
         merged = {**(get_value("auth", "keboola") or {}), **(auth_patch.get("keboola") or {})}
-        stack = merged.get("stack_url") or get_value("data_source", "keboola", "stack_url")
+        # stack_url falls back to data_source.keboola.stack_url — merge the
+        # current value with this patch's data_source block so a one-save
+        # "configure login + data-source address" isn't wrongly refused.
+        ds_merged = {
+            **(get_value("data_source", "keboola") or {}),
+            **((sections.get("data_source") or {}).get("keboola") or {}),
+        }
+        stack = merged.get("stack_url") or ds_merged.get("stack_url")
         return bool(merged.get("client_id") and merged.get("client_secret") and merged.get("project_id") and stack)
     return False
 

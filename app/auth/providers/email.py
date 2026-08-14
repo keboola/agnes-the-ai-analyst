@@ -115,7 +115,7 @@ def _generate_and_deliver_magic_link(email: str, next_path: str = "") -> tuple[d
 
 
 @router.post("/send-link")
-@_rate_limiter.limit("5/minute")
+@_rate_limiter.shared_limit("5/minute", scope="magic_link_send")
 async def send_magic_link(
     request: Request,
     body: MagicLinkRequest,
@@ -155,7 +155,7 @@ async def send_magic_link(
 
 
 @router.post("/send-link/web")
-@_rate_limiter.limit("5/minute")
+@_rate_limiter.shared_limit("5/minute", scope="magic_link_send")
 async def send_magic_link_web(
     request: Request,
     email: str = Form(...),
