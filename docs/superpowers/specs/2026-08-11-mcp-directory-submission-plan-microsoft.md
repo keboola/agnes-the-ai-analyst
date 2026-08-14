@@ -147,14 +147,35 @@ zásadně jiný model než Claude/OpenAI:
 
 ## Otevřené otázky k dořešení
 
-1. Je "Bring your own MCP server" v Agents 365 tenant-scoped, nebo umožňuje
-   cross-tenant viditelnost bez plné Connector Certification?
+1. ~~Je "Bring your own MCP server" v Agents 365 tenant-scoped, nebo umožňuje
+   cross-tenant viditelnost bez plné Connector Certification?~~
+   **Vyřešeno (research 14.8.):** tenant-scoped, potvrzeno — viz níže.
 2. ~~Znamená open-source podmínka Power Platform certifikace jen otevřenost
    OpenAPI/manifest definice konektoru, nebo širší nároky na produkt?~~
    **Vyřešeno (research 14.8.):** viz níže — jen definice konektoru, ne API/produkt,
    a navíc existuje novější cesta bez téhle podmínky vůbec.
 3. Má organizace existující Microsoft Partner Center účet pro Verified
    Publisher cestu, nebo bychom šli přes Independent Publisher (GitHub PR)?
+   **Zůstává otevřené** — obchodní/organizační otázka, ne něco k dohledání
+   v dokumentaci.
+
+### Vyřešeno: BYO MCP server je tenant-scoped (research 14.8.)
+
+Ověřeno v `learn.microsoft.com/en-us/microsoft-365/admin/manage/manage-tools-for-agent`:
+tok je striktně per-organizace — "Developer registers... IT admin reviews...
+Upon approval... The server becomes available to agent building surfaces only
+after consent is granted" — vše uvnitř jednoho tenantu. Žádný mechanismus pro
+cross-tenant viditelnost; každý zákazník by musel Agnes zaregistrovat a schválit
+sám ve svém vlastním M365 admin centeru. Potvrzuje to, co spec dokument už
+předpokládal: BYO MCP je ekvivalent "per-maker manuální připojení", ne
+Claude/OpenAI-style directory — nic, co by šlo udělat jednou za celou Agnes
+instalační základnu.
+
+Vedlejší zjištění (nesouvisí s cross-tenant otázkou, ale stojí za zápis): mezi
+podporovanými BYO MCP klientskými surface jmenuje Microsoft explicitně
+**Claude Code** (spolu s Copilot Studio, VS Code, GitHub Copilot CLI) —
+zajímavé pro budoucí `docs/mcp-registry-listing.md` recheck, ne akční položka
+teď.
 
 ### Vyřešeno: open-source podmínka neblokuje Agnes (research 14.8.)
 
