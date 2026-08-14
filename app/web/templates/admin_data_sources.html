@@ -580,6 +580,7 @@ function renderConnList() {
     return;
   }
   list.innerHTML = _connections.map(_connectionCardHtml).join("");
+  _fillGrantPickers();
   loadTokenMismatchWarnings();
 }
 
@@ -861,7 +862,67 @@ function _chatToolsRowHtml(row) {
     <span class="ds-badge ${badgeClass}">${badgeLabel}</span>
     <button type="button" class="btn btn-secondary" onclick="toggleChatTools('${id}', ${on ? "true" : "false"})">${on ? "Turn off" : "Turn on"}</button>
     ${on ? `<button type="button" class="btn btn-secondary" onclick="toggleChatTools('${id}', false, true)">Re-sync token</button>` : ""}
+    ${on && row.chat_tools_source_id ? `
+      <select id="ds-grant-group-${id}" class="ds-dropdown-native" aria-label="Group to grant this project's tools to"></select>
+      <button type="button" class="btn btn-secondary" onclick="grantChatTools('${id}', '${_esc(row.chat_tools_source_id)}')">Grant all to group</button>` : ""}
   </div>`;
+}
+
+let _groupsCache = null;
+
+async function _loadGroups() {
+  if (_groupsCache) return _groupsCache;
+  try {
+    const r = await fetch(`/api/admin/groups`, { credentials: "include" });
+    // Only a successful load is cached. `[]` is truthy, so caching the
+    // fallback would make `if (_groupsCache) return _groupsCache` treat one
+    // transient failure as a valid hit for the rest of the page visit —
+    // leaving the grant picker permanently blank until a full reload.
+    if (r.ok) _groupsCache = await r.json();
+    else return [];
+  } catch (_) {
+    return [];
+  }
+  return _groupsCache;
+}
+
+async function _fillGrantPickers() {
+  const groups = await _loadGroups();
+  document.querySelectorAll('select[id^="ds-grant-group-"]').forEach((sel) => {
+    if (sel.options.length) return;
+    sel.innerHTML = groups
+      .map((g) => `<option value="${_esc(g.id)}">${_esc(g.name)}</option>`)
+      .join("");
+  });
+}
+
+async function grantChatTools(id, sourceId) {
+  const sel = document.getElementById(`ds-grant-group-${id}`);
+  const groupId = sel && sel.value;
+  if (!groupId) { showToast("Pick a group first.", false); return; }
+  try {
+    const r = await fetch(`/api/admin/mcp-sources/${encodeURIComponent(sourceId)}/grants`, {
+      method: "POST", credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ group_id: groupId }),
+    });
+    const body = await r.json().catch(() => ({}));
+    if (r.ok) {
+      // "granted 0 of 37" is not the same news as "granted 37 of 37", and
+      // both look like success without the counts.
+      const extra = body.already_granted ? ` (${body.already_granted} already granted)` : "";
+      // A grant does not reach a mutating tool — the passthrough gate refuses
+      // those for every non-admin regardless, so promising reach here would
+      // be false for exactly the tools an analyst would notice missing.
+      const gated = body.admin_only ? ` ${body.admin_only} are mutating and stay admin-only.` : "";
+      const off = body.skipped_disabled ? ` ${body.skipped_disabled} disabled tools were skipped.` : "";
+      showToast(`Granted ${body.granted} of ${body.total} tools${extra}.${gated}${off}`, true);
+    } else {
+      showToast("Failed: " + detailMessage(body, `HTTP ${r.status}`), false);
+    }
+  } catch (_) {
+    showToast("Request failed.", false);
+  }
 }
 
 async function toggleChatTools(id, isOn, resync) {

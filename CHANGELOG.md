@@ -9,31 +9,35 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ---
 
 ## [Unreleased]
-
 ### Added
 
 - **`agnes diagnose` now checks whether the analyst can actually reach their data.** Every check it ran asked the server about itself, so it reported `Overall: healthy` — including `[ok] data` — while a fresh analyst's tables were unreachable: the manifest listed a table, `agnes pull` had 403'd on the download, and nothing on the laptop said so. The analyst who hit this stopped trusting the command and went to raw `curl`. A new `local-data` check compares what the manifest offers against the parquets on disk and names the next step ("run `agnes pull` and read its output; a download that 403s means the table is not in your stack yet"). A workspace with nothing pulled yet stays `info` — a normal first run is not a broken instance — but a genuine shortfall reports `warning`, which is the severity the headline aggregation actually reads (`warn`, the setup command's vocabulary, is inert here and would have left the verdict on `healthy`, the exact failure the check exists to catch).
 
   Both halves of the comparison are read the way the rest of the CLI reads them, so the answer agrees with what `agnes pull` fetches rather than with what the server lists. **Offered** is the manifest's `tables` **dict** keyed by table id — the shape the server emits and `agnes pull` consumes — filtered through the same download-set rules: `query_mode='remote'` rows answer server-side and have no parquet at all, `server_only` rows have one that is never distributed, and when the manifest carries the typed `direct_tables` / `data_packages[].tables[]` sections those are the stack-scoped truth (the flat dict is gated by a check whose Admin short-circuit bypasses the stack, so for an admin it over-lists tables `agnes pull` deliberately never downloads). **Local** mirrors the DuckDB view rebuild, which is what decides whether `agnes query <table>` resolves: a partitioned table lives as a directory of parts under `server/parquet/<table_id>/` and counts as one table, where a top-level `*.parquet` glob missed it and told analysts to re-fetch data they already had.
+- **A whole MCP source can be granted to a group in one action** — only its **enabled** tools, and it says how many it skipped. — `POST /api/admin/mcp-sources/{id}/grants` (`agnes admin mcp source grant <src> --group <id>`, plus a group picker on the Chat tools row of `/admin/data-sources`), with `DELETE …/grants/{group_id}` to take it back. The per-tool grant is the right granularity for an upstream curated a few tools at a time; it is the wrong one for a source that arrives with its whole toolset at once. A connected Keboola project registers around forty tools, so granting them one page at a time reintroduced by hand exactly the friction the chat-tools switch removes — registration was automated and the admin was left forty clicks later. The revoke half matters more than the convenience: an admin who granted a whole project in one action must be able to withdraw it in one, rather than clicking through forty tools while access stays live. Idempotent per tool. It refuses (409 `no_tools_registered`) rather than reporting success over a source with no registered tools, and returns `granted` / `already_granted` / `total` separately, because "granted 0 of 37" and "granted 37 of 37" are different news and look identical otherwise. Deliberately **not** MCP-exposed: a tool an agent can call that widens which tools a group may call is a privilege-escalation seam, and this one widens by a whole source at a time.
+- **A connection can carry `config.workspace_schema`**, passed to its derived chat-tools source as `KBC_WORKSPACE_SCHEMA`. This is what makes a **non-master, read-only** token usable: only a master token gets a workspace created for it behind the scenes, so an admin who narrowed the token to read-only — the obvious thing to do when lending a project to an agent — got a source where every tool worked except `query_data`, the one they most wanted. Absent unless the connection sets it, because with a master token inventing one would be wrong.
 
 ### Fixed
 
-- **`agnes diagnose`'s local-data check no longer reports green through a manifest it never read.** A 401/403/500 manifest response returns an ordinary error body with no `tables` key, which read as "the server offers nothing" — empty offered set, empty shortfall, `[ok] local-data` — straight through an auth outage; the fetch now `raise_for_status()`es into the could-not-compare branch, the same way `agnes pull`'s own manifest fetch treats non-2xx. And a relocated server crashed the whole command: `RedirectHardStop` derives from `BaseException` precisely so broad handlers can't eat it, and the manifest fetch was the one call in the command not shielded by name — so `agnes diagnose` exited 2 with empty output on exactly the deployment it exists to describe. The check now declines the comparison with an `info` row; the redirect verdict itself stays the `api` check's business. It also looked in the wrong directory on any machine where the data workspace is not the push anchor: it resolved via the `workspace_root` config key (the anchor `agnes push` and the session upload use), while every data command — `agnes pull`, `agnes query`, `agnes status`, `agnes disk-info` — resolves through `resolve_data_workspace()` (`AGNES_LOCAL_DIR` override → cwd if workspace-shaped → anchor), so with the override set, the analyst standing in another workspace, or a stale/unset anchor it reported a false shortfall — or a false "run `agnes init`" — about parquets sitting exactly where `agnes query` reads them; it now resolves the workspace the same way the data commands do. All three found by Devin Review on this PR.
 - **`customer-instance`: the state-applier's uid is now pinned everywhere it is created, not just in the startup-script's primary block.** `/data/state/instance.yaml` is written `0600` (#1214), which makes its owner load-bearing — the app container can read its own config only while `agnes-applier` resolves to the same uid as the app (999). #1214 pinned that in the startup-script's main `useradd`, but left two other call sites allocating an uid by chance: a belt-and-braces `useradd` further down the same script (before the `.env` chown) and, more significantly, `scripts/ops/agnes-state-applier-bootstrap.service` — the systemd unit that is the *only* user-creation path on any infra that doesn't run the OSS module's own startup-script. All three now pin the same uid (a single `AGNES_APPLIER_UID` variable in the template, referenced by both `useradd` attempts and the readback check, so they can't drift apart again), with the same fallback and posture as before: if the uid is already taken by a different account, provisioning falls back to an allocated one and logs a loud, non-fatal warning with remediation steps rather than bricking the boot — a 0600 file the app cannot read is no worse than the pre-#1214 world, and a hard failure over a file mode is a worse trade than a warning. `docs/postgres-cutover-runbook.md`'s manual migration command is updated to match. (#1217)
 
   **That fallback was not survivable, which made the warning a lie.** Provisioning gates its `chmod 600` on the readback, and both the runbook and the bootstrap unit told operators the overlay simply keeps its looser mode and everything keeps working — but the applier's own `write_instance_yaml` chmodded the temp `0600` unconditionally on both its writer paths and renamed it over the file, which re-owns it to whoever wrote it. So on any host where `agnes-applier` did not land on the app container's uid, the first rewrite left `/data/state/instance.yaml` owner-only under a uid the app is not, and the app's fail-closed strict boot read refused to start the instance. Every backend flip, cancel and stuck-job recovery rewrites that file, so ordinary admin activity took the instance offline — hours or weeks after the operator was told the state was fine, with nothing connecting the two. The mode is now computed once, from the uid the file will come to *rest* on (the writing process, or `agnes-applier` when running as root, since the chown after the rename can still move it there), and handed to both writers: `0600` where the app container will own the result; anywhere else, never an owner-only mode — `0640` with the app's gid (999) as the group wherever the applier can actually grant it (probed on a scratch file before each rewrite, because the post-rename group re-assert is best-effort and a `0640` whose grant never landed is the same lockout), falling back to the documented `0644` degradation otherwise, with a warning at every rewrite naming the uid it found and the mode it chose. Preserve-don't-tighten was this fix's first shape and had two holes of its own: the app-side writers (`write_backend_state`, the admin config editors) run as uid 999 *inside the container* — where owner-only is exactly right — and chmod `0600` unconditionally, so preserving carried that `0600` across the applier's re-owning rename and stranded the overlay unreadable one rewrite later anyway; and on a fresh overlay "preserve" bottomed out in a stat-fallback that *created* the file world-readable, database url and password inline. Warn-only stays the posture for a pre-existing mis-numbered account (`usermod -u` on a live system account orphans the files it already owns, which is a worse surprise than a warning), but it is now a warning about a hardening that did not apply rather than about a pending outage. Found by Devin Review on this PR (two rounds).
 
+- **`agnes diagnose`'s local-data check no longer reports green through a manifest it never read.** A 401/403/500 manifest response returns an ordinary error body with no `tables` key, which read as "the server offers nothing" — empty offered set, empty shortfall, `[ok] local-data` — straight through an auth outage; the fetch now `raise_for_status()`es into the could-not-compare branch, the same way `agnes pull`'s own manifest fetch treats non-2xx. And a relocated server crashed the whole command: `RedirectHardStop` derives from `BaseException` precisely so broad handlers can't eat it, and the manifest fetch was the one call in the command not shielded by name — so `agnes diagnose` exited 2 with empty output on exactly the deployment it exists to describe. The check now declines the comparison with an `info` row; the redirect verdict itself stays the `api` check's business. It also looked in the wrong directory on any machine where the data workspace is not the push anchor: it resolved via the `workspace_root` config key (the anchor `agnes push` and the session upload use), while every data command — `agnes pull`, `agnes query`, `agnes status`, `agnes disk-info` — resolves through `resolve_data_workspace()` (`AGNES_LOCAL_DIR` override → cwd if workspace-shaped → anchor), so with the override set, the analyst standing in another workspace, or a stale/unset anchor it reported a false shortfall — or a false "run `agnes init`" — about parquets sitting exactly where `agnes query` reads them; it now resolves the workspace the same way the data commands do. All three found by Devin Review on this PR.
+- **One failed group load no longer blanks the "Grant all to group" picker for the rest of the visit.** `/admin/data-sources` cached the empty fallback it assigns when the groups request fails, and an empty array is truthy in JavaScript — so the cache short-circuit handed that failure back as a valid group list on every later call, the picker rendered zero options, and each grant attempt answered "Pick a group first" until the page was fully reloaded. Only a successful load is cached now; a failure returns an empty list without remembering it, so the next render retries.
+
+- **A derived chat-tools source now follows its connection's `workspace_schema` in both directions.** Set on an already-enabled connection it used to arrive only after the admin toggled chat tools off and on; removed, it never went away at all — the env merge was `existing | derived`, which cannot delete, so the agent kept running SQL against a workspace the admin had taken away and nothing said so. The keys this module derives are now authoritative (absent means absent) while any key an admin added to the derived source survives untouched, and both the enable path and the unrelated-edit resync go through one shared merge rather than two copies of it.
 
 ### Internal
 - **`_build_context` now composes `_chrome_ctx` instead of hand-copying its keys.** The two web-template-context builders in `app/web/router.py` each maintained their own list of chrome-level keys (nav, branding, theme, feature toggles) by hand, so every new chrome key gave its author a chance to forget one — the failure was silent because Jinja renders undefined as empty. This bug class had already fired three times (`can_chat`, `can_studio`, and `config`/`can_chat` again in #993/#995). `_chrome_ctx` is now the single owner of every chrome-level key; `_build_context` starts from it and layers only its own heavier, page-specific payloads (the setup-prompt clipboard script, `server_url`). A new chrome key now only needs to be added once. No behavior change: a drift-guard test (`test_build_context_is_a_superset_of_chrome_ctx`) pins that the two stay in lockstep going forward. Closes #996.
 
 ## [0.83.15] - 2026-08-14
-
 ### Added
 
 - **Connector-catalogued attachments are now fetchable over the authenticated API.** The Jira connector downloads attachment binaries to the server and records where they landed (the `attachments` catalogue's `local_path`), but no client surface could fetch them — the only reader was a human with a shell on the host, neither RBAC-gated nor audited. `GET /api/attachments/{source}/{attachment_id}/download` + `agnes attachment get <source> <id> [-o <path>]` close that: a source declares which table catalogues its files, which columns carry the id and the path, and which directory is the permitted root (`src/attachment_sources.py`; `jira` is the first registered source), so a later connector that stores attachments registers a declaration and gets the route and the CLI command for free. RBAC is read access to the catalogue table (`can_access_table`, same gate as the parquet download), and a catalogue table marked `server_only` refuses with 403 `attachment_table_server_only` — its binaries stay on the server just as its parquet does (Devin Review on this PR); the catalogue's path value is contained under the source's permitted root before serving; misses stay distinguishable from denials (404 `attachment_not_found` / `attachment_not_stored` vs the RBAC 403) so a client can fall back to the upstream system's own API for exactly the rows the server never stored; and every fetch, granted or denied, lands in the audit log as `attachment.download` — refusals written as `denied`, the audit read layer's class for correct policy refusals, so they never inflate the Activity Center's error bucket (Devin Review on this PR). Deliberately a lazy per-id fetch, not manifest sync — nothing lands on an analyst's machine until someone asks for it. The backfill script's attachment downloader now publishes atomically (temp + `os.replace`) like the webhook path, and the streamed response is bounded at the size it advertises, so a concurrent writer can neither expose a torn file nor push the body past the declared Content-Length (Devin Review on this PR). Both publishers also pin the published file's mode to `0o660` explicitly — `os.replace` hands over the temp file's umask-derived mode, which under a restrictive deploy-time umask would leave the attachment unreadable to the serving process, while a world-readable `0o644` would both expose the bytes to every local account and collapse the POSIX-ACL mask on ACL-managed data dirs; `0o660` is the same group-rw pin the connector's issue-JSON writer already uses for exactly that reason; it assumes the connector's documented group/ACL storage setup — a serving process outside the backfill writer's group fails loudly (503 `attachment_unreadable` + a logged path), never silently, and the fix is aligning the groups, not widening the mode (Devin Review on this PR). A transient registry read failure now refuses the download with 503 `registry_unavailable` instead of proceeding with the `server_only` policy check silently skipped — bytes are never released by a gate that did not run, mirroring the parquet route's `distribution_check_unavailable` (Devin Review on this PR). Staging names carry a random component so two concurrent downloads of the same attachment (webhook threadpool, backfill workers) can never publish each other's half-written bytes, and a webhook that actually lands attachment files re-runs the incremental transform afterwards — the transform deliberately runs before the download (worker-timeout rationale), which would otherwise catalogue every freshly attached file with no stored path and 404 exactly the attachments users are most likely to fetch (Devin Review on this PR). That re-transform re-acquires the per-issue lock (the slow download itself stays outside it), so it can never publish a stale snapshot over a concurrent SLA-poll update that holds the same lock across its own write+transform (Devin Review on this PR). And a catalogue that cannot be OPENED or QUERIED refuses with 503 `catalogue_unavailable` instead of masquerading as `attachment_not_found` (or, for a failed open, escaping as an unaudited bare 500): only a genuinely absent view (declared but never synced) reads as a miss — a broken analytics attach or a declaration whose columns drifted from the connector's output must not send the client to the upstream API for rows the server actually has (Devin Review on this PR). The same misses-vs-malfunctions line runs through the filesystem open: a catalogued file the OS refuses to hand over (`EACCES`/`EIO`…, e.g. a serving process outside the `0o660` writer group) answers 503 `attachment_unreadable` with a warning log, never `attachment_not_stored` — only `ENOENT`/`ENOTDIR` reads as "no bytes here", so a misconfigured deployment cannot silently answer every request with "fetch it from the upstream system" while the outage looks like normal behaviour (Devin Review on this PR). The webhook downloader also gained the backfill's already-on-disk short-circuit (Jira attachment ids are immutable, so an existing `<id>_<name>` file is already the right bytes) and reports only NEWLY published files — without it every event re-fetched every attachment of the issue and the post-download re-transform ran on every event for any attachment-bearing issue, doubling webhook processing instead of firing only when a fresh file actually landed (Devin Review on this PR). Both exists-skips additionally require the on-disk size to match the size Jira reports — an existence-only skip would trust a file truncated by the pre-atomic writer (worker SIGKILL mid-write) and serve the short bytes with a self-consistent Content-Length forever; a size mismatch re-fetches and heals (Devin Review on this PR). And both publishers sweep dead `.tmp-*` staging files (older than an hour — the client itself times out at 60s) before staging: a SIGKILLed worker cannot unlink its staging file, the retry mints a fresh random name, and nothing else touches hidden names, so each interrupted download would otherwise leak up to the attachment size cap forever (Devin Review on this PR).
 
 ### Fixed
+
 - **Five live pages were unreachable under the rail chrome** (`ui_layout: rail` — the redesign's default). The rail renders *instead of* the topnav header, no fallback, and it shipped without links the topnav carries: **My connections** (`/me/connections` — per-user MCP OAuth self-service; restored to the account menu), **Memory** (`/corporate-memory`; restored as a nav destination — the first rail had it, the redesign dropped it), and **Apps** (`/apps`, same `data_apps.enabled` gate as the topnav). **Marketplace** and **Data Packages** (`/catalog`) were retired from the rail deliberately, onto in-page paths that were never built — the Library "+ Add" menu now really carries both ("Install from the marketplace", "Add shared data & recipes"). With Memory back in the nav, a memory-domain detail's back link under `rail` returns to the `/corporate-memory` browse again (the Library detour existed only because that page was unreachable; `?source=library` arrivals still return to the Library). Guarded from here on: the existing `/me/connections` nav test now runs over both chromes, and a new static parity guard (`tests/test_web_nav_user_parity.py`, sibling of the admin one) fails on any topnav-linked user page the rail cannot reach.
 - `agnes admin sessions download` raised `TypeError` before the request ever left: it passed `stream=True` through `api_get` into `httpx.Client.get()`, which has no such argument. The flag is dropped (`api_get` buffers the response body regardless); the new `agnes attachment get` never carried it.
 
@@ -56,7 +60,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **A hosted app that fails its first boot can never restart.** Data-app containers run under `restart_policy=unless-stopped`, but the runtime image's entrypoint clones the repo into `/app` on every start, and that clone fails once `/app` is populated. So the first boot's *real* error — in the run that surfaced this, five TypeScript errors from `tsc` — scrolls away behind an endless `fatal: destination path '/app' already exists and is not an empty directory`, exit 128, forever (16 restarts before it was noticed). The restart policy never provided the resilience it promises: because the clone is not idempotent, *no* restart of a data-app container can succeed, whatever killed it. `data_app_logs` — the only debugging surface an agent has for its own app — therefore reports a cause that is never the cause. Left as a known limitation for now rather than silently changing the policy: the honest fix is for the entrypoint to be restart-safe, which lives in the runtime image, and the deploy path already recreates the container from scratch so a redeploy recovers. Recorded here so the next person reading that log knows the clone error is a symptom.
 
 ## [0.83.14] - 2026-08-14
-
 ### Added
 - **`system.duckdb.rolling-snapshot/` — a rolling-refreshed recovery snapshot, refreshed independently of migration transitions.** `system.duckdb.pre-migrate` is captured once per migration and never touched again, so as a recovery aid it goes stale within hours of normal operation — every row written since the last migration is lost on a WAL-recovery restore (#379). `refresh_rolling_snapshot` (`src/db.py`) now maintains a second, rolling-refreshed artifact on a configurable cadence (`backups.rolling_snapshot_interval_hours`, default 6h, `0` disables — see `config/instance.yaml.example`): a `CHECKPOINT` followed by a logical `EXPORT DATABASE (FORMAT PARQUET, COMPRESSION ZSTD)` into a tmp directory, atomically swapped into place only once the export fully succeeds. It runs over the app's own long-lived `system.duckdb` connection on the existing periodic-checkpoint tick (#710) — never a second connection to the file — and is a no-op on a Postgres-state instance. `system.duckdb.pre-migrate` itself is unchanged: it stays the single-file artifact the WAL-recovery auto-restore path (`_try_open_system_db`) reads directly. The rolling snapshot is a manual-recovery aid (`IMPORT DATABASE`) documented as a new "Option A2" in `docs/runbooks/wal-recovery.md` (#380).
 
@@ -98,7 +101,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - A sync that actually syncs ≥1 table now publishes a `sync_completed` event to every active user's desktop notification channel (`app.notifications.publish_notification` → the existing `notify:{user}` WebSocket), so a connected desktop client hears about fresh data without polling. The payload follows the existing notification producers' contract — the event kind rides in `kind` (`type` is reserved by the delivery envelope), with a renderable `title`/`message` plus `source`, `table_count`, and the run outcome (`status: "ok" | "partial"` + `error_count`); a run with per-table failures that still synced something announces `partial`, not an unqualified success. The event is scoped to the tables THIS run actually synced, not the orchestrator's full rebuild result (which re-attaches every table from every prior sync) — a scheduled tick where nothing was due sends no notification at all, instead of re-announcing the whole instance's tables on every tick (Devin review). The count is restricted to tables whose data this run actually wrote: a `materialized` or `remote` row named in a scoped `POST /api/sync/trigger?tables=…` is never counted (the extractor skips the former and only creates a view for the latter), and a partial extractor run whose per-table stats could not be recovered claims none of its tables rather than announcing the failed ones as refreshed (Devin review). Partial step toward #412 (`agnes watch`): the CLI side is not shipped — the notifications WebSocket only accepts a `DESKTOP_JWT_SECRET`-signed token from the interactive desktop-app pairing flow, which analyst CLI PATs/JWTs cannot obtain.
 
 ## [0.83.13] - 2026-08-13
-
 ### Added
 
 - **Jira tickets can be joined to organizations on ids rather than names.** `issues` gained `organization_ids` (a JSON array — the Jira field is multi-valued), and a new current-state `organizations` table maps each id to the organization's current name plus whichever detail fields the operator names in `JIRA_ORG_DETAIL_FIELDS` (e.g. `38:crm_account_id` — detail ids are per-instance, so there are no defaults). Previously only ingest-time name strings were available, so renaming an organization orphaned its old tickets from any exact-name join. The table refreshes daily via a new `jira-org-refresh` job kind (scheduler row at 05:00); a manual run is `python -m connectors.jira.organizations` (`--dry-run`, `--force`). The refresh refuses to publish on states indistinguishable from data loss — failed or empty enumeration over an existing table, an unreadable baseline, a sweep that would remove most existing rows — and a per-organization failure carries the previous row forward; the connector README tabulates the refusal reasons and `--force` clears the two that never self-clear. `extract_init` now supports flat (unpartitioned) tables and upserts `_meta` rows so tables added after an instance's `extract.duckdb` was created still reach the catalog; `migrate_flat_to_hive` only migrates real `YYYY-MM` month files. The profiler catalog gains `jira_organizations` and the `jira_issues.organization_ids` relationship, and the legacy Data Broker `sync_jira.sh` creates the view. On existing installs, partitions written before this change read NULL in `organization_ids` — re-running the batch transform backfills them from the stored raw JSON with no re-fetch (command in the connector README).
@@ -108,7 +110,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **CI now runs the connector test suites.** `pytest tests/` never reached `connectors/`, where every connector keeps its tests beside the code (`connectors/jira/tests/`, ...) — 138 tests that ran only on developer machines, including the whole failure-semantics surface of the Jira connector, so no regression in them could ever fail a build. The shard job now runs `tests/ connectors/`, and the connector tests' measured `.test_durations` entries ship with the change so they shard like any other test. Regeneration command in the workflow comment is updated to match.
 
 ## [0.83.12] - 2026-08-13
-
 ### Fixed
 
 - **A redirect no longer kills `agnes diagnose` — the command whose whole job is to tell you what is wrong.** Measured against a real relocated deployment: an unreachable server produces exit 0 and the full JSON checklist with an `api: error` row, while a server answering `308` produced exit 2, empty stdout and not a single check. The shared HTTP client refuses a redirect from an httpx *response event hook* and ended the process right there with `sys.exit(2)`, deep inside somebody else's `api_get(...)`. `SystemExit` derives from `BaseException`, so it walks straight through `except Exception` — which is how it voided the two callers built precisely to survive a failed request: `diagnose`, which records a row per failed check, and `agnes update`, whose `_run_step` exists so one bad step cannot abort a convergence run and which therefore died before writing its report. Both now handle it, and it is delivered as `RedirectHardStop` rather than a process exit.
@@ -134,31 +135,26 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   The switch also takes the copy that points at what it removed, which the first pass left behind. Gating the default chrome's MCP-only "AI Connector" row alone left that user menu with an entry to *neither* surface — paper renders "Learn how it works" in the same slot, so the code comment claiming the orientation row survives the switch was true only under paper — and `/how-it-works` carries the CLI setup, the first-session narrative and the privacy content, so hiding MCP quietly took all of it out of the menu. The default chrome now falls back to that row. Inside the page, the plugin-packages note stopped telling the reader to "use the connector above instead" of a block that is no longer rendered, and the two connector-specific troubleshooting entries ("MCP endpoint not found", "Can't add a custom connector on Claude.ai?") follow the surface they troubleshoot; the transport-agnostic entries stay. Found by Devin Review on this PR.
 
 ## [0.83.11] - 2026-08-13
-
 ### Fixed
 
 - **A scoped sync for an already-deleted table id no longer re-registers the whole source project.** The auto-discovery gate on a `tables=[...]`-scoped sync trigger derived "is the registry empty?" from the requested subset (`repo.get(id)` returning `None` for a deleted id looked like an empty registry), instead of the whole registry like the scheduled-sync branch already did — so triggering a sync for a table id that was deleted while queued or running could re-discover and re-register every table on the source. Both branches now check the whole registry.
 
 ## [0.83.10] - 2026-08-13
-
 ### Fixed
 - **Setting `chat.docker_egress_allow_hosts` without `chat.docker_egress_mode: allowlist` now warns at startup.** The allow-hosts knob reads like it turns the allowlist on, but only the mode does — set alone (the mode defaults to `open`), the hosts were silently ignored and sandbox egress stayed unrestricted. The startup egress-config check now reports the ignored allowlist and the consequence for the configured mode.
 ### Added
 
 ## [0.83.9] - 2026-08-13
-
 ### Added
 
 - **The admin MCP source list flags rows the current url policy would now refuse.** `check_source_url` (#1154/#1204) gates a source's `url` only when it is configured — a row registered before the guard existed, or before `mcp.source_url_strict` was turned on, keeps forwarding credentials on an unrelated edit even when its url is now in the refused set (a literal link-local/reserved address, or cleartext http to a public one). `GET /api/admin/mcp-sources` and the detail endpoint now carry a `url_policy_verdict` (`ok` / `would_refuse` + reasons) per row, computed with the same DNS-free checks the policy applies with no resolver call — cheap enough to run on every row in a list. `agnes admin mcp source list` shows the same verdict in a new column. Runtime enforcement at the two forward seams is a separate, follow-up change (#1216).
 
 ## [0.83.8] - 2026-08-13
-
 ### Internal
 
 - Deflaked `test_concurrent_deploy_calls_never_overlap_inside_runner_up` (CI-only `[200, 200] != [200, 409]`): the runner stub now holds `up()` open on a latch the test releases only after the second deploy request completes, so the op lease is provably held for that request's whole lifetime. The old fixed 0.5s sleep left ~0.3s of real-time margin for the second request's retry-then-409 window; a loaded CI runner could stretch past it, the first deploy released the lease early, and both requests legitimately succeeded. The lease itself serialized correctly all along (the concurrency assertion never fired).
 
 ## [0.83.7] - 2026-08-12
-
 ### Fixed
 
 - **Turning chat tools on for a connected project now leaves the agent with tools to call.** As shipped in 0.83.5 the switch created the MCP source and stopped: the agent's passthrough surface is built from `tool_registry`, and those rows are otherwise written only by an admin curating each tool by hand under `/admin/mcp` — `introspect` and `classify` are read-only probes that persist nothing. So a switch that reported success produced a project the agent could not reach, and the surrounding copy sent the admin off to run Introspect themselves, on roughly forty tools, one at a time. Enabling now introspects the upstream and registers its tools as passthrough rows itself. `mutating` is taken from each tool's `readOnlyHint`, and a tool the upstream does **not** annotate is recorded as mutating rather than assumed safe — the absence of a claim is not a claim of safety. Exposed names carry a per-connection prefix, because every Keboola project exposes `query_data` and the agent picks a tool by name alone; without it two connected projects' tools would be indistinguishable at the point of choice. Grants are still not created: registering makes a tool curatable, granting makes it reachable, and only the second is an access-control decision — the UI and CLI now say so, and name the grants page that actually carries it rather than the Access screen, which does not. The two failure domains stay apart: an upstream that will not answer returns 502 with a retry hint, while a failed local config write propagates, because telling an admin to retry an upstream when their database write failed is a worse answer than none.
@@ -174,7 +170,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **The package cache no longer lands somewhere the container cannot keep it.** The derived source runs the upstream MCP server through `uv`, which caches it under `$HOME/.cache/uv` — but the runtime image never sets `HOME` (`python:3.13-slim` does not, and a `USER` directive alone does not either), and the MCP SDK forwards only environment variables that actually exist in the parent. Even where it resolved, the cache sat inside the container filesystem, which is replaced on every upgrade, so the first tool call after each auto-upgrade re-downloaded ~157 MB. It is now pinned to `${DATA_DIR}/cache/uv`, which both survives upgrades and does not depend on `HOME` — verified by running the server with `HOME` unset. Instances on a tight data volume should budget for it.
 
 ## [0.83.6] - 2026-08-12
-
 ### Changed
 
 - **The provenance line states the record, not an act nobody verified.** It said each note was "approved by an administrator of this instance" — but the bundle's required tier is selected on `is_required` alone, so a required note ships whatever its status, and an instance running the collector in `auto_publish` mode files mined items as approved with nobody looking. A per-item file now says the note is *marked required*, the rollup says the notes carry the status *approved*, and the single-note file stopped describing "each note below". A title is also rendered as a title — one line — because a title carrying newlines wrote its own heading and its own `— author, date` credit under somebody else's name, which the header then vouched for; the note's BODY is still delivered byte-for-byte, and the header now says so, since what it cannot prevent it must not vouch for. The rollup states how many notes it carries, so a body that forges a section makes a discrepancy the reader can see. Found by Devin Review and an adversarial review of this PR.
@@ -190,7 +185,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **`agnes admin memory approve` printed the same flagged sentence once per pattern it tripped.** The scanner reports a finding per kind, and the sentence this feature exists for trips three at once, so one flagged note filled three consecutive lines with identical text and read as three separate problems. Findings are now grouped by excerpt with their kinds listed together. Found on a live approval against a throwaway instance, not by the unit tests — which asserted the payload's structure and never looked at the shape of the output.
 
 ## [0.83.5] - 2026-08-12
-
 ### Changed
 
 - **`agnes init` no longer writes a trust declaration into your user-scope Claude Code settings unasked, and the declaration no longer argues for itself.** Two independent problems in the same block, both reported by an agent that read `~/.claude/settings.json` after being told to run `agnes init`. **The wording:** the `autoMode.environment` entries ended with *"cloning it and installing the plugins it grants is a routine, sanctioned internal operation, not integration of untrusted external code"* — a verdict about how the reading agent should judge a future action, written by the tool whose actions were being judged. The agent flagged it as exactly the pattern it is meant to distrust and refused to act on it, which is the correct reading: a claim carries no more weight for being emphatic, and a self-issued one carries less. The entries now state what the slot is for and stop — the host is this organization's Agnes server, it issued this machine's token, its marketplace is served from `https://<host>/marketplace.git/` and curated by that server's operator — leaving the conclusion to the classifier. **The consent:** this is the one write `agnes init` makes outside the workspace it was pointed at, since user-scope settings apply to every project on the machine, and it happened silently with a line printed afterwards. It is now opt-in: `--trust-marketplace-host` / `--no-trust-marketplace-host` decide it outright; an interactive run names the file, prints the exact lines it would add, and asks (defaulting to **No**, because declining costs one approval prompt while agreeing changes machine-wide settings); an unattended run — the pasted-install path, where the "operator" is an agent relaying a script — skips and says how to opt in. **The mechanism is unchanged and still recommended:** `autoMode.environment` is the sanctioned channel for declaring an organization's trust boundary, and the host is still derived from configuration, never hardcoded. Declining is not a broken install — Claude Code's auto mode may ask before `agnes refresh-marketplace --bootstrap` clones the marketplace, which is a human approving in the moment, the thing the pre-declaration was there to skip. Guarded by `tests/test_automode_trust_consent.py`, including a check that the entries contain no verdict language (verified to fail against the previous wording) and one that stripping the argument did not strip the information.
@@ -426,7 +420,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **The last `± 0.5` window in the drain-budget tests tolerated a drift that cannot occur.** `test_routine_cancellation_does_not_arm_the_shutdown_budget` asserted the unshared budget was `10.0 ± 0.5`, but with no deadline armed `_drain_budget_s` returns the configured timeout outright without reading the clock — so there was never anything to tolerate, and the tolerance instead concealed any margin applied to that path: a 2% headroom shaved off the timeout yields `9.8`, which sits inside the window. Now asserted exactly, and confirmed by mutation (`9.8 != 10.0`, where the window returned true). No `pytest.approx` remains in the module's budget assertions.
 
 ## [0.83.4] - 2026-08-10
-
 ### Added
 
 - **`agnes admin metrics import --prune` — the metric registry can finally shrink** (#1219). The import was upsert-only, so a metric deleted upstream stayed forever and a rename left both ids behind, indistinguishable from a hand-authored one; the practical effect was that an instance whose semantic layer is generated from an external catalog could never be re-synced, only added to. `--prune` reconciles the registry against the directory, and what it may delete is keyed on the **writer**, never on the id: the scope is `source='yaml_import'`, so a metric an admin wrote in the UI (`manual`) or a connector created (`keboola_semantic_layer`) is out of reach by construction rather than by luck. `--source-ref <label>` **partitions** it further and stamps the rows as it imports — two YAML exports into one instance otherwise share `source='yaml_import'`, and the second import would delete the first's metrics. Each label owns its own rows and the unlabeled import owns the unlabeled ones, so labelling an export protects it from every other import rather than only from other labelled ones. `--dry-run` reports the same added/updated/deleted breakdown and writes nothing, which is the recommended first run because a rename reads as delete + create at the id level. Two prune shapes are refused outright rather than obeyed, because both are nearly always a mistyped or half-written path and both would empty the scope: pointing `--prune` at a single **file**, and any input from which no metric parses — a directory one level too shallow globs to nothing (the layout is `<dir>/<category>/<name>.yml`) and a truncated export has files that yield nothing, both of which asked prune to delete everything. A **partial** failure is refused too, and it is the likeliest of the three: in a half-written export the files that did not parse look exactly like metrics the source dropped, so the error names them instead. Every refusal is decided from the parsed input before any row is written, so a refused run leaves the registry exactly as it found it rather than half-applying the readable files. **`POST /api/admin/metrics/import` now stamps `source='web_upload'` instead of `yaml_import`**, because it shared the CLI import's scope and a metric uploaded through the admin page is in no directory — so the next prune run took it as deleted upstream. Rows uploaded that way *before* this release are indistinguishable from CLI-imported ones and stay in scope; `--dry-run` lists them, and re-uploading re-stamps them. Each deletion writes an audit row (`metrics.prune`) **before** the row goes, not after and with `result="attempted"` rather than a success it cannot yet vouch for — this is the only destructive metric path and it runs direct against the repository with no API request behind it, so an interruption between the two would leave a metric deleted with nothing saying so. The report also distinguishes **adopted** from added: an incoming id that already belongs to another writer is overwritten and re-stamped by the upsert, which moves it into this importer's prune scope — calling that an addition told the operator a new metric would appear while a hand-authored one was being taken over. The default is unchanged — without `--prune` the command still only adds, and now says so in its output instead of letting a clean import read as "everything is in sync". A file the importer cannot read is skipped rather than aborting the directory, but the skip is now listed on stderr — silence let a partial import read as a complete one. The import also reads `.yaml` as well as `.yml`, which was merely incomplete before and became destructive once prune read "not in the directory" as "deleted upstream". Implemented on the shared `MetricYamlMixin`, so DuckDB and Postgres get identical behaviour, pinned by `tests/db_pg/test_ported_methods_contract.py`.
@@ -482,7 +475,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - `.claude-plugin/marketplace-metadata.json`'s worked example in `docs/curated-marketplace-format.md` used `"Data analysis"` and `"Reporting"` as categories — neither is in `STORE_CATEGORIES`, which the same page documents four rows above. Copying the example the page says to copy produced an invalid category.
 
 ## [0.83.3] - 2026-08-10
-
 ### Added
 
 - **Charts reach the user.** Asked for a metric over time, the chat agent had no way to show one: the sandbox images shipped pandas and numpy but not matplotlib, and `pip install matplotlib` inside a sandbox does not reach PyPI (E2B's per-hostname egress allowlist; `chat.docker_egress_mode: none` on the Docker sibling). It improvised — an SVG written to `/tmp` and a user told to open a path that does not exist on their machine. Both images now bake `matplotlib` in, and the workspace prompt carries the delivery half, because the library alone would not have been enough: **there is no file-delivery channel out of an interactive chat session at all.** Artifact harvest (`app/chat/artifact_harvest.py`) is wired only into the one-shot agent API, and files written under `/work` flow back to the per-user workspace *on the server*, which the browser never shows. The one channel that does work is inline `<svg>` in the reply — not a feature anyone built, but a standing property of two existing decisions (marked passes raw HTML through; `svg` is not in `renderMarkdownSafe`'s tag blocklist, and its `on*` handlers are stripped attribute-by-attribute). The prompt now names it, along with `svg.fonttype: none` so a figure stays text-sized rather than shipping every glyph as an outline, and refuses the two plausible-looking alternatives explicitly: a file path (unreachable) and a `data:` image URI (stripped by the URL-scheme allowlist, so the reader gets a broken image). The bubble constrains a chart to its column: a chart carries its own absolute size (matplotlib in `pt`, a hand-authored one in `px`) and `.msg-bubble` is a shrink-to-fit flex item, so nothing capped it — measured with the rule removed, a `figsize=(7, 3.2)` figure overflows by 242px in a 420px column and a hand-written 900×300 chart overflows by 197px even at 860px. Scoped to `.msg-body > svg` and `.msg-body > p > svg`, since the third `svg` in a bubble is the code-block copy button's icon, which a blanket rule would stretch to full width. All of it is guarded by `tests/test_chat_answer_provenance_and_charts.py`, which runs the markdown parser and the URL-scheme allowlist under `node` rather than asserting on a comment: the day `svg` is added to the blocklist for a good security reason, that file says out loud that the only chart channel is closing with it. Verified end-to-end against a real matplotlib figure rendered through the shipped sanitizer — 15 KB with `svg.fonttype: none` against 29 KB without, axes and labels intact, `<style>` inside `<defs>` stripped with no visual effect (it only restates SVG's own `stroke-linecap` defaults). Two loose ends from the docs written alongside this: the Docker provider's egress-off value is `docker_egress_mode: none`, not `closed` as first written — `closed` is not a value `_parse_docker_egress_mode` accepts, so an operator who copied it would have gotten `open`, the opposite of what the doc told them to expect, with one warning line as the only trace (now guarded — a test fails if any shipped doc or Dockerfile names an egress mode the parser does not recognize). And baking matplotlib into the Docker image *is* a filesystem-contract change — a pre-upgrade image cannot draw a chart — so `agnes.chat-sandbox.contract` bumps from `1` to `2`; the operator note below that tells the reader to check the label now says which value to expect, and a test pins the two together so they cannot drift apart silently the way they just did. A gap found after merge: the rule above lived only in the bundled sandbox-fallback `CLAUDE.md` (`app/initial_workspace_default/CLAUDE.md`) — `WorkdirManager.run_init` overwrites that file with the server-rendered default (`config/claude_md_template.txt`) on the common path (no admin Workspace Prompt override, no Initial Workspace Template repo), and that file carried no chart guidance at all, so the agent an analyst actually talks to never saw it. The same section now lives in both files, and a test renders `compute_default_claude_md` and pins the two copies equal so they cannot drift apart silently again. A second gap found after that: `config/claude_md_template.txt` is not sandbox-only — the same render also backs `agnes init` on an analyst's own laptop via `GET /api/welcome` — and there "you have matplotlib preinstalled", "this sandbox's filesystem is not their computer" and "the chat renders it" are simply false; a saved file is the natural way to hand over a chart on the user's own machine, and a terminal Claude Code session has no chat renderer for inline SVG at all. The template now takes an `is_sandbox` context flag (`True` from the one chat-sandbox call site in `app/main.py`, `False` — the default — from `GET /api/welcome`) and the Charts section branches on it: the sandbox wording is unchanged, a laptop workspace is told the code is identical, a file path is fine on a terminal, and inline SVG is required only inside an actual chat surface — the `data:` URI refusal is the one rule that still holds everywhere. The drift guard between the bundled sandbox-only file and the template now compares the bundled file against the template rendered with `is_sandbox=True`, not the raw template source, since the two are no longer meant to be byte-identical as files — only the sandbox-facing wording still is.
@@ -522,7 +514,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **An MCP server's transport is no longer guessed when the author declared it.** The plugin detail page inferred transport purely from config shape — `command` → `stdio`, `url` → `sse` — and ignored the `type` key, which is how both Claude Code's `.mcp.json` and the Agent Plugins `mcp.json` schema actually spell it. Two consequences: a server declaring `streamable-http` was displayed as `sse`, and since HTTP+SSE is the deprecated predecessor transport, *every* URL-based server was mislabelled as legacy. A declared `type` is now authoritative and an unrecognized value is shown as written rather than coerced; inference runs only when the key is absent, and a bare `url` infers `http`.
 
 ## [0.83.2] - 2026-08-10
-
 ### Fixed
 
 - **A metric or glossary description laid out with `<div>` lost its line breaks in the expanded detail.** 0.83.1 taught the renderer to read an imported description as HTML rather than as markdown, and gave the plain-text projection a word boundary where a stripped block tag had been. The rendered detail needed the same care from the other side: there a stripped `<div>` cannot be replaced by a space, it has to keep its structure — so a description stored as `<div>…</div><div>…</div>` rendered as one fused line (`Share of qualified sales.Excludes refunds and test orders.`) in the expanded metric detail on `/catalog/semantics` — the one surface that renders the description as markup. The one-line previews, the Glossary tab, `agnes catalog --metrics --show` and search hits all read the plain-text projection, which 0.83.1 already fixed, and are unaffected. The `html_source` path now additionally allows the structural block containers (`div`, `section`, `article`, `dl`/`dt`/`dd`, `figure`/`figcaption`, and the `h1`/`h5`/`h6` the narrow allowlist omits) — the same set the plain-text projection already treats as word boundaries, now guarded by a test so the two lists cannot drift apart again. The narrow allowlist keeps only `h2`-`h4` so a curator cannot outrank the page's own headings; an imported description is not authored against this page at all, and dropping its `<h1>` fused the sections it separated. That projection also learned to count **opening** tags, not just closing ones: nested structure separates text with an opening tag and no closing tag in between (`<figure>A<figcaption>B`), which a close-only pattern fused. Its attribute run skips over quoted values, since a `>` inside one does not close the tag — `<div title="a>b">` was cut in half and left `b">` as visible characters — and it is bounded on hostile input in two directions: the three alternatives are mutually exclusive on their first character, so there is no exponential backtracking, and the bare branch excludes `<`, so an unterminated tag stops at the next tag start instead of rescanning the remainder — without which N unclosed tags made the substitution quadratic (20 KB of `<div ` took 620 ms, enough for one malformed description to stall the page rendering it). It also matches case-insensitively: it runs on the rendered HTML, before nh3 — and nh3 is what normalizes tag case — so `<DIV>` arrives exactly as the upstream catalog wrote it. They get no entry in the attribute allowlist, so every attribute including `on*` handlers is still stripped — these carry layout, never behaviour — and curator-authored marketplace content keeps the narrow allowlist unchanged, where a pasted `<div>` staying visible text is the intended tell. Found running the fix against a live instance rather than in a test.
@@ -530,7 +521,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - The metric detail sizes every heading level it now admits. Preserving `h1`/`h5`/`h6` on the `html_source` path is what stops an imported description's sections fusing, but `.sl-detail__desc` styled only `h2`/`h3` — so a preserved `<h1>` fell back to the browser default and rendered at ~2em with large margins inside a compact metric row, out-shouting the page's own heading. `h4` had been in that position since before this change. Structure is preserved by the allowlist; how large it looks is the row's decision, and a guard now fails if the two drift apart.
 
 ## [0.83.1] - 2026-08-08
-
 ### Added
 - **An MCP source's own `url` is validated when it is configured** (#1154). Every forward to an `http`/`sse` source dials that url with a credential attached — the shared vault secret, an analyst's per-user secret, or an OAuth access token — but only the OAuth *endpoints* were ever checked, so an admin could register `http://169.254.169.254/mcp` and Agnes would post user credentials to the cloud metadata endpoint in cleartext. Refused now, at create and at update. The check deliberately is **not** the OAuth endpoints' `resolve_safe(https_only=True)`: that guard rejects every private and loopback address, and an organization running its own MCP server on `http://mcp.internal:8080` is an ordinary deployment rather than an attack. So the line falls where "nobody legitimately wants this" actually falls — link-local/metadata, multicast, reserved and unspecified addresses are refused, as is cleartext http to a *public* address and a hostname resolving to both public and internal addresses (the rebinding shape); an internal address is accepted and recorded in the audit row instead. A host that does not resolve right now is likewise recorded rather than refused, because this runs over the merged row and a DNS blip would otherwise block edits that never touched the url. Operators wanting the fail-closed posture set `mcp.source_url_strict` (`AGNES_MCP_SOURCE_URL_STRICT`), which demands https to a public, resolvable address and honours the existing `security.ssrf_allowed_hosts` allowlist — so a single on-prem source does not stop an instance from adopting it. `stdio` sources are exempt: there the secret rides the subprocess environment and `url` is never dialed. A **disabled** source is exempt on update, because enforcing there traps the operator: a source registered before this guard (or before `source_url_strict` was turned on) would otherwise 400 on every update including the one that turns it OFF, the single action that reduces the risk. Disabling buys the two runtime forwards, which re-fetch the row and refuse — it is not "never dialed", because neither the admin probes (`introspect`, `classify`, `test`) nor the analyst's own `POST /api/mcp/sources/{id}/my-secret/test` consult `enabled`. Those carry the check themselves rather than leaning on the flag — the analyst-facing one also now refuses a disabled source, since it dials with the caller's own credential. `materialize` — the fourth connector helper, and the one the module's own header names alongside the other three — takes it as well. `test` is the exception that proves the shape: its contract is HTTP 200 with a diagnostic, so a refused url is REPORTED as the diagnostic rather than turned into a 400 that would withhold the answer the button exists to give. On the analyst-facing probe the refusal is deliberately generic — the policy reason embeds the source's literal address, and an analyst is not an admin, so the cause goes to the log and the caller gets a sentence naming the source, matching what every other failure branch there already does. Remediation is disable → fix the url → re-enable, and re-enabling validates, so nothing reaches a live state unchecked. The switch is declared in `app.switches.SWITCHES` with a row in `docs/feature-flags.md`, as the registry introduced in #1209 now requires.
 
@@ -751,7 +741,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   planted *inside* a source is still refused.
 
 ## [0.83.0] - 2026-08-07
-
 ### Added
 
 - Admin "Browse & register tables" now works with bucket-scoped (custom access) Keboola tokens: when the project-wide `/buckets` + `/tables` listings are refused, the endpoint falls back to enumerating the token's own `bucketPermissions` per bucket, so the picker shows exactly the buckets the token can read. The response carries a `scope` field (`"project"` or `"token_buckets"`) and the picker renders a note when the listing is token-limited. Upstream listing failures are logged with the connection id, and network-level errors (DNS, refused connection, TLS) surface as a clean 502 `keboola_storage_api_error` detail instead of a generic 500.
@@ -885,7 +874,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Security
 
 ## [0.82.0] - 2026-08-06
-
 ### Added
 - **Chats page (`/chats`) — conversations as a manageable inventory, and the sidebar becomes a working set.** The rail listed every conversation in one scrolling column, which is right for "get back into yesterday's work" and cannot do anything else: it can't tell you which agent ran a chat, can't find the analysis from three weeks ago by name, and can't clear out the twenty you abandoned. The new page borrows the Library's page structure — prominent search and one primary action in the header, one control row (tabs left, refinements right), the same list ⇄ grid switch — so the two inventories read as one product. The list itself is deliberately NOT a table: a conversation has one thing you read (its title) and two you glance at (which agent, how long ago), so it is light flex rows on hairlines with the metadata trailing the title and a "⋮" on the right edge, rather than columns of equal standing inside a bordered card. Everything that narrows the list lives behind ONE Filter button, as it does on /library: its popover opens on the four views (All · Pinned · Shared · Archived, single-select — a chat is shown in one at a time) and carries the optional Agent and Source refinements under them, with the active view named on the button itself so the resting toolbar still says which conversations are on screen. Sorting is the toolbar's own control, per-row actions ride the same "⋮" menu the rail uses (pin/unpin · rename · archive/restore · delete), and multi-select comes with a bulk bar (shift-click for a run; select-all covers only the rows the filters actually leave visible). **Archive is now a named, reversible state**: `DELETE /api/chat/sessions/{id}` has always been a soft archive, but nothing listed archived rows, so the state had no name and no way back — `PUT /api/chat/sessions/{id}/archived` archives and restores, and `DELETE /api/chat/sessions/{id}/permanent` is the one that actually deletes the conversation and its messages. The plain `DELETE` keeps its long-standing soft-archive behavior, so the chat page and rail menus are unchanged; both new endpoints treat stopping the sandbox as best-effort, so archiving or deleting a conversation no longer depends on a live chat manager. Co-drive conversations someone else owns appear read-only (no checkbox, no row menu) because those actions are owner-only server-side. Rows update in place after every action — no reload, so the search and filters used to find them survive.
 - **Rail sidebar: New chat · Pinned · Recent · View all chats.** The conversation region is now a working set — the pinned shelf (uncapped, expanded by default), the five most recent conversations, and a quiet "View all chats" link to the page above, sitting directly under the last recent row. The link navigates and takes no active state on `/chats`: the accent in the rail means "the thing you are looking at is in this list", and that page is the whole list. This is a cap with a destination, unlike the five-row cap that was deliberately removed: that one offered a "Show more" whose only job was to undo a limit we had imposed on a list already bounded by the column's own geometry, and none of its machinery (truncation pass, observer, persisted expanded-state, pins-are-exempt budget) comes back. The "Chats" section is relabelled "Recent" so the link below it doesn't read as a second route to the same list, and the "Older" date header goes with the long feed. Topnav's full-height conversations column is unchanged apart from the same link at its foot.
@@ -1213,7 +1201,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - **Contract guard against the light-only-tint bug class** (`tests/test_design_system_contract.py`): every `--ds-*-soft` token is declared once in the global `:root` with no `data-theme="dark"` override, so filling with one and inking with `--ds-text-*` yields invisible text under dark — the connect-banner bug fixed above. The guard parses every shipped stylesheet plus each template's inline `<style>` (flattening `@media` wrappers), and fails when a rule fills with a light-only `-soft` tint, ink that flips with the theme is drawn on that element or a descendant/BEM child of it, and the same stylesheet ships no `[data-theme="dark"]` override for it. Correct pairings stay quiet by construction: a tint inked with a deep accent (`.ag-instack` → `--ds-agnes`), `--ds-text-inverse` on a solid fill, and rules already scoped to any `[data-theme="…"]`. Four unit tests pin the detector against synthetic CSS — including the exact pre-fix `.cbn` shape — so it can't rot into a vacuous pass; removing the shipped fix makes it fail with `.cbn (fill --ds-agnes-soft; ink from .cbn-title)`.
 
 ## [0.81.0] - 2026-08-06
-
 ### Added
 
 - The marketplace digest reports `distinct_installers` (people who installed at least one item in the period) alongside `new_installs` (install events), and `system_installs` for system-plugin subscriptions. `active_users` counts people while `new_installs` counts `(user x item)` rows, so the two were never comparable despite sitting side by side in the same KPI row; `distinct_installers` is the people-unit figure to read against `active_users`. The digest template states both definitions inline and tolerates a payload from an older server that omits the new keys.
@@ -1233,7 +1220,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Security
 
 ## [0.80.1] - 2026-08-06
-
 ### Added
 
 ### Changed
@@ -1275,7 +1261,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   instances that must keep it on.
 
 ## [0.80.0] - 2026-08-06
-
 ### Added
 
 - Domain migrations keep the old hostname working: set `DOMAIN_ALIAS` to the name you are moving away from and Caddy serves it alongside `DOMAIN`, with its own certificate, instead of failing the TLS handshake the moment `DOMAIN` changes — which is what would otherwise break bookmarks, `agnes` CLI configs and MCP connector URLs with a certificate error instead of a path onto the new address. Two audiences, two answers: someone arriving in a browser gets a short notice page naming the new address and what still points at the old one (deep links preserved, auto-forwarding after 15 s), while the CLI, MCP clients and anything else get a plain 308 — a silent redirect for everyone would never prompt a human to update the bookmark, and an HTML notice served to a machine client is just a confusing parse error. The split keys on `Accept: text/html` and is scoped to GET/HEAD, so a POST is never swallowed by the notice page. Unset (the default) the block is inert — it resolves to a non-published localhost port and, carrying no `tls` directive, is served an internal certificate silently rather than retrying a public one once a minute forever. Exposed on the `customer-instance` module as a per-VM `domain_alias` field on `prod_instance` / `dev_instances`; drop it once the old DNS record is retired. Cutover checklist — including the three things that do *not* follow `DOMAIN` (`SERVER_URL`/`public_url`, the Google OAuth client's redirect URIs, and already-connected MCP clients): `docs/DEPLOYMENT.md` → "Migrating to a new domain".
@@ -1347,7 +1332,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   subsequent pull exit non-zero — including from the SessionStart hook.
 
 ## [0.79.2] - 2026-08-06
-
 ### Added
 
 ### Changed
@@ -1385,7 +1369,6 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - The web half of the same change: `/home`'s install guide now hands the token to the machine via a copied shell command (Step 4, "Launch Claude — we'll hand it your login first" / "Save your login token") instead of embedding it in the setup script — the command saves the token to `~/.agnes/token` and, when auto-mode is on, launches Claude in the same line. The visible command always shows a masked placeholder; the real token is minted only in memory at copy time and never written into the page. Step 5's "Copy install script to clipboard" no longer mints or carries any token at all. `/setup`'s single-page flow got the matching treatment.
 
 ## [0.79.1] - 2026-08-06
-
 ### Added
 
 ### Changed
@@ -1438,8 +1421,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   curator-supplied path is now contained to the plugin directory instead of being
   joined and walked as given.
 
-## [0.79.0] - 2026-08-05
-### Added
+## [0.79.0] - 2026-08-05### Added
 
 - Cloud chat runs without an E2B account: `chat.provider: docker` spawns each session in a local Docker container instead of a cloud microVM, so a self-hosted instance no longer loses chat entirely for want of E2B keys. Same feature set — web chat, Slack, the agent API, headless runs and artifact harvest are unchanged. Docker access stays behind the `apps-runner` sidecar (still the only process holding the socket) over a new token-gated `/sandboxes/*` API; the gateway never touches `/var/run/docker.sock`. The per-session workspace is **bind-mounted** rather than uploaded, which removes the 100 MB `chat.e2b_workspace_max_bytes` cap and the per-spawn tarball, and makes files the agent writes persist on the host — note that concurrent sessions of the same user therefore share one workspace, and agent-created `node_modules`/`.venv` now survive the session; co-drive sessions still mount only their ephemeral directory. Pause maps to `docker pause` (memory survives while the daemon does, not across a host reboot — the next attach then produces a fresh sandbox with restored conversation context). Sandboxes run non-root with `cap_drop: ALL`, `no-new-privileges`, pids/memory/CPU limits, a capped allowlist of mounts and an image-prefix allowlist; no secret enters the container env. Agent-profile sessions never get the shared workspace mount — only their data symlink targets (snapshots writable, the rest read-only), so a profiled agent cannot rewrite the user's shared settings/hook files. New keys: `chat.docker_image`, `docker_network`, `docker_mem_limit`, `docker_cpus`, `docker_pids_limit`, `docker_egress_mode` (`open` | `none`; hostname-level allowlisting is E2B-only), `docker_max_total_sandboxes`. Requires the operator-built sandbox image (`app/initial_workspace_default/docker-sandbox/`), the `apps` compose profile, and `AGNES_INTERNAL_URL`/`SERVER_URL` pointing at a container-reachable address — boot gates refuse to start chat with actionable log lines otherwise. Operator walkthrough, including an honest E2B-vs-Docker comparison: `docs/cloud-chat.md`.
 
@@ -1463,8 +1445,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 ### Security
 - Docker chat sandboxes gain a third egress mode, `chat.docker_egress_mode: allowlist`: sandboxes stay on the internal (no-route-out) network of `none` while a new `services/egress_proxy` sidecar (compose profile `chat-docker-egress`) grants exactly `chat.docker_egress_allow_hosts` — every connection is re-checked **after DNS resolution** against link-local/metadata/private ranges and tunneled to the vetted address (DNS-rebinding protection; cloud metadata endpoints are blocked even if allowlisted). The re-check reduces every spelling of an address to one set of rules first — IPv4-mapped (`::ffff:169.254.169.254`), 6to4 and Teredo answers are unwrapped to the IPv4 address a dual-stack host would actually reach, and the unspecified address (`0.0.0.0`, `::`), multicast and reserved ranges are refused outright. Ignoring the proxy env is not a bypass — the internal network has no other route. Docker never reconciles the `internal` flag on a network that already exists, so a sandbox start refuses with `network_not_internal` rather than silently running without that layer if a same-named non-internal bridge is left over; remove it and it is recreated correctly. Plain-HTTP proxying authorizes every request rather than only the first on a connection — proxy clients pool per-proxy, not per-destination, so keep-alive is not offered upstream and a request's body is forwarded by its declared length (chunked request bodies are refused, having no length to bound the forward by). Closes the "hostname-level allowlisting is E2B-only" gap.
 
-## [0.78.2] - 2026-08-05
-### Added
+## [0.78.2] - 2026-08-05### Added
 
 ### Changed
 
@@ -1541,8 +1522,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.78.1] - 2026-08-04
-### Added
+## [0.78.1] - 2026-08-04### Added
 - MCP OAuth sources, phase 2 — the per-user browser connect flow: `GET
   /api/mcp/sources/{id}/oauth/authorize` (signed, single-use PKCE state;
   grant- and rate-limit-gated) redirects the analyst's browser to the
@@ -1578,8 +1558,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   lock: a fresh install must not be able to resolve back to a vulnerable
   release. A `telegram` extra now declares aiohttp too — `services/telegram_bot/bot.py` imports it at module scope, so that service only ever started because the shipped image installs `[slack-socket]` alongside; an operator installing `[server]` and running only the Telegram bot hit ImportError. aiohttp joins the `dev` extra too, so `tests/test_telegram_bot.py` actually executes in CI instead of skipping through its guarded import — the ImportError the extra prevents was previously untested.
 
-## [0.78.0] - 2026-08-04
-### Added
+## [0.78.0] - 2026-08-04### Added
 
 - Groundwork (phase 1 of the MCP OAuth sources design, no user-facing
   behavior yet): schema v109 adds `mcp_source_oauth_clients`,
@@ -1797,8 +1776,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 - Chat sandbox PreToolUse hook enforces org floor command rules: outright deny for `mkfs` and fork bombs, explicit user confirmation for recursive force delete (`rm -rf`), `git push --force`, destructive SQL (`DROP`/`TRUNCATE`), and piping a download into a shell. Commands are scanned per shell segment (`;`, `&&`, `||`, `&`, `|`, newlines), so chaining no longer hides a segment from the workspace-delete, enumeration and egress checks. The head of each segment is basenamed (`/bin/rm` is judged as `rm`) and known wrappers are stripped using per-wrapper flag/positional tables, so an absolute path or a `doas`/`chroot`-style prefix no longer slips past a name match; the whole-command rules additionally run over quote-normalized text, so bash's adjacent-string concatenation (`"DR""OP TABLE x"`) cannot hide them. The hook remains **defense-in-depth only** — it is fail-open, inspects Bash alone, is a workspace file the agent could rewrite, and its wrapper list is an allowlist; shell-string forms (`sh -c`, `su -c`, `eval`, command substitution) are explicitly out of its scope. VM-level egress enforcement stays the real boundary (see `docs/cloud-chat.md`). Shell grammar words (`then`, `do`, `else`, …) and redirections are stripped before the command is identified, so a refused action wrapped in an `if`/`for`/`while` block or an environment dump written to a file is still seen. Parentheses are treated as grouping rather than as separators, and heredoc bodies are skipped as the data they are, so a command computing its arguments inline is still checked and an ordinary file write is not refused for what its text says.
 - Admin god-mode observability: when the Admin short-circuit in `can_access` grants a resource the admin holds no explicit group grant for, a deduplicated `god_mode_bypass` log line records who reached what. Observability only — access decisions are unchanged; the data shows which surfaces actually rely on god-mode before any future narrowing.
 
-## [0.77.33] - 2026-08-03
-### Added
+## [0.77.33] - 2026-08-03### Added
 
 ### Changed
 
@@ -1814,8 +1792,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.77.32] - 2026-07-30
-### Added
+## [0.77.32] - 2026-07-30### Added
 
 ### Changed
 
@@ -1830,8 +1807,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.77.31] - 2026-07-30
-### Added
+## [0.77.31] - 2026-07-30### Added
 
 ### Changed
 
@@ -1845,8 +1821,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.77.30] - 2026-07-30
-### Added
+## [0.77.30] - 2026-07-30### Added
 
 - Query telemetry now reports `failed` (queries that errored) and `registered` (whether the id exists in `table_registry`) per table, on both the `/admin/usage` top-tables panel and `agnes admin usage summary` (unregistered ids marked `*`). An id parsed out of SQL is not proof a table exists, and the dashboard now says so instead of implying it.
 
@@ -1865,8 +1840,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.77.29] - 2026-07-30
-### Added
+## [0.77.29] - 2026-07-30### Added
 
 ### Changed
 
@@ -1888,14 +1862,12 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.77.28] - 2026-07-29
-### Added
+## [0.77.28] - 2026-07-29### Added
 
 - Linked (externally-hosted) data apps: an admin can surface an app that runs elsewhere — e.g. a Keboola-platform data app ingested via an MCP source — as a grantable Agnes resource without Agnes hosting it. A Keboola MCP tool set to *materialize* produces a `keboola_data_apps` table; a generic projection reconciler upserts `data_apps` rows with the new `repo_mode="linked"` (external URL, no git repo/runtime), keyed by ingest provenance and soft-deleting apps that disappear upstream (per-connection scoped, admin `description` override preserved across re-sync). Linked apps are granted like hosted ones (`ResourceType.DATA_APP` on `/admin/access`), appear in the same `/apps` list + detail (opening at their external URL, Keboola handling auth), and are known to a user's LLM through `data_apps_list` (RBAC-filtered, carries the description). New surfaces: `GET /api/data-apps?kind=hosted|linked`, `PATCH /api/data-apps/{slug}` (description override) + `agnes app list --linked` / `agnes app set-description` + the `data_app_set_description` MCP tool (foundation + stdio). Schema v108. Design: `docs/superpowers/specs/2026-07-29-keboola-dataapps-linking-design.md`.
 - Guided admin flow for linked apps: a `/admin/linked-apps` wizard walks an admin through the whole path in one page — pick a Keboola MCP source → set its data-app lister to `materialize` and fetch → select the ingested apps and grant them to a group — instead of hopping across the MCP-sources, tool-registry, and access pages. Adds a `source=<connection_id>` filter to `GET /api/data-apps` and nav entries (header + admin hub).
 
-## [0.77.27] - 2026-07-29
-### Fixed
+## [0.77.27] - 2026-07-29### Fixed
 
 - The passthrough MCP forward's 502 detail now surfaces the upstream's actual
   error instead of the MCP SDK's `unhandled errors in a TaskGroup
@@ -1910,8 +1882,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.77.26] - 2026-07-29
-### Added
+## [0.77.26] - 2026-07-29### Added
 
 ### Changed
 
@@ -1925,29 +1896,24 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.77.25] - 2026-07-29
-### Added
+## [0.77.25] - 2026-07-29### Added
 
 - Admin corporate-memory page: search boxes on the Review Queue and All Items tabs (title/content, debounced; `GET /api/memory/admin/pending` gained a `search` param), and moderation actions — Approve / Reject / Revoke / Mark required — on the All Items batch bar. Previously search existed only on Browse (which has no bulk actions) and bulk moderation only on Review (which had no search), so moderating specific items in a large queue required paging through it by eye.
 
-## [0.77.24] - 2026-07-29
-### Fixed
+## [0.77.24] - 2026-07-29### Fixed
 
 - Corporate memory now actually reads the `CLAUDE.local.md` files `agnes push` uploads. The collector scanned only `<HOME_BASE>/<user>/CLAUDE.local.md` — the bare-VM layout where analysts work on the server — while `POST /api/upload/local-md` writes to `${DATA_DIR}/user_local_md/`. On any deployment that doesn't populate `/home` (Docker Compose, i.e. analysts on laptops) the every-17-min job therefore found zero files and returned `skipped` forever: the upload arrived and was never read, so corporate memory had no `claude_local_md` input at all. It now scans both layouts; a user present in both is collected once with the home copy winning, and the bare-VM layout keeps emitting the directory name as `source_user` so existing hash keys and item provenance don't shift. `HOME_BASE` also gained a `CORPORATE_MEMORY_HOME_BASE` env override (it was hardcoded, unlike its sibling constants), and the per-run "Home base directory does not exist" WARNING that fired on every Docker run is now debug-level. The filename + directory are derived through shared helpers (`app.utils.local_md_filename` / `uploaded_local_md_dir`) used by both the writing endpoint and the reading collector, with a round-trip test asserting the two agree — that divergence is what made this silent.
 
-## [0.77.23] - 2026-07-29
-### Fixed
+## [0.77.23] - 2026-07-29### Fixed
 
 - Data apps: the in-chat authoring + live-preview loop is now actually reachable by the chat agent. The `data_app_*` MCP tool family — the hosted-app actions (`data_apps_list`, `data_app_get`, `data_app_deploy`, `data_app_logs`, `data_app_create_draft`, `data_app_delete_draft`, `data_app_git_credential`) and the four in-chat preview render tools (`agnes_data_app_preview`/`_refresh`/`_close`/`_credentials`) — was registered only on the HTTP MCP foundation surface (the SSE/streamable transports serving external clients), but the chat agent connects through the CLI **stdio** `agnes mcp` server, which never exposed them. As a result the chat agent could neither author/deploy an app nor open the split-pane preview. The stdio server now registers the whole family (mirroring the REST contracts), and a `DATA_APP_TOOL_NAMES` parity guard asserts both surfaces stay in sync. Analysts running a local `agnes mcp` gain the same app-management tools.
 - Data apps: `agnes_data_app_preview` no longer returns the scoped preview-grant cookie in its MCP tool result (on either transport). The cookie is a short-TTL bearer credential and a tool result is archived in the chat session transcript; the grant is still minted server-side and installed via the grant endpoint's `Set-Cookie` header (the web chat re-fetches it same-origin), so the preview pane is unaffected.
 
-## [0.77.22] - 2026-07-29
-### Added
+## [0.77.22] - 2026-07-29### Added
 
 - `agnes update` now runs an `agnes push` catch-up step (step 4b, before the data pull), so the SessionStart hook uploads session transcripts + `CLAUDE.local.md` that the SessionEnd hook never got to send. SessionEnd is not a dependable trigger — closing the terminal window (or a crash / kill) can take Claude Code down before it reaches the hook, leaving the transcript on disk and invisible in the admin session views, which read the pipeline's summary table and have no filesystem fallback. SessionStart cannot be missed, because the session is being created. push is already a full folder scan with ledger dedup, so one call recovers everything earlier runs missed, including a session still open in another window whose transcript has grown; the convergence report gains a `push` stage line.
 
-## [0.77.21] - 2026-07-29
-### Added
+## [0.77.21] - 2026-07-29### Added
 
 ### Changed
 
@@ -1961,8 +1927,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.77.20] - 2026-07-29
-### Added
+## [0.77.20] - 2026-07-29### Added
 
 - Per-connection Keboola master (owner) Storage API token for the semantic-layer sync — a separate vault slot from the plain storage token, set/rotate/remove via `/admin/data-sources`'s connection card ("Master token (semantic layer)" control) or `agnes admin connection secret <connection_id> --kind master`, validated with a live `verify_token` preflight at save time (rejected if the token isn't a master token, since the Metastore API rejects non-master tokens).
 - Multi-project semantic-layer sync: every Keboola connection holding a master token now syncs independently under its own `source_ref` provenance, with metric/glossary prune scoped to that connection's own rows so one connection's sync can never wipe another's.
@@ -1982,13 +1947,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.77.19] - 2026-07-29
-### Added
+## [0.77.19] - 2026-07-29### Added
 
 - CLI: `agnes admin memory approve|reject|revoke|require|unrequire` — lifecycle moderation of corporate-memory knowledge items from the terminal, wrapping the existing governance endpoints (`POST /api/memory/admin/batch`, per-item `mark-unmandatory`) with the same dedicated audit rows. Status changes stay off the generic `edit`/`bulk-edit` paths by design; these subcommands are the CLI counterpart of the web admin review queue.
 
-## [0.77.18] - 2026-07-29
-### Added
+## [0.77.18] - 2026-07-29### Added
 
 - PAT data-read **surface** (`personal_access_tokens.surface`, v106): `'all'` or `'stack'`. `POST /auth/tokens` accepts `surface` (default `all`) and token listings show it; `agnes auth token create --surface` mirrors it. New `POST /cli/auth/rescope-surface` (admin-only, PAT-authenticated) mints a full-surface token; `agnes init --as-admin` uses it.
 
@@ -2004,8 +1967,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.77.17] - 2026-07-29
-### Added
+## [0.77.17] - 2026-07-29### Added
 
 ### Changed
 
@@ -2019,8 +1981,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.77.16] - 2026-07-28
-### Fixed
+## [0.77.16] - 2026-07-28### Fixed
 
 - Store guardrails: the LLM security review no longer false-positives on the
   pipeline's own file-truncation marker. Oversized files clipped to fit the
@@ -2039,8 +2000,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.77.15] - 2026-07-28
-### Added
+## [0.77.15] - 2026-07-28### Added
 
 - The admin MCP source detail page gains an inline "Your connection" panel
   for `per_user`-scoped sources — connect, test, or disconnect your own
@@ -2061,8 +2021,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   register → connect → introspect flow (tools only exist after the first
   introspect). Non-admin callers still require a grant on the source.
 
-## [0.77.14] - 2026-07-28
-### Added
+## [0.77.14] - 2026-07-28### Added
 
 - **Data Apps: in-chat AI authoring loop (wave 3C).** A chat conversation can now scaffold, preview, and promote a hosted data app end-to-end with no shell access. The bundled `agnes-data-apps-extras` skill (the first bundled skill; loads alongside the upstream `dataapp-development` skill) drives a baked `nodejs-dashboard` React+Vite+Tailwind+Express scaffold (with `server/agnesQuery.ts` helpers over `AGNES_TOKEN`/`AGNES_URL`) onto a draft branch, deploys it in `dev` mode, and shows it live in a split-pane preview iframe. Four chat-surface MCP tools (`agnes_data_app_preview`/`_refresh`/`_close`/`_credentials`) render the preview, authorized by a short-TTL scoped `data-app-preview:<slug>` grant (`POST /api/data-apps/{slug}/preview-grant`) that the ingress proxy accepts for the view-only serving path only — reusing the existing `access_tokens` table (no migration) and mirroring the `data-app-git:<slug>` fail-closed scope guard. On approval the agent merges the draft into `main` and redeploys prod. Operators register the upstream `dataapp-developer` marketplace plugin per the new `docs/DEPLOYMENT.md` runbook.
 
@@ -2078,8 +2037,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.77.13] - 2026-07-28
-### Fixed
+## [0.77.13] - 2026-07-28### Fixed
 
 - Admin MCP connect probes (`POST /api/admin/mcp-sources/{id}/introspect`,
   `/classify`, `/test`) now surface the real upstream failure (e.g.
@@ -2092,8 +2050,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   anonymously and failed with 401 even though the admin had a working token
   connected). Sources with a shared/fallback secret behave as before.
 
-## [0.77.12] - 2026-07-28
-### Added
+## [0.77.12] - 2026-07-28### Added
 
 ### Changed
 
@@ -2107,8 +2064,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.77.11] - 2026-07-28
-### Added
+## [0.77.11] - 2026-07-28### Added
 
 ### Changed
 
@@ -2129,8 +2085,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.77.10] - 2026-07-28
-### Added
+## [0.77.10] - 2026-07-28### Added
 
 - **Canonical feature-flag convention.** `app.instance_config.feature_enabled`
   is now the single resolver (env var > instance.yaml/server-config overlay >
@@ -2162,8 +2117,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.77.9] - 2026-07-28
-### Added
+## [0.77.9] - 2026-07-28### Added
 
 ### Changed
 
@@ -2189,13 +2143,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.77.8] - 2026-07-28
-### Changed
+## [0.77.8] - 2026-07-28### Changed
 
 - Refreshed product descriptions across README, CLAUDE.md, ARCHITECTURE.md, `pyproject.toml`, and the docs index to reflect the current platform scope — agent profiles + agent-as-API, hosted data apps, in-product Studio, knowledge/collections search, and the role-split (api/gateway/worker) deployment topology. Also corrected ARCHITECTURE.md's stale "three source types" list (now four, incl. `materialized`) and its hardcoded schema version.
 
-## [0.77.7] - 2026-07-28
-### Added
+## [0.77.7] - 2026-07-28### Added
 
 - `usage_session_summary.uploaded_at` (schema v105): sessions record when
   they ARRIVED, not just when they started. The health pulse gains a
@@ -2221,8 +2173,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.77.6] - 2026-07-28
-### Added
+## [0.77.6] - 2026-07-28### Added
 
 - Activity Center timeline rows carry a server-computed `source`
   (web/cli/scheduler/system/…) so every consumer classifies rows by one rule
@@ -2273,13 +2224,11 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.77.5] - 2026-07-28
-### Changed
+## [0.77.5] - 2026-07-28### Changed
 
 - **Infra (customer-instance module): `data_apps_enabled` is now a per-VM field.** It moved from a module-global variable to an `optional(bool, false)` field on the `prod_instance` / `dev_instances[*]` object types (mirroring `dispatcher_enabled`), so an operator can enable hosted data apps on a single dev VM without also flipping every other VM in the instance — including prod. `data_apps_runtime_image` stays instance-wide. Consumed by a new `infra-v1.20.0` module tag.
 
-## [0.77.4] - 2026-07-28
-### Added
+## [0.77.4] - 2026-07-28### Added
 
 - **`agnes snapshot create` warns on a wasteful remote fetch shape.** A fetch
   with no `--where`/`--limit` (unbounded), or no `--select` / a `--select`
@@ -2289,8 +2238,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   `--from-query` path (used by `agnes query --remote --auto-snapshot`) is exempt.
   Phase 1 of `docs/superpowers/specs/2026-07-25-analysis-output-verification-design.md`.
 
-## [0.77.3] - 2026-07-28
-### Added
+## [0.77.3] - 2026-07-28### Added
 
 ### Changed
 
@@ -2334,8 +2282,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.77.2] - 2026-07-28
-### Added
+## [0.77.2] - 2026-07-28### Added
 
 - **Data Apps: durable enablement via the customer-instance Terraform module.** A new `data_apps_enabled` module variable (off by default; `data_apps_runtime_image` sets the runtime image) brings the feature up on VM boot without hand-editing config: the startup script mints/persists an `APPS_RUNNER_TOKEN`, resolves `DOCKER_GID` from the docker socket, writes `AGNES_DATA_APPS_ENABLED=true` (plus the runner token/prefix/gid) into the app `.env`, and enables the `apps` compose profile via a `--profile apps` command-line flag in both the startup script and `agnes-auto-upgrade.sh` (not `COMPOSE_PROFILES` in `.env` — docker compose ignores that env var whenever any `--profile` flag such as `--profile tls` is present). The app honors a Terraform-friendly `AGNES_DATA_APPS_ENABLED` env override (mirrors `AGNES_HOME_ROUTE`/`PUBLIC_URL`) that flips the feature on and backfills the example-config `data_apps:` defaults, so no instance.yaml edit is needed. Disabled instances render byte-identically.
 
@@ -2352,8 +2299,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.77.1] - 2026-07-28
-### Added
+## [0.77.1] - 2026-07-28### Added
 
 ### Changed
 
@@ -2379,8 +2325,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.77.0] - 2026-07-28
-### Added
+## [0.77.0] - 2026-07-28### Added
 
 - **Agent profiles.** Named, scoped agents layered over a user's own stack
   (agent-api V1a). `POST/GET /api/v1/agents` (create/list), `GET/PUT/DELETE
@@ -2613,8 +2558,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
   hardcoded `99` silently stopped exercising the noop path as the ladder grew,
   then broke outright once the ladder passed it.
 
-## [0.76.38] - 2026-07-28
-### Added
+## [0.76.38] - 2026-07-28### Added
 
 ### Changed
 
@@ -2638,8 +2582,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.76.37] - 2026-07-28
-### Added
+## [0.76.37] - 2026-07-28### Added
 
 ### Changed
 
@@ -2662,8 +2605,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.76.36] - 2026-07-27
-### Added
+## [0.76.36] - 2026-07-27### Added
 
 ### Changed
 
@@ -2686,8 +2628,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.76.35] - 2026-07-27
-### Added
+## [0.76.35] - 2026-07-27### Added
 
 - **Partitioned local tables can now be distributed to analyst laptops via `agnes pull`.** Tables stored as a *directory* of parquet parts — Jira (hive `month=*/data.parquet`) and Keboola `sync_strategy=partitioned` (`<key>.parquet`) — were previously undistributable: the manifest/download/pull path assumed exactly one `{table}.parquet` per table, so the orchestrator wrote an empty hash, `/api/data/{id}/download` 404'd, and the client couldn't build a view. Now the whole chain is part-aware: `sync_state` gains a `parts` JSON column (per-part `{path, hash, size_bytes}`; DuckDB + Postgres, schema v100 / alembic `0047`); the orchestrator hashes each part (`_hash_table_parts`) and stores a rollup hash so the whole-table "changed?" compare + object-store mirror keep working; the manifest emits `parts`; `GET /api/data/{id}/download?part=<relpath>` serves a single part (path-traversal-guarded); and `agnes pull` fetches only the changed parts into `server/parquet/{id}/`, swaps them all-or-nothing (a failed part leaves the prior dir intact — never a silently-partial view), prunes server-dropped parts, and builds one hive-partitioned local view per table (`union_by_name=true, hive_partitioning=true`, byte-identical to the server view). Single-file tables are unchanged (`parts` is `NULL`/absent → treated as single-file). Incremental by design: an analyst re-pulls only the month(s) that changed.
 
@@ -2703,8 +2644,7 @@ CalVer image tags (`stable-YYYY.MM.N`, `dev-YYYY.MM.N`) are produced for every C
 
 ### Security
 
-## [0.76.34] - 2026-07-24
-### Added
+## [0.76.34] - 2026-07-24### Added
 
 ### Changed
 
@@ -2793,8 +2733,7 @@ Remediation of the 2026-07-24 whole-repo security audit
 New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWLIST`,
 `AGNES_BOOTSTRAP_PASSWORD`, `AGNES_TELEGRAM_PHOTO_DIR`.
 
-## [0.76.33] - 2026-07-24
-### Changed
+## [0.76.33] - 2026-07-24### Changed
 
 - **Cloud-chat conversations survive a sandbox respawn with FULL context.**
   A fresh sandbox for a chat with history (crash respawn, post-restart
@@ -2818,8 +2757,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Security
 
-## [0.76.32] - 2026-07-24
-### Added
+## [0.76.32] - 2026-07-24### Added
 
 ### Changed
 
@@ -2867,8 +2805,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Security
 
-## [0.76.31] - 2026-07-24
-### Fixed
+## [0.76.31] - 2026-07-24### Fixed
 
 - **Materialized Keboola tables no longer OOM the sync on large results.**
   The typed-parquet retype (the all-VARCHAR fix) loaded the whole
@@ -2884,8 +2821,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   column VARCHAR), and an already-typed parquet skips the rewrite
   entirely.
 
-## [0.76.30] - 2026-07-24
-### Added
+## [0.76.30] - 2026-07-24### Added
 
 - **Data Apps: prod + draft iteration model.** Create a draft on an iteration branch
   (`agnes app draft create`), deploy it in `dev` mode, then promote by merging into
@@ -2928,8 +2864,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 - **Data Apps: enforce the `data-app-git:<slug>` PAT scope.** The credential minted by `POST /{slug}/git-credential` (and `data_app_git_credential`) now authenticates only the `/data-apps.git/{slug}` surface it was minted for, pinned to that one app's slug — previously the `scope` claim was unenforced, so the credential was a full-privilege user PAT usable against the whole non-admin (and, for an Admin owner, admin) REST/MCP API. Rejected JSON-API calls get 401 `git_scope_token_not_allowed`.
 
-## [0.76.29] - 2026-07-24
-### Fixed
+## [0.76.29] - 2026-07-24### Fixed
 
 - **Cloud-chat answers now stream token-by-token.** Both credential hops on
   the model-call path buffered the LLM's SSE response whole — the broker's
@@ -2951,8 +2886,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Security
 
-## [0.76.28] - 2026-07-24
-### Changed
+## [0.76.28] - 2026-07-24### Changed
 
 - `/catalog/semantics` metric detail now renders the full **description**
   (markdown → sanitized HTML via the existing `render_safe` pipeline, same
@@ -2968,8 +2902,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   (metrics are routinely searched by their spoken aliases, which were
   stored but not indexed).
 
-## [0.76.27] - 2026-07-24
-### Added
+## [0.76.27] - 2026-07-24### Added
 
 - **Per-instance `upgrade_schedule` override** on `prod_instance` /
   `dev_instances` in the `customer-instance` Terraform module — the
@@ -2994,8 +2927,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Security
 
-## [0.76.26] - 2026-07-24
-### Fixed
+## [0.76.26] - 2026-07-24### Fixed
 
 - Worker lane slots now wake immediately on a fresh Postgres enqueue instead
   of waiting out their poll interval: `enqueue` emits `NOTIFY agnes_jobs` and
@@ -3010,8 +2942,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   a per-process tmp filename so two scheduler containers sharing `DATA_DIR`
   can't race on the same tmp path.
 
-## [0.76.25] - 2026-07-24
-### Changed
+## [0.76.25] - 2026-07-24### Changed
 
 - **Cloud chat reuses a paused sandbox across process restarts instead of
   respawning fresh.** The resume-vs-respawn decision was gated on an
@@ -3026,8 +2957,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   (`chat.idle_grace_seconds`, default 60 s) keeps the sandbox warm through a
   likely follow-up before it pauses.
 
-## [0.76.23] - 2026-07-24
-### Fixed
+## [0.76.23] - 2026-07-24### Fixed
 
 - **Data Apps**: a manual `deploy`/`stop` and an auto-wake for the same app
   can no longer race each other into calling the runner sidecar's `up()`
@@ -3040,8 +2970,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   deploy/wake can't have its state clobbered by a stale reap write landing
   after it.
 
-## [0.76.22] - 2026-07-24
-### Fixed
+## [0.76.22] - 2026-07-24### Fixed
 
 - **Corporate Memory no longer accumulates near-duplicate pending items when
   the same fact is re-stated with different wording**: the
@@ -3062,8 +2991,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   contradicts), so it is routed to the create path where contradiction
   detection runs, rather than being absorbed as confirming evidence.
 
-## [0.76.20] - 2026-07-24
-### Internal
+## [0.76.20] - 2026-07-24### Internal
 
 - **DuckDB↔Postgres parity: hydrate sandbox lifecycle fields in the chat
   participants repo.** `chat_session_participants_pg._row_to_session` now
@@ -3076,8 +3004,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   co-driven sessions. Guarded by a new field-for-field hydration regression
   test in `tests/db_pg/`.
 
-## [0.76.18] - 2026-07-23
-### Fixed
+## [0.76.18] - 2026-07-23### Fixed
 
 - **Editing a cross-project BigQuery table's Dataset/Source Table no longer
   strands the row on its old `bq_fqn`.** The Edit modal's "Live from
@@ -3091,8 +3018,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   so an unrelated edit can't silently overwrite it with the `bucket`
   label.
 
-## [0.76.17] - 2026-07-23
-### Added
+## [0.76.17] - 2026-07-23### Added
 
 ### Changed
 
@@ -3153,19 +3079,16 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - **Datasource-token persistence** warns when writing to the plaintext overlay
   while a vault is configured (full vault routing is a tracked follow-up).
 
-## [0.76.16] - 2026-07-23
-### Added
+## [0.76.16] - 2026-07-23### Added
 
 - **Upsert-on-upload for collection files.** `POST /api/collections/{id}/files` accepts an optional per-file `paths` form field; re-uploading a file with the same `(corpus_id, path)` replaces it (old blob/chunks/derived tables purged) instead of inserting a duplicate. New `agnes collections upload --path <id>` (single-file) exposes it. Files without a path keep the current plain-insert behavior. Schema: `corpus_files.path` (nullable), DuckDB v97 + Alembic `0044`.
 - **`agnes collections rm-file <collection_id> <file_id> [--yes]`** — CLI command to delete a single file from a collection (previously only the whole-collection `rm` was exposed; per-file removal required a raw API call).
 
-## [0.76.15] - 2026-07-23
-### Fixed
+## [0.76.15] - 2026-07-23### Fixed
 
 - **`docker compose up` no longer requires `APPS_RUNNER_TOKEN` for stacks that never touch Data Apps.** The `apps-runner` service's env var was declared hard-required (`${APPS_RUNNER_TOKEN:?...}`), which broke every `docker compose up` invocation without it set — compose validates interpolation for the whole file before profile filtering, so this fired even though `apps-runner` is gated behind `profiles: ["apps"]`. Caused the v0.76.14 release to fail its smoke test and auto-rollback (#1007). Now soft-defaults to empty; the service's own token check already fails closed (rejects every request) when unset, so this is not an auth-bypass regression.
 
-## [0.76.14] - 2026-07-23
-### Added
+## [0.76.14] - 2026-07-23### Added
 
 - **Data Apps** (schema v96): host user web applications next to the data
   using the upstream `data-app-python-js` runtime image — internal git repos
@@ -3203,8 +3126,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Security
 
-## [0.76.13] - 2026-07-23
-### Added
+## [0.76.13] - 2026-07-23### Added
 
 - **Register a BigQuery table from another project without leaving the UI.**
   The "Live from BigQuery" form gained an optional **Project** field; filling
@@ -3223,8 +3145,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   `location` hint names the `404 Not found: Table ... was not found in
   location <location>` symptom of a mismatch.
 
-## [0.76.12] - 2026-07-23
-### Fixed
+## [0.76.12] - 2026-07-23### Fixed
 
 - **The tarball workspace transport actually engages** — the 0.76.9
   speedup silently never did: the E2B template bakes `/work` as root-owned,
@@ -3254,13 +3175,11 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   assistant message ("…tables.35", "…znovu:Z MCP…"); they now join with a
   blank line.
 
-## [0.76.11] - 2026-07-22
-### Fixed
+## [0.76.11] - 2026-07-22### Fixed
 
 - Keboola semantic-layer sync (`sync_semantic_layer()`) now falls back to the default named Keboola `source_connections` entry (the connection `/admin/data-sources` manages) when the legacy `KEBOOLA_STACK_URL`/`KEBOOLA_STORAGE_TOKEN` env-or-vault slot is empty. Verified live: an instance that connects a Keboola project only through the admin wizard previously failed every semantic-layer sync with "credentials not configured", even though the same connection's regular table syncs and its own `/test` endpoint both resolve their token off it correctly.
 
-## [0.76.10] - 2026-07-22
-### Fixed
+## [0.76.10] - 2026-07-22### Fixed
 
 - Pages rendered through `_chrome_ctx` (`/admin/studio*`, `/me/memory-mining`, `/admin/store/lint`) no longer drop the Chat nav link or render an empty instance name in the page title ("Studio — ") — the helper now provides the same shared `can_chat` and `config` context as `_build_context` (#993).
 - **`bq_fqn` is now honored on the query and scan paths**: a registry row
@@ -3278,8 +3197,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   triplet with a warning on the query path, where one bad row must not
   fail unrelated queries.
 
-## [0.76.9] - 2026-07-22
-### Changed
+## [0.76.9] - 2026-07-22### Changed
 
 - **Cloud-chat spawn and first-response latency cut across the whole E2B
   path.** The per-session workspace now travels as one gzipped tarball
@@ -3311,8 +3229,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   crash now surfaces only an `error` frame, leaving the buffer intact for
   the reconnect/teardown partial-save path.
 
-## [0.76.8] - 2026-07-22
-### Added
+## [0.76.8] - 2026-07-22### Added
 
 - **Full agent/skill lifecycle over MCP** — six new foundation tools close the
   REST × CLI × MCP parity gap for managing marketplace items and own store
@@ -3334,8 +3251,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   copy-pasted search id 404ed because the detail/install endpoints take the
   bare forms.
 
-## [0.76.7] - 2026-07-22
-### Fixed
+## [0.76.7] - 2026-07-22### Fixed
 
 - Observability/hygiene follow-ups from the three-plane architecture audit
   (spec §3.7): every log line (JSON and dev/rich text formats) now carries
@@ -3358,8 +3274,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   (both HEAVY lane). Single-box `all` deployments are unchanged — the original
   synchronous/BackgroundTask paths still run and neither kind is enqueued.
 
-## [0.76.6] - 2026-07-22
-### Fixed
+## [0.76.6] - 2026-07-22### Fixed
 
 - A configured object-store bucket on an image without the `[distribution]`
   extra (boto3) no longer breaks manifest builds: `object_store()` now
@@ -3379,8 +3294,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   failures from monitoring. Transient failures keep the existing
   fail-and-retry semantics.
 
-## [0.76.5] - 2026-07-21
-### Added
+## [0.76.5] - 2026-07-21### Added
 
 - The authoring Studio (`/admin/studio*`) can now be disabled per-instance.
   Default stays on; set `AGNES_STUDIO_ENABLED=0` (the infra/Terraform `.env`
@@ -3404,8 +3318,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Security
 
-## [0.76.4] - 2026-07-21
-### Fixed
+## [0.76.4] - 2026-07-21### Fixed
 
 - Install prompt (`/setup` clipboard payload) no longer instructs the agent to
   suppress its own security judgment around the freshly-minted PAT. Removed the
@@ -3419,8 +3332,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   private-session tip — that guidance belongs in the workspace docs, not the
   one-shot setup prompt.
 
-## [0.76.3] - 2026-07-21
-### Fixed
+## [0.76.3] - 2026-07-21### Fixed
 
 - **`customer-instance` VMs now write `SERVER_URL` into `/opt/agnes/.env`**,
   derived from the configured domain (`https://<domain>`) or the VM's
@@ -3433,13 +3345,11 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   module-provisioned VM (previously masked by hand-edited `.env` files that
   VM recreates wipe).
 
-## [0.76.2] - 2026-07-21
-### Fixed
+## [0.76.2] - 2026-07-21### Fixed
 
 - **Postgres container could fail with "Permission denied" on `global/pg_filenode.map` after a VM delete+recreate.** The `agnes-state-applier-bootstrap.service` unit runs on every boot and chowns `/data/postgres` to uid:gid `70:70` (the Postgres Alpine image's user) — but the chown wasn't recursive. `/data/postgres` lives on the persistent data disk, so a boot-disk-only VM recreate (auto-upgrade rollout, instance-template change) leaves its existing PGDATA contents in place with whatever uid the *previous* instance's postgres container mapped to 70; the non-recursive chown fixed only the top-level directory, leaving nested files like `global/pg_filenode.map` owned by the stale uid and unreadable to the freshly-started container. Observed live on a customer VM after a delete+insert. `scripts/ops/agnes-state-applier-bootstrap.service` now chowns `-R`.
 
-## [0.76.1] - 2026-07-21
-### Fixed
+## [0.76.1] - 2026-07-21### Fixed
 
 - **`customer-instance` VM recreation no longer breaks side-car Postgres or
   half-boots the stack** (all three hit a customer VM recreation on
@@ -3456,8 +3366,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   first app start no longer kills the script before the Caddy/auto-upgrade/
   watchdog sections install.
 
-## [0.76.0] - 2026-07-21
-### Added
+## [0.76.0] - 2026-07-21### Added
 
 - Agent authoring domain in Studio (`/admin/studio/agent`): a chat-assisted
   builder for reusable Claude Code subagents, mirroring the existing Skill
@@ -3467,8 +3376,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   landing page (`/admin/studio`) listing every authoring domain, and a
   top-level "Studio" primary-nav link.
 
-## [0.75.16] - 2026-07-21
-### Fixed
+## [0.75.16] - 2026-07-21### Fixed
 
 - DuckDB→Postgres migrator (`scripts.migrate_duckdb_to_pg`) no longer aborts a
   cutover on a dangling RBAC grant: `resource_grants` rows whose typed-FK
@@ -3483,8 +3391,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   exiting 0 — took the instance down. A genuine copy failure (a source row
   missing from the target) still fails via the new `missing_count`.
 
-## [0.75.15] - 2026-07-21
-### Fixed
+## [0.75.15] - 2026-07-21### Fixed
 
 - `system.duckdb` ART-index self-heal: the rebuild now swaps the corrupt
   file for the rebuilt one with an atomic `os.replace` (copy-to-`.broken`
@@ -3494,8 +3401,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   schema-qualifies table identifiers so it probes robustly across
   FTS-created schemas instead of relying on `search_path`.
 
-## [0.75.14] - 2026-07-20
-### Fixed
+## [0.75.14] - 2026-07-20### Fixed
 
 - Auto-upgrade now keeps the placement-driven `docker-compose.gcp-logging.yml`
   overlay in sync with `@main` (refreshed in place on every tick, but only when
@@ -3508,8 +3414,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   recreate on GCE hosts (absent on non-GCE → a stable `missing` entry, no
   spurious drift).
 
-## [0.75.13] - 2026-07-20
-### Added
+## [0.75.13] - 2026-07-20### Added
 
 - `/admin/data-sources` now shows the Keboola semantic-layer sync status
   (never-synced / last-sync-ok-with-N-items / last-attempt-failed-with-reason)
@@ -3544,13 +3449,11 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   regardless of the requesting user's table-stack — and is now filtered
   through the same gate.
 
-## [0.75.12] - 2026-07-20
-### Fixed
+## [0.75.12] - 2026-07-20### Fixed
 
 - Health probe no longer emits `alembic.runtime.migration` INFO noise every ~30s. The Postgres schema-revision read now uses a plain `SELECT` from `alembic_version` instead of configuring an Alembic `MigrationContext` per call, and `/api/health/detailed?include=schema` runs the read off the event loop (worker thread + reuse of the 30s liveness cache) so it no longer does a synchronous DB round-trip on the loop.
 
-## [0.75.11] - 2026-07-20
-### Added
+## [0.75.11] - 2026-07-20### Added
 
 - `system.duckdb` now **self-heals on-disk ART-index corruption on start**. DuckDB
   backs `PRIMARY KEY`/`UNIQUE` constraints with an ART index; a termination that
@@ -3569,8 +3472,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   API is unusable while the DB is invalidated; stop the app first — DuckDB is
   single-writer). No-ops on a Postgres app-state backend.
 
-## [0.75.10] - 2026-07-20
-### Fixed
+## [0.75.10] - 2026-07-20### Fixed
 
 - Dropped the 3 non-unique secondary indexes on `usage_session_summary`
   (on `username`, `started_at`, `user_id`). A corrupt entry in one of them
@@ -3582,8 +3484,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   instances on upgrade; `session_file` remains the primary key and the
   upsert keeps refreshing all columns (safe once unindexed).
 
-## [0.75.9] - 2026-07-20
-### Added
+## [0.75.9] - 2026-07-20### Added
 
 - E2B SDK contract tests (`tests/test_e2b_sdk_contract.py`) that assert against
   the *installed* `e2b` package — `AsyncSandbox.list` is a lazy paginator
@@ -3595,8 +3496,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   (`tests/test_e2b_smoke.py`, `-m e2b`, skipped unless `E2B_API_KEY` is set) that
   drives the real `list() → await next_items()` auth round trip.
 
-## [0.75.8] - 2026-07-20
-### Security
+## [0.75.8] - 2026-07-20### Security
 
 - OAuth `client_secret` is now encrypted at rest instead of stored in plaintext,
   so a database or backup leak no longer exposes usable MCP client secrets
@@ -3607,8 +3507,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   authentication **closed**. (Hashing was not possible: the MCP SDK verifies the
   presented secret by equality against the value `get_client` returns.)
 
-## [0.75.7] - 2026-07-20
-### Fixed
+## [0.75.7] - 2026-07-20### Fixed
 
 - `/api/v2/scan` and `/api/v2/scan/estimate` on a `source_type='bigquery'` +
   `query_mode='materialized'` table previously re-ran a billable BigQuery scan
@@ -3624,8 +3523,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Removed
 
-## [0.75.6] - 2026-07-20
-### Fixed
+## [0.75.6] - 2026-07-20### Fixed
 
 - Chat: a sandbox that spawned but then failed post-spawn setup (a broken-pipe
   ticket push when the runner died on boot, a DB `set_sandbox_ref` error, etc.)
@@ -3634,13 +3532,11 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   (billable) with the reaper unable to find them (#867, early-crash leak; the
   reaper-cadence half is tracked separately).
 
-## [0.75.5] - 2026-07-20
-### Changed
+## [0.75.5] - 2026-07-20### Changed
 
 - The Admin nav dropdown's catch-all "Agent Experience" section is split into three intent-based groups — **Moderation queues** (Curated memory reviews, Flea Submissions), **Marketplace & knowledge distribution** (Curated Marketplaces, Maintained digests), and **Onboarding & messaging** (Initial Workspace, News, Prompts) — so an admin lands on the right page by the job they're doing instead of scanning seven loosely-related items. Nav-only change in `app/web/templates/_app_header.html`; same links, same routes, same RBAC.
 
-## [0.75.4] - 2026-07-20
-### Changed
+## [0.75.4] - 2026-07-20### Changed
 
 - BigQuery cost attribution: the billable job on the fully-materialized
   remote-select path (`agnes query --remote --auto-snapshot` /
@@ -3654,13 +3550,11 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   runs through the extension — see
   [docs/planning/752-bq-billable-labels.md](docs/planning/752-bq-billable-labels.md).
 
-## [0.75.3] - 2026-07-20
-### Added
+## [0.75.3] - 2026-07-20### Added
 
 - Keboola relationship-based JOIN metrics: `semantic-metric` expressions previously skipped as `foreign_alias_reference` now compose a two-table `LEFT JOIN` when exactly one `semantic-relationship` connects the metric's dataset (on the live-verified `to` side) to a registered Agnes table, resolved by real column metadata rather than alias-name matching (verified live: alias names in `semantic-relationship.on` never matched the aliases metric authors used). Anything ambiguous, an unverified join direction, or an unsupported relationship type still skips and counts under a specific reason — never a guessed JOIN.
 
-## [0.75.2] - 2026-07-20
-### Added
+## [0.75.2] - 2026-07-20### Added
 
 - **Actionable diagnostic when the chat LLM credential fails at runtime.** An invalid/expired key (HTTP 401/403), an unfunded account ("credit balance too low", HTTP 400), or a provider outage forwarding chat traffic through the broker previously surfaced only as an opaque synthetic assistant message. The broker now classifies the failure (reusing `app/chat/readiness.py::classify_llm_failure`, shared with the admin "test connection" probe), records a key-free signal, and audits it as `broker_llm_auth_failure`. `GET /admin/chat/readiness` gains an `llm_runtime` field and the *Cloud chat readiness* admin panel shows a red banner naming the exact fault; the signal clears on the next successful forward. Operator remediation runbook added to `docs/DEPLOYMENT.md`.
 
@@ -3676,8 +3570,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   probe in both files' config-stub helpers and added a regression test
   guarding against this gap reopening.
 
-## [0.75.1] - 2026-07-20
-### Added
+## [0.75.1] - 2026-07-20### Added
 
 - Jira parquet: reproducible bloom-filter benchmark
   (`connectors/jira/scripts/bloom_benchmark.py`) and a decision record
@@ -3692,8 +3585,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 - **Session processors could hold the request-serving process for minutes under a large session backlog (e.g. a bulk onboarding wave), causing app-wide `503`s on completely unrelated endpoints.** `run_processor()` (`services/session_pipeline/runner.py`) now enforces a per-tick wall-clock time budget (default 150s) across the whole cross-session loop, in addition to the existing per-tick attempt-count cap — once the budget is exceeded, the loop stops visiting new candidates and leaves the rest for the next scheduler tick (already-processed sessions in that tick stay marked processed; no exception is raised, since a partial tick is a normal outcome). This closes a gap the attempt-count cap alone didn't cover: one processor (`usage`) is deliberately exempt from the attempt-count cap as cheap/local-only, so a large backlog could previously drain unboundedly in one tick.
 
-## [0.75.0] - 2026-07-20
-### Added
+## [0.75.0] - 2026-07-20### Added
 
 - **Process roles for multi-process deployments** (wave-1, WS A):
   `AGNES_ROLE=api|gateway|worker|all` (or `instance.yaml::deployment.role`;
@@ -3927,8 +3819,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   Generalizes the audit M1 internal-table fix (#868). The two duplicated
   enforcement copies were consolidated into one helper.
 
-## [0.74.121] - 2026-07-20
-### Added
+## [0.74.121] - 2026-07-20### Added
 
 - **Per-table timing in the scheduled BigQuery metadata refresh.** A slow
   refresh cycle (one run taking minutes instead of the usual ~100 s over the
@@ -3942,8 +3833,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   the `refresh_one` outcome dict, so `POST /api/v2/metadata-cache/refresh`
   surfaces them for operator on-demand refreshes. `app/api/bq_metadata_refresh.py`.
 
-## [0.74.120] - 2026-07-20
-### Added
+## [0.74.120] - 2026-07-20### Added
 
 - New admin/analyst web page `/catalog/semantics` — a read-only browser for
   the semantic layer: business metrics (`metric_definitions`) and the
@@ -3957,21 +3847,18 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   "Semantic layer: N metrics, M glossary terms synced from Keboola" — once a
   connection has synced. Picks up issue #853 plus the glossary.
 
-## [0.74.119] - 2026-07-20
-### Changed
+## [0.74.119] - 2026-07-20### Changed
 
 - `agnes push` now gzip-compresses session transcript uploads (~10x smaller transfers) when the server advertises the `session-gzip` capability; older client/server combinations keep the plain format automatically. Escape hatch: `AGNES_PUSH_NO_GZIP=1`. The server stream-decompresses uploads at ingest and stores plain JSONL — the size cap binds on decompressed bytes and per-call decompression output is bounded (zip-bomb / peak-memory guard).
 
-## [0.74.118] - 2026-07-18
-### Changed
+## [0.74.118] - 2026-07-18### Changed
 
 - `/me/connections` Connect / Replace token / Test / Remove buttons now use the
   design-system button classes (`btn btn-primary` / `btn-secondary` /
   `btn-danger`, size `btn-sm`) instead of unstyled browser-default buttons, and
   the row wraps on narrow viewports.
 
-## [0.74.117] - 2026-07-18
-### Changed
+## [0.74.117] - 2026-07-18### Changed
 
 - `/me/connections` "Test connection" now shows a friendly, actionable failure
   ("Couldn't connect to <source>. Check that your token is valid and try
@@ -3981,21 +3868,18 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   design-system danger token, successes the success token — so an error is
   visually distinct from a neutral message.
 
-## [0.74.116] - 2026-07-18
-### Added
+## [0.74.116] - 2026-07-18### Added
 
 - New analyst HOWTO: [Installing skills in Claude Cowork](docs/HOWTO/06-claude-cowork.md)
   — the download → `Customize → Personal plugins → Upload plugin` loop, the
   no-sync update model, what packages carry, connector reachability caveat,
   and troubleshooting for upload-validation failures.
 
-## [0.74.115] - 2026-07-18
-### Added
+## [0.74.115] - 2026-07-18### Added
 
 - Keboola glossary import: `semantic-glossary` Metastore items sync into a new `glossary_terms` table (DuckDB + Postgres, schema v93), tagged `source='keboola_semantic_layer'` and upsert+pruned each `keboola-semantic-layer-refresh` run alongside metrics — no new scheduler job. Relevance-ranked search (`GET /api/glossary/search`, `agnes glossary search`, the `glossary_search` MCP tool) uses DuckDB FTS BM25 (Postgres: `ts_rank`) with an ILIKE fallback, mirroring the corporate-memory knowledge search.
 
-## [0.74.114] - 2026-07-18
-### Fixed
+## [0.74.114] - 2026-07-18### Fixed
 
 - Cowork per-plugin zips (`GET /marketplace/cowork/<prefixed_name>.zip`) no
   longer fail Claude Cowork's upload validation when a skill or plugin
@@ -4017,8 +3901,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   gap left when the self-service connect flow (#919) grant-gated the page and
   `/test` but not these three sibling verbs.
 
-## [0.74.113] - 2026-07-18
-### Added
+## [0.74.113] - 2026-07-18### Added
 
 - Self-service per-user MCP credential management. A new `/me/connections`
   page lets any signed-in user connect, replace, test, and remove their own
@@ -4033,8 +3916,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   web-linked remedy pointing at the connect page (falling back to the CLI hint
   when no public URL is configured).
 
-## [0.74.112] - 2026-07-17
-### Added
+## [0.74.112] - 2026-07-17### Added
 
 - `customer-instance` Terraform module can now deploy the opt-in LLM
   dispatcher (token-arbitrage PoC) alongside Agnes. Per-VM flag
@@ -4056,8 +3938,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   fresh only if neither exists), so a VM recreate never desyncs the
   password from the surviving database.
 
-## [0.74.111] - 2026-07-17
-### Fixed
+## [0.74.111] - 2026-07-17### Fixed
 
 - **`INSERT OR REPLACE` could crash the whole app process on DuckDB, same class of bug as #909.**
   `UsageRepository.upsert_summary` (`usage_session_summary`, hit every ~10
@@ -4074,12 +3955,10 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   also removes a semantic difference between the two backends' SQL shape.
   `src/repositories/usage.py`, `app/chat/persistence.py`.
 
-## [0.74.110] - 2026-07-17
-### Internal
+## [0.74.110] - 2026-07-17### Internal
 - Tests: `agnes init` / launcher tests can no longer write into the developer's real home — all in-process and subprocess init invocations redirect `HOME` into tmp, and a `tests/conftest.py` autouse guard fails any test that mutates the real shell rc files (legacy-block cleanup) or drops launcher scripts into the real `~/.local/bin`.
 
-## [0.74.109] - 2026-07-17
-### Fixed
+## [0.74.109] - 2026-07-17### Fixed
 
 - Marketplace git smart-HTTP: a `git http-backend` subprocess that exited (or
   closed its stdin) before the request body was written — e.g. an `info/refs`
@@ -4091,8 +3970,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   reported as a 500 with its stderr and exit code logged.
   `app/marketplace_server/git_router.py` (race introduced in #887).
 
-## [0.74.108] - 2026-07-17
-### Added
+## [0.74.108] - 2026-07-17### Added
 
 - Opt-in LLM dispatcher upstream for chat completions (token-arbitrage PoC).
   When `LLM_DISPATCHER_URL` (+ `LLM_DISPATCHER_API_KEY`, the dispatcher team
@@ -4105,8 +3983,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   broker logs a warning when the URL is set without the key.
   `app/api/broker.py`, documented in `config/.env.template`.
 
-## [0.74.107] - 2026-07-17
-### Security
+## [0.74.107] - 2026-07-17### Security
 
 - **Jira attachment download: SSRF via the webhook-supplied URL (audit L3).**
   `download_attachment` fetched `attachment.content` straight from the webhook
@@ -4133,8 +4010,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Changed
 - The one-word workspace launcher installed by `agnes init` is now an executable script in `~/.local/bin` (`<word>.cmd` on Windows) instead of a shell function appended to `~/.zshrc` / `~/.bashrc` / PowerShell profiles. Scripts are visible to `which`, work from non-interactive shells, and on Windows are immune to the default `ExecutionPolicy Restricted` (which silently blocked the old profile function from loading). The collision guard now also refuses to shadow any existing executable on PATH (a workspace named `Node` gets `nodeai`, not `node`). `agnes init` and a new `agnes update` convergence step automatically remove the legacy marked rc-function blocks and install the script — never before the replacement script is in place; users who opted out via `agnes init --no-shortcut` are left untouched. `scripts/dev/agnes-client-reset.sh` removes marker-carrying launcher scripts on reset.
 
-## [0.74.106] - 2026-07-17
-### Fixed
+## [0.74.106] - 2026-07-17### Fixed
 
 - **Keboola export scratch dirs could leak silently, filling the data disk.**
   `materialize_query` / `_extract_via_legacy` pass `ignore_cleanup_errors=True`
@@ -4166,13 +4042,11 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   this is a DuckDB engine bug workaround, not a general anti-pattern fix).
   `src/repositories/usage.py`.
 
-## [0.74.105] - 2026-07-16
-### Fixed
+## [0.74.105] - 2026-07-16### Fixed
 
 - **`agnes pull` no longer aborts when a table's display name contains spaces or punctuation.** The stack sync used a table/package/domain label verbatim as an on-disk path segment; a display name like `Agnes audit log` failed the strict path-segment guard with `unsafe path segment: 'Agnes audit log'` and, because the check ran inside the server-map comprehension (before the per-table `try/except`), aborted the entire sync so `sync_state.json` was never written. Path segments are now sanitized (unsafe runs → `_`, already-safe names preserved verbatim), a genuinely un-nameable row is logged and skipped instead of raising, and the pre-existing `.`/`..` traversal pass-through is closed.
 
-## [0.74.104] - 2026-07-16
-### Added
+## [0.74.104] - 2026-07-16### Added
 
 - **Admin hub page (`GET /admin`)** — a settings-style landing page that indexes
   every `/admin` surface grouped by domain (Activity Center, Users & Access,
@@ -4198,18 +4072,15 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   and permissions are unchanged — every `/admin/*` route is still gated by
   `require_admin`; this is a discoverability/IA change only.
 
-## [0.74.103] - 2026-07-16
-### Fixed
+## [0.74.103] - 2026-07-16### Fixed
 
 - **Fresh Postgres-backend deployments can boot compose from scratch.** On a brand-new `data` volume the `data-migrate` one-shot in `docker-compose.postgres.yml` found no `system.duckdb` to migrate from, exited 2, and wedged the boot — `app` and `scheduler` gate on it via `service_completed_successfully`. The compose command now passes a new `--missing-source-ok` flag: `python -m scripts.migrate_duckdb_to_pg` treats the missing source as "nothing to migrate" (logged no-op, exit 0), so a fresh deployment proceeds straight to the alembic-seeded PG. Operator-driven runs WITHOUT the flag keep exiting 2 — during a real cutover a missing `system.duckdb` means a mis-mounted volume, not a fresh install — and the flag is rejected in combination with `--reset-target`. Covered by a static compose contract test plus a docker-gated e2e that boots the real overlay chain on fresh volumes (`pytest tests/test_e2e_docker_postgres_fresh.py -m docker`).
 
-## [0.74.102] - 2026-07-16
-### Fixed
+## [0.74.102] - 2026-07-16### Fixed
 
 - **`agnes init` and the recommended launch command no longer trip Claude Code's auto-mode classifier during analyst setup.** `agnes refresh-marketplace --bootstrap` (marketplace clone + plugin install) was soft-denied as "Untrusted Code Integration" under `--permission-mode auto`; `agnes init` now declares the configured marketplace host as trusted internal infrastructure in the user-scope `~/.claude/settings.json` (`autoMode.environment`), derived from config at runtime — never hardcoded. Separately, the `/home` onboarding page's recommended launch command now pre-approves `uv tool install` (setup step 1) via `Bash(uv tool install:*)` in `--allowedTools`, so it no longer requires an interactive permission prompt. Existing installs pick up the trust on their next `agnes init`; wiring it into `agnes update` for installs that never re-run init is a tracked follow-up.
 
-## [0.74.101] - 2026-07-16
-### Fixed
+## [0.74.101] - 2026-07-16### Fixed
 
 - Built-in marketplace plugins (`agnes-analyst`, `agnes-operator`) now ship
   their `SKILL.md` at the canonical `plugins/<name>/skills/<name>/SKILL.md`
@@ -4221,8 +4092,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   pick the skill up on the next `agnes refresh-marketplace` (or session
   start).
 
-## [0.74.100] - 2026-07-16
-### Added
+## [0.74.100] - 2026-07-16### Added
 
 - **Search responses now label the retrieval mode** (#898): `GET /api/collections/search`, `GET /api/knowledge/search`, and the MCP tools `collections_search` / `knowledge_search` (both transports, including the stdio offline fallback) carry a `retrieval: "hybrid" | "lexical_only"` field. Previously the lexical-only degradation that kicks in without the `agnes[embeddings]` extra was visible only in a server-side log line, so a client could not tell semantic-scored results from degraded ones.
 
@@ -4231,13 +4101,11 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - Catalog `fetch_via` hint for internal tables (`agnes_audit`, `agnes_sessions`, `agnes_telemetry`) no longer claims "already local" (#898) — on a fresh workspace no local view exists until the usage export lands in the pull manifest, so the old hint misrouted clients into a failing local query. It now points at the auto-routing `agnes query`.
 - MCP `describe` docstrings (stdio + server-side foundation tool) now document the actual sample shape (#898): `sample.rows` is a list of `{column: value}` objects and there is no `sample.columns` key — the docstring previously promised `{"columns": [...], "rows": [...]}`, which broke agents parsing the documented shape on empty tables.
 
-## [0.74.99] - 2026-07-16
-### Added
+## [0.74.99] - 2026-07-16### Added
 
 - Container CPU caps in `docker-compose.yml` are now env-overridable, mirroring the existing `AGNES_APP_MEM_LIMIT` pattern: `cpus: ${AGNES_APP_CPUS:-2.0}` (app) and `${AGNES_SCHEDULER_CPUS:-1.0}` (scheduler), settable per deployment in `.env` instead of editing the compose file (live edits are lost on VM recreate). The `customer-instance` Terraform module grows matching `app_cpus` / `scheduler_cpus` instance attributes (defaults unchanged) that flow into `/opt/agnes/.env` via the startup script.
 
-## [0.74.98] - 2026-07-16
-### Fixed
+## [0.74.98] - 2026-07-16### Fixed
 
 - **`agnes auth import-token` no longer fails a valid PAT when server-side verification is merely slow or transiently erroring.** The verification call (against `/api/catalog/tables`) hard-exited on any `5xx` and used a hard-coded 15s timeout, so a momentarily loaded or flapping endpoint turned a structurally-valid token into a failed install. Now only a definitive rejection (`401`) aborts; a `5xx` or a read timeout warns and proceeds to save the token (it already decoded locally and was not rejected — same posture as `--skip-verify`), while a genuine connection failure (bad URL / server down) still aborts. The timeout is configurable via `AGNES_VERIFY_TIMEOUT` (seconds; falls back to the 15s default on an unset, non-numeric, or non-positive value). `cli/commands/auth.py`.
 
@@ -4266,8 +4134,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   `SCHEDULER_VERIFICATION_DETECTOR_INTERVAL` bump so the liveness probe's
   staleness-warning grace window stays calibrated to the real cadence.
 
-## [0.74.97] - 2026-07-16
-### Added
+## [0.74.97] - 2026-07-16### Added
 
 - `security.ssrf_allowed_hosts` (env `AGNES_SSRF_ALLOWED_HOSTS`): operator
   allowlist of hostnames exempt from the private/reserved-network SSRF guard.
@@ -4334,8 +4201,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.96] - 2026-07-15
-### Fixed
+## [0.74.96] - 2026-07-15### Fixed
 
 - Intermittent **"system unavailable"** (503) responses under load. The
   auth/RBAC request dependencies (`get_current_user`, `get_optional_user`,
@@ -4385,8 +4251,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.95] - 2026-07-15
-### Added
+## [0.74.95] - 2026-07-15### Added
 
 - **Keyless chat LLM auth via Workload Identity Federation (opt-in).** A new
   `chat.llm.auth` setting (`api_key` default | `workload_identity`) lets the
@@ -4405,8 +4270,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.94] - 2026-07-15
-### Fixed
+## [0.74.94] - 2026-07-15### Fixed
 
 - RBAC N+1 in catalog (`/api/v2/catalog`, `/api/catalog`), sync manifest
   build, knowledge search, web router (chat snapshot, library, table detail),
@@ -4422,8 +4286,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.93] - 2026-07-15
-### Fixed
+## [0.74.93] - 2026-07-15### Fixed
 
 - Keboola connector data-sync reliability (found via live end-to-end verification against a real project):
   - Legacy CSV extraction (`query_mode='local'` fallback path) no longer trusts a sliced export manifest's raw `entries` array order when concatenating slices — entries are now re-sorted by a natural (numeric-aware) key parsed from each slice's URL before download, so an out-of-order manifest can no longer land a data slice ahead of the header slice and corrupt the resulting parquet's column names.
@@ -4431,15 +4294,13 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.92] - 2026-07-15
-### Fixed
+## [0.74.92] - 2026-07-15### Fixed
 
 - Keboola semantic layer importer: metrics whose Keboola SQL fragment carries an embedded `--` comment (e.g. an author note flagging a missing table or an unapplied filter) are now skipped and counted (`skipped_embedded_comment`) instead of silently emitting broken SQL — appending the composed `FROM` clause after such a comment let SQL treat it as part of the comment, dropping the `FROM` clause entirely. Found via live end-to-end verification against a real project.
 
 ---
 
-## [0.74.91] - 2026-07-15
-### Internal
+## [0.74.91] - 2026-07-15### Internal
 
 - **INC-01572 red-team coverage — process-memory leg.** Added
   `tests/e2e/test_adversarial.py::test_no_real_anthropic_key_in_process_memory`
@@ -4454,8 +4315,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.90] - 2026-07-15
-### Fixed
+## [0.74.90] - 2026-07-15### Fixed
 
 - **Chat P0 — CLI data tools and MCP tools returned `HTTP 405` inside chat.**
   The in-sandbox relay forwarded `/agnes-api` and `/agnes-mcp` requests to the
@@ -4473,8 +4333,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.89] - 2026-07-15
-### Fixed
+## [0.74.89] - 2026-07-15### Fixed
 
 - **Chat P0 — UI-rotated `ANTHROPIC_API_KEY` / `E2B_API_KEY` silently lost on
   restart.** The `.env_overlay` boot-load in `create_app` used
@@ -4489,15 +4348,13 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.88] - 2026-07-15
-### Added
+## [0.74.88] - 2026-07-15### Added
 
 - Keboola semantic layer importer: `connectors/keboola/semantic_layer.py` syncs a Keboola project's Metastore (datasets, metrics, constraints) into `metric_definitions` on a schedule (`SCHEDULER_KEBOOLA_SEMANTIC_LAYER_REFRESH_INTERVAL`, default 6h), tagged `source='keboola_semantic_layer'` and upsert+pruned each run. Requires a master (owner) Storage API token. Metrics referencing a JOINed dataset (via an aliased column not in scope for v1) are skipped and counted rather than guessed. A failed Metastore fetch or Storage API master-token preflight (401/5xx/network) aborts with a logged `{status: error}` instead of a 500; an empty upstream metrics response never prunes the entire existing row set (safety valve against upstream filter drift); and foreign-alias detection masks single-quoted string literals so a dotted enum value like `'in.progress'` no longer skips a valid single-table metric.
 
 ---
 
-## [0.74.87] - 2026-07-15
-### Fixed
+## [0.74.87] - 2026-07-15### Fixed
 
 - **Chat P0 — LLM completions timed out, agent returned empty responses.** Both
   httpx clients on the sandbox→server→Anthropic path (the in-sandbox relay's
@@ -4514,8 +4371,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.86] - 2026-07-15
-### Fixed
+## [0.74.86] - 2026-07-15### Fixed
 
 - **Chat readiness probe:** the admin "test E2B connection" diagnostic
   (`app/chat/readiness.py:test_e2b_key`) crashed with `TypeError: object
@@ -4531,8 +4387,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.85] - 2026-07-15
-### Fixed
+## [0.74.85] - 2026-07-15### Fixed
 
 - **Security:** the SSE (`/api/mcp`) and Streamable-HTTP MCP transports now
   filter `tools/list` by the caller's `tool_grants`, closing a visibility leak
@@ -4550,8 +4405,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.84] - 2026-07-15
-### Security
+## [0.74.84] - 2026-07-15### Security
 
 - OAuth 2.1 authorization codes, access tokens, and **refresh tokens** are now
   hashed (SHA-256) at rest in `oauth_auth_codes` / `oauth_access_tokens` /
@@ -4566,8 +4420,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   `OAuthClientInformationFull`, so hashing it at rest needs an SDK-side
   verification change and is tracked as a follow-up.
 
-## [0.74.83] - 2026-07-15
-### Security
+## [0.74.83] - 2026-07-15### Security
 
 - `/api/query` and `/api/v2/scan` (`from_query`) now deny non-admin references
   to the internal extract-catalog base tables `_meta`, `_remote_attach`, and
@@ -4582,8 +4435,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   tracked for a follow-up query-authorization allowlist redesign — this change
   closes the sensitive metadata/credential-name leak.
 
-## [0.74.82] - 2026-07-15
-### Fixed
+## [0.74.82] - 2026-07-15### Fixed
 
 - **Chat sandbox runner crashed at startup**, taking chat down end-to-end. The
   broker hardening added a module-level `from app.chat.relay import Relay` to
@@ -4598,8 +4450,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   module-level `app.*` import in the runner. Found by live E2E on agnes-dev
   (the deny_out egress fix let sandboxes spawn, which unmasked this).
 
-## [0.74.81] - 2026-07-15
-### Security
+## [0.74.81] - 2026-07-15### Security
 
 - Marketplace and initial-workspace clone URLs are now run through
   `_validate_url_not_private` (DNS-resolve + reject private/reserved/loopback/
@@ -4609,15 +4460,13 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   server-side SSRF / internal port-probe vector (admin-gated → defense in
   depth). Found by the post-INC-01572 audit (L2).
 
-## [0.74.80] - 2026-07-15
-### Added
+## [0.74.80] - 2026-07-15### Added
 
 - The guided web tour now includes the global header search box ("Search everything") — one step between Memory and the admin menu, explaining the cross-source search (tables + knowledge + documents) and its origin-labeled results.
 
 ---
 
-## [0.74.79] - 2026-07-15
-### Security
+## [0.74.79] - 2026-07-15### Security
 
 - Curated-marketplace file serving: two path/RBAC gaps from the post-INC-01572
   audit are closed. (M2) `curated_doc` authorized on `{marketplace_id}/{plugin_name}`
@@ -4631,8 +4480,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   files elsewhere under `DATA_DIR`; the segments are now validated as strict
   slugs (`..`, `/`, `\` rejected) on the asset, doc, and mirrored endpoints.
 
-## [0.74.78] - 2026-07-15
-### Fixed
+## [0.74.78] - 2026-07-15### Fixed
 
 - **Chat sandbox spawn was hard-down** on `e2b>=2.32.0`: the VM egress config
   passed `allow_out` without `deny_out`, and the E2B API now rejects that with
@@ -4646,11 +4494,9 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   end-to-end testing — unit tests mock the E2B API and can't see the contract
   change.
 
-## [0.74.77] - 2026-07-15
-### Security
+## [0.74.77] - 2026-07-15### Security
 
-## [0.74.76] - 2026-07-15
-### Security
+## [0.74.76] - 2026-07-15### Security
 
 - Corporate-memory curator: the LLM prompt that ingests every analyst's
   untrusted `CLAUDE.local.md` now enforces a trust boundary. The notes are
@@ -4673,8 +4519,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.75] - 2026-07-15
-- Password-reset, account-setup, and email magic-link tokens are now hashed
+## [0.74.75] - 2026-07-15- Password-reset, account-setup, and email magic-link tokens are now hashed
   (SHA-256) at rest instead of stored verbatim in the `users` table, matching
   the hash-at-rest standard already used for PATs and setup/broker tokens.
   Previously anyone who could read `system.duckdb` (a backup, a snapshot, an
@@ -4698,8 +4543,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.74] - 2026-07-15
-### Added
+## [0.74.74] - 2026-07-15### Added
 
 - **Chat sandbox secret broker.** The real Anthropic key and Agnes token are
   no longer placed in any chat-sandbox process environment. An in-sandbox
@@ -4762,8 +4606,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.73] - 2026-07-15
-### Added
+## [0.74.73] - 2026-07-15### Added
 
 - Connector SKILL.md frontmatter accepts `required: true` — required
   connectors render as a separate mandatory "Install required tools" step in
@@ -4776,8 +4619,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.72] - 2026-07-15
-### Fixed
+## [0.74.72] - 2026-07-15### Fixed
 
 - **Security (defense-in-depth):** the PreToolUse hook's curl/wget
   value-flag skip set is now per-tool, closing an egress-bypass class where a
@@ -4795,8 +4637,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.71] - 2026-07-14
-### Fixed
+## [0.74.71] - 2026-07-14### Fixed
 
 - PreToolUse hook no longer misreads a `curl`/`wget` flag argument as a bare
   host. A dotted flag value such as `--output results.example.csv` was
@@ -4812,8 +4653,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.70] - 2026-07-14
-### Changed
+## [0.74.70] - 2026-07-14### Changed
 
 - **Security:** chat sandboxes now enforce a VM-level outbound network allowlist
   (E2B `network.allow_out`, set at sandbox-creation time from the Agnes server
@@ -4837,21 +4677,18 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.69] - 2026-07-14
-### Fixed
+## [0.74.69] - 2026-07-14### Fixed
 - **Security:** the SSE and Streamable-HTTP MCP servers now enforce the same authorization + policy gate on passthrough tool *invocations* as the REST endpoint. Their dynamically-registered passthrough closures previously forwarded straight to the upstream MCP source, bypassing the per-group `tool_grants` check, the `mutating` admin-only gate, and the per-(tool, user) rate limit that `POST /api/mcp/passthrough/tools/{id}/call` enforces — so a caller reaching a passthrough tool over a remote MCP connector was neither grant-checked, mutation-gated, nor rate-limited (the credential leak on these transports was already closed in 0.74.66; this closes the gate bypass deferred there). The gate stack is now extracted into a single `enforce_passthrough_access` helper shared by both the REST endpoint and the transport closures so they can't drift; each transport re-fetches the live registry row per call (grant/mutating/rate-limit/`enabled` changes take effect immediately, no restart), fails closed when the caller identity can't be resolved from the request, applies the tool's `pii_fields` redaction to the response, and enforces the same pre-forward `scope='per_user'` credential guard (refuse with an `agnes mcp my-secret set <source>` remedy rather than an opaque upstream auth error).
 - **Known residual (invocation gated, listing not):** on the SSE / Streamable-HTTP transports every enabled passthrough tool's name + description + input schema is still advertised to any authenticated caller via the MCP `tools/list` response, regardless of that caller's `tool_grants` — invocation is now denied (above) but visibility is not yet filtered, unlike the REST listing (`_visible_passthrough_tools`) which already intersects with the caller's grants. Per-caller `tools/list` filtering on these transports is a follow-up (it needs the SDK's per-connection tool enumeration, not the one-time registration this fix touches).
 
 ---
 
-## [0.74.68] - 2026-07-14
-### Fixed
+## [0.74.68] - 2026-07-14### Fixed
 - Marketplace skill/agent detail hero now renders the same name-derived, type-tinted placeholder as the card grid — a skill named `Sales Dashboard` shows a green `SD` tile instead of a generic dark `SK`/`AG` glyph. Completes the #791 rollout (`name-derived, type-tinted placeholder initials`), which had tinted the card grid and the plugin detail hero but missed `marketplace_item_detail.html` (the standalone skill/agent detail page). Both the server-side placeholder and the post-load JS hydration now derive initials from the display name and apply the `--ds-accent-*` per-type tint (skill=green / agent=amber / plugin=blue).
 
 ---
 
-## [0.74.67] - 2026-07-14
-### Added
+## [0.74.67] - 2026-07-14### Added
 
 - Daily Slack release digest: a scheduled workflow (`release-digest.yml`)
   posts one aggregated summary of all GitHub Releases since the previous
@@ -4862,14 +4699,12 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.66] - 2026-07-14
-### Fixed
+## [0.74.66] - 2026-07-14### Fixed
 - **Security:** `scope='per_user'` MCP sources no longer fall back to the shared service credential for an *identified* caller who has not set their own credential — such passthrough calls now fail closed instead of silently borrowing the shared credential and exposing whatever it can see. This holds across all caller-facing transports: the REST passthrough endpoint returns a 403 with an `agnes mcp my-secret set <source>` remedy, and the SSE and Streamable-HTTP MCP servers (the Cowork remote-MCP path) now thread the per-request caller identity into the forward so their once-registered tool closures resolve the caller's own credential rather than defaulting to shared. The shared credential remains available only to the caller-less materialize path.
 
 ---
 
-## [0.74.65] - 2026-07-14
-### Added
+## [0.74.65] - 2026-07-14### Added
 
 - New branding knob `instance_brand_short` (`AGNES_INSTANCE_BRAND_SHORT` env >
   `instance.brand_short` YAML > defaults to the full `instance_brand`): the
@@ -4879,21 +4714,18 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.64] - 2026-07-13
-### Fixed
+## [0.74.64] - 2026-07-13### Fixed
 - Postgres telemetry day bucketing is now pinned to UTC. `occurred_at`/`started_at`/`timestamp` are `timestamptz`, and the usage rollup producer (`rebuild_rollups`), the telemetry day group-by, and the adoption/DAU/token series all bucketed days via a bare `CAST(... AS DATE)` — i.e. in the database session's TimeZone, so day labels drifted on non-UTC servers (DuckDB was unaffected: its session timezone is pinned to UTC). Window/trend boundaries in the reports repository (`CURRENT_DATE`, also session-TZ-dependent on Postgres) are pinned the same way. Guarded by a new contract test that runs the producer under a skewed session TimeZone.
 
 ---
 
-## [0.74.63] - 2026-07-13
-### Fixed
+## [0.74.63] - 2026-07-13### Fixed
 
 - Store uploads now locate the bundle by its anchor file anywhere in the ZIP instead of assuming the archive root: plugins root at the shallowest `.claude-plugin/plugin.json` (two anchors at the same depth → new `zip_multiple_plugins` error), and macOS archive junk (`__MACOSX/`, AppleDouble `._*`, `.DS_Store`) is skipped during anchor search and excluded from the baked tree. Previously a plugin ZIP created with macOS Finder's "Compress <folder>" (everything under one wrapper directory) pre-filled the upload form fine but then failed the final submit with a misleading "plugin.json missing at root" error — and an AppleDouble `._*.md` mirror could even win the agent-anchor search over the real agent file.
 
 ---
 
-## [0.74.62] - 2026-07-13
-### Added
+## [0.74.62] - 2026-07-13### Added
 
 - Maintained digests: admins define digest documents (title + standing
   instructions + source collections) that the scheduler regenerates with an
@@ -4913,15 +4745,13 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.61] - 2026-07-13
-### Fixed
+## [0.74.61] - 2026-07-13### Fixed
 
 - Bundled `connector-gws` seed skill no longer writes a non-empty `project_id` into `client_secret.json`. A non-empty value made the `gws` CLI send an `x-goog-user-project` header on every API call, so every analyst except the operator needed `roles/serviceusage.serviceUsageConsumer` on the shared OAuth GCP project and got "Caller does not have required permission to use project …" 403s after a successful OAuth login. The skill now writes `"project_id": ""` (header dropped; quota bills to the OAuth client's own project) and heals existing installs in its precheck — on a `serviceUsageConsumer` failure it blanks the stored `project_id` and retries without re-auth. `AGNES_GWS_PROJECT_ID` is still served by `/api/connectors/params` for operator-customized seed templates, but the bundled skill ignores it and `instance.yaml.example` now marks it legacy.
 
 ---
 
-## [0.74.60] - 2026-07-13
-### Added
+## [0.74.60] - 2026-07-13### Added
 
 - `agnes query --scope {auto,local,server}` (default `auto`) — runs locally first and transparently falls back to server-side execution when there is no local data yet or the query hits a table that is `query_mode='remote'`/`server_only`; a `[scope]` stderr note says where the query ran. `--remote`/`--local` remain as shorthands for `--scope server`/`--scope local`.
 - Global search box in the web header — one combobox across tables, curated knowledge, and uploaded documents, backed by the existing `GET /api/knowledge/search` endpoint; results are grouped and labeled by origin (table hits deep-link to the catalog drill-down).
@@ -4945,22 +4775,19 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.59] - 2026-07-13
-### Fixed
+## [0.74.59] - 2026-07-13### Fixed
 - Marketplace daily-series telemetry (plugin detail chart, inner-item series): the 30-day axis is now built from the UTC date, matching the UTC day buckets of the rollup fact. Previously, on hosts where the local date differed from the UTC date (e.g. shortly after local midnight east of UTC), the series dropped or misplaced today's bucket; the daily-series contract test asserted on the local clock for the same reason.
 
 ---
 
-## [0.74.58] - 2026-07-13
-### Changed
+## [0.74.58] - 2026-07-13### Changed
 
 - BQ metadata lookups (rows/size via `TABLE_STORAGE` and `__TABLES__`, entity type via `INFORMATION_SCHEMA.TABLES`) now run through the python BigQuery SDK instead of the DuckDB extension: ~0.3 s per call instead of 7–13 s through a pooled extension session, certifi-verified TLS (immune to the extension's intermittent `CURL error 77` class), and the region-scoped `TABLE_STORAGE` job is now pinned to the configured location — previously it could silently return no row and always fall through to the legacy path. The COLUMNS fetch (shared `fetch_bq_columns_full`) stays on the extension.
 - Materialized BQ syncs no longer `ATTACH` the data project into the COPY session. The COPY source is a standalone `bigquery_query()` call that never resolves through the attached catalog, while the ATTACH itself triggered a full-project `INFORMATION_SCHEMA` catalog scan on the BQ side — multi-GB billed plus seconds of latency per fresh session, many times a day — for zero benefit.
 
 ---
 
-## [0.74.57] - 2026-07-13
-### Added
+## [0.74.57] - 2026-07-13### Added
 
 - Claude Code setup instructions on both connector pages: the AI Connector page (`/me/ai-connector`) gains a **Claude Code** tab in the setup guide — `claude mcp add --transport http agnes <server>/api/mcp/http`, the restart-before-it-appears note, `/mcp` to authenticate, and an SSE-fallback note for servers that predate the mount-root fix below — and the token page (`/mcp-connect`) gains a **Claude Code** tab with the PAT-in-header one-liner (`claude mcp add --transport sse … --header "Authorization: Bearer <PAT>"`).
 
@@ -4970,8 +4797,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.56] - 2026-07-13
-### Added
+## [0.74.56] - 2026-07-13### Added
 
 - Startup now seeds the six canonical memory domains (`md_finance` … `md_infrastructure`) into the **active** state backend through the repository factory — previously only the DuckDB schema ladder seeded them, so a fresh Postgres-backed instance had no canonical domains at all (Alembic creates the table empty). The new `memory_domains` repo method `ensure_seed` (DuckDB + PG siblings) inserts under the deterministic `md_<slug>` ids and never touches an existing row — admin renames are not overwritten and soft-deleted domains are not resurrected (a soft-deleted row still holds its slug). Covered by cross-engine contract tests and a both-backends lifespan-replay parity test.
 
@@ -4981,8 +4807,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.55] - 2026-07-12
-### Changed
+## [0.74.55] - 2026-07-12### Changed
 
 - `agnes init` no longer auto-marks the bootstrap Claude Code session private (reverts the auto-mark half of #771; the push-time JWT redaction half stays and is the sole PAT defense — the raw token still never reaches the server's transcript store). Setup-session transcripts now upload like any other session, and marking a session private is exclusively the analyst's own deliberate action: the `/agnes-private` command template gains `disable-model-invocation: true` (the model can suggest the command but can never invoke it), and the install-prompt NOTE + step-4 tip + workspace CLAUDE.md template now instruct the agent to treat the PAT-in-transcript as designed behavior — no warnings, no self-initiated `agnes mark-private` — while still suggesting `/agnes-private` to the user for future sensitive sessions.
 
@@ -4992,8 +4817,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.54] - 2026-07-12
----
+## [0.74.54] - 2026-07-12---
 ### Added
 
 ### Changed
@@ -5011,15 +4835,13 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.53] - 2026-07-12
-### Fixed
+## [0.74.53] - 2026-07-12### Fixed
 
 - The three host-side ops scripts (`agnes-auto-upgrade.sh`, `agnes-state-applier.sh`, `agnes-tls-rotate.sh`) bash-sourced the entire `/opt/agnes/.env` (`set -a; . .env`) just to read a few infra-controlled keys. A free-text app var in `.env` (e.g. an operator-set `AGNES_INSTANCE_CUSTOM_PREAMBLE` containing a backtick, `>`, `$`, or quote) made the source abort with a shell syntax error under `set -e` — silently blocking every 5-minute auto-upgrade tick (VM stopped pulling new images), and latent on the cutover state-applier and daily TLS rotation. Each script now extracts only the keys it actually needs, line-by-line, never shell-evaluating any value (auto-upgrade: `AGNES_TAG`/`STATE_DIR`/`COMPOSE_FILE`; state-applier: `AGNES_TAG`; tls-rotate: `TLS_FULLCHAIN_URL`/`TLS_PRIVKEY_URL`/`TLS_CSR_SUBJECT`/`DOMAIN`/`STATE_DIR`). Docker Compose was unaffected — it parses `.env` with its own safe parser.
 
 ---
 
-## [0.74.52] - 2026-07-12
----
+## [0.74.52] - 2026-07-12---
 ### Added
 
 ### Changed
@@ -5035,8 +4857,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.51] - 2026-07-11
-### Added
+## [0.74.51] - 2026-07-11### Added
 
 - Credential-free local knowledge packaging: the server builds a per-collection
   `knowledge.duckdb` artifact (chunks + embeddings) whenever corpus content
@@ -5060,8 +4881,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.50] - 2026-07-10
-### Fixed
+## [0.74.50] - 2026-07-10### Fixed
 
 - Postgres-backed instances: ~25 further backend-split sites (beyond the 0.74.36 batch) read/wrote app-state on the always-DuckDB connection instead of the active backend, breaking (among others) the per-table MCP endpoint (404 for every table), internal-source registration, MCP passthrough-tool registration, memory-endpoint RBAC audience filtering, blocked-bundle purge (reaped 0 rows), session-pipeline user attribution and marketplace usage attribution (empty telemetry rollups), home-page stats, the admin activity health pulse, catalog profile display, workspace CLAUDE.md rendering (empty tables/metrics/marketplace sections), OpenMetadata catalog export, Slack-bot user identity + channel allowlist, chat audit-log writes, and the Keboola/BigQuery/MCP extractor registry reads. All sites now route through the backend-aware repository factory.
 
@@ -5071,8 +4891,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.49] - 2026-07-10
-### Added
+## [0.74.49] - 2026-07-10### Added
 
 - Unified knowledge search: one query across document Collections (hybrid
   lexical+vector), the corporate-memory knowledge base (fulltext), and the
@@ -5082,8 +4901,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.48] - 2026-07-10
-### Added
+## [0.74.48] - 2026-07-10### Added
 - Cloud-chat sandbox agents now connect to the Agnes MCP stdio server (`agnes mcp`) via `ClaudeAgentOptions.mcp_servers`, so a web-chat agent sees the same RBAC-filtered Universal-MCP passthrough tools (`crm_*`, etc.) that a local Claude Code / Cowork install gets — previously the sandbox agent could only reach Agnes through the `agnes` CLI's Bash surface and never saw passthrough tools. Auth (`AGNES_SERVER`/`AGNES_TOKEN`/`AGNES_SESSION_ID`) is forwarded on the MCP server's own env; unconfigured spawns (fake-agent tests) fall back to built-in tools only.
 
 ### Fixed
@@ -5091,8 +4909,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.47] - 2026-07-10
-### Changed
+## [0.74.47] - 2026-07-10### Changed
 
 - Compose hardening for the app and scheduler services: `CURL_CA_BUNDLE`/`SSL_CERT_FILE` pinned to the image's CA bundle (the statically linked libcurl inside DuckDB extensions intermittently failed new TLS handshakes with `CURL error 77` while its own CA discovery raced fd pressure) and the file-descriptor soft limit raised from the 1024 default to 65536 (fd exhaustion during bursts produces the same error signature).
 
@@ -5103,14 +4920,12 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.46] - 2026-07-10
-### Changed
+## [0.74.46] - 2026-07-10### Changed
 - **Rebrand: "AI Data Analyst" → "AI Harness".** Agnes outgrew its data-analyst framing — it now spans governed data access, an aggregated skills marketplace, corporate memory, and multiple agent surfaces (web chat, Slack, Telegram, MCP, CLI). Renamed the platform one-liner and brand strings across README, docs, the FastAPI/OpenAPI title, MCP server instructions, CLI help, web page-title fallbacks, `config/instance.yaml.example`, and the marketplace owner name. The default `instance.name` is now `"AI Harness"` (was `"AI Data Analyst"`; instances that set `instance.name` explicitly are unaffected). The `agnes init` workspace CLAUDE.md template heading no longer contains the legacy `AI Data Analyst` marker — workspace-initialized detection has been sentinel-based (`.claude/init-complete`) since #259, and the legacy substring check is retained for pre-#259 workspaces.
 
 ---
 
-## [0.74.45] - 2026-07-10
-### Added
+## [0.74.45] - 2026-07-10### Added
 
 - Collections: zip archive upload — a bundle (e.g. a Confluence HTML space export)
   is unpacked server-side, every supported member ingested as its own file with
@@ -5123,14 +4938,12 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.44] - 2026-07-10
-### Changed
+## [0.74.44] - 2026-07-10### Changed
 - Interactive web login sessions now persist for 30 days (JWT `exp` + `access_token` cookie `max_age`), up from 24 hours. Session JWTs remain non-revocable per-session — the only server-side kill switch is deactivating the account.
 
 ---
 
-## [0.74.43] - 2026-07-10
-### Added
+## [0.74.43] - 2026-07-10### Added
 - `instance.custom_preamble` install-prompt hook (env `AGNES_INSTANCE_CUSTOM_PREAMBLE`, resolver `get_instance_custom_preamble()`): an operator-authored block injected at the very top of the `agnes init` install prompt, above `Set up the … CLI`. Empty/unset (the default) emits zero lines, so the rendered prompt stays byte-identical; `{instance_brand}` and the other server-side placeholders are substituted, but it must not contain literal `{server_url}`/`{token}`. Documented in `docs/CONFIGURATION.md` and surfaced by `GET /api/admin/config-surface`.
 
 ### Changed
@@ -5147,8 +4960,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.42] - 2026-07-10
-### Changed
+## [0.74.42] - 2026-07-10### Changed
 - The cloud-chat workspace seed (`WorkdirManager.server_url`) now resolves its
   server URL through the same fallback chain as the sandbox data rails
   (`SERVER_URL` → `AGNES_INTERNAL_URL` → loopback) via the new
@@ -5167,28 +4979,24 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.41] - 2026-07-10
-### Added
+## [0.74.41] - 2026-07-10### Added
 
 - Studio Skill Builder (`/admin/studio/skill`, issue #688): guided authoring of a SKILL.md with an assistant profile, published straight into the store's guardrail + review pipeline via the new `POST /api/store/entities/from-markdown` (also `agnes store publish-md` and the `store_publish_markdown` MCP tool). Direct-submit domains bypass the authoring-suggestions queue — the store's own review is the moderation.
 
 ---
 
-## [0.74.40] - 2026-07-10
-### Fixed
+## [0.74.40] - 2026-07-10### Fixed
 
 - Failed or killed scheduled materializations are retried the same day instead of silently waiting until the next schedule boundary. The orchestrator's post-rebuild bookkeeping bumped `sync_state.last_sync` for every table in `_meta` — including `query_mode='materialized'` rows, whose daily due-check reads that timestamp — so one failed `daily 06:00` run left the table stale for 24 h (observed live as a week-long refresh gap). Materialized rows' sync_state is now owned solely by the materialized pass; the filesystem-fallback publish still records rows/hash and clears stale errors but preserves `last_sync` (new `update_sync(bump_last_sync=False)` on both backends), keeping the schedule gate open so the next tick re-materializes and heals the missing `_meta` row. Also fixes the filesystem-fallback path detecting materialized rows via `get_by_name()` instead of `get()` so that the schedule-gate protection applies when the registry `id` differs from the `name` (parquet filename stem).
 
 ---
 
-## [0.74.39] - 2026-07-10
-### Added
+## [0.74.39] - 2026-07-10### Added
 - Single `.skill` file uploads to the Store: the marketplace now accepts a lone `.skill` file (a `SKILL.md` document with YAML frontmatter `name`+`description` and a markdown body) as an alternative to a `.zip` bundle. The file is materialized server-side as `scratch/SKILL.md` and is identical to a zip upload; only valid for `type=skill` (uploading as plugin/agent returns 422 `skill_file_wrong_type`).
 
 ---
 
-## [0.74.38] - 2026-07-10
-### Fixed
+## [0.74.38] - 2026-07-10### Fixed
 - MCP wheel bootstrap no longer trusts the `.installed.json` marker alone: the marker lives on the persistent data volume while `pip install --user` lands in the ephemeral container filesystem, so after a container recreate the boot skipped the reinstall and every stdio MCP source failed with `[Errno 2] No such file or directory`. The skip path now also verifies the wheel's distribution is actually importable and reinstalls when it is gone.
 
 - Backend-split cleanup (batch 2): the CLI-login PAT mint and four corporate-memory admin endpoints (mark-mandatory, mark-unmandatory, admin item GET, memory-domain item lookup, and the per-domain markdown bundle) wrote/read via direct `AccessTokenRepository(conn)` / `KnowledgeRepository(conn)` instantiation, which always targets DuckDB — on a Postgres-backed instance those writes/reads bypassed the active backend. Migrated to `access_token_repo()` / `knowledge_repo()` and shrank the backend-split guard's grandfathered allow-list accordingly.
@@ -5196,8 +5004,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.74.37] - 2026-07-10
-### Added
+## [0.74.37] - 2026-07-10### Added
 - Operator toggle to hide individual `/login` feature cards without forking: set `instance.hide_login_features` (a YAML list or comma-separated string of the stable keys `data`, `marketplace`, `mcp`, `memory`, `anywhere`) in `instance.yaml`, or the `AGNES_INSTANCE_HIDE_LOGIN_FEATURES` env override. Empty by default — nothing is hidden.
 
 ### Fixed
@@ -5206,8 +5013,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Internal
 
-## [0.74.36] - 2026-07-10
-### Changed
+## [0.74.36] - 2026-07-10### Changed
 - Admin secrets/data-sources UX consolidation: Keboola project connect/browse/register/"Set as default"/"Rotate token" now live entirely on `/admin/data-sources`, removing the duplicate Keboola section from `/admin/datasource-credentials`. That page is retitled "Instance secrets" (Google Workspace + BigQuery only) and links back to `/admin/data-sources` for Keboola; `/admin/data-sources` gains a reciprocal link to Instance secrets.
 
 ### Fixed
@@ -5217,13 +5023,11 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 - Backend-split guard hardened: state-table list is now derived from the SQLAlchemy model metadata (a new model automatically extends the guard), `connectors/` joined the scan dirs, and a new detector flags raw state-SQL through *any* connection outside the repository layer — closing the helper-param blind spot behind this bug batch. New cross-engine repo methods added in pairs with contract-test coverage.
 
-## [0.74.35] - 2026-07-10
-### Added
+## [0.74.35] - 2026-07-10### Added
 
 - Web chat composer: a filterable slash menu (type `/` at the start of a message) showing the skills and slash commands actually invokable in your chat sandbox — server-normalized from bundled workspace-template skills and your RBAC-filtered marketplace/store plugin skills via the new `GET /api/chat/skills` endpoint (also reachable as `agnes chat skills` and the `chat_skills` MCP tool). (#780)
 
-## [0.74.34] - 2026-07-10
-### Added
+## [0.74.34] - 2026-07-10### Added
 
 - Marketplace registration supports pinning a marketplace to a fixed git tag or full 40-char commit SHA via a new `ref` field (mutually exclusive with `branch` — 400 if both are set). Nightly and manual syncs stay at the pinned ref even when upstream's default branch moves; a mismatched/unreachable SHA pin fails the sync and keeps serving the previous checkout, same as any other sync failure. Surfaced on the `/admin/marketplaces` cards/edit modal and in the `MarketplaceResponse` API shape (#781)
 
@@ -5235,20 +5039,17 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 - Schema v87: `ref` column added to `marketplace_registry` (DuckDB `_v86_to_v87` + Alembic `0034_marketplace_ref_pin_v87`)
 
-## [0.74.33] - 2026-07-10
-### Fixed
+## [0.74.33] - 2026-07-10### Fixed
 
 - Store uploads: `_safe_zip_extract` now rejects archives with more than 2000 members (`413 zip_too_many_entries`) — the existing size caps didn't bound member count, so a small ZIP packed with tiny files could exhaust inodes on the data volume (#779)
 
-## [0.74.32] - 2026-07-10
-### Changed
+## [0.74.32] - 2026-07-10### Changed
 
 - /home onboarding now recommends launching Claude with `claude --permission-mode auto` instead of `--dangerously-skip-permissions`. Auto mode's classifier auto-approves safe actions (file edits and safe Bash) so the setup script runs mostly unattended while riskier commands can still prompt — an honest middle ground rather than a blanket skip. The broad-blast-radius flag is no longer surfaced on /home (it stays documented as an advanced option on /setup-advanced), and the workspace launcher comment examples were updated to match.
 - Schema v87: `corpus_files.parent_file_id` links archive-extracted children to
   their bundle row (DuckDB `_v86_to_v87` + Alembic `0034_parent_file_id_v87`).
 
-## [0.74.31] - 2026-07-10
-### Fixed
+## [0.74.31] - 2026-07-10### Fixed
 
 - Filesystem-fallback master views now record success in `sync_state`: a table published via the fallback path (parquet on disk, `_meta` row missing) previously kept whatever stale `set_error()` row the failed run left behind, so the admin dashboard and manifest kept reporting a long-fixed failure indefinitely
 - Keboola CSV materialize path (`connectors/keboola/extractor.py`): the DuckDB `read_csv` conversion to parquet now pins the RFC-4180 dialect (`quote='"', escape='"'`) matching Storage API's CSV export format, instead of relying on DuckDB's dialect sniffer. Guards against a mis-detected escape character on rows carrying their own embedded quoting (e.g. JSON/SQL text columns) surfacing as a spurious `CSV Error on Line: N`.
@@ -5256,8 +5057,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 - Keboola connector: added test coverage for the GCS/Azure sliced-download branches in `connectors/keboola/storage_api.py` and the equivalent `gs://` rewrite in the legacy `connectors/keboola/client.py` fallback path — previously exercised only by manual verification, not the test suite.
 
-## [0.74.30] - 2026-07-09
-### Added
+## [0.74.30] - 2026-07-09### Added
 - Collections: `POST /api/collections/{id}/files/{file_id}/reingest` (+ `agnes collections reingest`, MCP `collections_reingest`) — re-run ingestion for one file after a fix. Files ingested before this release may still be sitting at `indexed` over what was actually empty content — re-ingest them to get an honest status.
 
 ### Changed
@@ -5266,12 +5066,10 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Fixed
 - PDF ingestion works on default installs: `pypdf` is now a core dependency (previously every PDF was rejected unless the heavy `docling` extra was installed).
 
-## [0.74.29] - 2026-07-09
-### Changed
+## [0.74.29] - 2026-07-09### Changed
 - Marketplace cover-photo placeholders now derive their initials from the entity name (`keboola-cli` → `KC`) instead of a generic per-type `PL`/`SK`/`AG`, and tint by type — plugin (blue) / skill (green) / agent (amber) — so a wall of cover-less cards is scannable at a glance. Applies to the card grid, the plugin detail hero, and inner skill/agent cards within a plugin's Internal Structure section; unknown/empty names fall back to the type abbreviation and default gradient. The plugin detail hero now pre-renders server-side initials as a progressive-enhancement fallback so no empty gradient flash occurs before the JS fetch completes.
 
-## [0.74.28] - 2026-07-09
-### Changed
+## [0.74.28] - 2026-07-09### Changed
 
 - Install prompt: replaced the render-time "your account has zero grants" claim with live-manifest wording plus an `agnes my-stack show` verification step (explaining the `[✓]`/`[✗]` legend), and added an up-front reconcile-vs-fresh-install note keyed on the `.claude/init-complete` sentinel — the prompt no longer contradicts grants added after it was generated or breaks on partially-set-up machines.
 
@@ -5281,27 +5079,22 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - `agnes refresh-marketplace`: a leftover `~/.agnes/marketplace` clone whose origin points at a different host than the configured server is now detected — `--bootstrap` re-clones from the current server automatically; refresh/`--check` fail fast with the repair command instead of syncing against the stale (possibly dead) remote.
 - connector-gws seed skill: the operator params file is documented at its real location `<workspace>/.claude/agnes/.env` (was wrongly `~/.claude/agnes/.env`, sending installs into the manual GCP walkthrough even when the operator had provisioned OAuth), and the skill now checks for the secret value directly in that file (instance.yaml `connectors:` overlay ships values verbatim) before falling back to the `*_ENV` shell-env pointer.
 
-## [0.74.27] - 2026-07-09
-### Added
+## [0.74.27] - 2026-07-09### Added
 - Admin "Add Keboola project" wizard at `/admin/data-sources`: paste a connection URL + storage token, validate, then browse buckets/tables and register the ones you want — no SSH, no config-file edits. Backed by a new `GET /api/admin/source-connections/{id}/tables` discovery endpoint (buckets grouped with nested tables) and `list_buckets()`/`list_tables()` on `KeboolaStorageClient`. Source connections can now also be renamed via `PUT /api/admin/source-connections/{id}` (`name` field), used by the wizard to adopt the project name `test-connection` reports. The admin nav gained a "Sources" grouping distinguishing "Data sources" (Keboola/BigQuery projects Agnes pulls tables from) from "MCP sources" (MCP servers whose tools Agnes calls at runtime) (#755)
 
-## [0.74.26] - 2026-07-09
-### Changed
+## [0.74.26] - 2026-07-09### Changed
 - `POST /api/v2/scan`'s billable BigQuery execution now runs through `google-cloud-bigquery`'s `client.query(labels=...)` instead of the unlabeled DuckDB `bigquery_query()` extension, so scan jobs carry the same cost-attribution labels (`workload_type`/`agent_name`/`user_id`) as the dry-run estimate and the hybrid-query path (#751). The `snapshot.create` audit row now also carries `bq_job_id`/`bytes_scanned`/`bytes_billed` for BigQuery-source scans, replacing the previously-deferred `None` placeholders. The remote-select streaming path (`agnes query --remote`) is unaffected — it stays on the DuckDB extension for Storage Read API pushdown (#752)
 
 ### Fixed
 - Audit rows for chat-secret updates, CLI auth code/token minting, data-package/recipe/memory-domain admin mutations, and memory-item required-flag toggles now go through the backend-aware `audit_repo()` factory instead of instantiating `AuditRepository` directly against the request's DuckDB connection. On Postgres instances the direct form wrote to the always-DuckDB connection while admin reads went to Postgres, so those audit entries silently never appeared in the Activity Center.
 
-## [0.74.25] - 2026-07-09
-### Fixed
+## [0.74.25] - 2026-07-09### Fixed
 - `agnes init` no longer writes a shell launcher function that shadows the `agnes` CLI binary itself (workspace folder named `Agnes` produced `function agnes`, hijacking every subsequent CLI call into a Claude chat session). The collision guard that already renamed shell built-ins now also covers the toolchain's own commands (`agnes`, `claude`) — the function becomes e.g. `agnesai` — and re-running `agnes init` removes the stale shadowing block a pre-fix install left in `~/.zshrc` / `~/.bashrc` / PowerShell profiles. IWT launchers seeded as `bin/<sanitized-name>` keep routing correctly under the renamed function (#783)
 
-## [0.74.24] - 2026-07-08
-### Changed
+## [0.74.24] - 2026-07-08### Changed
 - Library: the collection-creation form on `/library` is now a proper panel — labeled Name/Description fields with a live `/library/<slug>` URL preview, inline validation and 409 duplicate-slug errors (replacing `alert()`), Enter/Escape keyboard handling, and creating a collection now lands on the new collection's detail page ready for file upload instead of reloading the list.
 
-## [0.74.23] - 2026-07-08
-### Added
+## [0.74.23] - 2026-07-08### Added
 
 ### Changed
 
@@ -5312,8 +5105,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Internal
 
-## [0.74.22] - 2026-07-08
-### Added
+## [0.74.22] - 2026-07-08### Added
 
 ### Changed
 
@@ -5324,8 +5116,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 - Removed dead `get_system_db()` connection acquisitions in `app/api/sync.py` — the connections were opened and closed without ever being used, since the actual data access already went through `table_registry_repo()` / `sync_state_repo()` / `audit_repo()`, which open their own connections internally.
 
-## [0.74.21] - 2026-07-08
-### Added
+## [0.74.21] - 2026-07-08### Added
 - CLI proactively nudges analysts to re-mint their 90-day PAT before it expires: a one-line stderr warning (at most once per day, `AGNES_TOKEN_RENEW_DAYS` env override, default 7 days, `0` disables) when the stored token's `exp` claim is close to expiring, plus token status in `agnes auth whoami` and the `agnes update` convergence report. No refresh-token grant, no PAT TTL change — `agnes auth login` remains the renewal path (#477)
 
 ### Changed
@@ -5336,8 +5127,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Internal
 
-## [0.74.20] - 2026-07-08
-### Added
+## [0.74.20] - 2026-07-08### Added
 - `agnes statusline` now surfaces a one-line "what changed" summary after a detached `agnes update` convergence actually changes something (e.g. `Agnes: CLI 0.72.9 -> 0.73.0 (active next session) · +2 plugins · workspace refreshed`), shown once per convergence report; an all-`ok`/`skipped` report renders nothing, and the CLI portion is phrased honestly ("active next session" vs already active) since a freshly-installed binary only takes effect on the next `agnes` invocation (#744)
 
 ### Changed
@@ -5348,8 +5138,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Internal
 
-## [0.74.19] - 2026-07-08
-### Added
+## [0.74.19] - 2026-07-08### Added
 
 ### Changed
 
@@ -5360,8 +5149,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Internal
 
-## [0.74.18] - 2026-07-08
-### Added
+## [0.74.18] - 2026-07-08### Added
 
 ### Changed
 
@@ -5372,8 +5160,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Internal
 
-## [0.74.17] - 2026-07-08
-### Added
+## [0.74.17] - 2026-07-08### Added
 
 ### Changed
 
@@ -5386,8 +5173,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Internal
 
-## [0.74.16] - 2026-07-08
-### Added
+## [0.74.16] - 2026-07-08### Added
 
 ### Changed
 
@@ -5398,8 +5184,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Internal
 
-## [0.74.15] - 2026-07-07
-### Added
+## [0.74.15] - 2026-07-07### Added
 - BigQuery job labels (`workload_type`, `agent_name`, `environment`, `user_id`) on agent-issued BQ jobs. The **hybrid** path labels its billable jobs; the `/api/v2/scan` and remote-`/api/query` paths label only the dry-run cost estimate — their billable execution runs through the DuckDB BigQuery extension, which (like sync/snapshot) cannot carry job labels. Full billable-job attribution for those paths is a follow-up slice (bytes/slot capture).
 
 ### Changed
@@ -5410,8 +5195,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Internal
 
-## [0.74.14] - 2026-07-07
-### Added
+## [0.74.14] - 2026-07-07### Added
 - `GET /api/store/entities/{id}/status` — owner-facing review-pipeline status (latest submission status, error cause, actionable hint), with `agnes store status <id> [--wait]` and a `store_status` MCP tool; `agnes store upload` now points at it when the entity is held for review. Previously the only post-upload signal was a 409 `prior_version_pending` on the next update
 
 ### Changed
@@ -5426,8 +5210,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Internal
 
-## [0.74.13] - 2026-07-07
-### Added
+## [0.74.13] - 2026-07-07### Added
 
 ### Changed
 
@@ -5438,8 +5221,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Internal
 
-## [0.74.12] - 2026-07-07
-### Added
+## [0.74.12] - 2026-07-07### Added
 - Interactive chat turns (web + Slack) now emit a `chat.message` usage event (`source='server'`, surface + session id in props), so `/admin/telemetry` and the adoption dashboard's active-user counts include chat activity — previously `usage_events` only saw desktop CC sessions (`agnes push`) and server product events
 
 ### Changed
@@ -5450,8 +5232,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Internal
 
-## [0.74.11] - 2026-07-07
-### Added
+## [0.74.11] - 2026-07-07### Added
 
 ### Changed
 
@@ -5462,8 +5243,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Internal
 
-## [0.74.10] - 2026-07-07
-### Added
+## [0.74.10] - 2026-07-07### Added
 - `connectors` (the per-tenant connector-params overlay) is now an editable section in `/admin/server-config` (UI + API), so operators can manage it without hand-editing the overlay file on the server
 
 ### Changed
@@ -5475,8 +5255,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Internal
 
-## [0.74.9] - 2026-07-07
-### Added
+## [0.74.9] - 2026-07-07### Added
 
 ### Changed
 
@@ -5487,8 +5266,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Internal
 
-## [0.74.8] - 2026-07-07
-### Added
+## [0.74.8] - 2026-07-07### Added
 
 - `agnes init` now automatically installs a one-word launcher shortcut (`<workspace_name_lowercased>`) into the user's shell config (`~/.zshrc` / `~/.bashrc` on POSIX, PowerShell `$PROFILE` on Windows). The shortcut changes into the workspace and launches Claude with `--permission-mode auto`; when the IWT supplies a `bin/<word>` launcher it routes through it so the welcome skill fires. Cross-platform, idempotent (per-workspace marker — re-running `agnes init` never duplicates, and a second workspace on the same machine gets its own block), and reversible. If a same-named shell function from the old manual step already exists, the new block is appended (last definition wins) and the user is told the old line is a harmless leftover. Use `agnes init --no-shortcut` to opt out.
 
@@ -5502,8 +5280,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Internal
 
-## [0.74.7] - 2026-07-07
-### Added
+## [0.74.7] - 2026-07-07### Added
 
 ### Changed
 
@@ -5514,8 +5291,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 - Catalog table-detail page (`/catalog/t/{table_id}`) no longer swallows exceptions silently — all three `except` blocks in `app/web/router.py` (package-enumeration, profile-load, schema-introspection fallback) now log with `exc_info=True`, so the real cause (e.g. DuckDB catalog contention during a concurrent `SyncOrchestrator.rebuild()`) is visible in logs instead of a bare warning.
 
-## [0.74.6] - 2026-07-07
-### Added
+## [0.74.6] - 2026-07-07### Added
 
 ### Changed
 
@@ -5527,8 +5303,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 - Re-arm the debug-toolbar integration test weakened in #660: a rendered HTML 200 route without toolbar markup under `DEBUG=1` now fails instead of skipping; only the empty-body pytest-split artifact still skips.
 
-## [0.74.5] - 2026-07-07
-### Added
+## [0.74.5] - 2026-07-07### Added
 
 ### Changed
 
@@ -5539,8 +5314,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 - Test-suite disk hygiene: `pytest.ini` now sets `tmp_path_retention_count = 1` (down from the default 3) — a full-suite run writes 20–50 GB of DuckDB/parquet/pgserver fixtures into pytest's basetemp, and retaining the last 3 sessions accumulated 56+ GB and filled the disk, failing a run with thousands of spurious errors. Retaining a single session lets the next run's startup sweep reclaim the prior one (~3× less peak). Deliberately keeps the default `tmp_path_retention_policy = all` rather than `failed`: `failed` deletes each passing test's `tmp_path` mid-session, which desyncs the cached DuckDB system-DB connection (`get_system_db()` singleton) from disk and makes later tests fail with duplicate-key errors in the `seeded_app` fixture. A session-scoped reaper fixture (`tests/db_pg/pgserver_reaper.py`) additionally removes `agnes-pgserver-*` data dirs orphaned by hard-killed runs (older than 1 h, `postmaster.pid` process gone); live concurrent-worktree sessions are never touched.
 
-## [0.74.4] - 2026-07-03
-### Added
+## [0.74.4] - 2026-07-03### Added
 
 ### Changed
 
@@ -5551,8 +5325,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Internal
 
-## [0.74.3] - 2026-07-03
-### Added
+## [0.74.3] - 2026-07-03### Added
 
 ### Changed
 
@@ -5563,8 +5336,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Internal
 
-## [0.74.2] - 2026-07-02
-### Added
+## [0.74.2] - 2026-07-02### Added
 
 ### Changed
 
@@ -5575,8 +5347,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 - Bump `PyJWT` minimum to 2.13.0 (lock: 2.12.1 → 2.13.0), resolving five Dependabot alerts against the auth-critical JWT dependency — GHSA-xgmm-8j9v-c9wx (high: public-key JWK accepted as HMAC secret), GHSA-w7vc-732c-9m39, GHSA-993g-76c3-p5m4, GHSA-jq35-7prp-9v3f, GHSA-fhv5-28vv-h8m8. Agnes only uses symmetric HS256 `encode`/`decode` (no `PyJWK`/`PyJWKClient`), so none of the advisories were directly exploitable here; this is defense-in-depth hygiene.
 
-## [0.74.1] - 2026-07-02
-### Added
+## [0.74.1] - 2026-07-02### Added
 - `POST /api/admin/validate-gws-credentials` — admin-only format check for the Google Workspace OAuth `client_id` (no network call, no persistence). Powers a new "Test" button on the GWS card of `/admin/datasource-credentials`; the endpoint was documented for #718 but never wired up (previously returned 405 / absent from OpenAPI).
 
 ### Changed
@@ -5587,8 +5358,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Internal
 
-## [0.74.0] - 2026-07-02
-### Added
+## [0.74.0] - 2026-07-02### Added
 - Keboola multi-project support: `GET/POST/PUT/DELETE /api/admin/source-connections` CRUD surface (+ `/secret` vault endpoints and `/test` connectivity check) for naming and storing multiple Keboola project credentials; `connection_id` field on `POST /api/admin/register-table` pins a table to a specific named connection (400 on unknown id); sync materialized-pass resolves Keboola client credentials per-table via the named connection (vault-first, then `token_env` env var), falling back to the global instance token for tables without a `connection_id`.
 - `/admin/datasource-credentials` Keboola projects section: dynamic cards backed by the source-connections API showing name, stack URL, default and token-status badges, with Test / Set as default / Rotate token / Delete actions and an Add project modal.
 
@@ -5601,8 +5371,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Internal
 
-## [0.73.4] - 2026-07-02
-### Added
+## [0.73.4] - 2026-07-02### Added
 - `agnes update` — one idempotent, best-effort convergence of the workspace + CLI: CLI self-upgrade, workspace template (override 3-way merge with `.bak` backups / default `CLAUDE.md` refresh), Agnes-owned hooks/statusLine/commands, marketplace plugins, and data pull. Single-instance locked (`~/.config/agnes/update.lock`), runnable from any directory, with a per-run report appended to `<workspace>/.claude/agnes/update.log`. This is the recommended way to repair a broken install or pick up a new release.
 - A corrupt `<workspace>/.claude/settings.json` is now backed up to `settings.json.corrupt.<ts>` and rebuilt, instead of leaving hook install/repair permanently skipped.
 
@@ -5624,8 +5393,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - `cli/lib/push_lock.py` gained `acquire_path_or_skip(path)` (a path-scoped cross-platform `filelock`) reused for the update lock.
 - `agnes refresh-marketplace --check` exits a dedicated drift code (`20`) so `agnes update` can decide whether to run a full reconcile without re-implementing the ls-remote comparison.
 
-## [0.73.3] - 2026-07-02
-### Added
+## [0.73.3] - 2026-07-02### Added
 - **Generic Jira custom-field refresh** via `JIRA_REFRESH_FIELDS`. An operator lists the custom fields they want kept fresh on tickets (`field_id` or `field_id:column`, comma-separated, no defaults); the webhook overlay and the 15-minute poll re-fetch them with the primary token and overwrite them on the ticket, and the transform emits one JSON-text column per field on the `issues` table (column = the alias, or the field id). SLA fields are not special — they are just entries in the list. Joins are implicit: the value lives on the ticket row, keyed by `issue_key`. A configured column name that would collide with a built-in `issues` column (e.g. `resolution`, `status`) is prefixed with `cf_` so built-in values are never overwritten.
 - **`verify_sla_access` field preflight** (`connectors/jira/scripts/verify_sla_access.py`). Discovers an instance's custom fields (`--list-fields`, id + name + type) and verifies, against the live API, that the configured fields are readable with the primary token (`--issue KEY`) — classifying each as present / permission-error / null across the domain and `api.atlassian.com` gateway URLs. Never prints token/email values; exits non-zero when no field is readable.
 
@@ -5642,20 +5410,17 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Internal
 
-## [0.73.2] - 2026-07-02
-### Added
+## [0.73.2] - 2026-07-02### Added
 - `POST /api/admin/register-table` accepts `defer_rebuild` (BigQuery only): skips the synchronous, O(registry) per-insert rebuild of the extract + master views, returning `202 registered` without making the table queryable yet. New companion `POST /api/admin/registry/rebuild` triggers that rebuild once. Bulk onboarding can now register many tables with `defer_rebuild=true` and rebuild a single time, instead of one full registry-wide rebuild per table (which made large batches pathologically slow and starved foreground requests).
 
 ### Fixed
 - `POST /api/admin/registry/rebuild` now emits an audit-log entry and returns HTTP 422 when the instance is not BigQuery, preventing accidental rebuilds on non-BigQuery instances.
 - `POST /api/admin/registry/rebuild` now calls `invalidate_all()` after a synchronous rebuild so stale catalog entries are cleared immediately.
 
-## [0.73.1] - 2026-07-02
-### Fixed
+## [0.73.1] - 2026-07-02### Fixed
 - Corporate-memory contradiction check no longer fails with a 400 from the LLM provider. `BATCH_CONTRADICTION_SCHEMA`'s nullable `severity` / `resolution_action` fields now use `anyOf` (a string-with-enum branch or null) instead of a union `["string", "null"]` type combined with an `enum` containing `null`, which strict structured outputs reject — every contradiction check was permanently broken. The enum stays enforced at the schema level, so the model still can't emit out-of-range values.
 
-## [0.73.0] - 2026-07-02
-### Added
+## [0.73.0] - 2026-07-02### Added
 - `/admin/contribute-skill` page (admin-only) that accepts a pasted Claude Code
   `SKILL.md` and publishes it as a one-skill plugin in a local, sync-immune
   "Agnes Contributed" marketplace — the landing target for an external "Load
@@ -5681,13 +5446,11 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Internal
 
-## [0.72.1] - 2026-06-29
-### Internal
+## [0.72.1] - 2026-06-29### Internal
 
 - `scripts/dev/worktree-spawn.sh` — helper script to spawn an isolated Git worktree for a parallel Claude Code session; symlinks shared local state (`user/`, `.venv/`, `.env`, `data/`) back to the main checkout. Documented in CLAUDE.md under *Parallel Claude Code worktrees*.
 
-## [0.72.0] - 2026-06-26
-### Fixed
+## [0.72.0] - 2026-06-26### Fixed
 - `POST /api/admin/keboola/test-connection` now resolves the Keboola token from the vault when absent from the environment, so the "Test connection" button on `/admin/datasource-credentials` works for vault-only deployments.
 - `PUT /api/admin/datasource-secrets/BIGQUERY_SERVICE_ACCOUNT_JSON` now calls `clear_token_cache()` after storing the new SA JSON, so the rotated credential takes effect immediately instead of after the cached token expires (up to ~50 min).
 
@@ -5733,8 +5496,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 - Session-upload internals reorganized: new `cli/lib/session_paths.py` (projects-dir encoder honoring `CLAUDE_CONFIG_DIR`, no dash-collapsing) and `cli/lib/upload_log.py` (upload ledger `session_id⇥size⇥iso` + audit logs); `cli/lib/session_queue.py` and `cli/lib/claude_sessions.py` removed. Hook installer (`cli/lib/hooks.py`) drops the capture entries while keeping the capture markers for one-time migration cleanup.
 
-## [0.71.61] - 2026-06-23
-### Added
+## [0.71.61] - 2026-06-23### Added
 
 - `POST /api/admin/run-knowledge-migration` — admin endpoint to retroactively import `knowledge.json` items into the `knowledge_items` DB table for instances that collected corporate memory before v0.71.60. Idempotent; a one-click button on `/admin/corporate-memory` calls it and auto-hides after success.
 
@@ -5748,16 +5510,14 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Internal
 
-## [0.71.60] - 2026-06-23
-### Fixed
+## [0.71.60] - 2026-06-23### Fixed
 - Corporate memory pipeline now persists extracted knowledge items to the DuckDB `knowledge_items` table via `knowledge_repo()`; previously `collect_all()` only wrote `knowledge.json` and `/api/memory` always returned empty (#205).
 - `run_corporate_memory` now returns `ok: false` when DB-level sync errors occur; stats response includes `items_db_inserted`, `items_db_updated`, `items_db_errors`.
 
 ### Internal
 - `test-pg` CI job now runs as a 2-shard matrix, halving wall-clock time for the Postgres contract suite.
 
-## [0.71.59] - 2026-06-22
-### Added
+## [0.71.59] - 2026-06-22### Added
 - **AI Connector page leads with a "Control Agnes from your AI agent" connector panel.** The page moved to `/me/ai-connector` (the old `/me/cowork` and `/me/mcp` now 301-redirect there). The OAuth 2.1 connector URL (`/api/mcp/http`) is now the primary call to action — a prominent panel with the copy-able connector URL, a 3-step connect flow, and the supported clients (Claude Cowork, Claude web, ChatGPT, Gemini, Cursor, Microsoft Copilot, VS Code). Previously this no-token connect path was undiscoverable: the page surfaced only the setup-bundle download and the legacy SSE endpoint. The setup-bundle UI and the legacy SSE endpoint display were removed from the page (the bundle and SSE backend endpoints are unchanged). The "AI Connector" name is now applied consistently across the profile dropdown menu, the onboarding tour, and the help/onboarding docs (previously still labelled "AI Cowork"); references to the third-party Claude Cowork product are unchanged. The hero subtitle and the connector panel's lead paragraph now span the full content width instead of wrapping early.
 
 ### Changed
@@ -5769,8 +5529,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 - **CI test suite now runs across 8 shards (up from 4) with uv dependency caching**, reducing the worst-case shard wall-clock time from ~11 min to ~3 min. Regenerated `.test_durations` so pytest-split can balance all 8 900+ tests evenly across shards. `tests/db_pg/` now runs in a dedicated `test-pg` job, removing pgserver startup overhead from the split shards.
 
-## [0.71.58] - 2026-06-22
-### Added
+## [0.71.58] - 2026-06-22### Added
 - **Admin "Disable plugin" toggle in the `/admin/marketplaces` Details modal.** Each plugin row now has a "Disabled" switch (confirmation modal, same style as "Mark as system") that admin-disables the plugin instance-wide via the existing `POST /{marketplace_id}/plugins/{plugin_name}/{disable,enable}` endpoints. A disabled plugin disappears from every surface except the Details modal where it can be re-enabled — the RBAC served feed, the marketplace browse page, every user's my-stack, the synthetic served marketplace, the `/admin/access` grant UI, and the v2 `/skills` endpoint (admin included). The disable also survives restarts: the built-in marketplace re-seed on boot preserves `admin_disabled` (the `replace_for_marketplace` upsert never resets it), so a disabled built-in plugin stays disabled and hidden after a reboot. Disabling also clears the `is_system` flag (re-enabling does NOT restore it), and the "Mark as system" button is greyed out while a plugin is disabled. The `admin_disabled` flag is now surfaced on `GET /{marketplace_id}/plugins` (`PluginResponse`) so the modal can render the switch and a DISABLED pill.
 
 ### Changed
@@ -5790,8 +5549,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 - **Backend-split guard residual shrunk by 13 handler-files / 23 handlers** (`_GRANDFATHERED_DEPENDS_GET_DB_RAW_SQL`). New dual-backend repo methods backing them, all with cross-engine contract tests: `users.get_info_by_ids`; `sync_state.clear_for_table`; `store_submissions.{delete,list_for_entity}`; `session_processor_state.{delete_for_processors,max_processed_at,processed_session_files,get_states_for_session_files}`; `usage.{count_events,reset_all,list_sessions_for_user_admin,list_sessions_for_user_self,tokens_daily_series,tokens_by_model,tokens_top_sessions,tokens_totals}`; `audit.{count_for_user,query_governance,facets,kpis}` (added to `AuditRepositoryProtocol`; `kpis` p95 uses `approx_quantile` on DuckDB / `percentile_cont` on Postgres); `memory_domains.resolve_ids_to_slugs`; `marketplace_plugins.list_system_keys`; `store_entities.category_counts`; `table_registry.count_non_internal`; `user_group_members.{list_groups_with_meta_for_user (widened),list_google_sync_groups_for_user}`; `observability_views.{count_for_user,name_exists}`. New contract files: `test_{usage,sync_state,session_processor_state,table_registry,observability_views}_contract.py`. Also fixed a latent `usage.delete_older_than` bug (DuckDB returned `-1` rowcount; Postgres `::TEXT` interval cast broke under SQLAlchemy). `usage.reset_all` gained a `clear_processors` arg so `reprocess_usage` clears the usage rollups *and* their `session_processor_state` checkpoints in one transaction (restores the pre-refactor all-or-nothing reset); retention-prune and token-series contract tests strengthened with seeded cutoff / cross-user-and-window cases.
 
-## [0.71.57] - 2026-06-19
-### Added
+## [0.71.57] - 2026-06-19### Added
 
 ### Changed
 
@@ -5807,56 +5565,46 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 - **Backend-split guard now also catches `Depends(_get_db)` + raw `conn.execute` on state tables** (`tests/test_backend_split_guard.py`), and the cross-engine parity sweep compares `/api/admin/access-overview` response bodies, not just HTTP status (`tests/db_pg/`). New repo methods `users.get_by_ids`, `store_entities.synthetic_name_taken`, and `user_stack_subscriptions.subscribe_group_members` added to both DuckDB and Postgres backends with contract-test coverage.
 
-## [0.71.56] - 2026-06-18
-### Changed
+## [0.71.56] - 2026-06-18### Changed
 - **BREAKING** License changed from MIT to PolyForm Small Business License 1.0.0. Use of the software is now restricted to organizations with fewer than 100 total individuals and less than 1,000,000 USD (2019) in total revenue in the prior tax year. See [LICENSE](LICENSE) for full terms.
 ### Fixed
 - **MCP OAuth consent page now reads the correct session cookie — no more infinite login redirect.** `_get_session_user` in `app/auth/mcp_oauth.py` read a cookie named `agnes_session`, but every auth provider sets the session cookie as `access_token`. The consent page therefore never recovered the user's session after the login redirect, looping login → consent → login. It now reads `access_token`, matching the providers and `app/auth/dependencies.py`.
 - **Refreshed OAuth access tokens keep their `resource` binding (RFC 8707).** `exchange_refresh_token` minted the new access token without a `resource`, so a resource-bound token lost its binding (`resource=None`) on every refresh while the auth-code path set it correctly. The `resource` is now persisted on the refresh-token row (new `oauth_refresh_tokens.resource` column, DuckDB schema v84 + Alembic `0031`) and carried through token rotation into both the new access token and the rotated refresh token.
 
-## [0.71.55] - 2026-06-17
-### Fixed
+## [0.71.55] - 2026-06-17### Fixed
 - **Keboola materialized `where_filters` now resolve date placeholders (`{{last_6_months}}`, `{{today}}`, …) — a rolling window in a materialized `source_query` no longer needs a hand-maintained literal date.** `materialize_query` parsed the `source_query` filter spec but never ran `resolve_placeholders`, so a placeholder like `{{last_6_months}}` was sent to the Storage API verbatim and silently matched 0 rows — placeholders only worked on `query_mode='local'` rows. The materialized path now resolves them (via `parse_filters` + `resolve_placeholders`) exactly like the local/legacy path, and an unknown placeholder (`{{typo}}`) now fails loudly with a clear error instead of silently returning 0 rows.
 
-## [0.71.54] - 2026-06-17
-### Internal
+## [0.71.54] - 2026-06-17### Internal
 - OpenMetadata connector: added `search_data_products_by_tag` and `search_tables_by_data_product` reverse-search methods (query-filter by `tags.tagFQN` / `dataProducts.fullyQualifiedName`) for catalog-driven data-product onboarding.
 - `app/plugins.py`: generic extension points (`load_routers`, `extra_template_dirs`) to mount deployment-specific admin routers + Jinja template dirs from `instance.yaml` `plugins.*` config, without forking the app. Wired into bootstrap: `app.main.create_app` includes configured `plugins.admin_routers` before the web catch-all, and `app.web.router` adds `plugins.template_dirs` to the Jinja loader (built-in templates first; missing dirs dropped; config-read failure falls back to built-in only).
 
-## [0.71.53] - 2026-06-17
-### Fixed
+## [0.71.53] - 2026-06-17### Fixed
 
 - Google group membership changes now propagate to PAT/CLI callers without requiring a browser re-login. When `require_resource_access` denies a request, it re-fetches the caller's Workspace groups via the existing DWD path and retries the access check once (self-heal-on-miss, #504). A 60-second per-user cooldown prevents Admin SDK call storms on repeated denials.
 
-## [0.71.52] - 2026-06-17
-### Internal
+## [0.71.52] - 2026-06-17### Internal
 - Ruff-formatted `test_google_group_prefix_sync.py`; documented why success-path assertions use strict `== 302` (the callback explicitly sets `status_code=302`) rather than `in (302, 307)`. (#676)
 
-## [0.71.51] - 2026-06-17
-### Fixed
+## [0.71.51] - 2026-06-17### Fixed
 - **Invite copy button works on plain HTTP.** The clipboard helper now falls back to `document.execCommand('copy')` when `navigator.clipboard` is unavailable (non-HTTPS contexts), so the Copy button in the invitation and password-reset link modals reliably copies the URL on self-hosted instances that run without TLS. (#681)
 - **SMTP-not-configured notice is now visually prominent.** When no email transport is configured the modal note is styled as a yellow warning banner instead of gray secondary text, making it immediately clear the admin must share the link manually. (#681)
 - **Missing `audit_repo` import in password provider.** `app/auth/providers/password.py` referenced `audit_repo` inside `_audit()` without importing it, causing every audit call inside that module to silently fail with a `NameError` (swallowed by the bare `except Exception`). (#681)
 
-## [0.71.50] - 2026-06-17
-### Fixed
+## [0.71.50] - 2026-06-17### Fixed
 - **Collections: deleting a tabular file now purges its derived `table_registry` row, parquet, and `extract.duckdb` view.** Previously the cleanup left the table queryable via `agnes catalog` even after the file was removed. The same cascade fires on collection soft-delete. Both DuckDB and Postgres backends are covered. (#692)
 
-## [0.71.49] - 2026-06-17
-### Added
+## [0.71.49] - 2026-06-17### Added
 - Maintenance page shown during app restarts, replacing raw 502 errors; page auto-refreshes every 12 s
 
 ### Fixed
 - 502 errors during container restarts (e.g. auto-upgrade) are absorbed by Caddy's retry window instead of being surfaced to users
 
-## [0.71.48] - 2026-06-17
-### Added
+## [0.71.48] - 2026-06-17### Added
 - **Container logs ship to GCP Cloud Logging on GCE deployments.** A new opt-in compose overlay `docker-compose.gcp-logging.yml` switches the `app`, `scheduler`, `caddy`, `telegram-bot`, `ws-gateway`, and `extract` services to Docker's built-in `gcplogs` logging driver, so container stdout/stderr (application INFO **and** uncaught-exception tracebacks) flows to Google Cloud Logging next to the VM/system logs (resource `gce_instance`, logName `gcplogs-docker-driver`, tagged by `jsonPayload.container.name`; the app JSON line is preserved in `jsonPayload.message`) instead of staying in the local json-file driver and being lost on container recreate. Activation is **placement-driven**: the overlay is deliberately **not** baked into the image and **not** in any default `COMPOSE_FILE` / `CONFIG_FILES` list — `agnes-auto-upgrade.sh` and `agnes-state-applier.sh` append it only when the file physically exists on disk (`[ -f ]` guard), and the file is placed solely by the GCE deploy layer (Terraform startup-script), which runs only on GCE. Non-GCP deployments never receive the file and keep the default `json-file` driver unchanged (gcplogs would otherwise fail without a GCE metadata server). The VM service account already carries `roles/logging.logWriter`, so no IAM change is required, and `docker logs` keeps working via Docker's dual-logging local cache. (#679)
 
 ### Internal
 
-## [0.71.47] - 2026-06-17
-### Added
+## [0.71.47] - 2026-06-17### Added
 - **Native OAuth 2.1 remote MCP connector.** Agnes can now be added as a custom connector by any MCP-compatible AI agent — Claude Desktop / Claude.ai, Cursor, Cline, ChatGPT connectors, or a custom MCP SDK client — using the standard browser-based OAuth 2.1 + PKCE handshake, with no manually-issued PAT. A new Streamable-HTTP MCP transport is mounted at `/api/mcp/http` (the existing SSE transport stays at `/api/mcp/sse` for Cowork back-compat) and acts as its own OAuth Authorization Server: RFC 7591 dynamic client registration, `/authorize` + `/token` with PKCE (S256), and RFC 8414 + RFC 9728 discovery metadata published at the origin root (`/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource/api/mcp/http`) so a client given the bare instance URL can discover the connector. The authorize step bridges into the existing Agnes login (Google OAuth, email magic-link fallback) and shows a consent screen before minting a short-lived authorization code; the access token is a standard Agnes session JWT, so `resolve_token_to_user` accepts it and all existing RBAC applies unchanged. The connector URL a user pastes into their agent is `https://<your-host>/api/mcp/http`. New modules `app/api/mcp_streamable.py` + `app/auth/mcp_oauth.py`; OAuth clients/codes/tokens persisted via the dual-backend `oauth_clients` repo (DuckDB + Postgres parity). Schema → v83.
 
 ### Changed
@@ -5869,8 +5617,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Internal
 
-## [0.71.46] - 2026-06-16
-### Added
+## [0.71.46] - 2026-06-16### Added
 - Collections web UI: a **Library** nav section — `/library` lists your
   accessible collections; `/library/{slug}` shows files with per-file status
   pills, an upload drop, and an "Ask this collection" search box (wired to the
@@ -5920,14 +5667,12 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   (384-dim `float4` embedding column; chunk repo deferred to Retrieval slice).
   DuckDB `_v81_to_v82` migration + Alembic `0029_collections_v82`.
 
-## [0.71.45] - 2026-06-16
-### Added
+## [0.71.45] - 2026-06-16### Added
 - Corporate-memory mining (privacy-gated, v81): per-user **opt-in consent** (`memory_mining_consent`, dual-backend) before any session transcript is mined; an admin `POST /api/admin/memory-mining/run` PII-scans candidates, tags provenance, and routes them through the authoring-suggestions queue (never an admin-direct write). Candidate extraction is a deterministic placeholder; LLM distillation plugs in on top of the same consent/PII/provenance/approval gate.
 - Authoring agents — non-admin suggestion queue (`authoring_suggestions`, DuckDB v80 + Alembic, dual-backend): `POST /api/studio/suggestions` lets a non-admin submit a proposed create payload per studio domain; admins review via a moderation queue at `/admin/studio/suggestions` + `GET/POST /api/admin/authoring-suggestions[/{id}/approve|reject]`. Approving a suggestion auto-creates the real resource for all four domains by replaying the payload through each domain's own validation + repo create path (pydantic re-validation; the moderation UI shows the complete `command`/`url` payload so admin approval is informed consent).
 - Authoring agents: profiled chat sessions (`profile` on `POST /api/chat/sessions`, materialized into the session workdir, no migration) + a generic admin-only **authoring studio** at `/admin/studio/{domain}` with an embedded assistant panel, covering four domains — **data-package**, **mcp**, **marketplace**, and **corporate-memory** — each wiring its Create action to the existing admin endpoint.
 
-## [0.71.44] - 2026-06-16
-### Added
+## [0.71.44] - 2026-06-16### Added
 
 ### Changed
 
@@ -5940,8 +5685,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - Schema v80 (DuckDB `_v79_to_v80` + Alembic `0027_authoring_suggestions_v80`): `authoring_suggestions` table — non-admin suggestion queue and moderation flow, dual-backend.
 - Schema v81 (DuckDB `_v80_to_v81` + Alembic `0028_memory_mining_consent_v81`): `memory_mining_consent` table — opt-in privacy gate for memory mining, dual-backend.
 
-## [0.71.43] - 2026-06-16
-### Added
+## [0.71.43] - 2026-06-16### Added
 
 ### Changed
 
@@ -5963,8 +5707,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   parametrized auth scenarios (anonymous, non-admin, admin). Includes a route-
   coverage guard that fails CI when a new endpoint has no test or exclusion entry.
 
-## [0.71.42] - 2026-06-16
-### Added
+## [0.71.42] - 2026-06-16### Added
 - Named source connections (phase 1/5): `source_connections` + vault-backed `connection_secrets` registry (DuckDB v79 + Alembic `0026`), per-type config validation with URL normalization, a connection/token resolver (vault → `token_env`), and first-boot seeding of `keboola`/`bigquery` defaults from env/yaml. Invisible in this phase — extraction switches over to per-connection `extracts/<name>/` in phase 2. Lays the groundwork for N connections per source type (multiple Keboola stacks/projects, multiple BigQuery projects) without changing single-connection deployments.
 
 ### Changed
@@ -5975,8 +5718,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Internal
 
-## [0.71.41] - 2026-06-16
-### Added
+## [0.71.41] - 2026-06-16### Added
 - **Built-in marketplace: owner + richer plugin descriptions.** The seeded built-in marketplace now sets `curator_name="Agnes"`, so it shows a clear owner/attribution in the admin and browse UI (distinct from admin-registered marketplaces that carry their curator's name). The `marketplace.json` + per-plugin `plugin.json` descriptions now spell out what each plugin actually covers — `agnes-analyst` (discovery, local-vs-remote query path, estimate-first snapshots, per-source SQL flavour, metric definitions) and `agnes-operator` (the three config layers + live config-surface) — so users browsing know what they're installing.
 - **Jira connector: hive-partitioned parquet layout.** Monthly parquet files are
   now written to `month=YYYY-MM/data.parquet` hive partition directories instead
@@ -6001,8 +5743,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Internal
 
-## [0.71.40] — 2026-06-15
-### Added
+## [0.71.40] — 2026-06-15### Added
 - **Config-surface introspection** — `GET /api/admin/config-surface` (admin-gated), the `agnes admin config-surface` CLI, and a matching MCP tool expose this instance's complete configurable surface in one read: every `instance_config` knob with its resolved value + source (env / yaml / default), the registered Initial Workspace Template (url/branch/last-sync-sha), the registered marketplaces, and `infra_repo_url`. The machine-readable form of `docs/CONFIGURATION.md`. Also adds the optional `instance.infra_repo_url` / `AGNES_INFRA_REPO_URL` knob (empty default) — the one deployment pointer the app cannot self-discover.
 - **Built-in marketplace** — two vendor-neutral plugins ship with every instance and are seeded automatically (offline, from `src/_builtin_marketplace/`, no git fetch): `agnes-analyst` (how to query/discover/snapshot Agnes data + look up metrics, served to `Everyone`) and `agnes-operator` (how to configure the instance — init prompt, workspace, branding, connectors — backed by a live `config-surface` call so guidance names this instance's real pointers, served to `Admin`). New `marketplace_registry.is_builtin` flag (the nightly git-sync skips built-in rows) and `marketplace_plugins.admin_disabled` flag for per-plugin admin disable, on both the DuckDB (v77→v78) and Postgres ladders.
 
@@ -6014,8 +5755,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Internal
 
-## [0.71.39] — 2026-06-15
-### Added
+## [0.71.39] — 2026-06-15### Added
 - `agnes diagnose` now includes a **Jira partition-format** check
   (`jira-partition-format`) that detects whether the Jira connector's
   on-disk parquet files use the old flat `YYYY-MM.parquet` layout or the
@@ -6075,8 +5815,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   canonical, with a space); the extractor normalizes it to `MATERIALIZED_VIEW`
   (underscore) before branching so existing view-path logic is unaffected.
 
-## [0.71.38] — 2026-06-15
-### Added
+## [0.71.38] — 2026-06-15### Added
 - **Forced password change on first sign-in for non-self-chosen passwords.** A
   new `users.must_change_password` flag (schema v77; Alembic
   `0024_must_change_password_v77`) is set whenever a password is established by
@@ -6114,8 +5853,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   passes on the first that carries the markup — matching its own docstring
   ("at least one HTML 200 response") — and only skips when none do.
 
-## [0.71.37] — 2026-06-13
-### Fixed
+## [0.71.37] — 2026-06-13### Fixed
 - `GET /api/health` no longer blocks the event loop on its DB schema read. The
   liveness probe is `async`, but it ran the schema `SELECT` synchronously on the
   same system connection the orchestrator writes `sync_state` to during a
@@ -6127,13 +5865,11 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   migration. The response body is unchanged (`status` + `db_schema` + `current`),
   so the watchdog's schema-bump info event and the docker smoke check keep working. (#654)
 
-## [0.71.36] — 2026-06-13
-### Added
+## [0.71.36] — 2026-06-13### Added
 - **`/admin/prompts` bind-git file picker.** The Git-mode pane of each managed prompt (install / workspace) now offers a dropdown of the bindable files in the synced Initial Workspace Template repo instead of a raw free-text path field that silently 400'd on a typo. Options are repo-root-relative paths (e.g. `workspace/CLAUDE.md`, `install-prompt/template.md.tmpl`) — exactly the strings `bind-git` accepts — with this card's canonical seed path pre-selected. A "Type a path manually" escape hatch keeps the old text input for power users / re-bind. Backed by a new read-only `GET /api/admin/prompts/iwt-files` (returns `{iwt_configured, files, suggested}`; empty `files` when IWT is unconfigured) and `src.initial_workspace.list_iwt_repo_files()` (repo-root-relative, `.git/` + symlinks excluded). Admin-web-only (EXEMPT in the triple-surface gate). (#622 Slice 3, #653)
 - **Initial Workspace Template moved to its own page + optional nightly auto-sync.** The IWT register / sync / delete UI now lives at `/admin/initial-workspace` (Admin → Agent Experience) instead of buried in a `/admin/server-config` section; the old anchor leaves a cross-link. The new page also surfaces a read-only **Prompt bindings** provenance table (which repo file each managed prompt reads from + divergence state, deep-linking to `/admin/prompts`). Optional **nightly auto-sync**: set `initial_workspace.sync_schedule` (UI field or `instance.yaml`; grammar `daily HH:MM` / `every Nm` / `cron …`, default `daily 03:30` when never configured, **leave empty to disable** — the scheduler then omits the nightly job entirely; env override `SCHEDULER_INITIAL_WORKSPACE_SCHEDULE`) and the scheduler fast-forwards the repo nightly via a new always-200 `POST /api/admin/initial-workspace/sync-if-configured` wrapper (silent no-op when no IWT is registered; the manual `/sync` still errors loudly). Cadence is read once at scheduler-container start — a UI edit takes effect on the next scheduler restart. Each nightly run writes an `initial_workspace.sync` / `initial_workspace.sync_failed` audit row, surfaced under the `/admin/activity` scheduler filter. (#622 Slice 3, #653)
 
-## [0.71.35] — 2026-06-13
-### Added
+## [0.71.35] — 2026-06-13### Added
 - **Store pre-submit dry-run** — `POST /api/store/entities/dryrun` runs the full
   guardrail pipeline (inline checks + LLM review) against a candidate bundle and
   returns `{inline_checks, llm_findings, would_publish}` **without persisting any
@@ -6148,8 +5884,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   runs the LLM review off the event loop. Per-submitter dry-run quota and
   identical-bundle verdict caching are deferred (tracked on #317). (#317, #652)
 
-## [0.71.34] — 2026-06-13
-### Added
+## [0.71.34] — 2026-06-13### Added
 - **Thumbs up/down ratings on store / marketplace items.** Analysts can now
   signal whether a store entity (skill / agent / plugin) was useful via a
   per-user thumbs up/down vote. New endpoint `POST /api/store/entities/{id}/rate`
@@ -6166,8 +5901,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   mirroring `knowledge_votes`. New dual-backend `store_entity_votes` repository
   (DuckDB + Postgres) with a cross-engine contract test. (#398, #651)
 
-## [0.71.33] — 2026-06-13
-### Added
+## [0.71.33] — 2026-06-13### Added
 - **Query telemetry in the admin usage view** (addresses #410, on-demand slice).
   `GET /api/admin/telemetry/summary` now returns a `query_telemetry` facet that
   aggregates the existing `query.remote` / `query.local` / `snapshot.create`
@@ -6180,8 +5914,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   (no new table, no scheduler rollup — the periodic-aggregation step from the
   issue is deferred). Implemented on both DuckDB and Postgres backends. (#650)
 
-## [0.71.32] — 2026-06-13
-### Added
+## [0.71.32] — 2026-06-13### Added
 - **Structured `where_filters` builder in the admin Keboola register/edit modals**
   (addresses #408). The Direct-extract (Storage API) registration path used to
   expose row filters only as a raw-JSON textarea — error-prone for non-technical
@@ -6195,8 +5928,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   contract — no schema or API change. An "Edit raw JSON" escape hatch is kept for
   power users. Pure front-end (`app/web/static/js/where-filters-builder.js`). (#649)
 
-## [0.71.31] — 2026-06-13
-### Added
+## [0.71.31] — 2026-06-13### Added
 - **Webhook alert on scheduled-sync failure.** When a scheduled sync fails —
   either fatally, on an extractor/subprocess timeout, or with per-table errors
   (materialized-pass errors, Keboola extractor exit 1/2) — Agnes now POSTs a
@@ -6217,20 +5949,16 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Internal
 
-## [0.71.30] — 2026-06-13
-### Added
+## [0.71.30] — 2026-06-13### Added
 - **`/admin/prompts` bind-git file picker.** The Git-mode pane of each managed prompt (install / workspace) now offers a dropdown of the bindable files in the synced Initial Workspace Template repo instead of a raw free-text path field that silently 400'd on a typo. Options are repo-root-relative paths (e.g. `workspace/CLAUDE.md`, `install-prompt/template.md.tmpl`) — exactly the strings `bind-git` accepts — with this card's canonical seed path pre-selected. A "Type a path manually" escape hatch keeps the old text input for power users / re-bind. Backed by a new read-only `GET /api/admin/prompts/iwt-files` (returns `{iwt_configured, files, suggested}`; empty `files` when IWT is unconfigured) and `src.initial_workspace.list_iwt_repo_files()` (repo-root-relative, `.git/` + symlinks excluded). Admin-web-only (EXEMPT in the triple-surface gate). (#622 Slice 3)
 
-## [0.71.29] — 2026-06-12
-### Added
+## [0.71.29] — 2026-06-12### Added
 - Admin → Tables: **Unregister** action on unpackaged table rows, giving admins a UI path to delete a registered table (previously only possible via `DELETE /api/admin/registry/{id}`). Wires the existing, until-now unreachable `deleteTable()` handler to a per-row danger button. The action is offered only on **unpackaged** rows: tables shown inside a package keep *Remove from package* (detach), so a table is unregistered only after it has been detached — deletion follows the safe detach-then-unregister order and never leaves a dangling package→table link. (#645)
 
-## [0.71.28] — 2026-06-12
-### Added
+## [0.71.28] — 2026-06-12### Added
 - The customer-instance watchdog now also reports two informational deployment-timeline events alongside incident alerts: an app **image change** (auto-upgrade recreated the container; includes the boot banner version when available) and a **DB schema-version change** (startup self-migration or a manual migration run, read from the `/api/health` body the liveness probe already fetches). Both are tracked as run-to-run deltas in the watchdog state dir, prefixed `i` in the message body, bypass the hourly alert-type anti-spam (one-shot by construction), and seed silently on first run. Incident alerts that arrive right after an upgrade now carry that context instead of looking like spontaneous failures.
 
-## [0.71.27] — 2026-06-12
-### Fixed
+## [0.71.27] — 2026-06-12### Fixed
 - BigQuery "not found" errors (a registered table pointing at a non-existent BQ
   dataset/table, or a location mismatch) now surface as a structured 502 on
   `/api/v2/sample` instead of a bare HTTP 500. The BQ extension reports these as
@@ -6238,12 +5966,10 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   error translator's last-resort heuristic previously didn't recognize.
   (#643, FAI-22)
 
-## [0.71.26] — 2026-06-12
-### Changed
+## [0.71.26] — 2026-06-12### Changed
 - **The Postgres backend now self-migrates at startup** (issue #636, part 2). When the DB's Alembic revision is behind the image's head, the app applies the pending migrations in-process under a Postgres advisory lock (replica-safe: concurrent starters serialize and the late one no-ops) instead of refusing to boot — mirroring the DuckDB ladder's self-migration on connect, and ending the crash-loop that the #641 fail-closed guard caused on deployments with no migrate step. `AGNES_PG_AUTO_MIGRATE=0` restores the fail-closed check for pipeline-controlled deployments; a DB *ahead* of the image (app rollback) and a failed upgrade still refuse to boot; `AGNES_SKIP_PG_REVISION_CHECK=1` keeps skipping everything for emergency boots.
 
-## [0.71.25] — 2026-06-12
-### Added
+## [0.71.25] — 2026-06-12### Added
 - **`/admin/prompts` divergence badge.** When a managed prompt (install / workspace) is bound to a file in the Initial Workspace Template (IWT) repo (Git mode), each card now shows whether the bound file's content has drifted from the version captured at bind time: an `in sync @ <short-sha>` badge, or a red `diverged from repo` badge with a hint to re-click **Bind** to accept the repo's current version as the new baseline (no new endpoint — Bind already re-stamps). Divergence is computed lazily on `GET /api/admin/prompts/{kind}` (new response fields `diverged` + `current_blob_sha`) by comparing the live git blob sha of the bound path to the stored `base_sha`; it's a UI hint only and never blocks rendering. A bound file deleted from the repo, or a binding stamped before this change (legacy commit-sha baseline), reads as diverged — the safe loud default. The `initial_workspace.sync` audit event also gains a `diverged_prompts` param listing which bound prompts the new commit moved. (#622 Slice 2, #642)
 
 ### Changed
@@ -6252,17 +5978,14 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 - `src/initial_workspace.py` gains `blob_sha(rel_path)` — best-effort per-file blob sha from the IWT clone HEAD (containment-guarded, returns `None` on absent path / unconfigured / git error). (#622 Slice 2, #642)
 
-## [0.71.24] — 2026-06-12
-### Fixed
+## [0.71.24] — 2026-06-12### Fixed
 - Postgres backend now fails closed at startup when the DB's Alembic revision doesn't match the application's expected head, instead of booting "healthy" and 500ing every write that touches a post-stamp column (e.g. `table_registry.server_only`). The DuckDB ladder self-migrates on connect; Postgres did not apply or even check revisions on boot, so a re-pulled image against a PG stamped at an older revision drifted silently. A new `assert_pg_at_head()` runs in the FastAPI lifespan (PG-only, gated on `use_pg()`) and refuses to serve with a clear message naming the current and head revisions plus the remediation — distinguishing a DB *behind* the image (apply `alembic upgrade head`) from a DB *ahead* of it (unknown revision after an app rollback: roll the image forward or restore the matching backup). Set `AGNES_SKIP_PG_REVISION_CHECK=1` to boot anyway for emergency recovery. Auto-apply of pending migrations is intentionally deferred. (#636, #641)
 
-## [0.71.23] — 2026-06-12
-### Fixed
+## [0.71.23] — 2026-06-12### Fixed
 - **Session uploads: three silent data-loss vectors closed.** (1) Queue entries pointing at a transcript that doesn't exist *yet* (Claude Code writes the `.jsonl` lazily on the first prompt) were permanently dropped by any concurrent `agnes push`; they are now requeued with a first-failure stamp and only age out to the forensic failed-log after 30 days (`RETRY_TTL`). (2) The SessionEnd hook now runs `agnes capture-session` before the detached push, so an ending session always re-queues its final transcript — previously a push fired mid-session from another window (or by `/clear`) consumed the entry and the server kept a partial transcript, or an empty post-`/clear` stub, forever. Existing workspaces pick the new layout up via the `agnes self-upgrade` hook refresh. (3) 401 (expired / not-yet-imported PAT) dropped the whole queue permanently; it is now transient — retried until re-auth, bounded by the same TTL, which also caps persistent 5xx requeue loops. `agnes push` reports a new `requeued` counter. (#640)
 - **Admin session list & downloads now see API-uploaded sessions.** The endpoints scanned only the legacy collector layout (`user_sessions/<email local-part>/`), so sessions stored by `/api/upload/sessions` under `user_sessions/<user_id>/` were invisible in the list until the usage processor indexed them and their single-file download 404'd forever. List, single-file download, and bulk ZIP now scan both layouts, and the self-service `/api/me/stats/sessions` list gained the same dual-layout scan (plus basename matching for its download links). (#640)
 
-## [0.71.22] — 2026-06-12
-### Added
+## [0.71.22] — 2026-06-12### Added
 - **`/admin/prompts` — edit the install + workspace prompts from the admin UI even when an Initial Workspace Template (IWT) repo is registered.** Previously, as soon as the IWT clone contained `workspace/CLAUDE.md`, the admin editor flipped read-only (the implicit `seed_owns()` lock) — exactly when operators adopt the override repo, the common production setup. Each managed prompt now carries an explicit **Git ⇄ Editor** source toggle (`instance_templates.source_mode`): in **Editor** mode the admin's DB override wins at render time and the editor is always writable; in **Git** mode the prompt binds to a repo-relative file in the IWT clone (e.g. `workspace/CLAUDE.md`; editor read-only, edit in the repo + "Sync now") — bind-time validation and render-time resolution share the same repo-root namespace, and the render-time read is containment-guarded against `..`/symlink escapes like `resolve_seed_file`. A new unified page (`/admin/prompts`, two cards) replaces the two standalone editors (`/admin/agent-prompt` + `/admin/workspace-prompt`, now `308` → `/admin/prompts`). New REST surface (admin-only): `GET/PUT/DELETE /api/admin/prompts/{kind}`, `POST .../source`, `POST .../bind-git`, `POST .../preview` (`kind ∈ install|workspace`). The core fix lands at `build_zip()` — override-mode `agnes init` (which serves the IWT zip verbatim, bypassing `/api/welcome`) now ships the admin-edited `CLAUDE.md` when the workspace prompt is in Editor mode. (#622 Slice 1, #638)
 
 ### Removed
@@ -6271,96 +5994,75 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 - **DuckDB schema v75 + Alembic `0022_prompt_source_mode_v75`.** Adds `source_mode` (NOT NULL, default `'editor'`), `git_path`, and `base_sha` to `instance_templates`; existing `welcome`/`claude_md` rows backfill to `'editor'`. `base_sha` is reserved for Slice-2 divergence detection (written, not read in Slice 1). Both backends kept in parity (SQLAlchemy model + dual repos with `get_meta`/`set_source_mode`/`bind_git`, cross-engine contract test included). (#622, #638)
 
-## [0.71.21] — 2026-06-12
-### Fixed
+## [0.71.21] — 2026-06-12### Fixed
 - Pasting a fully-qualified BigQuery path (`project.dataset.table` or `dataset.table`) into `source_table` no longer breaks the table's sync. BigQuery table names cannot contain dots, so the registration layer (`POST /api/admin/register-table`, `PUT /api/admin/registry/{id}`, precheck, and the `/admin/tables` UI which surfaces the same errors) now collapses an unambiguous pasted path to the bare table name (when its dataset component matches `bucket`), and rejects contradictions with an actionable 400 — dataset mismatch points the admin at `bucket`, a foreign project points at `bq_fqn`. Previously the FQN was stored verbatim and the extractor composed a doubled path that failed to register on every sync.
 
-## [0.71.20] — 2026-06-12
-### Internal
+## [0.71.20] — 2026-06-12### Internal
 - CI: `release.yml` no longer builds a `:dev-<slug>` image for `*-autopilot` branches. These short-lived per-issue PR branches deploy to no VM, so the dev image was waste; worse, each force-push cancelled the prior run (`cancel-in-progress`), leaving a cosmetic red `build-and-push` check (not a required check — only `test` + `docker-build` gate merges) that made every such PR look broken. `main` and real dev branches are unaffected. (#634)
 
-## [0.71.19] — 2026-06-12
-### Fixed
+## [0.71.19] — 2026-06-12### Fixed
 - `/api/v2/scan` results exceeding `api.scan.max_result_bytes` no longer crash with `AttributeError: 'RecordBatchReader' object has no attribute 'num_rows'` — the truncation guard assumed a `pyarrow.Table`, but duckdb ≥ 1.5 `.arrow()` returns a streaming `RecordBatchReader` (hit in production on the `from_query` auto-snapshot path). The guard now streams batch-by-batch with the cap applied (`arrow_to_ipc_bytes_capped`), which also bounds server memory: an over-cap result is consumed only up to the cap instead of being fully materialized in RAM — previously a single large `from_query` materialization could OOM the container.
 - Post-sync data profiling persists again. The profiler block in the sync runner referenced the repository factory without importing it — the NameError was swallowed and logged only as `[SYNC] Profiler skipped`, so table profiles were never saved after any sync; a second bug in the same block called `.save` on the factory function instead of the repository instance. Also drops a stray always-DuckDB `get_system_db()` connection from the block (backend-split hygiene).
 
-## [0.71.18] — 2026-06-12
-### Fixed
+## [0.71.18] — 2026-06-12### Fixed
 - **`/admin/chat` is now reachable from the Admin menu.** The cloud-chat session dashboard had no nav entry anywhere — admins could only find it by typing the URL, and the adjacent Activity Center item "Sessions" (analyst-uploaded Claude Code session files) was easy to mistake for it. The Admin → Activity Center menu now lists both with distinct labels: "Analyst sessions" (`/admin/sessions`, renamed incl. its page title) and "Chat sessions" (`/admin/chat`). The chat dashboard itself migrated off its raw-HTML scaffold onto the design-system page shell ("Chat runners", Activity Center hero, standard nav/theme) — the last entry in the standalone-template allowlist, which is now empty and locked. (#632)
 
-## [0.71.17] — 2026-06-12
-### Internal
+## [0.71.17] — 2026-06-12### Internal
 - **E2E docker harness works again from a clean checkout.** Four stacked bit-rots made `tests/e2e/` unrunnable: (1) `Dockerfile.e2e` copied only `pyproject.toml` into the dep layer — metadata generation fails since `readme = "README.md"` was declared — and installed with plain pip, which cannot apply the `[tool.uv] override-dependencies` urllib3 pin and dies with `ResolutionImpossible` on the kbcstorage cap; the image now mirrors the production Dockerfile (python:3.13-slim + uv). (2) The root `.dockerignore` excludes `tests/`, so the image never contained its own `start.sh` entrypoint — a per-Dockerfile `Dockerfile.e2e.dockerignore` (BuildKit) now carries the list minus that line. (3) The harness probed `/healthz`, which no longer exists — conftest, the compose healthcheck, and the adversarial liveness probe now hit `/api/health`. (4) Tests that create chat sessions hard-failed with 503 `chat_disabled` when `E2B_API_KEY` is unset (fake-agent mode still spawns real E2B microVMs) — every chat-session-creating test file now skips cleanly via a shared `skip_unless_chat_sessions_possible()` helper. Note: the suite needs `--timeout=900` to outlive pytest.ini's global `--timeout=60` during image build + health wait. (#631)
 - **New `agnes-e2e-tester` agent** (`.claude/agents/`): runs/triages the layered test suites (unit → docker E2E → real-LLM/E2B) with the env-var gates and cost guardrails spelled out, and carries per-surface manual verification checklists (web chat incl. pause/resume, Slack, MCP/CRM passthrough, onboarding tour) for live-instance smoke tests. (#631)
 
-## [0.71.16] — 2026-06-12
-### Added
+## [0.71.16] — 2026-06-12### Added
 - **`server_only` distribution mode for registered tables.** A new `server_only` boolean flag on `table_registry` (default `false`), decoupled from `query_mode`: a `server_only=true` table is kept server-side and refreshed by the normal extract/sync pipeline (including incremental) **and** stays queryable via `agnes query --remote`, but `agnes pull` does NOT download its parquet to analyst laptops. The manifest still lists it (so `agnes catalog` discovery + RBAC are unaffected); the `cli/lib/pull.py` download-set loop counts it in `parquets_total` but skips the fetch, mirroring the remote-skip’s listed-but-not-downloaded behavior — and prunes a previously-downloaded parquet (plus its sync-state row) on the first pull after the flag flips on, so the table doesn’t stay locally queryable. Use it for large tables where re-downloading the whole parquet to every laptop on each change is wasteful but live upstream querying is undesirable. Only meaningful for `query_mode IN ('local', 'materialized')` — the admin API validator (`POST`/`PUT` register/update) rejects `server_only=true` paired with `query_mode='remote'`, including after the BigQuery live-registration coercion to `'remote'` (the invariant is re-asserted post-coercion on both the register and update paths). Exposed as a checkbox in the admin register/edit modals for Keboola **and** BigQuery synced rows (hidden for live/remote rows; switching a BQ row to Live clears it). The `agnes query` "no local view → use `--remote`" hint now also covers `server_only` tables. DuckDB schema v74 + Alembic migration `0021_server_only_v74` keep both backends in parity. (#607, #630)
 
-## [0.71.15] — 2026-06-12
-### Added
+## [0.71.15] — 2026-06-12### Added
 - **Operator wheels for stdio MCP sources survive container recreates.** stdio-transport MCP sources need their server's binary inside the app container, but anything installed by hand (`docker exec pip install …`) was wiped on every recreate — and recreates are routine now that auto-upgrade tracks releases — silently breaking the source's scheduled materialize with command-not-found until someone reinstalled. New contract: drop the wheel(s) into `${DATA_DIR}/mcp/wheels/` on the persistent data volume; at startup the app installs each with `pip install --user --no-deps` (`--no-deps` so a third-party wheel can never clobber the app's pinned dependencies — ship dependency wheels alongside if the server needs extras) and puts `~/.local/bin` on PATH so the stdio client can spawn the console script. Idempotent via a content-hash marker (unchanged wheels cost one hash per boot), fail-soft per wheel (a bad wheel logs an ERROR and is retried next boot; startup is never blocked). (#629)
 
-## [0.71.14] — 2026-06-12
-### Fixed
+## [0.71.14] — 2026-06-12### Fixed
 - **Chat sandbox: the freshly-minted session token now always wins over a persisted token file.** `ChatManager._spawn_runner` mints a fresh short-lived session JWT into `AGNES_TOKEN` on every spawn/respawn, but the `agnes` CLI's `get_token()` preferred `token.json` over the env var — so any token file present in the sandbox (e.g. written by an in-session `agnes init`, or replayed workspace state) silently shadowed the fresh credential and produced `HTTP 401: Invalid or expired token` on `agnes catalog`/`query` after a respawn. Inside the sandbox (`AGNES_SESSION_ID` set — only the chat runner sets it) a non-empty `AGNES_TOKEN` env now takes precedence; an empty env still falls through to the file rather than returning a blank credential. Analyst laptops keep the historical file-first order — `token.json` written by `agnes init` stays canonical there. (#628)
 
-## [0.71.13] — 2026-06-12
-### Added
+## [0.71.13] — 2026-06-12### Added
 - **Scheduler now supports cron expressions** alongside the existing `every Nm` / `every Nh` / `daily HH:MM` formats (fully backward compatible). A `cron <minute hour day-of-month month day-of-week>` schedule (UTC) covers day-of-month, weekly, monthly, and arbitrary cadences with one well-known format — e.g. `cron 0 5 7 * *` (05:00 UTC on the 7th of every month), `cron 0 5 * * 1` (05:00 UTC every Monday), `cron 30 6 1,15 * *` (06:30 on the 1st and 15th). Each field supports `*`, comma lists (`1,15`), ranges (`9-17`), and steps (`*/15`); day-of-week is 0-6 (0 = Sunday). When both day-of-month and day-of-week are restricted, both must match (AND) — a documented, deterministic departure from vixie cron's OR quirk. Implemented with a hand-rolled 5-field matcher (no new dependency). `is_table_due` mirrors the existing `daily` catch-up contract — a missed occurrence fires on the next tick after it passed, across arbitrarily long offline gaps (the due-check walks days, not minutes, bounded at 8 years — past the 4-year gap of a Feb-29 schedule) — and month-end is handled natively (`cron 0 0 31 * *` never fires in a 30-day month). `is_valid_schedule` validates each field against its range so the admin API rejects malformed cron with 422, consistent with the `daily 25:00` rejection. The admin table forms' Sync Schedule hints now mention the `cron …` form. (#608, #627)
 
-## [0.71.12] — 2026-06-12
-### Fixed
+## [0.71.12] — 2026-06-12### Fixed
 - **`agnes pull` no longer destroys a good parquet on a hash mismatch, and a partial pull exits non-zero.** A table whose download failed the manifest-hash check used to be `unlink`ed *before* the result was verified — so a corrupt or raced download left the table completely missing from disk (not just stale), and `agnes pull` still reported success with exit 0. Now `_download_one` (`cli/lib/pull.py`) downloads into a sidecar `<tid>.parquet.verify.tmp`, verifies the hash there, and only `os.replace`s it onto the live `<tid>.parquet` **after** verification passes — so a bad download never touches the prior good file. A hash mismatch is treated as transient and re-downloaded (2 retries, small backoff) before giving up; on persistent mismatch the old parquet stays in place and the table is recorded under `result.errors`. Retries reset the per-file progress display, so a re-download doesn't inflate the byte counter past the file's size. The `agnes pull` command (`cli/commands/pull.py`) now `raise typer.Exit(1)` whenever `result.errors` is non-empty on all three output paths (normal, `--quiet`, `--json` — the JSON path emits the summary dict first, then exits 1), so manual runs and CI both see a partial pull as a failure instead of a success-looking exit 0. The pre-v49 / no-hash `_is_valid_parquet` fallback path is unchanged. (#596, #626)
 
-## [0.71.11] — 2026-06-12
-### Added
+## [0.71.11] — 2026-06-12### Added
 - **Host-side watchdog + daily DB backup with restore-verification in the `customer-instance` module.** Every provisioned VM now runs two systemd timers (artifacts ship as module files through the startup script — independent of the pinned app `image_tag`): `agnes-watchdog` (every 5 min) greps container logs for known incident signatures — DuckDB `FatalException` crash loops, the invalidated-database "zombie" state where the app keeps answering `/api/health` 200 while every write returns 500, WAL-salvage data-loss events, index-desync errors — plus container restart bursts, cgroup OOM kills, scheduler HTTP-500 streaks, `/data` disk pressure and a dead health endpoint; `agnes-db-backup` (daily) copies `system.duckdb`+WAL to `/data/backups/system-duckdb/` (7-day retention) and *proves each copy restorable* by opening a scratch copy, replaying the WAL and exercising the statement classes from the 2026-06 index-corruption incident — so silent on-disk corruption surfaces within a day instead of at the next outage. Alerts go to journald + `/var/log/agnes-watchdog.log` and optionally to a Slack/Google-Chat-compatible webhook (new `alert_webhook_url` variable, sensitive; messages carry a per-environment label derived from the VM role). Opt out with `enable_watchdog = false`. Complements `enable_monitoring`'s uptime checks + PD snapshots: those observe the VM from outside; the watchdog reads failure states the health endpoint cannot express, and the canary verify catches corruption a disk snapshot would preserve faithfully. (#623)
 
-## [0.71.10] — 2026-06-12
-### Added
+## [0.71.10] — 2026-06-12### Added
 - **An analyst's Claude can now browse and subscribe to stack resources without leaving the chat.** New `GET /api/stack/browse?type=<data_package|memory_domain>` exposes the existing `StackResolver.browse()` candidate set — every RBAC-granted resource for the caller, each annotated with an `in_stack` flag — so the model can discover what it *could* add, not just what is already subscribed. Surfaced on all three contracts: `agnes stack browse [--type] [--json]` (renders an `IN STACK` ✓ column), and three MCP tools (`stack_browse`, `stack_subscribe`, `stack_unsubscribe`). `stack_subscribe` returns a post-subscribe `next_step` hint (`Run \`agnes pull\` to download the new tables.`) so the freshly-subscribed resource becomes usable in the same conversation. Subscriptions are persistent (identical to the web UI "Add to stack" button). User approval rides the MCP client's own tool-permission prompt — no custom mechanism. The workspace `CLAUDE.md` rails now point at the browse → add → pull flow. (#621, #625)
 
 ### Fixed
 - `POST /api/stack/subscribe` and `DELETE /api/stack/subscription/{type}/{id}` now reject co-session principals with 403 (`co_session cannot manage stack`), matching `GET /api/stack` and the new `/browse`. Previously a co-session token reaching these endpoints crashed on the principal dataclass instead of being cleanly refused. (#625)
 
-## [0.71.9] — 2026-06-12
-### Changed
+## [0.71.9] — 2026-06-12### Changed
 - **`/admin/users` is now server-paged.** The page previously pulled every user account to the browser and filtered in JavaScript. It now shows a total-users metric at the top and a table of only the 10 most recently registered users; the search box and a new group-filter dropdown push their work to the backend (`GET /api/users?search=&group_id=&limit=`), which returns at most the requested window ordered by registration date. New repository method `search_recent(limit, search, group_id)` (DuckDB + Postgres parity). The `GET /api/users` list is now recency-ordered (was email-sorted); `limit` still defaults to 1000 so list-everything callers (`agnes admin list-users`, the setup health check) keep their prior reach. (#624, FAI-23)
 
-## [0.71.8] — 2026-06-11
-### Added
+## [0.71.8] — 2026-06-11### Added
 - **`agnes query --remote --auto-snapshot` auto-recovers from the BigQuery scan cap on VIEW targets.** When a `--remote` query against a BigQuery VIEW / MATERIALIZED VIEW trips the 5 GB `remote_scan_too_large` cap (BigQuery can't push `LIMIT` into a view body), the opt-in `--auto-snapshot` flag now completes the query in one command: it materializes each over-cap view's **raw rows** as a deterministic local snapshot (`auto_<sha8>` keyed on the view name), substitutes the view names for their snapshots in the original SQL, and re-runs it locally — instead of failing with a "go run `agnes snapshot create` yourself" hint. Per-view keying means a JOIN across N over-cap views gets N distinct snapshots (no silent self-join), and the same view shared across two over-cap queries hits one cached snapshot. View-name substitution is case-insensitive so analysts who type any case still hit the canonical-case registry ID. A fresh snapshot (24h TTL, reusing the per-snapshot TTL infra) is reused on repeat invocations; an elapsed one is rebuilt. The flag parses the server's structured `remote_scan_too_large` 400 (no text regex); with the flag OFF, or on a non-view over-cap (empty `view_targets`), or any other error, behavior is byte-for-byte unchanged. Physical-table `--remote` queries are unaffected. Backed by a new `agnes snapshot create --from-query "<sql>"` mode that materializes a snapshot from a raw SELECT executed remotely (mutually exclusive with `--select`/`--where`), and a small server hook on `/api/v2/scan` (`from_query`) that runs the raw SELECT through the same RBAC + registry-gating as `/api/query` but without the scan cap (the analyst explicitly opted in). DuckDB execution errors on the from_query path now map to a structured `duckdb_execution_error` 400 (not a raw 500), and `scan_endpoint` logs the error-result audit row when `run_remote_select_to_arrow` raises so audit coverage matches the rest of the endpoint (Devin Review BUG_0001 + BUG_0002 + ANALYSIS_0001 + ANALYSIS_0003 on #620). (#620)
 
-## [0.71.7] — 2026-06-11
-### Added
+## [0.71.7] — 2026-06-11### Added
 - **One-keystroke upgrade flow: `agnes self-update` alias + interactive prompt on version drift.** Added a hidden `agnes self-update` verb that resolves to the same callback as the canonical `agnes self-upgrade` (both point at one Typer instance, so they are byte-for-byte identical and idempotent). On a server-touching command where the local CLI is behind the server's pinned version — and stdin is an interactive TTY, the prompt isn't bypassed, and no skip-state exists for the current server version — the CLI now prompts **once**: `agnes <local> is <N> versions behind the server (latest: <server>). Upgrade now? [Y/n] (5s default Y)`. Accepting (or the 5s timeout) runs the self-upgrade flow and then re-execs the user's original command against the freshly-installed binary (`[upgraded → <server>] running your original command...`), guarded against a re-exec loop by an env sentinel. Declining touches `~/.config/agnes/state/skipped-upgrade-<server-version>` so the prompt stays quiet until the server's pinned version moves forward. Non-TTY contexts (CI, pipes), `--no-update-check`, and `AGNES_NO_UPDATE_CHECK=1` skip the prompt entirely; the existing one-line out-of-date banner remains as the fallback for every declined/skipped/non-interactive path. The banner's earlier pinned-URL → `agnes self-upgrade` replacement shipped previously (#521/#593). New `cli/upgrade_prompt.py`. EOF (Ctrl+D) on the prompt now returns No (deferred, not silent auto-upgrade), and the wrapper honours the install rc + persists the outcome via `record_outcome` + refreshes hooks on success — mirroring the canonical `self_upgrade` callback's wiring (Devin Review BUG_0001 + ANALYSIS_0001 + ANALYSIS_0003 on #619). (#619)
 
-## [0.71.6] — 2026-06-11
-### Fixed
+## [0.71.6] — 2026-06-11### Fixed
 - The Windows PowerShell "one-word shortcut" snippet on `/home` (auto + YOLO modes) and `/setup-advanced` now prefixes the `function` definition it appends to `$PROFILE` with an empty array element (`Add-Content $PROFILE '', 'function …'`). `Add-Content` only adds a *trailing* line terminator, so when the user's existing profile didn't end in a newline (e.g. a trailing `$PSStyle.FileInfo.Directory = "…"` line) the function got glued onto the previous line, producing `ParserError: Unexpected token 'function'` on every new shell. The single-quoted body is preserved so `$env:USERPROFILE` is still written verbatim rather than expanded at append time. (#618, FAI-51)
 
-## [0.71.5] — 2026-06-11
-### Fixed
+## [0.71.5] — 2026-06-11### Fixed
 - Onboarding Step 2 "Pick a folder" — the Windows/PowerShell command is now a single line (`New-Item … | Out-Null; Set-Location …`) so one paste both creates the folder *and* enters it. Previously it was two newline-separated statements; pasting into PowerShell submitted only the first line and left `Set-Location` unsent in the input buffer, so the shell never `cd`'d into the new folder. Mirrors the macOS/Linux tab's single-line `mkdir … && cd …` (`;` is used over `&&` so it also parses in Windows PowerShell 5.1). (#615, FAI-50)
 
-## [0.71.4] — 2026-06-11
-### Fixed
+## [0.71.4] — 2026-06-11### Fixed
 - **MCP source names are now validated as safe SQL identifiers at create/rename.** An admin could register an MCP source whose name the sync engine refuses to attach (e.g. `keboola-crm` with a hyphen): materialize reported success and wrote `/data/extracts/<name>/`, but the orchestrator's scan rejected the directory (`Rejected unsafe source_name identifier` — a server-log WARNING only), so the tables silently never reached analytics/catalog with zero admin-visible feedback. `POST /api/admin/mcp-sources` and the rename path of `PUT /api/admin/mcp-sources/{id}` now reject such names up front with an actionable 400, using the same strict validator (`src/identifier_validation.is_safe_identifier`) the orchestrator enforces — no second regex to drift. (#613)
 
-## [0.71.3] — 2026-06-11
-### Added
+## [0.71.3] — 2026-06-11### Added
 - **Onboarding / guided tour.** A client-side spotlight tour that walks a signed-in user through the app. On the first authed visit an intro consent modal pops once ("Take a tour?"); accepting runs the spotlight, and either choice (or completing/exiting) sets a `localStorage` flag so it never auto-pops again. Each step can be skipped or ended (Skip / ✕ / Esc), and arrow keys / Enter drive it. Re-openable anytime from the `(?)` help icon in the nav header. The tour **renders in place on whatever page the user is on** — all spotlighted elements are nav anchors present in the header on every authenticated page, so no cross-page navigation occurs. Each step carries a wayfinding icon, a richer description, and a list of concrete "what you can do here" bullets, plus a progress bar; the spotlight breathes and the card animates in (all `prefers-reduced-motion`-aware). The steps are **role-split** (admin vs non-admin) and filtered server-side, so non-admins never receive admin-only steps. Steps are the single source of truth in `app/web/onboarding.py` — injected as JSON, never hardcoded in JS — and a contract test (`tests/test_onboarding_not_outdated.py`) fails if any step points at a nav anchor that no longer exists, drops its icon, or thins its tips below two, so the tour can't silently go stale or hollow out as the UI changes. Generic + vendor-agnostic; styles read `--ds-*` tokens (flips with blue/dark themes). New `app/web/onboarding.py`, `app/web/static/css/tour.css`, `app/web/static/js/tour.js`, and `_tour.html` partial included by both base layouts. (#573)
 
 ### Internal
 - **`DEBUG=0` can now override the `LOCAL_DEV_MODE` debug-toolbar default.** `LOCAL_DEV_MODE` still implies `DEBUG` (so dev gets the toolbar without setting both), but an explicit `DEBUG` env now wins either way — set `DEBUG=0` to run an auth-bypassed local-dev instance *without* the debug toolbar, whose per-request instrumentation (it also profiles the compose healthcheck) can saturate the event loop and peg CPU on heavy HTML pages. `docker-compose.local-dev.yml` sets `DEBUG=0` by default for a snappy UI preview; set it to `1` to get the toolbar back.
 
-## [0.71.2] — 2026-06-11
-### Fixed
+## [0.71.2] — 2026-06-11### Fixed
 - **VM auto-upgrade no longer loses a deferred upgrade.** `scripts/ops/agnes-auto-upgrade.sh` detected changes by comparing the local tag digest before/after `docker compose pull` — but when the recreate was deferred because a sync was in flight, that tick's pull had already moved the local tag, so every subsequent tick saw "no change" and the deferred recreate never happened: the VM silently kept running the old image until the *next* release shipped (observed live: 8+ hours on a stale image with the new tag pulled beside it). Detection is now drift-based — the running `app` container's image ID is compared against what the tag points to (stateless; also self-heals a stopped/missing container), and config-file changes are tracked against a marker recording the hash at the last successful recreate (`/opt/agnes/.agnes-config-applied`, lazily initialized) — so a deferred change is re-detected on every tick until the recreate actually succeeds. A failing `docker compose pull` (registry blip) no longer aborts the script before drift detection — a warning is logged and the local tag is consulted either way. VMs pick the fix up automatically via the script's own self-update step. (#610)
 
-## [0.71.1] — 2026-06-11
-### Added
+## [0.71.1] — 2026-06-11### Added
 
 ### Changed
 
@@ -6373,12 +6075,10 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Internal
 
-## [0.71.0] — 2026-06-11
-### Fixed
+## [0.71.0] — 2026-06-11### Fixed
 - **Chat `_linger_then_pause` no longer spins forever on a 3× runner crash.** If a turn was in flight (`turn_in_flight=True`), all sinks disconnected, and the runner then crashed 3 consecutive times (terminal `SessionState.DEAD` set by `_wait_for_exit_and_respawn` without emitting a `done` frame to clear the flag), the linger task spun at 50 ms intervals indefinitely — the `live.state != SessionState.ACTIVE` guard at the bottom of the function was only evaluated *after* the spin exited, which it never did. The `_live` entry also leaked (the reaper skips `DEAD` sessions), making this a slow memory grow on long-running servers. The spin now checks `live.state` each tick and bails cleanly when the session is no longer `ACTIVE`. Devin Review BUG_0001 follow-up from #605.
 
-## [0.70.21] — 2026-06-11
-### Added
+## [0.70.21] — 2026-06-11### Added
 - Chat sessions survive browser disconnects: in-flight turns always complete and
   persist; orphaned sessions pause their sandbox (memory snapshot) and resume with
   full agent context on reconnect or on the next Slack message. New knobs:
@@ -6405,112 +6105,89 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - Test suite: per-xdist-worker `DATA_DIR` isolation removes sporadic cross-worker
   `system.duckdb` file-lock failures. (#605)
 
-## [0.70.20] — 2026-06-10
-### Fixed
+## [0.70.20] — 2026-06-10### Fixed
 - **MCP `pull` tool now returns wall-clock duration.** The tool used to read `result.elapsed_s` with a `hasattr` guard — but `PullResult` exposes `duration_s`, so the guard always returned `False` and every MCP `pull` response carried `"elapsed_s": None`, silently erasing the real call duration that REST + `agnes pull --json` correctly surface. The response key is now `duration_s` (matching `PullResult` and the rest of the codebase) and reads the right attribute. Devin Review BUG_0001 follow-up from #594.
 
-## [0.70.19] — 2026-06-10
-### Fixed
+## [0.70.19] — 2026-06-10### Fixed
 - **Slash commands now work on Socket Mode deployments.** The Socket Mode dispatcher only routed `events_api` envelopes, so `SLACK_TRANSPORT=socket` instances silently dropped `/agnes`, `/agnes-new` and `/agnes-status` (the command never reached the server). `slash_commands` envelopes are now acked within the 3s contract — `/agnes help` is answered entirely inside the ack payload, everything else acks with an interim "working on it" ephemeral — and then routed through the same `dispatch_command` path the HTTP endpoint uses, with the same `response_url` recovery backstop. Interactive (button) routing over Socket Mode remains a later phase. (#606)
 
-## [0.70.18] — 2026-06-10
-### Added
+## [0.70.18] — 2026-06-10### Added
 - **Legacy-hook nudge on `agnes pull`.** Workspaces bootstrapped by the old server-upload flow (a `SessionEnd`/`SessionStart` hook referencing `collect_session` or `server/scripts/`, with none of the modern `agnes init` hooks) never invoke `agnes self-upgrade`, so the CLI drifts stale indefinitely. `agnes pull` now detects this layout via `workspace_has_legacy_hooks()` and emits a single stderr nudge — `This workspace uses an outdated hook layout — run \`agnes init\` to enable auto-update.` — pointing the analyst at `agnes init`. It does NOT auto-migrate; the analyst owns when their hook layout changes. Suppressed under `--quiet` (the SessionStart hook path) and `--json`. (#601)
 
 ### Fixed
 - **Silent `agnes self-upgrade` failures now surface.** The SessionStart hook runs `agnes self-upgrade --quiet 2>/dev/null || true`, so a failing auto-update (network, uv/pip resolution, smoke-test rollback) was invisible and the CLI could sit stale for weeks. Each self-upgrade outcome is now persisted to `$AGNES_CONFIG_DIR/upgrade_status.json` (`last_attempt_ts`, `last_outcome`, `consecutive_failures`); the quiet path stays silent but increments the counter on failure / resets it on success, and the next NON-quiet `agnes` command warns once — `agnes self-upgrade has failed N times — run \`agnes self-upgrade\` to see the error.` — when three or more attempts in a row have failed. `--quiet` commands and the in-progress smoke-test subprocess stay silent. A transient network blip (server unreachable without `--force`) no longer resets the consecutive-failure counter — the offline branch now takes no opinion on the CLI state (Devin Review BUG_0001). (#601)
 
-## [0.70.17] — 2026-06-10
-### Added
+## [0.70.17] — 2026-06-10### Added
 - **Per-snapshot TTL expiry for local snapshots (#407).** `agnes snapshot create --ttl <7d|24h|90m>` stamps an `expires_at` instant on the snapshot; `agnes refresh --ttl …` re-anchors it. A lazy sweep at the start of `agnes pull` deletes any snapshots whose TTL has elapsed (best-effort, never blocks a pull; skipped under `--dry-run`/`--json`, one quiet stderr notice per swept snapshot otherwise), and `agnes snapshot prune --expired` runs the same sweep on demand. `agnes snapshot list` now shows an `EXPIRES` column. There is no global default TTL — only `--ttl` snapshots ever expire; existing snapshots and legacy `meta.json` files (no `expires_at` key) are unaffected. The lazy sweep re-reads + re-verifies the expiry under `snapshot_lock` (closing a TOCTOU race against a concurrent `agnes snapshot refresh --ttl <d>` that re-anchors `expires_at`, Devin Review BUG_0001). (#599)
 
-## [0.70.16] — 2026-06-10
-### Added
+## [0.70.16] — 2026-06-10### Added
 - **Per-source partial rebuilds.** `POST /api/sync/trigger?source=<source_type>` (and the new `agnes admin sync --source <type>`) scope a sync to a single registered source: only that source's local + materialized rows are rebuilt, leaving the other source's `extract.duckdb` untouched. Useful on dual-source deployments where a BigQuery refresh should not pay the cost of re-extracting every Keboola table. A bare trigger / `agnes admin sync` still rebuilds everything. Unknown source types fail fast with `422`. (#602)
 
-## [0.70.15] — 2026-06-10
-### Added
+## [0.70.15] — 2026-06-10### Added
 - **`bytes_scanned` on the query API + `agnes query --remote` output (#393).** `POST /api/query` now returns the BigQuery dry-run scan estimate as `bytes_scanned` (bytes) for `query_mode='remote'` queries (`None` for local DuckDB queries — no BQ tables involved), exposing it to REST and MCP consumers. `agnes query --remote` prints a human-readable `BigQuery scanned ~<size> (dry-run estimate)` line to STDERR (mirroring the existing `truncated` notice), so json/csv stdout stays pure. (#598)
 
 ### Fixed
 - **Admin Adoption dashboard now renders users from the `users` table.** The `/admin/adoption` list and per-user drill-down used to display the email local-part from `usage_session_summary` and guess initials/avatar from it, so names, circle initials, and the circle color all disagreed with `/admin/users`. The `/api/admin/adoption/top-users` rows are now enriched server-side with the real `name`/`email`/`registered` flag (joined by `user_id`, with an unambiguous email-local-part fallback for pre-v45 rows), and both pages render the avatar circle via a shared `AgnesIdentity` helper (`app/web/static/js/identity.js`) — identical initials and stable color to `/admin/users`. Session identities with no matching user show the bare email with an empty circle. (#604)
 
-## [0.70.14] — 2026-06-10
-### Added
+## [0.70.14] — 2026-06-10### Added
 - **`agnes update-workspace`** — safe re-apply of the Initial Workspace Template into an already-initialised workspace, **without losing analyst edits**. Reads the server URL + PAT from saved config (like `agnes pull`, no `--server-url`), warns + requires a literal `YES` (or `--yes` for the slash-command flow), and does a 3-way diff against a per-workspace baseline: files the analyst changed are backed up to `<name>.bak.<timestamp>` before being refreshed, files they hadn't touched are updated in place, new template files are created, and files not in the template are left untouched. `--dry-run` previews the plan. **IWT-only** — a clean no-op (touches nothing, exits 0) on instances with no Initial Workspace Template configured; it never re-pulls parquets. The baseline is the exact installed template zip, stored **client-side** under `~/.config/agnes/workspace-baselines/` (keyed by a hash of the workspace path, so it never pollutes the workspace tree or lands in a git commit), written on the first override `agnes init` so the first update has a reference point (older workspaces with no baseline conservatively back up every changed file). A canonical `/update-workspace` slash command ships under `cli/templates/commands/` for IWT admins to copy into their template repo. (FAI-24, #595)
 
 ### Fixed
 - **Security: Agnes now protects its own PAT on disk and reduces its transcript exposure (#580, Findings 1-min + 2).** Plaintext token files are written with mode `0o600` (owner-only) instead of being left at the ambient umask (commonly `0o644`, world-readable) — at all three write sites: `cli.config.save_token` (`~/.config/agnes/token.json`) and the generated Cowork `setup.py` (`token.json` + both `.agnes-creds.json` copies). Each uses an atomic write (temp file chmod'd before rename) and is best-effort + Windows-safe (the chmod is skipped where the platform/filesystem doesn't honor it; native ACLs apply). `agnes init` now deletes the transient `~/.agnes/token` bootstrap file once it has consumed the token, and the setup prompt gained an explicit note that the heredoc PAT lands in the uploaded session transcript, with a `/agnes-private` reminder to keep the bootstrap session out of `agnes push`. (Storing the PAT in the OS keychain — Finding 3 — is deferred pending a security review; `0o600` plaintext is the accepted baseline.) (#580, #600)
 
-## [0.70.13] — 2026-06-10
-### Fixed
+## [0.70.13] — 2026-06-10### Fixed
 - **`agnes pull` now revokes local query access when a data package leaves your stack.** After an analyst removed a data package, `agnes pull` left the package's parquets under `server/parquet/` and their DuckDB views in place, so the tables stayed locally queryable — and for admins the flat `manifest["tables"]` dict over-listed every accessible table regardless of subscription (the server-side `can_access_table` Admin short-circuit bypasses the stack). When the manifest carries the typed v49 stack sections (`data_packages[].tables[]` + `direct_tables[]`), `run_pull` now restricts the download set to the authorized table names and prunes any `server/parquet/<name>.parquet` (plus its `sync_state` row and, via the unconditional view rebuild, its now-orphaned view) that left the stack. Pre-v49 servers emit no typed sections, so their behavior is unchanged. `PullResult.tables_removed` counts the prune and is surfaced in `agnes pull --json`, the MCP `pull` tool's return dict, and the human-readable summary line (Devin Review BUG_0001). (#506, #594)
 
-## [0.70.12] — 2026-06-10
-### Fixed
+## [0.70.12] — 2026-06-10### Fixed
 - **CLI out-of-date banner no longer prints a copy-paste command that 404s after a server upgrade.** The `agnes` out-of-date notice (`cli/update_check.py:format_outdated_notice`) used to emit `uv tool install --force <server>/cli/wheel/agnes-X.Y.Z-py3-none-any.whl` — a version-pinned URL the CLI caches for up to 24h. `GET /cli/wheel/{name}` serves only the *current* wheel, so once the server upgrades, the old pinned wheel is gone and the cached command 404s. The banner now recommends `agnes self-upgrade`, the supported path that re-probes `/cli/latest`, installs the current wheel, smoke-tests it, and rolls back on failure — it never 404s and always converges to the true latest even if the banner's version number lags. `UpdateInfo.download_url` is still populated and still consumed by `agnes self-upgrade`; server endpoints (`/cli/latest`, `/cli/wheel/{name}`, `/cli/download`) and the first-install setup-page instructions are unchanged. (#521, #593)
 
-## [0.70.11] — 2026-06-10
-### Internal
+## [0.70.11] — 2026-06-10### Internal
 - **Regression tests anchoring the materialize memory-cap + disk-space pre-flight invariants (#431/#433).** Added unit coverage that the Keboola consolidation connection sets `memory_limit='2GB'` (+ `threads=2`, `preserve_insertion_order=false`), that `_download_single` performs its disk-space pre-flight check, and that the BigQuery pool-acquire path enforces its memory cap — locking these guardrails against silent regression. Tests only; no production behavior change. (#432, #591)
 
-## [0.70.10] — 2026-06-10
-### Internal
+## [0.70.10] — 2026-06-10### Internal
 - Anti-regression guards for the `/setup` design-system unification (#586 / #590): `test_setup_html_uses_design_system_base` in `tests/test_design_system_contract.py` locks `setup.html` on `base_ds.html` + `.container--narrow` (no regression to `base_login.html` or hardcoded `max-width: 520px`), and a new `tests/test_setup_page_unified.py::test_first_time_setup_renders_all_wizard_fields` is an end-to-end render check that all four wizard steps, progress dots, and key inputs survive the migration. Locks the v0.70.8 fix; no behaviour change. (#592)
 
-## [0.70.9] — 2026-06-10
-### Fixed
+## [0.70.9] — 2026-06-10### Fixed
 - Slack chat dropped the **first message after binding** with `SessionNotFound`. The DM / mention / `/agnes` handlers schedule `ChatManager.attach()` fire-and-forget (it spawns the E2B sandbox — several seconds — and never returns for the session's lifetime) and then waited a fixed `asyncio.sleep(0.1)` before `send_user_message`. The sleep raced attach() registering the live session, so the turn was injected before the session existed. Added `ChatManager.wait_until_live(chat_id, timeout=…)` which polls the live registry, and the three handlers now await it (and post a friendly "still starting up — resend" notice on timeout) instead of a blind sleep. The `/agnes` slash-command path also uses the strong-ref `_schedule()` helper for the fire-and-forget attach (Devin Review BUG_0001): with the 30s wait window the bare `asyncio.create_task()` it used to use could be GC-collected mid-flight, silently dropping the turn. (#589)
 - A Slack `message` event with no `user` field (message edits/deletions and other subtypes) crashed the event dispatch: `_handle_dm` fell through to `issue_verification_code(slack_user_id=None)`, tripping the `slack_binding_codes.slack_user_id` NOT NULL constraint. `_handle_dm` now early-returns on a user-less event, mirroring the guard `_handle_mention` already had. (#589)
 
-## [0.70.8] — 2026-06-10
-### Changed
+## [0.70.8] — 2026-06-10### Changed
 - Setup wizard (`/setup`): migrated from the `base_login` centered card to the standard `base_ds` app shell + `.container--narrow` (800px), dropping the hardcoded `max-width: 520px` inline styles so its width and gutters match every other page. (#586, #590)
 
-## [0.70.7] — 2026-06-10
-### Added
+## [0.70.7] — 2026-06-10### Added
 - The `customer-instance` Terraform module now exposes a `home_route` variable, so instances built on the upstream module (not just self-contained infra) can pin the post-auth landing page to `/home` (state-aware onboarding) instead of the `/dashboard` default. It writes `AGNES_HOME_ROUTE` into `/opt/agnes/.env` **only when set non-empty** — left empty (the default) it omits the line entirely, so the route stays operator-settable at runtime via `instance.home_route` / `/admin/server-config` (the env tier shadows the YAML tier, so pinning both is a footgun). Closes a parity gap where module-based instances had no declarative way to opt into `/home`. (#588)
 
 ### Internal
 - `docs/CONFIGURATION.md` is now the single authoritative map of every per-instance knob — env override, `instance.yaml` path, default, and resolver for all 33 `get_*` resolvers — with the env > YAML > default resolution order, the Initial Workspace Template tier, and the infra-pattern reachability caveat documented up front. A new ratchet test (`tests/test_config_reference_coverage.py`) fails when a resolver in `app/instance_config.py` is undocumented (or an exemption names a deleted resolver), so the reference can't silently drift behind the code — the same anti-drift discipline already applied to DuckDB↔Postgres parity and REST×CLI×MCP coverage. (#588)
 
-## [0.70.6] — 2026-06-10
-### Fixed
+## [0.70.6] — 2026-06-10### Fixed
 - Slack magic-link binding (and Slack `/chat` deep links) were always **root-relative** (`/slack/bind?code=…`) and therefore not clickable from Slack — even with `PUBLIC_URL` set — because the bot's request-less handlers read `app.state.public_url`, which nothing ever assigned. Resolve the instance base URL at startup via a new `get_public_url()` (`PUBLIC_URL` env > `server.public_url` in instance.yaml > unset, mirroring `get_home_route`) and stash it on `app.state.public_url` before the Socket Mode dispatcher starts, so the bot mints **absolute** links. Unset still degrades gracefully to a relative path. This makes good on the `0.70.5` "Requires `PUBLIC_URL` set so the link is absolute" contract, which the wiring never fulfilled. (#587)
 
-## [0.70.5] — 2026-06-09
-### Added
+## [0.70.5] — 2026-06-09### Added
 - Slack identity binding is now a **one-click magic link** instead of a copy-paste code. When an unbound Slack user messages Agnes, the bot replies with a `…/slack/bind?code=NNNNNN` link; opening it while signed in to Agnes redeems the code server-side via the new auth-gated `GET /slack/bind` route and stamps `users.slack_user_id` — no copy-paste, and it's a one-time bind per Slack user. Security is unchanged: the route requires an Agnes login, so the code in the URL is inert on its own (it only binds the signed-in account). This also fills a gap — there was previously **no frontend UI at all** to redeem the code the bot handed out (the bot pointed at `/setup?slack=1`, which has no bind form), so binding could not actually be completed through the browser. Requires `PUBLIC_URL` (or `server.public_url`) set so the link is absolute. (#584)
 
-## [0.70.4] — 2026-06-09
-### Fixed
+## [0.70.4] — 2026-06-09### Fixed
 - **Bounded process memory on data-source-heavy instances (no more allocator-driven OOM crash-loops).** On instances serving BigQuery/DuckDB query traffic, anonymous (heap) memory grew without bound until the container hit its `mem_limit` and the cgroup OOM-killed the server — raising `mem_limit` only deferred the kill. Root cause was *allocator retention*, not a code leak: glibc's default per-CPU malloc arenas hold freed memory and never return it to the OS, and on a host with Transparent Huge Pages = `always` each retained region is backed by a 2 MiB huge page, so RSS ratchets up to the largest concurrent native working set (Arrow/DuckDB buffers) and stays there. Two complementary mitigations: the container image now sets `MALLOC_ARENA_MAX=2` + `MALLOC_TRIM_THRESHOLD_=131072` (Dockerfile), and the `customer-instance` provisioning module sets host THP to `madvise` (startup script, re-applied every boot). Heap was confirmed flat under churn (no Python/object leak); the fix is allocator-level. Negligible CPU impact for this I/O-bound workload. (#583)
 
 ### Internal
 - `app/chat/e2b_workspace_sync._iter_files` now sorts subdirs and filenames so workspace uploads visit files in a deterministic, cross-platform order (was filesystem-dependent: lexical on macOS, inode order on Linux). Caused a `test_workspace_too_large_carries_byte_count` CI flake; surfaced while CI'ing #583. (#583)
 
-## [0.70.3] — 2026-06-09
-### Fixed
+## [0.70.3] — 2026-06-09### Fixed
 - **Cloud chat: every chat turn stalled without an answer on E2B SDK 2.x.** `app/chat/e2b_provider.py` calls `sandbox.commands.run()` to spawn the agent runner, then streams the user's prompt via `commands.send_stdin()`. E2B SDK 2.x gates interactive stdin behind a new `stdin=True` flag on `run()` — without it the runner gets EOF and exits, and every subsequent `send_stdin()` fails with `SandboxException: Code.internal: error writing to stdin: stdin not enabled or closed`. The "agent never responds after Slack binding" symptom seen during live E2E testing turned out to be this — not a Slack/auth issue. Both web `/chat` and Slack bound-DM sessions are affected; SDK 1.x deployments are not (the kwarg didn't exist there) but the floor is raised to `e2b>=2.0.0` so a downstream resolver can't silently land on 1.x and break with `TypeError` instead (Devin Review on #585). (#585)
 
-## [0.70.2] — 2026-06-09
-### Added
+## [0.70.2] — 2026-06-09### Added
 - A **Light / Dark / System** theme switcher in the user (avatar) menu. Agnes already shipped a dark palette and an OS-aware `auto` mode, but only operators could select it via `instance.yaml` — this adds a per-user, in-app control. The choice persists per-browser (`localStorage`), overrides the instance default and the OS setting, and is applied before first paint so there's no flash on reload. **System** tracks the OS `prefers-color-scheme` live. Pages with legacy hardcoded colors may still need per-page dark touch-ups (the dark palette is documented as a work-in-progress). (#581)
 
-## [0.70.1] — 2026-06-09
-### Fixed
+## [0.70.1] — 2026-06-09### Fixed
 - **Postgres: catalog table-page renders `platforms` / `gotchas` lists correctly again.** `TableRegistryPgRepository._decode_row` was returning the raw `json.dumps()`'d TEXT for `platforms` and `gotchas` (only the JSONB `sample_questions` / `pairs_well_with` arrived pre-decoded), so the catalog UI iterated the JSON string character-by-character (`[ · " · w · e · b · " · , ...]`) and the gotchas section showed a long run of empty rows before the text. JSON-decoded on read now. DuckDB-backed instances were unaffected. Also closes the latent parity gap flagged in Devin Review (ANALYSIS_0001): all four list-shaped docs fields (`platforms`, `gotchas`, `sample_questions`, `pairs_well_with`) now normalize `None` / empty-string / parse-failure / non-list-parsed-value to `[]`, matching the DuckDB backend byte-for-byte — current consumers were safe via `or []` guards, but the first consumer without one would have hit cross-backend behaviour drift. Locked by 6 parity tests. (#582)
 
-## [0.70.0] — 2026-06-09
-### Added
+## [0.70.0] — 2026-06-09### Added
 - **Adoption dashboard (`/admin/adoption`).** A business-facing view of how the system is actually used — distinct from the technical telemetry/sessions/activity pages. Top KPI cards (active users, time spent active + wall-clock, sessions, skill usage, tokens, prompts) over a 24h/7d/30d window toggle; a 30-day daily-trend chart section (inline SVG, one small-multiple per metric); a top-skills table; and a "users by activity" list (top 10 by active time, searchable) that links to a per-user drill-down at `/admin/adoption/users/{id}` with that user's KPIs, daily trends, and top skills/tools. Backed by new `/api/admin/adoption/*` endpoints aggregating `usage_session_summary` (time/sessions/tokens/prompts via `active_seconds`/`wall_seconds`, already computed by the session processor) and `usage_events` (distinct-users-per-day, skill events) on the fly — no new tables or data collection. Admin-only, audit-logged. (FAI-32, #579)
 
-## [0.69.1] — 2026-06-09
-### Fixed
+## [0.69.1] — 2026-06-09### Fixed
 - The `[slack-socket]` extra now also installs `aiohttp` (`slack_sdk`'s `SocketModeClient` uses the aiohttp transport at `services/slack_bot/socket_mode_client.py`, but `slack_sdk` does not depend on `aiohttp` itself). Without it, a `chat.slack.transport: socket` deployment still fail-closed at startup with `ModuleNotFoundError: No module named 'aiohttp'` even after the image bundled `slack_sdk` (#576). Follow-up to #576; HTTP transport unaffected. Found during live Socket Mode E2E testing.
 
-## [0.69.0] — 2026-06-08
-### Added
+## [0.69.0] — 2026-06-08### Added
 
 - Dev-agent kit: a Claude Code dev-agent kit under `.claude/` — `/agnes-review` scope-gated review team (rules / architecture / rbac / parity + consolidator), `agnes-builder` + `agnes-conventions` (five code-verified playbooks), `/agnes-build` parallel build team (`agnes-decomposer` + `agnes-integrator`), a `CONTRIBUTING.md` change-safety sync-map, and a PostToolUse ruff/mypy quality hook (`scripts/post-edit-quality.sh`). A router table in `CLAUDE.md` indexes it.
 - API coverage: the `/api/* → CLI + MCP` triple-surface check (`tests/test_documentation_api_triple_surface.py`) is now a ratchet — a new endpoint must be classified triple-surface (`_COHORT`) or consciously REST-only (`_EXEMPT`); existing endpoints are grandfathered (`tests/api_triple_surface_grandfathered.txt`). Complements the docs-coverage gate from #565.
@@ -6523,67 +6200,52 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Internal
 
-## [0.68.12] — 2026-06-08
-### Fixed
+## [0.68.12] — 2026-06-08### Fixed
 - The server Docker image now bundles `slack_sdk` (the `[slack-socket]` extra is added to the `uv pip install` line in the Dockerfile), so the optional Slack **Socket Mode** inbound transport works out-of-the-box. Previously the extra was documented but never installed in the image, so a `chat.slack.transport: socket` / `SLACK_TRANSPORT=socket` deployment fail-closed at startup (logged + Slack left disabled) on the stock image — Socket Mode effectively required a custom build. HTTP transport (the default) is unaffected and the `slack_sdk` import stays lazy, so HTTP-only deployments pay nothing at runtime. (#576)
 
-## [0.68.11] — 2026-06-08
-### Added
+## [0.68.11] — 2026-06-08### Added
 - Admin Tables: a **Test connection** button in the Keboola register & edit modals that verifies the instance's Keboola Storage API token/stack (lists buckets) and reports the result inline — previously this probe was only available on the Instance settings page. Both modals clear any stale result on reopen so a previously-passed badge isn't shown on a freshly-reset form. (#402, #575)
 
-## [0.68.10] — 2026-06-08
-### Changed
+## [0.68.10] — 2026-06-08### Changed
 - Admin Tables: on non-Keboola instances, the Keboola **Discover** / **List tables** / **Use table as base** buttons in the register & edit modals now render disabled with an explanatory tooltip (*"Keboola not connected — set token in Instance settings"*) instead of being hidden — the inputs were already shown, so the buttons were silently vanishing with no explanation. The disabled buttons carry no click handler, so they still can't reach the instance-type-routed discover endpoint. (#405, #574)
 
-## [0.68.9] — 2026-06-08
-### Changed
+## [0.68.9] — 2026-06-08### Changed
 - Tokenized hardcoded font-sizes in `style-custom.css` to the `--text-*` scale — 27 value-preserving swaps (`0.875rem`→`var(--text-base)`, `0.75rem`→`var(--text-sm)`, `1rem`→`var(--text-md)`, `1.5rem`→`var(--text-xl)`; each token equals the literal it replaces at the 16px root, so rendering is unchanged). Addresses the font-size half of #400 (the absorbed-`style.css` legacy section); the neutral-color half is already handled by the legacy `--text`/`--border` token aliases, and the remaining hardcoded colors there are intentional semantic tints (alert states) / a dark code block. Sizes with no exact token (13px `0.8125rem`, 22px `1.375rem`, …) are left as-is — rounding them to the nearest token would change rendering, so they're better standardised per-component. (#400, #572)
 
-## [0.68.8] — 2026-06-08
-### Fixed
+## [0.68.8] — 2026-06-08### Fixed
 - Cleaned up half-rebranded UI spots where a brand-green element still used the old pre-rebrand blue `#0056A3` (the legacy `--primary-dark`), now `var(--ds-primary-dark)`: the `marketplace_plugin_detail` hero gradient (was green→blue, now green→green-dark), the `news_editor` primary-button hover, and the green-tinted status/type badges in `memory_domain_detail`, `admin_corporate_memory`, `catalog_package_detail` (`.qm-remote`), and `marketplace.css` (`.type-badge[data-type=plugin]`) — were green bg + blue text, now green-on-green (the LOCAL/REMOTE/MATERIALIZED + PLUGIN/SKILL/AGENT labels carry the distinction). Left untouched: the legacy `--primary` blue palette (internally consistent; a separate migration). (#497, #571)
 
-## [0.68.7] — 2026-06-08
-### Fixed
+## [0.68.7] — 2026-06-08### Fixed
 - **Dark mode: form controls and their surfaces no longer render white.** Two parts. (1) `color-scheme: light`/`dark` is now set on the theme roots (`design-tokens.css`) so browser-default inputs/selects/textareas + scrollbars adopt the dark UA palette instead of staying white. (2) The hardcoded-white form surfaces that `color-scheme` can't reach are tokenized to `var(--ds-surface)`/`var(--ds-border)`/`var(--ds-text-*)`: the search/filter inputs on `admin_sync`/`admin_groups`/`admin_mcp_sources`/`admin_access`, the `store_upload` fields + type-tiles + drop-zone, the `news_editor` panels/textareas/preview/labels (it was a fully hardcoded-light admin page), the `catalog` hero search-row, and the JS-built `chip-input` component (container + dropdown). The `marketplace` page was light-locked via a full light palette scoped to `.mp-page` (`--surface`/`--text-primary`/`--text-secondary`/`--border-light` pinned to fixed values) — those now flip to the design-system tokens, plus its hero search-row. Verified across ~28 routes with an in-browser crawler: every previously-white form surface now flips light↔dark, and light mode is unchanged. Complements the edit-group modal fix (#560). Part of #497 §8/§9. (#497, #563)
 
-## [0.68.6] — 2026-06-08
-### Fixed
+## [0.68.6] — 2026-06-08### Fixed
 - **Edit-group modal now flips in dark mode.** `admin_group_detail`'s edit modal hardcoded a white card (`background: #fff`) with `#e5e7eb`-bordered inputs, so it stayed a white island in the dark theme. It now adopts the canonical global `.modal-card` — whose token-driven rules (`var(--surface)`/`var(--text-primary)`/`var(--border)`) style the card plus its labels and inputs — and the description field uses the `.form-textarea` canonical. Light mode is unchanged (`--ds-surface` resolves to `#ffffff`, the prior literal); dark mode flips the card, inputs, and labels together. Part of the #497 §8 form-input audit. (#497, #560)
 
-## [0.68.5] — 2026-06-08
-### Changed
+## [0.68.5] — 2026-06-08### Changed
 - Tokenized the remaining hardcoded brand-green tints in templates: 30 `rgba(46, 168, 119, α)` literals across 10 templates (`store_upload`, `_profile_tokens`, `admin_tokens`, `admin_corporate_memory`, `install`, `marketplace_plugin_detail`, `memory_domain_detail`, `catalog_package_detail`, `home_onboarded`, `admin_tables`) → `color-mix(in srgb, var(--ds-primary) X%, transparent)`, so the tints follow the operator's brand color (e.g. they go blue under the blue theme) instead of staying green. Finishes #510's hex sweep, which only covered the 6 CSS files; visually identical under the default (green) theme. Also fixes an adjacent rebrand leftover flagged in review — `.hero-action-btn:hover` hardcoded the old pre-rebrand blue `#0056A3` (`--primary-dark`) → `var(--ds-primary-dark)`, so the hover darkens on-brand instead of jumping to blue. (#497 §5, #570)
 
-## [0.68.4] — 2026-06-08
-### Changed
+## [0.68.4] — 2026-06-08### Changed
 - `/admin/server-config`: bespoke `.danger-pill` / `.secret-pill` badges now use the canonical `.badge` / `.badge--danger` / `.badge--success` classes (token-based, so they flip correctly in dark mode), and the page's duplicated `.modal-*` CSS was dropped in favor of the global design-system modal styles (page-specific `.diff-*` kept). (#497, #549)
 
-## [0.68.3] — 2026-06-07
-### Fixed
+## [0.68.3] — 2026-06-07### Fixed
 - **Windows: `agnes refresh-marketplace` (both `--bootstrap` and the default refresh) crashed with `FileNotFoundError [WinError 2]`.** Every `claude` subprocess call passed the bare command name, but Windows `CreateProcess` doesn't apply `PATHEXT` to a bare name, and the npm-installed `claude` shim (`.cmd`/`.bat`) can't be launched directly even via its fully-resolved path — it must be routed through `cmd.exe`. A new `_claude_base_cmd()` helper now resolves the executable via `shutil.which`, wraps a `.cmd`/`.bat` shim in `cmd /c` on Windows, and every claude invocation site splats its result; when `claude` isn't installed the helper returns `None` and each caller falls back to its existing claude-missing behavior. (#568)
 
-## [0.68.2] — 2026-06-07
-### Fixed
+## [0.68.2] — 2026-06-07### Fixed
 - **Postgres: flea-market LLM security reviews are now backend-agnostic.** `run_llm_review` (the background task that reviews a submitted plugin/skill/agent) was hardcoded to DuckDB (`conn_factory=get_system_db`): on a Postgres-backed instance it looked the submission up in an empty DuckDB, logged "submission vanished", and returned with no verdict — leaving **every** submission stuck at `pending_llm` ("Under review") forever, regardless of whether the LLM provider key was set. DuckDB-backed instances were unaffected. It now resolves `store_submissions` / `store_entities` / `audit` through the `src.repositories` factory (the same `use_pg()` switch the rest of the app uses), so it follows the configured backend (the `conn_factory` argument is retained for call-site/test compatibility but no longer used). Same root cause as the stuck-review reaper fix in v0.67.2; covered by a cross-engine contract test. (#567)
 
-## [0.68.1] — 2026-06-06
-### Fixed
+## [0.68.1] — 2026-06-06### Fixed
 - **Setup page no longer serves a stale install script after a redeploy.** Server-rendered HTML responses now carry `Cache-Control: no-store`, so browsers re-render `/home`, `/setup`, and `/install` against the live build on every load. Previously the page had no cache directive: a browser-cached setup hero kept handing out the wheel filename baked in at its original render time, and after a redeploy that version-pinned `/cli/wheel/{name}` URL 404s (the new build replaced the wheel on disk), breaking a fresh install end-to-end. Scoped to `text/html` — JSON APIs and the immutable-cached static / marketplace-image assets are untouched. (#569)
 
-## [0.68.0] — 2026-06-05
-### Added
+## [0.68.0] — 2026-06-05### Added
 - **Per-plugin Cowork export + Cowork download UI.** Plugins can now be downloaded individually as Claude Cowork-uploadable zips. New `GET /marketplace/cowork/{prefixed_name}.zip` (same PAT/cookie auth and RBAC filtering as `marketplace.zip`) repackages a single plugin into the shape Cowork's stricter validator accepts — matched against a known-good reference upload. It keeps all plugin content (`data/`, `scripts/`, `vendor/`, `global-rules/`, `CLAUDE.md`, `settings.json`, agent `tools:`) and only: puts the plugin at the zip root (no `marketplace.json` wrapper); coerces `plugin.json` to a semver `version` + required `author` + dropped `homepage`; whitelists SKILL.md frontmatter to `name`/`description`/`compatibility` (drops Claude-Code-only `argument-hint`/`user-invocable`) with `<`/`>`/`"` sanitized out of descriptions; concatenates the per-directory `.md` files under `data/` into `_all.md` (keeps every byte while staying under Cowork's 5000-file cap — a docs/Confluence dump can be tens of thousands of files); renames Next.js route path segments (`[x]`→`dyn-x`, `(y)`→`grp-y`); and strips `.DS_Store` + Agnes-only paths. `/me/cowork` describes both Cowork flows — the bundled project (skills + live MCP data, scoped to one project folder) and per-plugin packages (uploaded via Customize, skills work across all Cowork projects) — and hosts the per-plugin download list; each marketplace plugin detail page also gains a "Download for Cowork" button. New module `app/marketplace_server/cowork_packager.py`. (#488)
 - **In-app API documentation, three surfaces.** A curated API Reference guide (`docs/api-reference.md`) is now reachable from three surfaces in lockstep, so a public endpoint is documented everywhere an analyst or agent might reach for: (a) web — `/documentation/api` (login-gated, no admin requirement; Documentation group in the Admin nav links the guide alongside Swagger UI and ReDoc); (b) CLI — `agnes docs api` renders the same guide in the terminal via Rich's Markdown formatter; (c) MCP — `documentation_api` tool on the HTTP MCP server returns the raw Markdown so Claude Desktop / Cursor / Cline can look up the REST surface without leaving the chat. Single source of truth (`docs/api-reference.md`), Markdown rendered or echoed at each surface — adds the triple-surface policy floor for future endpoints (see `tests/test_documentation_api_triple_surface.py`). (#565)
 - **CI gate: public API endpoint coverage.** A new test (`tests/test_api_docs_coverage.py`) requires every public `/api/*` route in the FastAPI app to be listed in `docs/api-reference.md`; CI fails when a new endpoint ships without a matching entry in the guide, preventing silent documentation drift. The match is token-bounded — `/api/health` does NOT count as documenting `/api/health/detailed` (a separate admin diagnostics endpoint), closing the substring-overlap false-pass flagged in Devin Review on #565 (BUG_0001). (#565)
 - **Admin menu highlights on `/documentation` pages.** The Admin nav trigger now shows the active state when the user is anywhere under `/documentation`, consistent with the existing `/admin/*` highlight behaviour. (#565)
 
-## [0.67.6] — 2026-06-05
-### Fixed
+## [0.67.6] — 2026-06-05### Fixed
 - **Keboola discovery now opens the suggestions dropdown.** After clicking Discover (buckets) or List tables in the register or edit Keboola-table modal, the freshly populated `<datalist>` opens its native suggestion popup automatically — the associated input is focused and an `input` event dispatched — so the loaded buckets/tables are visible without a second click into the field. No-op when discovery returns nothing; degrades gracefully on browsers that ignore the nudge (the populated datalist + success toast are unchanged). (#556, #561)
 
-## [0.67.5] — 2026-06-05
-### Internal
+## [0.67.5] — 2026-06-05### Internal
 - Anti-regression guard in `tests/test_design_system_contract.py`: page-level
   templates must `{% extends %}` a design-system base, not ship their own
   `<html>`/`<head>`/`<body>` scaffold. Closes the one unimplemented item from
@@ -6595,20 +6257,17 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   explicit `_STANDALONE_ALLOWLIST`; a companion test fails if an allowlist
   entry goes stale (page migrated or removed) so the list can't silently rot. (#551)
 
-## [0.67.4] — 2026-06-05
-### Fixed
+## [0.67.4] — 2026-06-05### Fixed
 - **Postgres: admins can grant data tables to analysts again.** `POST /api/admin/data-packages/{id}/tables` resolved the table via `TableRegistryRepository(conn)` on the always-DuckDB `_get_db` connection, so on a Postgres-backed deployment it never found tables that live in PG and returned `404 table_not_found` for tables that are present in `/api/v2/catalog` — analysts could not be granted any data package. The lookup now goes through the backend-aware `table_registry_repo()` factory. (#562)
 - **Postgres: deleting a group that carries grants no longer 500s.** `DELETE /api/admin/groups/{id}` cascaded members + grants via raw `conn.execute(...)` (DuckDB) before `repo.delete()` (Postgres), so on a Postgres deployment the children were never removed and the parent delete hit a `resource_grants.group_id` foreign-key violation. The cascade now routes through the `user_group_members_repo()` / `resource_grants_repo()` factories, matching the parent delete's backend. (#562)
 
 ### Internal
 - Cross-backend parity regression test (`tests/db_pg/test_parity_data_packages_groups.py`) driving the data-package table-attach and group-delete endpoints on both DuckDB and Postgres; retired the now-fixed `TableRegistryRepository` entry for `app/api/data_packages.py` from the backend-split direct-instantiation allow-list. (#562)
 
-## [0.67.3] — 2026-06-05
-### Internal
+## [0.67.3] — 2026-06-05### Internal
 - Planning docs for the ORM-on-state migration land under `docs/planning/`: an inventory of every raw-SQL callsite (`agnes-orm-rawsql-audit.md` + per-subsystem inventories for `app`, `src`, `cli/conn/svc`), a phased migration plan (`orm-state-migration.md`), and three rounds of Codex adversary review (`orm-migration-adversary-review.md` → v2 → v3) that progressively patched factual errors and tightened the cut/rollback plan. No code change — pure planning artifact, locks the scope before any callsite is touched. (#555)
 
-## [0.67.2] — 2026-06-05
-### Changed
+## [0.67.2] — 2026-06-05### Changed
 - **PG debug-toolbar panel now captures data-XHR queries.** v0.67.1 pinned the toolbar to document navigations to stop background polls (`/api/version`, `/api/health`, …) from wiping the panel — but that also hid the queries from data XHRs like `/api/marketplace/items` and `/api/store/entities`, which is exactly what an operator wants to inspect. The skip list is now narrow (a handful of named pollers) and everything else — document navigations AND data XHRs — is instrumented. `/api/health` is exact-match so the separate authenticated admin diagnostics endpoint `/api/health/detailed` stays observable. (#559)
 
 ### Added
@@ -6617,15 +6276,13 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Fixed
 - The stuck-review reaper now works on Postgres-backed instances. It was DuckDB-only: `POST /api/admin/run-reap-stuck-reviews` injected a DuckDB connection and the reaper ran raw DuckDB SQL against it, so on a Postgres deployment it queried an empty local DuckDB, found nothing, and returned `200 reaped=0` every 15 minutes while real `pending_llm` submissions sat in Postgres forever. A flea-market submission whose LLM review never completed (e.g. the LLM provider key was unset when it was uploaded, so no review was scheduled) would then show "Under review" indefinitely instead of flipping to `review_error` with a Retry button. The flip SQL now lives on the repositories (`reap_stuck_pending_llm` on both the DuckDB and Postgres `store_submissions` repos) and the reaper resolves the repo from the factory, so it flips rows on whichever backend holds them. Covered by a cross-engine contract test. (#558)
 
-## [0.67.1] — 2026-06-05
-### Added
+## [0.67.1] — 2026-06-05### Added
 - **Postgres debug-toolbar panel.** The FastAPI debug toolbar (mounted only when `DEBUG=1`) now has a Postgres panel alongside the DuckDB one — captures every state-layer SQL statement through SQLAlchemy `before/after_cursor_execute` + `handle_error` event listeners into a contextvar-scoped, request-scoped store, then renders timings/params/errors per request. Closes the toolbar gap that opened when app state moved from `system.duckdb` to Cloud SQL Postgres (state SQL was invisible; only analytics DuckDB queries showed). The toolbar background-poll fix-up also pins panel state to document navigations so background polls (e.g. usage telemetry) don't reset the query panel mid-request. (#553)
 
 ### Internal
 - `fastapi-debug-toolbar` moves from the `[dev]` extra to the `[server]` extra so it ships inside the single production image (build-once / promote-the-same-artifact discipline — the image validated in dev is the exact one promoted to prod, differing only by the `DEBUG` env var). The toolbar middleware is mounted only when `DEBUG=1` in `app/main.py`, which prod never sets, so the dep is inert in prod. (#553)
 
-## [0.67.0] — 2026-06-05
-### Added
+## [0.67.0] — 2026-06-05### Added
 - **Cowork bundle ships a `skill-router` agent.** Every generated
   `bundle.zip` now includes `.claude/agents/skill-router.md` alongside the
   curated skills — a lightweight subagent that inventories the workspace
@@ -6635,20 +6292,16 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   can't see what's available. The name is reserved (`_CURATED_AGENT_NAMES`)
   so a marketplace plugin can't shadow it.
 
-## [0.66.1] — 2026-06-05
-### Internal
+## [0.66.1] — 2026-06-05### Internal
 - Bump `starlette` 1.0.0 → 1.0.1 (transitive bugfix release; no public-surface change). (#554)
 
-## [0.66.0] — 2026-06-04
-### Added
+## [0.66.0] — 2026-06-04### Added
 - Slack bot tokens (`SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_SIGNING_SECRET`) can now be set, rotated, and cleared from the admin UI (`/admin/server-config` → Slack bot secrets), stored encrypted in the server vault. Environment variables still take precedence, so Terraform-managed deployments are unaffected. Requires `AGNES_VAULT_KEY` on the server.
 
-## [0.65.20] — 2026-06-04
-### Fixed
+## [0.65.20] — 2026-06-04### Fixed
 - The Keboola sync now sweeps orphaned `kbc-export-*` / `kbc-slice-*` staging dirs from the temp root (`AGNES_TEMP_DIR`) at the start of every run. These dirs are normally removed by `TemporaryDirectory` on any return — including the disk-full path — so the only way they survive is a hard kill (SIGKILL / OOM / container recreate) mid-export. Without a sweep they accumulated on the data disk until it filled and *every* subsequent sync failed with `No space left on device`, a self-reinforcing failure that needed a manual `rm` to break. The sweep is age-gated (`AGNES_SCRATCH_MAX_AGE_SEC`, default 1h) so a concurrent in-flight export is never deleted, and runs under the sync lock before any new scratch is created.
 
-## [0.65.19] — 2026-06-04
-### Internal
+## [0.65.19] — 2026-06-04### Internal
 - Repository factory (`src/repositories/__init__.py`) now dispatches through a
   declarative `_REGISTRY` table (`key -> {backend: (module, class)}`) instead of
   ~44 hand-written two-way `if use_pg()` functions. Behaviour and the public
@@ -6662,20 +6315,17 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   importable) — the structural half of the dual-backend discipline,
   complementing the method-parity and behavioural-contract suites.
 
-## [0.65.18] — 2026-06-04
-### Added
+## [0.65.18] — 2026-06-04### Added
 - Dark mode is now reachable. `instance.theme` accepts two new values: `dark` (the full dark surface palette that already shipped in `design-tokens.css` but was unreachable — `get_instance_theme()` only allowed `blue`/`navy`) and `auto` (brand palette in light, flips to the dark palette when the user's OS prefers dark — resolved client-side in `_theme_resolve.html`, inline in `<head>` before first paint so there's no flash). (#497)
 
 ### Fixed
 - Dark theme: the legacy `--ds-info-*` / `--ds-warn-*` token vocab now maps to the dark accent tints instead of staying light pastel (which washed out on dark surfaces). (#497)
 - Dark theme: `/first-time-setup` form inputs no longer render white-on-dark — they derive bg/text from `--ds-surface` / `--ds-text-primary` (unchanged in light). (#497)
 
-## [0.65.17] — 2026-06-04
-### Changed
+## [0.65.17] — 2026-06-04### Changed
 - The store-upload page header now renders via the shared `_page_hero.html` partial (which gains an optional `page_hero_class` hook) instead of duplicating the hero markup. (#497)
 
-## [0.65.16] — 2026-06-04
-### Changed
+## [0.65.16] — 2026-06-04### Changed
 - The registered/discovered MCP tools tables (`/admin/mcp-sources/…`) now use the canonical `.ds-table` class instead of bespoke `tools-table` styles; the key-value config summary stays bespoke. (#497)
 ### Internal
 - Added a schema-parity gate (`tests/db_pg/test_schema_parity.py::test_alembic_head_materializes_every_model`)
@@ -6691,8 +6341,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   gate locks the dual-backend-discipline invariant so that drift is caught at
   CI instead of wedging a customer instance at startup.
 
-## [0.65.14] — 2026-06-04
-### Fixed
+## [0.65.14] — 2026-06-04### Fixed
 - Cowork bundle now ships skills in Claude Code's directory format
   (`.claude/skills/<name>/SKILL.md`) with supporting files (references/,
   assets/) preserved, instead of flat `.claude/skills/<name>.md` files that
@@ -6704,8 +6353,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   anthropics/claude-code#50669), not workspace `.claude/skills/`.
 - **Cowork bundle connects over verified TLS on macOS without manual cert setup.** The generated `mcp_server.py` / `agnes.py` now build their HTTPS `ssl` context from a Mozilla CA bundle shipped in the ZIP as `cacert.pem` (also copied to `~/.config/agnes/` by `setup.py`), falling back to the OS trust store and honouring `SSL_CERT_FILE`. This fixes `CERTIFICATE_VERIFY_FAILED` on Pythons that lack a usable system CA store (notably macOS python.org builds) **without disabling certificate verification**. An explicit opt-out for genuinely broken environments remains via `AGNES_INSECURE_SKIP_TLS_VERIFY=1`.
 
-## [0.65.13] — 2026-06-04
-### Internal
+## [0.65.13] — 2026-06-04### Internal
 - **Fixed the DuckDB/Postgres status-parity sweeps being dead under
   `pytest -n auto`.** `test_get_status_parity_sweep.py` and
   `test_mutation_status_parity_sweep.py` stashed each backend's results in a
@@ -6721,8 +6369,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   positives. Added `test_first_time_setup_parity.py` pinning the
   `/first-time-setup` 302-redirect-when-users-exist fix per backend.
 
-## [0.65.12] — 2026-06-04
-### Fixed
+## [0.65.12] — 2026-06-04### Fixed
 - **Postgres backend: the first-time-setup wizard stayed open on a
   provisioned instance.** `GET /first-time-setup` counted users with a raw
   `SELECT COUNT(*) FROM users` on the always-DuckDB `_get_db` connection, so on
@@ -6748,8 +6395,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   instantiation). The GET sweep found the `/first-time-setup` divergence above;
   the mutation sweep is clean (no remaining divergence on that surface).
 
-## [0.65.11] — 2026-06-04
-### Fixed
+## [0.65.11] — 2026-06-04### Fixed
 - **`agnes schema` / `agnes describe` / sample / scan 500'd for any extract
   whose directory name differs from its `source_type`.** The v2 endpoints
   (`/api/v2/schema`, `/api/v2/sample`, `/api/v2/scan`, and the catalog
@@ -6765,8 +6411,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   already use), with the `source_type` directory kept as a fast path. A missing
   parquet now returns a clean 404 instead of 500.
 
-## [0.65.10] — 2026-06-04
-### Fixed
+## [0.65.10] — 2026-06-04### Fixed
 - **Postgres backend: `agnes query` against internal tables returned nothing.**
   The internal-table SQL feature (analyst SQL over `agnes_telemetry` /
   `agnes_audit` / `agnes_sessions`) ran the query in DuckDB against the system
@@ -6785,8 +6430,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   Pinned by both-backends parity + RBAC-escape tests
   (`tests/db_pg/test_parity_internal_query.py`).
 
-## [0.65.9] — 2026-06-04
-### Fixed
+## [0.65.9] — 2026-06-04### Fixed
 - **Postgres backend: Slack identity binding silently failed.** The
   `users.slack_user_id` column (mapping a Slack user to an Agnes account) was
   only ever lazy-`ALTER`-ed into the DuckDB system file by the Slack bot, so it
@@ -6814,8 +6458,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   would violate; the one-code-per-Slack-user issue flow already prevents
   duplicate bindings.
 
-## [0.65.8] — 2026-06-04
-### Fixed
+## [0.65.8] — 2026-06-04### Fixed
 - **Postgres backend: per-user MCP credentials were ignored at call time.**
   When forwarding to an upstream MCP source, `connectors.mcp.client.`
   `_lookup_secret_for_source` read the caller's per-user secret off a raw
@@ -6835,8 +6478,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   parity tests (`tests/db_pg/test_parity_mcp_shared_vault.py`). Closes the
   deferred follow-up flagged in #530's merge body. (#537)
 
-## [0.65.7] — 2026-06-04
-### Fixed
+## [0.65.7] — 2026-06-04### Fixed
 - **Postgres backend: a fresh instance had no `Admin` / `Everyone` system
   groups, so admin access and Everyone-scoped grants never worked.** The system
   groups are seeded by `src.db._seed_system_groups`, which runs only on a DuckDB
@@ -6848,8 +6490,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   seed-admin step resolves group ids + writes membership through the factory.
   Pinned by both-backends parity tests (`tests/db_pg/test_parity_seed_admin_groups.py`). (#536)
 
-## [0.65.6] — 2026-06-04
-### Fixed
+## [0.65.6] — 2026-06-04### Fixed
 - **Postgres backend: catalog `/sample` preview was empty for internal tables.**
   The preview for an internal source (`agnes_audit` / `agnes_sessions` /
   `agnes_telemetry`) read the physical state table (`audit_log` etc.) off a raw
@@ -6859,8 +6500,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   connection) while keeping the same RBAC row filter. Pinned by a both-backends
   parity test (`tests/db_pg/test_parity_internal_sample.py`).
 
-## [0.65.5] — 2026-06-04
-### Fixed
+## [0.65.5] — 2026-06-04### Fixed
 - **Postgres backend: deleting an MCP source leaked its per-user secrets.**
   `DELETE /api/admin/mcp-sources/{id}` purged per-user vault rows via a raw
   `PerUserSecretsRepository(conn)` off the always-DuckDB connection. Per-user
@@ -6882,8 +6522,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   connection was dead. `bq_metadata_refresh.py` and `query.py` drop out of the
   backend-split guard's `get_system_db` residual list.
 
-## [0.65.4] — 2026-06-04
-### Fixed
+## [0.65.4] — 2026-06-04### Fixed
 - **Postgres backend: co-session tokens failed closed on a PG instance.**
   Co-session token resolution (`pat_resolver.resolve_token_to_user`) read
   `chat_session_participants` / `chat_sessions` off the always-DuckDB system
@@ -6902,8 +6541,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   `events.py`) stay grandfathered as a coherent DuckDB-conn unit — full
   Slack-identity-on-Postgres migration is a separate subsystem effort. (#533)
 
-## [0.65.3] — 2026-06-04
-### Fixed
+## [0.65.3] — 2026-06-04### Fixed
 - **Postgres backend: the sync pipeline served no data on a PG instance.**
   `SyncOrchestrator.rebuild()` read the table registry, wrote `sync_state`, and
   read/reconciled `view_ownership` through a raw `get_system_db()` (always
@@ -6922,12 +6560,10 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   (matching the DuckDB sibling), so a non-admin's domain-granted memory items
   were invisible/miscounted on Postgres.
 
-## [0.65.2] — 2026-06-04
-### Changed
+## [0.65.2] — 2026-06-04### Changed
 - Refreshed the `/login` feature panel to match the product pillars shown on `/home`: **Data packages**, **Marketplace** (plugins, skills, and agents in one card), **MCP**, **Memory**, and a **Use it anywhere** card for the cloud surfaces (Cowork, web chat, Slack). Replaces the stale, aspirational cards (*Unified Data Access / Instant Automation / Smart Notifications / Performance Intelligence*) with descriptions that reflect what the platform actually does, and adds a `BETA` badge to every capability except the mature Data packages core. The panel subtitle is realigned with the `/home` hero copy, and the cards are tightened so the full set fits without scrolling. Adds a "Made by Keboola" attribution with the Keboola wordmark at the foot of the brand panel.
 
-## [0.65.1] — 2026-06-04
-### Internal
+## [0.65.1] — 2026-06-04### Internal
 - Made `tests/test_cache_warmup.py::test_list_remote_rows_filters_to_bigquery_source_type`
   deterministic by patching the `table_registry_repo()` factory the code calls
   rather than the underlying class + `get_system_db` — the old patch could be
@@ -7059,8 +6695,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   definition of "the DuckDB→Postgres migration is finished". Meta-tests assert
   the detector flags a planted violation and ignores the factory-call form.
 
-## [0.65.0] — 2026-06-03
-### Added
+## [0.65.0] — 2026-06-03### Added
 - Web chat: a non-interactive "Slack" pill in the `/chat` sidebar marks sessions that originated from Slack (`slack_dm` / `slack_thread`), and `/chat?session=<id>` now deep-links straight into a session on page load. Both are client-side renders that degrade gracefully on older servers; the deep link is a one-shot, RBAC-guarded by the existing session-scoped endpoints (an unknown/forbidden id lands on an empty chat with an error status rather than leaking data).
 - **Slack Block Kit interactivity.** Bot DM replies now carry interactive
   buttons, delivered via a new signature-verified `POST /api/slack/interactivity`
@@ -7186,46 +6821,37 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   can't interleave partial JSON lines. New `ChatManager.active_count_for_user`
   wrapper.
 
-## [0.64.0] — 2026-06-03
-### Added
+## [0.64.0] — 2026-06-03### Added
 - MCP source secrets are now fully manageable from the admin UI: set/rotate/clear a vault-stored secret (encrypted at rest), an `env` (`KEY=VALUE`) field and a `scope` selector on the source form, and a secret-status indicator — no host environment variable required. The legacy `auth_secret_env` (host-env) path is relabelled "Advanced (legacy)" and still works. Storing a secret with no `AGNES_VAULT_KEY` set now returns `409` (outside `LOCAL_DEV_MODE`) instead of silently using an ephemeral key that loses the value on restart; a set-but-invalid key still raises a clear config error. `GET /api/health` now reports `vault_key_configured`, source serialization includes a `has_vault_secret` boolean, and `AGNES_VAULT_KEY` is documented in `config/.env.template`. Deleting a source now also removes its vault secrets (shared + per-user) so no orphaned encrypted rows are left behind.
 
-## [0.63.1] — 2026-06-03
-### Fixed
+## [0.63.1] — 2026-06-03### Fixed
 - **A cloud/DuckDB-backend VM now reboots cleanly instead of hanging on a side-car migration.** The `customer-instance` startup-script baked the Postgres side-car overlay (`docker-compose.postgres.yml` + `…-host-mount.yml`) into the `.env` `COMPOSE_FILE` unconditionally — so a reboot of a `backend: cloud` (or `duckdb`) instance re-engaged the side-car and ran the one-shot `migrate` service against it, which fails (`failed to resolve host 'postgres'`) and blocks `app`/`scheduler` startup via `depends_on`. The startup-script now selects the overlay set from the persisted `instance.yaml` backend — side-car overlay only for `backend=side_car`; `duckdb`/`cloud` run the baseline (cloud reaches managed Postgres via `instance.yaml::database.url`) — mirroring `agnes-state-applier.sh`. Regression test added.
 
-## [0.63.0] — 2026-06-03
-### Added
+## [0.63.0] — 2026-06-03### Added
 - MCP **sources** can now carry per-source non-secret environment variables (`env`, a `{VAR: value}` map) passed to the spawned **stdio** subprocess — e.g. a base API URL the upstream server needs alongside its `auth_secret_env` secret (which overlays `env`). New optional field on `POST/PUT /api/admin/mcp-sources` and a new nullable `mcp_sources.env` column (DuckDB `_v68_to_v69` + Alembic `0016`). Backward-compatible: existing sources (`env` NULL) behave exactly as before.
 
-## [0.62.4] — 2026-06-03
-### Fixed
+## [0.62.4] — 2026-06-03### Fixed
 - **Fresh customer-instance VMs on the Postgres/cloud path now boot.** Two gaps broke first-boot for any VM whose startup-script engages the Postgres overlay (existing DuckDB-only fleets were unaffected): (1) the `Dockerfile` never copied `agnes-state-applier-bootstrap.service` into `/opt/agnes-host/`, so the startup-script's `install` of it failed under `set -e` (`install: cannot stat …`); (2) the `migrate` and `data-migrate` services in `docker-compose.postgres.yml` declared only `build: .`, so `docker compose up` tried to build them on the sourceless VM and failed with `failed to read dockerfile`. The Dockerfile now ships the bootstrap unit, and both one-shot services carry an `image:` (the pulled GHCR image) alongside `build` — mirroring the app/scheduler split. Regression tests assert every startup-script-installed ops unit is shipped by the Dockerfile and that the overlay's migrate services carry a prebuilt image. (#524)
 
-## [0.62.3] — 2026-06-03
-### Fixed
+## [0.62.3] — 2026-06-03### Fixed
 - `Dockerfile.demo` pins `ENV DATA_DIR=/data` so the baked demo extract (written to the absolute `/data/extracts/demo` at build time) is found by the boot-time rebuild. The app default `DATA_DIR=./data` is relative to the `/app` workdir, so without this the demo tables (`orders_demo`, `customers_demo`) silently never loaded and the demo catalog came up empty. (#525)
 
-## [0.62.2] — 2026-06-03
-### Fixed
+## [0.62.2] — 2026-06-03### Fixed
 - **Served Claude Code marketplace was missing every plugin on Postgres-backed deployments.** `src/marketplace_filter.py:resolve_allowed_plugins` ran the `resource_grants ⋈ marketplace_plugins ⋈ marketplace_registry` JOIN as raw `conn.execute` against the DuckDB-typed connection. On a `db-state-machine` CLOUD / SIDE_CAR instance the rows live in Postgres — the raw SQL hit an empty DuckDB table and the JOIN returned 0 rows, so `/marketplace.git/` and `/marketplace.zip` served only plugins from marketplaces ingested *before* the PG cutover (typically the seed `grpn-foundryai` set). `agnes marketplace search` still reported `installed: true` on the missing plugins because the curated tab reads `user_curated_subscriptions` through the repo factory and that *was* PG-routed — divergent UX signals that matched the field tickets exactly. Routed `resolve_allowed_plugins`, `resolve_user_groups`, and the subscription / store-install reads in `resolve_user_marketplace` through the repo factory (`marketplace_plugins_repo().list_granted_for_groups`, `user_groups_repo().list_names_by_ids`, `user_curated_subscriptions_repo`, `user_store_installs_repo`) so the served set, the marketplace search results, and the My Stack page all read the same source of truth on either backend. (#522)
 
 ### Internal
 - New cross-engine contract test (`tests/db_pg/test_marketplace_plugins_grants_contract.py`) parametrises `list_granted_for_groups` + `list_names_by_ids` over both DuckDB and Postgres backends — pins the JOIN shape (DISTINCT + ORDER BY parity with PG's stricter standard), the registered-at + name ordering, the marketplace_registry INNER-JOIN filter (orphan plugins drop), and the empty-input short-circuit. Catches the routing regression that drove this PR and prevents it from reappearing on either side. (#522)
 
-## [0.62.1] — 2026-06-03
-### Fixed
+## [0.62.1] — 2026-06-03### Fixed
 - MCP passthrough tools that declare no input parameters (e.g. canned-view tools such as a pipeline summary) no longer fail with a `kwargs` validation error. Empty-schema tools now register a parameterless signature in both the server-hosted (`app/api/mcp/tools_generator.py`) and CLI stdio (`cli/mcp/_dynamic_passthrough.py`) MCP servers, instead of a `**kwargs` wrapper that FastMCP rendered as a required field (so the only valid — empty — call was rejected).
 
-## [0.62.0] — 2026-06-03
-### Added
+## [0.62.0] — 2026-06-03### Added
 - **`agnes auth refresh-groups` + `POST /auth/refresh-groups`** — re-sync the caller's Google Workspace group memberships against the live Admin SDK without a browser sign-in. Closes the gap that drove a recurring class of "I'm in the new group but Agnes can't see my access" tickets: previously the `user_group_members.source='google_sync'` snapshot refreshed *only* in the browser OAuth callback (`app/auth/group_sync.fetch_user_groups`), so CLI/PAT users (`agnes refresh-marketplace`, `agnes pull`, `/api/marketplace/*`) saw a frozen view of their groups until they re-signed-in on the dashboard. The new endpoint reuses the OAuth-callback write path (prefix filter, admin/everyone mapping, `replace_google_sync_groups`) via the extracted `apply_user_groups` helper, so policy stays single-sourced. Rate-limited at 5/min/IP (slowapi default key — matches the `/token` and `/bootstrap` pattern in the same router; refreshing is cheap on our side but each call costs a Workspace Admin SDK quota unit, so the limit guards the upstream quota). Response reports `added` / `removed` / `current` so the CLI shows exactly what changed. The diff-computation read path goes through `user_group_members_repo().list_groups_with_meta_for_user()` so the response is correct on both DuckDB and Postgres state backends (Devin Review caught the original raw-SQL drift); a new `tests/db_pg/test_user_group_members_contract.py` pins down the read shape across both engines. (#520)
 
 ### Internal
 - **Extracted `app.auth.group_sync.apply_user_groups(user_id, email, conn) -> SyncResult`** from the OAuth callback's inline sync block (`app/auth/providers/google.py`), so the callback and the new refresh endpoint write the snapshot through one implementation. Cuts ~70 LoC of duplication and removes the OAuth-only assumption baked into the previous shape. Behavior preserved end-to-end (verified by the existing prefix/system-mapping/idempotency suite). The extracted function preserves the pre-extraction OAuth callback's fail-soft contract: a transient `ug_repo.ensure()` / `get_by_name()` hiccup (DuckDB write lock, PG connection drop) downgrades to `soft_failed=True` rather than raising — without this, the OAuth callback would turn a transient DB hiccup into `/login?error=oauth_failed` (user locked out) and the refresh endpoint into HTTP 500. The denied case (`denied=True`) deliberately preserves existing `source='google_sync'` rows rather than wiping RBAC on a prefix-policy mismatch that may be transient (operator-typo in `PREFIX_ENV` / Admin SDK propagation lag). Both contracts documented on the function's docstring. (#520)
 
-## [0.61.6] — 2026-06-03
-### Fixed
+## [0.61.6] — 2026-06-03### Fixed
 - `/home` "Mark me as onboarded" (and `agnes init`) now takes effect on a
   Postgres-backed instance. The route read `users.onboarded` with a raw
   `conn.execute` against DuckDB while `POST /api/me/onboarded` writes through
@@ -7236,32 +6862,26 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   the read and write share the active backend. (#518)
 - Marketplace **My Stack** tab returned HTTP 500 on the Postgres state backend — the `user_store_installs` PG repo's `list_for_user` omitted `title` / `tagline` / `synthetic_name` from its SELECT, which the flea-card builder (`_flea_to_item`) reads directly (`entity["synthetic_name"]` → `KeyError`). Brought the PG projection to parity with the DuckDB repo and added a cross-engine contract test. (#517)
 
-## [0.61.5] — 2026-06-03
-### Added
+## [0.61.5] — 2026-06-03### Added
 - The configured instance logo (`AGNES_INSTANCE_LOGO_SVG` env > `instance.logo_svg` YAML) now renders on the `/login` Sign In card, above the heading — previously the logo only surfaced in the app header. Empty default keeps the OSS vendor-neutral: no logo renders unless an operator sets one.
 
-## [0.61.4] — 2026-06-03
-### Changed
+## [0.61.4] — 2026-06-03### Changed
 - **Migrated the 7 remaining `base.html` leaf pages onto the design-system base (`base_ds`).** `admin_tables`, `admin_database`, `admin_sync`, `admin_mcp_sources`, `admin_mcp_source_detail`, `admin_mcp_tool_grants`, `cowork_help` — pages added on `main` *after* the #481 batch (Cowork + Universal MCP #474, db-state #455). Each is an extends-swap onto `base_ds` with its per-page component CSS moved into `{% block head_extra %}` and the redundant `_components.html` import dropped (`base_ds` auto-imports `ds`); every hero is kept in place (faithful — no visual change, render-verified). Only the 7 intentionally-bespoke templates (the catalog/marketplace `*_detail` card-heroes, the dead `admin_scheduler_runs` redirect, and the `_message` partial) now remain on `base.html`. Migration-tail follow-up to #482.
 
-## [0.61.3] — 2026-06-03
-### Changed
+## [0.61.3] — 2026-06-03### Changed
 - Brand-green tints, focus rings, and shadows across the static CSS (`style-custom.css`, `home.css`, `dashboard.css`, `marketplace.css`, `activity_center.css`, `admin_access.css`) now derive from the `--ds-primary` theme token via `color-mix` instead of hardcoded green, so they follow the active theme (light/blue/dark). No visual change in the default theme. (#497)
 
-## [0.61.2] — 2026-06-03
-### Changed
+## [0.61.2] — 2026-06-03### Changed
 - Confirmation, alert, and input dialogs across the web UI now render as styled in-app modals instead of native browser `confirm()` / `alert()` / `prompt()` pop-ups — design-system look (rounded corners + brand colours), non–event-loop-blocking, with focus trap, Esc/backdrop dismissal, and keyboard-friendly Enter-to-confirm. Helpers live in `app/web/static/js/modal.js` (`confirmModal()` / `alertModal()` / `promptModal()`), CSS in `app/web/static/style-custom.css`, autoloaded via `_app_scripts.html`. Touches 22 templates + `admin/db_state.js`; covers regular pages and the admin surface (`admin_tables`, `admin_corporate_memory`, `admin_store_submission_detail`, `admin_user_detail`, etc.). The Devin Review on #508 caught a `window.confirm` slip in `home_not_onboarded.html` (the prior audit regex matched bare `confirm(` but not the `window.`-prefixed form); converted in this PR. Also fixes a name collision where `admin_tokens.html` / `_profile_tokens.html` defined a page-local `confirmModal` element id that shadowed the helper. (#497)
 
-## [0.61.1] — 2026-06-03
-### Fixed
+## [0.61.1] — 2026-06-03### Fixed
 - **`app/api/mcp_http.py:_BASE` no longer reuses `AGNES_BASE_URL` for self-calls.** The MCP HTTP server makes server-side self-calls into Agnes for `catalog` / `schema` / `describe` / `query` / `skills`. Reusing the public-facing `AGNES_BASE_URL` made every tool round-trip through the reverse proxy (added TLS + DNS + proxy latency, broke when the external URL wasn't resolvable from inside the container). The base URL is now read from a dedicated `AGNES_MCP_INTERNAL_URL` env var (default `http://localhost:8000`). Operators running Agnes split across multiple pods can point the var at the in-cluster service URL. (Devin Review on #474.)
 - **`app/api/admin_mcp.py` adopts the `mcp_sources_repo()` / `tool_registry_repo()` factory functions across all 15 handler sites.** Direct `MCPSourceRepository(conn)` / `ToolRegistryRepository(conn)` instantiations skipped the dual-backend factory, so a Postgres-backed (side-car / cloud) deploy was reading MCP source / tool data from the wrong place. The `audit_log` path keeps the conn dependency intact since it's a per-router helper; only the MCP repository constructions were swapped. (Devin Review on #474.)
 
 ### Internal
 - **Cross-engine contract tests for the MCP repository pairs.** New `tests/db_pg/test_mcp_sources_contract.py` (11 tests) + `tests/db_pg/test_tool_registry_contract.py` (8 tests) parametrise over `[duckdb, pg]` (sister of `test_data_packages_contract.py`) so DuckDB and Postgres implementations of `mcp_sources` + `tool_registry` upsert / get / get_by_name / list / delete + their validators are exercised against the same call sites. Closes the third Devin Review follow-up on #474 (cross-engine contract tests for the 3 new repository pairs landed by Cowork + MCP); the `setup_tokens` pair (the third) has narrower API surface and is exercised end-to-end through the existing Cowork bundle setup tests.
 
-## [0.61.0] — 2026-06-03
-### Added
+## [0.61.0] — 2026-06-03### Added
 - Seed-driven connector framework foundation (A1.1 of the connector-skills refactor).
   - `src/_bundled_seed/` snapshot of the OSS workspace seed ships inside the wheel and serves as the fallback when no Initial Workspace Template is configured. Resolution chain: operator IWT clone first, bundled snapshot second.
   - `src/connectors_manifest.py` scans seed-resident `workspace/.claude/skills/connector-*/SKILL.md` files, parses the `connector:` YAML frontmatter block, validates with length caps + HTML stripping + type checks, caches by source signature + file hash.
@@ -7355,8 +6975,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   - `google-github-actions/auth` v2 → v3 (used in `release.yml` for the Artifact Registry mirror auth step). Supersedes #501.
   - `e2b` Python lib upper-bound widened from `<2.0.0` to `<3.0.0` (lets the resolver pick up the v2 line as the e2b SDK ships it; runtime API surface that `app/chat/e2b_provider.py` uses is unchanged). Supersedes #503.
 
-## [0.60.0] — 2026-06-02
-### Internal
+## [0.60.0] — 2026-06-02### Internal
 - **DuckDB schema → v68 + Postgres parity.** The cloud-chat tables
   (`chat_sessions`, `chat_messages`, `user_workdirs`) ship as migration
   `_v67_to_v68` in `src/db.py` (idempotent `CREATE … IF NOT EXISTS`, wired
@@ -7744,8 +7363,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   A cannot open session B's WebSocket. nsjail-side tests reuse the
   same skip helper as `tests/security/test_nsjail_escape.py`.
 
-## [0.59.4] — 2026-06-02
-### Added
+## [0.59.4] — 2026-06-02### Added
 - **`/me/cowork` — AI Cowork page.** New dedicated page consolidating setup bundle download (numbered steps, first-prompt copy box, active-bundle revoke list), MCP connection details, and available tools (Agnes tools, passthrough tools, marketplace skills) in collapsible sections. Replaces the split between `/me/profile → Connect Claude Code` and `/me/mcp`. Accessible via the user menu ("AI Cowork") for all authenticated users.
 - **Cowork bundle ships marketplace skills + agents as Cowork slash commands.** The bundle ZIP now includes all RBAC-granted marketplace skills (`.claude/skills/<name>.md`) and agents (`.claude/agents/<name>.md`) so they appear as `/skill-name` slash commands immediately on first Cowork open — no per-plugin ZIP upload needed. Claude-Code-only frontmatter keys (`argument-hint`, `user-invocable`) are filtered out; skill names are de-duplicated across plugins. Three curated Agnes skills always ship: `/explore-data` (catalog + describe + suggest), `/query-data` (schema-aware SQL workflow), `/new-skill` (design + write a skill to the workspace).
 
@@ -7753,8 +7371,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - **Cowork moved from Admin dropdown to user menu.** The link previously appeared under Admin → Agent Experience (admin-only); it now sits in the user dropdown (Profile / AI Cowork / My activity), visible to every authenticated user. The `/me/mcp` URL 301-redirects to `/me/cowork`.
 - **Profile page simplified.** The "Connect Claude Code" setup panel has been removed from `/me/profile`; setup now lives at `/me/cowork`.
 
-## [0.59.3] — 2026-06-02
-### Added
+## [0.59.3] — 2026-06-02### Added
 - **`base_page.html` intermediate page-shell layout (#367 Tier 2).** A thin layer between `base_ds.html` and content pages that auto-wires the canonical chrome — hero (`page_hero_*` → `_page_hero.html`) + `{% block toolbar %}` + `{% block page %}` — so a page gets the standard shell without a per-page `<style>` block or a container opt-out. `profile.html` is migrated onto it as the first adopter (rendered width unchanged — the canonical `.container:has(.profile-page)` cap still applies).
 - **Design-system anti-drift guards in `tests/test_design_system_contract.py` (#367 Tier 1).** Leaf templates can no longer reintroduce a `.container:has()` width opt-out or a bare `:root {}` token-shadow block; the canonical bases (`base.html`, `base_ds.html`, `base_page.html`, `_theme.html`) are exempt.
 
@@ -7784,8 +7401,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Internal
 - **Documented the design-system page shell for agents.** `docs/architecture.md` now describes the `base.html` → `base_ds.html` → `base_page.html` hierarchy and carries a step-by-step **New Web Page** recipe under *Extending the Platform*; `CLAUDE.md` gains a `Web pages` pointer under *Extensibility*, and the `#419` refactor playbook is de-staled (`base_ds` is canonical + auto-imports `ds`). New pages now have a clear path: extend `base_page` / `base_ds` (never legacy `base.html`), page CSS in `{% block head_extra %}`, `ds.*` macros auto-imported.
 
-## [0.59.2] — 2026-06-02
-### Added
+## [0.59.2] — 2026-06-02### Added
 
 ### Changed
 
@@ -7799,22 +7415,18 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ---
 
-## [0.59.1] - 2026-06-02
-### Fixed
+## [0.59.1] - 2026-06-02### Fixed
 
 - `POST /api/admin/db/migrate`: concurrent calls where one caller writes `*_in_progress` before the other's pre-lock transition check now correctly return 409 "already in progress" instead of a misleading 400 "transition not allowed".
 - Cowork nav link positioned at the end of Admin → Agent Experience group (was missing after #491 rearrangement).
 
-## [0.59.0] — 2026-06-02
-### Changed
+## [0.59.0] — 2026-06-02### Changed
 - **Cowork page renamed and relocated in the header.** The `/me/mcp` page (added in 0.58.0 as "AI Tools" in the primary nav) is now titled **"Cowork"** and reached from the **Admin → Agent Experience** dropdown instead of the top-level navigation. Page `<h1>` and browser `<title>` updated to match. Note: the Admin dropdown is admin-only, so the page is no longer linked from the header for non-admins (the route itself remains accessible to any authenticated user).
 
-## [0.58.1] — 2026-06-02
-### Fixed
+## [0.58.1] — 2026-06-02### Fixed
 - **`e2e-nightly.yml` + `ci.yml` docker-e2e workflows no longer fail at container start after v0.56.0's BREAKING JWT fail-closed (#483).** Both workflows created an empty `.env` (`touch .env`) and relied on docker-compose's `environment:` block for runtime values; with `JWT_SECRET_KEY` absent, the app refused to start in production mode and the `Container agnes-the-ai-analyst-app-1 is unhealthy` failure auto-filed issue #487 against the first v0.58.0 nightly run. Both workflows now write a random 64-hex `JWT_SECRET_KEY` (per run, via `openssl rand -hex 32`) to `.env` before `docker compose up` so the safety guard is satisfied without committing a secret to the repo. `release.yml` smoke-test was unaffected — it already mounts `docker-compose.ci.yml` overlay which sets `JWT_SECRET_KEY` for the built-image path.
 
-## [0.58.0] — 2026-06-02
-### Added
+## [0.58.0] — 2026-06-02### Added
 - **Cowork `setup.py` shows macOS restart dialog after MCP registration.** After writing Agnes into Claude Desktop's config, `setup.py` shows a native macOS dialog ("Agnes MCP tools registered. Restart Claude Desktop now to activate them?" / "Later" / "Restart Now"). Choosing "Restart Now" quits Claude Desktop and reopens it automatically. Best-effort — silently skipped if `osascript` is unavailable.
 - **Cowork `setup.py` uses stable `mcp_server.py` path in `~/.claude/settings.json`.** Previously wrote the bundle folder path (`HERE/mcp_server.py`) to the user-level Claude settings, which broke when the bundle folder was deleted. Now writes `~/.config/agnes/mcp_server.py` (the stable copy created by setup) so the entry survives bundle cleanup and new-bundle downloads.
 - **Agnes MCP server (`agnes mcp` / `cli/mcp/server.py`).** FastMCP-based stdio server exposing seven tools to Claude: `catalog`, `schema`, `describe`, `query`, `query_local`, `pull`, `server_info`. Registered in `cli/main.py` as the `mcp` subcommand. Enables Claude Code / Claude Desktop to query Agnes data directly — no Bash tool, no CLI install required.
@@ -7856,12 +7468,10 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - **Cowork zip cache correctness.** The per-plugin Cowork zip cache is now keyed by `(prefixed_name, version)` instead of `prefixed_name` alone — per-user store bundles (e.g. `flea`) share one `prefixed_name` but differ in content, so the old key could serve one user's bundle to another on a TTL hit. The cache is also now invalidated on store/marketplace entity create/update/archive (not only on nightly sync), so edited plugin content stops being served stale within the 300 s TTL.
 - **Cowork zip arcname dedup keeps skills valid.** Arcname collisions (two source dirs sanitizing to one path, e.g. `[id]/` and `dyn-id/`) now resolve at the directory level (`skills/dyn-id` → `skills/dyn-id-1`) instead of renaming the file, so a colliding `SKILL.md` is never turned into `SKILL-1.md` (which would make Cowork stop recognising the skill). The root-level filename fallback now splits on the filename only, so a dot in a parent directory can no longer corrupt the path. A missing per-file size guard in the store-bundle branch was added to match the on-disk-plugin branch.
 
-## [0.57.2] — 2026-06-01
-### Added
+## [0.57.2] — 2026-06-01### Added
 - **Container memory caps are now overridable via `.env`.** `docker-compose.yml` reads `AGNES_APP_MEM_LIMIT` (default `4g`) and `AGNES_SCHEDULER_MEM_LIMIT` (default `2g`), so a deployment on a larger host can raise the cap without forking compose — small deploys keep the previous defaults. The `infra/modules/customer-instance` Terraform module exposes matching per-VM `app_mem_limit` / `scheduler_mem_limit` attributes on `prod_instance` / `dev_instances` (same defaults) and renders them into `/opt/agnes/.env`. Sizing note: DuckDB enforces `memory_limit` per-connection and (1.5+) defaults a fresh connection to ~80% of the cgroup limit, so on a big VM leaving the container at `4g` both wastes host RAM and lets the per-connection budgets sum past the cap, at which point the cgroup OOM-killer SIGKILLs uvicorn mid-WAL-write (the corruption guarded against by the `stop_grace_period` note in compose and the per-connection caps in `src/db.py`). Raise this cap together with those per-connection budgets.
 
-## [0.57.1] — 2026-06-01
-### Fixed
+## [0.57.1] — 2026-06-01### Fixed
 - **`POST /api/admin/db/migrate` refuses to queue when the source backend is PG but `instance.yaml`'s `database.url` is unset.** Round-3 review H1-NEW — pre-fix, a migration FROM `cloud` / `side_car` whose `current_url` came back `None` (corrupted overlay per B2-NEW, or operator manually cleared the url) would queue a job with `source_url=null`, the migrator would crash later with `--source-url is required`, and the rollback path would write empty url back to `instance.yaml` — leaving `backend=cloud + no url` and requiring manual YAML repair to recover. The endpoint now refuses with a 400 naming `database.url` so the operator can fix the overlay before retrying.
 - **`POST /api/admin/db/migrate` pins the resolved target/source IP into the queued job, closing the DNS rebinding window between validation and migrator connect.** Round-3 review B1-NEW (BLOCKER) — round-2's `_urls_alias` ran `socket.getaddrinfo` for the alias check, but the hostname-bearing URL was then persisted verbatim into the pending job JSON; the applier passed it unresolved to psycopg. An attacker controlling `rebind.example`'s DNS could pass it as `cloud_url`, the host resolves to a public IP at validation time, and then to the local sidecar's IP when the migrator connects — self-migration commits, the next cloud-only applier tick stops the only live Postgres. `start_migration` now records both the display URL (hostname form) AND a `*_pinned_ip` field whose host is the resolved IP at validation time; the applier prefers the pinned URL when present and falls back to the hostname URL for v1 (legacy) jobs queued before this fix. Job-JSON `schema_version` bumped 1 → 2.
 - **Applier bash YAML fallback emits URLs as double-quoted YAML scalars; `read_backend_state` logs loudly on parse errors.** Round-3 review B2-NEW (BLOCKER) — round-2's H4-NEW added a pure-bash fallback for hosts without PyYAML, but interpolated `${url}` bare into the `url:` YAML line. URLs containing YAML-special chars (e.g. `options=-c replication: logical` — colon-space is a key-value separator in block context) produced malformed YAML that `read_backend_state` caught as `YAMLError` and silently swallowed by defaulting to `(DUCKDB, None)`. The operator's app then served the wrong backend while data lived on Postgres. The fallback now escapes `\` and `"` via `sed` and emits `printf '  url: "%s"\n'`; `read_backend_state` logs at `WARNING` on parse failure so the corruption surfaces in operator logs even with the safe-fallback behaviour preserved.
@@ -7869,8 +7479,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - **Stuck-running recovery restarts `app` + `scheduler` after reverting `instance.yaml`.** Round-3 review B3-NEW (BLOCKER) — round-2's H5-NEW added recovery that marked stale-heartbeat jobs failed and restored the in-progress placeholder, but never restarted the services the migrator had stopped (line ~413 of the applier script). After a SIGKILL/OOM mid-migrator tick, the next tick's recovery ran, marked the job failed, exited at the no-pending-job path (line ~327) — and the app + scheduler stayed DOWN until the next successful migration or a manual restart. Recovery now runs `dc up -d --no-deps --force-recreate app scheduler` after the YAML revert (single call, even when multiple stuck jobs are processed).
 - **Cancel ↔ flip is now atomically gated by `MigrationLock`.** Round-3 review H1-PARTIAL — round-2's `_check_cancel_before_flip` narrowed the cancel-during-verify race but a microsecond window remained between the migrator's re-check and its `write_backend_state(TARGET, ...)`. Neither side held `MigrationLock` during the actual flip, so a concurrent `cancel_job` could revert `instance.yaml` to SOURCE between the migrator's check and its write — and the migrator would then overwrite the revert, producing data on TARGET but `instance.yaml` on SOURCE. Both sides now acquire `MigrationLock` around their check+write blocks; `MigrationInProgressError` triggers a brief retry on either side, after which the loser sees the winner's terminal state.
 
-## [0.57.0] — 2026-06-01
-### Added
+## [0.57.0] — 2026-06-01### Added
 - **Admin-controlled DB backend state machine.** Replaces ad-hoc `.env` editing with a guarded workflow for migrating Agnes app-state between DuckDB, side-car Postgres, and managed cloud Postgres. Spec at `docs/superpowers/specs/2026-05-27-db-backend-state-machine-design.md`; operator playbook in `docs/postgres-cutover-runbook.md` (new "Admin UI / CLI" section). The machine records `target_state` intent + a `db_migration_job` row; a host-side `agnes-state-applier.timer` runs the data-migrate subprocess, then rewrites `/opt/agnes/.env` and `docker compose up -d` once verification passes. Pre-flip DuckDB snapshots land gzipped under `/data/state/backups/duckdb-pre-<target>-<ts>.duckdb.gz`.
 - **`/admin/server-config` — Database backend section.** UI card showing current backend, redacted connection URL, allowed transitions, and a live progress panel that polls the running migration job. Confirmation modal + cloud-URL input for the `cloud` transition.
 - **`agnes admin db` CLI.** `state` (inspect current backend + transitions), `migrate <target>` (kick off a migration; `--cloud-url` flag for non-interactive cloud targets), `job <id>` (poll status), `cancel <id>` (abort pre-flip). All subcommands hit the PAT-authed admin endpoints; `--json` available for scripting.
@@ -7942,8 +7551,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - **`/data/postgres` ownership is set at provision time, not at applier runtime.** Round-2 review B4-NEW (BLOCKER) tightening — the previous mitigation was an idempotent stat-then-chown in the applier's `ExecStart`, but that ran as the unprivileged `agnes-applier` user under `set -e` and aborted the whole tick on every fresh VM where the directory was still root-owned. Provisioning (`startup-script.sh.tpl`) now creates `/data/postgres` owned `70:70` via `install -d`, the bootstrap unit (root-running) re-asserts the chown on every boot, and the applier merely STATs the directory and warns if it's wrong — no chown attempts, no `set -e` abort.
 - **DuckDB system schema bumped to v62.** Main shipped `cli_auth_codes` table as v61 (PR #475 browser-based `agnes auth login`); this branch's per-type FK columns on `resource_grants` (E.3) were renumbered to v62 during the merge. Migration ladder runs `_v60_to_v61` (cli_auth_codes) → `_v61_to_v62` (resource_grants FK columns) in order. `_SYSTEM_SCHEMA` declares both, so fresh installs and design-pass-origin DBs at v61 heal correctly. The detailed verification matrix (one line per finding mapped to commit SHA) lives in the PR #455 description.
 
-## [0.56.0] — 2026-06-01
-### Added
+## [0.56.0] — 2026-06-01### Added
 - `AGNES_REBUILD_ON_BOOT=1` builds master views from baked extracts at startup (for images that ship data without a scheduler).
 - `scripts/build_demo_extract.py` + `Dockerfile.demo` produce an image variant with a self-contained synthetic demo dataset.
 - Optional Artifact Registry image mirror in the release workflow (repo vars `AR_LOCATION`/`AR_PROJECT`/`AR_REPO` + secret `GCP_SA_KEY`).
@@ -7951,27 +7559,22 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Changed
 - **BREAKING**: in production (non-local-dev) the app now refuses to start without an explicit `JWT_SECRET_KEY` of ≥32 chars — auto-generation is limited to local dev. Set a strong `JWT_SECRET_KEY` before deploying.
 
-## [0.55.32] — 2026-06-01
-### Added
+## [0.55.32] — 2026-06-01### Added
 - **`agnes admin data-semantics generate <dir>` — scaffold the workspace data-semantics pack from the catalog (#469, Gap 1).** Emits a *starter* pack so an operator hand-edits know-how instead of authoring the whole tree: `<pkg>/tables/*.yml` (id, fqn, partition/cluster keys, columns — from `table_registry` + `column_metadata` + `bq_metadata_cache`), `<pkg>/metrics/*.yml` (from `metric_definitions`), grouped by `data_packages`, plus seed-if-absent `_brief.md` / `_overview.md` skeletons. Provenance + 3-way merge ride the pack's native `sync:` block (`method: generated` vs `hand-authored`): re-runs refresh machine-owned fields, keep human edits, preserve human-added keys, and drop a field whose source disappears. `--check` makes drift CI-enforceable; `--dry-run` / `--json` for inspection. Engine `src/data_semantics_scaffold.py` is `app.`-free. Metrics that belong to no data package are reported, not silently dropped.
 
-## [0.55.31] — 2026-06-01
-### Fixed
+## [0.55.31] — 2026-06-01### Fixed
 - **Frontend timestamps now render in the analyst's local timezone.** Three coupled fixes: (1) every `duckdb.connect(...)` is now routed through `src.db._open_duckdb`, which pins the DuckDB session timezone to UTC via `SET GLOBAL TimeZone='UTC'` — DuckDB's `TIMESTAMP` type strips tzinfo on write after shifting the value into the session zone, and ICU's default session zone is the host's local zone, so on a non-UTC host a UTC-aware write was previously stored as local-naive. `GLOBAL` is required because DuckDB cursors do NOT inherit session-level `SET TimeZone` (they start with the ICU default), and every repository reads through `conn.cursor()`. (2) FastAPI now serializes datetime fields with an explicit UTC offset — `app.serialization.AgnesJSONResponse` set as the default response class plus an override of `fastapi.encoders.ENCODERS_BY_TYPE[datetime]` so naive datetimes get the `+00:00` suffix on the wire instead of an offset-less ISO string that `new Date()` would parse as local time. (3) A new `window.AgnesTime` helper (`app/web/static/js/datetime.js`) hydrates `<time datetime="...">` tags client-side, replaces the per-template `fmtDate` slice helpers in `admin_users.html` / `admin_groups.html` / `admin_marketplaces.html` / `admin_user_detail.html` / `admin_group_detail.html` (which used to chop the ISO string and never convert to local tz), and powers the marketplace 'added' date. Two follow-on call sites — `app/api/health.py:_check_session_pipeline` sync-lag and `src/repositories/session_processor_state.py:scan_unprocessed_for` mtime compare — now compare against UTC-naive instead of local-naive to match the pinned DB. UTC label stays as the no-JS fallback and as the tooltip. No DuckDB schema migration — deferred until the parallel Postgres migration lands.
 
-## [0.55.30] — 2026-06-01
-### Fixed
+## [0.55.30] — 2026-06-01### Fixed
 - **`system.duckdb` could roll back days of admin state (data packages, RBAC grants, group members) after an OOM kill, and the OOM kill itself was self-inflicted.** Three compounding defects in a memory-bounded container (e.g. a 4 GiB cgroup):
   - **Uncapped system connection → OOM loop.** DuckDB enforces `memory_limit` per-connection, not per-process. The analytics + read-only connections were capped (2 GiB each) but the long-lived `system.duckdb` singleton was left uncapped, so a telemetry/audit aggregation on it could grow the process past the cgroup cap and the kernel OOM-killed the worker. `get_system_db()` now applies an explicit budget via a shared `_apply_memory_caps` helper (system 1 GiB, analytics 1.5 GiB, read-only 1 GiB) plus a `temp_directory` so an over-budget query spills to disk instead of growing RSS.
   - **Destructive WAL-replay recovery.** On restart after an unclean kill, an unreplayable WAL (the FTS-index DDL drop-ordering failure below) made `_try_open_system_db` restore the `pre-migrate` snapshot — captured only at migrations, so potentially days stale — discarding the live file's far newer last checkpoint. Recovery now first **discards only the unreplayable WAL and reopens the live file at its last checkpoint** (`_salvage_discard_wal`), losing at most post-checkpoint transactions; the pre-migrate fallback (with the #379 version guard) fires only if the file itself won't open. The discarded WAL is preserved chmod 600 for forensics.
   - **FTS DDL lingering in the WAL.** `ensure_knowledge_fts_index` rebuilds the `fts_main_knowledge_items` schema on every search; those DROP/CREATE ops sat in the WAL until the next checkpoint and were what DuckDB's replay choked on after a kill. It now `CHECKPOINT`s immediately after (re)creating the index (best-effort) so the FTS DDL never lingers in the WAL.
 
-## [0.55.29] — 2026-06-01
-### Added
+## [0.55.29] — 2026-06-01### Added
 - **`agnes admin autodoc-tables` — LLM-generate descriptions for undescribed tables (#399).** Most registered tables ship with no `description`, weakening `agnes catalog` for AI agents. The command reads each undescribed table's stored profile (columns + sample rows) and asks the configured LLM (Haiku by default, via `connectors.llm`) for a short factual description, then saves it via `TableRegistryRepository.set_description`. Only empty descriptions are filled — an existing one is never overwritten — and only already-profiled tables are touched. `--table` to target one, `--dry-run` to preview, `--limit N` to cap. Pure prompt/parse core in `src/table_autodoc.py` (no `app.`/DB/network deps). Uses `ANTHROPIC_API_KEY` / `LLM_API_KEY` (or the instance `ai:` block).
 
-## [0.55.28] — 2026-06-01
-### Added
+## [0.55.28] — 2026-06-01### Added
 - Browser-based `agnes auth login` (gh-style loopback). Instead of
   prompting for a plaintext password, the CLI opens the browser to
   `/cli/auth/start`, the user signs in with whatever provider their
@@ -7987,8 +7590,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   (prints the sign-in URL); a timeout or old server prints the manual
   `agnes auth import-token` path.
 
-## [0.55.27] — 2026-06-01
-### Security
+## [0.55.27] — 2026-06-01### Security
 - Bumped `dulwich` from 0.24.1 to 1.2.5 (Dependabot, #468). dulwich powers the in-process git server mounted at `app/marketplace_server/{git_backend,git_router}.py` that serves the curated-marketplace clone endpoint — five hardenings landed in this jump:
   - **GHSA-gfhv-vqv2-4544** — `porcelain.submodule_update` (and `porcelain.clone(recurse_submodules=True)`) now validates submodule paths; a crafted upstream could previously direct submodule contents into `.git/hooks` and drop an executable hook there. dulwich analogue of git's CVE-2024-32002 / CVE-2024-32004.
   - **CVE-2026-42305** — Windows tree-path validation hardened: `validate_path_element_ntfs` now rejects Windows path separators, the alternate-data-stream marker `:`, NTFS 8.3 short-name aliases of `.git`, and reserved Windows device names. `core.protectNTFS` defaults to true on every platform and both `core.protectNTFS` / `core.protectHFS` are now read under their correct option names.
@@ -7997,12 +7599,10 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   - **`receive.maxInputSize`** — `ReceivePackHandler` now honours `receive.maxInputSize`; previously an unauthenticated remote could send a tiny crafted pack with a huge declared `dest_size` and trigger hundreds of MB of allocation in `git-receive-pack`.
   - Test impact: the four-shard test suite + `tests/test_marketplace_server_git.py` are green on 1.2.5 — no Agnes-side API breakage from the 0.x → 1.x bump.
 
-## [0.55.26] — 2026-06-01
-### Fixed
+## [0.55.26] — 2026-06-01### Fixed
 - **Data Package card: the lifecycle status pill (POC / Coming soon / Draft) overlapped the curated/new badges.** Both the status pill (`.stack-card__status-pill`) and the derived-badge row (`.stack-card__badges`) were absolute-positioned at the same `top:8px; left:8px` corner of the card cover, so a package that had a non-default status *and* a derived badge rendered the two stacked on top of each other. The badge row now drops just below the status pill when one is present; placement is unchanged (top-left) when there's no pill. Macro: `app/web/templates/macros/_stack_card.html`.
 
-## [0.55.25] — 2026-05-28
-### Fixed
+## [0.55.25] — 2026-05-28### Fixed
 - **Telemetry dropdown listed the same user under both their email and
   their UUID.** `usage_events.username` /
   `usage_session_summary.username` had three writers disagreeing on what
@@ -8021,8 +7621,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   the filesystem lookup key via `session_file = "<dir>/<name>"` — only
   the display/grouping identity changes.
 
-## [0.55.24] — 2026-05-28
-### Fixed
+## [0.55.24] — 2026-05-28### Fixed
 - **/home not-onboarded hero title rendered escaped `&lt;span&gt;` text.**
   The `{% set _brand = instance_brand | e %}` + `{% set title = _brand ~ "…<span>…" %}`
   pattern silently autoescaped the right operand because Jinja's `~`
@@ -8035,8 +7634,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   (`test_home_not_onboarded_hero_title_html_renders_unescaped`,
   `test_home_not_onboarded_hero_title_html_escapes_brand`).
 
-## [0.55.23] — 2026-05-27
-### Added
+## [0.55.23] — 2026-05-27### Added
 - **Seven new design-system macros in `_components.html`.** Closes the
   "Macro gaps" tracker on #419 by extending the canonical 5 (button,
   primary_nav, tabs, table, panel) with seven more:
@@ -8090,8 +7688,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   `test_design_system_contract.py` so a future PR re-introducing
   legacy primary tokens or raw hex literals fails the build.
 
-## [0.55.22] — 2026-05-27
-### Added
+## [0.55.22] — 2026-05-27### Added
 - **`customer-instance` module: per-VM OAuth client secrets via naming
   template.** New module-level variable `oauth_secret_name_template` lets
   callers declare a single convention (e.g.
@@ -8124,8 +7721,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
   Bump to `infra-v1.10.0`.
 
-## [0.55.21] — 2026-05-27
-### Added
+## [0.55.21] — 2026-05-27### Added
 - **Scheduler-driven Jira self-healing pair: SLA poll + consistency check.** Brings Agnes back to parity with the legacy Data Broker `jira-sla-poll.timer` / `jira-consistency.timer` systemd units, but invoked from the in-cluster scheduler container instead of host systemd. Two new entries in `services/scheduler/__main__.py` (`jira-sla-poll`, `jira-consistency-check`) target the new endpoints `POST /api/admin/run-jira-sla-poll` and `POST /api/admin/run-jira-consistency-check`. Defaults match the systemd unit cadence — 15 min for SLA poll, 30 min for consistency — and are tunable via two new env vars: `SCHEDULER_JIRA_SLA_POLL_INTERVAL`, `SCHEDULER_JIRA_CONSISTENCY_INTERVAL`. The SLA poll re-fetches `elapsed_millis` + `status` for open tickets whose snapshot would otherwise stagnate between webhooks (and self-heals stale status/resolution on the same pass); the consistency check compares Jira API ↔ raw JSON ↔ parquet and auto-backfills small webhook-loss gaps (`max_age_days=30` default, tunable per call). Both endpoints short-circuit with `{"status": "skipped", "reason": "jira_not_configured"}` when the `JIRA_*` env vars are unset, so a customer without Jira ingest pays nothing for the default scheduler entries. `connectors/jira/scripts/poll_sla.py` `main()` was split into a programmatic `run(dry_run, verbose) -> dict` plus a thin CLI wrapper so the endpoint can call it in-process (the `consistency_check.py` `Config` + `JiraConsistencyChecker` factoring was already endpoint-shaped). The pre-existing systemd units in `connectors/jira/systemd/` are left in place for customers who prefer host-side scheduling. Twelve new parametrized tests cover defaults, env-var overrides, and rejection of invalid values for both intervals.
 
 ### Removed
@@ -8134,8 +7730,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   single source of truth for system state; no operator-visible behavior change
   if you stayed on v0.55.19 or upgraded straight to v0.55.21.
 
-## [0.55.20] — 2026-05-27
-### Added
+## [0.55.20] — 2026-05-27### Added
 - **`/admin/tables` Keboola smart-paste — split `bucket.table_name` on paste/blur.** Keboola Storage's "COPY TO CLIPBOARD" yields the full table id `{bucket}.{table_name}` (e.g. `out.c-crm-tr-RdC3aX4M.account`). The Register Keboola modal has two separate inputs (Bucket + Source Table), so pasting the full id used to fail silently. The modal now has a dedicated `#kbTableIdPaste` input above the existing fields; pasting or blurring with a value containing a `.` splits on the LAST dot and fills both downstream inputs. Downstream fields get a synthetic `input` event so any datalist-refresh / discover hooks treat it as user-typed; manual entry through Bucket + Source Table still works as before. Closes #401.
 - **`/dashboard` live sync-status pill.** Small horizontal pill between the env-setup-cta and the stats-row. Initial state is server-rendered from the existing `data_stats.last_updated` (MAX `last_sync` across all `sync_state` rows): "Last sync: <iso>" or "No sync recorded yet". A JS poller hits `GET /api/sync/status` every 30 s and flips the pill to `is-running` (brand-primary pulsing dot, "Sync running…" text) when the `locked` flag is true. The `/api/sync/status` endpoint is intentionally tiny (`{locked: bool}`, public/no-auth for the host-side auto-upgrade cron), so the timestamp comes from server-render rather than live fetch; extending the endpoint to return last-run pass/fail status is a follow-up. Closes #392.
 - **`/catalog/t/<table_id>` data-preview button + modal.** Hero card on the table-detail page now has a "Preview data" button that opens a modal showing the first 10 rows via `GET /api/v2/sample/{table_id}`. The endpoint already enforces `can_access_table` per user, so a 403 lands as a clear inline error inside the modal body. Columns are derived dynamically from the first row's keys; states for Loading / Empty / Error are friendly text. Esc, Close, and backdrop click all dismiss. The issue text said "in catalog.html", but `/catalog` lists Data Packages (not tables) — the natural per-table affordance lives on the table-detail page. Closes #396.
@@ -8170,8 +7765,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   bind — without that override the migration script would read an empty
   named volume and exit 2.
 
-## [0.55.19] — 2026-05-27
-### Fixed
+## [0.55.19] — 2026-05-27### Fixed
 - **Profile pass in `_run_sync` now runs each `profile_table` call in a
   fresh Python subprocess** (`src/_profiler_worker.py`, new generic
   helper `src/_subprocess_runner.py`). Running the profile loop in-
@@ -8188,8 +7782,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   still owns the `ProfileRepository.save(...)` write so system.duckdb
   stays single-writer.
 
-## [0.55.18] — 2026-05-27
-### Changed
+## [0.55.18] — 2026-05-27### Changed
 - **`/admin/server-config` button family migrated to the canonical `.btn-*` vocabulary.** The 21 page-local `.cfg-btn` / `.cfg-btn.primary` / `.cfg-btn.danger` instances (5 static modal buttons + 16 buttons emitted from `<script>` template literals — array/map remove + add, per-section Save, BigQuery / Keboola connection-test, initial-workspace Sync / Edit / Delete / Download / Register) now route through `.btn .btn-primary` / `.btn-secondary` / `.btn-danger`, matching the rest of the admin UI. Small "×" remove buttons compose `.btn-sm .btn--icon` for tightness. The page-local `.cfg-btn` CSS block is gone. Static modal buttons render via `ds.button`; JS-string buttons emit canonical class names directly (macros can't reach inside `<script>` literals).
 - **`/admin/corporate-memory` button family migrated to the canonical `.btn-*` vocabulary.** The bespoke moderation-specific variants (`.btn-mandate`, `.btn-approve`, `.btn-reject`, `.btn-revoke`) are retired in favor of the canonical four — `.btn-mandate` → `.btn-primary` (Save / Apply / Confirm / Mark-as-Required / Mark-as-duplicate), `.btn-approve` → `.btn-secondary` (Approve / Keep / Different), `.btn-reject` → `.btn-danger` (Reject / Delete), `.btn-revoke` → `.btn-ghost` (Dismiss). The variant-choice hierarchy (primary > secondary > danger > ghost) continues to encode the semantic priority; the green-on-approve / red-on-reject solid color cues from the bespoke palette are lost but visual hierarchy is preserved. Page-local `.btn` base rule deleted — the canonical `.btn` family in `style-custom.css` supplies the same contract. 29 button class-name swaps across Jinja static markup + JS template-literal contexts. Closes one of the four dedicated follow-up PRs called out by #427.
 - **`/admin/tables` shadowing `.btn` CSS deleted; buttons inherit canonical visual contract.** The markup on this page already used canonical `.btn` / `.btn-primary` / `.btn-secondary` / `.btn-sm` class names (migrated piecemeal across prior commits), but the template carried its own `.btn` family rules that shadowed canonical — most visibly, `.btn-secondary` rendered with a filled grey background (`var(--border-light)`) rather than the canonical white-bg + grey-border outline. Those page-local rules are gone (`.btn`, `.btn-primary`, `.btn-primary:hover`, `.btn-primary:disabled`, `.btn-secondary`, `.btn-secondary:hover`, `.btn-danger`, `.btn-danger:hover`, `.btn-sm`); buttons now match the unified admin look. Two surviving bare `<button class="btn">` sites (Remove-from-package + Delete-package destructive actions, which had inline `color:#b91c1c` overrides) were upgraded to canonical `.btn-danger` (the second commit on #437 fixed the same hazard there). `.btn-icon` (28×28 icon-only button family with `[data-tooltip]:hover::after` chip styling) stays page-local because canonical `.btn--icon` is just a size modifier with no tooltip behavior — flagged for a later pass once a canonical tooltip primitive exists. Visible delta: toolbar + modal secondary buttons shift from filled-grey to outlined-white; destructive buttons shift from filled-red to outlined-red (canonical "calm — committed to by hover" treatment).
@@ -8217,8 +7810,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   synonym for muscle-memory compatibility, and Step 9's restart cue
   keeps the same wording.
 
-## [0.55.17] — 2026-05-27
-### Fixed
+## [0.55.17] — 2026-05-27### Fixed
 - `scripts/generate_sample_data.py` size `l` preset went from
   unfinishable (>2h wall-clock, ~30 min on `_generate_orders_and_items`
   alone, then ~1.5h+ on `_generate_support_tickets`) to ~3m24s
@@ -8238,8 +7830,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   `random()` draws in the same order). Sizes `s` and `m` are also
   faster but the bug was only catastrophic at `l`.
 
-## [0.55.16] — 2026-05-27
-### Changed
+## [0.55.16] — 2026-05-27### Changed
 - **Web UI consistency pass — CSS extraction, design-token migration, parametric hero sections.** Eight templates with large inline `<style>` blocks (news, profile, error, activity_center, admin_access, dashboard, home_not_onboarded, marketplace) had their CSS extracted into dedicated stylesheets under `app/web/static/css/`, and four landing surfaces (home, dashboard, marketplace, catalog) gained parametric hero sections sharing one partial. Color references migrated from legacy `var(--primary)` (blue) to canonical `var(--ds-primary)` (green) on `me_activity` and `memory_domain_detail` so their hover/focus accents read in the unified palette; exact-match hex literals (terminal yellow, Google-sync chip green, VS Code thumbnail bg/ink) were swapped for their `--ds-*` token equivalents in `home.css` and `profile.html`. The bespoke `.btn-warning` variant was retired — its single use (the `/admin/marketplaces` system-confirm modal) now renders via canonical `.btn-danger`, since marking a plugin as system is destructive (fans out a forced grant to every existing principal). `.btn-required` (amber-disabled affordance on catalog_package_detail + memory_domain_detail) was promoted from page-local to canonical in `style-custom.css` and pinned in `tests/test_design_system_contract.py`. Modal dialogs on `/admin/tables` now center vertically.
 
 ### Internal
@@ -8271,8 +7862,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   row-group scans + in-memory `SAMPLE`); the cap binds only when
   something goes wrong.
 
-## [0.55.15] — 2026-05-26
-### Fixed
+## [0.55.15] — 2026-05-26### Fixed
 - **DuckDB consolidation connections in `materialize_query` now cap
   `memory_limit` + `threads`** (`connectors/keboola/extractor.py`,
   `connectors/bigquery/extractor.py`). DuckDB's default `memory_limit`
@@ -8334,8 +7924,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - `docs/PLATFORM_SETUP.md` first-boot bullet no longer hard-codes a schema version number ("v41") — points readers at `src/db.py` as the live source of truth, matching the convention already established in `CLAUDE.md`.
 - `docs/ONBOARDING.md` step 4 tfvars block no longer scopes optional variables to "module infra-v1.4.0+" (those have been default for several minor versions); step 9 Monitoring & backup reframed from "follow-up — not required" to "module already provisions, wire a notification channel" since `customer-instance` ships uptime checks + daily PD snapshots out of the box.
 
-## [0.55.14] — 2026-05-26
-### Changed
+## [0.55.14] — 2026-05-26### Changed
 - **`agnes admin grant list` default tabular output now leads with an `ID` column** (first 8 chars of the grant UUID). Pre-fix the table omitted the id entirely, so any operator wanting to `agnes admin grant delete <id>` had to re-run with `--json` and pipe through jq to recover what should be a primary identifier. `--json` output is unchanged (still includes the full uuid).
 - **`agnes admin grant create --help` now leads with a positional-arguments usage example** (`agnes admin grant create <group> <resource_type> <resource_id>`). The previous help body assumed the reader had already inferred argument order from typer's USAGE line; combined with the parent-level `agnes admin grant --help` hinting at flag-style filters on `list`, operators frequently invoked `grant create --group X --resource-type Y --resource-id Z` and were left to discover positional syntax from the typer error.
 - **`agnes admin activity sync` renders `synced_at` as `YYYY-MM-DD HH:MM:SSZ`** (19 chars + Z marker) instead of naively slicing the raw ISO string to 20 chars. Pre-fix the output for any timestamp with sub-second precision ended in a trailing dot (`2026-05-26T12:46:54.`) — meaningless to readers, and broke downstream `awk`/`grep` pipelines that split on whitespace.
@@ -8347,24 +7936,20 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 - **`agnes admin grant delete` now accepts the 8-char `short_id` from `agnes admin grant list`** (in addition to the full UUID). The previous PR added a `short_id` column to `grant list` and advertised it as input to `grant delete`, but `grant delete` was a thin pass-through to `DELETE /api/admin/grants/{id}` which does exact-match lookup → every short-id paste returned 404. A new `_resolve_grant_id` helper queries the grants API and matches by full id or unique 8-char prefix; ambiguous prefixes abort with a clear error rather than silently picking one. Closes the workflow gap created by the prior commit (caught in self-review).
 
-## [0.55.13] — 2026-05-26
-### Internal
+## [0.55.13] — 2026-05-26### Internal
 - `.github/workflows/e2e-nightly.yml` GitHub Actions bumped: `actions/setup-node@v4 → v6`, `actions/github-script@v7 → v9`, `actions/upload-artifact@v4 → v7`. Consolidates dependabot PRs #422, #423, #424 into one merge. Standard usage paths unchanged; the bump tracks the Node 24 runtime + ESM upgrades the actions ecosystem moved to since these were last pinned.
 
-## [0.55.12] — 2026-05-26
-### Fixed
+## [0.55.12] — 2026-05-26### Fixed
 - **`src/db.py::_try_open_system_db` no longer silently drops post-migration data on WAL-replay recovery (#379).** The auto-recovery path used to copy `system.duckdb.pre-migrate` over the broken DB and re-run the migration ladder unconditionally — but the snapshot is captured once per migration transition and never refreshed, so any rows added since that transition vanished without warning. The function now opens the snapshot read-only to peek its `schema_version`; if it does not match the current `SCHEMA_VERSION` exactly (either direction — stale OR future, the latter catching the operator-rolled-the-code-back split-brain case), the broken DB + WAL are preserved at `.broken.<ts>` (chmod `0o600` because `system.duckdb` holds argon2 password hashes + PAT rows + audit log) and a `RuntimeError` is raised with the explicit manual-recovery `cp` command operators can run if they choose to accept the snapshot's data state. The happy-path (HEAD-version snapshot) and the "no snapshot file" path are unchanged.
 
-## [0.55.11] — 2026-05-25
-### Fixed
+## [0.55.11] — 2026-05-25### Fixed
 - **`e2e-nightly` smoke scripts now sign the agent-browser session in before navigating to protected pages.** After #389 unblocked the workflow far enough to reach the smoke step, both `smoke_catalog.sh` and `smoke_admin_activity.sh` were redirected to `/login?next=…` by the global 401 handler in `app/main.py:898-907` and asserted against the login snapshot. Fix introduces `scripts/seed_e2e_user.py` (idempotent — creates `e2e@example.com` in Admin group with a hardcoded dev-only password; refuses to seed without Admin group present; rehashes only when verify fails) and `scripts/e2e/_login.sh` (sourced by both smoke scripts; uses agent-browser to POST against `/auth/password/login/web`, selectors scoped to `form[action='/auth/password/login/web']` to disambiguate the tabbed login UI). `.github/workflows/e2e-nightly.yml` orchestrates the seed via a stop-seed-start cycle (uvicorn holds an exclusive DuckDB writer lock on `/data/state/system.duckdb`; `docker compose exec` while the app is running can't open the DB — the new step stops the app, runs the seed in a one-shot `docker compose run --rm` container sharing the data volume, restarts the app, and polls `/api/health` until ready). The seed module is gated on `AGNES_E2E_SEED=1` as defence-in-depth: the script ships in the production image via `COPY . .`, so a stray `docker exec` on a prod box without the opt-in env var refuses to mint an Admin user. `_login.sh` no longer hardcodes credentials — the workflow's "Export E2E credentials" step imports them from `scripts/seed_e2e_user.py` constants and writes them to `$GITHUB_ENV`, so seed and smoke helper share a single source of truth. Closes #417.
 
 ### Internal
 - New unit tests in `tests/test_seed_e2e_user.py` covering opt-in-env refusal, fresh-create, idempotency, and Admin-group-missing refusal paths.
 - New regression test `tests/test_login_form_action.py` pins the literal `action="/auth/password/login/web"` in `login_email.html` so the smoke helper's CSS selector and the template can't drift apart silently.
 
-## [0.55.10] — 2026-05-25
-### Added
+## [0.55.10] — 2026-05-25### Added
 - `/admin/tables` now warns when a Keboola table exists but Keboola is not the configured data source: an amber "⚠ Keboola not connected" chip appears under the table name in the listing, and a banner at the top of both the Register and Edit Keboola modals links directly to the Data source section in Instance settings (`/admin/server-config#cfg-s-data_source`).
 - `/admin/tables` shows a **Last synced** column (YYYY-MM-DD HH:MM) for every registered table, populated from a single batched `sync_state` read.
 - `/admin/server-config` Data source section has a **Test Keboola connection** button (`POST /api/admin/keboola/test-connection`) that verifies the Storage API token by listing buckets and reports bucket count + elapsed time, mirroring the existing BigQuery probe.
@@ -8380,8 +7965,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - `/admin/server-config` array and map form inputs now carry `id`, `name`, and `aria-label` attributes; group-header `<label>` elements without a `for` target replaced with `<div class="cfg-field-label">`, resolving browser accessibility warnings.
 - `/admin/server-config` hash deep-link no longer crashes the page render when the hash contains invalid CSS selector characters (e.g. `#:foo`, `#test[bar`) — `querySelector` is now wrapped in try/catch and invalid hashes are silently ignored.
 
-## [0.55.9] — 2026-05-25
-### Fixed
+## [0.55.9] — 2026-05-25### Fixed
 - **`/admin/tables` first-run setup prompt example trimmed.** The verbatim sample
   for connector verify lines previously hardcoded a personal name + an
   Asana-specific `2 workspace(s) visible.` tail. Now reads
@@ -8410,16 +7994,14 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   on failure so triage gets real logs instead of a 404 mystery. Closes #387,
   #386, #385, #376, #368, #362.
 
-## [0.55.8] — 2026-05-25
-### Changed
+## [0.55.8] — 2026-05-25### Changed
 - `/admin/server-config` now has a sticky two-column layout: a section-navigation sidebar on the left (jumps to Instance, Data source, Email, Auth, AI, etc.) and scrollable config fields on the right. Page title corrected from "Server config" to "Server configuration".
 - Initial Workspace Template panel moved above the Danger zone section on the server-config page.
 
 ### Fixed
 - Second `renderAll()` call on the server-config page no longer destroys the `#iw-section` DOM node; the element is now detached before `wrap.innerHTML` replaces child nodes and re-inserted before the danger zone.
 
-## [0.55.7] — 2026-05-25
-### Changed
+## [0.55.7] — 2026-05-25### Changed
 - **Design system unification — phase 1 (templates → macros).** New `ds.button` + `ds.panel` macros in `app/web/templates/_components.html` plus a `base_ds.html` shell and `app/web/static/css/design-tokens.css`. 33 templates (admin / home / marketplace / catalog / auth / setup / store / activity / corporate-memory / me-activity / profile / login flows / password reset+setup / error / news editor / sessions / users / tokens / usage / workspace prompt / welcome) refactored to render their buttons + side panels via the new macros — single source of truth for button variants, sizes, icon-only, and panel chrome. Plus 234 new lines in `style-custom.css` (notably `.ds-table` with `:is()` aliases over 15 legacy table class names so existing rules cascade onto the new design) and 40 lines in `design-tokens.css`. Design rationale + per-batch refactor playbook live in `.design/design-system-unification/{DESIGN_BRIEF,DESIGN_REVIEW,REFACTOR_PLAYBOOK}.md` and `.interface-design/system.md`. Credit @davidrybar-grpn (#375).
 
 ### Fixed
@@ -8700,12 +8282,10 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 
 ### Internal
 
-## [0.55.6] — 2026-05-20
-### Fixed
+## [0.55.6] — 2026-05-20### Fixed
 - `agnes query --remote`: SQL using only a full backtick BQ path (`` `<proj>.<dataset>.<table>` ``) no longer fails with `Parser Error: syntax error at or near "``"`. The rewriter now detects backtick-quoted paths and wraps them in `bigquery_query()` before passing to DuckDB, instead of sending the BQ-native backtick syntax to the local DuckDB parser. (#363)
 
-## [0.55.5] — 2026-05-19
-### Fixed
+## [0.55.5] — 2026-05-19### Fixed
 - `agnes init` now runs `_chmod_workspace_hooks(workspace)` for OVERRIDE
   mode too (Initial Workspace Template seed-repo flow), not just the
   DEFAULT path. Override-mode workspaces seeded from an admin's
@@ -8734,12 +8314,10 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   so the CSS rule wins; styling now lives in one place per hero
   scope (`.install-hero code` / `.hero code`).
 
-## [0.55.4] — 2026-05-19
-### Security
+## [0.55.4] — 2026-05-19### Security
 - Bumped `idna` from 3.11 to 3.15 (Dependabot, #357). 3.14 closed a bypass of the CVE-2024-3651 mitigation by rejecting oversize inputs up-front (**CVE-2026-45409**); 3.15 hardens further by enforcing the DNS-length cap on individual labels early in `check_label`. Transitive dependency of `requests` / `httpx` — bumped via `uv.lock` only, no surface-area change.
 
-## [0.55.3] — 2026-05-19
-### Changed
+## [0.55.3] — 2026-05-19### Changed
 - **BREAKING:** `src/rbac.can_access_table` + `get_accessible_tables` now route through Data Package stack membership instead of per-table `resource_grants`. Per-table grants no longer surface a table to analysts on their own — admins must wrap tables in a Data Package and grant the package (Required or in the user's stack). `manifest.direct_tables` is always `[]` (key kept for older-CLI destructuring). Internal tables (`agnes_sessions/telemetry/audit`) + admin god-mode keep their carve-outs. Standardised 403 detail across every CLI gate (`/api/data/*`, `/api/query`, `/api/v2/sample`, `/api/v2/scan`, `/api/v2/schema`): *"Table 'X' is not in your stack. Ask an admin to add it to a Data Package you have access to (Required or in your stack), then run `agnes pull` to refresh."* New shared test helper `tests.conftest.grant_table_via_package` replaces the legacy `resource_grants(table)` pattern across 8 test files. Closes #356 / #333 follow-up.
 - `agnes diagnose` is now role-aware. A fresh analyst install no longer reports `Overall: degraded` just because the server has operator-side warnings (stale tables, session-pipeline cadence, BQ billing-project config) that the analyst can't act on. Server (`/api/health/detailed`) tags every check with `audience: "analyst" | "operator"` plus a top-level `caller_role` derived from `user.is_admin` and an `overall_analyst` aggregation. Client excludes operator checks from the headline for analyst callers, surfaces operator warning count on a secondary line so they stay visible, auto-promotes admin/operator callers to the full aggregation, and lets analysts opt in via `--include-operator-checks`. Legacy servers (no `caller_role`) keep the pre-#345-B full aggregation — no silent regression. Closes #345 B.
 
@@ -8777,8 +8355,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 ### Fixed
 - **First-demo UX polish on /catalog** (2026-05-19): Browse grid now groups **Required** packages first instead of by `created_at` so the most-relevant adopt-immediately items lead. `.stack-card__desc` line clamp bumped 2 → 4 lines so card descriptions get more room. `/catalog/t/<id>` table-detail page dropped four editorial sections (Sample questions / What's inside / Things to know / Pairs well with) — hero (name + description + parent packages) only. Same Browse-order treatment applied to `/corporate-memory`.
 
-## [0.55.2] — 2026-05-19
-### Fixed
+## [0.55.2] — 2026-05-19### Fixed
 - **Customer-instance Terraform module pre-creates `/data/uploads`**
   (`infra/modules/customer-instance/startup-script.sh.tpl`). v50/0.55.0
   added a marketplace cover-image upload directory mounted under
@@ -8796,8 +8373,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   rebooting, run `sudo mkdir -p /data/uploads && sudo chown 999:999
   /data/uploads` on the host.
 
-## [0.55.1] — 2026-05-19
-### Added
+## [0.55.1] — 2026-05-19### Added
 - `/home` install-hero lead now includes a short "What leaves your
   machine" privacy callout: explains that prompts / tool-calls /
   tool-responses travel back to the central catalog while raw data
@@ -8847,8 +8423,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   user's rc file (fixed-string match + short-circuit per the dedup
   bug report).
 
-## [0.55.0] — 2026-05-19
-### Added
+## [0.55.0] — 2026-05-19### Added
 - **Extended Data Packages content (v56 schema)** backing the rewritten
   `/catalog/p/<slug>` package detail page per the extended-descriptions admin
   extended-descriptions spec. Eight new schema fields, validated API,
@@ -9285,8 +8860,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   via Shift + Tab kept as the strict-review fallback for users who want
   to approve each command; persistent YOLO setup link unchanged.
 
-## [0.54.29] — 2026-05-19
-### Added
+## [0.54.29] — 2026-05-19### Added
 - **`table_registry.bq_fqn` column** (schema v51, issue #343) — optional
   fully-qualified BigQuery path (`project.dataset.table`) that decouples
   the UX/RBAC `bucket` label from the physical BQ dataset name. Pre-v51
@@ -9487,8 +9061,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   for existing duplicates and raises `RuntimeError` listing them rather
   than letting the index create fail mid-way with a raw DuckDB error.
 
-## [0.54.28] — 2026-05-18
-### Fixed
+## [0.54.28] — 2026-05-18### Fixed
 - `/api/v2/sample` (and `agnes describe`) no longer returns HTTP 500
   for materialized BigQuery tables (`source_type='bigquery'`,
   `query_mode='materialized'`). The handler previously routed any
@@ -9499,8 +9072,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   to the local parquet read path. Regression-locked by
   `test_materialized_bq_table_reads_parquet_not_bq`. Closes #341.
 
-## [0.54.27] — 2026-05-18
-### Fixed
+## [0.54.27] — 2026-05-18### Fixed
 - `/admin/tables` edit modal no longer throws `ReferenceError` on
   non-Keboola instances (BigQuery, CSV). Two JS helpers
   (`_getEditKbSyncMode`, `onEditKbSyncModeChange`) were wrapped in
@@ -9510,8 +9082,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   prefill helpers that actually talk to the Keboola Storage API;
   the shared sync-mode helpers ship to every instance.
 
-## [0.54.26] — 2026-05-18
-### Changed
+## [0.54.26] — 2026-05-18### Changed
 - **BREAKING:** eight `DELETE` endpoints that previously returned `200` with
   a JSON body now correctly return `204 No Content` (HTTP semantics for
   idempotent removal). External clients that parsed the response body
@@ -9536,8 +9107,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   declare 401/403 on all protected `/api/*` operations centrally — 220 ops
   now carry the auth-error responses in the spec.
 
-## [0.54.25] — 2026-05-18
-### Fixed
+## [0.54.25] — 2026-05-18### Fixed
 - `POST /api/sync/table-subscriptions` now enforces the same RBAC gate as
   `POST /api/sync/settings` — authenticated users can no longer subscribe to
   tables they have no `resource_grants` row for (ADV-001, issue #336).
@@ -9596,8 +9166,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   (PR #332 lifecycle validation), and archived-entity-keeps-
   serving-installs (CLAUDE.md contract).
 
-## [0.54.24] — 2026-05-16
-### Fixed
+## [0.54.24] — 2026-05-16### Fixed
 - Flea-market admin submissions UI now derives the per-submission
   `v#` label by **submission_id**, not **hash**. Hash-based lookup
   mislabeled every byte-identical reupload (and every reused-verdict
@@ -9641,8 +9210,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   non-determinism), pointing admin at Rescan / Override. Reuse
   markers (`reused_from_submission_id`) render too.
 
-## [0.54.23] — 2026-05-16
-### Fixed
+## [0.54.23] — 2026-05-16### Fixed
 - Flea-market admin **Rescan** of a non-current v2+ submission with
   `guardrails.enabled: false` now promotes the entity forward
   (mirrors the inline-promote in create / update / restore). Pre-fix
@@ -9653,8 +9221,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   path is unchanged (rescan schedules an LLM review; promotion lands
   when the verdict approves through `runner.run_llm_review`).
 
-## [0.54.22] — 2026-05-15
-### Fixed
+## [0.54.22] — 2026-05-15### Fixed
 - **Flea-market — promote-on-approve + admin-override now look up
   the submission's `version_no` in `version_history` by
   `submission_id`, not by `hash`.** Hash-based lookup broke whenever
@@ -9693,8 +9260,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   tiebreaker comment with a generic `<customer>-marketplace`
   placeholder per `CLAUDE.md § Vendor-agnostic OSS`.
 
-## [0.54.21] — 2026-05-15
-### Added
+## [0.54.21] — 2026-05-15### Added
 - **Marketplace — flea inner skill/agent detail page parity with
   curated.** New backend endpoints `GET /api/marketplace/flea/{id}/skill/{name}`
   and `…/agent/{name}` plus matching web routes that render
@@ -9786,8 +9352,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   implementation plan: `docs/superpowers/specs/2026-05-15-agnes-agents-design.md`
   and `docs/superpowers/plans/2026-05-15-agnes-agents.md`.
 
-## [0.54.20] — 2026-05-15
-### Added
+## [0.54.20] — 2026-05-15### Added
 - **Corporate Memory — BM25 relevance ranking on knowledge search.**
   Replaces the `title ILIKE '%q%' OR content ILIKE '%q%'`
   ranked-by-insertion-order query in `KnowledgeRepository.search`
@@ -9820,8 +9385,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   a snapshot — see `src/fts.py` for the on-mutation / lifespan
   rebuild contract.
 
-## [0.54.19] — 2026-05-15
-### Changed
+## [0.54.19] — 2026-05-15### Changed
 - `connectors/jira/scripts/consistency_check.py` —
   `AUTO_FIX_THRESHOLD` bumped from 10 to 20. Auto-backfill now covers
   typical SLA-poller hiccups before escalating to ERROR.
@@ -9860,8 +9424,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   remains sensitive (touch only with end-to-end understanding of the
   JSON-overlay / parquet-rewrite pipeline) but is no longer off-limits.
 
-## [0.54.18] — 2026-05-15
-### Added
+## [0.54.18] — 2026-05-15### Added
 - "Curated Memory" now sits in the primary navigation next to Data
   Packages, visible to every authenticated user.
 - **Per-user Dismiss** for Curated Memory items — analysts can opt-out
@@ -9928,8 +9491,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   `_version_no_for_submission`; falls back to live for legacy rows.
   (Low — surfaced by adversarial review.)
 
-## [0.54.17] — 2026-05-15
-### Changed
+## [0.54.17] — 2026-05-15### Changed
 - `agnes refresh-marketplace --check` (the SessionStart-hook detector
   that fires on every Claude Code session start in every workspace)
   now uses `git ls-remote origin HEAD` instead of `git fetch origin`
@@ -9942,8 +9504,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   match). The slash-command and `--bootstrap` paths still do real
   `git fetch + reset --hard` — they actually need the objects.
 
-## [0.54.16] — 2026-05-14
-### Fixed
+## [0.54.16] — 2026-05-14### Fixed
 - Store submit-flow wizard buttons were missing the `.btn` base class —
   Next / Back / Finish on `/store/new` and Save on `/store/edit/<id>`
   carried only the `.btn-primary` / `.btn-secondary` color modifier, so
@@ -9951,8 +9512,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   (~18px-tall color boxes) instead of matching their sibling Cancel
   links. Added the `.btn` base class on all four.
 
-## [0.54.15] — 2026-05-14
-### Added
+## [0.54.15] — 2026-05-14### Added
 - New `/me/activity` page consolidating per-analyst usage analytics into
   one place: four tabs — Sessions, Token usage, Data access, Sync
   activity. The Sessions tab merges what used to be split across two
@@ -10009,8 +9569,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   from `_profile_tokens.html` and `_profile_troubleshooting.html` partials.
 - Documentation tree cleaned up and consolidated. `CLAUDE.md` rewritten (708 → ~320 lines): the four overlapping release sections, the stale `v1→v35` DuckDB schema history, and the marketplace endpoint internals moved out to focused docs; preachy process sections tightened. New `docs/RELEASING.md` (release process + deploy workflows + CI quirks, with `RELEASE_TEMPLATE.md` folded in as an appendix) and `docs/marketplace.md` (marketplace ingestion + re-serving internals). Historical planning artifacts (`docs/superpowers/`, 52 files) and dated one-off docs (`HACKATHON.md`, `pd-ps-comments.md`, `security-audit-2026-04.md`, `future/NOTIFICATIONS.md`) moved under `docs/archive/`. New `docs/README.md` documentation index organized by audience, linked from `README.md` and `CLAUDE.md`. Removed the `docs/auto-install.md` stub. Fixed dangling doc links in `connectors/jira/README.md` and `dev_docs/README.md`, and repointed code/doc references to the archived paths (or dropped the pointer where the target was already a dead reference on `main`). Added a root `AGENTS.md` pointing to `CLAUDE.md` as the single source of truth for any AI coding agent, and `CLAUDE.local.md` to `.gitignore`.
 
-## [0.54.14] — 2026-05-14
-### Changed
+## [0.54.14] — 2026-05-14### Changed
 - **Marketplace submission surfaces — clearer CTA + fuller guides
   (#308).** The curated-tab action-row CTA now reads "Submit a skill
   or plugin" (was "Submit a plugin") — skills are first-class on the
@@ -10106,8 +9665,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   removed by earlier PRs (#243 onward), leaving the whole
   minimize-mode machinery unreachable.
 
-## [0.54.13] — 2026-05-14
-### Security
+## [0.54.13] — 2026-05-14### Security
 
 - **RBAC filter uses stable `user_id` (UUID) instead of mutable email
   local-part (#293).** Non-admin users querying `agnes_sessions` /
@@ -10119,8 +9677,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   trigger backfill. During the transition period, RBAC queries include
   an OR fallback on `username` so pre-backfill rows remain visible.
 
-## [0.54.12] — 2026-05-14
-### Fixed
+## [0.54.12] — 2026-05-14### Fixed
 - **Usage processor now extracts user-typed slash invocations.** Claude Code
   records `/foo` and `/plugin:name` slash commands as
   `<command-name>/foo</command-name>` XML tags embedded in user message
@@ -10135,8 +9692,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   (CLI: `agnes admin telemetry reprocess`). Implicit Skill tool_use
   extraction (LLM-decided invocations) is unchanged.
 
-## [0.54.11] — 2026-05-14
-### Changed
+## [0.54.11] — 2026-05-14### Changed
 - Catalog page: each `catalog_data` bucket now renders as its own
   top-level Data Package card instead of being nested as a collapsible
   accordion under a single "Core Business Data" wrapper. The page hero
@@ -10152,8 +9708,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   with zero registered tables now renders no Data Package cards at all,
   where the old wrapper always rendered (showing "0 tables").
 
-## [0.54.10] — 2026-05-14
-### Changed
+## [0.54.10] — 2026-05-14### Changed
 - Web UI design system unified: single stylesheet (`style-custom.css`),
   canonical primitives for buttons, form controls, page headers, tables,
   empty states, toasts, and stat cards. Top-nav Admin entry now shares
@@ -10311,8 +9866,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - `_reject_inline_or_continue` now takes `plugin_dir` and lazy-computes `bundle_meta` only on the security branch; the validation branch (the common case for honest submitters) no longer pays for a SHA256 walk over the bundle on every reject.
 - Surface failures to write the `store.upload.security_blocked` audit row via `logger.exception` instead of silently swallowing — that audit row is the only forensic trace of an inline-tier security finding, and a swallowed DB error would have left no record at all.
 
-## [0.54.9] — 2026-05-13
-### Added
+## [0.54.9] — 2026-05-13### Added
 - **Initial Workspace Template** — admin-configurable per-instance override for the `agnes init` analyst workspace skeleton. Configure on `/admin/server-config` → "Initial Workspace Template" section: link a Git repo (HTTPS, optional branch, optional PAT for private repos). Server clones manually via "Sync now" into `${DATA_DIR}/initial-workspace/`. **Repo layout convention**: only the contents of a top-level `workspace/` subdirectory are shipped to analysts; anything else at the repo root (README, LICENSE, CI configs) stays in the repo and is never delivered. Sync fails strictly when the repo has no `workspace/` subdirectory at root. When configured, `agnes init` downloads a zip of `workspace/` content and extracts it into the analyst's workspace, fully bypassing Agnes-default `CLAUDE.md`, `.claude/settings.json`, hooks, slash commands, `CLAUDE.local.md` stub, and `AGNES_WORKSPACE.md`. Admin's repo is authoritative. `--force` shows a typed-YES confirmation listing files-to-overwrite vs files-to-create before extracting. See `docs/initial-workspace-override.md` for the full responsibility-transfer contract and required hooks the admin's repo must ship for `agnes pull` / `agnes push` to keep working.
 - New endpoints: `GET/POST/DELETE /api/admin/initial-workspace`, `POST /api/admin/initial-workspace/sync` (admin); `GET /api/initial-workspace`, `GET /api/initial-workspace.zip`, `POST /api/initial-workspace/applied` (PAT-authed analyst).
 - New audit-log actions: `initial_workspace.register`, `initial_workspace.sync`, `initial_workspace.sync_failed`, `initial_workspace.delete`, `initial_workspace.fetch_started` (server-authored, anchors the trail), `initial_workspace.applied` (CLI-authored, best-effort confirmation).
@@ -10323,8 +9877,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
 - `cli/lib/override.py::is_override_workspace` gates the **init-time** skip block in `cli/commands/init.py` (the `if not override_active:` branch). Runtime CLI commands (`agnes refresh-marketplace`, `agnes self-upgrade`'s `maybe_refresh_claude_hooks`) do NOT consult the sentinel and keep the workspace in sync — see the `### Fixed` entry "Runtime CLI commands now work on Initial Workspace Template workspaces" in the `[0.54.14]` release notes for the full contract.
 - `app/api/marketplaces.py::_persist_token` removed; both marketplaces and the new initial-workspace endpoint now route through the shared `app/secrets.py::persist_overlay_token` helper, which wraps the `.env_overlay` read-modify-write in a process-wide `threading.Lock`. Closes a pre-existing race where two concurrent `/admin/marketplaces` Save clicks could clobber each other's PATs on the overlay file.
 
-## [0.54.8] — 2026-05-13
-### Changed
+## [0.54.8] — 2026-05-13### Changed
 
 - **BREAKING** Store upload — inline guardrail failures now hard-reject
   before any DB row, bundle, photo, or doc is persisted. Two tiers:
@@ -10361,8 +9914,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   `_make_eval_skill_zip`-driven setup for tests that need an entity in
   the hidden + blocked_llm state.
 
-## [0.54.7] — 2026-05-13
-### Added
+## [0.54.7] — 2026-05-13### Added
 
 - `instance.overview` yaml field (env override
   `AGNES_INSTANCE_OVERVIEW`) — operator-authored HTML body rendered in
@@ -10389,8 +9941,7 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   `.advanced-pointer` CSS stays in place as dead style to keep the
   diff focused.
 
-## [0.54.6] — 2026-05-13
-### Changed
+## [0.54.6] — 2026-05-13### Changed
 
 - Header brand: wired `instance.logo_svg` (yaml) /
   `AGNES_INSTANCE_LOGO_SVG` (env) into the brand slot via a new
@@ -10424,13 +9975,11 @@ New operator knobs: `AGNES_TRUSTED_PROXY_HOPS`, `AGNES_REMOTE_ATTACH_HOST_ALLOWL
   when onboarded, so analysts who wipe `~/{{ workspace_dir }}` can
   flip back without digging through settings.
 
-## [0.54.5] — 2026-05-13
-### Internal
+## [0.54.5] — 2026-05-13### Internal
 
 - **`get_analytics_db()` is a singleton — mirrors `get_system_db()`** (#163). Pre-fix the function opened a fresh `duckdb.connect()` on every call; most callers don't `.close()` the returned handle, so each leaked connection held a WAL ref + FD until GC kicked in. Under load this manifested as "too many open files" or DuckDB lock contention on the analytics DB. Singleton + cursor-per-call (matches the system-DB pattern) keeps one underlying connection alive while letting callers safely close the cursor handle. New `close_analytics_db()` mirrors `close_system_db()` (best-effort CHECKPOINT then close); both are wired into the FastAPI shutdown hook in `app/main.py`. `get_analytics_db_readonly()` deliberately stays per-call — each invocation re-ATTACHes extract.duckdb files into a fresh read-only context. 5 tests in `tests/test_analytics_db_singleton.py` pin the contract: cache, cursor-close-safe, DATA_DIR-change reopen, thread safety (16 concurrent calls share the singleton), close + reopen.
 
-## [0.54.4] — 2026-05-13
-Three LOW hygiene fixes from the takeover-review on PR #276 (closed via #277).
+## [0.54.4] — 2026-05-13Three LOW hygiene fixes from the takeover-review on PR #276 (closed via #277).
 
 ### Fixed
 
@@ -10441,16 +9990,14 @@ Three LOW hygiene fixes from the takeover-review on PR #276 (closed via #277).
 
 - **Skills walker uses `rglob("*.md")` instead of `rglob("*")`** — perf nit. The skills walker in `_iter_components` greedily walked every file under `skills/` (assets, scripts, data fixtures) just to filter to `skill.md` by name. For asset-heavy skill packs (tutorials with screenshots, data fixtures) this was hundreds of stat() calls per ingest. Brings the skills walker in line with the agents + commands walkers which already filter at the glob layer. (#277 LOW #1)
 
-## [0.54.3] — 2026-05-13
-### Added
+## [0.54.3] — 2026-05-13### Added
 - `AGNES_DEFAULT_SYNC_SCHEDULE` env var (consumed by `app/api/sync.py:_run_materialized_pass`) sets the platform-wide fallback `sync_schedule` for registry rows that don't pin their own value. Lets a deployment dial cadence down to `daily 03:00` without having to PUT every row. Per-table `sync_schedule` still wins; literal `every 1h` is the floor if neither is set (matches OSS-historical behaviour).
 
 ### Fixed
 - `GET /api/sync/status` no longer reports `locked=false` during the ~few-hundred-ms window between the trigger handler's 200 response and the background task's `_sync_lock.acquire()`. The handler now stamps `_recent_trigger_at`, and the status endpoint returns `locked=true` for `_TRIGGER_HOLD_SEC` (=30s) after the most recent trigger. Pre-fix, host-side `agnes-auto-upgrade.sh` defer probe firing in that window saw an honest `locked=false` and proceeded with `docker compose up -d`, SIGKILLing the just-spawning extractor / materialized worker. Observed on agnes-dev: 3 mid-sync container kills in 30 min until the trigger-hold window closed the gap.
 - `scripts/ops/agnes-auto-upgrade.sh`: the post-upgrade chown loop now includes `/data/tmp` (the default `AGNES_TEMP_DIR` set in `docker-compose.yml`) and `mkdir -p`'s it first. Pre-fix the runtime user (`uid 999`) couldn't create `/data/tmp` under a root-owned data-disk root, so tempfiles silently fell back to the boot disk's overlayfs `/tmp` — defeating the whole point of routing slice staging onto the dedicated data volume.
 
-## [0.54.2] — 2026-05-13
-### Added
+## [0.54.2] — 2026-05-13### Added
 
 - **Admin-configurable flea-market content guardrail thresholds.**
   `/admin/server-config` gains a new **Flea-market guardrails** section
@@ -10470,8 +10017,7 @@ Three LOW hygiene fixes from the takeover-review on PR #276 (closed via #277).
   Defaults are unchanged — instances that don't set
   `guardrails.*` keep the original PR #276 bar.
 
-## [0.54.1] — 2026-05-13
-### Added
+## [0.54.1] — 2026-05-13### Added
 - `agnes marketplace search` — unified search across Curated and Flea Market; RBAC-filtered server-side, supports `--source`, `--type`, `--sort`, `--query`, `--json`
 - `agnes marketplace detail <id>` — full detail view for any marketplace item (curated: `marketplace_id/plugin_name`, flea: UUID)
 - `agnes marketplace add <id>` — add a plugin/skill/agent to your stack; works for both Curated and Flea Market
@@ -10488,8 +10034,7 @@ Three LOW hygiene fixes from the takeover-review on PR #276 (closed via #277).
 - `agnes store` now covers only creator-side operations: `upload`, `update`, `delete`, `mine`
 - `agnes my-stack show` output label updated: `From Store:` → `From Flea Market:`
 
-## [0.54.0] — 2026-05-12
-Activity Center build — unified observability surface plus a recursive
+## [0.54.0] — 2026-05-12Activity Center build — unified observability surface plus a recursive
 internal data source so Claude Code can introspect its own usage.
 
 Five surfaces in the regrouped **Admin** dropdown:
@@ -10580,8 +10125,7 @@ the `Usage` → `Telemetry` rename across UI / URL / API / CLI
 ### Operations
 - First boot on v41 against an existing instance with >100k `audit_log` rows: index creation runs synchronously and may take 30–120s. Plan an upgrade window. Subsequent restarts are unaffected.
 
-## [0.53.5] — 2026-05-12
-### Added
+## [0.53.5] — 2026-05-12### Added
 
 - **Flea-market content guardrail — two-tier per-component description
   enforcement.** Submissions are now rejected when any component (plugin,
@@ -10630,8 +10174,7 @@ the `Usage` → `Telemetry` rename across UI / URL / API / CLI
   preview walker (`summarize_for_preview` for `type=agent`) which
   already filtered the same shape.
 
-## [0.53.4] — 2026-05-12
-### Fixed
+## [0.53.4] — 2026-05-12### Fixed
 
 - **Analyst CLI install (`uv tool install <wheel>`) no longer fails with `urllib3 / kbcstorage` resolver conflict on a clean machine.** From 0.53.3, every fresh `/setup` walkthrough hit `kbcstorage<=0.9.5 → urllib3<2.0.0` vs the wheel METADATA's `urllib3>=2.7.0` security pin and resolved to `unsatisfiable`. The `[tool.uv] override-dependencies = ["urllib3>=2.7.0"]` workaround that masked the conflict in workspace installs (Dockerfile, dev) does NOT propagate to the wheel — wheel METADATA is plain PEP 621 `Requires-Dist`, and a fresh resolver context (`uv tool install <wheel-url>`) never sees the override. Fix: `kbcstorage` moved out of `[project] dependencies` into `[project.optional-dependencies] server`, since it is server-side-only (`connectors/keboola/client.py` callers — admin endpoints, server connectors, integration tests; no CLI import path). Server install picks it up via the Dockerfile's `uv pip install --system --no-cache ".[server]"`; CI installs `.[dev,server]` so the workspace tests still cover the kbcstorage path. Analyst CLI wheel METADATA now lists `kbcstorage>=0.9.0; extra == 'server'` (gated) — `uv tool install` resolves cleanly.
 
@@ -10639,8 +10182,7 @@ the `Usage` → `Telemetry` rename across UI / URL / API / CLI
 
 - **New CI lane `cli-wheel-clean-install` in `.github/workflows/ci.yml`** builds the wheel via `uv build` and installs it into a fresh `python:3.13-slim` container with `uv tool install`, asserting `agnes --version` works AND that `kbcstorage` is absent from the CLI venv. Catches the "wheel METADATA conflicts with transitive deps under fresh resolver" regression class — exactly what `[tool.uv] override-dependencies` does NOT protect against. Without this lane, the previous regression slipped through every existing test (workspace overrides masked the conflict in pytest) and only surfaced on the next analyst's first install.
 
-## [0.53.3] — 2026-05-12
-Hygiene round closing #244 + #252 + clearing 5 Dependabot urllib3 advisories. (Originally cut as 0.53.2 — bumped to 0.53.3 after #264 / #268 landed as 0.53.2 in parallel.)
+## [0.53.3] — 2026-05-12Hygiene round closing #244 + #252 + clearing 5 Dependabot urllib3 advisories. (Originally cut as 0.53.2 — bumped to 0.53.3 after #264 / #268 landed as 0.53.2 in parallel.)
 
 ### Added
 
@@ -10658,8 +10200,7 @@ Hygiene round closing #244 + #252 + clearing 5 Dependabot urllib3 advisories. (O
 
 - 8 regression tests in `tests/test_session_health.py` cover the #244 check matrix (ok / warning / info / threshold / window-bounds / malformed-log resilience).
 
-## [0.53.2] — 2026-05-12
-Two threads in one cut. **Operator surface:** `instance.brand` /
+## [0.53.2] — 2026-05-12Two threads in one cut. **Operator surface:** `instance.brand` /
 `instance.workspace_dir` let an operator rebrand the analyst-facing UI
 and the `~/Agnes` workspace folder without a fork (defaults preserve
 "Agnes"), and the setup script picks up an explicit "create workspace
@@ -10690,8 +10231,7 @@ unchanged.
 
 - **BREAKING: `agnes query --register-bq` CLI flag removed.** The flag ran the `RemoteQueryEngine` in-process on the caller's machine and required local BigQuery credentials (`BIGQUERY_PROJECT` + ADC) that analysts don't have. Calling it from an analyst workspace surfaced as a confusing `not_configured` error chain ("Could not load static instance.yaml" + "BigQuery project not configured"), and an agent following CLAUDE.md guidance for hybrid queries would land in exactly that trap. The underlying engine was originally designed server-side ("Step 28: Remote query architecture", commit `d180b201`); the CLI port (`d605e7d9`) silently assumed parity. Analysts now have two paths for combining local and remote data: `agnes snapshot create` a filtered slice of the remote table and join it locally, or run the join server-side via `agnes query --remote`. Admins keep an unchanged server-side path via `POST /api/query/hybrid` (`app/api/query_hybrid.py`). Removed: `--register-bq` flag, `register_bq` field in `--stdin` JSON, `_query_hybrid()` in `cli/commands/query.py`. CLAUDE.md "Hybrid Queries" section rewritten; `cli/skills/agnes-data-querying.md` and `docs/DATA_SOURCES.md` updated to drop the flag.
 
-## [0.53.1] — 2026-05-12
-Follow-up to 0.53.0 closing #266 — `/admin/tables` Edit modal on BQ
+## [0.53.1] — 2026-05-12Follow-up to 0.53.0 closing #266 — `/admin/tables` Edit modal on BQ
 materialized rows silently destroyed `bucket` / `source_table` on every
 save, and the prior whole-table register path never persisted them in
 the first place. Three small client-side fixes in `admin_tables.html`,
@@ -10742,8 +10282,7 @@ relies on.
   pass for backward compatibility with already-recorded verdicts.
 >
 
-## [0.53.0] — 2026-05-12
-Second hygiene round closing the Tier B trackers opened during the
+## [0.53.0] — 2026-05-12Second hygiene round closing the Tier B trackers opened during the
 0.51.0 retro plus one new admin UI bug. `agnes init` resumes after a
 kill (#259), schema endpoint stops calling BigQuery for materialized
 tables (#261), admin tables UI no longer breaks on apostrophes (#265),
@@ -10761,8 +10300,7 @@ stale parquet locks get swept at startup (#260).
 - **#262** closed as obsolete — Caddy `file_server` + persistent catalog cache already address the user-facing impact this issue was originally written about.
 - **#266** admin tables Edit dialog dataset field "disabled for materialized" — actual behavior is `display:none` (hidden when sync mode is custom-SQL); not the same as "disabled". UX clarification not in scope for this release.
 
-## [0.52.0] — 2026-05-12
-UX + hygiene round following the 0.51.0 catalog-hang fix. Five small,
+## [0.52.0] — 2026-05-12UX + hygiene round following the 0.51.0 catalog-hang fix. Five small,
 analyst-facing improvements surfaced by the post-merge perf-test runs
 (`~/Downloads/agnes-perf-test-2026-05-12/`); each closes a tracker
 issue opened during the 0.51.0 retro.
@@ -10786,12 +10324,10 @@ issue opened during the 0.51.0 retro.
 - **`schema <materialized_table>` cold-start anomaly** (#261) — needs investigation.
 - **Docker root on boot disk** (#262) — infra-level, not app code.
 
-## [0.51.1] — 2026-05-12
-### Fixed
+## [0.51.1] — 2026-05-12### Fixed
 - **`/corporate-memory/admin` no longer fails with "Error loading pending items." once pending knowledge items exist.** `GET /corporate-memory/admin` was passing the `corporate_memory.groups` YAML section (a dict, default `{}`) into the template as `groups=`, but `renderItemCard` evaluates `GROUPS.map(g => ...)` to build the mandate-form audience picker — `{}.map is not a function` threw inside the template literal, bubbled up to `renderReviewItems`, and the `loadReviewQueue` catch block painted the misleading "Error loading pending items." banner over a perfectly valid `/api/memory/admin/pending` response. Bug was dormant since the initial system commit because `renderItemCard` only runs when at least one pending item exists, so test fixtures and empty queues never tripped it. Fix: route now passes RBAC user_groups (`user_groups` table) shaped as `[{name, members_count}]`, which is what the mandate form actually targets (audience targeting is `group:<rbac-group-name>`, not `corporate_memory.groups`); template hardens the `.map` call with `Array.isArray(GROUPS) ? GROUPS : []` so a future shape regression degrades to "no group options" instead of crashing the whole list. No DB migration; no API change.
 
-## [0.51.0] — 2026-05-12
-### Fixed
+## [0.51.0] — 2026-05-12### Fixed
 
 - **`GET /api/v2/catalog` no longer hangs on cold cache.** Since 0.47.0 the catalog endpoint enriched each remote BigQuery row by fetching `INFORMATION_SCHEMA.TABLE_STORAGE` + `COLUMNS` through the DuckDB BigQuery extension inside the request. On cold caches that fanned out to O(N) sequential BQ jobs-API roundtrips — easily 90 s+ on partitioned / view-backed tables — and reliably exceeded the CLI's 30 s `httpx.ReadTimeout`. Enrichment now reads exclusively from a persistent `bq_metadata_cache` DuckDB table, populated by a scheduler-driven refresh job. First call after a fresh container start returns in tens of milliseconds with `metadata_freshness: never_fetched` for rows the scheduler hasn't reached yet; subsequent ticks fill the cache. Closes the cold-start outage class entirely.
 
@@ -10818,8 +10354,7 @@ issue opened during the 0.51.0 retro.
 - **DuckDB lower bound bumped from `>=0.9.0` to `>=1.5.2`.** 1.5.1 had a regression where `ALTER TABLE … ADD COLUMN IF NOT EXISTS` was rejected with `Cannot alter entry … because there are entries that depend on it` when the target table was FK-referenced from another table; the migration ladder hit this on `internal_roles` (v8→v9) and `user_groups` (v11→v12) when replayed from old schema_version. 1.5.2 restores the previous behavior. CI was already on 1.5.2; this just pins the same floor for local devs.
 - `tests/test_cli_binary_rename.py::test_agnes_command_exists` now skips with an actionable message instead of failing when the local venv has no `agnes` on PATH or the binary is a stale shim from a prior editable install. CI installs the package fresh and still asserts the real contract.
 
-## [0.50.0] — 2026-05-12
-### Added
+## [0.50.0] — 2026-05-12### Added
 
 - Skill and agent detail pages (`/marketplace/curated/<mp>/<plugin>/{skill,agent}/<name>`) now render the same rich curator-authored content as the plugin detail page. New optional per-item fields in `marketplace-metadata.json` under `plugins.<plugin>.skills.<name>` and `plugins.<plugin>.agents.<name>`: `display_name`, `tagline`, `category` (per-item override; falls back to parent plugin's category when absent), `description` (markdown body for "Description" panel), `use_cases[]` ("When to use it" cards), `sample_interaction` (Claude Code-style dark transcript Q&A panel — same Catppuccin Mocha treatment as plugin detail), `when_to_use` (markdown disambiguation block "When to use this", typically referencing alternative skills/agents), and `invocation` (curator-provided literal command string, e.g. `/my-plugin:tool <your question>` or `@my-agent:role` — overrides the computed `<manifest_name>:<inner_name>` chip when set, and works correctly for both `/` skill prefix and `@` agent prefix).
 - Plugin detail page and listing card render rich curator-authored content from `marketplace-metadata.json`. New optional plugin-level fields: `display_name` (overrides the technical plugin id on the hero h1 + listing card name + mac-window titlebar label), `tagline` (1-line value prop replacing the verbose marketplace.json description on cards and the hero subtitle), `description` (multi-paragraph markdown body rendered into the "What it does" panel as sanitized HTML), `use_cases[]` (each entry `{title, description, prompt}` — drives a new "When to use it" 3-column card grid), and `sample_interaction` (`{user, assistant}` — drives a new "Example" Q&A panel with the assistant side rendered as safe markdown). All fields are optional; sections only render when the curator has filled them, so un-enriched plugins look exactly like before. Read on-demand from the working tree (cached by mtime per marketplace), so curator edits land at the next request without waiting for a sync cycle. Server-side markdown render via `markdown-it-py` + `nh3` sanitizer with a description-scoped tag allowlist (no iframes, no images, no inline HTML). See `docs/curated-marketplace-format.md` for the schema reference.
@@ -10843,8 +10378,7 @@ issue opened during the 0.51.0 retro.
 - Vendor-agnostic OSS cleanup: removed operator-specific token references (`/grpn-eng:` / `@grpn-eng:` / `.foundryai/`) from `src/marketplace_metadata.py` docstring, `app/web/templates/marketplace_item_detail.html` JS comment, `docs/curated-marketplace-format.md`, and `tests/test_marketplace_metadata.py` fixtures. Replaced with generic `/my-plugin:tool` / `@my-agent:role` / `.example/` placeholders.
 - New tests for the must-fixes above (cache stress at >256 entries, per-field byte cap with UTF-8 boundary preservation, truthy-vs-presence resolver contract) plus XSS regression coverage on `render_safe` for `javascript:` autolinks (raw + reference + mixed-case), `data:`, `vbscript:` schemes, and positive-coverage for `http`/`https`/`mailto` allowlist + `noopener noreferrer` rel attribute.
 
-## [0.49.1] — 2026-05-11
-### Added
+## [0.49.1] — 2026-05-11### Added
 
 - **`instance.admin_email` operator config knob** (env `AGNES_INSTANCE_ADMIN_EMAIL` > YAML `instance.admin_email` > unset). When set, the `/home` Google Workspace connector tile renders an "Email admin" mailto button so analysts whose operator hasn't pre-provisioned a shared OAuth app can request one without leaving the workspace. Empty default cleanly hides the button.
 
@@ -10862,8 +10396,7 @@ issue opened during the 0.51.0 retro.
 
 - **BREAKING: `/corporate-memory` page + dashboard widget + nav link restricted to admins.** The `/corporate-memory` route now requires `require_admin` (was `get_current_user`); non-admin users hitting it see 403 (was 200). The Memory link in the top nav and the corporate-memory widget on `/dashboard` are hidden via `{% if session.user.is_admin %}` guards. **Asymmetry:** the underlying `/api/memory/*` endpoints stay on `get_current_user` so CLI / agent flows that POST a knowledge item or fetch `/api/memory` keep working; the gating is web-UI-only. Operators who relied on non-admin web access need to either grant Admin to those users or use the API.
 
-## [0.49.0] — 2026-05-11
-### Fixed (PR #242 follow-ups)
+## [0.49.0] — 2026-05-11### Fixed (PR #242 follow-ups)
 
 - **`/agnes-private` legacy-scan gap closed (David #8 from PR review).**
   `agnes push --legacy-scan` now consults the private list using the
@@ -11103,8 +10636,7 @@ issue opened during the 0.51.0 retro.
   `agnes-data-querying`) inline where they're relevant. Layout: Confirm
   shifts from step 9 to step 8 across all variants.
 
-## [0.48.0] — 2026-05-10
-### Fixed
+## [0.48.0] — 2026-05-10### Fixed
 
 - **`agnes refresh-marketplace --bootstrap` now recovers when the local
   marketplace clone exists but Claude Code's registry has lost the
@@ -11705,24 +11237,20 @@ issue opened during the 0.51.0 retro.
 
 - **`docker-compose.yml` `stop_grace_period: 60s`** on the `app` and `scheduler` services (was Docker's 10s default). Gives uvicorn time to drain in-flight requests + run the new shutdown CHECKPOINT before SIGKILL. Healthy `docker compose down` is unaffected (services still stop as soon as their lifespan exits).
 
-## [0.47.4] — 2026-05-08
-### Fixed
+## [0.47.4] — 2026-05-08### Fixed
 
 - `services/session_collector` no longer logs "Collection complete: 0 users, 0 files copied" + "Group 'data-ops' not found" every 10 minutes in the Docker layout where `/home/*/user/sessions/` doesn't exist. New env var `AGNES_SKIP_LEGACY_COLLECTOR=1` (set by default in `docker-compose.yml`) short-circuits the collector pass. The bare-VM deployment path (where /home/* IS populated by Claude Code) leaves this unset and continues to scan + log normally — including the data-ops warning, which is load-bearing for catching missing-group mis-deploys.
 - `agnes diagnose` `session_pipeline` check gains a FIFO-aware lookup: in addition to the existing MAX(processed_at) comparison (catches "detector hasn't run lately"), it now flags the case where an OLD jsonl never got processed even though newer ones did (= verification-detector skipped a file). Threshold defaults to 4× the verification-detector grace (= 2h with default 30min grace) and is configurable via `SESSION_PIPELINE_STUCK_FILE_GRACE_SECONDS`. Severity intentionally starts at `info` — operators can tighten to `warning` once they have prod data on false-positive rate.
 
-## [0.47.3] — 2026-05-07
-### Fixed
+## [0.47.3] — 2026-05-07### Fixed
 
 - `agnes self-upgrade` (without `--force`) previously read the local 24h `update_check.json` cache to decide whether an upgrade was needed — meaning that for up to 24 hours after a server-side version bump, the explicit `agnes self-upgrade` command exited silently as a no-op even though a newer wheel was available. Cache is now always invalidated for the explicit command (the cache still gates the implicit warning loop in the root callback to avoid hammering `/cli/latest` on every `agnes <anything>` invocation). Surfaced when a server bump 0.47.1 → 0.47.2 didn't trigger client-side upgrade.
 
-## [0.47.2] — 2026-05-07
-### Fixed
+## [0.47.2] — 2026-05-07### Fixed
 
 - Restore #218 (real BQ error surfacing in `remote_estimate_failed`) and #219 (friendlier missing-table hint in `agnes query`) — both fixes were silently reverted by the squash merge of #217 because that branch carried stale snapshots of `app/api/query.py` and `cli/commands/query.py` from before #218 and #219 merged. Verified end-to-end against production: `agnes query --remote "SELECT FROM unit_economics WHERE bad_col=1"` now returns the BQ "Unrecognized name" diagnostic; `agnes query "DESCRIBE unit_economics"` now appends the remote-table hint.
 
-## [0.47.1] — 2026-05-07
-Keboola connector v27 — incremental, partitioned, where_filters, typed parquet.
+## [0.47.1] — 2026-05-07Keboola connector v27 — incremental, partitioned, where_filters, typed parquet.
 
 ### Added
 
@@ -11745,8 +11273,7 @@ Keboola connector v27 — incremental, partitioned, where_filters, typed parquet
 - **`update_table` exclude_unset semantic shift** documented inline; `test_api_put_clears_v26_fields_on_strategy_switch` pins the explicit-null-propagates behavior.
 - **`incremental.py:_convert_column` failure on primary_key column** now raises hard (was silent mixed-type column → broken dedup downstream). Test added.
 
-## [0.47.0] — 2026-05-07
-Catalog metadata enrichment + cache discipline + automatic warmup.
+## [0.47.0] — 2026-05-07Catalog metadata enrichment + cache discipline + automatic warmup.
 Closes #155 + #156.
 
 ### Added
@@ -11826,19 +11353,16 @@ Closes #155 + #156.
   `test_v2_catalog_invalidation`, `test_cache_warmup`,
   `test_main_startup_warmup`, `test_admin_tables_warmup_ui`.
 
-## [0.46.5] — 2026-05-07
-### Fixed
+## [0.46.5] — 2026-05-07### Fixed
 
 - `agnes describe <table> -n 5` previously failed with `Missing argument 'TABLE_ID'` because the command was registered as a `Typer.Typer` subcommand group; the combination of positional `table_id` + short option `-n INTEGER` mis-parses in that pattern. Switched to a flat `@app.command("describe")` registration. All forms (`-n` before/after positional, `--rows=N`, default n=5) now parse correctly. Surfaced from a real analyst session following the CLAUDE.md "agent rails" discovery workflow.
 - `/api/v2/sample/<id>` (called by `agnes describe`) returned HTTP 500 with `ValueError: Out of range float values are not JSON compliant: nan` when the result rows contained NaN values from the underlying DuckDB / BigQuery scan. The endpoint now sanitizes NaN/±inf to JSON `null` before serialization. Same surfaced from a real analyst session.
 
-## [0.46.4] — 2026-05-07
-### Fixed
+## [0.46.4] — 2026-05-07### Fixed
 
 - SessionEnd `agnes push` hook previously synchronous-ran in the foreground; Claude Code's `-p` (headless) mode terminates SessionEnd hook subprocesses after ~1 second regardless of work in progress, so the upload was killed mid-stream and most session JSONLs never reached the server. Now wrapped in `bash -c "( nohup agnes push ... & ) ; true"` so the upload child detaches from the hook subprocess and survives Claude's aggressive shutdown. Existing workspaces pick up the detached form on their next `agnes init` invocation via the existing migration path. Verified end-to-end against production: `claude -p` exited in 5s, the detached child completed the upload, and the session JSONL landed on the server within 30s.
 
-## [0.46.3] — 2026-05-07
-### Added
+## [0.46.3] — 2026-05-07### Added
 
 - `agnes init` now installs a third SessionStart hook entry (`agnes push --quiet`) so orphan session JSONLs left behind by `claude -p` headless invocations (where Claude Code does NOT fire SessionEnd) or abnormal exits get uploaded on the next interactive session start. Symmetric self-healing alongside the existing `agnes pull` SessionStart entry. Existing workspaces pick up the third entry on their next `agnes init` invocation via the existing migration path in `cli/lib/hooks.py:_OUR_COMMAND_MARKERS`.
 
@@ -11846,18 +11370,15 @@ Closes #155 + #156.
 
 - `agnes diagnose` `session_pipeline` warning previously read "uploads are not being processed", which led users to suspect their `agnes push` uploads were failing. The warning now reads "verification-detector backlog" and includes `last_processed` so operators see at a glance that uploads are fine and only the LLM extraction step is behind.
 
-## [0.46.2] — 2026-05-07
-### Fixed
+## [0.46.2] — 2026-05-07### Fixed
 
 - `agnes query` against a `query_mode='remote'` table previously surfaced DuckDB's misleading "did you mean <similar materialized table>" suggestion. Now appends a friendlier hint pointing users to `agnes catalog`, `agnes schema <id>`, and `agnes query --remote`. Reproduces from a real analyst session where `DESCRIBE unit_economics` (a remote table) sent the user down a 30-second wrong path.
 
-## [0.46.1] — 2026-05-07
-### Fixed
+## [0.46.1] — 2026-05-07### Fixed
 
 - `remote_estimate_failed` now surfaces the rewritten-SQL diagnostic (the actual BQ "Unrecognized name" / "Syntax error" message) instead of the unhelpful "Table must be qualified" from the user-original-SQL retry. Adds `underlying_original` for the second-attempt context. Hint now points users to `agnes schema <id>` first — the typical cause is a typo'd column name.
 
-## [0.46.0] — 2026-05-07
-Catalog metadata enrichment + cache discipline + automatic warmup.
+## [0.46.0] — 2026-05-07Catalog metadata enrichment + cache discipline + automatic warmup.
 Closes #155 + #156.
 
 ### Added
@@ -11937,8 +11458,7 @@ Closes #155 + #156.
   `test_v2_catalog_invalidation`, `test_cache_warmup`,
   `test_main_startup_warmup`, `test_admin_tables_warmup_ui`.
 
-## [0.45.0] — 2026-05-07
-Operator-and-analyst quality bundle: a security fix for the optional
+## [0.45.0] — 2026-05-07Operator-and-analyst quality bundle: a security fix for the optional
 Telegram bot, two CLI gaps closed, and three rounds of UX polish on
 `agnes diagnose` and `agnes pull` so non-TTY consumers (CI runners,
 Claude Code SessionStart hooks, sub-agent watchdogs) get readable,
@@ -12045,14 +11565,12 @@ actionable signal. Closes #84, #164, #177, #178, #203, #204.
   To force a TF-driven reset, `rm /opt/agnes/.env` and reboot. Folded
   in from #214, which landed on main between 0.44.1 and this cut.
 
-## [0.44.1] — 2026-05-07
-### Fixed
+## [0.44.1] — 2026-05-07### Fixed
 
 - `/admin/users/{id}` — "Add to group" dropdown explains itself when empty instead of leaving the admin staring at a silent `— Pick a group —` placeholder. Three cases now surface a hint below the picker: (a) user is already in every group, (b) every remaining group is Google-Workspace-managed and Agnes can't grant manually (POST would 409 — link to `/admin/groups` to create a custom group), (c) no groups exist at all. Pre-fix on deployments where `Admin` + `Everyone` are mapped via `AGNES_GROUP_{ADMIN,EVERYONE}_EMAIL` and no custom groups exist, the picker was empty with zero indication that the operator needed to create a custom group first.
 - `/admin/users/{id}` — "Add to group" dropdown's `loadAll()` race fixed: pre-fix `loadGroups()` and `loadMemberships()` ran in parallel and `refreshGroupDropdown()` (called from `loadGroups`) read the `memberships` global, which could still be `[]` if memberships hadn't returned yet — letting the dropdown show groups the user was already in. `loadMemberships()` now re-runs the dropdown refresh once it has its data, so the final render reflects both data sets regardless of which fetch completes first.
 
-## [0.44.0] — 2026-05-07
-### Added
+## [0.44.0] — 2026-05-07### Added
 - `agnes refresh-marketplace` — single CLI command that owns the per-user
   filtered Claude Code marketplace lifecycle. `--bootstrap` does the
   first-time setup: clones the per-user marketplace bare repo to
@@ -12094,15 +11612,13 @@ actionable signal. Closes #84, #164, #177, #178, #203, #204.
 
 - `infra/modules/customer-instance` (tag `infra-v1.7.0`): `google_compute_instance.vm` now sets `allow_stopping_for_update = true`. Without it, changing `machine_type` (or any other field GCP will only mutate on a stopped VM) caused Terraform to fall back to a destroy + recreate, churning VM-local state for what should be an in-place resize. Consumers do not need to update — the field is provider-side only — but bumping the module ref to `infra-v1.7.0` enables in-place machine-type bumps.
 
-## [0.43.0] — 2026-05-06
-### Added
+## [0.43.0] — 2026-05-06### Added
 
 - CLI auto-upgrade: `agnes self-upgrade` reinstalls the CLI from the server's currently-shipped wheel via `uv tool install --force`, falling back to `pip install --force-reinstall --no-deps` via `sys.executable` when uv is not on PATH. After install, the new binary is smoke-tested at the install-resolved path (`uv tool dir --bin` for uv, `<sys.executable parent>/agnes` for pip) — never via PATH lookup, to avoid stale-shadow false positives. Smoke failure triggers automatic rollback to the previously verified-good wheel (recorded in `~/.config/agnes/last_known_good.json`); rollback's exit code is captured and surfaced on stderr if it also fails. First-ever upgrade or unrecoverable rollback prints the canonical bootstrap recovery: `curl -fsSL <your-agnes-server>/cli/install.sh | bash`. The new command is wired into the SessionStart hook installed by `agnes init` as a chained shell entry (`agnes self-upgrade … || true; agnes pull … || true`) so an upgrade failure does not block the pull.
 - Server: `/api/*` responses now carry `X-Agnes-Latest-Version` and `X-Agnes-Min-Version` headers. CLIs older than `X-Agnes-Min-Version` exit with **code 2** and a remediation message instead of failing on a wire-protocol mismatch. Day-one floor is `0.0.0` (no enforcement) — bump `MIN_COMPAT_CLI_VERSION` in `app/version.py` in the same PR that ships a deliberate wire break.
 - CLI: `cli/update_check.py:check()` accepts a keyword-only `bypass_disabled=True` so explicit `agnes self-upgrade` invocations probe `/cli/latest` even when `AGNES_NO_UPDATE_CHECK=1` is set (which silences the implicit warning loop only).
 
-## [0.42.0] — 2026-05-06
-### Fixed
+## [0.42.0] — 2026-05-06### Fixed
 - `agnes query --remote`: full backtick BigQuery paths in user SQL are no
   longer corrupted by the registered-name rewriter. Previously a query
   like ``SELECT … FROM `<project>.<dataset>.<table>` WHERE …`` whose
@@ -12134,8 +11650,7 @@ actionable signal. Closes #84, #164, #177, #178, #203, #204.
   project) and `bq_path_not_registered` (when path is unknown) error
   kinds. Issue #201.
 
-## [0.41.0] — 2026-05-06
-### Fixed
+## [0.41.0] — 2026-05-06### Fixed
 - **Orchestrator filesystem fallback for materialized parquets that
   couldn't register in `extract.duckdb`'s `_meta`**
   (`src/orchestrator.py:_attach_and_create_views`). The 0.40.0 fix in
@@ -12162,8 +11677,7 @@ actionable signal. Closes #84, #164, #177, #178, #203, #204.
   shadow); invalid identifier in parquet stem is skipped without crash;
   source without `data/` subdir doesn't crash the scan.
 
-## [0.40.0] — 2026-05-06
-### Fixed
+## [0.40.0] — 2026-05-06### Fixed
 - **Materialized BigQuery parquets now register themselves in
   `extract.duckdb` so the master view actually appears**
   (`connectors/bigquery/extractor.py:materialize_query`). Pre-fix the
@@ -12187,8 +11701,7 @@ actionable signal. Closes #84, #164, #177, #178, #203, #204.
   the fix logs and continues — the next extractor pass creates the
   file and the master view appears on the rebuild after that.
 
-## [0.39.0] — 2026-05-06
-### Performance
+## [0.39.0] — 2026-05-06### Performance
 - **`/api/query` (and `agnes query --remote`) now rewrites user SQL referencing
   `query_mode='remote'` BigQuery rows into a single `bigquery_query()` call
   before execute** (`app/api/query.py`). Pre-fix the master view
@@ -12260,8 +11773,7 @@ actionable signal. Closes #84, #164, #177, #178, #203, #204.
   (Rich progress bar with bytes / speed / ETA, aggregated per-file
   across chunked-download chunks).
 
-## [0.38.3] — 2026-05-06
-### Changed
+## [0.38.3] — 2026-05-06### Changed
 - **Admin / Tables**: registry table now shows Source (bucket/table), Schedule, Folder, Registered by/at, and a sync-error warning icon per row. The page widens to ~1600px to accommodate.
 
 ### Fixed
@@ -12269,8 +11781,7 @@ actionable signal. Closes #84, #164, #177, #178, #203, #204.
 - **Admin / Tables**: descriptions stored with shell-quoting backslash-escapes (`Don\'t`, `\n`) now render correctly. The same normalization also runs at register/update time so newly-saved descriptions are never corrupted.
 - **Admin / Tables**: `scripts/fix_description_escapes.py` cleans up already-corrupted descriptions in `table_registry` (run with `--dry-run` first, then `--apply`).
 
-## [0.38.2] — 2026-05-06
-### Fixed
+## [0.38.2] — 2026-05-06### Fixed
 - **`bq_query_timeout_ms` was not applied on every BigQuery ATTACH branch**
   (`src/db.py:_reattach_remote_extensions`,
   `src/orchestrator.py:_attach_remote_extensions`). Pre-fix only the
@@ -12290,8 +11801,7 @@ actionable signal. Closes #84, #164, #177, #178, #203, #204.
   readback (catches the silent-ignore mode some extension versions
   exhibit) and a mismatch logs `WARNING` too.
 
-## [0.38.1] — 2026-05-06
-### Internal
+## [0.38.1] — 2026-05-06### Internal
 - `CLAUDE.md` — `Claude Code marketplace endpoint` section now documents the
   two-step fallback (system `git clone` + local `claude plugin marketplace
   add`) for users registering manually against a private-CA Agnes instance.
@@ -12302,8 +11812,7 @@ actionable signal. Closes #84, #164, #177, #178, #203, #204.
   already branches between the two automatically based on platform; the
   doc snippet now matches that behavior for manual flows.
 
-## [0.38.0] — 2026-05-06
-### Added
+## [0.38.0] — 2026-05-06### Added
 - **`/store` page** — community marketplace where every authenticated user
   can upload skills, agents, and plugins as ZIPs. Listing has type / category /
   search filters; detail page shows metadata, file list, photo, video link,
@@ -12438,8 +11947,7 @@ actionable signal. Closes #84, #164, #177, #178, #203, #204.
   F1 (video_url), F2 (zip-bomb), F4 (admin authz parity), F5 (cross-owner
   suffix collision).
 
-## [0.37.0] — 2026-05-06
-Operator-side disk-layout release. Closes the 2026-05-05 shadow-mount class identified in v0.36.0's deploy notes via two independent fixes that operators can adopt separately: (#194 folds in @cvrysanek's #191 + #192). The image-side change is invisible — `STATE_DIR` defaults to the legacy nested path, so existing deployments see no behavior change unless they opt into the new flat layout. Folds in three rounds of Devin Review (3 BUGs + 1 ANALYSIS class, ANALYSIS deferred per the operator-side limitation it describes).
+## [0.37.0] — 2026-05-06Operator-side disk-layout release. Closes the 2026-05-05 shadow-mount class identified in v0.36.0's deploy notes via two independent fixes that operators can adopt separately: (#194 folds in @cvrysanek's #191 + #192). The image-side change is invisible — `STATE_DIR` defaults to the legacy nested path, so existing deployments see no behavior change unless they opt into the new flat layout. Folds in three rounds of Devin Review (3 BUGs + 1 ANALYSIS class, ANALYSIS deferred per the operator-side limitation it describes).
 
 ### Added
 - **`STATE_DIR` env var + `docker-compose.flat-mount.yml` overlay** — operators can now place the writable state disk in **parallel** to the data disk (`sdb` at `/data`, `sdc` at `/data-state`) instead of nested (`sdc` at `/data/state` inside `/data`). The flat layout removes three structural fragilities of the legacy nested layout: bind-mount propagation gotchas (the 2026-05-05 shadow-mount class), two-writer collisions on a shared prefix (host's `tls-rotate.timer` as root + container app as uid 999 on the same path), and mount-order coupling on disk resize. `STATE_DIR` defaults to `${DATA_DIR}/state` so existing deployers see no behavior change; opt-in to flat layout via the new overlay + `STATE_DIR=/data-state` per the runbook in `docs/state-dir.md`. Read by `src/db.py:_get_state_dir()`, `app/secrets.py:_state_dir()`, `app/main.py` (`.env_overlay`), `app/instance_config.py` (`instance.yaml` overlay reader), `app/api/admin.py` (writers for both `/api/admin/configure` and `/api/admin/server-config` against the same overlay), `app/api/marketplaces.py` (marketplace PAT persistence into `.env_overlay`), `scripts/ops/agnes-auto-upgrade.sh` (mount-sanity + cert detection), `scripts/ops/agnes-tls-rotate.sh` (`CERT_DIR=$STATE_DIR/certs`). All read/write sites resolve via the same helper so under `STATE_DIR=/data-state` the irreplaceable tier (`system.duckdb`, secrets, `instance.yaml`, `.env_overlay`, certs) lands on sdc consistently — partial migration would silently lose secrets on container restart.
@@ -12447,8 +11955,7 @@ Operator-side disk-layout release. Closes the 2026-05-05 shadow-mount class iden
 ### Changed
 - **`docker-compose.host-mount.yml` switched from "named volume + driver_opts" to direct service-level bind mounts** (`volumes: !override` per service). Docker named volumes have an immutability footgun: once a volume is created, its driver options are fixed for the life of the volume, and editing this file does NOT propagate the new options to existing volumes. This bit a deployer in production: the volume was created before the overlay had `bind,rbind`, kept the old `bind` (non-recursive) propagation, and containers wrote to a shadowed subdirectory of the parent disk instead of the nested child mount. DuckDB went FATAL on a root-owned WAL during a routine container recreate; sign-in broke. Direct service binds re-evaluate options every container start and default to recursive in modern Docker (20.10+) — no immutable state to migrate, no shadow-mount class. Operators on this overlay: next `docker compose up -d` starts containers with direct binds; the old `agnes_data` named volume is no longer referenced and can be removed with `docker volume rm agnes_data` (operator's choice — orphaned but harmless if left). Both `host-mount.yml` and `flat-mount.yml` `volumes: !override` blocks for `caddy` now restate every mount the base service depends on (notably `data:/srv:ro` for the v0.36.0 file_server bypass and `caddy_config:/config` for ACME state) — a Devin-caught regression where `!override` silently dropped these mounts under the new layout, defeating the parquet-download perf bypass.
 
-## [0.36.0] — 2026-05-05
-Combined performance + analyst-clarity bundle. Folds three previously-staged work streams into one PR (#188): the long-running `agnes query --remote` timeout (#181), the Caddy parquet-download bypass (#182), and Pavel's #185 Phase 1 trace findings (silent 44-min first-init, opaque CLI tracebacks, no analyst-Claude size signal). Also performs the Tier 1 event-loop unblocking — the five hottest BQ-touching endpoints were `async def` over synchronous DuckDB / BQ-extension calls, so a single heavy `agnes query --remote` froze every other request for the duration of the BQ wait. The image-side fixes ship in this release; for existing VMs, the new auto-upgrade.sh self-fetches the matching Caddyfile + compose overlays from `main` on its next 5-minute tick, so deployment requires no operator action beyond letting the cron run.
+## [0.36.0] — 2026-05-05Combined performance + analyst-clarity bundle. Folds three previously-staged work streams into one PR (#188): the long-running `agnes query --remote` timeout (#181), the Caddy parquet-download bypass (#182), and Pavel's #185 Phase 1 trace findings (silent 44-min first-init, opaque CLI tracebacks, no analyst-Claude size signal). Also performs the Tier 1 event-loop unblocking — the five hottest BQ-touching endpoints were `async def` over synchronous DuckDB / BQ-extension calls, so a single heavy `agnes query --remote` froze every other request for the duration of the BQ wait. The image-side fixes ship in this release; for existing VMs, the new auto-upgrade.sh self-fetches the matching Caddyfile + compose overlays from `main` on its next 5-minute tick, so deployment requires no operator action beyond letting the cron run.
 
 ### Added
 - **`data_source.bigquery.query_timeout_ms` config knob** (default 600 000 ms = 10 min). The DuckDB BigQuery extension's built-in default of 90 s was too tight for analyst-scale queries against view-backed BQ datasets — `agnes query --remote` would HTTP 400 with `Binder Error: Query execution exceeded the timeout. Job ID: …` whenever the underlying BQ job took longer than 90 s, even though the BQ job itself was healthy. The new knob is applied via `SET bq_query_timeout_ms` after every `LOAD bigquery` on every BQ-touching DuckDB session — the orchestrator's `_remote_attach` ATTACH path (`src/orchestrator.py`), the analytics-DB read-only reattach path (`src/db.py:_reattach_remote_extensions` — the primary `agnes query --remote` request path), the `BqAccess` session factory (`connectors/bigquery/access.py`), and the standalone extractor (`connectors/bigquery/extractor.py`). Sentinel `0` (or non-numeric / unparseable values) leaves the extension default in place so operators on legacy extension versions that don't recognise the setting aren't broken. Configurable via `/admin/server-config` UI. Note: BigQuery's `jobs.query` RPC caps the wait at ~200 s per call regardless of this setting; the extension polls on top so the effective ceiling is the value here but each poll is ~200 s. DuckDB emits an informational warning when the value is set above the BQ RPC cap — operators can safely ignore it.
@@ -12474,13 +11981,11 @@ Combined performance + analyst-clarity bundle. Folds three previously-staged wor
   - `connectors/keboola/extractor.py:run` now wraps `_extract_via_extension` in a per-table try/except — on any per-table scan failure it retries via the legacy client. Previously, when `ATTACH` succeeded but the table-level `COPY (SELECT * FROM kbc."<bucket>"."<table>")` failed, the table was just marked failed with no retry.
   Together these unblock deployments where the extension's bucket-schema scans return `Schema '..."in.c-..."' does not exist or not authorized` (keboola/duckdb-extension#17) while the upstream extension fix is in flight.
 
-## [0.35.1] — 2026-05-05
-### Fixed
+## [0.35.1] — 2026-05-05### Fixed
 
 - `agnes query --remote` no longer dies after 30s on long-running BigQuery SELECTs. The CLI HTTP client now defaults to a 300s timeout for `/api/query` and exposes `AGNES_QUERY_TIMEOUT` (seconds, float) for operators who need to extend it further. Other CLI calls keep the 30s default. (`cli/client.py`, `cli/commands/query.py`)
 
-## [0.35.0] — 2026-05-05
-Five-defect fix for the silently-broken session pipeline on default Compose deploys (#176). Sessions uploaded by `agnes push` landed on `/data/user_sessions/<user>/*.jsonl`, but on a stock `docker compose up` deploy nothing ever processed them — `/corporate-memory` stayed empty even when sessions and `CLAUDE.local.md` were uploaded. The root cause was a stack of compounding defects: LLM SDKs were dev-only deps so the scheduler container boot-looped on `ModuleNotFoundError`, the side-car services were profile-gated and ran as tight `restart: unless-stopped` boot loops anyway, the `verification_detector` had no scheduler entry at all, the first-time setup never seeded an `ai:` block, and the `/corporate-memory` page silently filtered out the pending review queue. This release wires the LLM pipeline into the existing scheduler-v2 model (one HTTP-driven cron tick per service) and adds a health-check that warns when uploaded jsonls aren't being processed.
+## [0.35.0] — 2026-05-05Five-defect fix for the silently-broken session pipeline on default Compose deploys (#176). Sessions uploaded by `agnes push` landed on `/data/user_sessions/<user>/*.jsonl`, but on a stock `docker compose up` deploy nothing ever processed them — `/corporate-memory` stayed empty even when sessions and `CLAUDE.local.md` were uploaded. The root cause was a stack of compounding defects: LLM SDKs were dev-only deps so the scheduler container boot-looped on `ModuleNotFoundError`, the side-car services were profile-gated and ran as tight `restart: unless-stopped` boot loops anyway, the `verification_detector` had no scheduler entry at all, the first-time setup never seeded an `ai:` block, and the `/corporate-memory` page silently filtered out the pending review queue. This release wires the LLM pipeline into the existing scheduler-v2 model (one HTTP-driven cron tick per service) and adds a health-check that warns when uploaded jsonls aren't being processed.
 
 ### Changed
 
@@ -12538,8 +12043,7 @@ Five-defect fix for the silently-broken session pipeline on default Compose depl
 - `tests/test_scheduler.py` — `TestLLMPipelineCadenceEnvVars` + `TestVerificationDetectorGraceFollowsCadence` pin the new env-var-driven cadences and the single-source-of-truth contract between scheduler and health-check grace (#179 review).
 - `docs/architecture.md` — Services table updated to reflect the scheduler-v2 cadence map.
 
-## [0.34.0] — 2026-05-04
-End-to-end clean-analyst-bootstrap rewrite. The web `/setup` page now produces a single unified paste prompt that, dropped into Claude Code in an empty folder, fully bootstraps a workspace — installs the CLI, authenticates, fetches `CLAUDE.md`, installs SessionStart/End hooks, runs the first data refresh, and writes a human-readable workspace docs file (`AGNES_WORKSPACE.md`). The admin-vs-analyst layout split (introduced as `?role=` mid-cycle) was collapsed before merge: every caller sees the same flow, with the marketplace + plugins block emitted iff the caller has plugin grants. 26 implementation tasks across 6 phases plus a 10-task unification follow-up.
+## [0.34.0] — 2026-05-04End-to-end clean-analyst-bootstrap rewrite. The web `/setup` page now produces a single unified paste prompt that, dropped into Claude Code in an empty folder, fully bootstraps a workspace — installs the CLI, authenticates, fetches `CLAUDE.md`, installs SessionStart/End hooks, runs the first data refresh, and writes a human-readable workspace docs file (`AGNES_WORKSPACE.md`). The admin-vs-analyst layout split (introduced as `?role=` mid-cycle) was collapsed before merge: every caller sees the same flow, with the marketplace + plugins block emitted iff the caller has plugin grants. 26 implementation tasks across 6 phases plus a 10-task unification follow-up.
 
 ### Changed
 - **BREAKING** CLI binary renamed from `da` to `agnes`. No backward-compat alias is shipped. Update shell aliases, hook commands in any pre-existing `.claude/settings.json`, scripts, and cron jobs. Reinstall via `uv tool install <wheel>`; the wheel now ships an `agnes` entry point.
@@ -12598,8 +12102,7 @@ End-to-end clean-analyst-bootstrap rewrite. The web `/setup` page now produces a
 - `docs/RELEASE_CHECKLIST.md` — manual clean-install protocol mandated for any PR touching the bootstrap path.
 - Audited and replaced stale `da` verbs left over from prior merges in admin UI text, audit-log messages, code comments, operator runbooks, analyst-facing skill docs, and test docstrings (welcome template renderer/API tests now assert exact emitted markers — `agnes init` for analyst flow, `agnes auth` for admin flow — with explicit absence checks on legacy verbs). Vendor-specific `/opt/data-analyst/` install paths in jira backfill/consistency scripts and operator docs replaced with `<install-dir>/` and an `AGNES_ENV_FILE` env-var override. Intentional stale-marker tuples (`_LEGACY_STRINGS` in `app/api/claude_md.py`, `_OUR_COMMAND_MARKERS` in `cli/lib/hooks.py`) and tests that seed legacy hook content (`tests/test_lib_hooks.py`, `tests/test_legacy_strings_scan.py`) are preserved by design.
 
-## [0.33.0] — 2026-05-04
-Closes #162. Headline fix: `query_mode='materialized'` BigQuery rows now
+## [0.33.0] — 2026-05-04Closes #162. Headline fix: `query_mode='materialized'` BigQuery rows now
 materialize correctly for views and materialized views, with per-table
 concurrency control preventing parquet corruption on overlapping scheduler
 ticks. Plus a source_query server-generation convenience, a
@@ -12680,8 +12183,7 @@ converts existing DuckDB-flavor source_query values to BQ-native SQL.
   inside `_run_materialized_pass`) so monkeypatching `app.api.sync.is_table_due`
   actually intercepts the call — the deferred form made test patches a no-op.
 
-## [0.32.0] — 2026-05-04
-Closes #160. Headline fix: `da query --remote` now resolves
+## [0.32.0] — 2026-05-04Closes #160. Headline fix: `da query --remote` now resolves
 `query_mode='remote'` BigQuery rows whose underlying entity is a `VIEW`
 or `MATERIALIZED_VIEW`. Plus four reinforcing fixes that surfaced during
 the work — server-side cost guardrail, registry-gating of direct `bq.*`
@@ -12768,8 +12270,7 @@ iterations of Devin Review.
   the function for backwards compat; existing test sites that call
   `v2_scan._build_quota_tracker()` keep working.
 
-## [0.31.0] — 2026-05-04
-### Added
+## [0.31.0] — 2026-05-04### Added
 
 - **Agent Workspace Prompt** — admin-editable Jinja2 markdown template for the analyst's `CLAUDE.md`, surfaced in their workspace by `da analyst setup`. Default = rich briefing with RBAC-filtered tables/metrics/marketplaces context. Edit at `/admin/workspace-prompt`. Endpoints: `GET /api/welcome` (analyst-facing, auth required), `GET/PUT/DELETE /api/admin/workspace-prompt-template`, `POST /api/admin/workspace-prompt-template/preview`. CLI: `da analyst setup` writes `CLAUDE.md` by default; new `--no-claude-md` flag opts out. See `docs/agent-workspace-prompt.md`.
 - **Agent Setup Prompt** — customizable bash setup script shown on `/setup` and copied by the dashboard clipboard CTA. Default = the live `setup_instructions.resolve_lines()` output (TLS trust bootstrap, CLI install, login, marketplace, skills). Admin override at `/admin/agent-prompt` — full replacement of the default, not a banner added on top. Override flows to both the `/setup` page display and the dashboard clipboard payload. Jinja2 is available for `{{ instance.name }}` etc.; `{server_url}` and `{token}` are JS-substituted at clipboard-copy time and survive Jinja2 rendering unchanged. REST API: `GET /api/admin/welcome-template` returns `{content, default, updated_at, updated_by}` (`content` is `null` when no override is set; `default` is always the live computed script); `PUT` to set an override; `DELETE` to clear; `POST /api/admin/welcome-template/preview` for live preview without persisting. Available Jinja2 placeholders: `instance.{name,subtitle}`, `server.{url,hostname}`, `user` (may be `null` for anonymous visitors), `now`, `today`. Override content is HTML-sanitized post-render (script/iframe/event-handler strip). See `docs/agent-setup-prompt.md`.
@@ -12787,8 +12288,7 @@ iterations of Devin Review.
 
 - `da analyst setup` summary now accurately reflects whether `CLAUDE.md` was written, skipped (`--no-claude-md`), or skipped due to a server error — previously it always claimed "written from server template" even when the fetch failed (404, 401/403, network), contradicting its own stderr warning.
 
-## [0.30.1] — 2026-05-02
-### Security
+## [0.30.1] — 2026-05-02### Security
 - **auth**: per-IP rate limiting now applied across every credential-bearing
   auth endpoint. Defaults:
     - **10/minute** — `POST /auth/token`, `POST /auth/password/login`,
@@ -12882,8 +12382,7 @@ iterations of Devin Review.
   `services.duckdb_state` lives in `/api/health/detailed` (auth-gated).
   Tests had drifted and broke nightly e2e on main.
 
-## [0.30.0] — 2026-05-01
-### Added
+## [0.30.0] — 2026-05-01### Added
 - **admin UI**: each row in `/admin/tables` listings now has a per-row
   **Manage access** icon button (between Edit and Delete) that deep-links
   to `/admin/access#table:<table_id>`. The grant editor reads the hash on
@@ -13135,12 +12634,10 @@ cannot exercise them and they will be revisited in follow-up PRs:
   In practice: the cron scheduler is single-threaded and manual
   triggers are rare, so the race window is small.
 
-## [0.29.0] — 2026-05-01
-### Fixed
+## [0.29.0] — 2026-05-01### Fixed
 - **`scripts/ops/agnes-tls-rotate.sh` self-signed fallback cert now sets `basicConstraints=critical,CA:FALSE` on the leaf.** OpenSSL's default `[v3_ca]` config marks `CA:TRUE` on `req -x509`, which causes strict TLS stacks (rustls / `webpki`, used by `uv`, `cargo`, and future versions of `pip`) to reject the cert with `invalid peer certificate: CaUsedAsEndEntity` per RFC 5280 §4.2.1.9. Browsers, curl, and OpenSSL-based clients tolerated the violation, hiding the bug until a `uv` user hit it. Affects every VM running on the self-signed fallback while the corp PKI hasn't published the real chain yet — the fix lands on the next `agnes-tls-rotate.timer` tick (or `systemctl start agnes-tls-rotate.service` for an immediate refresh). Existing CSR / real-cert paths unaffected; only the bring-up fallback regenerates.
 
-## [0.28.0] — 2026-05-01
-### Fixed
+## [0.28.0] — 2026-05-01### Fixed
 
 - **Analyst CLAUDE.md template now documents BigQuery remote-query capability.** `config/claude_md_template.txt` (used by `da analyst setup`) had **zero mention** of `query_mode: "remote"`, `da fetch`, `da query --remote`, or `--register-bq` — the AI analyst running in a freshly-bootstrapped workspace had no idea remote tables existed. Added a `## Remote Queries (BigQuery)` section covering: discovery via `da catalog` (now called out as canonical, with `data/metadata/schema.json` flagged as local-only); the three query patterns (`da fetch` preferred, `da query --remote` for one-shots, `da query --register-bq` for hybrid joins); permission boundary (BQ access via the agnes server's GCE service account, not personal creds — escalate permission errors to admin); cost awareness (every query bills the SA's project for bytes scanned, `--select`/`--where`/`--estimate` discipline); `da fetch` estimate-first rules; BigQuery SQL flavor reminder; snapshot freshness ritual (`da snapshot drop` + re-fetch when source data updates); concrete hybrid-query example with `--register-bq` joining local + ad-hoc BQ; the unknown-table case (ad-hoc `--register-bq` or ask admin to register); and a cross-reference to `da skills show agnes-data-querying` for deeper guidance. Also clarifies that **personal customizations belong in `.claude/CLAUDE.local.md`**, not CLAUDE.md (which is regenerated by `da analyst setup --force` and would lose edits). Closes #153.
 
@@ -13148,8 +12645,7 @@ cannot exercise them and they will be revisited in follow-up PRs:
 
 - **Legacy `docs/setup/claude_md_template.txt` deleted.** 359-line stale template that documented the deprecated SSH-heredoc remote-query protocol (`ssh data-analyst 'bash ~/server/scripts/remote_query.sh --stdin' < query.json`). The active template lives at `config/claude_md_template.txt`; the docs/ copy was confusing references and at risk of being pulled into a workspace by a future refactor. No code references the deleted file (verified).
 
-## [0.27.0] — 2026-04-30
-### Removed
+## [0.27.0] — 2026-04-30### Removed
 
 - **BREAKING** Table access fully migrated to per-group `resource_grants` (`ResourceType.TABLE`). Existing `dataset_permissions` rows are dropped on upgrade — admins must re-grant via `/admin/access`. Wildcard bucket grants (`bucket.*`) no longer supported and not replaced: every table needs an explicit grant (or admin override). Per-table bulk action in `/admin/access` covers a whole bucket at once.
 - **BREAKING** `table_registry.is_public` column dropped. The bypass shortcut had no API/UI/CLI surface to set it (only direct DB UPDATE worked) so the legacy data-RBAC layer was de-facto inactive — every table was implicitly public. Post-upgrade non-admin users see **zero tables** until admin grants explicit access. Migrate by minting the relevant `resource_grants(group, "table", id)` rows in `/admin/access` before deploy or immediately after.
@@ -13163,14 +12659,12 @@ cannot exercise them and they will be revisited in follow-up PRs:
 
 - Schema **v19**: drops `dataset_permissions`, `access_requests` tables and `users.role`, `table_registry.is_public` columns. Implementation in `src/db.py:_v18_to_v19_finalize` uses the table-rebuild idiom (rename → create new → INSERT … SELECT → drop old) to work around DuckDB's `ALTER TABLE DROP COLUMN` limitations on tables that have ever held FK constraints. The INSERT picks the intersection of the legacy and v19 column sets so test fixtures with hand-crafted minimal pre-v19 schemas migrate cleanly.
 
-## [0.26.0] — 2026-04-30
-### Changed
+## [0.26.0] — 2026-04-30### Changed
 
 - **BREAKING** **All host-side artifacts (compose files, `Caddyfile`, host bash scripts) now ship in the docker image, not curled from `main` at boot.** The Dockerfile bakes them at `/opt/agnes-host/` and the customer-instance startup template extracts the whole directory via `docker create` + `docker cp` from the same `image_tag` the operator already pinned. Removes 5 `curl`s against `raw.githubusercontent.com` from the customer template (`docker-compose.yml`, `docker-compose.prod.yml`, `docker-compose.host-mount.yml`, `docker-compose.tls.yml`, `Caddyfile`) plus the `agnes-auto-upgrade.sh` curl shipped in 0.25.0. The image also now ships `agnes-tls-rotate.sh` + `tls-fetch.sh` at `/opt/agnes-host/` so consumer-side deploy templates can adopt the same pattern. Replaces the curl-from-main pattern that decoupled host-side artifacts from the pinned image (split-brain — image at `stable-2026.04.516`, host artifacts floating on whatever `main` was when the VM last booted) and gave no rollback knob other than reverting upstream PRs globally. With everything baked in, host artifacts and app code are released together from one commit; `image_tag` controls all; rollback is one tag bump; egress simplifies to "private registry" only (no public-internet dependency on every boot). Drift prevention is preserved by construction — image and host artifacts CANNOT drift because they ship together. **Operator action**: `image_tag` MUST point to a tag from this release or later; older tags lack `/opt/agnes-host/` and the startup `docker cp` will fail-loud at first boot. Existing VMs are unaffected because the module sets `lifecycle { ignore_changes = [metadata_startup_script] }` — only newly-created VMs run the new script.
 - `compose_ref` variable on the customer-instance terraform module is **deprecated** — no longer used (compose files come from `image_tag` now). Variable retained for one release cycle to avoid breaking existing `terraform plan`s; will be removed in a future major bump. Pin `image_tag` instead.
 
-## [0.25.0] — 2026-04-30
-### Fixed
+## [0.25.0] — 2026-04-30### Fixed
 - `scripts/ops/agnes-auto-upgrade.sh`: fail-fast guard before any `docker
   compose` action — when the VM has a config disk attached
   (`/dev/disk/by-id/google-config-disk` exists), `/data/state` MUST be backed
@@ -13197,8 +12691,7 @@ cannot exercise them and they will be revisited in follow-up PRs:
   it the caddy service crash-loops while the overlay closes `:8000`,
   net effect "app unreachable").
 
-## [0.24.0] — 2026-04-30
-### Changed
+## [0.24.0] — 2026-04-30### Changed
 
 - **Effective-access readout no longer short-circuits for admin users on `/admin/users/{id}` and `/profile`.** Both `GET /api/admin/users/{id}/effective-access` and `GET /api/me/effective-access` previously returned `is_admin=true, items=[]` when the target was in the Admin group, and the UI rendered a flat "Full access via Admin" gold pill — which hid the underlying grant graph. Now both endpoints always run the JOIN, return the explicit per-resource breakdown, and surface `is_admin` only as informational metadata on the response. The UI drops the special pill on both surfaces and renders the same per-resource table everyone else sees. Authorization at runtime still gives Admin god-mode regardless of this list (see `app.auth.access.is_user_admin`); this is purely an audit/debug surface for admins to see *which* Admin-group grants exist via *which* sibling groups.
 
@@ -13229,8 +12722,7 @@ cannot exercise them and they will be revisited in follow-up PRs:
 
 - **`GET /api/admin/group-suggestions` endpoint and the "Suggested from your Google account" picker on the `/admin/groups` create modal.** The picker fetched the calling admin's Workspace groups (via Cloud Identity), filtered out ones already registered as `user_groups` rows, and offered them as one-click name pre-fills. Replaced by the OAuth callback's automatic `google_sync` group materialization (every Workspace group the user belongs to that matches `AGNES_GOOGLE_GROUP_PREFIX` is auto-created on login) — the manual picker became redundant. Cloud Identity calls in the request path are gone with it.
 
-## [0.23.0] — 2026-04-30
-### Added
+## [0.23.0] — 2026-04-30### Added
 - **Single-item Edit button on every memory item card** in `/corporate-memory/admin`. Surfaces the per-item `PATCH /api/memory/admin/{id}` endpoint added in #126 — until now it was only reachable via the CLI (`da admin memory edit <id>`) or by selecting one item in the bulk batch bar. The modal pre-fills from the item's current title / content / category / domain (dropdown matching `VALID_DOMAINS` + `(unset)`) / audience / tags (comma-separated). Authorisation: same `require_admin` gate as the rest of the memory admin surface.
 - **`ai` section editable in `/admin/server-config`**. The `ai:` block in `instance.yaml` (provider / api_key / model / base_url / structured_output for the corporate-memory extractor) was missing from `_EDITABLE_SECTIONS` and `SECTION_META`, so admins had no UI path to view or set the LLM token without editing `instance.yaml` directly. `api_key` is auto-masked via the existing `_SECRET_KEY_PATTERNS` (substring matches "api_key"), so the input renders as a password field and audit-log diffs redact the value.
 - **`MEMORY_DOMAIN` RBAC resource type** for corporate-memory items. Admins use `/admin/access` to grant `user_groups` access to specific domains (one of `finance` / `engineering` / `product` / `data` / `operations` / `infrastructure`). Members of granted groups see all `knowledge_items` in that domain regardless of the existing `audience` string filter. The two filters compose with OR semantics, so the existing `audience='group:X'` convention keeps working unchanged for ad-hoc per-item targeting; pre-grant deployments behave identically (when no MEMORY_DOMAIN grants exist, the OR clause collapses to a no-op). Wired in `KnowledgeRepository.list_items` / `search` / `count_items` / `count_by_tag` / `count_by_audience` and in the inline SQL of `GET /api/memory/stats` via a new `granted_domains` parameter resolved from `resource_grants` by `_caller_granted_memory_domains`. **Note**: a MEMORY_DOMAIN grant is a parallel visibility path that pierces the `audience` field — an item with `audience='group:admins-only'` and `domain='finance'` becomes visible to anyone with a `MEMORY_DOMAIN/finance` grant. Operators who relied on `audience` as a hard access boundary should be aware (Devin ANALYSIS_0003 on PR #141).
@@ -13238,8 +12730,7 @@ cannot exercise them and they will be revisited in follow-up PRs:
 ### Fixed
 - **Edit modal NULL→empty-string preservation** in `/corporate-memory/admin`. `submitEditItem` was sending `audience=""` for items whose stored audience was NULL, which silently broke visibility (the audience filter checks `audience IS NULL OR audience = 'all'`, neither of which matches empty string). Now empty form values for `audience`/`category`/`domain`/`content` are sent as JSON `null` so the backend stores NULL. (Devin BUG_0001 on PR #141 5f649a4 review.)
 
-## [0.22.0] — 2026-04-30
-### Fixed
+## [0.22.0] — 2026-04-30### Fixed
 
 - **`/api/v2/sample/{table_id}`, `/api/v2/schema/{table_id}`, `/api/v2/scan/estimate`, and `/api/v2/scan` now return structured 502/400 instead of bare 500 when BigQuery raises `Forbidden`/`BadRequest`.** Issue #134. Previously, `_fetch_bq_sample`, `_fetch_bq_schema`, `_bq_dry_run_bytes`, and `_run_bq_scan` had no `try/except`, so a cross-project SA without `serviceusage.services.use` on the data project surfaced as an empty HTTP 500 — operators got no diagnostic. All four call sites now translate `google.api_core.exceptions.Forbidden` to HTTP 502 with `error: "cross_project_forbidden"` (when the message mentions `serviceusage`) plus a `details.hint` pointing at `data_source.bigquery.billing_project` in `instance.yaml`, or `error: "bq_forbidden"` for non-serviceusage ACL denials. `BadRequest` translates to HTTP 400 (`bq_bad_request`) on `/scan/estimate` and `/scan` since their SQL is user-derived (built from `req.select`/`where`/`order_by`), and to HTTP 502 (`bq_upstream_error`) on `/sample` and `/schema` where SQL is server-constructed (server-built `SELECT * … LIMIT n` and `INFORMATION_SCHEMA.COLUMNS` queries respectively). The strict `_fetch_bq_schema` path is wrapped; the best-effort `_fetch_bq_table_options` path retains its existing `try/except → return {}` so `/schema` still returns 200 with empty partition info if BQ metadata is unreachable. `/api/v2/sample` additionally falls back to `data_source.bigquery.billing_project` (with `data_source.bigquery.project` as the default) — `/scan/estimate` and `/scan` already had this fallback.
 
@@ -13255,8 +12746,7 @@ cannot exercise them and they will be revisited in follow-up PRs:
 - `scripts/smoke-test.sh`: assertion 8 now hits `/api/admin/registry` (the current admin tables endpoint). The old `/api/admin/tables` URL was renamed long ago and the smoke test was returning 404 on every run — it only surfaced as a deploy failure when the full release pipeline first triggered the rollback path on the post-#137 deploy (run 25151878647). Same stale URL was also fixed in `CLAUDE.md`, `README.md`, and `dev_docs/server.md` — the routes now correctly point at `POST /api/admin/register-table` (create) and `PUT /api/admin/registry/{id}` (update).
 - `.github/workflows/release.yml` smoke-test job: added `Log in to GHCR` step. The auto-rollback's `docker push :stable` was hitting `unauthenticated: User cannot be authenticated with the token provided` because the smoke-test job had no GHCR login of its own. Result: a failed deploy left `:stable` pointing at the broken image. The rollback step also got an explicit `GH_TOKEN` env, and the workflow's top-level `permissions` block gained `issues: write`, so its `gh issue create` call actually creates the alert issue (was silently swallowed by the `|| echo` fallback because of both the missing env var AND the missing scope).
 
-## [0.21.0] — 2026-04-30
-### Internal
+## [0.21.0] — 2026-04-30### Internal
 
 - `scripts/dev/agnes-client-reset.sh` — destructive cleanup of an Agnes *client* install on a developer workstation, mirror image of `app/web/setup_instructions.py` so an onboarding-from-scratch test is reproducible. Removes the `da` CLI (`uv tool uninstall`), `~/.config/da` / `~/.agnes` / `~/.claude/skills/agnes`, the Claude Code `agnes` marketplace + its plugins, the Agnes CA from the OS trust store (Windows `certutil -delstore`, macOS `security delete-certificate -Z`, Linux `update-ca-certificates`/`update-ca-trust`), the `AGNES_CA_PEM_TRUST` block from the user's shell rc (with `.agnes-reset.bak` backup), and `/tmp/agnes*.whl` matches. Cross-platform (Git Bash on Windows / macOS / Linux); `--yes` skips the confirm prompt, `--dry-run` prints actions without executing.
 
@@ -13279,8 +12769,7 @@ cannot exercise them and they will be revisited in follow-up PRs:
 - **"Set up a new Claude Code" prompt now bootstraps the marketplace and plugins.** The clipboard payload generated by the dashboard CTA appends a git pre-flight check (`git --version`, with `brew install git` / `winget install --id Git.Git` install commands for macOS / Windows) followed by a marketplace-registration step that runs `claude plugin marketplace add "https://x:<PAT>@<host>/marketplace.git/"` and one `claude plugin install <plugin>@agnes --scope project` per RBAC-allowed plugin (resolved via `marketplace_filter.resolve_allowed_plugins`). When the user has no plugin grants, the original 6-step layout is preserved. When `AGNES_DEBUG_AUTH` is enabled on the server (dev/self-signed-cert instances), a host-scoped `git config --global http."<server>/".sslVerify false` line is also included so the marketplace clone works against the self-signed endpoint. Plugins load on the next `claude` start.
 - **Setup prompt inlines the server's TLS cert as a step-0 trust block on instances with a private CA / self-signed chain.** `app.web.router._read_agnes_ca_pem` reads `/data/state/certs/fullchain.pem` (path overridable via `AGNES_TLS_FULLCHAIN_PATH`; the file is bind-mounted into the app container by `docker-compose.host-mount.yml` from the same location `agnes-tls-rotate.sh` writes). Self-signed leaves and CA-signed leaves whose issuer isn't in the server-side `certifi` trust store are inlined into the prompt; publicly-trusted chains (Let's Encrypt etc.) are skipped so users don't unnecessarily narrow their default Python TLS trust. The inlined block writes the PEM to `~/.agnes/ca.pem` via single-quoted heredoc (so `$`/backtick chars in the cert never shell-expand) and exports `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `GIT_SSL_CAINFO` for the current shell + persists them to `~/.bashrc`/`~/.zshrc` (idempotent via a marker grep guard) so `da` keeps trusting the host across new terminal sessions. When the trust block is emitted, the legacy `git config sslVerify=false` downgrade is suppressed — full TLS validation re-enabled, just against the inlined cert. Cross-platform (macOS bash/zsh + Windows Git Bash) — same env vars, same heredoc syntax. Replaces the `git config sslVerify=false`-only path that broke `claude plugin marketplace add` (Node has its own HTTPS client and ignores `git config`) and `uv tool install` (rustls, no insecure flag) on self-signed instances.
 
-## [0.20.0] — 2026-04-29
-### Added
+## [0.20.0] — 2026-04-29### Added
 - Dev debug toolbar gated by `DEBUG=1`. Mounts `fastapi-debug-toolbar` with panels
   for headers, routes, settings, versions, timer, logging, and a custom DuckDB
   panel that captures every `con.execute()` from `src/db.py` (tagged by
@@ -13351,8 +12840,7 @@ cannot exercise them and they will be revisited in follow-up PRs:
 - `services/telegram_bot/config.py`: removed unused `BOT_LOG_FILE` constant.
 - `tests/conftest.py`: removed stale comment about bot.py FileHandler.
 
-## [0.19.0] — 2026-04-29
-### Added
+## [0.19.0] — 2026-04-29### Added
 - `table_registry.sync_schedule` is now honored at runtime. `POST /api/sync/trigger` (called by the scheduler sidecar every 15 min by default) drops local tables whose schedule says they are not due. Tables without a schedule continue to sync on every tick (opt-in feature). Manual `POST /api/sync/trigger {"tables":[...]}` bypasses the schedule filter — operator override always wins. (#79)
 - `script_registry.schedule` is now honored at runtime via the new endpoint `POST /api/scripts/run-due` (admin-only). The scheduler sidecar fires this every 60 s by default. Each due script is claimed atomically (`last_status='running'`), executed in a BackgroundTask, and the outcome written to `last_run` / `last_status`. Scripts already in `running` state are skipped — no concurrent runs of the same script. (#78)
 - Four new env vars on the scheduler sidecar: `SCHEDULER_DATA_REFRESH_INTERVAL`, `SCHEDULER_HEALTH_CHECK_INTERVAL`, `SCHEDULER_SCRIPT_RUN_INTERVAL`, `SCHEDULER_TICK_SECONDS`. All accept positive integers (seconds); tick must be ≤ smallest job interval. Documented in `docs/DEPLOYMENT.md` → Scheduler tuning. (#77)
@@ -13376,8 +12864,7 @@ cannot exercise them and they will be revisited in follow-up PRs:
 - **Stuck `last_status='running'`**: a scheduled script whose BackgroundTask crashes mid-run (process killed, OOM, gateway timeout) stays claimed forever. Recovery: `UPDATE script_registry SET last_status = NULL WHERE id = ?` from a DuckDB shell. Auto-recovery via max-runtime detection is intentionally out of scope for v0.19.0; revisit if it bites in practice.
 - **Schedule quantization rounds up**: `SCHEDULER_*_INTERVAL` accepts seconds but the underlying schedule grammar is minute-grained. Non-multiples of 60 round UP to the next minute (90 s → `every 2m`, never `every 1m`) so a job never fires more often than the operator configured. Sub-minute values clamp to `every 1m`. Documented in `docs/DEPLOYMENT.md` → Scheduler tuning.
 
-## [0.18.0] — 2026-04-29
-### Added
+## [0.18.0] — 2026-04-29### Added
 
 - **Corporate-memory tree view + cross-axis filtering** on `/corporate-memory` and `/corporate-memory/admin`. Operators choose a grouping axis (domain / category / tag / audience) and combine it with chip filters (status, source_type, audience, has-duplicate-hint, search). Tree uses native `<details>`; localStorage persists open/closed state per axis; no new dependencies. Issue #62.
 - **Corporate-memory duplicate-candidate hints** — admin sees a "Duplicate Candidates" tab with likely-duplicate item pairs detected by entity overlap (Jaccard score, ≥2 shared entities, same domain). Resolution actions: `duplicate` / `different` / `dismissed`. Auto-merge intentionally not included. Issue #62.
@@ -13425,8 +12912,7 @@ cannot exercise them and they will be revisited in follow-up PRs:
 - **`da admin memory duplicates list` couldn't list both resolution states** — the CLI always sent `resolved=true|false` and the API defaulted to `resolved=false` when omitted, so neither path returned the full set. `GET /api/memory/admin/duplicate-candidates` now treats omitted `resolved` as "no filter"; the CLI omits the flag by default and only sets it when the user passes `--resolved` or `--unresolved`. The web UI continues to pass `resolved=false` explicitly so the actionable backlog stays the default surface. Issue #62.
 - `PUT /api/admin/registry/{id}` now preserves the original `registered_at` timestamp instead of resetting it to `now()` on every edit. `TableRegistryRepository.register` accepts `registered_at` as an optional kwarg; `update_table` re-passes the existing value from the row it just read. Closes #130.
 
-## [0.17.0] — 2026-04-29
-### Added
+## [0.17.0] — 2026-04-29### Added
 
 - **Shared-secret auth path for the in-cluster scheduler service** (`SCHEDULER_API_TOKEN`). Both the `app` and `scheduler` containers source the same `/opt/agnes/.env` via Docker Compose `env_file:`, so a 256-bit secret generated once at VM provisioning serves both sides symmetrically. The app validates incoming `Authorization: Bearer <secret>` against the env var (constant-time compare; minimum length 32 chars; rejected when env is empty) and resolves matches to a synthetic `scheduler@system.local` user that is a member of the `Admin` system group — every existing RBAC gate (`require_admin`, `require_resource_access`) works unchanged. Audit-log entries from the scheduler are attributed to this user. Rotation: edit `.env`, `docker compose restart app scheduler`. See `app/auth/scheduler_token.py` for the threat model.
 - **`POST /api/marketplaces/sync-all`** — admin-only endpoint that runs `src.marketplace.sync_marketplaces()` inside the app process. Wired up so the scheduler container can drive the nightly refresh over HTTP without opening `system.duckdb` directly.
@@ -13454,8 +12940,7 @@ cannot exercise them and they will be revisited in follow-up PRs:
 - `release.yml` adds an `e2e-bind-mount` job that boots the freshly built image against a host-bind-mounted `/data` directory (instead of the named volume the existing `smoke-test` job uses). Docker initializes a fresh named volume by copying from the image's `/data` — which the Dockerfile chowns to `agnes:agnes` before flipping USER — so the named-volume path always works. The bind-mount path mirrors what GCE VMs run via `docker-compose.host-mount.yml`, and includes a negative assertion (write must fail on root-owned `/data` before the operator chown) plus a positive assertion (smoke passes after the chown). Locks in the contract that broke a recent release: removing `chown 999:999` from `startup-script.sh.tpl` or changing the Dockerfile uid pin breaks CI.
 - Extracted `bigquery.extractor.rebuild_from_registry()` from the `__main__` block of `connectors/bigquery/extractor.py` so the API can call it post-register without `runpy`-importing the module. The standalone CLI entrypoint (`python -m connectors.bigquery.extractor`) keeps working.
 
-## [0.16.0] — 2026-04-29
-Minor release. Comprehensive deploy safety audit — CI/CD pipeline hardening, 50+ new tests covering previously untested failure modes, DB schema health check, config versioning, and BigQuery ATTACH error resilience. Built on top of v0.15.0 / `2e1dfb7`.
+## [0.16.0] — 2026-04-29Minor release. Comprehensive deploy safety audit — CI/CD pipeline hardening, 50+ new tests covering previously untested failure modes, DB schema health check, config versioning, and BigQuery ATTACH error resilience. Built on top of v0.15.0 / `2e1dfb7`.
 
 PR: [#120](https://github.com/keboola/agnes-the-ai-analyst/pull/120) (ci/deploy-safety-audit).
 
@@ -13497,17 +12982,13 @@ PR: [#120](https://github.com/keboola/agnes-the-ai-analyst/pull/120) (ci/deploy-
 - `fetch-depth: 0` + `fetch-tags: true` in `release.yml` for rollback tag resolution.
 - Docs updated: `ARCHITECTURE.md`, `docs/DATA_SOURCES.md`, `docs/QUICKSTART.md`, `docs/RBAC.md`, `docs/auth-groups.md`.
 
-## [0.15.0] — 2026-04-29
-Minor release. Adds corporate memory v1+v1.5 and /me/debug self-only auth diagnostic. See [GitHub release](https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.15.0) for full notes.
+## [0.15.0] — 2026-04-29Minor release. Adds corporate memory v1+v1.5 and /me/debug self-only auth diagnostic. See [GitHub release](https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.15.0) for full notes.
 
-## [0.14.0] — 2026-04-28
-Minor release. Replaces BigQuery wrap-view pattern with Claude-driven fetch primitives. See [GitHub release](https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.14.0) for full notes.
+## [0.14.0] — 2026-04-28Minor release. Replaces BigQuery wrap-view pattern with Claude-driven fetch primitives. See [GitHub release](https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.14.0) for full notes.
 
-## [0.13.0] — 2026-04-28
-Minor release. Admin server-config editor + Windows PowerShell wrapper. See [GitHub release](https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.13.0) for full notes.
+## [0.13.0] — 2026-04-28Minor release. Admin server-config editor + Windows PowerShell wrapper. See [GitHub release](https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.13.0) for full notes.
 
-## [0.12.1] — 2026-04-28
-Patch release. Hotfixes the pre-migration snapshot-integrity bug shipped in [v0.12.0](https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.12.0) and bundles the security/ops hardening from issue groups #82 (auth hardening), #85 (API validation), #87 (deploy posture), plus #46 (SSRF) and #90 (memory stats blocking).
+## [0.12.1] — 2026-04-28Patch release. Hotfixes the pre-migration snapshot-integrity bug shipped in [v0.12.0](https://github.com/keboola/agnes-the-ai-analyst/releases/tag/v0.12.0) and bundles the security/ops hardening from issue groups #82 (auth hardening), #85 (API validation), #87 (deploy posture), plus #46 (SSRF) and #90 (memory stats blocking).
 
 ### Added
 
@@ -13633,8 +13114,7 @@ Patch release. Hotfixes the pre-migration snapshot-integrity bug shipped in [v0.
 - `test_no_override_file` regression test asserts `docker-compose.override.yml`
   does not exist post-rename. See issue #87/M23.
 
-## [0.12.0] — 2026-04-28
-### Changed
+## [0.12.0] — 2026-04-28### Changed
 
 - `/admin/access` resource tree now visually separates the three-level hierarchy (resource type → block/bucket → item). Each resource-type section gets a colored left stripe and a faint tinted banner; sections are separated by an 8px neutral gap. Stripe colors cycle 4-wide via `nth-child` so adding new resource types to `app/resource_types.py` works without touching CSS. The first-position color is the project primary blue (`#0073D1`), avoiding the violet (`#6366f1`) reserved for granted items.
 
@@ -13917,8 +13397,7 @@ Patch release. Hotfixes the pre-migration snapshot-integrity bug shipped in [v0.
 
 ---
 
-## [0.11.5] — 2026-04-27
-Follow-up release for PR #73: addresses four rounds of Devin AI review on the role-management-complete branch. No new public-API surface; the user-visible payoff is that v8→v9-migrated installations now work end-to-end (login flows, user list, admin nav, privilege revocation), and `make local-dev` startup is finally quiet.
+## [0.11.5] — 2026-04-27Follow-up release for PR #73: addresses four rounds of Devin AI review on the role-management-complete branch. No new public-API surface; the user-visible payoff is that v8→v9-migrated installations now work end-to-end (login flows, user list, admin nav, privilege revocation), and `make local-dev` startup is finally quiet.
 
 ### Fixed
 
@@ -13942,8 +13421,7 @@ Follow-up release for PR #73: addresses four rounds of Devin AI review on the ro
 
 ---
 
-## [0.11.4] — 2026-04-27
-Role-management complete release. Sjednocuje legacy `users.role` enum (viewer/analyst/km_admin/admin) with the v8 internal-roles foundation under one model with implies hierarchy, ships admin UI + REST API + CLI for managing both group mappings and direct user grants, and wires `require_internal_role` for PAT-aware resolution so admin endpoints work uniformly across OAuth and headless callers.
+## [0.11.4] — 2026-04-27Role-management complete release. Sjednocuje legacy `users.role` enum (viewer/analyst/km_admin/admin) with the v8 internal-roles foundation under one model with implies hierarchy, ships admin UI + REST API + CLI for managing both group mappings and direct user grants, and wires `require_internal_role` for PAT-aware resolution so admin endpoints work uniformly across OAuth and headless callers.
 
 ### Added
 
@@ -13975,8 +13453,7 @@ Role-management complete release. Sjednocuje legacy `users.role` enum (viewer/an
 - INFO-level audit log on grant + mapping mutations (action strings: `role_mapping.created/deleted`, `role_grant.created/deleted`, resource `mapping:<id>` / `grant:<id>`).
 - "Last admin protection" on `DELETE /api/admin/users/{id}/role-grants/{grant_id}`: refuses to delete the final `core.admin` grant in the system (mirrors existing `count_admins` protection on user deletion / deactivation).
 
-## [0.11.3] — 2026-04-26
-Authorization-foundation release — adds the internal-roles layer between Cloud Identity groups and per-module capability checks. Schema v8 migration; no admin UI yet (follow-up).
+## [0.11.3] — 2026-04-26Authorization-foundation release — adds the internal-roles layer between Cloud Identity groups and per-module capability checks. Schema v8 migration; no admin UI yet (follow-up).
 
 ### Added
 
@@ -13992,8 +13469,7 @@ Authorization-foundation release — adds the internal-roles layer between Cloud
 - Startup warning when `SESSION_SECRET` is shorter than 32 chars, matching the existing `JWT_SECRET_KEY` gate. Both HMAC surfaces sign trust-laden state (`session.internal_roles`, `session.google_groups`, JWTs) — keeping the two gates consistent so a weak secret gets surfaced at boot, not after a quiet downgrade.
 - `_clear_registry_for_tests()` now refuses to run unless `TESTING=1` so a stray import path in production can't drop the registered capabilities.
 
-## [0.11.2] — 2026-04-26
-Dev-experience patch release — make `LOCAL_DEV_MODE` realistic enough to actually exercise group-aware code paths on `localhost`, and consolidate scattered dev-onboarding instructions into a single `docs/local-development.md`.
+## [0.11.2] — 2026-04-26Dev-experience patch release — make `LOCAL_DEV_MODE` realistic enough to actually exercise group-aware code paths on `localhost`, and consolidate scattered dev-onboarding instructions into a single `docs/local-development.md`.
 
 ### Added
 
@@ -14005,8 +13481,7 @@ Dev-experience patch release — make `LOCAL_DEV_MODE` realistic enough to actua
 
 - Fix nightly `docker-e2e` CI failures: refresh two stale assertions that had drifted from the live API. `tests/test_docker_full.py::test_app_returns_html_on_root` now expects the auth-aware `302 → /login` (root has redirected since the auth middleware landed); `tests/test_e2e_docker.py::TestDockerHealth::test_health_has_duckdb` now reads `services["duckdb_state"]` (current health-payload shape, already validated by `tests/test_api.py`). No application behavior change — these only ran in the scheduled nightly job, so the drift went unnoticed for several PRs.
 
-## [0.11.1] — 2026-04-26
-Patch release — hotfix the missed Caddy env passthrough that should have shipped with 0.11.0, plus codify changelog discipline so this kind of drift gets caught at PR review time next time.
+## [0.11.1] — 2026-04-26Patch release — hotfix the missed Caddy env passthrough that should have shipped with 0.11.0, plus codify changelog discipline so this kind of drift gets caught at PR review time next time.
 
 ### Fixed
 
@@ -14016,8 +13491,7 @@ Patch release — hotfix the missed Caddy env passthrough that should have shipp
 
 - `CLAUDE.md` — non-negotiable changelog discipline: every PR touching user-visible behavior must update `CHANGELOG.md` under `## [Unreleased]` in the same PR.
 
-## [0.11.0] — 2026-04-26
-First tagged semver release. The `version = "2.x"` strings that appeared in earlier `pyproject.toml` snapshots were arbitrary placeholders from the initial scaffold and never reflected actual API maturity — resetting to pre-1.0 to signal that things may still shift.
+## [0.11.0] — 2026-04-26First tagged semver release. The `version = "2.x"` strings that appeared in earlier `pyproject.toml` snapshots were arbitrary placeholders from the initial scaffold and never reflected actual API maturity — resetting to pre-1.0 to signal that things may still shift.
 
 ### Added — Auth
 
