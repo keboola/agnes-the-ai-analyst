@@ -168,3 +168,18 @@ def test_summarize_args_shows_the_command_line():
     res = json.loads(_node_run(script))
     assert res["cmd"] == "agnes schema hr_headcount"
     assert res["sql"] == "SELECT 1"
+
+
+# ── tool results: JSON is one click away, never the primary rendering ───────
+
+
+def test_json_fallback_is_collapsed_behind_details():
+    js = _read(CHAT_JS)
+    body = js[
+        js.index('wrap.className = "cloud-chat-tool-result is-json"') : js.index("function _coerceToTablePreview")
+    ]
+    assert 'document.createElement("details")' in body, "the JSON fallback must be a collapsed details, not a bare pre"
+    assert "Structured result" in body, "the visible line is a summary, not the payload"
+    det_pos = body.index('document.createElement("details")')
+    pre_pos = body.index('document.createElement("pre")')
+    assert det_pos < pre_pos, "the pre lives INSIDE the details"

@@ -2374,14 +2374,28 @@ function _renderToolResultPreview(result) {
     return wrap;
   }
 
-  // Everything else — pretty-printed JSON inside a <pre>.
+  // Everything else — a one-line summary with the raw JSON one click away.
+  // A pretty-printed payload as the primary rendering is exactly the thing
+  // this function exists to avoid.
   const wrap = document.createElement("div");
   wrap.className = "cloud-chat-tool-result is-json";
+  const det = document.createElement("details");
+  det.className = "cloud-chat-tool-result-full";
+  const sum = document.createElement("summary");
+  const fieldCount =
+    result && typeof result === "object" && !Array.isArray(result)
+      ? Object.keys(result).length
+      : 0;
+  sum.textContent = fieldCount > 0
+    ? `Structured result · ${fieldCount} field${fieldCount === 1 ? "" : "s"} — show raw JSON`
+    : "Structured result — show raw JSON";
+  det.appendChild(sum);
   const pre = document.createElement("pre");
   const code = document.createElement("code");
   code.textContent = JSON.stringify(result, null, 2).slice(0, 4000);
   pre.appendChild(code);
-  wrap.appendChild(pre);
+  det.appendChild(pre);
+  wrap.appendChild(det);
   enhanceCodeBlocks(wrap);
   return wrap;
 }
