@@ -6323,7 +6323,6 @@ async def admin_package_detail(
     request: Request,
     package_id: str,
     user: dict = Depends(require_admin),
-    conn: duckdb.DuckDBPyConnection = Depends(_get_db),
 ):
     """ONE package, end to end — what is in it, who can use it, who has it.
 
