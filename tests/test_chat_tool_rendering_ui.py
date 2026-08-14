@@ -322,6 +322,48 @@ def test_errors_and_cancels_reach_the_transcript():
     assert "textContent" in body and ".innerHTML" not in body
 
 
+def test_an_interrupted_turn_repaints_its_withheld_tail():
+    """The streaming painter deliberately withholds a trailing half-open fence
+    (_streamingSafeText); the finalize repaint that would restore it never
+    comes on cancelled / confirmation_required / error — no assistant_message
+    follows them. Each must retire the bubble by painting the FULL accumulated
+    text, or the reader silently loses the last words that were on screen.
+    (Devin Review on this PR.)"""
+    js = _read(CHAT_JS)
+    assert "function _abortStreamingBubble" in js
+    fn = js[js.index("function _abortStreamingBubble") : js.index("function appendToken")]
+    assert "renderAnswerMarkdown(currentAssistantText)" in fn, (
+        "the abort paint takes the whole text, not the streaming-safe slice"
+    )
+    assert "_streamingSafeText" not in fn
+    sw = js[js.index("switch (frame.type)") : js.index("function applySessionRename")]
+    assert sw.count("_abortStreamingBubble()") >= 3, (
+        "cancelled, confirmation_required and error must all retire the bubble"
+    )
+
+
+def test_transcript_export_keeps_the_raw_tool_id():
+    """The exported transcript is the artifact handed to whoever debugs a bad
+    answer — the human label alone ("Reading a file") erases which tool
+    actually ran. The DOM keeps the raw id in a tooltip; the export has no
+    tooltip, so it carries both. (Devin Review on this PR.)"""
+    js = _read(CHAT_JS)
+    assert "tool: tc.tool" in js, "formatToolCall must return the raw id alongside the label"
+    export = js[js.index("async function fetchTranscriptMarkdown") : js.index("function wireCopyTranscript")]
+    assert "call.tool" in export and "call.label" in export, (
+        "the markdown export names both the verb and the raw tool id"
+    )
+
+
+def test_next_action_chips_wear_the_button_radius():
+    """Design-system shape rule: pill radius is badge language; every labelled
+    button wears --ds-radius-btn. (Devin Review on this PR.)"""
+    css = _read(CHAT_CSS)
+    rule = css[css.index(".cloud-chat-next-action {") : css.index(".cloud-chat-next-action:hover")]
+    assert "var(--ds-radius-btn)" in rule
+    assert "radius-pill" not in rule
+
+
 def test_system_note_styles_exist():
     css = _read(CHAT_CSS)
     assert ".cloud-chat-system-note" in css

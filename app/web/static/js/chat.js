@@ -570,7 +570,10 @@ function renderAnswerMarkdown(content) {
  *  an empty fence. */
 function formatToolCall(tc) {
   if (!tc || typeof tc.tool !== "string") return null;
-  return { label: _toolLabel(tc.tool, tc.args), argsJson: JSON.stringify(tc.args ?? {}, null, 2) };
+  // Both the verb and the raw id: the DOM keeps the id in a tooltip, but the
+  // markdown export has no tooltip — the copied record must still name which
+  // tool actually ran, or the one artifact handed to a debugger goes vague.
+  return { label: _toolLabel(tc.tool, tc.args), tool: tc.tool, argsJson: JSON.stringify(tc.args ?? {}, null, 2) };
 }
 
 /** Markdown transcript of one conversation. ``title`` must be captured by the
@@ -593,7 +596,7 @@ async function fetchTranscriptMarkdown(chatId, title) {
       if (!call) continue;
       // Fenced, not inline: an `agnes query` argument is multi-line SQL, and
       // the point of carrying tool calls at all is that they stay readable.
-      out.push(`<details><summary>tool: ${call.label}</summary>`, "", "```json", call.argsJson, "```", "", "</details>", "");
+      out.push(`<details><summary>tool: ${call.label} (${call.tool})</summary>`, "", "```json", call.argsJson, "```", "", "</details>", "");
     }
   }
   return out.join("\n");
@@ -1368,6 +1371,7 @@ function handleFrame(frame) {
     // The terminal frames below all disarm the long-run notification nudge —
     // a turn that has stopped is no longer worth offering to be pinged about.
     case "cancelled":
+      _abortStreamingBubble();
       renderSystemNote("Turn cancelled.", "warn");
       setStatus(`Cancelled tool: ${frame.tool || ""}`, "warn");
       $("cancel-btn").hidden = true;
@@ -1378,6 +1382,7 @@ function handleFrame(frame) {
       // The runner stopped the turn at the per-turn tool budget — no
       // assistant_message follows, so without this note the turn just froze
       // with zero explanation (the frame used to be silently dropped).
+      _abortStreamingBubble();
       renderSystemNote(
         `Stopped early: this turn hit its tool-call budget${frame.budget ? ` (${frame.budget})` : ""}. Send a message to continue where it left off.`,
         "warn",
@@ -1388,6 +1393,7 @@ function handleFrame(frame) {
       onboardingNoteTurnEnded();
       break;
     case "error":
+      _abortStreamingBubble();
       renderSystemNote(
         `Something went wrong: ${frame.kind || "error"}${frame.message ? ` — ${frame.message}` : ""}`,
         "error",
@@ -1683,6 +1689,7 @@ function renderMessage(m) {
       // untrusted and were previously interpolated into innerHTML unescaped.
       const summary = document.createElement("summary");
       summary.textContent = `tool: ${call.label}`;
+      summary.title = call.tool;
       const pre = document.createElement("pre");
       const code = document.createElement("code");
       code.textContent = call.argsJson;
@@ -2010,6 +2017,30 @@ function _renderStreamingMarkdown() {
     currentAssistantBody.textContent = visible;
   }
   maybeScrollToBottom();
+}
+
+/** A turn that stopped without its assistant_message (cancel, error, tool
+ *  budget) must not eat the words it had already streamed: the streaming
+ *  painter deliberately withholds a trailing half-open fence, and the final
+ *  repaint that would have restored it never comes on those paths. Paint the
+ *  FULL accumulated text once and retire the bubble — the record over
+ *  polish; a half-open fence shown raw is honest about where the turn died.
+ *  Retiring also stops the NEXT turn's tokens appending into this bubble. */
+function _abortStreamingBubble() {
+  if (_streamRenderTimer) {
+    clearTimeout(_streamRenderTimer);
+    _streamRenderTimer = null;
+  }
+  if (!currentAssistantBody) return;
+  try {
+    currentAssistantBody.innerHTML = renderAnswerMarkdown(currentAssistantText);
+  } catch (_e) {
+    currentAssistantBody.textContent = currentAssistantText;
+  }
+  currentAssistantArticle.classList.remove("is-streaming");
+  currentAssistantArticle = null;
+  currentAssistantBody = null;
+  currentAssistantText = "";
 }
 
 function appendToken(text) {
