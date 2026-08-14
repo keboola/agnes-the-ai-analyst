@@ -229,6 +229,24 @@ class TestPreviewGrantEndpoint:
         r = env["client"].post("/api/data-apps/does-not-exist/preview-grant", headers=_auth(env["owner_pat"]))
         assert r.status_code == 404
 
+    def test_mint_refusal_is_a_clean_400_not_a_500(self, preview_api_env, monkeypatch):
+        """`_mint_preview_token` refuses (ValueError) a slug that is unsafe in
+        a cookie name — a deliberate, now side-effect-free refusal, which the
+        endpoint must surface as a 400 with a stable machine token rather
+        than an unhandled 500 (Devin Review on this PR). Patched rather than
+        seeded: every create path validates slugs, so a DB row that trips the
+        check cannot be built through the API."""
+        import app.api.data_apps as data_apps_api
+
+        def _refuse(row, requester, **kw):
+            raise ValueError("data app slug is not safe in a cookie name")
+
+        monkeypatch.setattr(data_apps_api, "_mint_preview_token", _refuse)
+        env = preview_api_env
+        r = env["client"].post("/api/data-apps/dash/preview-grant", headers=_auth(env["owner_pat"]))
+        assert r.status_code == 400, r.text
+        assert r.json()["detail"] == "slug_not_cookie_safe"
+
     def test_disabled_feature_404s(self, preview_api_env, monkeypatch):
         import app.api.data_apps as data_apps_api
 

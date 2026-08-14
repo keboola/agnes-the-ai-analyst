@@ -980,6 +980,109 @@ def test_a_legacy_named_cookie_is_still_pinned_to_its_own_slug(proxy_client, fak
     assert r.status_code in (401, 403), r.text
 
 
+def test_an_anonymous_probe_cannot_tell_a_real_slug_from_a_missing_one(proxy_client, running_app):
+    """Readiness must resolve the caller BEFORE the registry read.
+
+    With auth moved from the `Depends` chain into the handler body, a
+    lookup-first ordering answered an anonymous `GET /readiness` 404 for a
+    made-up slug and 401 for a real one — a credential-free way to enumerate
+    which hosted apps exist on the instance (Devin Review on this PR). Both
+    must answer the same 401 the old `Depends(get_current_user)` signature
+    enforced.
+    """
+    real = proxy_client.get("/api/data-apps/s/readiness", follow_redirects=False)
+    fake = proxy_client.get("/api/data-apps/no-such-app/readiness", follow_redirects=False)
+    assert real.status_code == 401, real.text
+    assert fake.status_code == 401, (
+        f"an unknown slug answered {fake.status_code} while a real one answers 401 — "
+        "anonymous callers can enumerate app slugs"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Subdomain-mode readiness CORS — route-scoped, per-app, never app-wide.
+# ---------------------------------------------------------------------------
+
+
+def test_readiness_answers_cors_for_the_apps_own_subdomain_origin(
+    proxy_client, proxy_env, fake_runner, running_app, mint_preview
+):
+    """On a subdomain-served instance the holding page lives on
+    `https://<slug>.<base>` and its poll must be able to READ the readiness
+    JSON from the main host — a credentialed cross-origin simple GET, so the
+    response headers are the entire CORS surface needed."""
+    tok = mint_preview("s", ttl_s=1800)
+
+    # No subdomain_base configured -> no CORS grant, even for a matching shape.
+    r = proxy_client.get(
+        "/api/data-apps/s/readiness",
+        headers={"cookie": tok.cookie, "origin": "https://s.apps.example.com"},
+    )
+    assert r.status_code == 200, r.text
+    assert "access-control-allow-origin" not in r.headers
+
+    _set_data_apps_config(proxy_env["data_dir"], subdomain_base="apps.example.com")
+    r = proxy_client.get(
+        "/api/data-apps/s/readiness",
+        headers={"cookie": tok.cookie, "origin": "https://s.apps.example.com"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.headers.get("access-control-allow-origin") == "https://s.apps.example.com"
+    assert r.headers.get("access-control-allow-credentials") == "true"
+    assert "origin" in (r.headers.get("vary") or "").lower()
+
+
+def test_readiness_cors_is_pinned_to_the_apps_own_origin(
+    proxy_client, proxy_env, fake_runner, running_app, mint_preview
+):
+    """A sibling app's subdomain — user-authored code — must not be able to
+    read another app's readiness, and non-subdomain origins get nothing."""
+    _set_data_apps_config(proxy_env["data_dir"], subdomain_base="apps.example.com")
+    tok = mint_preview("s", ttl_s=1800)
+    for origin in (
+        "https://other.apps.example.com",  # a sibling app's own origin
+        "https://evil.example.com",
+        "https://s.apps.example.com.evil.com",  # suffix-spoof
+        "ftp://s.apps.example.com",
+    ):
+        r = proxy_client.get(
+            "/api/data-apps/s/readiness",
+            headers={"cookie": tok.cookie, "origin": origin},
+        )
+        assert r.status_code == 200, r.text
+        assert "access-control-allow-origin" not in r.headers, f"origin {origin} must not be CORS-readable"
+
+
+def test_data_app_subdomains_get_no_app_wide_cors(proxy_env):
+    """The one readable response is the readiness poll's — NOT every endpoint.
+
+    The first cut allowed `*.{subdomain_base}` app-wide via CORSMiddleware's
+    `allow_origin_regex` with `allow_credentials=True`. Data-app subdomains
+    serve user-authored JS, and the session cookie already rides from them to
+    the main host (`Domain=.<parent>`, same-site) — so that policy let any
+    hosted app's code read every authenticated Agnes endpoint as its viewer
+    (Devin Review on this PR). The middleware must not reflect those origins
+    even when `subdomain_base` is configured at app-build time.
+    """
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+
+    _set_data_apps_config(proxy_env["data_dir"], subdomain_base="apps.example.com")
+    _create_app_row(slug="corsapp", state="created")
+    client = TestClient(create_app())
+
+    r = client.get(
+        "/api/data-apps/corsapp",
+        headers={"Authorization": f"Bearer {proxy_env['owner_pat']}", "origin": "https://corsapp.apps.example.com"},
+    )
+    assert r.status_code == 200, r.text
+    assert "access-control-allow-origin" not in r.headers, (
+        "an authenticated control-plane response is CORS-readable from a data-app "
+        "subdomain — the app-wide credentialed origin grant is back"
+    )
+
+
 def test_a_slug_that_would_break_the_cookie_header_is_refused(mint_preview, running_app):
     """The slug is interpolated into a `Set-Cookie` NAME, so it is re-checked
     at mint rather than trusted to have come from a validated create — a
@@ -987,9 +1090,14 @@ def test_a_slug_that_would_break_the_cookie_header_is_refused(mint_preview, runn
     needs. Refusing is right here: there is no safe cookie to emit, and
     silently mangling the name would hand back a credential no request can
     ever carry.
+
+    And the refusal must be SIDE-EFFECT-FREE: the check first ran after the
+    JWT was minted and the `access_tokens` row persisted, so each rejected
+    slug below left a live, orphaned 30-minute credential in the DB that
+    nothing would ever hand out or revoke (Devin Review on this PR).
     """
     from app.api.data_apps import _mint_preview_token
-    from src.repositories import data_apps_repo, users_repo
+    from src.repositories import access_token_repo, data_apps_repo, users_repo
 
     row = dict(data_apps_repo().get_by_slug("s"))
     requester = users_repo().get_by_id(row["owner_user_id"])
@@ -997,6 +1105,13 @@ def test_a_slug_that_would_break_the_cookie_header_is_refused(mint_preview, runn
         row["slug"] = bad
         with pytest.raises(ValueError):
             _mint_preview_token(row, requester)
+
+    orphans = [
+        t
+        for t in access_token_repo().list_for_user(requester["id"], include_revoked=False)
+        if (t.get("name") or "").startswith("data-app-preview:")
+    ]
+    assert orphans == [], f"a refused mint must not leave a live credential row behind: {orphans}"
 
 
 def test_the_waking_page_polls_a_relative_url_on_the_path_form(client_granted, fake_runner, sleeping_app):
