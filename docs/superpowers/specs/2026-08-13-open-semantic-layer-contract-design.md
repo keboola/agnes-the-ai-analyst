@@ -214,7 +214,20 @@ project.
 Projection writes `metric_definitions`, `glossary_terms` and `column_metadata`
 stamped with the model's `source` and `source_ref`. Prune is scoped to that
 `source_ref` — the isolation model already proven for YAML metric imports and
-per-connection metastore syncs. Two sources can never delete each other's rows.
+per-connection metastore syncs.
+
+**One exception, found during implementation and not designed around:**
+`column_metadata` has no `source_ref` column — only `source` — so column-level
+prune can be scoped no finer than `(table_id, source)`. The consequence is
+narrow but real: two sources that share a `source` value AND describe the same
+physical table can prune each other's column descriptions. Metrics and glossary
+terms are unaffected; both carry `source_ref`.
+
+The clean fix is to add `source_ref` to `column_metadata` on both ladders. It is
+deliberately NOT bundled into this design: it widens the migration beyond the
+tables this contract introduces, and the collision requires two sources sharing
+a `source` value, which the source registry does not currently produce. Revisit
+it the moment a second adapter writes columns under an existing `source`.
 
 **Imported rows are read-only in the UI.** Editing an imported definition in place
 would put the editor in a race with a scheduled importer that prunes what upstream

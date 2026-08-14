@@ -1217,7 +1217,10 @@ def test_reprojection_prunes_only_this_origin(system_db):
     project_document(shrunk, source="git", source_ref="repo-a")
 
     from src.repositories import metric_repo
-    remaining = {m["name"] for m in metric_repo().list_all()}
+    # NOTE: MetricRepository exposes `list(category=None)`, NOT `list_all()`.
+    # The semantic_models repo this plan adds does use `list_all` — don't let
+    # the two naming conventions blur.
+    remaining = {m["name"] for m in metric_repo().list()}
     assert "revenue" not in remaining, "repo-a's dropped metric should be pruned"
     assert "cost" in remaining, "prune must not cross a source_ref boundary"
 ```
@@ -1812,8 +1815,14 @@ def test_projection_matches_pre_ossie_output(system_db, fixture, golden):
     """Everything that worked before must produce the identical row set."""
     import_source("keboola-1")
     from src.repositories import metric_repo, glossary_repo
-    got = {"metrics": sorted(metric_repo().list_all(), key=lambda m: m["id"]),
-           "glossary": sorted(glossary_repo().list_all(), key=lambda g: g["id"])}
+    # Two repository-API traps, both of which produce a PASSING but meaningless
+    # comparison if taken from memory:
+    #   * MetricRepository exposes `list(category=None)`, not `list_all()`.
+    #   * GlossaryRepository.list() defaults to limit=100 — pass an explicit
+    #     high limit, or a golden diff silently stops at the 100th term.
+    got = {"metrics": sorted(metric_repo().list(), key=lambda m: m["id"]),
+           "glossary": sorted(glossary_repo().list(limit=100_000), key=lambda g: g["id"])}
+    assert len(got["glossary"]) < 100_000, "raise the limit; the cap was hit"
     assert _normalize(got) == _normalize(golden)
 ```
 
