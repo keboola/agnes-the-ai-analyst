@@ -614,6 +614,7 @@ _URL_MAP = {
     "password_auth.request_access": "/auth/password/setup",
     "email_auth.login_email_form": "/login/email",
     "email_auth.send_magic_link": "/auth/email/send-link",
+    "email_auth.send_magic_link_web": "/auth/email/send-link/web",
     "register": "/auth/password/setup",
     "setup": "/first-time-setup",
 }
@@ -953,20 +954,30 @@ async def login_page(request: Request):
     if not next_path.startswith("/") or next_path.startswith("//"):
         next_path = ""
 
+    from app.auth.provider_registry import provider_allowed
+
     providers = []
     try:
         from app.auth.providers.google import is_available as google_available
 
-        if google_available():
+        if google_available() and provider_allowed("google"):
             providers.append({"name": "google", "display_name": "Google", "icon": "google"})
     except Exception:
         pass
-    providers.append({"name": "password", "display_name": "Email & Password", "icon": "key"})
+    if provider_allowed("password"):
+        providers.append({"name": "password", "display_name": "Email & Password", "icon": "key"})
     try:
         from app.auth.providers.email import is_available as email_available
 
-        if email_available():
+        if email_available() and provider_allowed("email"):
             providers.append({"name": "email", "display_name": "Email Link", "icon": "mail"})
+    except Exception:
+        pass
+    try:
+        from app.auth.providers.keboola import is_available as keboola_available
+
+        if keboola_available() and provider_allowed("keboola"):
+            providers.append({"name": "keboola", "display_name": "Keboola", "icon": "keboola"})
     except Exception:
         pass
 
@@ -994,14 +1005,40 @@ async def login_page(request: Request):
             login_buttons.append(
                 {"url": _url, "text": "Sign in with Email Link", "css_class": "btn-secondary", "icon_html": ""}
             )
+        elif p["name"] == "keboola":
+            _url = "/auth/keboola/login"
+            if next_path:
+                _url += f"?next={quote(next_path, safe='')}"
+            login_buttons.append(
+                {"url": _url, "text": "Sign in with Keboola", "css_class": "btn-primary", "icon_html": ""}
+            )
 
-    ctx = _build_context(request, providers=providers, login_buttons=login_buttons, next_path=next_path)
+    keboola_expected_project = ""
+    if request.query_params.get("error") == "keboola_project_mismatch":
+        try:
+            from app.auth.providers import keboola_verify as _kv
+
+            keboola_expected_project = _kv.configured_project_id() or ""
+        except Exception:
+            pass
+
+    ctx = _build_context(
+        request,
+        providers=providers,
+        login_buttons=login_buttons,
+        next_path=next_path,
+        keboola_expected_project=keboola_expected_project,
+    )
     return templates.TemplateResponse(request, "login.html", ctx)
 
 
 @router.get("/login/password", response_class=HTMLResponse)
 async def login_password_page(request: Request):
     """Password login form (email + password)."""
+    from app.auth.provider_registry import provider_allowed
+
+    if not provider_allowed("password"):
+        raise HTTPException(status_code=404, detail="Not Found")
     next_path = request.query_params.get("next", "")
     if not next_path.startswith("/") or next_path.startswith("//"):
         next_path = ""
@@ -1009,7 +1046,7 @@ async def login_password_page(request: Request):
     try:
         from app.auth.providers.google import is_available as google_available
 
-        google_ok = google_available()
+        google_ok = google_available() and provider_allowed("google")
     except Exception:
         pass
     ctx = _build_context(request, google_available=google_ok, next_path=next_path)
@@ -1018,19 +1055,45 @@ async def login_password_page(request: Request):
 
 @router.get("/login/email", response_class=HTMLResponse)
 async def login_email_page(request: Request):
-    """Email magic link login form."""
-    next_path = request.query_params.get("next", "")
-    if not next_path.startswith("/") or next_path.startswith("//"):
-        next_path = ""
+    """Email magic link login form.
+
+    Renders `login_magic_link.html` — the actual magic-link form, whose
+    "Send Sign-In Link" button posts to `/auth/email/send-link/web`. This
+    route used to render `login_email.html` (the password form, which posts
+    to `/auth/password/*`) by mistake: with `auth.providers: [email]`, the
+    entire `/auth/password` router 404s, so the wrong template locked out
+    the web UI end to end.
+    """
+    from app.auth.provider_registry import provider_allowed
+
+    if not provider_allowed("email"):
+        raise HTTPException(status_code=404, detail="Not Found")
+    # Don't render a "send me a link" form when no mail transport is configured
+    # — it would take the email and claim a link was sent that can never arrive.
+    # is_available() is True in local-dev (the link is logged), so dev still works.
+    from app.auth.providers.email import is_available as email_available
+
+    if not email_available():
+        return RedirectResponse(url="/login?error=email_not_configured", status_code=302)
+    from app.auth._common import safe_next_path
+
+    next_path = safe_next_path(request.query_params.get("next", ""), default="")
     google_ok = False
     try:
         from app.auth.providers.google import is_available as google_available
 
-        google_ok = google_available()
+        google_ok = google_available() and provider_allowed("google")
     except Exception:
         pass
-    ctx = _build_context(request, google_available=google_ok, next_path=next_path)
-    return templates.TemplateResponse(request, "login_email.html", ctx)
+    from app.instance_config import get_allowed_domains
+
+    ctx = _build_context(
+        request,
+        google_available=google_ok,
+        next_path=next_path,
+        allowed_domains=get_allowed_domains(),
+    )
+    return templates.TemplateResponse(request, "login_magic_link.html", ctx)
 
 
 def _compute_data_stats() -> dict:

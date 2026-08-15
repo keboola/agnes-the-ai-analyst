@@ -278,6 +278,28 @@ SWITCHES: tuple[Switch, ...] = (
         ),
     ),
     Switch(
+        name="keboola_token_header",
+        config_keys=("auth", "keboola", "allow_token_header"),
+        env_var="AGNES_KEBOOLA_ALLOW_TOKEN_HEADER",
+        kind="bool",
+        default=False,
+        effect="live",
+        category="operations",
+        editable=True,
+        description=(
+            "Accept a Keboola Storage API token in the X-StorageApi-Token header as API "
+            "authentication. The token is verified against the configured stack per request "
+            "(60s cache), must be a master token for the bound project, and maps only to an "
+            "EXISTING user — it never provisions accounts. Off by default: a plain Storage "
+            "token carries no interactive factor, so enabling this bypasses any MFA/SSO the "
+            "organization enforces on web logins. It also grants that user's full Agnes "
+            "authority (PAT-equivalent): if the mapped user is an admin, admin mutation "
+            "endpoints are reachable with the token — the narrowing is on the data-read "
+            "surface (credential_surface='stack'), not the admin gate. Credential-minting "
+            "endpoints (PAT/MCP/agent/data-app) are blocked regardless."
+        ),
+    ),
+    Switch(
         name="mcp_connector_ui",
         config_keys=("mcp", "connector_ui_enabled"),
         env_var="AGNES_MCP_CONNECTOR_UI_ENABLED",

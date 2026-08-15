@@ -665,24 +665,81 @@ class TestUnauthenticatedHtmlRedirects:
             f"Expected google login URL with ?next in login page; snippet: {body[:800]}"
         )
 
-    def test_login_email_page_extracts_and_renders_next(self, web_client):
+    def test_login_email_page_extracts_and_renders_next(self, web_client, monkeypatch):
         """/login/email (magic link) must extract ?next from the URL and
         emit it into the hidden form field so it round-trips to the POST."""
+        monkeypatch.setenv("SMTP_HOST", "smtp.example.com")  # mail transport → page renders
         resp = web_client.get("/login/email?next=/catalog")
         assert resp.status_code == 200
         body = resp.text
         # The template renders <input type="hidden" name="next" value="/catalog">
         assert 'name="next" value="/catalog"' in body, f"Expected /catalog in next hidden field; snippet: {body[:800]}"
 
-    def test_login_email_page_rejects_open_redirect_in_next(self, web_client):
+    def test_login_email_page_rejects_open_redirect_in_next(self, web_client, monkeypatch):
         """Hostile ?next values (e.g. //evil) must be sanitized away before
         the hidden field is rendered."""
+        monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
         resp = web_client.get("/login/email?next=//evil.example/")
         assert resp.status_code == 200
         body = resp.text
         assert "evil.example" not in body
         # Empty string is the sanitized default.
         assert 'name="next" value=""' in body
+
+    def test_login_email_page_renders_magic_link_form(self, web_client, monkeypatch):
+        """/login/email must render the magic-link form, not the password
+        form. The password form posts to /auth/password/*, which 404s
+        under an `auth.providers: [email]` allowlist — that mismatch used
+        to lock the whole web UI out (regression)."""
+        monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
+        resp = web_client.get("/login/email")
+        assert resp.status_code == 200
+        body = resp.text
+        assert 'action="/auth/email/send-link/web"' in body
+        assert "/auth/password/login/web" not in body
+
+    def test_login_email_page_redirects_when_no_mail_transport(self, web_client, monkeypatch):
+        """Without SMTP/SendGrid (and outside dev mode) the magic-link page
+        would take an email and claim a link was sent that never arrives, so
+        it redirects to /login with an explanatory error instead of pretending
+        (Devin review on #1288)."""
+        for var in ("SMTP_HOST", "SENDGRID_API_KEY", "LOCAL_DEV_MODE"):
+            monkeypatch.delenv(var, raising=False)
+        resp = web_client.get("/login/email", follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/login?error=email_not_configured"
+
+    def test_send_link_web_post_refuses_when_no_mail_transport(self, web_client, monkeypatch):
+        """The POST sibling must refuse on its own — it is reachable without a
+        freshly-rendered GET (stale form, bookmark, scripted client), and
+        without a transport the sent-page's "We sent a sign-in link" would be
+        a lie: delivery is silently skipped (Devin Review on PR #1288)."""
+        for var in ("SMTP_HOST", "SENDGRID_API_KEY", "LOCAL_DEV_MODE"):
+            monkeypatch.delenv(var, raising=False)
+        resp = web_client.post(
+            "/auth/email/send-link/web",
+            data={"email": "someone@example.com"},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/login?error=email_not_configured"
+
+    def test_sent_page_expiry_copy_is_computed_from_the_token_ttl(self, web_client, monkeypatch):
+        """The sent-page's expiry sentence must be rendered from
+        MAGIC_LINK_EXPIRY, not hand-copied — the template said "15 minutes"
+        while the token actually lived an hour (Devin Review on PR #1288).
+        The expectation is derived from the constant so a TTL change cannot
+        re-split the copy from the behavior."""
+        from app.auth.providers.email import MAGIC_LINK_EXPIRY
+
+        monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
+        monkeypatch.delenv("LOCAL_DEV_MODE", raising=False)
+        resp = web_client.post(
+            "/auth/email/send-link/web",
+            data={"email": "someone@example.com"},
+        )
+        assert resp.status_code == 200
+        assert f"The link expires in {MAGIC_LINK_EXPIRY // 60} minutes." in resp.text
 
     def test_google_login_stashes_safe_next_in_session(self, web_client, monkeypatch):
         """google_login() must stash the sanitized next_path in the session.
