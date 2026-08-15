@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from src.semantic.validation import SPEC_VERSION, validate_document
+from src.semantic.document_validation import SPEC_VERSION, validate_document
 
 VALID = """
 version: "0.2.0.dev0"

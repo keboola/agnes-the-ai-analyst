@@ -47,7 +47,7 @@ from typing import Any, Dict, List, Optional
 
 from src.repositories import semantic_model_repo
 from src.semantic.projection import ProjectionReport, project_document
-from src.semantic.validation import validate_document
+from src.semantic.document_validation import validate_document
 
 
 @dataclass
