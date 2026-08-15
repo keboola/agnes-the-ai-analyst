@@ -1708,6 +1708,15 @@ def _known_fields_resolved() -> dict:
     from app.switches import switch_value
 
     fields["auth"]["keboola"]["fields"]["multi_project_mode"]["default"] = switch_value("keboola_multi_project_mode")
+    # The project id is required exactly when the single-project gate is in
+    # force. Under an active discovery mode (`select`/`auto`) it is optional
+    # — unset/`'*'` IS the wildcard — and a static `required: True` rendered
+    # a required marker beside a hint telling the operator to leave it
+    # blank, nudging them to pin a project and silently disable the
+    # wildcard they intended (Devin Review on this PR, sixteenth round).
+    fields["auth"]["keboola"]["fields"]["project_id"]["required"] = (
+        switch_value("keboola_multi_project_mode") == "disabled"
+    )
     return fields
 
 

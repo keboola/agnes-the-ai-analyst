@@ -316,6 +316,21 @@ class TestServerConfigFeatureFlagsInventory:
         kf = c.get("/api/admin/server-config", headers=_auth(token)).json()["known_fields"]
         assert kf["auth"]["keboola"]["fields"]["multi_project_mode"]["default"] == "auto"
 
+    def test_known_fields_project_id_required_follows_the_mode(self, seeded_app, monkeypatch):
+        """`project_id` is required exactly when the single-project gate is
+        in force: under an active discovery mode unset/`'*'` IS the wildcard,
+        and a static required marker beside the leave-it-blank hint nudged
+        operators to pin a project and silently lose the wildcard (Devin
+        Review on PR #1328, sixteenth round)."""
+        c = seeded_app["client"]
+        token = seeded_app["admin_token"]
+        monkeypatch.delenv("AGNES_KEBOOLA_MULTI_PROJECT_MODE", raising=False)
+        kf = c.get("/api/admin/server-config", headers=_auth(token)).json()["known_fields"]
+        assert kf["auth"]["keboola"]["fields"]["project_id"]["required"] is True
+        monkeypatch.setenv("AGNES_KEBOOLA_MULTI_PROJECT_MODE", "auto")
+        kf = c.get("/api/admin/server-config", headers=_auth(token)).json()["known_fields"]
+        assert kf["auth"]["keboola"]["fields"]["project_id"]["required"] is False
+
     def test_known_fields_defaults_follow_the_preset(self, seeded_app, monkeypatch):
         """The EDITABLE registry must render the preset-implied default for
         unset preset-coupled fields — a static literal there means a redesign
